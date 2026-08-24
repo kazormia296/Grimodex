@@ -2,9 +2,9 @@
 
 ## Status
 
-- **Lifecycle:** Active implementation plan
-- **Milestone:** NIR-0 — Shared contract adoption
-- **Last updated:** 2026-08-22
+- **Lifecycle:** NIR0-CERT candidate implementation plan
+- **Milestone:** NIR-0 — C2B activation and Chronicle add-only certification
+- **Last updated:** 2026-08-25
 - **Stacked base at creation:** PR #551, `codex/c2-parallel-foundations` at `eb428bd75a3ff08936526eaeb82ae58ff7e76146`
 - **Contract PR:** `NIR0-00: Narrative Revision Semantics, Native-Verified Human Derivation, Material-Basis Inheritance, Monotonicity, and Project-Scoped Identity Contract`
 - **Pilot:** Chronicle `scene-event@1`
@@ -21,10 +21,11 @@ This document fixes the implementation order and cross-PR ownership for NIR-0. I
 
 Pull request descriptions and chat history are implementation evidence, not architectural authority.
 
-NIR0-00 is contract-only. E2.1 is the explicitly ratified additive exception
-for the Chronicle AI-audit stage seam: it may carry durable audit metadata and
-an ephemeral request-scoped pure sidecar, but it does not add V2 persistence,
-a database schema/migration, or product activation.
+NIR0-00 was the contract-only foundation. E2.1 is the explicitly ratified
+additive exception for the Chronicle AI-audit stage seam: it may carry durable
+audit metadata and an ephemeral request-scoped pure sidecar. The current
+NIR0-CERT slice adds the C2B V2 persistence, Native Human writer, activation
+markers, and bounded Chronicle add-only production route described below.
 
 ---
 
@@ -946,62 +947,33 @@ C1 Chronicle pure scene-event@1 Adapter
 
 C1 may start after S1 + K1 + E1. It does not wait for C2-ZB because it is pure TypeScript and performs no persistence.
 
-### Wave 2 — C2 joins and storage
+### Wave 2/3 — completed C2B add-only convergence
 
-External C2 lane:
-
-```text
-C2-5B
-  → C2-ZB
-  → C2-ZC
-```
-
-NIR lanes:
+The candidate branch now contains the required C2B convergence slice:
 
 ```text
-after C2-ZB:
-  D1 sealed Dependency declaration storage
-  C2A Envelope V2 persistence + Human Derivation writer + monotonicity trigger
-
-after C2-ZC:
-  D2 Dependency shadow runtime
-```
-
-### Wave 3 — atomic child semantics and product journey
-
-```text
-C2A + D2
-  → C2B Effective Material Basis
-       child declarations
-       atomic current-Epoch Freshness initialization
-  → activation gate
-  → C3 Chronicle Human-derived review flow
+C2A + D1 + D2 shadow foundations
+  → live Scope authority and ScopeOverride adapter
+  → atomic child Material Basis / D1 / V1 Edge / Freshness / pointer CAS
+  → Chronicle V2 coordinator and atomic proposal-set save
+  → C2B Human Native / IPC / review writer
+  → bounded activation: scene-event@1 + add only
   → NIR0-CERT
 ```
 
 ### 11.1 Activation gate
 
-No Chronicle producer emits V2 into production persistence when only C2A is merged.
+Activation is enabled only for the bounded Chronicle `scene-event@1` add pilot.
+The active production entry points are the extraction coordinator, atomic
+proposal-set save, and the C2B Human-derived revision writer. Direct generic V2
+append remains blocked; the existing V1 path is an explicit compatibility
+fallback.
 
-The following remain disabled until C2B lands:
-
-- Chronicle V2 emission,
-- Human-derived V2 edit UI,
-- V2 current-Revision promotion,
-- any product claim that NIR-0 is active.
-
-C1 may generate and test V2 objects in pure fixtures before this point, but production save continues using the existing V1 path.
-
-Activation requires:
-
-```text
-C2A merged
-D1 merged
-D2 merged
-C2B merged
-focused migration / persistence / Freshness journeys green
-implementationStatus updated atomically
-```
+The activation update is atomic across policy, schema, validator, and
+production markers. It is accepted only with focused migration, persistence,
+Freshness, Human title/secret, IPC, and negative-matrix evidence. Disclosure
+admission, D2 full V2 authority cutover, and non-add change kinds remain
+deferred.
 
 ---
 
@@ -1099,9 +1071,12 @@ NIR-0 is complete only when all of the following are true.
 
 23. V2 cannot downgrade to V1, no-envelope, or legacy-unbound through the typed writer.
 24. The structural downgrade trigger rejects non-V2 child insertion after a V2 current Revision.
-25. Chronicle production V2 emission remains disabled until C2B.
-26. Human-derived V2 UI remains disabled until C2B.
-27. Activation changes implementation status and production entry points atomically.
+25. Chronicle production V2 emission is enabled only for the typed
+    `scene-event@1` `add` pilot after C2B; other change kinds remain blocked.
+26. The Human-derived V2 UI uses the typed C2B writer route; direct generic V2
+    append remains blocked and the V1 path is an explicit fallback.
+27. Activation changes implementation status, policy/schema state, and
+    production entry points atomically.
 
 ### Stage provenance and boundaries
 
@@ -1179,6 +1154,12 @@ pnpm ci:local:verify -- full --base <resolved-base> --head HEAD
 ```
 
 Local CI receipts are candidate-bound. A stacked PR based on PR #551 must rerun Quick and Full after rebase / retarget to merged `master`.
+
+The completion ledger is [NIR0-CERT](../certification/nir0/NIR0-CERT.md). It
+records the candidate commit, exact base/HEAD pair, focused suite counts,
+semantic contract result, local CI receipts, and the deferred remote merge
+evidence. A local certificate is not a substitute for the later PR #556/#557
+merge and clean-master revalidation.
 
 ---
 

@@ -3,8 +3,8 @@
 ## Status
 
 - **Lifecycle:** Active mutable roadmap
-- **Last updated:** 2026-08-21
-- **Current focus:** Gate C2 completion and canonical Semantic Build Graph cutover
+- **Last updated:** 2026-08-25
+- **Current focus:** NIR0-CERT for the C2B ScopeOverride and Chronicle V2 add-only pilot
 - **North star:** **本文に追従し、根拠を示し、人間の修正を覚える Living Story Bible**
 
 This document is the canonical **mutable implementation and product roadmap** for Narrative Semantic Core, AI-assisted extraction, incremental maintenance, and the Living Story Bible product surface.
@@ -51,6 +51,7 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 | ---------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Gate B2, C0, C1, C1.5              | **Complete** | Writer authority, Change Feed, semantic contracts, and authority routes are ratified.                                                                                                                                                                                                                                                                                            |
 | Gate C2 foundation                 | **Complete** | [PR #534](https://github.com/kazormia296/Grimodex/pull/534) landed the shadow Semantic Build Graph, evaluator, publish runtime, maintenance ledger, Verify/Rebuild/Backfill/Repair primitives, and policy contracts.                                                                                                                                                             |
+| NIR-0 C2B / Chronicle add-only    | **Active — NIR0-CERT** | ScopeOverride atomic materialization, live Scope authority, Chronicle V2 coordinator/save route, C2B Human writer, activation policy, and focused negative matrix are implemented on the candidate branch; clean Full CI and remote merge evidence remain. |
 | C2 identity normalization          | **Complete** | [PR #535](https://github.com/kazormia296/Grimodex/pull/535) canonicalized Dependency Edge and Application Contribution identities and repaired stored rows.                                                                                                                                                                                                                      |
 | Application Contribution ownership | **Complete** | [PR #536](https://github.com/kazormia296/Grimodex/pull/536) landed C2 item 4: Contribution provenance, canonical target identities with the SCHEMA rewrite migration, and one-way human ownership behind typed writers.                                                                                                                                                          |
 | C2-2 Consumer granularity          | **Complete** | Producers declare Edges per Proposal Revision, the canonical vocabulary is ratified in [`policies/narrative/narrative-consumer-contract.json`](../../policies/narrative/narrative-consumer-contract.json), SCHEMA 30 records each Edge's declaring Run, and existing Run-grained Edges are re-keyed from the durable per-Revision Source Basis.                                  |
@@ -327,15 +328,15 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 ## NIR-0: Shared contract adoption
 
-**State:** Active — Wave 0 / NIR0-00 contract freeze
+**State:** Active — NIR0-CERT candidate; production scope is the Chronicle add-only pilot
 
 The detailed authority for this work is the [NIR-0 implementation
 plan](narrative-ir-nir0-implementation-plan.md), under ADR 011 and the
-ADR 009/010 contracts. NIR0-00 freezes the policy, schema, semantic
-validator, and Chronicle `scene-event@1` golden corpus while leaving all
-production Entry Points empty.
+ADR 009/010 contracts. NIR0-00 supplied the contract freeze; the current
+candidate completes the C2B materialization and connects the typed Chronicle
+`scene-event@1` / `add` production route.
 
-### NIR0-00 contract-freeze deliverables
+### NIR0-CERT candidate deliverables
 
 - Envelope V2 and project-scoped `proposal-revision` identity at
   `narrative_proposal_revisions.id`; `narrative-ir-revision` remains
@@ -347,23 +348,31 @@ production Entry Points empty.
 - Shared versioned Adapter golden requirement for canonical Scope JSON and
   Scope Digest; future TypeScript and Rust implementations must pass the same
   corpus.
-- Activation remains disabled until C2B, D1, D2, focused
-  persistence/Freshness journeys, and atomic implementation-status evidence.
-- ADR 009 capability status and independent Scope Disclosure adoption remain
-  declared and are not implied by NIR activation.
+- C2B ScopeOverride derives live Scope V2, child D1/V1 dependencies,
+  current-Epoch Freshness, and the final pointer CAS atomically; stale,
+  missing, ambiguous, reorder, archive, and rollback paths fail closed.
+- Chronicle production emits only `scene-event@1` with `changeKind=add` when
+  the C1 provenance closure and evidence anchors are complete. The typed C2B
+  Human writer is the V2 review route; the existing V1 append path remains an
+  explicit fallback.
+- Activation is enabled for these entry points and remains bounded to this
+  pilot. Disclosure admission, D2 full cutover, revise/retract/merge/split,
+  and NIR-1 retrieval remain deferred.
 
-NIR-0 does not add runtime code, a persistence/schema migration, a second
-Freshness authority, or a production product claim. The milestone is complete
-only after a later certification step demonstrates a validated producer and the
-activation prerequisites; this contract-freeze slice does not claim completion.
+NIR-0 does not add a second Freshness or semantic authority, replace manuscript
+text, or imply universal Narrative IR coverage. The candidate is complete only
+after the [NIR0-CERT evidence package](../certification/nir0/NIR0-CERT.md)
+records the clean candidate HEAD, Full receipt, focused suites, and deferred
+work; remote PR merge evidence is tracked separately.
 
 ### Exit criteria
 
-- Policy/schema/fixture/validator checks pass without enabling a V2 production
-  Entry Point.
-- A later implementation lane demonstrates a validated Evidence-bound
-  `scene-event@1` Revision while Review, Freshness, and Projection remain
-  separate.
+- Policy/schema/fixture/validator and semantic contract checks pass with the
+  exact activated production markers.
+- A clean candidate HEAD passes Quick/Full CI and receipt verification.
+- The Evidence-bound `scene-event@1` add journey, C2B Human journey, live
+  ScopeOverride materialization, Freshness, and negative matrix remain
+  separate and are recorded in NIR0-CERT.
 ## NIR-1: First Retrieval Vertical Slice
 
 **State:** Blocked on C2-Z and NIR-0

@@ -96,13 +96,14 @@ struct ProjectionAdmission {
     material_basis: MaterialBasis,
     semantic_epoch_id: String,
     scope_projection: Option<TrustedScopeV2Projection>,
+    actual_kind: HumanMaterialDerivationKind,
 }
 
 fn admit_projection_parent(
     conn: &Connection,
     trusted_project_id: &str,
     request: &CreateHumanDerivedRevisionRequest,
-    requested_kind: HumanMaterialDerivationKind,
+    requested_kind: Option<HumanMaterialDerivationKind>,
 ) -> anyhow::Result<ProjectionAdmission> {
     #[allow(clippy::type_complexity)]
     let row: Option<(
@@ -204,17 +205,19 @@ fn admit_projection_parent(
             ));
         }
     };
-    if actual_kind != requested_kind {
-        if requested_kind == HumanMaterialDerivationKind::ScopeOverride
-            && actual_kind == HumanMaterialDerivationKind::ProjectionOnly
-        {
+    if let Some(requested_kind) = requested_kind {
+        if actual_kind != requested_kind {
+            if requested_kind == HumanMaterialDerivationKind::ScopeOverride
+                && actual_kind == HumanMaterialDerivationKind::ProjectionOnly
+            {
+                return Err(anyhow!(
+                    "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE: Native scope authority is not available for C2B materialization"
+                ));
+            }
             return Err(anyhow!(
-                "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE: Native scope authority is not available for C2B materialization"
+                "NEX_C2B_DERIVATION_KIND_MISMATCH: caller derivation kind does not match Native classification"
             ));
         }
-        return Err(anyhow!(
-            "NEX_C2B_DERIVATION_KIND_MISMATCH: caller derivation kind does not match Native classification"
-        ));
     }
     let source_basis = load_source_basis_rows(conn, &current_revision_id)?;
     let active_dependency_declaration_set = match read_active_dependency_declaration_set_in_tx(
@@ -311,6 +314,7 @@ fn admit_projection_parent(
         material_basis: resolution.material_basis,
         semantic_epoch_id,
         scope_projection,
+        actual_kind,
     })
 }
 
@@ -566,140 +570,168 @@ pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization(
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
-            let admission =
-                admit_projection_parent(conn, trusted_project_id, &request, derivation_kind)?;
-            let trusted_material_basis = (derivation_kind == HumanMaterialDerivationKind::ScopeOverride)
-                .then_some(&admission.material_basis);
-            let mut saved = human_derivation::create_human_derived_revision_in_tx_with_authorities(
+            create_human_derived_revision_with_c2b_projection_materialization_in_tx(
                 conn,
                 trusted_project_id,
-                None,
-                admission.scope_projection.as_ref(),
-                trusted_material_basis,
                 &request,
-            )?;
-            let child_receipt: HumanRevisionReceiptProjection =
-                serde_json::from_value(saved.clone()).context(
-                    "NEX_C2B_CHILD_RECEIPT_INVALID: C2A did not return a typed child revision",
-                )?;
-            anyhow::ensure!(
-                !child_receipt.revision_id.trim().is_empty(),
-                "NEX_C2B_CHILD_RECEIPT_INVALID: child revision id is empty"
-            );
+                Some(derivation_kind),
+            )
+        })
+    })
+}
 
-            let (child_envelope_json, child_created_at): (Option<String>, String) = conn
-                .query_row(
-                    "SELECT reconciliation_envelope_json, created_at
+fn create_human_derived_revision_with_c2b_projection_materialization_in_tx(
+    conn: &Connection,
+    trusted_project_id: &str,
+    request: &CreateHumanDerivedRevisionRequest,
+    requested_kind: Option<HumanMaterialDerivationKind>,
+) -> anyhow::Result<Value> {
+    let admission = admit_projection_parent(conn, trusted_project_id, request, requested_kind)?;
+    let trusted_material_basis = (admission.actual_kind
+        == HumanMaterialDerivationKind::ScopeOverride)
+        .then_some(&admission.material_basis);
+    let mut saved = human_derivation::create_human_derived_revision_in_tx_with_authorities(
+        conn,
+        trusted_project_id,
+        None,
+        admission.scope_projection.as_ref(),
+        trusted_material_basis,
+        request,
+    )?;
+    let child_receipt: HumanRevisionReceiptProjection = serde_json::from_value(saved.clone())
+        .context("NEX_C2B_CHILD_RECEIPT_INVALID: C2A did not return a typed child revision")?;
+    anyhow::ensure!(
+        !child_receipt.revision_id.trim().is_empty(),
+        "NEX_C2B_CHILD_RECEIPT_INVALID: child revision id is empty"
+    );
+
+    let (child_envelope_json, child_created_at): (Option<String>, String) = conn
+        .query_row(
+            "SELECT reconciliation_envelope_json, created_at
                        FROM narrative_proposal_revisions
                       WHERE id = ?1 AND proposal_id = ?2",
-                    params![child_receipt.revision_id, admission.proposal_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .context("NEX_C2B_CHILD_REVISION_INVALID: persisted child revision is missing")?;
-            let child_envelope: EnvelopeMaterialProjection = serde_json::from_str(
-                child_envelope_json.as_deref().ok_or_else(|| {
-                    anyhow!("NEX_C2B_CHILD_ENVELOPE_INVALID: child Envelope is missing")
-                })?,
-            )
-            .context("NEX_C2B_CHILD_ENVELOPE_INVALID: typed material projection failed")?;
-            anyhow::ensure!(
+            params![child_receipt.revision_id, admission.proposal_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .context("NEX_C2B_CHILD_REVISION_INVALID: persisted child revision is missing")?;
+    let child_envelope: EnvelopeMaterialProjection = serde_json::from_str(
+        child_envelope_json
+            .as_deref()
+            .ok_or_else(|| anyhow!("NEX_C2B_CHILD_ENVELOPE_INVALID: child Envelope is missing"))?,
+    )
+    .context("NEX_C2B_CHILD_ENVELOPE_INVALID: typed material projection failed")?;
+    anyhow::ensure!(
                 child_envelope.effective_material_basis == admission.material_basis,
                 "NEX_C2B_CHILD_MATERIAL_MISMATCH: child Envelope material differs from the admitted projection"
             );
 
-            let child_source_basis = load_source_basis_rows(conn, &child_receipt.revision_id)?;
-            record_revision_dependency_edges_in_tx(
-                conn,
-                trusted_project_id,
-                &admission.run_id,
-                &child_receipt.revision_id,
-                &child_source_basis,
-                &child_created_at,
-            )?;
+    let child_source_basis = load_source_basis_rows(conn, &child_receipt.revision_id)?;
+    record_revision_dependency_edges_in_tx(
+        conn,
+        trusted_project_id,
+        &admission.run_id,
+        &child_receipt.revision_id,
+        &child_source_basis,
+        &child_created_at,
+    )?;
 
-            let d1_projection = project_d1_declaration_set(
-                &admission.material_basis,
-                &D1ParentAuthority {
-                    project_id: trusted_project_id.to_owned(),
-                    consumer_kind: PROPOSAL_REVISION_CONSUMER_KIND.to_owned(),
-                    consumer_key: child_receipt.revision_id.clone(),
-                    producer_id: D1_PRODUCER_ID.to_owned(),
-                    producer_generation: PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
-                },
-            )?;
-            write_dependency_declaration_set_in_tx(
-                conn,
-                DependencyDeclarationSetRequest {
-                    project_id: d1_projection.project_id,
-                    consumer_kind: d1_projection.consumer_kind,
-                    consumer_key: d1_projection.consumer_key,
-                    producer_id: d1_projection.producer_id,
-                    producer_generation: d1_projection.producer_generation,
-                    expected_head_version: 0,
-                    declarations: d1_projection.declarations,
-                    created_at: child_created_at.clone(),
-                },
-            )?;
+    let d1_projection = project_d1_declaration_set(
+        &admission.material_basis,
+        &D1ParentAuthority {
+            project_id: trusted_project_id.to_owned(),
+            consumer_kind: PROPOSAL_REVISION_CONSUMER_KIND.to_owned(),
+            consumer_key: child_receipt.revision_id.clone(),
+            producer_id: D1_PRODUCER_ID.to_owned(),
+            producer_generation: PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
+        },
+    )?;
+    write_dependency_declaration_set_in_tx(
+        conn,
+        DependencyDeclarationSetRequest {
+            project_id: d1_projection.project_id,
+            consumer_kind: d1_projection.consumer_kind,
+            consumer_key: d1_projection.consumer_key,
+            producer_id: d1_projection.producer_id,
+            producer_generation: d1_projection.producer_generation,
+            expected_head_version: 0,
+            declarations: d1_projection.declarations,
+            created_at: child_created_at.clone(),
+        },
+    )?;
 
-            let child_edges = find_edges_by_consumer(
-                conn,
-                trusted_project_id,
-                PROPOSAL_REVISION_CONSUMER_KIND,
-                &child_receipt.revision_id,
-            )?;
-            let edges_and_observations = child_edges
-                .iter()
-                .map(|edge| {
-                    Ok((
-                        edge.id.clone(),
-                        evaluate_edge_from_db(
-                            conn,
-                            trusted_project_id,
-                            &admission.run_id,
-                            edge,
-                        )?,
-                    ))
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            super::publish_runtime::publish_complete_runless_freshness_in_tx(
-                conn,
-                trusted_project_id,
-                PROPOSAL_REVISION_CONSUMER_KIND,
-                &child_receipt.revision_id,
-                &edges_and_observations,
-                &admission.semantic_epoch_id,
-                &child_created_at,
-            )?;
+    let child_edges = find_edges_by_consumer(
+        conn,
+        trusted_project_id,
+        PROPOSAL_REVISION_CONSUMER_KIND,
+        &child_receipt.revision_id,
+    )?;
+    let edges_and_observations = child_edges
+        .iter()
+        .map(|edge| {
+            Ok((
+                edge.id.clone(),
+                evaluate_edge_from_db(conn, trusted_project_id, &admission.run_id, edge)?,
+            ))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    super::publish_runtime::publish_complete_runless_freshness_in_tx(
+        conn,
+        trusted_project_id,
+        PROPOSAL_REVISION_CONSUMER_KIND,
+        &child_receipt.revision_id,
+        &edges_and_observations,
+        &admission.semantic_epoch_id,
+        &child_created_at,
+    )?;
 
-            let payload_json = canonical_json_string(&request.proposal_payload)?;
-            let updated = conn.execute(
-                "UPDATE narrative_proposals
+    let payload_json = canonical_json_string(&request.proposal_payload)?;
+    let updated = conn.execute(
+        "UPDATE narrative_proposals
                     SET payload_json = ?1,
                         current_revision_id = ?2,
                         status = 'unreviewed',
                         updated_at = ?3
                   WHERE id = ?4
                     AND current_revision_id = ?5",
-                params![
-                    payload_json,
-                    child_receipt.revision_id,
-                    child_created_at,
-                    admission.proposal_id,
-                    admission.parent_revision_id,
-                ],
-            )?;
-            anyhow::ensure!(
-                updated == 1,
-                "NEX_PROPOSAL_REVISION_CONFLICT: current revision changed concurrently"
-            );
-            let saved_object = saved.as_object_mut().ok_or_else(|| {
-                anyhow!("NEX_C2B_CHILD_RECEIPT_INVALID: C2A receipt is not an object")
-            })?;
-            saved_object.insert(
-                "currentRevisionId".to_owned(),
-                Value::String(child_receipt.revision_id),
-            );
-            Ok(saved)
+        params![
+            payload_json,
+            child_receipt.revision_id,
+            child_created_at,
+            admission.proposal_id,
+            admission.parent_revision_id,
+        ],
+    )?;
+    anyhow::ensure!(
+        updated == 1,
+        "NEX_PROPOSAL_REVISION_CONFLICT: current revision changed concurrently"
+    );
+    let saved_object = saved
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("NEX_C2B_CHILD_RECEIPT_INVALID: C2A receipt is not an object"))?;
+    saved_object.insert(
+        "currentRevisionId".to_owned(),
+        Value::String(child_receipt.revision_id),
+    );
+    Ok(saved)
+}
+
+/// C3 production entry point. Native classifies the edited payload against the
+/// persisted parent before selecting projection-only versus ScopeOverride;
+/// renderer input never supplies a derivation kind.
+pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization_auto(
+    db: &Database,
+    trusted_project_id: &str,
+    request: CreateHumanDerivedRevisionRequest,
+) -> anyhow::Result<Value> {
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            require_narrative_extraction_allowed(conn)?;
+            create_human_derived_revision_with_c2b_projection_materialization_in_tx(
+                conn,
+                trusted_project_id,
+                &request,
+                None,
+            )
         })
     })
 }

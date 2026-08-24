@@ -19,6 +19,7 @@ use grimodex_db::narrative_extraction::human_material_basis::HumanMaterialDeriva
 use grimodex_db::narrative_extraction::{
     narrative_extraction_create_human_derived_revision,
     narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization,
+    narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto,
     narrative_extraction_create_human_derived_revision_with_scope, narrative_extraction_create_run,
     write_dependency_declaration_set, CreateHumanDerivedRevisionRequest, CreateRunPayload,
     CreateTaskSeed, DependencyDeclaration, DependencyDeclarationSetRequest,
@@ -1826,11 +1827,10 @@ mod c2b_atomic_materialization_red {
         let before_execution = c2b_state_snapshot(&db);
         install_final_pointer_cas_order_guard(&db);
         let saved =
-            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto(
                 &db,
                 PROJECT_A,
                 c2b_request(&db),
-                HumanMaterialDerivationKind::ProjectionOnly,
             )
             .expect("C2B projection-only materialization");
         let child_revision_id = saved["revisionId"]
@@ -2167,11 +2167,10 @@ mod c2b_atomic_materialization_red {
         install_final_pointer_cas_order_guard(&db);
 
         let saved =
-            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto(
                 &db,
                 PROJECT_A,
                 scope_override_request(&db),
-                HumanMaterialDerivationKind::ScopeOverride,
             )
             .expect("live ScopeOverride materialization");
         let child_revision_id = saved["revisionId"]
@@ -2309,11 +2308,10 @@ mod c2b_atomic_materialization_red {
         .expect("advance live Scope authority after the parent was sealed");
 
         let saved =
-            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto(
                 &db,
                 PROJECT_A,
                 scope_override_request(&db),
-                HumanMaterialDerivationKind::ScopeOverride,
             )
             .expect("ScopeOverride must re-derive the current authority");
         let child_revision_id = saved["revisionId"].as_str().expect("child revision");
@@ -2399,11 +2397,10 @@ mod c2b_atomic_materialization_red {
         .expect("seed an ambiguous live Story authority");
 
         let saved =
-            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto(
                 &db,
                 PROJECT_A,
                 scope_override_request(&db),
-                HumanMaterialDerivationKind::ScopeOverride,
             )
             .expect("ambiguous Story must remain an explicit unresolved Scope");
         let child_revision_id = saved["revisionId"].as_str().expect("child revision");
@@ -2432,11 +2429,10 @@ mod c2b_atomic_materialization_red {
         let before = c2b_state_snapshot(&db);
 
         let error =
-            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto(
                 &db,
                 PROJECT_A,
                 scope_override_request(&db),
-                HumanMaterialDerivationKind::ScopeOverride,
             )
             .expect_err("ScopeOverride pointer race must rollback every child side effect");
         assert!(

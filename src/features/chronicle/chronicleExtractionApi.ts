@@ -15,6 +15,7 @@ import {
 import {
   appendHumanDecision,
   appendRevision,
+  createHumanDerivedRevision,
 } from "@/application/narrative-extraction/proposalRepository";
 import {
   applyChronicleCommit,
@@ -789,6 +790,27 @@ export async function recordChronicleProposalRevision(args: {
     readonly expectedEnvelopeDigest: string;
   };
 }): Promise<string> {
+  if (args.inheritReconciliationEnvelope) {
+    const result = await createHumanDerivedRevision({
+      projectId: args.projectId,
+      request: {
+        proposalId: args.proposalId,
+        expectedCurrentRevisionId: args.expectedCurrentRevisionId,
+        parentRevisionId: args.inheritReconciliationEnvelope.parentRevisionId,
+        expectedParentEnvelopeDigest:
+          args.inheritReconciliationEnvelope.expectedEnvelopeDigest,
+        proposalPayload: args.payload as unknown as Readonly<
+          Record<string, unknown>
+        >,
+        adapter: {
+          id: "chronicle.scene-event",
+          version: "1",
+        },
+        surfaceId: "chronicle-review",
+      },
+    });
+    return result.revisionId;
+  }
   const result = await appendRevision({
     runId: args.runId,
     projectId: args.projectId,

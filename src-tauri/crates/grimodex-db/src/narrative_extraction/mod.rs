@@ -358,6 +358,21 @@ pub fn narrative_extraction_create_human_derived_revision_with_c2b_projection_ma
     )
 }
 
+/// Production C2B Human writer. Native classifies the edited Chronicle
+/// payload and selects projection-only versus ScopeOverride inside the same
+/// transaction; the renderer cannot provide a derivation kind.
+pub fn narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto(
+    db: &Database,
+    trusted_project_id: &str,
+    request: CreateHumanDerivedRevisionRequest,
+) -> anyhow::Result<Value> {
+    human_materialization::create_human_derived_revision_with_c2b_projection_materialization_auto(
+        db,
+        trusted_project_id,
+        request,
+    )
+}
+
 pub fn narrative_extraction_get_run(
     db: &Database,
     run_id: String,

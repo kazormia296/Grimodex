@@ -419,6 +419,53 @@ fn real_folder_reorder_reaches_the_project_aggregate_edge_through_typed_feed_met
 }
 
 #[test]
+fn empty_folder_structural_changes_do_not_false_stale_the_project_aggregate_edge() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO tree_nodes
+                (id, project_id, parent_id, node_type, title, sort_order,
+                 content, version, created_at, updated_at)
+             VALUES ('folder-empty', ?1, NULL, 'folder', 'Empty', 'c0',
+                     '{}', 0, ?2, ?2)",
+            params![PROJECT_ID, CREATED_AT],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed an empty Folder without changing the baseline authority");
+
+    tree_node_patch(
+        &db,
+        patch_payload(
+            "reorder-empty-folder",
+            "folder-empty",
+            "sortOrder",
+            json!("z0"),
+        ),
+    )
+    .expect("reorder an empty Folder through the real tree writer");
+    let reordered = run_cycle(&db);
+    assert_eq!(reordered.affected_edge_count, 0);
+    assert_eq!(reordered.affected_consumer_count, 0);
+    assert_eq!(edge_state(&db), None);
+
+    tree_node_patch(
+        &db,
+        patch_payload(
+            "archive-empty-folder",
+            "folder-empty",
+            "archivedAt",
+            json!(UPDATED_AT),
+        ),
+    )
+    .expect("archive an empty Folder through the real tree writer");
+    let archived = run_cycle(&db);
+    assert_eq!(archived.affected_edge_count, 0);
+    assert_eq!(archived.affected_consumer_count, 0);
+    assert_eq!(edge_state(&db), None);
+}
+
+#[test]
 fn body_and_display_metadata_do_not_touch_the_project_aggregate_edge() {
     for (case, field, value) in [
         ("title", "title", json!("Renamed only")),

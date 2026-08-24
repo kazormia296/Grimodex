@@ -2377,6 +2377,25 @@ fn project_scope_authority_identity(project_id: &str) -> String {
     format!("project:scope-authority:{project_id}")
 }
 
+fn folder_event_has_live_scene_subtree_impact(event: &NarrativeChangeEventRecord) -> bool {
+    let Some(impact) = event
+        .structural_impact
+        .as_ref()
+        .and_then(|impact| impact.get("liveSceneSubtreeImpact"))
+    else {
+        return false;
+    };
+    let before_count = impact
+        .get("beforeCount")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let after_count = impact
+        .get("afterCount")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    before_count > 0 || after_count > 0
+}
+
 fn event_changes_project_scope_authority(event: &NarrativeChangeEventRecord) -> bool {
     let node_type = match event.object_key.get("kind").and_then(Value::as_str) {
         Some("scene") => Some("scene"),
@@ -2413,7 +2432,10 @@ fn event_changes_project_scope_authority(event: &NarrativeChangeEventRecord) -> 
             path.as_str(),
             "/parentId" | "/sortOrder" | "/storyTimeOrder" | "/archivedAt"
         ),
-        Some("folder") => matches!(path.as_str(), "/parentId" | "/sortOrder" | "/archivedAt"),
+        Some("folder") => {
+            matches!(path.as_str(), "/parentId" | "/sortOrder" | "/archivedAt")
+                && folder_event_has_live_scene_subtree_impact(event)
+        }
         _ => false,
     })
 }
@@ -3043,6 +3065,16 @@ mod tests {
                 .iter()
                 .map(|path| (*path).to_owned())
                 .collect::<Vec<_>>();
+            let mut structural_impact = serde_json::json!({
+                "changedPaths": changed_paths,
+                "nodeType": node_type,
+            });
+            if node_type == "folder" {
+                structural_impact["liveSceneSubtreeImpact"] = serde_json::json!({
+                    "beforeCount": 1,
+                    "afterCount": 1,
+                });
+            }
             NarrativeChangeEventRecord {
                 event_id: format!("scope-{kind}-{node_type}-{mutation_kind}"),
                 project_id: PROJECT_ID.to_owned(),
@@ -3066,10 +3098,7 @@ mod tests {
                 after_digest: Some("sha256:after".to_owned()),
                 changed_paths: changed_paths.clone(),
                 text_impact: None,
-                structural_impact: Some(serde_json::json!({
-                    "changedPaths": changed_paths,
-                    "nodeType": node_type,
-                })),
+                structural_impact: Some(structural_impact),
                 cause_kind: super::super::change_feed::NarrativeChangeCauseKind::Forward,
                 origin: super::super::change_feed::NarrativeChangeOrigin::Human,
                 original_transaction_id: None,
@@ -3095,6 +3124,16 @@ mod tests {
             "update",
             &["/parentId"],
         )));
+        let mut empty_folder = event("component", "folder", "metadata", "update", &["/sortOrder"]);
+        empty_folder.structural_impact = Some(serde_json::json!({
+            "changedPaths": ["/sortOrder"],
+            "nodeType": "folder",
+            "liveSceneSubtreeImpact": {
+                "beforeCount": 0,
+                "afterCount": 0,
+            },
+        }));
+        assert!(!event_changes_project_scope_authority(&empty_folder));
         assert!(!event_changes_project_scope_authority(&event(
             "scene",
             "scene",

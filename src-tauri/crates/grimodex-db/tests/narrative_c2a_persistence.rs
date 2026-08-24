@@ -529,11 +529,12 @@ fn save_v2_root(
 }
 
 #[test]
-fn public_v2_save_is_activation_disabled_and_rolls_back_without_breaking_v1_save() {
+fn public_v2_save_is_atomic_and_does_not_break_v1_fallback() {
     let db = migrated_db();
     let run_id = "run-public-v2-save";
     let task_id = "task-public-v2-save";
     create_run(&db, PROJECT_A, run_id, task_id);
+    let invalid_second_envelope = envelope_v2(&db, PROJECT_A, run_id, task_id, "Arrival");
     let error = narrative_extraction::narrative_extraction_save_proposal_set(
         &db,
         SaveProposalSetPayload {
@@ -542,21 +543,31 @@ fn public_v2_save_is_activation_disabled_and_rolls_back_without_breaking_v1_save
             proposal_set_id: Some("set-public-v2-save".to_owned()),
             set_kind: "chronicle.extract.review@1".to_owned(),
             summary_json: None,
-            proposals: vec![ProposalSeed {
-                proposal_id: Some("proposal-public-v2-save".to_owned()),
-                proposal_key: "event:arrival:public-v2-save".to_owned(),
-                kind: PROPOSAL_KIND.to_owned(),
-                payload_json: proposal_payload("Arrival", false),
-                reconciliation_envelope: Some(envelope_v2(
-                    &db, PROJECT_A, run_id, task_id, "Arrival",
-                )),
-            }],
+            proposals: vec![
+                ProposalSeed {
+                    proposal_id: Some("proposal-public-v2-save".to_owned()),
+                    proposal_key: "event:arrival:public-v2-save".to_owned(),
+                    kind: PROPOSAL_KIND.to_owned(),
+                    payload_json: proposal_payload("Arrival", false),
+                    reconciliation_envelope: Some(envelope_v2(
+                        &db, PROJECT_A, run_id, task_id, "Arrival",
+                    )),
+                },
+                ProposalSeed {
+                    proposal_id: Some("proposal-public-v2-save-invalid".to_owned()),
+                    proposal_key: "event:arrival:public-v2-save-invalid".to_owned(),
+                    kind: PROPOSAL_KIND.to_owned(),
+                    payload_json: proposal_payload("Departure", false),
+                    reconciliation_envelope: Some(invalid_second_envelope),
+                },
+            ],
         },
     )
-    .expect_err("public V2 save must remain dormant");
-    assert!(error
-        .to_string()
-        .contains("NEX_NARRATIVE_V2_ACTIVATION_DISABLED"));
+    .expect_err("invalid V2 ProposalSet must roll back atomically");
+    assert!(
+        error.to_string().contains("NEX_ENVELOPE_DIGEST_MISMATCH"),
+        "unexpected error: {error:#}"
+    );
     let set_count: i64 = db
         .with_conn(|conn| {
             Ok(conn.query_row(
@@ -567,6 +578,29 @@ fn public_v2_save_is_activation_disabled_and_rolls_back_without_breaking_v1_save
         })
         .expect("read V2 save rollback");
     assert_eq!(set_count, 0);
+
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            proposal_set_id: Some("set-public-v2-save-valid".to_owned()),
+            set_kind: "chronicle.extract.review@1".to_owned(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("proposal-public-v2-save-valid".to_owned()),
+                proposal_key: "event:arrival:public-v2-save-valid".to_owned(),
+                kind: PROPOSAL_KIND.to_owned(),
+                payload_json: proposal_payload("Arrival", false),
+                reconciliation_envelope: Some(envelope_v2(
+                    &db, PROJECT_A, run_id, task_id, "Arrival",
+                )),
+            }],
+        },
+    )
+    .expect("activated public V2 save");
+    assert_eq!(saved["proposals"][0]["originKind"], "enveloped");
+    assert_eq!(saved["proposals"][0]["status"], "unreviewed");
 
     create_run(&db, PROJECT_A, "run-public-v1-save", "task-public-v1-save");
     let legacy = save_legacy_root(
@@ -2925,15 +2959,17 @@ fn direct_sql_v2_current_rejects_every_immutable_revision_update_surface() {
 }
 
 #[test]
-fn c2a_stays_dormant_and_chronicle_v2_activation_is_disabled() {
+fn c2b_activation_enables_chronicle_v2_and_keeps_the_v1_fallback() {
     let activation = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../policies/narrative/narrative-ir-contract.json"
     ));
-    assert!(activation.contains("\"state\": \"disabled\""));
-    assert!(activation.contains("\"productionEntryPoints\": []"));
-    assert!(activation.contains("\"v2Emission\": \"blocked-until-c2b\""));
-    assert!(activation.contains("\"humanDerivedV2Ui\": \"blocked-until-c2b\""));
-    assert!(activation.contains("\"currentRevisionPromotion\": \"blocked-until-c2b\""));
+    assert!(activation.contains("\"state\": \"enabled\""));
+    assert!(activation.contains("runChronicleExtractionCoordinator"));
+    assert!(activation.contains("narrative_extraction_save_proposal_set"));
+    assert!(activation.contains("createHumanDerivedNarrativeRevisionV2"));
+    assert!(activation.contains("\"v2Emission\": \"enabled\""));
+    assert!(activation.contains("\"humanDerivedV2Ui\": \"enabled\""));
+    assert!(activation.contains("\"currentRevisionPromotion\": \"enabled\""));
     assert!(activation.contains("\"productionFallback\": \"existing-v1-path\""));
 }

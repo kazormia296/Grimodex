@@ -415,7 +415,7 @@ describe("NIR-0 Narrative IR contract", () => {
     }
   });
 
-  it("keeps V2 production activation disabled until C2B child declarations and Freshness", () => {
+  it("requires the enabled V2 activation entry-point set to remain exact", () => {
     const contract = structuredClone(
       readJson("policies/narrative/narrative-ir-contract.json"),
     );
@@ -983,7 +983,7 @@ describe("NIR-0 Narrative IR contract", () => {
     );
   });
 
-  it("scans only configured production roots for the exact disabled-activation markers", async () => {
+  it("scans only configured production roots for the exact activation markers", async () => {
     const validatorModule =
       await import("./validate-narrative-ir-contract.mjs");
     assert.equal(
@@ -1099,7 +1099,7 @@ describe("NIR-0 Narrative IR contract", () => {
       const repoResult = validateNarrativeIrContractFromRepo(tempRoot);
       assert.ok(
         repoResult.errors.some((error) =>
-          /activation marker.*appears in production/i.test(error),
+          /activation marker.*(absent|appears in production)/i.test(error),
         ),
         `expected repo-level activation marker error: ${JSON.stringify(repoResult.errors)}`,
       );

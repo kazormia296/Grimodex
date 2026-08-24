@@ -11,6 +11,7 @@ const createRunMock = vi.hoisted(() => vi.fn());
 const cancelRunMock = vi.hoisted(() => vi.fn());
 const saveProposalSetMock = vi.hoisted(() => vi.fn());
 const buildSnapshotSourceBasisMock = vi.hoisted(() => vi.fn());
+const buildProductionV2EnvelopeMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./nativeApi", () => ({
   narrativeExtractionClaimTask: claimMock,
@@ -34,6 +35,11 @@ vi.mock("./runRepository", async () => {
 vi.mock("./proposalRepository", () => ({
   saveChronicleProposalSet: saveProposalSetMock,
   buildSnapshotSourceBasis: buildSnapshotSourceBasisMock,
+}));
+
+vi.mock("./chronicleV2Production", () => ({
+  buildChronicleProductionV2Envelope: buildProductionV2EnvelopeMock,
+  CHRONICLE_SCENE_EVENT_V2_PRODUCTION: true,
 }));
 
 import {
@@ -119,6 +125,12 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
           status: "unreviewed",
         },
       ],
+    });
+    buildProductionV2EnvelopeMock.mockResolvedValue({
+      proposalKey: "test-proposal-key",
+      envelope: { schemaVersion: 2 },
+      stageProvenanceClosure: { schemaVersion: 1 },
+      provenanceBinding: { schemaVersion: 1 },
     });
   });
 
@@ -348,7 +360,13 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
             },
           ];
         },
-        synthesizeWithAi: async ({ clusterRef, observations, createId }) => {
+        synthesizeWithAi: async ({
+          clusterRef,
+          observations,
+          createId,
+          onStageReceipt,
+        }) => {
+          onStageReceipt?.({} as never);
           synthesizeObservationIds.push(
             observations.map((observation) => observation.localId),
           );
@@ -404,6 +422,16 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     expect(observationById.size).toBe(2);
     expect(localIds.every((id) => observationById.has(id))).toBe(true);
     expect(result.proposals.length).toBeGreaterThan(0);
+    expect(buildProductionV2EnvelopeMock).toHaveBeenCalledTimes(1);
+    expect(saveProposalSetMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        v2EnvelopeByProposalKey: expect.any(Map),
+        stageProvenanceBundle: {
+          closure: { schemaVersion: 1 },
+          binding: { schemaVersion: 1 },
+        },
+      }),
+    );
   });
 
   it("calls fail_task when a claimed task throws", async () => {

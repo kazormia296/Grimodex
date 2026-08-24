@@ -5,7 +5,10 @@ import type {
   NarrativeProposalDecision,
   NarrativeProposalStatus,
 } from "@/features/narrative-extraction/runtime/types";
-import type { ReconciliationEnvelopeV1 } from "@/features/narrative-extraction/reconciler/types";
+import type {
+  ReconciliationEnvelopeV1,
+  ReconciliationEnvelopeV2,
+} from "@/features/narrative-extraction/reconciler/types";
 import type { NarrativeScopeAuthorityBasisV2 } from "@/features/narrative-extraction/source/scopeAuthorityBasisV2";
 
 export interface CreateRunTaskSeed {
@@ -108,7 +111,7 @@ export interface ProposalSeed {
   readonly kind: string;
   readonly payloadJson: object;
   /** Optional V1 contract; omitted legacy revisions remain reviewable but cannot Apply. */
-  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1;
+  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1 | ReconciliationEnvelopeV2<unknown>;
 }
 
 export interface SaveProposalSetPayload {
@@ -220,7 +223,7 @@ export interface AppendRevisionPayload {
   readonly proposalId: string;
   readonly payloadJson: Readonly<Record<string, unknown>>;
   /** Optional V1 contract; omitted revisions are explicitly legacy-unbound. */
-  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1;
+  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1 | ReconciliationEnvelopeV2<unknown>;
   /** Optional explicit CAS inheritance; omission never inherits implicitly. */
   readonly inheritReconciliationEnvelope?: ReconciliationEnvelopeInheritance;
   /** Must match Native `current_revision_id` (OCC). */
@@ -258,7 +261,7 @@ export interface ReviseAndDecidePayload {
   readonly projectId: string;
   readonly proposalId: string;
   readonly payloadJson: Readonly<Record<string, unknown>>;
-  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1;
+  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1 | ReconciliationEnvelopeV2<unknown>;
   /** Optional explicit CAS inheritance; omission never inherits implicitly. */
   readonly inheritReconciliationEnvelope?: ReconciliationEnvelopeInheritance;
   /** Must match Native `current_revision_id` (OCC). */
@@ -274,6 +277,37 @@ export interface ReviseAndDecideResult {
   readonly revisionNumber: number;
   readonly decisionId: string;
   readonly decision: NarrativeProposalDecision;
+  readonly status: NarrativeProposalStatus;
+}
+
+/** Renderer-shaped C2B request; Native derives the material/Scope authority. */
+export interface CreateHumanDerivedRevisionRequest {
+  readonly proposalId: string;
+  readonly expectedCurrentRevisionId: string;
+  readonly parentRevisionId: string;
+  readonly expectedParentEnvelopeDigest: string;
+  readonly proposalPayload: Readonly<Record<string, unknown>>;
+  readonly adapter: {
+    readonly id: string;
+    readonly version: string;
+  };
+  readonly surfaceId: string;
+}
+
+export interface CreateHumanDerivedRevisionPayload {
+  /** Main supplies the project authority; it is not part of the C2B request. */
+  readonly projectId: string;
+  readonly request: CreateHumanDerivedRevisionRequest;
+}
+
+export interface CreateHumanDerivedRevisionResult {
+  readonly proposalId: string;
+  readonly revisionId: string;
+  readonly revisionNumber: number;
+  readonly originKind: "enveloped";
+  readonly createdBy: string;
+  readonly reconciliationEnvelopeDigest: string;
+  readonly currentRevisionId: string;
   readonly status: NarrativeProposalStatus;
 }
 
@@ -532,6 +566,19 @@ export async function narrativeExtractionReviseAndDecideAsHuman(
     { payload },
   );
 }
+
+/** Native-owned C2B writer for Chronicle Human title/secret edits. */
+export async function narrativeExtractionCreateHumanDerivedRevision(
+  payload: CreateHumanDerivedRevisionPayload,
+): Promise<CreateHumanDerivedRevisionResult> {
+  return invoke<CreateHumanDerivedRevisionResult>(
+    "narrative_extraction_create_human_derived_revision",
+    { payload },
+  );
+}
+
+export const createHumanDerivedNarrativeRevisionV2 =
+  narrativeExtractionCreateHumanDerivedRevision;
 
 export async function narrativeExtractionSetHumanFieldLock(
   payload: HumanFieldLockPayload,

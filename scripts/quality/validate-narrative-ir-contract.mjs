@@ -204,6 +204,13 @@ const REQUIRED_ACTIVATION_MARKERS = Object.freeze([
   "CHRONICLE_SCENE_EVENT_V2_PRODUCTION",
 ]);
 
+const REQUIRED_ACTIVATION_PRODUCTION_ENTRY_POINTS = Object.freeze([
+  "runChronicleExtractionCoordinator",
+  "narrative_extraction_save_proposal_set",
+  "createHumanDerivedNarrativeRevisionV2",
+  "narrative_extraction_create_human_derived_revision",
+]);
+
 const PRODUCTION_SOURCE_FILE_PATTERN = /\.(?:cjs|mjs|js|jsx|ts|tsx|rs)$/u;
 const TEST_SOURCE_FILE_PATTERN = /(?:\.(?:test|spec)\.[^.]+|_test\.rs)$/u;
 const IGNORED_PRODUCTION_DIRECTORIES = new Set([
@@ -1677,10 +1684,15 @@ export function validateNarrativeIrContract(
   const activation = contract.activation;
   pushIf(
     errors,
-    activation?.state === "disabled" &&
+    (activation?.state === "disabled" &&
       Array.isArray(activation?.productionEntryPoints) &&
-      activation.productionEntryPoints.length === 0,
-    "NIR-0 activation must have no production entry point",
+      activation.productionEntryPoints.length === 0) ||
+      (activation?.state === "enabled" &&
+        sameStringArray(
+          activation?.productionEntryPoints,
+          REQUIRED_ACTIVATION_PRODUCTION_ENTRY_POINTS,
+        )),
+    "NIR-0 activation production entry points do not match its state",
   );
   pushIf(
     errors,
@@ -1696,10 +1708,17 @@ export function validateNarrativeIrContract(
   );
   pushIf(
     errors,
-    activation?.v2Emission === "blocked-until-c2b" &&
+    (activation?.state === "disabled" &&
+      activation?.v2Emission === "blocked-until-c2b" &&
       activation?.humanDerivedV2Ui === "blocked-until-c2b" &&
-      activation?.currentRevisionPromotion === "blocked-until-c2b",
-    "Chronicle V2 production and Human-derived UI must remain disabled until C2B",
+      activation?.currentRevisionPromotion === "blocked-until-c2b" &&
+      activation?.pureFixtureGeneration === "allowed-before-activation") ||
+      (activation?.state === "enabled" &&
+        activation?.v2Emission === "enabled" &&
+        activation?.humanDerivedV2Ui === "enabled" &&
+        activation?.currentRevisionPromotion === "enabled" &&
+        activation?.pureFixtureGeneration === "allowed"),
+    "NIR-0 activation state and V2 capability values are inconsistent",
   );
   pushIf(
     errors,
@@ -1817,20 +1836,28 @@ export function validateNarrativeIrContractFromRepo(repoRoot) {
       errors,
     );
     const activation = contract.activation;
-    if (
-      activation?.state === "disabled" &&
-      Array.isArray(activation?.productionEntryPoints) &&
-      activation.productionEntryPoints.length === 0
-    ) {
+    if (activation?.state === "disabled" || activation?.state === "enabled") {
       try {
-        for (const finding of scanNarrativeIrProductionMarkers(
+        const findings = scanNarrativeIrProductionMarkers(
           repoRoot,
           activation?.scanRoots,
           activation?.productionMarkers,
-        )) {
-          errors.push(
-            `NIR-0 activation marker ${finding.marker} appears in production at ${finding.path} while activation is disabled`,
-          );
+        );
+        if (activation.state === "disabled") {
+          for (const finding of findings) {
+            errors.push(
+              `NIR-0 activation marker ${finding.marker} appears in production at ${finding.path} while activation is disabled`,
+            );
+          }
+        } else {
+          const foundMarkers = new Set(findings.map((finding) => finding.marker));
+          for (const marker of activation.productionMarkers ?? []) {
+            if (!foundMarkers.has(marker)) {
+              errors.push(
+                `NIR-0 activation marker ${marker} is absent from production`,
+              );
+            }
+          }
         }
       } catch (error) {
         errors.push(

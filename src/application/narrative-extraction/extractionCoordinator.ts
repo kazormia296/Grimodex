@@ -50,6 +50,11 @@ import {
   saveChronicleProposalSet,
 } from "./proposalRepository";
 import {
+  buildChronicleProductionV2Envelope,
+  CHRONICLE_SCENE_EVENT_V2_PRODUCTION,
+} from "./chronicleV2Production";
+import type { ChronicleStageTerminalReceiptV1 } from "@/features/narrative-extraction/reconciler/stageProvenance";
+import {
   buildProjectNarrativeSnapshot,
   type ProjectSnapshotAdapterServices,
 } from "./projectSnapshotAdapter";
@@ -63,6 +68,7 @@ import {
 
 /** Run surface path id (not a stage AI attempt path). */
 export const CHRONICLE_EXTRACT_SURFACE_PATH = "chronicle.extract" as const;
+export const NARRATIVE_IR_V2_PRODUCTION_ENABLED = true as const;
 
 export const CHRONICLE_EXTRACT_TASK_KINDS = {
   snapshot: "source.snapshot@1",
@@ -375,6 +381,7 @@ async function executeTask(
   request: ChronicleExtractionRequest,
   deps: ExtractionCoordinatorDeps,
   createId: () => string,
+  stageReceipts: ChronicleStageTerminalReceiptV1[],
 ): Promise<{
   outputJson: Readonly<Record<string, unknown>>;
   artifacts: ReturnType<typeof buildInlineJsonArtifact>[];
@@ -442,6 +449,9 @@ async function executeTask(
               stageExecutionId: createId(),
             }),
             createStageExecutionId: createId,
+            onStageReceipt: (receipt) => {
+              stageReceipts.push(receipt);
+            },
           });
           collected.push(...rekeyObservationsForWindow(window.windowId, batch));
         }
@@ -577,6 +587,9 @@ async function executeTask(
               stageExecutionId: createId(),
             }),
             createStageExecutionId: createId,
+            onStageReceipt: (receipt) => {
+              stageReceipts.push(receipt);
+            },
           });
           collected.push(...batch);
         }
@@ -868,6 +881,7 @@ export async function runChronicleExtractionCoordinator(
   }
   let savedProposalSetId: string | undefined;
   let savedProposals: readonly SavedProposalSeed[] = [];
+  const stageReceipts: ChronicleStageTerminalReceiptV1[] = [];
 
   for (const taskKind of CHRONICLE_EXTRACT_DAG) {
     let claim;
@@ -932,6 +946,7 @@ export async function runChronicleExtractionCoordinator(
         request,
         deps,
         createId,
+        stageReceipts,
       );
 
       let artifacts = executed.artifacts;
@@ -957,12 +972,84 @@ export async function runChronicleExtractionCoordinator(
         if (!evidencePayload) {
           throw new Error("Missing resolved evidence for proposal persistence");
         }
+        const originalObservationPayload =
+          await loadInlineJsonArtifact<ObservationArtifactPayload>(
+            runId,
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.observations,
+          );
+        if (!originalObservationPayload) {
+          throw new Error("Missing original observations for proposal persistence");
+        }
+        const mergedObservationPayload =
+          await loadInlineJsonArtifact<ObservationArtifactPayload>(
+            runId,
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.mergedObservations,
+          );
+        const hypothesisPayload =
+          await loadInlineJsonArtifact<HypothesisArtifactPayload>(
+            runId,
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.hypotheses,
+          );
+        if (!mergedObservationPayload || !hypothesisPayload) {
+          throw new Error("Missing merged observations or hypotheses for proposal persistence");
+        }
+        const sourceBasis = buildSnapshotSourceBasis(
+          runId,
+          snapshotResult.snapshot,
+        );
+        const plannedRows = proposalPayload?.planned ?? [];
+        const v2EnvelopeByProposalKey = new Map<
+          string,
+          Awaited<ReturnType<typeof buildChronicleProductionV2Envelope>>["envelope"]
+        >();
+        let stageProvenanceBundle:
+          | Awaited<ReturnType<typeof buildChronicleProductionV2Envelope>>
+          | undefined;
+        if (
+          NARRATIVE_IR_V2_PRODUCTION_ENABLED &&
+          CHRONICLE_SCENE_EVENT_V2_PRODUCTION &&
+          deps.useAi &&
+          proposals.length > 0 &&
+          stageReceipts.length > 0
+        ) {
+          const hypothesesById = new Map(
+            hypothesisPayload.hypotheses.map((hypothesis) => [
+              hypothesis.hypothesisId,
+              hypothesis,
+            ]) ?? [],
+          );
+          for (const [index, plannedRow] of plannedRows.entries()) {
+            const proposalKey = `${plannedRow.proposal.eventId}:${index}`;
+            const hypothesis = hypothesesById.get(plannedRow.hypothesisId);
+            if (!hypothesis) {
+              throw new Error(
+                `Missing hypothesis for Chronicle V2 proposal ${proposalKey}`,
+              );
+            }
+            const builtV2 = await buildChronicleProductionV2Envelope({
+              projectId: request.projectId,
+              runId,
+              proposalKey,
+              proposal: plannedRow.proposal,
+              hypothesis,
+              originalObservations: originalObservationPayload.observations,
+              mergedObservations: mergedObservationPayload.observations,
+              evidenceAnchors: evidencePayload.anchors,
+              existingEventMatch: plannedRow.match,
+              snapshot: snapshotResult.snapshot,
+              sourceBasis,
+              stageReceipts,
+            });
+            v2EnvelopeByProposalKey.set(proposalKey, builtV2.envelope);
+            stageProvenanceBundle ??= builtV2;
+          }
+        }
         const saved = await saveChronicleProposalSet({
           runId,
           projectId: request.projectId,
           taskId: claim.task.taskId,
           sourceRevisionToken: snapshotResult.snapshot.digest,
-          sourceBasis: buildSnapshotSourceBasis(runId, snapshotResult.snapshot),
+          sourceBasis,
           summaryJson: {
             proposalCount: proposals.length,
             surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
@@ -995,6 +1082,17 @@ export async function runChronicleExtractionCoordinator(
             proposalKey: `${proposal.eventId}:${index}`,
             payload: proposal,
           })),
+          ...(v2EnvelopeByProposalKey.size > 0
+            ? { v2EnvelopeByProposalKey }
+            : {}),
+          ...(stageProvenanceBundle
+            ? {
+                stageProvenanceBundle: {
+                  closure: stageProvenanceBundle.stageProvenanceClosure,
+                  binding: stageProvenanceBundle.provenanceBinding,
+                },
+              }
+            : {}),
         });
         savedProposalSetId = saved.proposalSetId;
         savedProposals = saved.proposals;

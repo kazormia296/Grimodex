@@ -1072,13 +1072,12 @@ pub fn get_run_review_bundle(
 }
 
 pub fn save_proposal_set(db: &Database, payload: SaveProposalSetPayload) -> anyhow::Result<Value> {
-    save_proposal_set_with_v2_mode(db, payload, false)
+    save_proposal_set_atomic(db, payload)
 }
 
-fn save_proposal_set_with_v2_mode(
+fn save_proposal_set_atomic(
     db: &Database,
     payload: SaveProposalSetPayload,
-    allow_dormant_v2: bool,
 ) -> anyhow::Result<Value> {
     let proposal_set_id = payload
         .proposal_set_id
@@ -1118,7 +1117,6 @@ fn save_proposal_set_with_v2_mode(
                     &payload.run_id,
                     &payload.project_id,
                     proposal,
-                    allow_dormant_v2,
                 )?);
             }
 
@@ -1136,7 +1134,6 @@ fn insert_proposal_seed(
     run_id: &str,
     project_id: &str,
     seed: &ProposalSeed,
-    allow_dormant_v2: bool,
 ) -> anyhow::Result<Value> {
     let proposal_id = seed
         .proposal_id
@@ -1153,10 +1150,6 @@ fn insert_proposal_seed(
     )?;
     if let Some(envelope) = seed.reconciliation_envelope.as_ref() {
         if envelope_schema_version(envelope) == Some(2) {
-            anyhow::ensure!(
-                allow_dormant_v2,
-                "NEX_NARRATIVE_V2_ACTIVATION_DISABLED: production ProposalSet ingress cannot activate Envelope V2"
-            );
             let envelope_kind = envelope
                 .pointer("/projectionBinding/proposalKind")
                 .and_then(Value::as_str)
@@ -1172,6 +1165,16 @@ fn insert_proposal_seed(
             validate_chronicle_scene_event_proposal_payload(&seed.payload_json).map_err(
                 |error| anyhow::anyhow!("NEX_ENVELOPE_PROPOSAL_PAYLOAD_INVALID: {error}"),
             )?;
+            anyhow::ensure!(
+                envelope.pointer("/assertion/assertionKind").and_then(Value::as_str)
+                    == Some("scene-event@1"),
+                "NEX_NARRATIVE_V2_PILOT_ASSERTION_KIND_FORBIDDEN: production Chronicle pilot accepts only scene-event@1"
+            );
+            anyhow::ensure!(
+                envelope.pointer("/changeIntent/changeKind").and_then(Value::as_str)
+                    == Some("add"),
+                "NEX_NARRATIVE_V2_PILOT_CHANGE_KIND_FORBIDDEN: production Chronicle pilot accepts only add"
+            );
             ensure_v2_proposal_evidence_binding(envelope, &seed.payload_json)?;
         }
         ensure_v2_proposal_payload_digest(envelope, &seed.payload_json)?;

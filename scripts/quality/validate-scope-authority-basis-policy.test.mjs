@@ -61,7 +61,7 @@ test("declares historical scope authority as shadow-only and stopped", () => {
   });
 });
 
-test("declares the live project authority as computed shadow state without activating C2B", () => {
+test("declares the live project authority as wired C2B state", () => {
   const live = readScopePolicy().liveProjectAuthority;
   assert.deepEqual(live, {
     contractId: "narrative-project-scope-authority-revision/1",
@@ -69,20 +69,18 @@ test("declares the live project authority as computed shadow state without activ
     sourceKind: "project-scope-authority",
     sourceKeyPattern: "project:scope-authority:<projectId>",
     persistence: "computed-no-table-or-head",
-    scopeOverrideActive: false,
+    scopeOverrideActive: true,
     runtimeStopCode: "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE",
     implementationStatus: {
-      state: "shadow",
+      state: "wired",
       productionEntryPoints: [
         "build_narrative_project_scope_authority_v1",
         "load_live_project_scope_authority",
+        "create_human_derived_revision_with_c2b_projection_materialization_auto",
         "run_incremental_freshness_cycle",
         "rebuild_narrative_derived_state_for_project",
       ],
-      blockedOn: [
-        "c2b-scope-override-wiring",
-        "scope-v2-contract-adapter",
-      ],
+      blockedOn: [],
     },
   });
 });
