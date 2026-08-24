@@ -2286,6 +2286,116 @@ fn v2_to_v1_downgrade_and_legacy_inheritance_have_stable_boundaries() {
 }
 
 #[test]
+fn direct_sql_v2_current_rejects_missing_or_null_schema_version_in_enveloped_children() {
+    for (case, envelope_json) in [
+        ("missing-schema-version", "{}"),
+        ("null-schema-version", r#"{"schemaVersion":null}"#),
+    ] {
+        let db = migrated_db();
+        let run_id = format!("run-monotonic-sql-{case}");
+        let task_id = format!("task-monotonic-sql-{case}");
+        let proposal_id = format!("proposal-monotonic-sql-{case}");
+        let child_id = format!("revision-monotonic-sql-{case}-child");
+        let parent = seed_v2_parent(
+            &db,
+            PROJECT_A,
+            &run_id,
+            &task_id,
+            &proposal_id,
+            &format!("revision-monotonic-sql-{case}-parent"),
+            &scene_revision_token(&db, PROJECT_A),
+        );
+
+        let sql_error = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_proposal_revisions
+                        (id, proposal_id, revision_number, payload_json, origin_kind,
+                         reconciliation_envelope_json, created_at, created_by)
+                     VALUES (?1, ?2, 2, '{}', 'enveloped', ?3, datetime('now'), 'sql-test')",
+                    rusqlite::params![child_id, proposal_id, envelope_json],
+                )?;
+                Ok(())
+            })
+            .expect_err("an enveloped child without schemaVersion 2 must be blocked");
+        assert!(
+            sql_error
+                .to_string()
+                .contains("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"),
+            "{case}: unexpected SQL error: {sql_error:#}"
+        );
+
+        let (current_revision, revision_count, child_count): (String, i64, i64) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT current_revision_id,
+                            (SELECT COUNT(*) FROM narrative_proposal_revisions
+                              WHERE proposal_id = ?1),
+                            (SELECT COUNT(*) FROM narrative_proposal_revisions
+                              WHERE id = ?2)
+                       FROM narrative_proposals WHERE id = ?1",
+                    rusqlite::params![proposal_id, child_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?)
+            })
+            .expect("read failed monotonic child state");
+        assert_eq!(
+            current_revision, parent["revisionId"],
+            "{case}: current revision pointer changed"
+        );
+        assert_eq!(revision_count, 1, "{case}: child revision persisted");
+        assert_eq!(child_count, 0, "{case}: rejected child persisted");
+    }
+}
+
+#[test]
+fn direct_sql_v2_current_accepts_integer_valued_schema_version_2_0_at_monotonic_boundary() {
+    let db = migrated_db();
+    let run_id = "run-monotonic-sql-numeric-boundary";
+    let task_id = "task-monotonic-sql-numeric-boundary";
+    let proposal_id = "proposal-monotonic-sql-numeric-boundary";
+    let parent = seed_v2_parent(
+        &db,
+        PROJECT_A,
+        run_id,
+        task_id,
+        proposal_id,
+        "revision-monotonic-sql-numeric-boundary-parent",
+        &scene_revision_token(&db, PROJECT_A),
+    );
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_proposal_revisions
+                (id, proposal_id, revision_number, payload_json, origin_kind,
+                 reconciliation_envelope_json, created_at, created_by)
+             VALUES ('revision-monotonic-sql-numeric-boundary-child', ?1, 2, '{}',
+                     'enveloped', '{\"schemaVersion\":2.0}', datetime('now'), 'sql-test')",
+            rusqlite::params![proposal_id],
+        )?;
+        Ok(())
+    })
+    .unwrap_or_else(|error| {
+        panic!("the monotonic trigger must not reject SQLite's integer-valued 2.0 boundary; this test does not assert full envelope validity: {error:#}")
+    });
+
+    let (current_revision, child_count): (String, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT current_revision_id,
+                        (SELECT COUNT(*) FROM narrative_proposal_revisions
+                          WHERE id = 'revision-monotonic-sql-numeric-boundary-child')
+                   FROM narrative_proposals WHERE id = ?1",
+                rusqlite::params![proposal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read numeric boundary state");
+    assert_eq!(current_revision, parent["revisionId"]);
+    assert_eq!(child_count, 1);
+}
+
+#[test]
 fn c2a_stays_dormant_and_chronicle_v2_activation_is_disabled() {
     let activation = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
