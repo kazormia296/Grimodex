@@ -191,12 +191,16 @@ rules:
       - src/features/narrative-semantic-core/**
       - src/features/narrative-extraction/source/digest.ts
       - src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts
+      - src/features/narrative-extraction/source/scopeAuthorityBasisV2.ts
+      - src/features/narrative-extraction/source/scopeAuthorityBasisV2.contract.test.ts
       - src-tauri/crates/grimodex-core/src/canonical_json.rs
       - src-tauri/crates/grimodex-core/tests/canonical_json.rs
       - src-tauri/crates/grimodex-core/src/narrative_ir.rs
       - src-tauri/crates/grimodex-core/tests/narrative_ir.rs
       - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
       - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
+      - src-tauri/crates/grimodex-core/src/narrative_scope_authority_basis.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_scope_authority_basis.rs
       - src/features/narrative-extraction/reconciler/stageExecution.ts
       - src/features/narrative-extraction/reconciler/stageExecution.test.ts
       - src/features/narrative-extraction/reconciler/types.ts

@@ -441,12 +441,14 @@ requirements:
       - policies/narrative/narrative-dependency-producer-registry.json
       - policies/narrative/fixtures/dependency-role-contract.json
       - policies/narrative/fixtures/canonical-json-number-parity.json
+      - policies/narrative/fixtures/narrative-ir/scope-authority-basis-v2.json
       - policies/narrative/narrative-finding-contract.json
       - policies/narrative/schemas/mutation-authority-routes.schema.json
       - policies/narrative/schemas/semantic-state-vocabulary.schema.json
       - policies/narrative/schemas/semantic-core-authorities.schema.json
       - policies/narrative/schemas/retrieval-disclosure.schema.json
       - policies/narrative/schemas/narrative-scope-relation-contract.schema.json
+      - policies/narrative/schemas/narrative-scope-authority-basis-v2.schema.json
       - policies/narrative/schemas/narrative-dependency-role-registry.schema.json
       - policies/narrative/schemas/narrative-dependency-producer-registry.schema.json
       - policies/narrative/schemas/narrative-artifact-authority.schema.json
@@ -458,9 +460,11 @@ requirements:
       - src/features/narrative-semantic-core/contracts/scopeRelation.ts
       - src/features/narrative-semantic-core/contracts/dependencyRole.ts
       - src/features/narrative-extraction/source/digest.ts
+      - src/features/narrative-extraction/source/scopeAuthorityBasisV2.ts
       - src-tauri/crates/grimodex-core/src/canonical_json.rs
       - src-tauri/crates/grimodex-core/src/narrative_ir.rs
       - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
+      - src-tauri/crates/grimodex-core/src/narrative_scope_authority_basis.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
       - scripts/quality/validate-narrative-ir-contract.mjs
       - docs/plans/narrative-ir-nir0-implementation-plan.md
@@ -509,6 +513,7 @@ requirements:
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/validate-narrative-ir-contract.test.mjs
+      - scripts/quality/validate-scope-authority-basis-policy.test.mjs
       - src/features/narrative-semantic-core/contracts/mutationAuthority.test.ts
       - src/features/narrative-semantic-core/contracts/stateVocabulary.test.ts
       - src/features/narrative-semantic-core/contracts/assertionState.test.ts
@@ -521,9 +526,11 @@ requirements:
       - src/features/narrative-semantic-core/contracts/scopeRelation.test.ts
       - src/features/narrative-semantic-core/contracts/dependencyRole.test.ts
       - src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts
+      - src/features/narrative-extraction/source/scopeAuthorityBasisV2.contract.test.ts
       - src-tauri/crates/grimodex-core/tests/canonical_json.rs
       - src-tauri/crates/grimodex-core/tests/narrative_ir.rs
       - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_scope_authority_basis.rs
       - src/features/narrative-extraction/reconciler/stageExecution.test.ts
       - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
       - src/features/narrative-extraction/reconciler/v2Adapter.test.ts

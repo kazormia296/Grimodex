@@ -14,28 +14,28 @@
   "mappings": [
     {
       "documentRef": "D000001",
-      "sourceKey": "project:scene:scene-one",
-      "sceneRef": "scene:scene-one",
-      "readingOrderRef": "reading:scene-one",
-      "storyTimeRef": "story:scene-one",
+      "sourceKey": "project:scene:\uE000",
+      "sceneRef": "scene:\uE000",
+      "readingOrderRef": "reading:\uE000",
+      "storyTimeRef": "story:\uE000",
       "readingRank": 0,
       "storyTimeOrder": {
         "status": "resolved",
-        "rawStoryKey": "a0",
-        "storyRank": 0
+        "rawStoryKey": "\uE000",
+        "storyRank": 1
       }
     },
     {
       "documentRef": "D000002",
-      "sourceKey": "project:scene:scene-two",
-      "sceneRef": "scene:scene-two",
-      "readingOrderRef": "reading:scene-two",
-      "storyTimeRef": "story:scene-two",
+      "sourceKey": "project:scene:\uD83D\uDE00",
+      "sceneRef": "scene:\uD83D\uDE00",
+      "readingOrderRef": "reading:\uD83D\uDE00",
+      "storyTimeRef": "story:\uD83D\uDE00",
       "readingRank": 1,
       "storyTimeOrder": {
-        "status": "unresolved",
-        "reason": "not-provided",
-        "rawStoryKey": null
+        "status": "resolved",
+        "rawStoryKey": "\uD83D\uDE00",
+        "storyRank": 0
       }
     },
     {
@@ -47,8 +47,8 @@
       "readingRank": 2,
       "storyTimeOrder": {
         "status": "unresolved",
-        "reason": "ambiguous",
-        "rawStoryKey": "b0"
+        "reason": "not-provided",
+        "rawStoryKey": null
       }
     },
     {
@@ -63,14 +63,27 @@
         "reason": "ambiguous",
         "rawStoryKey": "b0"
       }
+    },
+    {
+      "documentRef": "D000005",
+      "sourceKey": "project:scene:scene-five",
+      "sceneRef": "scene:scene-five",
+      "readingOrderRef": "reading:scene-five",
+      "storyTimeRef": "story:scene-five",
+      "readingRank": 4,
+      "storyTimeOrder": {
+        "status": "unresolved",
+        "reason": "ambiguous",
+        "rawStoryKey": "b0"
+      }
     }
   ],
   "digests": {
     "corpusDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-    "scopeRegistryRevision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-    "readingOrderRevision": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-    "storyTimeOrderRevision": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-    "authorityDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
-    "compositeDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "scopeRegistryRevision": "sha256:14c38b8b1f9de3bf5704da8456d3d40205df7ee5606c82d09f2a60a5f3f434d5",
+    "readingOrderRevision": "sha256:ebe9ceb73006708ea25f490517053dd59d073d688637e764e7fdb7b2119c0ad1",
+    "storyTimeOrderRevision": "sha256:d154c6a8b94c4134d114812d2f498c3597c8ee3047213c32d37504323286de07",
+    "authorityDigest": "sha256:b52f00d82155312c1074bbb8cc2390cc9205b6d2d0c081d061ecc0ece649abf4",
+    "compositeDigest": "sha256:2088c78e8faf3c7d36ab59ab30223e68af8284ab066ee2ebf200b6413492c940"
   }
 }

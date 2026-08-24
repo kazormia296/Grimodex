@@ -21,6 +21,18 @@ function readScopePolicy() {
   );
 }
 
+function readArtifactPolicy() {
+  return JSON.parse(
+    readFileSync(
+      path.join(
+        REPO_ROOT,
+        "policies/narrative/narrative-artifact-authority.json",
+      ),
+      "utf8",
+    ),
+  );
+}
+
 test("declares historical scope authority as future-only and stopped", () => {
   const historical = readScopePolicy().historicalAuthorityBasis;
   assert.deepEqual(historical, {
@@ -44,7 +56,34 @@ test("declares historical scope authority as future-only and stopped", () => {
         "native-scope-authority-basis-producer",
         "native-scope-authority-basis-resolver",
         "c2b-scope-override-wiring",
+        "project-scope-order-authority",
       ],
     },
   });
+});
+
+test("does not promote the historical carrier through generic artifact authority", () => {
+  const artifacts = readArtifactPolicy().artifacts;
+  const extractionArtifact = artifacts.find(
+    (artifact) => artifact.id === "extraction-artifact",
+  );
+  assert.deepEqual(
+    {
+      authority: extractionArtifact?.authority,
+      authoritative: extractionArtifact?.authoritative,
+    },
+    { authority: "none", authoritative: false },
+  );
+  assert.equal(
+    artifacts.some((artifact) => artifact.id === "scope-authority-basis"),
+    false,
+  );
+  assert.equal(
+    artifacts.filter(
+      (artifact) =>
+        artifact.storage === "narrative_extraction_artifacts" &&
+        artifact.authoritative === true,
+    ).length,
+    0,
+  );
 });
