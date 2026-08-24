@@ -334,6 +334,13 @@ fn applies_basis_specific_chronicle_producer_contracts() {
         "Human-derived revisionBasis must reject a producer claim"
     );
 
+    let mut interpretation_mismatch = valid_envelope();
+    interpretation_mismatch["revisionBasis"]["producer"]["id"] = json!("other-reconciler");
+    assert!(
+        validate_chronicle_scene_event_v2(&interpretation_mismatch).is_err(),
+        "model-derived assertion and revision producers must remain equal"
+    );
+
     let mut interpretation_without_producer = valid_envelope();
     interpretation_without_producer["revisionBasis"]
         .as_object_mut()
