@@ -772,7 +772,7 @@ fn has_v34_c2a_stage_storage(conn: &Connection) -> anyhow::Result<bool> {
                 && sql.contains("json_extract(current_revision.reconciliation_envelope_json,'$.schemaversion')=2")
                 && sql.contains("new.origin_kind<>'enveloped'")
                 && sql.contains("new.reconciliation_envelope_jsonisnull")
-                && sql.contains("json_extract(new.reconciliation_envelope_json,'$.schemaversion')<>2")
+                && sql.contains("json_extract(new.reconciliation_envelope_json,'$.schemaversion')isnot2")
                 && sql.contains("nex_revision_envelope_downgrade_forbidden")
         }))
 }

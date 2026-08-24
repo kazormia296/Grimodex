@@ -3625,7 +3625,7 @@ impl Database {
                     NEW.origin_kind <> 'enveloped'
                     OR NEW.reconciliation_envelope_json IS NULL
                     OR json_extract(NEW.reconciliation_envelope_json,
-                                    '$.schemaVersion') <> 2
+                                    '$.schemaVersion') IS NOT 2
                 )
                 BEGIN
                     SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');

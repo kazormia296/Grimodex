@@ -4111,10 +4111,6 @@ export type NarrativeExtractionStageReceipt =
   typeof narrativeExtractionStageReceipts.$inferSelect;
 export type NewNarrativeExtractionStageReceipt =
   typeof narrativeExtractionStageReceipts.$inferInsert;
-export type NarrativeExtractionStageClosure =
-  typeof narrativeExtractionStageClosures.$inferSelect;
-export type NewNarrativeExtractionStageClosure =
-  typeof narrativeExtractionStageClosures.$inferInsert;
 export type NarrativeDependencyDeclarationSet =
   typeof narrativeDependencyDeclarationSets.$inferSelect;
 export type NewNarrativeDependencyDeclarationSet =
