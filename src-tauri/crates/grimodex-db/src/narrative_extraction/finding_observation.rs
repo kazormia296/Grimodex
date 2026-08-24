@@ -688,6 +688,7 @@ pub(crate) fn record_terminal_failure_observation_in_tx(
                     "NEX_MAINTENANCE_RETRY_EXHAUSTED"
                         | "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING"
                         | "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING"
+                        | "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID"
                 ),
                 "NEX_FINDING_FAILURE_CODE_MISMATCH: '{}' is not a recovery-synthesized code",
                 write.failure_code

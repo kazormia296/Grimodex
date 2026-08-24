@@ -349,9 +349,15 @@ pub const RESTORE_SESSION_PHASE_COMMITTED: &str = "committed";
 /// fails, escalate the marker to the durable `committed` phase (an atomic
 /// rename that does not require unlink) so the next open can verify and
 /// safely converge to deletion.
-fn finalize_restore_session_marker(ws_path: &Path) {
+///
+/// When neither step can complete — the unlink failed *and* the marker can
+/// be neither read nor rewritten to `committed` — this returns an error:
+/// the restored data is intact, but the caller must not report a clean
+/// success while the next open is guaranteed to enter Safe Mode over a
+/// stale incomplete marker.
+fn finalize_restore_session_marker(ws_path: &Path) -> AppResult<()> {
     let Err(clear_error) = clear_restore_session_marker(ws_path) else {
-        return;
+        return Ok(());
     };
     let rewritten = match read_incomplete_restore_session(ws_path) {
         Ok(Some(mut marker)) => {
@@ -362,12 +368,19 @@ fn finalize_restore_session_marker(ws_path: &Path) {
         Err(read_error) => Err(read_error),
     };
     match rewritten {
-        Ok(()) => tracing::warn!(
-            "restore-session marker could not be removed ({clear_error}); escalated to a durable committed marker so the next open converges to deletion"
-        ),
-        Err(write_error) => tracing::error!(
-            "restore-session marker could not be removed ({clear_error}) nor committed ({write_error}); the next open will enter Safe Mode until backups/.restore-session.json is deleted"
-        ),
+        Ok(()) => {
+            tracing::warn!(
+                "restore-session marker could not be removed ({clear_error}); escalated to a durable committed marker so the next open converges to deletion"
+            );
+            Ok(())
+        }
+        Err(write_error) => Err(anyhow::anyhow!(
+            "RESTORE_SESSION_MARKER_FINALIZE_FAILED: restore-session marker could not be \
+             removed ({clear_error}) nor committed ({write_error}); the restored image is \
+             installed, but the next open would enter Safe Mode until \
+             backups/.restore-session.json is deleted"
+        )
+        .into()),
     }
 }
 
@@ -866,7 +879,7 @@ pub fn install_staged_workspace_db(
                                     if let Some(cleanup) = rollback_cleanup.as_mut() {
                                         cleanup.disarm();
                                     }
-                                    finalize_restore_session_marker(ws_path);
+                                    let _ = finalize_restore_session_marker(ws_path);
                                     (
                                         Err(anyhow::anyhow!(
                                             "{primary_msg}; 元のDBは未置換のまま保持しています"
@@ -993,14 +1006,18 @@ pub fn install_staged_workspace_db(
     let _ = retained_safety;
 
     if !options.publish_workspace_authority {
-        finalize_restore_session_marker(ws_path);
+        finalize_restore_session_marker(ws_path)?;
         drop(exclusive_lease);
         return Ok(());
     }
 
     match publish_active_workspace(ws_state, ws_path.to_path_buf(), exclusive_lease) {
         Ok(_) => {
-            finalize_restore_session_marker(ws_path);
+            // The authority is live and the restored data is intact, but a
+            // finalize failure means the next open would still enter Safe
+            // Mode: that is not a clean success and must not be reported as
+            // one.
+            finalize_restore_session_marker(ws_path)?;
             if let Some(on_reopened) = options.on_reopened.take() {
                 on_reopened();
             }
@@ -1034,7 +1051,7 @@ pub fn install_staged_workspace_db(
                             if let Some(cleanup) = rollback_cleanup.as_mut() {
                                 cleanup.disarm();
                             }
-                            finalize_restore_session_marker(ws_path);
+                            let _ = finalize_restore_session_marker(ws_path);
                             match publish_active_workspace(
                                 ws_state,
                                 ws_path.to_path_buf(),
@@ -1151,7 +1168,7 @@ fn restore_rollback_error(args: RestoreRollbackArgs<'_>) -> AppResult<()> {
                     if let Some(cleanup) = rollback_cleanup {
                         cleanup.disarm();
                     }
-                    finalize_restore_session_marker(ws_path);
+                    let _ = finalize_restore_session_marker(ws_path);
                     Err(anyhow::anyhow!("{primary}; 元のDBへ戻しました").into())
                 }
                 Err(error) => {

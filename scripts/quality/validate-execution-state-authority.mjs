@@ -99,12 +99,55 @@ const C25B_FAILURE_POLICY_EXPECTATIONS = Object.freeze({
     nextAttemptPolicy: "requeue-new-run-same-sealed-system-work",
     findingRoute: "none",
   }),
+  // Recovery-synthesized manual halts and the non-clean-Verify repair gate
+  // are runtime Finding routes too: the machine-readable contract must name
+  // every code the Maintenance Inbox can carry.
+  NEX_MAINTENANCE_RETRY_EXHAUSTED: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
+  NEX_MAINTENANCE_FAILURE_DETAIL_MISSING: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
+  NEX_MAINTENANCE_FAILURE_LEDGER_MISSING: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
+  NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
+  NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
 });
 
 const C25B_FAILURE_CODE_ORDER = Object.freeze([
   "NEX_MAINTENANCE_TRANSIENT",
   "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
   "NEX_MAINTENANCE_INTERRUPTED",
+  "NEX_MAINTENANCE_RETRY_EXHAUSTED",
+  "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING",
+  "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING",
+  "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+  "NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR",
 ]);
 
 function isObject(value) {
@@ -368,7 +411,7 @@ function validateFailurePolicy(failurePolicy, errors) {
   }
   if (routedCodes.size !== Object.keys(C25B_FAILURE_POLICY_EXPECTATIONS).length) {
     errors.push(
-      "C2-5B findingRoutingMatrix must contain exactly the three C2-5B failure codes; unknown or cross-phase codes are not routed by substring",
+      "C2-5B findingRoutingMatrix must contain exactly the canonical C2-5B failure codes; unknown or cross-phase codes are not routed by substring",
     );
   }
 }

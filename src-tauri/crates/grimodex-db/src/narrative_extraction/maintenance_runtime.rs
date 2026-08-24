@@ -1000,6 +1000,11 @@ pub fn complete_foreground_system_work_run(
                             rebuild_contract_version: REBUILD_CONTRACT_VERSION.to_string(),
                             run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
                             report_digest: report_digest.to_string(),
+                            graph_state_digest:
+                                super::maintenance_skip_evidence::durable_graph_state_digest(
+                                    conn,
+                                    &project_id,
+                                )?,
                         },
                     )?;
                 }
@@ -1259,30 +1264,64 @@ fn load_durable_maintenance_runs(
 }
 
 fn validate_active_maintenance_run(run: &DurableMaintenanceRun) -> anyhow::Result<()> {
-    if run.run_kind != VERIFY_RUN_KIND || !matches!(run.status.as_str(), "pending" | "running") {
+    // Every automatic Run Kind fails closed on a malformed active row.
+    // Silently filtering a malformed active Backfill/Rebuild from the
+    // canonical candidates would let the cycle start a second canonical Run
+    // beside a row that is still live.
+    if !matches!(run.status.as_str(), "pending" | "running") {
         return Ok(());
     }
-    let epoch_id = run
-        .semantic_epoch_id
-        .as_deref()
-        .filter(|value| !value.is_empty());
-    anyhow::ensure!(
-        epoch_id.is_some(),
-        "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Verify Run '{}' has no Semantic Epoch",
-        run.run_id
-    );
     let work_key = run.work_key.as_deref().filter(|value| !value.is_empty());
     anyhow::ensure!(
         work_key.is_some(),
-        "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Verify Run '{}' has no workKey",
+        "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: '{}' Run '{}' has no workKey",
+        run.run_kind,
         run.run_id
     );
-    let expected = format!("{VERIFY_WORK_KEY_PREFIX}{}", epoch_id.unwrap_or_default());
-    anyhow::ensure!(
-        work_key == Some(expected.as_str()),
-        "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Verify Run '{}' workKey does not match its Semantic Epoch",
-        run.run_id
-    );
+    match run.run_kind.as_str() {
+        "backfill" => {
+            anyhow::ensure!(
+                work_key == Some(LEGACY_BACKFILL_WORK_KEY),
+                "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Backfill Run '{}' workKey is not canonical",
+                run.run_id
+            );
+        }
+        VERIFY_RUN_KIND => {
+            let epoch_id = run
+                .semantic_epoch_id
+                .as_deref()
+                .filter(|value| !value.is_empty());
+            anyhow::ensure!(
+                epoch_id.is_some(),
+                "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Verify Run '{}' has no Semantic Epoch",
+                run.run_id
+            );
+            let expected = format!("{VERIFY_WORK_KEY_PREFIX}{}", epoch_id.unwrap_or_default());
+            anyhow::ensure!(
+                work_key == Some(expected.as_str()),
+                "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Verify Run '{}' workKey does not match its Semantic Epoch",
+                run.run_id
+            );
+        }
+        "semantic-index-rebuild" => {
+            anyhow::ensure!(
+                run.semantic_epoch_id
+                    .as_deref()
+                    .is_some_and(|epoch_id| !epoch_id.is_empty()),
+                "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Rebuild Run '{}' has no Semantic Epoch",
+                run.run_id
+            );
+            anyhow::ensure!(
+                work_key == Some(REBUILD_DERIVED_WORK_KEY),
+                "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Rebuild Run '{}' workKey is not canonical",
+                run.run_id
+            );
+        }
+        other => anyhow::bail!(
+            "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: unsupported active Run kind '{other}' for Run '{}'",
+            run.run_id
+        ),
+    }
     Ok(())
 }
 
@@ -2087,6 +2126,17 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
         if terminal_halted_work.contains(&recovery_work_key) {
             continue;
         }
+        // The RecoveryMode gate and the recovery decision must key on the
+        // same effective WorkKey. A stale or epoch-less wire item is
+        // normalized to the current Semantic Epoch before recovery, so the
+        // mode lookup has to see that exact normalized identity too —
+        // otherwise a StartupRecovery mode registered for the stale key can
+        // be applied to the current-epoch key and terminalize a Run that is
+        // live in this process.
+        let effective_item = DesiredWork {
+            semantic_epoch_id: recovery_work.semantic_epoch_id.clone(),
+            ..item.clone()
+        };
 
         let foreground_run_is_held = if let Some(owned) = foreground_owned_run.as_ref() {
             if !foreground_owned_run_matches_work(owned, &item)? {
@@ -2152,7 +2202,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
             }
         }
 
-        let action = recover_cycle_work(db, &item, mode_for(&item))?;
+        let action = recover_cycle_work(db, &effective_item, mode_for(&effective_item))?;
         match action {
             RecoveryAction::CoalescedRunning { .. } | RecoveryAction::CoalescedPending { .. } => {
                 coalesced_active = true;
@@ -2209,12 +2259,47 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                     // not-before instant is refused; the durable wake keeps
                     // the scheduler polling until the boundary passes, so
                     // the 1s -> 2s -> 4s policy holds across restarts too.
-                    if let Some(not_before) = retry_not_before(db, &recovery_work)? {
-                        if let Ok(not_before_at) = parse_maintenance_instant(&not_before) {
-                            if chrono::Utc::now() < not_before_at {
-                                has_more = true;
-                                continue;
+                    //
+                    // The failure policy's invariant is "next_attempt_at is
+                    // set iff retryDisposition is retryable", so a Retry
+                    // decision whose durable not-before is missing or
+                    // unparseable is broken retry evidence, not permission
+                    // to dispatch immediately: fail closed to manual.
+                    match retry_not_before(db, &recovery_work)? {
+                        RetryEvidence::NoFailedAttempt => {
+                            // A run-level terminal code with no Attempt
+                            // ledger (older writer, import): the run-level
+                            // recovery classification governs dispatch.
+                        }
+                        RetryEvidence::NotBefore(Some(not_before)) => {
+                            match parse_maintenance_instant(&not_before) {
+                                Ok(not_before_at) => {
+                                    if chrono::Utc::now() < not_before_at {
+                                        has_more = true;
+                                        continue;
+                                    }
+                                }
+                                Err(_) => {
+                                    super::terminal_failure::project_manual_intervention_finding(
+                                        db,
+                                        &recovery_work,
+                                        "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+                                    )?;
+                                    handled_non_coalesced = true;
+                                    terminal_halted_work.insert(recovery_work_key);
+                                    continue;
+                                }
                             }
+                        }
+                        RetryEvidence::NotBefore(None) => {
+                            super::terminal_failure::project_manual_intervention_finding(
+                                db,
+                                &recovery_work,
+                                "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+                            )?;
+                            handled_non_coalesced = true;
+                            terminal_halted_work.insert(recovery_work_key);
+                            continue;
                         }
                     }
                 }
@@ -2435,6 +2520,14 @@ fn recover_cycle_work(
         }
         action => Ok(action),
     }
+}
+
+/// Epoch-normalized canonical recovery key for one wire item. The N-API
+/// recovery gate must mark exactly the identity the cycle recovered — the
+/// normalized key — not the possibly stale/epoch-less wire key, or the two
+/// sides of the gate track different identities forever.
+pub fn recovery_canonical_key(db: &Database, item: &DesiredWork) -> anyhow::Result<String> {
+    Ok(recovery_work_key_for_item(db, item)?.canonical_key())
 }
 
 /// Resolve the exact durable identity used by recovery for one requested
@@ -3541,7 +3634,19 @@ pub const fn retry_backoff_ms(attempt: u32) -> u64 {
 /// Durable retry not-before boundary for one work identity: the
 /// `next_attempt_at` persisted by the latest failed Attempt. Dispatch must
 /// not start a retry before this instant, including after a process restart.
-fn retry_not_before(db: &Database, work: &WorkKey) -> anyhow::Result<Option<String>> {
+/// The latest failed Attempt's durable retry evidence for `work`.
+/// `NoFailedAttempt` means the failure carries no Attempt-level ledger at all
+/// (a run-level terminal code from an older writer or an import); the
+/// run-level recovery classification governs there. `NotBefore(None)` means
+/// an Attempt row exists but violates the failure policy's
+/// "next_attempt_at iff retryable" invariant, which is broken retry
+/// evidence, not permission to dispatch immediately.
+enum RetryEvidence {
+    NoFailedAttempt,
+    NotBefore(Option<String>),
+}
+
+fn retry_not_before(db: &Database, work: &WorkKey) -> anyhow::Result<RetryEvidence> {
     db.with_conn(|conn| {
         conn.query_row(
             "SELECT a.next_attempt_at
@@ -3562,7 +3667,10 @@ fn retry_not_before(db: &Database, work: &WorkKey) -> anyhow::Result<Option<Stri
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
-        .map(Option::flatten)
+        .map(|row| match row {
+            None => RetryEvidence::NoFailedAttempt,
+            Some(not_before) => RetryEvidence::NotBefore(not_before),
+        })
         .map_err(Into::into)
     })
 }

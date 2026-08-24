@@ -124,20 +124,24 @@ fn basis(first_story_key: &str) -> NarrativeScopeAuthorityBasisV2 {
 /// The `source.snapshot@1` corpus artifact production sends in the same
 /// typed finish. The sealed basis must bind to this corpus closure.
 fn corpus_artifact_json() -> serde_json::Value {
+    let payload = json!({
+        "snapshot": {
+            "digest": SNAPSHOT_DIGEST,
+            "documents": [
+                {"ref": "D000001", "sourceKey": "project:scene:scene-one"},
+                {"ref": "D000002", "sourceKey": "project:scene:scene-two"}
+            ]
+        },
+        "sourceViews": []
+    });
+    let payload_digest =
+        grimodex_core::canonical_json_digest(&payload).expect("canonical corpus digest");
     json!({
         "artifactId": "corpus:run-scope-runtime",
         "artifactKind": "source.snapshot@1",
         "payloadStorage": "inline-json",
-        "payloadJson": {
-            "snapshot": {
-                "digest": SNAPSHOT_DIGEST,
-                "documents": [
-                    {"ref": "D000001", "sourceKey": "project:scene:scene-one"},
-                    {"ref": "D000002", "sourceKey": "project:scene:scene-two"}
-                ]
-            },
-            "sourceViews": []
-        }
+        "payloadDigest": payload_digest,
+        "payloadJson": payload
     })
 }
 

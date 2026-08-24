@@ -88,6 +88,20 @@ fn rebuild_report_digest() -> String {
     format!("sha256:{}", digest_plan(&rebuild_summary()))
 }
 
+/// The graph-state digest of this suite's fixture project, which owns no
+/// Durable Graph Edges. Mirrors `durable_graph_state_digest`'s canonical
+/// form for an empty edge table.
+fn empty_graph_state_digest() -> String {
+    format!(
+        "sha256:{}",
+        digest_plan(&json!({
+            "domain": "grimodex:narrative:durable-graph-state:v1",
+            "projectId": PROJECT_ID,
+            "edges": [],
+        }))
+    )
+}
+
 fn evidence() -> CompletedRunSkipEvidence {
     CompletedRunSkipEvidence {
         project_id: PROJECT_ID.to_string(),
@@ -100,6 +114,7 @@ fn evidence() -> CompletedRunSkipEvidence {
         rebuild_contract_version: REBUILD_RUN_KIND_CONTRACT_VERSION.to_string(),
         run_kind_contract_version: RUN_CONTRACT_VERSION.to_string(),
         report_digest: report_digest(),
+        graph_state_digest: empty_graph_state_digest(),
     }
 }
 
@@ -130,6 +145,7 @@ fn rebuild_evidence() -> CompletedRunSkipEvidence {
         rebuild_contract_version: REBUILD_RUN_KIND_CONTRACT_VERSION.to_string(),
         run_kind_contract_version: "1".to_string(),
         report_digest: rebuild_report_digest(),
+        graph_state_digest: empty_graph_state_digest(),
     }
 }
 
@@ -1179,4 +1195,51 @@ fn every_digest_coordinate_requires_sha256_lowercase_hex64() {
         );
         assert!(persist_completed_run_skip_evidence(&db, RUN_ID, &stored_evidence).is_err());
     }
+}
+
+#[test]
+fn same_epoch_edge_write_after_clean_verify_forces_rerun() {
+    // A Producer adding an Edge inside the same Semantic Epoch changes the
+    // durable graph state a clean Verify was sealed against: the sealed
+    // evidence must not be reusable even though every contract/registry
+    // coordinate still matches.
+    let db = fixture_db();
+    insert_completed_verify_run(&db, "completed", Some(successful_outcome()));
+    persist_completed_run_skip_evidence(&db, RUN_ID, &evidence()).expect("persist skip evidence");
+    let skip = db
+        .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+        .expect("evaluate before the graph moves");
+    assert!(matches!(skip, CompletedRunSkipDecision::Skip { .. }));
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                 read_set_json, created_at)
+             VALUES ('edge-post-verify', ?1, 'proposal-revision', 'revision:new',
+                     'project:scene:new', '[]', '2026-08-23T00:00:00.000Z')",
+            [PROJECT_ID],
+        )?;
+        Ok(())
+    })
+    .expect("add a same-epoch Edge after the clean Verify");
+
+    let decision = db
+        .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+        .expect("evaluate after the graph moved");
+    assert_eq!(
+        decision,
+        CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::GraphStateMismatch,
+        }
+    );
+    assert_eq!(
+        db.with_conn(|conn| read_completed_run_skip_evidence(
+            conn,
+            PROJECT_ID,
+            "dependency-verify"
+        ))
+        .expect("read after the graph moved"),
+        None
+    );
 }

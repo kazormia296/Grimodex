@@ -158,6 +158,20 @@ function c25bFailurePolicies() {
       nextAttemptPolicy: "requeue-new-run-same-sealed-system-work",
       policyVersion: "v1",
     },
+    ...[
+      "NEX_MAINTENANCE_RETRY_EXHAUSTED",
+      "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING",
+      "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING",
+      "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+      "NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR",
+    ].map((failureCode) => ({
+      failureCode,
+      retryDisposition: "manual",
+      maxAttempts: 0,
+      backoffPolicy: "none",
+      nextAttemptPolicy: "none",
+      policyVersion: "v1",
+    })),
   ];
 }
 
@@ -175,6 +189,16 @@ function c25bFindingRoutingMatrix() {
       failureCode: "NEX_MAINTENANCE_INTERRUPTED",
       findingRoute: "none",
     },
+    ...[
+      "NEX_MAINTENANCE_RETRY_EXHAUSTED",
+      "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING",
+      "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING",
+      "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+      "NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR",
+    ].map((failureCode) => ({
+      failureCode,
+      findingRoute: "maintenance-inbox",
+    })),
   ];
 }
 

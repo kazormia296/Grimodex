@@ -156,6 +156,41 @@ pub(crate) fn list_dependency_declaration_head_keys_for_sources_in_tx(
     Ok(keys.into_iter().collect())
 }
 
+/// Return D1 head identities whose active set cannot satisfy the entry join
+/// at all: the set row is missing or it has zero entries. The source-bounded
+/// reverse lookup above INNER-joins through entries, so a head broken this
+/// way would otherwise be invisible to ordinary Source mutations — no
+/// corrupt diagnostic, no publication guard. These identities are appended
+/// to every source-bounded selection so the verified reader can observe the
+/// corruption.
+pub(crate) fn list_broken_dependency_declaration_head_keys_in_tx(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Vec<(String, String)>> {
+    if !table_exists(conn, HEAD_TABLE)?
+        || !table_exists(conn, SET_TABLE)?
+        || !table_exists(conn, ENTRY_TABLE)?
+    {
+        return Ok(Vec::new());
+    }
+    let mut statement = conn.prepare(&format!(
+        "SELECT head.consumer_kind, head.consumer_key
+           FROM {HEAD_TABLE} AS head
+           LEFT JOIN {SET_TABLE} AS set_row
+             ON set_row.id = head.active_declaration_set_id
+          WHERE head.project_id = ?1
+            AND (set_row.id IS NULL
+                 OR NOT EXISTS (
+                        SELECT 1 FROM {ENTRY_TABLE} AS entry
+                         WHERE entry.declaration_set_id = set_row.id))
+          ORDER BY head.consumer_kind ASC, head.consumer_key ASC"
+    ))?;
+    let rows = statement
+        .query_map([project_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// Return every D1 head identity for the restore/rebuild verifier. Unlike
 /// the incremental Feed path, a full rebuild intentionally verifies the
 /// project's complete active-head set, including V2-only Consumers and

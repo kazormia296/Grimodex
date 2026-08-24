@@ -116,6 +116,26 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
     assert_eq!(first.snippet_sources_fixed, 2);
     assert_eq!(first.snippet_scenes_fixed, 1);
     assert!(first.maintenance_transaction_id.is_some());
+
+    // The Epoch rotation committed a durable wake in the same transaction:
+    // a lost observer event can never strand this rotation without a
+    // maintenance wake, and an acknowledged wake stays acknowledged.
+    let pending = grimodex_db::narrative_extraction::list_pending_maintenance_wakes(&db)
+        .expect("list pending maintenance wakes");
+    assert_eq!(pending.len(), 1, "one wake per rotation: {pending:?}");
+    assert_eq!(pending[0].project_id, "repair-p1");
+    assert_eq!(pending[0].operation, "semantic-epoch-reset");
+    let acked = grimodex_db::narrative_extraction::ack_maintenance_wakes(
+        &db,
+        &[pending[0].id.clone()],
+    )
+    .expect("ack maintenance wake");
+    assert_eq!(acked, 1);
+    assert!(
+        grimodex_db::narrative_extraction::list_pending_maintenance_wakes(&db)
+            .expect("re-list maintenance wakes")
+            .is_empty()
+    );
     let codex_b_after = canonical_codex_digest(&db, "repair-p1", "codex-b");
     let snippet_b_after = canonical_snippet_digest(&db, "repair-p1", "snippet-b");
 

@@ -38,9 +38,12 @@ const CHRONICLE_RAW_OBSERVATIONS_KIND: &str = "chronicle.raw-observations@1";
 struct ChronicleEventSynthesisOutputShape {
     kind: String,
     observation_count: u64,
-    event_count: u64,
     observation_refs: Vec<String>,
     stage_provenance_closure_digest: String,
+    /// Seals the exact raw-observations artifact this output was derived
+    /// from. Without it, a genuine transport receipt could be paired with an
+    /// arbitrary shape-valid observations artifact.
+    raw_observations_digest: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,17 +133,20 @@ pub(crate) fn validate_chronicle_synthesis_companion(
         .map_err(|error| {
             anyhow!("NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: typed output shape: {error}")
         })?;
+    // A Scene or range containing no events is a normal input: zero
+    // observations are a first-class successful result whose provenance is
+    // recorded like any other. `eventCount` is deliberately not a
+    // Native-verified field — nothing durable grounds it, so Native does not
+    // attest it.
     anyhow::ensure!(
-        output.kind == CHRONICLE_EVENT_SYNTHESIS_OUTPUT_KIND
-            && output.observation_count > 0
-            && output.event_count > 0
-            && !output.observation_refs.is_empty(),
+        output.kind == CHRONICLE_EVENT_SYNTHESIS_OUTPUT_KIND,
         "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: kind/count contract is invalid"
     );
     ensure_digest(
         &output.stage_provenance_closure_digest,
         "stageProvenanceClosureDigest",
     )?;
+    ensure_digest(&output.raw_observations_digest, "rawObservationsDigest")?;
     let mut raw_observations: Option<&ArtifactInput> = None;
     for artifact in artifacts {
         anyhow::ensure!(
@@ -176,6 +182,10 @@ pub(crate) fn validate_chronicle_synthesis_companion(
         raw_digest == canonical_json_digest(raw_value)?,
         "NEX_CHRONICLE_RAW_OBSERVATIONS_DIGEST_MISMATCH: raw observation payload digest differs from Native recomputation"
     );
+    anyhow::ensure!(
+        output.raw_observations_digest == raw_digest,
+        "NEX_CHRONICLE_RAW_OBSERVATIONS_DIGEST_MISMATCH: output rawObservationsDigest does not seal the durable raw observation artifact"
+    );
     let raw: ChronicleRawObservationsShape =
         serde_json::from_value(raw_value.clone()).map_err(|error| {
             anyhow!("NEX_CHRONICLE_RAW_OBSERVATIONS_INVALID: typed artifact shape: {error}")
@@ -183,10 +193,6 @@ pub(crate) fn validate_chronicle_synthesis_companion(
     anyhow::ensure!(
         raw.kind == CHRONICLE_RAW_OBSERVATIONS_KIND && raw.version == 1,
         "NEX_CHRONICLE_RAW_OBSERVATIONS_INVALID: unsupported artifact kind/version"
-    );
-    anyhow::ensure!(
-        !raw.observations.is_empty(),
-        "NEX_CHRONICLE_RAW_OBSERVATIONS_INVALID: observations must not be empty"
     );
     anyhow::ensure!(
         output.observation_count == raw.observations.len() as u64,
@@ -326,20 +332,100 @@ pub(crate) fn persist_chronicle_stage_bundle(
             == binding.stage_provenance_closure_digest,
         "NEX_CHRONICLE_SYNTHESIS_CLOSURE_DIGEST_MISMATCH: trusted binding does not match typed closure"
     );
-    validate_owner_execution_digests(&binding.closure, binding)?;
+    // The production DAG runs AI synthesis under its own
+    // `chronicle.synthesize-event@1` task and stamps that task/attempt into
+    // the stage execution; the single-task flow stamps the finish owner.
+    // Both are honest topologies, so the acceptable root-synthesis owners
+    // are the finish owner plus this Run's durable synthesize tasks — read
+    // from the ledger, never from the caller's payload.
+    let mut synthesis_owner_pairs: Vec<(String, String)> =
+        vec![(task_id.to_string(), attempt_id.to_string())];
+    {
+        let mut statement = conn.prepare(
+            "SELECT t.id, a.id
+               FROM narrative_extraction_tasks t
+               JOIN narrative_extraction_attempts a ON a.task_id = t.id
+              WHERE t.run_id = ?1 AND t.task_kind = 'chronicle.synthesize-event@1'",
+        )?;
+        let rows = statement
+            .query_map(params![run_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<(String, String)>>>()?;
+        synthesis_owner_pairs.extend(rows);
+    }
+    validate_owner_execution_digests(&binding.closure, binding, &synthesis_owner_pairs)?;
+    validate_receipt_lifecycle_bindings(conn, project_id, run_id, &binding.closure)?;
     persist_stage_bundle_if_present(
         conn,
         project_id,
         run_id,
         task_id,
         attempt_id,
+        &synthesis_owner_pairs,
         &binding.closure,
     )
+}
+
+/// CAS every receipt's lifecycle coordinates and transport evidence against
+/// durable Native state: the receipt's Task must belong to this Run, its
+/// Attempt must belong to that Task, and a receipt claiming an AI response
+/// must be backed by an AI-audit ledger event that recorded this exact
+/// receipt's stage execution and response digest. Without this, a caller
+/// holding a lease can mint self-consistent fictional receipts.
+fn validate_receipt_lifecycle_bindings(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    closure: &ChronicleStageProvenanceClosure,
+) -> anyhow::Result<()> {
+    for receipt in &closure.receipts {
+        let execution = &receipt.stage_execution;
+        let task_in_run: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE id = ?1 AND run_id = ?2",
+            params![execution.task_id, run_id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            task_in_run == 1,
+            "NEX_CHRONICLE_STAGE_RECEIPT_TASK_UNKNOWN: receipt taskId '{}' is not a Task of this Run",
+            execution.task_id
+        );
+        let attempt_of_task: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_attempts WHERE id = ?1 AND task_id = ?2",
+            params![execution.attempt_id, execution.task_id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            attempt_of_task == 1,
+            "NEX_CHRONICLE_STAGE_RECEIPT_ATTEMPT_UNKNOWN: receipt attemptId '{}' is not an Attempt of Task '{}'",
+            execution.attempt_id,
+            execution.task_id
+        );
+        if let Some(response_digest) = receipt.response_digest.as_deref() {
+            let audited: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM ai_audit_events
+                  WHERE project_id = ?1
+                    AND json_extract(payload,
+                            '$.metadata.chronicleStage.stageExecution.stageExecutionId') = ?2
+                    AND json_extract(payload,
+                            '$.metadata.chronicleStage.responseDigest') = ?3",
+                params![project_id, execution.stage_execution_id, response_digest],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                audited >= 1,
+                "NEX_CHRONICLE_STAGE_RECEIPT_AUDIT_MISSING: no AI-audit ledger event records \
+                 stage execution '{}' with this responseDigest",
+                execution.stage_execution_id
+            );
+        }
+    }
+    Ok(())
 }
 
 fn validate_owner_execution_digests(
     closure: &ChronicleStageProvenanceClosure,
     binding: &ChronicleStageC1ExecutionBinding,
+    synthesis_owner_pairs: &[(String, String)],
 ) -> anyhow::Result<()> {
     let owner_roots = closure
         .receipts
@@ -352,8 +438,9 @@ fn validate_owner_execution_digests(
             ) && execution.parent_stage_execution_id.is_none()
                 && execution.project_id == binding.project_id
                 && execution.run_id == binding.run_id
-                && execution.task_id == binding.task_id
-                && execution.attempt_id == binding.attempt_id
+                && synthesis_owner_pairs.iter().any(|(owner_task, owner_attempt)| {
+                    execution.task_id == *owner_task && execution.attempt_id == *owner_attempt
+                })
         })
         .collect::<Vec<_>>();
     anyhow::ensure!(
@@ -414,9 +501,17 @@ pub(crate) fn persist_stage_bundle_if_present(
     run_id: &str,
     task_id: &str,
     attempt_id: &str,
+    synthesis_owner_pairs: &[(String, String)],
     closure: &ChronicleStageProvenanceClosure,
 ) -> anyhow::Result<()> {
-    validate_closure_shape(project_id, run_id, task_id, attempt_id, closure)?;
+    validate_closure_shape(
+        project_id,
+        run_id,
+        task_id,
+        attempt_id,
+        synthesis_owner_pairs,
+        closure,
+    )?;
     let created_at = grimodex_core::now_rfc3339_millis();
     for receipt in &closure.receipts {
         persist_receipt(conn, project_id, run_id, receipt, &created_at)?;
@@ -446,6 +541,7 @@ fn validate_closure_shape(
     run_id: &str,
     owner_task_id: &str,
     owner_attempt_id: &str,
+    synthesis_owner_pairs: &[(String, String)],
     closure: &ChronicleStageProvenanceClosure,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -568,12 +664,16 @@ fn validate_closure_shape(
     }
     let has_observation =
         has_successful_stage_path(&validated_receipts, OBSERVATION_STAGE_ID, None, None);
-    let has_synthesis = has_successful_stage_path(
-        &validated_receipts,
-        SYNTHESIS_STAGE_ID,
-        Some(owner_task_id),
-        Some(owner_attempt_id),
-    );
+    // The successful synthesis path may be owned by the finish owner or by
+    // this Run's durable synthesize task (production DAG topology).
+    let has_synthesis = synthesis_owner_pairs.iter().any(|(task, attempt)| {
+        has_successful_stage_path(
+            &validated_receipts,
+            SYNTHESIS_STAGE_ID,
+            Some(task.as_str()),
+            Some(attempt.as_str()),
+        )
+    });
     anyhow::ensure!(
         has_observation && has_synthesis,
         "NEX_STAGE_PROVENANCE_CLOSURE_INVALID: observation and synthesis require a successful root or repair child"

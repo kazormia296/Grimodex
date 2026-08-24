@@ -68,6 +68,9 @@ export function bootstrapNarrativeMaintenance(
     },
     onCycleAccepted: () => {
       coordinator?.requestRediscovery();
+      // Accepted cycles double as a wake-outbox drain point so an Epoch
+      // rotation whose live event was lost mid-session is still delivered.
+      void coordinator?.drainWakeOutbox();
     },
     onCiProcessInterruption: (ack, expectedBinding) => {
       if (!seam.active) return false;

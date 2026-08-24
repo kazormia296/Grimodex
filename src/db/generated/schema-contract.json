@@ -8966,6 +8966,67 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_maintenance_repair_leases ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, lease_owner TEXT NOT NULL CHECK(length(lease_owner) > 0), verify_run_id TEXT NOT NULL CHECK(length(verify_run_id) > 0), repair_plan_digest TEXT NOT NULL CHECK(length(repair_plan_digest) > 0), semantic_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL, active_run_id TEXT, PRIMARY KEY(project_id) )"
     },
+    "narrative_maintenance_wake_outbox": {
+      "kind": "table",
+      "columns": {
+        "acked_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "operation": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reason": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_maintenance_wake_outbox ( id TEXT NOT NULL PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, operation TEXT NOT NULL CHECK(length(operation) > 0), reason TEXT NOT NULL CHECK(length(reason) > 0), created_at TEXT NOT NULL, acked_at TEXT )"
+    },
     "narrative_projection_dependencies": {
       "kind": "table",
       "columns": {
@@ -15302,6 +15363,18 @@
       ],
       "createSql": "CREATE INDEX idx_narrative_temporal_nodes_project ON narrative_temporal_nodes(project_id)"
     },
+    "idx_narrative_wake_outbox_pending": {
+      "table": "narrative_maintenance_wake_outbox",
+      "unique": false,
+      "partial": true,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_wake_outbox_pending ON narrative_maintenance_wake_outbox(project_id) WHERE acked_at IS NULL"
+    },
     "idx_pea_parent": {
       "table": "post_effect_annotations",
       "unique": false,
@@ -16402,6 +16475,7 @@
     "narrative_decision_immutable_after_apply_delete": "CREATE TRIGGER narrative_decision_immutable_after_apply_delete BEFORE DELETE ON narrative_proposal_decisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END",
     "narrative_decision_immutable_after_apply_update": "CREATE TRIGGER narrative_decision_immutable_after_apply_update BEFORE UPDATE ON narrative_proposal_decisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END",
     "narrative_proposal_revisions_v2_monotonicity_guard": "CREATE TRIGGER narrative_proposal_revisions_v2_monotonicity_guard BEFORE INSERT ON narrative_proposal_revisions WHEN EXISTS ( SELECT 1 FROM narrative_proposals p JOIN narrative_proposal_revisions current_revision ON current_revision.id = p.current_revision_id WHERE p.id = NEW.proposal_id AND current_revision.origin_kind = 'enveloped' AND json_extract(current_revision.reconciliation_envelope_json, '$.schemaVersion') = 2 ) AND ( NEW.origin_kind <> 'enveloped' OR NEW.reconciliation_envelope_json IS NULL OR json_extract(NEW.reconciliation_envelope_json, '$.schemaVersion') IS NOT 2 ) BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN'); END",
+    "narrative_proposals_v2_pointer_monotonicity_guard": "CREATE TRIGGER narrative_proposals_v2_pointer_monotonicity_guard BEFORE UPDATE OF current_revision_id ON narrative_proposals WHEN EXISTS ( SELECT 1 FROM narrative_proposal_revisions old_revision WHERE old_revision.id = OLD.current_revision_id AND old_revision.origin_kind = 'enveloped' AND json_extract(old_revision.reconciliation_envelope_json, '$.schemaVersion') = 2 ) AND NOT EXISTS ( SELECT 1 FROM narrative_proposal_revisions new_revision WHERE new_revision.id = NEW.current_revision_id AND new_revision.origin_kind = 'enveloped' AND json_extract(new_revision.reconciliation_envelope_json, '$.schemaVersion') = 2 ) BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN'); END",
     "narrative_revision_envelope_immutable_update": "CREATE TRIGGER narrative_revision_envelope_immutable_update BEFORE UPDATE ON narrative_proposal_revisions WHEN OLD.origin_kind IS NOT NEW.origin_kind OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_IMMUTABLE'); END",
     "narrative_revision_immutable_after_apply_delete": "CREATE TRIGGER narrative_revision_immutable_after_apply_delete BEFORE DELETE ON narrative_proposal_revisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END",
     "narrative_revision_immutable_after_apply_update": "CREATE TRIGGER narrative_revision_immutable_after_apply_update BEFORE UPDATE ON narrative_proposal_revisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END",

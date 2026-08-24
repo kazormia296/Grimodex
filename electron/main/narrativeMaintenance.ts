@@ -66,7 +66,12 @@ export interface NarrativeMaintenanceCycleRequest {
 export type NarrativeMaintenanceCycleResult =
   | { status: "accepted"; hasMore: boolean }
   | { status: "workspace-unavailable"; reason?: string }
-  | { status: "coalesced" }
+  /**
+   * All items coalesced onto an already running/pending Run. This is a
+   * no-double-dispatch ACK, not a work-chain-complete ACK: `hasMore` still
+   * signals a durable backlog that needs a follow-up wake.
+   */
+  | { status: "coalesced"; hasMore: boolean }
   /** Valid work whose adapter is intentionally not enabled in this lane. */
   | { status: "deferred"; hasMore: boolean }
   | NarrativeMaintenanceCiTerminalFaultAck
@@ -566,7 +571,13 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
       };
     }
     if (value.status === "coalesced") {
-      return { status: "coalesced" };
+      // Native always reports hasMore on coalesced. A double that omits it
+      // is treated as backlog (fail closed): a coalesced ACK must never
+      // silently end the work chain the coalesced Run still owes.
+      return {
+        status: "coalesced",
+        hasMore: typeof value.hasMore === "boolean" ? value.hasMore : true,
+      };
     }
     if (value.status === "deferred" && typeof value.hasMore === "boolean") {
       return { status: "deferred", hasMore: value.hasMore };
@@ -1051,7 +1062,8 @@ export function createNarrativeMaintenanceScheduler(
       shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
       if (
         !disposed &&
-        cycleResult.status === "accepted" &&
+        (cycleResult.status === "accepted" ||
+          cycleResult.status === "coalesced") &&
         cycleResult.hasMore
       ) {
         const wakeProjects = [
@@ -1163,9 +1175,21 @@ export function createNarrativeMaintenanceScheduler(
               requeuedCount += 1;
               firstRetryCount ??= retryCount;
             } else {
+              // Delivery failed before Native created any Run/Attempt/Inbox
+              // evidence, so dropping the item would silently halt automatic
+              // maintenance. Park a durable wake instead: the trigger stays
+              // out of the hot retry loop, and the next explicit event
+              // (workspace open, epoch rotation, new request, outbox drain)
+              // clears the park and re-delivers through discovery.
               retryCounts.delete(key);
+              const wakeKey = scopedWakeKey(work.projectId, cycleBinding);
+              durableWakeProjects.set(wakeKey, {
+                projectId: work.projectId,
+                workspaceBinding: cycleBinding,
+              });
+              deferredWakeProjects.add(wakeKey);
               warn(
-                `[narrative-maintenance] retry exhausted for canonical key ${key}; stopping`,
+                `[narrative-maintenance] retry exhausted for canonical key ${key}; parking durable wake for project ${work.projectId}`,
                 error,
               );
             }
@@ -1183,10 +1207,17 @@ export function createNarrativeMaintenanceScheduler(
                 requeuedCount += 1;
                 firstRetryCount ??= retryCount;
               } else {
+                // Same parking rule as exhausted work delivery: the durable
+                // backlog signal must survive exhaustion, just outside the
+                // hot retry loop.
                 durableWakeRetryCounts.delete(wakeKey);
-                durableWakeProjects.delete(wakeKey);
+                durableWakeProjects.set(wakeKey, {
+                  projectId,
+                  workspaceBinding: cycleBinding,
+                });
+                deferredWakeProjects.add(wakeKey);
                 warn(
-                  `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; stopping`,
+                  `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; parking durable wake`,
                   error,
                 );
               }

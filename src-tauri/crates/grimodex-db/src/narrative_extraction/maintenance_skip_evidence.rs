@@ -59,6 +59,16 @@ pub struct CompletedRunSkipEvidence {
     pub run_kind_contract_version: String,
     #[serde(alias = "successfulTerminalDigest", alias = "terminalDigest")]
     pub report_digest: String,
+    /// Deterministic digest of every Durable Graph Edge row for the project
+    /// at seal time. Contract/registry coordinates describe the *code and
+    /// contract generation*; this describes the *data*. Skip evaluation
+    /// recomputes it live and refuses reuse when any Edge row changed —
+    /// including same-epoch content mutations that produce no defect the
+    /// report shape can see. Evidence sealed before this field existed
+    /// deserializes to the empty string and can never match, so old clean
+    /// Verifies re-run once and reseal.
+    #[serde(default)]
+    pub graph_state_digest: String,
 }
 
 /// Current coordinates used to decide whether a completed Run can be
@@ -102,6 +112,7 @@ pub enum CompletedRunSkipReason {
     RunKindContractMismatch,
     ReportDigestMismatch,
     DerivedStateInvalid,
+    GraphStateMismatch,
     UnsupportedRunKind,
 }
 
@@ -432,6 +443,17 @@ pub fn evaluate_completed_run_skip(
                 reason: CompletedRunSkipReason::DerivedStateInvalid,
             });
         }
+        // Same-transaction data CAS first: any Edge-row change since the
+        // evidence was sealed — including one that produces no defect the
+        // report shape can see — refuses reuse with the precise reason.
+        // Empty (pre-field) evidence never matches.
+        if evidence.graph_state_digest
+            != durable_graph_state_digest(conn, &expected.project_id)?
+        {
+            return Ok(CompletedRunSkipDecision::Rerun {
+                reason: CompletedRunSkipReason::GraphStateMismatch,
+            });
+        }
         if !live_verify_report_matches_sealed(conn, &expected.project_id, &evidence.report_digest)?
         {
             return Ok(CompletedRunSkipDecision::Rerun {
@@ -532,6 +554,9 @@ pub fn read_completed_run_skip_evidence(
         if report.is_none_or(|report| !report.is_clean()) {
             return Ok(None);
         }
+        if parsed.graph_state_digest != durable_graph_state_digest(conn, project_id)? {
+            return Ok(None);
+        }
         if !live_verify_report_matches_sealed(conn, project_id, &parsed.report_digest)? {
             return Ok(None);
         }
@@ -540,6 +565,41 @@ pub fn read_completed_run_skip_evidence(
         return Ok(None);
     }
     Ok(Some(parsed))
+}
+
+/// Deterministic digest of the project's complete Durable Graph Edge table:
+/// every row, every durable column, ordered by id. This is the data-side
+/// coordinate a clean Verify seals so its reuse is compare-and-swapped
+/// against the graph content as it stands, not only against contract
+/// generations and the defect-shaped report.
+pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> Result<String> {
+    let mut statement = conn.prepare(
+        "SELECT id, consumer_kind, consumer_key, source_object_identity, read_set_json,
+                generated_by_transaction_id, created_at, owning_run_id
+           FROM narrative_dependency_edges
+          WHERE project_id = ?1
+          ORDER BY id ASC",
+    )?;
+    let rows = statement
+        .query_map([project_id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "consumerKind": row.get::<_, String>(1)?,
+                "consumerKey": row.get::<_, String>(2)?,
+                "sourceObjectIdentity": row.get::<_, String>(3)?,
+                "readSetJson": row.get::<_, String>(4)?,
+                "generatedByTransactionId": row.get::<_, Option<String>>(5)?,
+                "createdAt": row.get::<_, String>(6)?,
+                "owningRunId": row.get::<_, Option<String>>(7)?,
+            }))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let canonical = serde_json::json!({
+        "domain": "grimodex:narrative:durable-graph-state:v1",
+        "projectId": project_id,
+        "edges": rows,
+    });
+    Ok(format!("sha256:{}", digest_plan(&canonical)))
 }
 
 /// Recompute the read-only Verify report against live derived state before a

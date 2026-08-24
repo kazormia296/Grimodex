@@ -292,12 +292,15 @@ fn validate_snapshot_corpus_closure(
         .as_ref()
         .ok_or_else(|| invalid_corpus_artifact("corpus payload is missing"))?;
     let canonical_digest = grimodex_core::canonical_json_digest(payload)?;
-    if let Some(claimed) = corpus.payload_digest.as_deref() {
-        anyhow::ensure!(
-            claimed == canonical_digest,
-            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus payload digest differs from the Native canonical recomputation"
-        );
-    }
+    // The payload digest is mandatory: an omitted digest would leave the
+    // corpus artifact without the durable identity the readback CAS needs.
+    let claimed = corpus.payload_digest.as_deref().ok_or_else(|| {
+        invalid_corpus_artifact("corpus payloadDigest is required for the durable closure")
+    })?;
+    anyhow::ensure!(
+        claimed == canonical_digest,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus payload digest differs from the Native canonical recomputation"
+    );
     let snapshot = payload
         .get("snapshot")
         .and_then(Value::as_object)
@@ -574,6 +577,66 @@ pub(crate) fn load_historical_scope_authority_basis_in_tx(
         basis.digests.corpus_digest == snapshot_digest,
         "NEX_SCOPE_AUTHORITY_CORPUS_MISMATCH: artifact corpus differs from Run snapshotDigest"
     );
+
+    // Re-verify the exact `source.snapshot@1` companion under the same read
+    // snapshot: a basis whose corpus bytes were lost or replaced (restore,
+    // import, corruption) must not be returned as valid. The corpus must
+    // exist, be owned by the same Task/Attempt, carry the mandatory payload
+    // digest, and still satisfy the full closure the producer sealed.
+    let mut corpus_statement = conn.prepare(
+        "SELECT task_id, attempt_id, payload_storage, payload_json, payload_ref, payload_digest
+               FROM narrative_extraction_artifacts
+              WHERE run_id = ?1 AND artifact_kind = ?2
+              ORDER BY id",
+    )?;
+    let corpora = corpus_statement
+        .query_map(
+            params![run_id, HISTORICAL_SCOPE_AUTHORITY_CORPUS_ARTIFACT_KIND],
+            |row| {
+                Ok(StoredHistoricalArtifact {
+                    task_id: row.get(0)?,
+                    attempt_id: row.get(1)?,
+                    payload_storage: row.get(2)?,
+                    payload_json: row.get(3)?,
+                    payload_ref: row.get(4)?,
+                    payload_digest: row.get(5)?,
+                })
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    anyhow::ensure!(
+        corpora.len() == 1,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_REQUIRED: Run must own exactly one \
+         source.snapshot@1 corpus companion for its sealed historical basis"
+    );
+    let corpus = &corpora[0];
+    anyhow::ensure!(
+        corpus.task_id.as_deref() == Some(task_id)
+            && corpus.attempt_id.as_deref() == Some(attempt_id),
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus companion belongs to a different \
+         Task/Attempt than the sealed basis"
+    );
+    let corpus_payload_json = corpus.payload_json.as_deref().ok_or_else(|| {
+        invalid_corpus_artifact("corpus payloadJson is missing at readback")
+    })?;
+    let corpus_payload: serde_json::Value =
+        serde_json::from_str(corpus_payload_json).map_err(|error| {
+            invalid_corpus_artifact(format!("corpus payload JSON at readback: {error}"))
+        })?;
+    let corpus_input = ArtifactInput {
+        artifact_id: None,
+        artifact_kind: HISTORICAL_SCOPE_AUTHORITY_CORPUS_ARTIFACT_KIND.to_string(),
+        payload_storage: Some(corpus.payload_storage.clone()),
+        payload_json: Some(corpus_payload),
+        payload_ref: corpus.payload_ref.clone(),
+        payload_digest: corpus.payload_digest.clone(),
+    };
+    validate_snapshot_corpus_closure(
+        std::slice::from_ref(&corpus_input),
+        &basis,
+        &snapshot_digest,
+    )?;
+
     Ok(Some(basis))
 }
 

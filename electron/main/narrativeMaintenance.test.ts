@@ -514,6 +514,31 @@ describe("narrative maintenance scheduler", () => {
     });
   });
 
+  it("coalesced with hasMore keeps a durable backlog wake so the work chain continues", async () => {
+    // Coalesced is a no-double-dispatch ACK, not a work-chain-complete ACK:
+    // when another Run owns the batch and native still reports backlog, a
+    // follow-up wake must poll until the chain's next phase is discoverable.
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "coalesced", hasMore: true })
+      .mockResolvedValueOnce(acceptedCycle());
+    const { scheduler } = createScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0]).toEqual({
+      work: [],
+      wakeProjectIds: ["project-1"],
+    });
+  });
+
   it("scopes an empty hasMore wake to its project and leaves another project independent", async () => {
     const p1Wake = deferred<NarrativeMaintenanceCycleResult>();
     const runNarrativeMaintenanceCycle = vi

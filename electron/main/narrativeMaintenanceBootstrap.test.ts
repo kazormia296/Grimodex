@@ -9,7 +9,9 @@ import {
 import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
 
 function activeSeam(
-  overrides: Partial<Extract<NarrativeMaintenanceCiSeam, { active: true }>> = {},
+  overrides: Partial<
+    Extract<NarrativeMaintenanceCiSeam, { active: true }>
+  > = {},
 ): Extract<NarrativeMaintenanceCiSeam, { active: true }> {
   return {
     active: true,
@@ -38,6 +40,7 @@ function fakeCoordinator() {
   return {
     handleBackendEvent: vi.fn(),
     requestRediscovery: vi.fn(),
+    drainWakeOutbox: vi.fn(async () => {}),
     dispose: vi.fn(),
   };
 }
@@ -49,7 +52,11 @@ describe("C2-5B production maintenance bootstrap", () => {
       seam: NarrativeMaintenanceCiSeam;
       expected: boolean;
     }> = [
-      { name: "setup", seam: activeSeam({ setup: "disabled" }), expected: false },
+      {
+        name: "setup",
+        seam: activeSeam({ setup: "disabled" }),
+        expected: false,
+      },
       { name: "normal", seam: activeSeam(), expected: true },
       {
         name: "inactive",
@@ -89,12 +96,14 @@ describe("C2-5B production maintenance bootstrap", () => {
         createCoordinator,
       });
 
-      expect(createScheduler, `${name} scheduler factory`).toHaveBeenCalledTimes(
-        expected ? 1 : 0,
-      );
-      expect(createCoordinator, `${name} coordinator factory`).toHaveBeenCalledTimes(
-        expected ? 1 : 0,
-      );
+      expect(
+        createScheduler,
+        `${name} scheduler factory`,
+      ).toHaveBeenCalledTimes(expected ? 1 : 0);
+      expect(
+        createCoordinator,
+        `${name} coordinator factory`,
+      ).toHaveBeenCalledTimes(expected ? 1 : 0);
       expect(scheduler.start, `${name} scheduler start`).toHaveBeenCalledTimes(
         expected ? 1 : 0,
       );

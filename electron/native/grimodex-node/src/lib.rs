@@ -1751,6 +1751,13 @@ impl Backend {
             match cycle_outcome {
                 narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => Ok(None),
                 narrative_extraction::IncrementalFreshnessCycleOutcome::Processed(summary) => {
+                    // D2 shadow diagnostics stay out of the durable Freshness
+                    // authority, but they must not be silently discarded at
+                    // the production boundary either: main is the only
+                    // observable telemetry sink for corrupt-head, selector,
+                    // and effect diagnostics.
+                    let v2_shadow = serde_json::to_value(&summary.v2_shadow)
+                        .map_err(anyhow::Error::from)?;
                     Ok(Some(
                         serde_json::json!({
                             "projectId": summary.project_id,
@@ -1759,6 +1766,7 @@ impl Backend {
                             "affectedEdgeCount": summary.affected_edge_count,
                             "affectedConsumerCount": summary.affected_consumer_count,
                             "hasMore": summary.has_more,
+                            "v2Shadow": v2_shadow,
                         })
                         .to_string(),
                     ))
@@ -1876,6 +1884,49 @@ impl Backend {
             )
             .map_err(AppError::Anyhow)?;
             serde_json::to_string(&discovery).map_err(|error| AppError::Anyhow(error.into()))
+        })
+        .await
+    }
+
+    /// Electron main-only durable wake outbox reader. An Epoch rotation
+    /// commits its wake identity in the same transaction as the rotation;
+    /// this lists the wakes main has not yet acknowledged so a lost
+    /// observer event can never strand a rotated Epoch without maintenance
+    /// discovery. Returns a JSON array; an unavailable workspace is `[]`.
+    #[napi]
+    pub async fn list_narrative_maintenance_wake_outbox(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let authority = match active_database(&state.ws) {
+                Ok(authority) => authority,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => return Ok("[]".to_string()),
+                Err(error) => return Err(error),
+            };
+            let wakes = narrative_extraction::list_pending_maintenance_wakes(authority.db())
+                .map_err(AppError::Anyhow)?;
+            serde_json::to_string(&wakes).map_err(|error| AppError::Anyhow(error.into()))
+        })
+        .await
+    }
+
+    /// Acknowledge delivered durable wakes after main has registered the
+    /// corresponding discovery. Returns the number of rows newly acked.
+    #[napi]
+    pub async fn ack_narrative_maintenance_wake_outbox(&self, ids: Vec<String>) -> Result<u32> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let authority = match active_database(&state.ws) {
+                Ok(authority) => authority,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => return Ok(0),
+                Err(error) => return Err(error),
+            };
+            let acked = narrative_extraction::ack_maintenance_wakes(authority.db(), &ids)
+                .map_err(AppError::Anyhow)?;
+            Ok(u32::try_from(acked).unwrap_or(u32::MAX))
         })
         .await
     }
@@ -2200,6 +2251,44 @@ impl Backend {
                 ci_config.as_ref(),
                 foreground_owner.as_ref(),
             )?;
+            // Backfill/Verify/Rebuild progress through several transactions,
+            // so the workspace can be switched mid-cycle. Re-resolve the
+            // active authority under the open lock before treating this
+            // cycle as an ACK: a late cycle pinned to a replaced workspace
+            // must not mark the global recovery gate recovered or remember a
+            // foreground barrier for the new workspace.
+            {
+                let _workspace_open_guard = state
+                    .ws
+                    .open_lock
+                    .lock()
+                    .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+                let current_authority = match active_database(&state.ws) {
+                    Ok(current_authority) => current_authority,
+                    Err(
+                        AppError::NoWorkspace
+                        | AppError::WorkspaceSwitching
+                        | AppError::SafeModeActive,
+                    ) => {
+                        return Ok(serde_json::json!({
+                            "status": "workspace-unavailable",
+                            "reason": "maintenance-workspace-changed-during-cycle",
+                        })
+                        .to_string());
+                    }
+                    Err(error) => return Err(error),
+                };
+                if !Arc::ptr_eq(&authority, &current_authority)
+                    || narrative_authority_id(&current_authority)
+                        != request_binding.authority_id
+                {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                        "reason": "maintenance-workspace-changed-during-cycle",
+                    })
+                    .to_string());
+                }
+            }
             if matches!(
                 result.status,
                 MaintenanceCycleStatus::Accepted | MaintenanceCycleStatus::Coalesced
@@ -2231,9 +2320,23 @@ impl Backend {
                 MaintenanceCycleStatus::Accepted | MaintenanceCycleStatus::Coalesced
             ) {
                 for item in &normalized_work {
-                    state
-                        .narrative_maintenance_recovery_gate
-                        .mark_recovered_for_binding(request_binding, &item.canonical_key());
+                    // Mark the epoch-normalized identity the cycle actually
+                    // recovered. If normalization fails, marking is skipped
+                    // fail-closed: the key stays in StartupRecovery.
+                    match narrative_extraction::recovery_canonical_key(authority.db(), item) {
+                        Ok(recovered_key) => {
+                            state
+                                .narrative_maintenance_recovery_gate
+                                .mark_recovered_for_binding(request_binding, &recovered_key);
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "narrative.maintenance",
+                                %error,
+                                "failed to normalize recovery key; leaving identity unrecovered"
+                            );
+                        }
+                    }
                 }
             }
             Ok(json)
@@ -3146,6 +3249,17 @@ impl Backend {
                 .narrative_maintenance_mutation_lock
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // Snapshot restore mutates the active workspace over several
+            // steps and then reports success against its binding. Serialize
+            // the whole restore with workspace open/switch: a concurrent
+            // switch must never observe a restore committed into the old
+            // workspace after the new one became active, nor a success
+            // response bound to a replaced authority.
+            let _workspace_open_guard = state
+                .ws
+                .open_lock
+                .lock()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
             let authority = active_database(&state.ws)?;
             let binding = narrative_maintenance_binding_for_authority(&state, &authority);
             let (result, replayed) = {
@@ -4062,6 +4176,14 @@ impl Backend {
                 .narrative_maintenance_mutation_lock
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // Same serialization contract as snapshot restore: integrity
+            // repair rotates the Semantic Epoch, so the repair and its
+            // rotation event must be excluded against workspace open/switch.
+            let _workspace_open_guard = state
+                .ws
+                .open_lock
+                .lock()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
             let authority = active_database(&state.ws)?;
             let binding = narrative_maintenance_binding_for_authority(&state, &authority);
             let (report, replayed) = {
@@ -6265,6 +6387,24 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let dto: RepairNarrativeDependencyDeclarationsPayload = from_wire("payload", payload)?;
+            // The policy's `exclusive-workspace-lease` precondition: from
+            // backup through mutation commit, a Repair apply must be
+            // serialized with workspace open/switch, snapshot restore, and
+            // the other maintenance mutations. The per-project Repair row
+            // lease only excludes concurrent Repairs; these process-level
+            // locks exclude the operations that could swap or mutate the
+            // workspace the backup is protecting. (Preview takes them too —
+            // it is cheap and keeps the sealed preview bound to a stable
+            // authority.)
+            let _mutation_guard = state
+                .narrative_maintenance_mutation_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _workspace_open_guard = state
+                .ws
+                .open_lock
+                .lock()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
             let authority = active_database(&state.ws)?;
             let db = authority.db();
 

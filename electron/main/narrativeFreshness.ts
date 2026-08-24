@@ -35,6 +35,28 @@ function batchHasMore(raw: string): boolean {
   );
 }
 
+/**
+ * D2 shadow diagnostics are deliberately kept out of the durable Freshness
+ * authority, so main is their only observable sink: surface every diagnostic
+ * the batch summary carries instead of silently discarding it at this
+ * boundary.
+ */
+function shadowDiagnostics(raw: string): string[] {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (typeof value !== "object" || value === null) return [];
+    const shadow = (value as Record<string, unknown>).v2Shadow;
+    if (typeof shadow !== "object" || shadow === null) return [];
+    const diagnostics = (shadow as Record<string, unknown>).diagnostics;
+    if (!Array.isArray(diagnostics)) return [];
+    return diagnostics.filter(
+      (entry): entry is string => typeof entry === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
 export function createNarrativeFreshnessScheduler(
   backend: NarrativeFreshnessBackendLike | null,
   options: SchedulerOptions = {},
@@ -72,8 +94,13 @@ export function createNarrativeFreshnessScheduler(
       // napi class methodはbindを失うとselfが壊れるためbackend経由で呼ぶ。
       const result = await method.call(backend);
       if (disposed) return;
-      if (result !== null && batchHasMore(result)) {
-        nextDelayMs = BACKLOG_DELAY_MS;
+      if (result !== null) {
+        for (const diagnostic of shadowDiagnostics(result)) {
+          warn("[narrative-freshness] D2 shadow diagnostic:", diagnostic);
+        }
+        if (batchHasMore(result)) {
+          nextDelayMs = BACKLOG_DELAY_MS;
+        }
       }
     } catch (error) {
       nextDelayMs = ERROR_RETRY_DELAY_MS;

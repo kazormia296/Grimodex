@@ -530,6 +530,7 @@ fn is_synthetic_manual_code(code: &str) -> bool {
         "NEX_MAINTENANCE_RETRY_EXHAUSTED"
             | "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING"
             | "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING"
+            | "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID"
     )
 }
 

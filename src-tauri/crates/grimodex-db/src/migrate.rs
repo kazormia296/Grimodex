@@ -3473,6 +3473,22 @@ impl Database {
                 expires_at              TEXT NOT NULL,
                 PRIMARY KEY(project_id)
             );
+            -- Durable wake outbox: a Semantic Epoch rotation commits its wake
+            -- identity in the same transaction, so a lost observer event (or
+            -- an idempotent replay that suppresses re-emission) can never
+            -- strand a rotated Epoch without a maintenance wake. Rows stay
+            -- pending until main acknowledges the delivered wake.
+            CREATE TABLE IF NOT EXISTS narrative_maintenance_wake_outbox (
+                id          TEXT NOT NULL PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                operation   TEXT NOT NULL CHECK(length(operation) > 0),
+                reason      TEXT NOT NULL CHECK(length(reason) > 0),
+                created_at  TEXT NOT NULL,
+                acked_at    TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_wake_outbox_pending
+                ON narrative_maintenance_wake_outbox(project_id)
+                WHERE acked_at IS NULL;
             CREATE INDEX IF NOT EXISTS idx_narrative_semantic_epochs_project
                 ON narrative_semantic_epochs(project_id, epoch_number);
             CREATE INDEX IF NOT EXISTS idx_narrative_dependency_edges_source
@@ -3612,6 +3628,24 @@ impl Database {
             ",
         )?;
         Self::repair_narrative_v2_monotonicity_trigger(&conn)?;
+
+        // Epoch markers used to advance the durable Project object head with
+        // their synthetic reset state; the writer no longer does, and any
+        // head still pointing at a marker event is deleted so the next real
+        // Project mutation chains from genuine domain state instead of
+        // reporting a discontinuity against the sentinel.
+        conn.execute(
+            "DELETE FROM narrative_change_object_heads
+              WHERE EXISTS (
+                    SELECT 1
+                      FROM narrative_change_events e
+                     WHERE e.project_id = narrative_change_object_heads.project_id
+                       AND e.id = narrative_change_object_heads.event_id
+                       AND json_extract(e.object_key_json, '$.kind') = 'project'
+                       AND json_extract(e.structural_impact_json, '$.event')
+                               IN ('project-restored', 'semantic-epoch-reset'))",
+            [],
+        )?;
 
         // New Run columns: run_kind distinguishes cursor-bound Runs (the
         // Freshness evaluator) from non-cursor-bound Runs (interpretation,
@@ -3916,6 +3950,28 @@ impl Database {
                     OR NEW.reconciliation_envelope_json IS NULL
                     OR json_extract(NEW.reconciliation_envelope_json,
                                     '$.schemaVersion') IS NOT 2
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');
+                END;
+            DROP TRIGGER IF EXISTS narrative_proposals_v2_pointer_monotonicity_guard;
+            CREATE TRIGGER narrative_proposals_v2_pointer_monotonicity_guard
+                BEFORE UPDATE OF current_revision_id ON narrative_proposals
+                WHEN EXISTS (
+                    SELECT 1
+                      FROM narrative_proposal_revisions old_revision
+                     WHERE old_revision.id = OLD.current_revision_id
+                       AND old_revision.origin_kind = 'enveloped'
+                       AND json_extract(old_revision.reconciliation_envelope_json,
+                                        '$.schemaVersion') = 2
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM narrative_proposal_revisions new_revision
+                     WHERE new_revision.id = NEW.current_revision_id
+                       AND new_revision.origin_kind = 'enveloped'
+                       AND json_extract(new_revision.reconciliation_envelope_json,
+                                        '$.schemaVersion') = 2
                 )
                 BEGIN
                     SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');

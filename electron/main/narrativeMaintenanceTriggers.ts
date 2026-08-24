@@ -23,6 +23,9 @@ interface NarrativeMaintenanceDiscoveryBackend {
   discoverNarrativeMaintenanceWork?(
     reason: NarrativeMaintenanceWakeReason,
   ): Promise<unknown>;
+  /** Durable wake outbox written by Epoch rotations; see drainWakeOutbox. */
+  listNarrativeMaintenanceWakeOutbox?(): Promise<unknown>;
+  ackNarrativeMaintenanceWakeOutbox?(ids: string[]): Promise<unknown>;
 }
 
 interface NarrativeMaintenanceDiscoveryResult {
@@ -38,6 +41,13 @@ interface NarrativeMaintenanceUnavailable {
 export interface NarrativeMaintenanceTriggerCoordinator {
   handleBackendEvent(channel: string, payload: unknown): void;
   requestRediscovery(): void;
+  /**
+   * Deliver Epoch-rotation wakes committed to the durable outbox. Each
+   * pending row starts a discovery chain and is acknowledged only after the
+   * discovery entry point has been registered; the durable maintenance state
+   * machine is the crash backstop after an ACK.
+   */
+  drainWakeOutbox(): Promise<void>;
   dispose(): void;
 }
 
@@ -384,6 +394,51 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     );
   };
 
+  const drainWakeOutbox = async (): Promise<void> => {
+    if (disposed) return;
+    const list = backend?.listNarrativeMaintenanceWakeOutbox;
+    const ack = backend?.ackNarrativeMaintenanceWakeOutbox;
+    if (typeof list !== "function" || typeof ack !== "function") return;
+    let ids: string[];
+    try {
+      const raw = parseJsonWire(await list.call(backend));
+      if (!Array.isArray(raw)) {
+        throw new Error("native wake outbox returned an invalid list");
+      }
+      ids = raw.map((row) => {
+        if (!isRecord(row) || typeof row.id !== "string") {
+          throw new Error("native wake outbox returned an invalid row");
+        }
+        return row.id;
+      });
+    } catch (error) {
+      warn("[narrative-maintenance] wake outbox listing failed:", error);
+      return;
+    }
+    if (disposed || ids.length === 0) return;
+    // The wake payload is only "this workspace has a rotated Epoch"; the
+    // discovery planner reads the durable state machine, so one discovery
+    // chain covers every pending row.
+    const generation = ++chainGeneration;
+    rediscoveryAttempts = 0;
+    lastDiscoveryFingerprint = null;
+    lastWakeReason = "semantic-epoch-rotated";
+    clearTimer();
+    pendingRetryDelayMs = null;
+    if (discoveryInFlight) {
+      pendingEvent = { reason: "semantic-epoch-rotated", generation };
+    } else {
+      pendingEvent = null;
+      armTimer("semantic-epoch-rotated", 0, generation);
+    }
+    try {
+      await ack.call(backend, ids);
+    } catch (error) {
+      // Leaving the rows pending is safe: the next drain re-delivers them.
+      warn("[narrative-maintenance] wake outbox ack failed:", error);
+    }
+  };
+
   return {
     handleBackendEvent(channel, payload): void {
       if (
@@ -436,8 +491,13 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       }
       pendingEvent = null;
       armTimer(reason, 0, generation);
+      // Both trigger channels double as outbox drain points: a wake row
+      // whose live event was lost is re-delivered here, and a row whose
+      // live event did arrive is acknowledged here.
+      void drainWakeOutbox();
     },
     requestRediscovery,
+    drainWakeOutbox,
     dispose(): void {
       if (disposed) return;
       disposed = true;

@@ -625,7 +625,11 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         // physical shape is checked here before the schema marker advances;
         // V2 remains a non-authoritative shadow until a later cutover lane.
         && has_v33_dependency_declaration_storage(conn)?
-        && has_v34_c2a_stage_storage(conn)?)
+        && has_v34_c2a_stage_storage(conn)?
+        // The durable wake outbox and the V2 pointer monotonicity guard ship
+        // as an in-version repair of SCHEMA 34: their absence forces a full
+        // idempotent DDL replay rather than a version bump.
+        && table_exists(conn, "narrative_maintenance_wake_outbox")?)
 }
 
 /// SCHEMA 34 / NIR-0 C2A: durable, non-authoritative Stage model bindings and
@@ -712,6 +716,16 @@ fn has_v34_c2a_stage_storage(conn: &Connection) -> anyhow::Result<bool> {
         )
         .optional()?
         .map(|sql| compact_sql(&sql));
+    let pointer_trigger_sql = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master
+              WHERE type = 'trigger'
+                AND name = 'narrative_proposals_v2_pointer_monotonicity_guard'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|sql| compact_sql(&sql));
 
     Ok(columns_ok(&binding_table_columns, &binding_columns)
         && columns_ok(&receipt_table_columns, &receipt_columns)
@@ -773,6 +787,21 @@ fn has_v34_c2a_stage_storage(conn: &Connection) -> anyhow::Result<bool> {
                 && sql.contains("new.origin_kind<>'enveloped'")
                 && sql.contains("new.reconciliation_envelope_jsonisnull")
                 && sql.contains("json_extract(new.reconciliation_envelope_json,'$.schemaversion')isnot2")
+                && sql.contains("nex_revision_envelope_downgrade_forbidden")
+        })
+        && pointer_trigger_sql.is_some_and(|sql| {
+            sql.contains("beforeupdateofcurrent_revision_idonnarrative_proposals")
+                && sql.contains("old_revision.id=old.current_revision_id")
+                && sql.contains("old_revision.origin_kind='enveloped'")
+                && sql.contains(
+                    "json_extract(old_revision.reconciliation_envelope_json,'$.schemaversion')=2",
+                )
+                && sql.contains("andnotexists(")
+                && sql.contains("new_revision.id=new.current_revision_id")
+                && sql.contains("new_revision.origin_kind='enveloped'")
+                && sql.contains(
+                    "json_extract(new_revision.reconciliation_envelope_json,'$.schemaversion')=2",
+                )
                 && sql.contains("nex_revision_envelope_downgrade_forbidden")
         }))
 }

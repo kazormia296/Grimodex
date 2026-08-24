@@ -180,7 +180,84 @@ pub(crate) fn rotate_epoch_for_restore_in_tx(
         _ => return Ok(None),
     };
     let epoch_id = create_epoch_in_tx(conn, project_id, reason, triggered_by_change_event_uid)?;
+    // The wake identity commits with the rotation. The observer event that
+    // lib.rs emits after commit is only a prompt to drain this outbox: if the
+    // event is lost (crash between commit and emit, dropped listener, or an
+    // idempotent replay that suppresses re-emission), the pending row still
+    // re-delivers the wake at the next drain point.
+    record_maintenance_wake_in_tx(conn, project_id, structural_impact_event)?;
     Ok(Some(epoch_id))
+}
+
+/// One pending durable maintenance wake written by an Epoch rotation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingMaintenanceWake {
+    pub id: String,
+    pub project_id: String,
+    pub operation: String,
+    pub reason: String,
+    pub created_at: String,
+}
+
+pub(crate) fn record_maintenance_wake_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    operation: &str,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO narrative_maintenance_wake_outbox
+            (id, project_id, operation, reason, created_at)
+         VALUES (?1, ?2, ?3, 'semantic-epoch-rotated',
+                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        params![uuid::Uuid::new_v4().to_string(), project_id, operation],
+    )?;
+    Ok(())
+}
+
+/// Pending (unacknowledged) maintenance wakes, oldest first.
+pub fn list_pending_maintenance_wakes(
+    db: &Database,
+) -> anyhow::Result<Vec<PendingMaintenanceWake>> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT id, project_id, operation, reason, created_at
+               FROM narrative_maintenance_wake_outbox
+              WHERE acked_at IS NULL
+              ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(PendingMaintenanceWake {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    operation: row.get(2)?,
+                    reason: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    })
+}
+
+/// Acknowledge delivered wakes. Returns the number of rows newly acked.
+pub fn ack_maintenance_wakes(db: &Database, ids: &[String]) -> anyhow::Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    db.with_conn(|conn| {
+        let mut acked = 0usize;
+        for id in ids {
+            acked += conn.execute(
+                "UPDATE narrative_maintenance_wake_outbox
+                    SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                  WHERE id = ?1 AND acked_at IS NULL",
+                params![id],
+            )?;
+        }
+        Ok(acked)
+    })
 }
 
 /// Mint one restore-boundary Epoch per project in a newly installed backup.
@@ -1044,6 +1121,17 @@ fn rebuild_source_change_class_for_role(
     role: grimodex_core::narrative_dependency::DependencyRole,
     base: SourceChangeClass,
 ) -> SourceChangeClass {
+    // Mirror of the incremental `shadow_change_class_for_role` contract:
+    // missing/broken evidence classes are never weakened by a role.
+    if matches!(
+        base,
+        SourceChangeClass::SourceMissing
+            | SourceChangeClass::AnchorMissing
+            | SourceChangeClass::SelectedSetCollapsed
+            | SourceChangeClass::ComponentUnavailable
+    ) {
+        return base;
+    }
     match role {
         grimodex_core::narrative_dependency::DependencyRole::QualityContext => {
             SourceChangeClass::QualityInputChanged
@@ -1564,6 +1652,10 @@ pub fn run_dependency_verify_for_project_with_coordinates(
                                 rebuild_contract_version: REBUILD_CONTRACT_VERSION.to_string(),
                                 run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
                                 report_digest: report_digest.clone(),
+                                graph_state_digest:
+                                    super::maintenance_skip_evidence::durable_graph_state_digest(
+                                        conn, project_id,
+                                    )?,
                             },
                         )?;
                         // Only a clean confirmation resolves the work's

@@ -1093,6 +1093,101 @@ fn closure_for_receipts(
     closure
 }
 
+/// Seed the durable lifecycle rows a stage receipt binds to. Receipts are
+/// CAS'd against the ledger, so fixtures must own real Task/Attempt rows.
+fn seed_stage_task_attempt(
+    db: &Database,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    task_kind: &str,
+) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT OR IGNORE INTO narrative_extraction_tasks
+                (id, run_id, task_kind, status, created_at)
+             VALUES (?1, ?2, ?3, 'completed', datetime('now'))",
+            rusqlite::params![task_id, run_id, task_kind],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO narrative_extraction_attempts
+                (id, task_id, attempt_number, status, started_at)
+             VALUES (?1, ?2, 1, 'completed', datetime('now'))",
+            rusqlite::params![attempt_id, task_id],
+        )?;
+        Ok(())
+    })
+    .expect("seed stage lifecycle rows");
+}
+
+/// Seed one AI-audit ledger event binding a receipt's stage execution and
+/// response digest, mirroring the transport's terminal metadata shape.
+fn seed_stage_audit_event(
+    db: &Database,
+    project_id: &str,
+    stage_execution_id: &str,
+    response_digest: &str,
+) {
+    db.with_conn(|conn| {
+        let scope_id = format!("project:{project_id}");
+        let sequence: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM ai_audit_events WHERE scope_id = ?1",
+            rusqlite::params![scope_id],
+            |row| row.get(0),
+        )?;
+        let payload = json!({
+            "metadata": {"chronicleStage": {
+                "stageExecution": {"stageExecutionId": stage_execution_id},
+                "responseDigest": response_digest,
+            }}
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO ai_audit_events
+                (scope_id, project_id, sequence, event_id, execution_id, operation_id,
+                 path_id, event_type, timestamp, recorded_at, payload, payload_sha256,
+                 prev_hash, hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'op-test', 'path-test', 'completion', 0, 0,
+                     ?6, 'sha256:test', 'sha256:test', 'sha256:test')",
+            rusqlite::params![
+                scope_id,
+                project_id,
+                sequence,
+                format!("audit-{stage_execution_id}-{sequence}"),
+                format!("exec-{stage_execution_id}"),
+                payload,
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("seed stage audit event");
+}
+
+/// Seed lifecycle + audit evidence for every receipt in a fixture closure.
+/// Non-owner synthesis roots are deliberately NOT seeded as synthesize
+/// tasks: an unrelated synthesis owner must stay unknown to the ledger.
+fn seed_closure_evidence(db: &Database, run_id: &str, owner_task_id: &str, closure: &Value) {
+    for receipt in closure["receipts"].as_array().expect("closure receipts") {
+        let execution = &receipt["stageExecution"];
+        let task_id = execution["taskId"].as_str().expect("receipt taskId");
+        let attempt_id = execution["attemptId"].as_str().expect("receipt attemptId");
+        let stage_id = execution["stageId"].as_str().expect("receipt stageId");
+        if task_id != owner_task_id && stage_id == OBSERVATION_STAGE_ID {
+            seed_stage_task_attempt(db, run_id, task_id, attempt_id, "chronicle.observe-events@1");
+        }
+        if let Some(response_digest) = receipt["responseDigest"].as_str() {
+            seed_stage_audit_event(
+                db,
+                PROJECT_A,
+                execution["stageExecutionId"]
+                    .as_str()
+                    .expect("stage execution id"),
+                response_digest,
+            );
+        }
+    }
+}
+
 fn artifact(id: &str, kind: &str, payload: Value) -> ArtifactInput {
     ArtifactInput {
         artifact_id: Some(id.to_owned()),
@@ -1173,13 +1268,19 @@ fn finish_bundle_with_artifacts(
         .as_str()
         .expect("closure digest")
         .to_owned();
+    seed_closure_evidence(db, run_id, task_id, &closure);
     let typed_closure: ChronicleStageProvenanceClosure =
         serde_json::from_value(closure.clone()).expect("typed ephemeral closure");
+    let raw_observations_digest = artifacts
+        .iter()
+        .find(|artifact| artifact.artifact_kind == "chronicle.raw-observations@1")
+        .and_then(|artifact| artifact.payload_digest.clone())
+        .unwrap_or_else(|| FORGED_DIGEST.to_owned());
     let output = json!({
         "kind": "chronicle.event-synthesis-output@1",
         "observationCount": observation_count,
-        "eventCount": 1,
         "observationRefs": observation_refs,
+        "rawObservationsDigest": raw_observations_digest,
         "stageProvenanceClosureDigest": output_closure_digest
             .map_or_else(|| closure["stageProvenanceClosureDigest"].clone(), |digest| json!(digest))
     });
@@ -2399,6 +2500,152 @@ fn direct_sql_v2_current_accepts_integer_valued_schema_version_2_0_at_monotonic_
         .expect("read numeric boundary state");
     assert_eq!(current_revision, parent["revisionId"]);
     assert_eq!(child_count, 1);
+}
+
+#[test]
+fn direct_sql_v2_pointer_repoint_to_non_v2_revision_is_rejected() {
+    // A V2 current revision must stay V2: repointing the proposal's
+    // current_revision_id at a legacy revision (or clearing it) is the one
+    // remaining downgrade vector after the INSERT guard and the revision
+    // immutability triggers, and it must be blocked at the DB layer.
+    let db = migrated_db();
+    let parent = seed_v2_parent(
+        &db,
+        PROJECT_A,
+        "run-pointer-guard",
+        "task-pointer-guard",
+        "proposal-pointer-guard",
+        "revision-pointer-guard-parent",
+        &scene_revision_token(&db, PROJECT_A),
+    );
+    create_run(&db, PROJECT_A, "run-pointer-legacy", "task-pointer-legacy");
+    let legacy = save_legacy_root(
+        &db,
+        PROJECT_A,
+        "run-pointer-legacy",
+        "task-pointer-legacy",
+        "proposal-pointer-legacy",
+    );
+
+    // Repoint V2 -> legacy revision: rejected.
+    let repoint_error = db
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposals SET current_revision_id = ?1
+                  WHERE id = 'proposal-pointer-guard'",
+                rusqlite::params![legacy["revisionId"].as_str().unwrap()],
+            )?;
+            Ok(())
+        })
+        .expect_err("repointing a V2 proposal at a legacy revision must be blocked");
+    assert!(repoint_error
+        .to_string()
+        .contains("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"));
+
+    // Clearing the pointer from a V2 current is the same downgrade.
+    let clear_error = db
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposals SET current_revision_id = NULL
+                  WHERE id = 'proposal-pointer-guard'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect_err("clearing a V2 proposal's current revision must be blocked");
+    assert!(clear_error
+        .to_string()
+        .contains("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"));
+
+    let current_revision: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT current_revision_id FROM narrative_proposals
+                  WHERE id = 'proposal-pointer-guard'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("read guarded pointer");
+    assert_eq!(current_revision, parent["revisionId"]);
+
+    // A legacy proposal's pointer stays freely movable between legacy
+    // revisions: the guard fires only on a V2 -> non-V2 transition.
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_proposals SET current_revision_id = ?1
+              WHERE id = 'proposal-pointer-legacy'",
+            rusqlite::params![legacy["revisionId"].as_str().unwrap()],
+        )?;
+        Ok(())
+    })
+    .expect("legacy pointer update must not be blocked");
+}
+
+#[test]
+fn production_dag_synthesis_task_receipt_finishes_the_plan_proposals_bundle() {
+    // The production coordinator runs AI synthesis under its own
+    // `chronicle.synthesize-event@1` task and stamps that task/attempt into
+    // the stage execution; the later `chronicle.plan-proposals@1` finish
+    // owner assembles proposals deterministically. An honest receipt from
+    // that topology must be accepted without rewriting history.
+    let db = migrated_db();
+    let run_id = "run-stage-production-topology";
+    let task_id = "task-stage-production-topology";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    seed_stage_task_attempt(
+        &db,
+        run_id,
+        "task:synthesize-production",
+        "attempt:synthesize-production",
+        "chronicle.synthesize-event@1",
+    );
+
+    let observation_receipt = stage_receipt(
+        PROJECT_A,
+        run_id,
+        "task:observation",
+        "attempt:observation",
+        OBSERVATION_STAGE_ID,
+        "stage:observation",
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+        &json!({"observations": [observation_payload()]}),
+    );
+    let synthesis_receipt = stage_receipt(
+        PROJECT_A,
+        run_id,
+        "task:synthesize-production",
+        "attempt:synthesize-production",
+        EVENT_SYNTHESIS_STAGE_ID,
+        "stage:event-synthesis",
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+        &json!({"proposal": proposal_payload("Arrival", false)}),
+    );
+    let closure = closure_for_receipts(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        json!([synthesis_receipt, observation_receipt]),
+    );
+
+    finish_bundle(&db, run_id, task_id, &attempt_id, closure)
+        .expect("an honest production-topology receipt must finish the bundle");
+    let receipt_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_stage_receipts WHERE run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count persisted receipts");
+    assert_eq!(receipt_count, 2);
 }
 
 #[test]

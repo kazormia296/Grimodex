@@ -30,6 +30,7 @@ use super::cursor_reservation::{
     reserve_cursor_range_in_tx,
 };
 use super::declaration_storage::{
+    list_broken_dependency_declaration_head_keys_in_tx,
     list_dependency_declaration_head_keys_for_sources_in_tx,
     list_dependency_declaration_head_keys_in_tx, read_active_dependency_declaration_set_in_tx,
     verify_active_dependency_declaration_set_unchanged_in_conn, ActiveDependencyDeclarationSet,
@@ -278,13 +279,27 @@ fn run_serialized_cycle(db: &Database) -> anyhow::Result<IncrementalFreshnessCyc
     let publish_result = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
     });
-    if let Err(error) = publish_result {
-        // A stale Epoch/reservation intentionally cannot publish.  Requeue is
-        // best effort and CAS-scoped to this attempt, so it cannot disturb a
-        // newer owner that won the race.
-        requeue_after_failure(db, &batch, &error)?;
-        return Err(error);
-    }
+    let v2_shadow_drift = match publish_result {
+        Ok(drift) => drift,
+        Err(error) => {
+            // A stale Epoch/reservation intentionally cannot publish.
+            // Requeue is best effort and CAS-scoped to this attempt, so it
+            // cannot disturb a newer owner that won the race.
+            requeue_after_failure(db, &batch, &error)?;
+            return Err(error);
+        }
+    };
+    // Shadow-input drift discards the now-stale D2 summary but keeps its
+    // diagnostic observable: the V1 publication above committed either way.
+    let v2_shadow = match v2_shadow_drift {
+        None => plan.v2_shadow,
+        Some(diagnostic) => {
+            let mut discarded = plan.v2_shadow;
+            discarded.consumers.clear();
+            discarded.diagnostics.push(diagnostic);
+            discarded
+        }
+    };
 
     Ok(IncrementalFreshnessCycleOutcome::Processed(
         IncrementalFreshnessBatchSummary {
@@ -295,7 +310,7 @@ fn run_serialized_cycle(db: &Database) -> anyhow::Result<IncrementalFreshnessCyc
             affected_edge_count: plan.affected_edge_count,
             affected_consumer_count: plan.by_consumer.len(),
             has_more: batch.has_more,
-            v2_shadow: plan.v2_shadow,
+            v2_shadow,
         },
     ))
 }
@@ -1378,6 +1393,20 @@ fn shadow_change_class_for_role(
     role: grimodex_core::narrative_dependency::DependencyRole,
     base: SourceChangeClass,
 ) -> SourceChangeClass {
+    // Role narrowing applies only to ordinary content changes. Missing or
+    // broken evidence (a deleted Source, a lost anchor, a collapsed selected
+    // set, an unavailable component) is a fact about the input's existence,
+    // not about how the role consumes its content — a quality/ranking role
+    // must not weaken it into an advisory content-change class.
+    if matches!(
+        base,
+        SourceChangeClass::SourceMissing
+            | SourceChangeClass::AnchorMissing
+            | SourceChangeClass::SelectedSetCollapsed
+            | SourceChangeClass::ComponentUnavailable
+    ) {
+        return base;
+    }
     match role {
         grimodex_core::narrative_dependency::DependencyRole::QualityContext => {
             SourceChangeClass::QualityInputChanged
@@ -1419,6 +1448,17 @@ fn shadow_change_class_for_selector(
     let selector =
         grimodex_core::narrative_dependency::validate_dependency_selector_value(&value, None)
             .map_err(|error| format!("selector validation failed: {error}"))?;
+    // A Source-level fact stronger than any selector narrowing is decided
+    // before selector proofs are demanded: a deleted Source needs no range
+    // overlap or anchor proof — its declaration is missing regardless of
+    // which range of it was selected. Without this, a delete event (which
+    // carries no position map) degrades SourceMissing into Unknown/manual.
+    if matches!(
+        base,
+        SourceChangeClass::SourceMissing | SourceChangeClass::ComponentUnavailable
+    ) {
+        return Ok(base);
+    }
     match selector {
         grimodex_core::narrative_dependency::DependencySelector::TextRange {
             anchor_digest,
@@ -1585,11 +1625,25 @@ fn selected_v2_shadow_head_keys_in_tx(
 ) -> anyhow::Result<Vec<(String, String)>> {
     match selection_scope {
         V2ShadowSelectionScope::SourceBounded(source_identities) => {
-            list_dependency_declaration_head_keys_for_sources_in_tx(
+            let mut keys = list_dependency_declaration_head_keys_for_sources_in_tx(
                 conn,
                 project_id,
                 source_identities,
-            )
+            )?;
+            // The source-bounded lookup INNER-joins Head -> Set -> Entry, so
+            // a head whose set or entries are missing can never be selected
+            // by it. Append those broken heads to every bounded selection:
+            // the verified reader then surfaces them as Corrupt diagnostics
+            // and publication guards instead of leaving corruption
+            // unobservable under ordinary Source mutations.
+            let broken = list_broken_dependency_declaration_head_keys_in_tx(conn, project_id)?;
+            for key in broken {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+            keys.sort();
+            Ok(keys)
         }
         V2ShadowSelectionScope::ComponentSchemaGlobal
         | V2ShadowSelectionScope::ProjectResetGlobal => {
@@ -1897,16 +1951,24 @@ fn renew_batch_lease(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<()> 
     })
 }
 
-fn verify_v2_declaration_inputs_in_tx(
+/// Re-read the non-authoritative D2 shadow inputs inside the publish
+/// transaction. `Ok(None)` means the inputs are unchanged; `Ok(Some(..))`
+/// carries the drift diagnostic. Drift never fails the authoritative V1
+/// publication — the caller discards the stale shadow summary and commits V1
+/// — so a mutating D1 head can never consume V1's retry budget or dead-letter
+/// the cursor. Real read errors still propagate as `Err`.
+fn check_v2_declaration_inputs_in_tx(
     conn: &Connection,
     project_id: &str,
     plan: &EvaluationPlan,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<String>> {
     let current_keys = selected_v2_shadow_head_keys_in_tx(conn, project_id, &plan.v2_shadow_scope)?;
-    anyhow::ensure!(
-        current_keys == plan.v2_declaration_head_keys,
-        "NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED: selected D1 head key set changed after evaluation"
-    );
+    if current_keys != plan.v2_declaration_head_keys {
+        return Ok(Some(
+            "NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED: selected D1 head key set changed after evaluation"
+                .to_string(),
+        ));
+    }
     for (consumer_kind, consumer_key, expected_state) in &plan.v2_declaration_head_snapshots {
         let current_state = read_active_dependency_declaration_set_in_tx(
             conn,
@@ -1914,22 +1976,32 @@ fn verify_v2_declaration_inputs_in_tx(
             consumer_kind,
             consumer_key,
         )?;
-        anyhow::ensure!(
-            &current_state == expected_state,
-            "NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED: active head state changed for {consumer_kind}:{consumer_key}"
-        );
+        if &current_state != expected_state {
+            return Ok(Some(format!(
+                "NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED: active head state changed for {consumer_kind}:{consumer_key}"
+            )));
+        }
     }
     for guard in &plan.v2_declaration_guards {
-        verify_active_dependency_declaration_set_unchanged_in_conn(conn, guard)?;
+        if let Err(error) = verify_active_dependency_declaration_set_unchanged_in_conn(conn, guard)
+        {
+            let message = error.to_string();
+            if message.contains("NEX_DECLARATION_HEAD_CHANGED_AFTER_EVALUATION")
+                || message.contains("NEX_DECLARATION_HEAD_INCOHERENT_AFTER_EVALUATION")
+            {
+                return Ok(Some(message));
+            }
+            return Err(error);
+        }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn publish_batch_in_tx(
     conn: &Connection,
     batch: &ClaimedBatch,
     plan: &EvaluationPlan,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<String>> {
     verify_task_lease(conn, &batch.task_id, &batch.run_id, &batch.lease_owner)?;
     verify_publish_reservation_in_tx(
         conn,
@@ -1967,15 +2039,13 @@ fn publish_batch_in_tx(
             "NEX_SEMANTIC_EPOCH_CHANGED: Edge producer Epoch changed before publication"
         );
     }
-    // D2 is shadow-only, but the selected V2 head/key/state snapshot is still
-    // part of the plan's input. Re-run the exact source-bounded or global
-    // selection before any V1 row is written so a no-head -> new-head race
-    // (or a head disappearing/corrupting) cannot acknowledge a Feed range
-    // without evaluating the declaration that was selected for this event.
-    // The outer caller rolls this transaction back and requeues the existing
-    // reservation. Unrelated Sources/heads remain outside ordinary bounded
-    // selection; global markers intentionally select the complete project.
-    verify_v2_declaration_inputs_in_tx(conn, &batch.project_id, plan)?;
+    // D2 is shadow-only: drift in the selected V2 head/key/state snapshot is
+    // recorded, the stale shadow summary is discarded by the caller, and the
+    // authoritative V1 publication commits regardless. D2 cannot fail,
+    // requeue, or dead-letter V1. Unrelated Sources/heads remain outside
+    // ordinary bounded selection; global markers intentionally select the
+    // complete project.
+    let v2_shadow_drift = check_v2_declaration_inputs_in_tx(conn, &batch.project_id, plan)?;
     let now = now_string();
     for ((consumer_kind, consumer_key), observations) in &plan.by_consumer {
         publish_freshness_evaluation_edges_only_in_tx(
@@ -2035,7 +2105,7 @@ fn publish_batch_in_tx(
         &batch.semantic_epoch_id,
         batch.through_sequence_inclusive,
     )?;
-    Ok(())
+    Ok(v2_shadow_drift)
 }
 
 fn requeue_after_failure(
@@ -3106,7 +3176,7 @@ mod tests {
     }
 
     #[test]
-    fn publish_rejects_a_new_affected_v2_head_after_evaluation() {
+    fn publish_commits_v1_and_discards_shadow_when_a_new_affected_v2_head_appears() {
         let db = fixture_db();
         let (batch, plan) = reserve_and_evaluate(&db);
         seed_shadow_head(
@@ -3117,20 +3187,32 @@ mod tests {
             1,
         );
 
-        let error = db
+        let drift = db
             .with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
-            .expect_err("new affected V2 head must invalidate the publication plan");
+            .expect("a new affected V2 head is drift, not a V1 failure")
+            .expect("shadow drift must be reported alongside the committed V1 publication");
         assert!(
-            format!("{error:#}").contains("NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED"),
-            "unexpected publish failure: {error:#}"
+            drift.contains("NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED"),
+            "unexpected drift diagnostic: {drift}"
         );
-        assert_publish_rolled_back(&db, &batch);
+        db.with_conn(|conn| {
+            let acknowledged: i64 = conn.query_row(
+                "SELECT acknowledged_through_sequence
+                   FROM narrative_change_cursors
+                  WHERE project_id = ?1 AND consumer_id = ?2",
+                params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(acknowledged == 1, "the V1 cursor must be acknowledged");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect V1 acknowledgement after shadow drift");
     }
 
     #[test]
-    fn publish_rejects_an_affected_v2_head_changed_after_evaluation() {
+    fn publish_commits_v1_and_discards_shadow_when_an_affected_v2_head_changes() {
         let db = fixture_db();
         seed_shadow_head(
             &db,
@@ -3148,20 +3230,32 @@ mod tests {
             2,
         );
 
-        let error = db
+        let drift = db
             .with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
-            .expect_err("changed affected V2 head must invalidate the publication plan");
+            .expect("a changed affected V2 head is drift, not a V1 failure")
+            .expect("shadow drift must be reported alongside the committed V1 publication");
         assert!(
-            format!("{error:#}").contains("NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED"),
-            "unexpected publish failure: {error:#}"
+            drift.contains("NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED"),
+            "unexpected drift diagnostic: {drift}"
         );
-        assert_publish_rolled_back(&db, &batch);
+        db.with_conn(|conn| {
+            let acknowledged: i64 = conn.query_row(
+                "SELECT acknowledged_through_sequence
+                   FROM narrative_change_cursors
+                  WHERE project_id = ?1 AND consumer_id = ?2",
+                params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(acknowledged == 1, "the V1 cursor must be acknowledged");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect V1 acknowledgement after shadow drift");
     }
 
     #[test]
-    fn publish_rejects_a_new_project_wide_v2_head_after_component_schema_evaluation() {
+    fn publish_commits_v1_and_discards_shadow_on_new_project_wide_v2_head() {
         let db = fixture_db();
         mark_component_schema_change(&db);
         let (batch, plan) = reserve_and_evaluate(&db);
@@ -3171,36 +3265,60 @@ mod tests {
         );
         seed_component_shadow_head(&db, PROJECT_ID, CONSUMER_RUN_ID, 0, 1);
 
-        let error = db
+        let drift = db
             .with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
-            .expect_err("new project-wide V2 head must invalidate the publication plan");
+            .expect("a new project-wide V2 head is drift, not a V1 failure")
+            .expect("shadow drift must be reported alongside the committed V1 publication");
         assert!(
-            format!("{error:#}").contains("NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED"),
-            "unexpected publish failure: {error:#}"
+            drift.contains("NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED"),
+            "unexpected drift diagnostic: {drift}"
         );
-        assert_publish_rolled_back(&db, &batch);
+        db.with_conn(|conn| {
+            let acknowledged: i64 = conn.query_row(
+                "SELECT acknowledged_through_sequence
+                   FROM narrative_change_cursors
+                  WHERE project_id = ?1 AND consumer_id = ?2",
+                params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(acknowledged == 1, "the V1 cursor must be acknowledged");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect V1 acknowledgement after shadow drift");
     }
 
     #[test]
-    fn publish_rejects_a_changed_project_wide_v2_head_after_component_schema_evaluation() {
+    fn publish_commits_v1_and_discards_shadow_on_changed_project_wide_v2_head() {
         let db = fixture_db();
         mark_component_schema_change(&db);
         seed_component_shadow_head(&db, PROJECT_ID, CONSUMER_RUN_ID, 0, 1);
         let (batch, plan) = reserve_and_evaluate(&db);
         seed_component_shadow_head(&db, PROJECT_ID, CONSUMER_RUN_ID, 1, 2);
 
-        let error = db
+        let drift = db
             .with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
-            .expect_err("changed project-wide V2 head must invalidate the publication plan");
+            .expect("a changed project-wide V2 head is drift, not a V1 failure")
+            .expect("shadow drift must be reported alongside the committed V1 publication");
         assert!(
-            format!("{error:#}").contains("NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED"),
-            "unexpected publish failure: {error:#}"
+            drift.contains("NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED"),
+            "unexpected drift diagnostic: {drift}"
         );
-        assert_publish_rolled_back(&db, &batch);
+        db.with_conn(|conn| {
+            let acknowledged: i64 = conn.query_row(
+                "SELECT acknowledged_through_sequence
+                   FROM narrative_change_cursors
+                  WHERE project_id = ?1 AND consumer_id = ?2",
+                params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(acknowledged == 1, "the V1 cursor must be acknowledged");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect V1 acknowledgement after shadow drift");
     }
 
     #[test]
@@ -3218,10 +3336,12 @@ mod tests {
         let (batch, plan) = reserve_and_evaluate(&db);
         seed_component_shadow_head(&db, "unrelated-project", "unrelated-consumer", 0, 1);
 
-        db.with_conn(|conn| {
-            with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
-        })
-        .expect("unrelated project V2 head must stay outside the global project guard");
+        let drift = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
+            })
+            .expect("unrelated project V2 head must stay outside the global project guard");
+        assert!(drift.is_none(), "unexpected drift: {drift:?}");
 
         db.with_conn(|conn| {
             let acknowledged: i64 = conn.query_row(
@@ -3249,10 +3369,12 @@ mod tests {
             1,
         );
 
-        db.with_conn(|conn| {
-            with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
-        })
-        .expect("unrelated V2 head must stay outside the bounded publication guard");
+        let drift = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
+            })
+            .expect("unrelated V2 head must stay outside the bounded publication guard");
+        assert!(drift.is_none(), "unexpected drift: {drift:?}");
 
         db.with_conn(|conn| {
             let acknowledged: i64 = conn.query_row(
