@@ -390,7 +390,10 @@ fn fixture_db_for_payload_kind_with_source_token(
     .expect("seed Human run and task");
 
     let source_revision_token = source_revision_token(&db);
-    let parent_scope = parent_scope_for_payload(&parent_payload);
+    let mut parent_scope = parent_scope_for_payload(&parent_payload);
+    if fixture_kind == ParentFixtureKind::C2B {
+        parent_scope["scene"]["ref"] = json!(format!("scene:{SCENE_ID}"));
+    }
     let envelope =
         parent_envelope_with_payload(&source_revision_token, &parent_payload, &parent_scope);
     let envelope_json = canonical_json_string(&envelope).expect("canonical parent Envelope");
@@ -1806,6 +1809,17 @@ mod c2b_atomic_materialization_red {
         .expect("install post-Freshness competing pointer");
     }
 
+    fn scope_override_request(db: &Database) -> CreateHumanDerivedRevisionRequest {
+        let mut edited = proposal_payload();
+        edited["disclosure"]["secret"] = json!(true);
+        request_with_payload(
+            PARENT_REVISION_ID,
+            PARENT_REVISION_ID,
+            &parent_envelope_digest(db),
+            edited,
+        )
+    }
+
     #[test]
     fn c2b_projection_materializes_exact_child_basis_v1_d1_epoch_and_runless_freshness() {
         let db = c2b_projection_fixture_db();
@@ -2143,6 +2157,291 @@ mod c2b_atomic_materialization_red {
                     .to_string()
                     .contains("NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE"),
             "unexpected scope classification error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
+
+    #[test]
+    fn c2b_scope_override_materializes_live_scope_authority_and_all_child_authorities_atomically() {
+        let db = c2b_projection_fixture_db();
+        install_final_pointer_cas_order_guard(&db);
+
+        let saved =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                scope_override_request(&db),
+                HumanMaterialDerivationKind::ScopeOverride,
+            )
+            .expect("live ScopeOverride materialization");
+        let child_revision_id = saved["revisionId"]
+            .as_str()
+            .expect("ScopeOverride child revision id")
+            .to_owned();
+
+        let (child_envelope, source_rows, edge_count, scope_declaration_count, freshness_count): (
+            Value,
+            Vec<(String, String, String)>,
+            i64,
+            i64,
+            i64,
+        ) = db
+            .with_conn(|conn| {
+                let envelope_json: String = conn.query_row(
+                    "SELECT reconciliation_envelope_json
+                       FROM narrative_proposal_revisions
+                      WHERE id = ?1",
+                    [child_revision_id.as_str()],
+                    |row| row.get(0),
+                )?;
+                let mut statement = conn.prepare(
+                    "SELECT source_kind, source_key, revision_token
+                       FROM narrative_revision_source_basis
+                      WHERE revision_id = ?1
+                      ORDER BY ordinal",
+                )?;
+                let source_rows = statement
+                    .query_map([child_revision_id.as_str()], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let edge_count: i64 = conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_dependency_edges
+                      WHERE project_id = ?1
+                        AND consumer_kind = 'proposal-revision'
+                        AND consumer_key = ?2",
+                    rusqlite::params![PROJECT_A, child_revision_id],
+                    |row| row.get(0),
+                )?;
+                let scope_declaration_count: i64 = conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_dependency_declaration_entries e
+                       JOIN narrative_dependency_declaration_sets s
+                         ON s.id = e.declaration_set_id
+                      WHERE s.project_id = ?1
+                        AND s.consumer_kind = 'proposal-revision'
+                        AND s.consumer_key = ?2
+                        AND e.dependency_role = 'scope-resolution'",
+                    rusqlite::params![PROJECT_A, child_revision_id],
+                    |row| row.get(0),
+                )?;
+                let freshness_count: i64 = conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_consumer_freshness
+                      WHERE project_id = ?1
+                        AND consumer_kind = 'proposal-revision'
+                        AND consumer_key = ?2",
+                    rusqlite::params![PROJECT_A, child_revision_id],
+                    |row| row.get(0),
+                )?;
+                Ok((
+                    serde_json::from_str(&envelope_json)?,
+                    source_rows,
+                    edge_count,
+                    scope_declaration_count,
+                    freshness_count,
+                ))
+            })
+            .expect("read live ScopeOverride materialization");
+
+        assert_eq!(
+            child_envelope["assertion"]["scope"]["audience"],
+            json!({"kind": "exact", "ref": "reader"})
+        );
+        assert_eq!(
+            child_envelope["assertion"]["scope"]["readingOrder"],
+            json!({
+                "kind": "interval",
+                "from": {"ref": format!("reading:{SCENE_ID}"), "inclusive": true},
+                "until": {"ref": format!("reading:{SCENE_ID}"), "inclusive": true}
+            })
+        );
+        assert_eq!(
+            child_envelope["assertion"]["scope"]["storyTime"],
+            json!({"kind": "unresolved", "reason": "not-provided"})
+        );
+        assert_eq!(
+            child_envelope["effectiveMaterialBasis"]["sourceBasis"]
+                .as_array()
+                .expect("child material source basis")
+                .iter()
+                .filter_map(|source| source["sourceKind"].as_str())
+                .collect::<Vec<_>>(),
+            vec!["scene-body", "project-scope-authority"]
+        );
+        assert_eq!(source_rows.len(), 2);
+        assert_eq!(source_rows[1].0, "project-scope-authority");
+        assert_eq!(
+            source_rows[1].1,
+            format!("project:scope-authority:{PROJECT_A}")
+        );
+        assert_eq!(edge_count, 2, "V1 must include the live authority Source");
+        assert_eq!(
+            scope_declaration_count, 1,
+            "D1 must include one re-derived ScopeResolution dependency"
+        );
+        assert_eq!(
+            freshness_count, 1,
+            "current-Epoch Freshness is part of the transaction"
+        );
+        assert_eq!(
+            db.with_conn(|conn| Ok::<_, anyhow::Error>(conn.query_row(
+                "SELECT current_revision_id FROM narrative_proposals WHERE id = ?1",
+                [PROPOSAL_ID],
+                |row| row.get::<_, String>(0),
+            )?))
+            .expect("read promoted child pointer"),
+            child_revision_id
+        );
+    }
+
+    #[test]
+    fn c2b_scope_override_rederives_after_live_authority_advanced() {
+        let db = c2b_projection_fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET story_time_order = 'live-story' WHERE id = ?1",
+                [SCENE_ID],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("advance live Scope authority after the parent was sealed");
+
+        let saved =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                scope_override_request(&db),
+                HumanMaterialDerivationKind::ScopeOverride,
+            )
+            .expect("ScopeOverride must re-derive the current authority");
+        let child_revision_id = saved["revisionId"].as_str().expect("child revision");
+        let (story_scope, authority_token): (Value, String) = db
+            .with_conn(|conn| {
+                let envelope_json: String = conn.query_row(
+                    "SELECT reconciliation_envelope_json
+                       FROM narrative_proposal_revisions WHERE id = ?1",
+                    [child_revision_id],
+                    |row| row.get(0),
+                )?;
+                let authority_token: String = conn.query_row(
+                    "SELECT revision_token
+                       FROM narrative_revision_source_basis
+                      WHERE revision_id = ?1 AND source_kind = 'project-scope-authority'",
+                    [child_revision_id],
+                    |row| row.get(0),
+                )?;
+                let envelope: Value = serde_json::from_str(&envelope_json)?;
+                Ok((
+                    envelope["assertion"]["scope"]["storyTime"].clone(),
+                    authority_token,
+                ))
+            })
+            .expect("read current live authority binding");
+        assert_eq!(
+            story_scope,
+            json!({
+                "kind": "interval",
+                "from": {"ref": format!("story:{SCENE_ID}"), "inclusive": true},
+                "until": {"ref": format!("story:{SCENE_ID}"), "inclusive": true}
+            })
+        );
+        assert!(!authority_token.is_empty());
+    }
+
+    #[test]
+    fn c2b_scope_override_missing_live_scene_fails_before_dml_and_rolls_back() {
+        let db = c2b_projection_fixture_db();
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM tree_nodes WHERE id = ?1", [SCENE_ID])?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("remove the live Scope target");
+        let before = c2b_state_snapshot(&db);
+        install_child_revision_dml_guard(&db);
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                scope_override_request(&db),
+                HumanMaterialDerivationKind::ScopeOverride,
+            )
+            .expect_err("missing live Scope target must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2B_SCOPE_AUTHORITY_SCENE_MISSING"),
+            "unexpected missing authority error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
+
+    #[test]
+    fn c2b_scope_override_ambiguous_story_is_persisted_as_unresolved() {
+        let db = c2b_projection_fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET story_time_order = 'ambiguous-story' WHERE id = ?1",
+                [SCENE_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, sort_order, story_time_order,
+                     content, version, created_at, updated_at)
+                 VALUES ('scene-ambiguous', ?1, 'scene', 'Ambiguous', 'z0',
+                         'ambiguous-story', '{\"type\":\"doc\",\"content\":[]}', 0, ?2, ?2)",
+                rusqlite::params![PROJECT_A, DECLARATION_CREATED_AT],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed an ambiguous live Story authority");
+
+        let saved =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                scope_override_request(&db),
+                HumanMaterialDerivationKind::ScopeOverride,
+            )
+            .expect("ambiguous Story must remain an explicit unresolved Scope");
+        let child_revision_id = saved["revisionId"].as_str().expect("child revision");
+        let story_scope: Value = db
+            .with_conn(|conn| {
+                let envelope_json: String = conn.query_row(
+                    "SELECT reconciliation_envelope_json
+                       FROM narrative_proposal_revisions WHERE id = ?1",
+                    [child_revision_id],
+                    |row| row.get(0),
+                )?;
+                let envelope: Value = serde_json::from_str(&envelope_json)?;
+                Ok(envelope["assertion"]["scope"]["storyTime"].clone())
+            })
+            .expect("read unresolved Story Scope");
+        assert_eq!(
+            story_scope,
+            json!({"kind": "unresolved", "reason": "ambiguous"})
+        );
+    }
+
+    #[test]
+    fn c2b_scope_override_final_pointer_race_rolls_back_live_authority_materialization() {
+        let db = c2b_projection_fixture_db();
+        install_post_freshness_pointer_competitor(&db);
+        let before = c2b_state_snapshot(&db);
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                scope_override_request(&db),
+                HumanMaterialDerivationKind::ScopeOverride,
+            )
+            .expect_err("ScopeOverride pointer race must rollback every child side effect");
+        assert!(
+            error.to_string().contains(REVISION_CONFLICT),
+            "unexpected ScopeOverride race error: {error:#}"
         );
         assert_eq!(before, c2b_state_snapshot(&db));
     }
