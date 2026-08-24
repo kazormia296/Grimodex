@@ -323,6 +323,22 @@ fn fixture_db_for_payload_kind(
     parent_payload: Value,
     fixture_kind: ParentFixtureKind,
 ) -> Database {
+    fixture_db_for_payload_kind_with_source_token(
+        parent_revision_id,
+        include_v1_edge,
+        parent_payload,
+        fixture_kind,
+        None,
+    )
+}
+
+fn fixture_db_for_payload_kind_with_source_token(
+    parent_revision_id: &str,
+    include_v1_edge: bool,
+    parent_payload: Value,
+    fixture_kind: ParentFixtureKind,
+    persisted_source_token: Option<&str>,
+) -> Database {
     // The typed API and D1 tables are intentionally missing on the frozen
     // base, so this setup is reached only after D1 publishes the contract.
     // Keeping the fixture executable (rather than ignored) makes that missing
@@ -381,6 +397,7 @@ fn fixture_db_for_payload_kind(
     let payload_json = canonical_json_string(&parent_payload).expect("canonical proposal");
     let read_set_json =
         serde_json::to_string(&vec![source_revision_token.clone()]).expect("parent read set JSON");
+    let persisted_source_token = persisted_source_token.unwrap_or(&source_revision_token);
 
     db.with_conn(|conn| {
         conn.execute(
@@ -426,7 +443,7 @@ fn fixture_db_for_payload_kind(
             "INSERT INTO narrative_revision_source_basis
                 (revision_id, ordinal, source_kind, source_key, revision_token)
              VALUES (?1, 0, 'scene-body', ?2, ?3)",
-            rusqlite::params![parent_revision_id, source_key(), source_revision_token],
+            rusqlite::params![parent_revision_id, source_key(), persisted_source_token],
         )?;
         if include_v1_edge {
             conn.execute(
@@ -1909,6 +1926,372 @@ mod c2b_atomic_materialization_red {
         assert!(
             error.to_string().contains("C2B_TEST_FRESHNESS_ABORT"),
             "unexpected Freshness trigger error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
+
+    #[test]
+    fn c2b_scope_affecting_payload_cannot_lie_as_projection_only() {
+        let db = c2b_projection_fixture_db();
+        let mut edited = proposal_payload();
+        edited["disclosure"]["secret"] = json!(true);
+        let before = c2b_state_snapshot(&db);
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                request_with_payload(
+                    PARENT_REVISION_ID,
+                    PARENT_REVISION_ID,
+                    &parent_envelope_digest(&db),
+                    edited,
+                ),
+                HumanMaterialDerivationKind::ProjectionOnly,
+            )
+            .expect_err("scope-affecting payload must not enter projection-only C2B");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2B_DERIVATION_KIND_MISMATCH")
+                || error
+                    .to_string()
+                    .contains("NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE"),
+            "unexpected scope classification error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
+
+    #[test]
+    fn c2b_parent_source_basis_token_drift_fails_before_child_dml() {
+        let db = fixture_db_for_payload_kind_with_source_token(
+            PARENT_REVISION_ID,
+            true,
+            proposal_payload(),
+            ParentFixtureKind::C2B,
+            Some("v99@2099-01-01T00:00:00.000Z"),
+        );
+        let before = c2b_state_snapshot(&db);
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                c2b_request(&db),
+                HumanMaterialDerivationKind::ProjectionOnly,
+            )
+            .expect_err("parent SourceBasis drift must fail before child DML");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2B_MATERIAL_PARENT_SOURCE_MISMATCH"),
+            "unexpected parent SourceBasis drift error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
+
+    #[test]
+    fn c2b_parent_v1_owner_drift_fails_before_child_dml() {
+        let db = c2b_projection_fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_dependency_edges
+                    SET owning_run_id = 'run-drift'
+                  WHERE project_id = ?1
+                    AND consumer_kind = 'proposal-revision'
+                    AND consumer_key = ?2",
+                rusqlite::params![PROJECT_A, PARENT_REVISION_ID],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("forge parent V1 owning Run for drift test");
+        let before = c2b_state_snapshot(&db);
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                c2b_request(&db),
+                HumanMaterialDerivationKind::ProjectionOnly,
+            )
+            .expect_err("parent V1 owner drift must fail before child DML");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2B_MATERIAL_V1_OWNER_MISMATCH"),
+            "unexpected parent V1 drift error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
+
+    #[test]
+    fn c2b_parent_d1_generation_drift_fails_before_child_dml() {
+        let db = c2b_projection_fixture_db();
+        write_dependency_declaration_set(
+            &db,
+            DependencyDeclarationSetRequest {
+                project_id: PROJECT_A.to_owned(),
+                consumer_kind: "proposal-revision".to_owned(),
+                consumer_key: PARENT_REVISION_ID.to_owned(),
+                producer_id: C2B_DECLARATION_PRODUCER_ID.to_owned(),
+                producer_generation: 2,
+                expected_head_version: 1,
+                declarations: vec![
+                    DependencyDeclaration {
+                        source_object_identity: source_key(),
+                        role: DependencyRole::DirectEvidence,
+                        selector: DependencySelector::WholeSource,
+                    },
+                    DependencyDeclaration {
+                        source_object_identity: "component:chronicle.event-synthesis.prompt"
+                            .to_owned(),
+                        role: DependencyRole::ComponentContract,
+                        selector: DependencySelector::ComponentContract {
+                            contract_id: "chronicle.event-synthesis.prompt".to_owned(),
+                            contract_digest: parent_component_contract_digest(),
+                        },
+                    },
+                ],
+                created_at: DECLARATION_CREATED_AT.to_owned(),
+            },
+        )
+        .expect("advance parent D1 generation for drift test");
+        let before = c2b_state_snapshot(&db);
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                c2b_request(&db),
+                HumanMaterialDerivationKind::ProjectionOnly,
+            )
+            .expect_err("parent D1 generation drift must fail before child DML");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2B_MATERIAL_D1_GENERATION_INVALID"),
+            "unexpected parent D1 drift error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
+
+    #[test]
+    fn c2b_missing_current_semantic_epoch_fails_before_child_dml() {
+        let db = c2b_projection_fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_semantic_epochs WHERE project_id = ?1",
+                [PROJECT_A],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("remove current Semantic Epoch for negative test");
+        let before = c2b_state_snapshot(&db);
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                c2b_request(&db),
+                HumanMaterialDerivationKind::ProjectionOnly,
+            )
+            .expect_err("C2B must fail closed without a current Semantic Epoch");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2B_CURRENT_SEMANTIC_EPOCH_UNAVAILABLE"),
+            "unexpected missing-epoch error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
+
+    #[test]
+    fn c2b_success_preserves_execution_state_and_separates_d1_from_v1_digest() {
+        let db = c2b_projection_fixture_db();
+        let mut edited = proposal_payload();
+        edited["title"] = json!("Arrival at Dawn");
+        let before = c2b_state_snapshot(&db);
+        let saved =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                request_with_payload(
+                    PARENT_REVISION_ID,
+                    PARENT_REVISION_ID,
+                    &parent_envelope_digest(&db),
+                    edited.clone(),
+                ),
+                HumanMaterialDerivationKind::ProjectionOnly,
+            )
+            .expect("C2B edited projection materialization");
+        let child_revision_id = saved["revisionId"]
+            .as_str()
+            .expect("C2B child revision id")
+            .to_owned();
+        let after = c2b_state_snapshot(&db);
+
+        assert_eq!(before.run_count, after.run_count);
+        assert_eq!(before.task_count, after.task_count);
+        assert_eq!(before.attempt_count, after.attempt_count);
+        assert_eq!(before.cursor_count, after.cursor_count);
+        assert_eq!(before.semantic_epoch_count, after.semantic_epoch_count);
+        assert_eq!(before.current_epoch_id, after.current_epoch_id);
+
+        let child_payload: Value = db
+            .with_conn(|conn| {
+                let payload_json: String = conn.query_row(
+                    "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1",
+                    [child_revision_id.as_str()],
+                    |row| row.get(0),
+                )?;
+                Ok(serde_json::from_str(&payload_json)?)
+            })
+            .expect("read edited child payload");
+        assert_eq!(child_payload, edited);
+
+        let (proposal_current_revision_id, proposal_payload): (String, Value) = db
+            .with_conn(|conn| {
+                let (current_revision_id, payload_json): (String, String) = conn.query_row(
+                    "SELECT current_revision_id, payload_json
+                       FROM narrative_proposals
+                      WHERE id = ?1",
+                    [PROPOSAL_ID],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                Ok((current_revision_id, serde_json::from_str(&payload_json)?))
+            })
+            .expect("read promoted proposal state");
+        assert_eq!(proposal_current_revision_id, child_revision_id);
+        assert_eq!(proposal_payload, edited);
+
+        let (d1_state, d1_digest, freshness_digest): (String, String, String) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT s.state, s.dependency_set_digest,
+                            f.dependency_set_digest
+                       FROM narrative_dependency_declaration_sets s
+                       JOIN narrative_consumer_freshness f
+                         ON f.project_id = s.project_id
+                        AND f.consumer_kind = s.consumer_kind
+                        AND f.consumer_key = s.consumer_key
+                      WHERE s.project_id = ?1
+                        AND s.consumer_kind = 'proposal-revision'
+                        AND s.consumer_key = ?2",
+                    rusqlite::params![PROJECT_A, child_revision_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?)
+            })
+            .expect("read child D1 and Consumer Freshness digests");
+        assert_eq!(d1_state, "sealed");
+        assert_ne!(
+            d1_digest, freshness_digest,
+            "D1 declaration digest and V1 Consumer Freshness digest have distinct authorities"
+        );
+    }
+
+    #[test]
+    fn c2b_lost_response_retry_does_not_duplicate_child_materialization() {
+        let db = c2b_projection_fixture_db();
+        let request = c2b_request(&db);
+        let _lost_response =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                request.clone(),
+                HumanMaterialDerivationKind::ProjectionOnly,
+            )
+            .expect("first C2B materialization");
+        let after_first = c2b_state_snapshot(&db);
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                request,
+                HumanMaterialDerivationKind::ProjectionOnly,
+            )
+            .expect_err("retrying a completed C2B request must hit the parent CAS");
+        assert!(
+            error.to_string().contains("NEX_PROPOSAL_REVISION_CONFLICT"),
+            "unexpected duplicate retry error: {error:#}"
+        );
+        assert_eq!(after_first, c2b_state_snapshot(&db));
+    }
+
+    #[test]
+    fn c2b_foreign_current_revision_pointer_fails_before_child_dml() {
+        let db = c2b_projection_fixture_db();
+        let parent_digest = parent_envelope_digest(&db);
+        let parent_envelope_json: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT reconciliation_envelope_json
+                       FROM narrative_proposal_revisions
+                      WHERE id = ?1",
+                    [PARENT_REVISION_ID],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read parent envelope for foreign pointer fixture");
+        let payload_json = canonical_json_string(&proposal_payload()).expect("canonical payload");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, summary_json, created_at, updated_at)
+                 VALUES ('set-foreign-c2b', ?1, ?2, 'chronicle.extract.review@1', '{}', ?3, ?3)",
+                rusqlite::params![RUN_ID, PROJECT_A, DECLARATION_CREATED_AT],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                     current_revision_id, created_at, updated_at)
+                 VALUES ('proposal-foreign-c2b', 'set-foreign-c2b', 'event:foreign:0',
+                         'chronicle.create-event@1', 'unreviewed', ?1, 'revision-foreign-c2b', ?2, ?2)",
+                rusqlite::params![payload_json, DECLARATION_CREATED_AT],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, origin_kind,
+                     reconciliation_envelope_json, reconciliation_envelope_digest,
+                     created_at, created_by)
+                 VALUES ('revision-foreign-c2b', 'proposal-foreign-c2b', 1, ?1,
+                         'enveloped', ?2, ?3, ?4, 'chronicle')",
+                rusqlite::params![
+                    canonical_json_string(&proposal_payload())?,
+                    parent_envelope_json,
+                    parent_digest,
+                    DECLARATION_CREATED_AT
+                ],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposals
+                    SET current_revision_id = 'revision-foreign-c2b'
+                  WHERE id = ?1",
+                [PROPOSAL_ID],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("repoint proposal to a foreign proposal revision");
+        let before = c2b_state_snapshot(&db);
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                request_with_payload(
+                    "revision-foreign-c2b",
+                    "revision-foreign-c2b",
+                    &parent_digest,
+                    proposal_payload(),
+                ),
+                HumanMaterialDerivationKind::ProjectionOnly,
+            )
+            .expect_err("foreign current revision pointer must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REVISION_PARENT_ENVELOPE_DIGEST_CONFLICT"),
+            "unexpected foreign-pointer error: {error:#}"
         );
         assert_eq!(before, c2b_state_snapshot(&db));
     }
