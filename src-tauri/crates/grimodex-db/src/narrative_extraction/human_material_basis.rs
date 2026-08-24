@@ -89,6 +89,7 @@ where
 pub struct HumanMaterialResolutionContext {
     pub project_id: String,
     pub parent_revision_id: String,
+    pub expected_parent_owning_run_id: String,
     pub expected_parent_envelope_digest: String,
     pub scene_ref: String,
     pub edited_document_ref: String,
@@ -246,6 +247,10 @@ fn ensure_non_empty(value: &str, field: &str) -> anyhow::Result<()> {
 fn validate_context(context: &HumanMaterialResolutionContext) -> anyhow::Result<()> {
     ensure_non_empty(&context.project_id, "projectId")?;
     ensure_non_empty(&context.parent_revision_id, "parentRevisionId")?;
+    ensure_non_empty(
+        &context.expected_parent_owning_run_id,
+        "expectedParentOwningRunId",
+    )?;
     ensure_non_empty(&context.scene_ref, "sceneRef")?;
     ensure_non_empty(&context.edited_document_ref, "editedDocumentRef")?;
     anyhow::ensure!(
@@ -744,6 +749,10 @@ pub fn validate_human_material_parent_bundle(
         "NEX_C2B_MATERIAL_PARENT_CONSUMER_MISMATCH: parent bundle Consumer key differs from CAS parent"
     );
     ensure_non_empty(&parent.owning_run_id, "owningRunId")?;
+    anyhow::ensure!(
+        parent.owning_run_id == context.expected_parent_owning_run_id,
+        "NEX_C2B_MATERIAL_PARENT_RUN_MISMATCH: parent bundle owning Run differs from CAS authority"
+    );
     anyhow::ensure!(
         parent.expected_parent_envelope_digest == context.expected_parent_envelope_digest,
         "NEX_C2B_MATERIAL_PARENT_DIGEST_MISMATCH: parent bundle envelope digest differs from context"

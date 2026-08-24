@@ -172,6 +172,7 @@ fn resolution_context(scope_override: bool) -> HumanMaterialResolutionContext {
     HumanMaterialResolutionContext {
         project_id: "project-a".to_owned(),
         parent_revision_id: PARENT_REVISION_ID.to_owned(),
+        expected_parent_owning_run_id: PARENT_RUN_ID.to_owned(),
         expected_parent_envelope_digest: digest(&parent_envelope),
         scene_ref: "scene:1".to_owned(),
         edited_document_ref: "document:1".to_owned(),
