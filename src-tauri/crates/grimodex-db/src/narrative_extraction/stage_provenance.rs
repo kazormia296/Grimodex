@@ -147,6 +147,10 @@ pub(crate) fn validate_chronicle_synthesis_companion(
             artifact.artifact_kind != CLOSURE_ARTIFACT_KIND,
             "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID: closure is an ephemeral typed bundle field, not a durable artifact"
         );
+        anyhow::ensure!(
+            artifact.artifact_kind == CHRONICLE_RAW_OBSERVATIONS_KIND,
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID: exactly one durable artifact of kind chronicle.raw-observations@1 is required"
+        );
         if artifact.artifact_kind == CHRONICLE_RAW_OBSERVATIONS_KIND {
             anyhow::ensure!(
                 raw_observations.replace(artifact).is_none(),
@@ -246,6 +250,10 @@ pub(crate) fn validate_chronicle_synthesis_companion(
         );
     }
     let mut output_refs = HashSet::new();
+    anyhow::ensure!(
+        output.observation_refs.len() == observation_ids.len(),
+        "NEX_CHRONICLE_RAW_OBSERVATIONS_INVALID: observationRefs must have the same cardinality as raw localIds"
+    );
     anyhow::ensure!(
         output.observation_refs.iter().all(|reference| {
             !reference.trim().is_empty()

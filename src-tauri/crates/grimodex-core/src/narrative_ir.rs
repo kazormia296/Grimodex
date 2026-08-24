@@ -1297,12 +1297,30 @@ pub fn validate_chronicle_scene_event_v2(value: &Value) -> Result<(), NarrativeI
         require(envelope, "revisionBasis", "envelope")?,
         "revisionBasis",
     )?;
-    let basis_producer = validate_chronicle_reconciler_producer(
-        require(revision_basis, "producer", "revisionBasis")?,
-        "revisionBasis.producer",
-    )?;
-    if assertion_producer != basis_producer {
-        return Err(validation_error("producer-mismatch", "assertion.producer"));
+    match revision_basis.get("kind").and_then(Value::as_str) {
+        Some("interpretation") => {
+            let basis_producer = validate_chronicle_reconciler_producer(
+                require(revision_basis, "producer", "revisionBasis")?,
+                "revisionBasis.producer",
+            )?;
+            if assertion_producer != basis_producer {
+                return Err(validation_error("producer-mismatch", "assertion.producer"));
+            }
+        }
+        Some("human-derived") => {
+            // Human-derived revision bases deliberately carry the Native Human
+            // actor and parent CAS instead of a model/reconciler producer. The
+            // structural validator already rejects unknown Human-basis keys;
+            // keep this branch explicit so the Chronicle adapter does not
+            // accidentally impose the model-derived producer equality rule on
+            // a Human child.
+        }
+        _ => {
+            return Err(validation_error(
+                "invalid-revision-basis",
+                "revisionBasis.kind",
+            ));
+        }
     }
     if require(assertion, "payloadSchemaRef", "assertion")?
         .get("id")
@@ -1449,7 +1467,9 @@ fn validate_chronicle_material_contract(
         require(envelope, "revisionBasis", "envelope")?,
         "revisionBasis",
     )?;
-    if selector.get("contractDigest") != basis.get("componentContractDigest") {
+    if basis.get("kind").and_then(Value::as_str) == Some("interpretation")
+        && selector.get("contractDigest") != basis.get("componentContractDigest")
+    {
         return Err(validation_error(
             "invalid-material-basis",
             "effectiveMaterialBasis.dependencySet.component-contract.selector.contractDigest",
