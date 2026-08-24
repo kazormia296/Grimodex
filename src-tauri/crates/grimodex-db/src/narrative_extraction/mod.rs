@@ -49,6 +49,7 @@ pub use maintenance_skip_evidence::{
     CompletedRunSkipReason, COMPLETED_RUN_SKIP_EVIDENCE_FIELD, REBUILD_RUN_KIND_CONTRACT_VERSION,
     VERIFY_RUN_KIND_CONTRACT_VERSION,
 };
+pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 mod human_derivation;
 pub mod human_material_basis;

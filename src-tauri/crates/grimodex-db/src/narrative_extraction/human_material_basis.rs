@@ -9,15 +9,21 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, Context};
 use grimodex_core::canonical_json_digest;
+use grimodex_core::contract_string::is_contract_non_empty;
 use grimodex_core::narrative_dependency::{
-    canonicalize_dependency_selector, validate_dependency_selector, DependencyRole,
-    DependencySelector,
+    canonicalize_dependency_selector, compute_dependency_key, compute_dependency_set_digest,
+    validate_dependency_selector, validate_dependency_selector_value, DependencyRole,
+    DependencySelector, DependencySetDigestEntry, DEPENDENCY_ROLE_CONTRACT_VERSION,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::declaration_storage::DependencyDeclaration;
+use super::declaration_storage::{
+    ActiveDependencyDeclarationSet, DependencyDeclaration, DependencyDeclarationSetState,
+    StoredDependencyDeclaration,
+};
 use super::dependency_edges::canonical_source_object_identity;
+use super::reconciliation_envelope::SourceBasisRow;
 use super::repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 
 const D1_PRODUCER_ID: &str = "proposal-revision-source-basis";
@@ -65,7 +71,16 @@ pub struct MaterialDependencyEntry {
     pub input_ref: String,
     pub context_ids: Vec<String>,
     pub role: DependencyRole,
+    #[serde(deserialize_with = "deserialize_dependency_selector")]
     pub selector: DependencySelector,
+}
+
+fn deserialize_dependency_selector<'de, D>(deserializer: D) -> Result<DependencySelector, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    validate_dependency_selector_value(&value, None).map_err(D::Error::custom)
 }
 
 /// Native authority used to bind a material resolution to its parent CAS and
@@ -78,6 +93,19 @@ pub struct HumanMaterialResolutionContext {
     pub scene_ref: String,
     pub edited_document_ref: String,
     pub secret_scope: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HumanMaterialParentBundle {
+    pub project_id: String,
+    pub consumer_kind: String,
+    pub consumer_key: String,
+    pub owning_run_id: String,
+    pub expected_parent_envelope_digest: String,
+    pub material_basis: MaterialBasis,
+    pub source_basis: Vec<SourceBasisRow>,
+    pub active_dependency_declaration_set: ActiveDependencyDeclarationSet,
+    pub persisted_v1_edges: Vec<V1PersistedEdge>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,16 +172,6 @@ pub struct D1ParentAuthority {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct D1DeclarationProjection {
-    pub project_id: String,
-    pub consumer_kind: String,
-    pub consumer_key: String,
-    pub producer_id: String,
-    pub producer_generation: i64,
-    pub declarations: Vec<DependencyDeclaration>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct D1ParentSnapshot {
     pub project_id: String,
     pub consumer_kind: String,
     pub consumer_key: String,
@@ -286,7 +304,11 @@ fn validate_evidence_set(
     for evidence in evidence_set {
         ensure_non_empty(&evidence.evidence_ref, "evidenceRef")?;
         ensure_non_empty(&evidence.document_ref, "documentRef")?;
-        ensure_non_empty(&evidence.quote, "quote")?;
+        anyhow::ensure!(
+            is_contract_non_empty(&evidence.quote),
+            "NEX_C2B_MATERIAL_QUOTE_EMPTY: evidenceRef '{}' quote must contain non-whitespace content",
+            evidence.evidence_ref
+        );
         ensure_non_empty(&evidence.source_key, "sourceKey")?;
         ensure_non_empty(&evidence.revision_token, "revisionToken")?;
         anyhow::ensure!(
@@ -535,16 +557,216 @@ fn required_parent_sources(parent: &MaterialBasis) -> HashSet<String> {
     required
 }
 
+fn validate_parent_source_basis(
+    material: &MaterialBasis,
+    persisted: &[SourceBasisRow],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        material.source_basis.len() == persisted.len(),
+        "NEX_C2B_MATERIAL_PARENT_SOURCE_COUNT_MISMATCH: material has {} sources, persisted parent has {}",
+        material.source_basis.len(),
+        persisted.len()
+    );
+    for (ordinal, (material_source, persisted_source)) in
+        material.source_basis.iter().zip(persisted).enumerate()
+    {
+        anyhow::ensure!(
+            persisted_source.ordinal == ordinal as i64,
+            "NEX_C2B_MATERIAL_PARENT_SOURCE_ORDINAL_MISMATCH: persisted SourceBasis ordinal {} is not {}",
+            persisted_source.ordinal,
+            ordinal
+        );
+        anyhow::ensure!(
+            persisted_source.source_kind == material_source.source_kind
+                && persisted_source.source_key == material_source.source_key
+                && persisted_source.revision_token == material_source.revision_token
+                && persisted_source.observed_at == material_source.revision_observed_at,
+            "NEX_C2B_MATERIAL_PARENT_SOURCE_MISMATCH: persisted SourceBasis row {} differs from material",
+            ordinal
+        );
+    }
+    Ok(())
+}
+
+fn typed_stored_d1_declaration(
+    entry: &StoredDependencyDeclaration,
+) -> anyhow::Result<DependencyDeclaration> {
+    ensure_non_empty(&entry.id, "declarationId")?;
+    ensure_non_empty(&entry.declaration_set_id, "declarationSetId")?;
+    ensure_non_empty(&entry.source_object_identity, "sourceObjectIdentity")?;
+    anyhow::ensure!(
+        entry.role_contract_version == DEPENDENCY_ROLE_CONTRACT_VERSION,
+        "NEX_C2B_MATERIAL_D1_ROLE_CONTRACT_INVALID: declaration '{}' has an unsupported role contract",
+        entry.id
+    );
+    let selector_value: serde_json::Value =
+        serde_json::from_str(&entry.selector_json).map_err(|error| {
+            anyhow!(
+                "NEX_C2B_MATERIAL_D1_SELECTOR_INVALID: {}: {error}",
+                entry.id
+            )
+        })?;
+    let selector = validate_dependency_selector_value(&selector_value, None).map_err(|error| {
+        anyhow!(
+            "NEX_C2B_MATERIAL_D1_SELECTOR_INVALID: {}: {error}",
+            entry.id
+        )
+    })?;
+    let canonical_selector = canonicalize_dependency_selector(&selector).map_err(|error| {
+        anyhow!(
+            "NEX_C2B_MATERIAL_D1_SELECTOR_INVALID: {}: {error}",
+            entry.id
+        )
+    })?;
+    anyhow::ensure!(
+        canonical_selector == entry.selector_json,
+        "NEX_C2B_MATERIAL_D1_SELECTOR_NONCANONICAL: declaration '{}' selector is not canonical",
+        entry.id
+    );
+    anyhow::ensure!(
+        digest_bytes(canonical_selector.as_bytes()) == entry.selector_digest,
+        "NEX_C2B_MATERIAL_D1_SELECTOR_DIGEST_MISMATCH: declaration '{}' selector digest is invalid",
+        entry.id
+    );
+    anyhow::ensure!(
+        compute_dependency_key(entry.dependency_role.as_str(), &selector)
+            .map_err(|error| anyhow!("NEX_C2B_MATERIAL_D1_KEY_INVALID: {}: {error}", entry.id))?
+            == entry.dependency_key,
+        "NEX_C2B_MATERIAL_D1_KEY_MISMATCH: declaration '{}' dependency key is invalid",
+        entry.id
+    );
+    Ok(DependencyDeclaration {
+        source_object_identity: entry.source_object_identity.clone(),
+        role: entry.dependency_role,
+        selector,
+    })
+}
+
+fn validate_active_parent_d1(parent: &HumanMaterialParentBundle) -> anyhow::Result<()> {
+    let active = &parent.active_dependency_declaration_set;
+    ensure_non_empty(&active.declaration_set_id, "declarationSetId")?;
+    anyhow::ensure!(
+        active.state == DependencyDeclarationSetState::Sealed,
+        "NEX_C2B_MATERIAL_D1_HEAD_STATE_INVALID: active declaration set is not sealed"
+    );
+    anyhow::ensure!(
+        active.project_id == parent.project_id
+            && active.consumer_kind == parent.consumer_kind
+            && active.consumer_key == parent.consumer_key,
+        "NEX_C2B_MATERIAL_D1_AUTHORITY_MISMATCH: active declaration set Consumer differs from parent bundle"
+    );
+    anyhow::ensure!(
+        active.consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND,
+        "NEX_C2B_MATERIAL_D1_CONSUMER_KIND_INVALID: active declaration set Consumer kind is unsupported"
+    );
+    anyhow::ensure!(
+        active.producer_id == D1_PRODUCER_ID,
+        "NEX_C2B_MATERIAL_D1_PRODUCER_INVALID: active declaration set producer is not Native-pinned"
+    );
+    anyhow::ensure!(
+        active.producer_generation == PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
+        "NEX_C2B_MATERIAL_D1_GENERATION_INVALID: active declaration set generation is not Native-pinned"
+    );
+
+    let mut entry_ids = HashSet::new();
+    let mut digest_entries = Vec::with_capacity(active.entries.len());
+    let mut actual = Vec::with_capacity(active.entries.len());
+    for entry in &active.entries {
+        anyhow::ensure!(
+            entry_ids.insert(entry.id.clone()),
+            "NEX_C2B_MATERIAL_D1_ENTRY_DUPLICATE: declaration id '{}' is duplicated",
+            entry.id
+        );
+        anyhow::ensure!(
+            entry.declaration_set_id == active.declaration_set_id,
+            "NEX_C2B_MATERIAL_D1_SET_MISMATCH: declaration '{}' belongs to another declaration set",
+            entry.id
+        );
+        actual.push(typed_stored_d1_declaration(entry)?);
+        digest_entries.push(DependencySetDigestEntry {
+            source_object_identity: entry.source_object_identity.clone(),
+            dependency_key: entry.dependency_key.clone(),
+            selector_digest: entry.selector_digest.clone(),
+        });
+    }
+    let expected = parent
+        .material_basis
+        .dependency_set
+        .iter()
+        .map(|dependency| {
+            Ok(DependencyDeclaration {
+                source_object_identity: dependency.input_ref.clone(),
+                role: dependency.role,
+                selector: canonicalize_typed_selector(&dependency.selector)?,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        sorted_declarations(&expected)? == sorted_declarations(&actual)?,
+        "NEX_C2B_MATERIAL_D1_DECLARATION_MISMATCH: active declaration set differs from material dependencies"
+    );
+    let expected_digest = compute_dependency_set_digest(&digest_entries)
+        .map_err(|error| anyhow!("NEX_C2B_MATERIAL_D1_SET_DIGEST_INVALID: {error}"))?;
+    anyhow::ensure!(
+        expected_digest == active.dependency_set_digest,
+        "NEX_C2B_MATERIAL_D1_SET_DIGEST_MISMATCH: active declaration set digest is invalid"
+    );
+    Ok(())
+}
+
+fn parent_v1_authority(parent: &HumanMaterialParentBundle) -> V1ParentAuthority {
+    V1ParentAuthority {
+        project_id: parent.project_id.clone(),
+        consumer_kind: parent.consumer_kind.clone(),
+        consumer_key: parent.consumer_key.clone(),
+        owning_run_id: parent.owning_run_id.clone(),
+    }
+}
+
+/// Verify the complete parent material, SourceBasis, V1 edges, and sealed D1
+/// head against one CAS-bound Native bundle.
+pub fn validate_human_material_parent_bundle(
+    parent: &HumanMaterialParentBundle,
+    context: &HumanMaterialResolutionContext,
+) -> anyhow::Result<()> {
+    validate_context(context)?;
+    ensure_non_empty(&parent.project_id, "projectId")?;
+    anyhow::ensure!(
+        parent.project_id == context.project_id,
+        "NEX_C2B_MATERIAL_PARENT_PROJECT_MISMATCH: parent bundle project differs from context"
+    );
+    anyhow::ensure!(
+        parent.consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND,
+        "NEX_C2B_MATERIAL_PARENT_CONSUMER_KIND_INVALID: parent bundle Consumer kind is unsupported"
+    );
+    anyhow::ensure!(
+        parent.consumer_key == context.parent_revision_id,
+        "NEX_C2B_MATERIAL_PARENT_CONSUMER_MISMATCH: parent bundle Consumer key differs from CAS parent"
+    );
+    ensure_non_empty(&parent.owning_run_id, "owningRunId")?;
+    anyhow::ensure!(
+        parent.expected_parent_envelope_digest == context.expected_parent_envelope_digest,
+        "NEX_C2B_MATERIAL_PARENT_DIGEST_MISMATCH: parent bundle envelope digest differs from context"
+    );
+    validate_material_basis(&parent.material_basis)?;
+    validate_parent_source_basis(&parent.material_basis, &parent.source_basis)?;
+    validate_active_parent_d1(parent)?;
+
+    let authority = parent_v1_authority(parent);
+    let expected = project_v1_expectations(&parent.material_basis, &authority)?;
+    validate_v1_parent_edges(&expected, &parent.persisted_v1_edges, &authority)
+}
+
 /// Resolve a projection-only or scope-override material basis without any
 /// persistence side effect.
 pub fn resolve_human_material_basis(
     kind: HumanMaterialDerivationKind,
-    parent: &MaterialBasis,
+    parent: &HumanMaterialParentBundle,
     context: &HumanMaterialResolutionContext,
     trusted: Option<&TrustedHumanMaterialResolution>,
 ) -> anyhow::Result<HumanMaterialResolution> {
-    validate_context(context)?;
-    validate_material_basis(parent)?;
+    validate_human_material_parent_bundle(parent, context)?;
+    let parent_material = &parent.material_basis;
 
     if kind == HumanMaterialDerivationKind::ProjectionOnly {
         anyhow::ensure!(
@@ -552,7 +774,7 @@ pub fn resolve_human_material_basis(
             "NEX_C2B_MATERIAL_PROJECTION_SIDECAR_FORBIDDEN: projection-only resolution does not accept a trusted sidecar"
         );
         return Ok(HumanMaterialResolution {
-            material_basis: parent.clone(),
+            material_basis: parent_material.clone(),
         });
     }
 
@@ -567,10 +789,10 @@ pub fn resolve_human_material_basis(
     validate_material_basis(&child)?;
 
     anyhow::ensure!(
-        child.evidence_set == parent.evidence_set,
+        child.evidence_set == parent_material.evidence_set,
         "NEX_C2B_MATERIAL_SCOPE_EVIDENCE_CHANGED: scope override must preserve Evidence exactly"
     );
-    let parent_non_scope = parent
+    let parent_non_scope = parent_material
         .dependency_set
         .iter()
         .filter(|dependency| dependency.role != DependencyRole::ScopeResolution)
@@ -587,13 +809,13 @@ pub fn resolve_human_material_basis(
         "NEX_C2B_MATERIAL_SCOPE_DEPENDENCY_CHANGED: scope override changed a non-scope dependency"
     );
     let child_sources = validate_source_basis(&child.source_basis)?;
-    for required_source in required_parent_sources(parent) {
+    for required_source in required_parent_sources(parent_material) {
         anyhow::ensure!(
             child_sources.contains(&required_source),
             "NEX_C2B_MATERIAL_SCOPE_SOURCE_DROPPED: required parent source '{}' is absent",
             required_source
         );
-        let parent_entry = parent
+        let parent_entry = parent_material
             .source_basis
             .iter()
             .find(|source| source.source_key == required_source)
@@ -732,44 +954,6 @@ fn sorted_declarations(
         .collect())
 }
 
-/// Verify a typed persisted D1 snapshot against the complete expected
-/// projection. Declaration ordering is storage detail; metadata is not.
-pub fn validate_d1_parent_authority(
-    expected: &D1DeclarationProjection,
-    actual: &D1ParentSnapshot,
-) -> anyhow::Result<()> {
-    ensure_non_empty(&expected.project_id, "projectId")?;
-    anyhow::ensure!(
-        expected.consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND,
-        "NEX_C2B_MATERIAL_D1_CONSUMER_KIND_INVALID: expected consumerKind must be '{}'",
-        PROPOSAL_REVISION_CONSUMER_KIND
-    );
-    ensure_non_empty(&expected.consumer_key, "consumerKey")?;
-    anyhow::ensure!(
-        expected.producer_id == D1_PRODUCER_ID,
-        "NEX_C2B_MATERIAL_D1_PRODUCER_INVALID: expected producerId is not Native-pinned"
-    );
-    anyhow::ensure!(
-        expected.producer_generation == PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
-        "NEX_C2B_MATERIAL_D1_GENERATION_INVALID: expected producerGeneration is not Native-pinned"
-    );
-    anyhow::ensure!(
-        actual.project_id == expected.project_id
-            && actual.consumer_kind == expected.consumer_kind
-            && actual.consumer_key == expected.consumer_key
-            && actual.producer_id == expected.producer_id
-            && actual.producer_generation == expected.producer_generation,
-        "NEX_C2B_MATERIAL_D1_AUTHORITY_MISMATCH: persisted D1 metadata differs from projection"
-    );
-    let expected_declarations = sorted_declarations(&expected.declarations)?;
-    let actual_declarations = sorted_declarations(&actual.declarations)?;
-    anyhow::ensure!(
-        expected_declarations == actual_declarations,
-        "NEX_C2B_MATERIAL_D1_DECLARATION_MISMATCH: persisted D1 declarations differ from projection"
-    );
-    Ok(())
-}
-
 /// Project V1 compatibility expectations from SourceBasis only. Each source
 /// contributes exactly one whole-source revision token and one owning Run.
 pub fn project_v1_expectations(
@@ -816,7 +1000,7 @@ pub fn project_v1_expectations(
 
 /// Verify the exact V1 edge set. The legacy read-set payload remains typed at
 /// the boundary and is parsed directly as a one-token string array.
-pub fn validate_v1_parent_authority(
+fn validate_v1_parent_edges(
     expected: &[V1EdgeExpectation],
     persisted: &[V1PersistedEdge],
     authority: &V1ParentAuthority,

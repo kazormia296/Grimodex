@@ -22,8 +22,8 @@ use super::source_revision::resolve_source_revision;
 pub(crate) const ORIGIN_ENVELOPED: &str = "enveloped";
 pub(crate) const ORIGIN_LEGACY_UNBOUND: &str = "legacy-unbound";
 
-#[derive(Debug, Clone)]
-pub(crate) struct SourceBasisRow {
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SourceBasisRow {
     pub ordinal: i64,
     pub source_kind: String,
     pub source_key: String,
