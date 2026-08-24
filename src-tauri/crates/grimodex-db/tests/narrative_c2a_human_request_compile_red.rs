@@ -1682,6 +1682,20 @@ mod c2b_atomic_materialization_red {
         )
     }
 
+    fn assert_execution_authority_unchanged(before: &C2BStateSnapshot, after: &C2BStateSnapshot) {
+        assert_eq!(before.run_count, after.run_count);
+        assert_eq!(before.task_count, after.task_count);
+        assert_eq!(before.attempt_count, after.attempt_count);
+        assert_eq!(before.cursor_count, after.cursor_count);
+        assert_eq!(before.semantic_epoch_count, after.semantic_epoch_count);
+        assert_eq!(before.current_epoch_id, after.current_epoch_id);
+        assert_eq!(before.run_rows, after.run_rows);
+        assert_eq!(before.task_rows, after.task_rows);
+        assert_eq!(before.attempt_rows, after.attempt_rows);
+        assert_eq!(before.cursor_rows, after.cursor_rows);
+        assert_eq!(before.semantic_epoch_rows, after.semantic_epoch_rows);
+    }
+
     fn projection_source_basis(
         db: &Database,
         revision_id: &str,
@@ -1778,8 +1792,14 @@ mod c2b_atomic_materialization_red {
                 "CREATE TEMP TRIGGER c2b_test_require_material_before_pointer
                    BEFORE UPDATE OF payload_json, current_revision_id ON narrative_proposals
                    WHEN OLD.id = 'proposal-human'
-                    AND NEW.current_revision_id <> OLD.current_revision_id
+                    AND (NEW.payload_json IS NOT OLD.payload_json
+                         OR NEW.current_revision_id IS NOT OLD.current_revision_id)
                    BEGIN
+                       SELECT CASE WHEN
+                           NEW.payload_json IS NOT OLD.payload_json
+                           AND NEW.current_revision_id IS OLD.current_revision_id
+                           THEN RAISE(ABORT, 'C2B_TEST_PAYLOAD_PROMOTION_NOT_ATOMIC')
+                       END;
                        SELECT CASE WHEN
                            NOT EXISTS (
                                SELECT 1 FROM narrative_revision_source_basis b
@@ -1857,6 +1877,7 @@ mod c2b_atomic_materialization_red {
     #[test]
     fn c2b_projection_materializes_exact_child_basis_v1_d1_epoch_and_runless_freshness() {
         let db = c2b_projection_fixture_db();
+        let before_execution = c2b_state_snapshot(&db);
         install_final_pointer_cas_order_guard(&db);
         let saved =
             narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
@@ -1870,6 +1891,8 @@ mod c2b_atomic_materialization_red {
             .as_str()
             .expect("C2B child revision id")
             .to_owned();
+        let after_execution = c2b_state_snapshot(&db);
+        assert_execution_authority_unchanged(&before_execution, &after_execution);
 
         let current_revision_id: String = db
             .with_conn(|conn| {
@@ -2341,6 +2364,7 @@ mod c2b_atomic_materialization_red {
     #[test]
     fn c2b_success_preserves_execution_state_and_separates_d1_from_v1_digest() {
         let db = c2b_projection_fixture_db();
+        install_final_pointer_cas_order_guard(&db);
         let mut edited = proposal_payload();
         edited["title"] = json!("Arrival at Dawn");
         let before = c2b_state_snapshot(&db);
@@ -2362,18 +2386,7 @@ mod c2b_atomic_materialization_red {
             .expect("C2B child revision id")
             .to_owned();
         let after = c2b_state_snapshot(&db);
-
-        assert_eq!(before.run_count, after.run_count);
-        assert_eq!(before.task_count, after.task_count);
-        assert_eq!(before.attempt_count, after.attempt_count);
-        assert_eq!(before.cursor_count, after.cursor_count);
-        assert_eq!(before.semantic_epoch_count, after.semantic_epoch_count);
-        assert_eq!(before.current_epoch_id, after.current_epoch_id);
-        assert_eq!(before.run_rows, after.run_rows);
-        assert_eq!(before.task_rows, after.task_rows);
-        assert_eq!(before.attempt_rows, after.attempt_rows);
-        assert_eq!(before.cursor_rows, after.cursor_rows);
-        assert_eq!(before.semantic_epoch_rows, after.semantic_epoch_rows);
+        assert_execution_authority_unchanged(&before, &after);
 
         let child_payload: Value = db
             .with_conn(|conn| {
