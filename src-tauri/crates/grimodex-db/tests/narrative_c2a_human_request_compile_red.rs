@@ -26,6 +26,7 @@ use grimodex_db::narrative_extraction::{
     TrustedScopeBoundary, TrustedScopeInterval, TrustedUnresolvedConstraint,
 };
 use grimodex_db::Database;
+use rusqlite::types::ValueRef;
 use serde_json::{json, Value};
 
 const PROJECT_A: &str = "project-a";
@@ -842,10 +843,52 @@ struct C2BStateSnapshot {
     task_count: i64,
     attempt_count: i64,
     cursor_count: i64,
+    run_rows: Vec<Vec<String>>,
+    task_rows: Vec<Vec<String>>,
+    attempt_rows: Vec<Vec<String>>,
+    cursor_rows: Vec<Vec<String>>,
+    semantic_epoch_rows: Vec<Vec<String>>,
+}
+
+fn exact_table_rows(
+    conn: &rusqlite::Connection,
+    table: &str,
+) -> rusqlite::Result<Vec<Vec<String>>> {
+    assert!(matches!(
+        table,
+        "narrative_extraction_runs"
+            | "narrative_extraction_tasks"
+            | "narrative_extraction_attempts"
+            | "narrative_change_cursors"
+            | "narrative_semantic_epochs"
+    ));
+    let mut statement = conn.prepare(&format!("SELECT * FROM {table} ORDER BY 1"))?;
+    let column_count = statement.column_count();
+    let rows = statement
+        .query_map([], |row| {
+            (0..column_count)
+                .map(|index| {
+                    Ok(match row.get_ref(index)? {
+                        ValueRef::Null => "null".to_owned(),
+                        ValueRef::Integer(value) => format!("integer:{value}"),
+                        ValueRef::Real(value) => format!("real:{:016x}", value.to_bits()),
+                        ValueRef::Text(value) => format!("text:{value:?}"),
+                        ValueRef::Blob(value) => format!("blob:{value:?}"),
+                    })
+                })
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 fn c2b_state_snapshot(db: &Database) -> C2BStateSnapshot {
     db.with_conn(|conn| {
+        let run_rows = exact_table_rows(conn, "narrative_extraction_runs")?;
+        let task_rows = exact_table_rows(conn, "narrative_extraction_tasks")?;
+        let attempt_rows = exact_table_rows(conn, "narrative_extraction_attempts")?;
+        let cursor_rows = exact_table_rows(conn, "narrative_change_cursors")?;
+        let semantic_epoch_rows = exact_table_rows(conn, "narrative_semantic_epochs")?;
         Ok(conn.query_row(
             "SELECT p.current_revision_id,
                     (SELECT COUNT(*) FROM narrative_proposal_revisions
@@ -885,6 +928,11 @@ fn c2b_state_snapshot(db: &Database) -> C2BStateSnapshot {
                     task_count: row.get(12)?,
                     attempt_count: row.get(13)?,
                     cursor_count: row.get(14)?,
+                    run_rows,
+                    task_rows,
+                    attempt_rows,
+                    cursor_rows,
+                    semantic_epoch_rows,
                 })
             },
         )?)
@@ -1616,6 +1664,13 @@ fn stale_resolver_parent_reaches_typed_writer_without_rewriting_observed_token()
 mod c2b_atomic_materialization_red {
     use super::*;
     use grimodex_core::canonical_json_string;
+    use grimodex_core::narrative_dependency::{
+        canonicalize_dependency_selector, compute_dependency_key, compute_dependency_set_digest,
+        DependencySetDigestEntry,
+    };
+    use grimodex_db::narrative_extraction::{
+        read_active_dependency_declaration_set, DependencyDeclarationSetState,
+    };
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
@@ -1680,9 +1735,123 @@ mod c2b_atomic_materialization_red {
         hex::encode(Sha256::digest(canonical.as_bytes()))
     }
 
+    fn d1_digest_entry(
+        source_object_identity: String,
+        role: &str,
+        selector: &DependencySelector,
+    ) -> DependencySetDigestEntry {
+        let selector_json =
+            canonicalize_dependency_selector(selector).expect("canonical D1 selector");
+        DependencySetDigestEntry {
+            source_object_identity,
+            dependency_key: compute_dependency_key(role, selector).expect("canonical D1 key"),
+            selector_digest: format!(
+                "sha256:{}",
+                hex::encode(Sha256::digest(selector_json.as_bytes()))
+            ),
+        }
+    }
+
+    fn install_child_revision_dml_guard(db: &Database) {
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TEMP TRIGGER c2b_test_abort_child_revision_dml
+                   BEFORE INSERT ON narrative_proposal_revisions
+                   BEGIN
+                       SELECT RAISE(ABORT, 'C2B_TEST_CHILD_DML_REACHED');
+                   END;",
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("install child-revision DML guard");
+    }
+
+    fn install_final_pointer_cas_order_guard(db: &Database) {
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TEMP TRIGGER c2b_test_require_material_before_pointer
+                   BEFORE UPDATE OF current_revision_id ON narrative_proposals
+                   WHEN OLD.id = 'proposal-human'
+                    AND NEW.current_revision_id <> OLD.current_revision_id
+                   BEGIN
+                       SELECT CASE WHEN
+                           NOT EXISTS (
+                               SELECT 1 FROM narrative_revision_source_basis b
+                                WHERE b.revision_id = NEW.current_revision_id
+                           )
+                           OR NOT EXISTS (
+                               SELECT 1 FROM narrative_dependency_edges e
+                                WHERE e.project_id = 'project-a'
+                                  AND e.consumer_kind = 'proposal-revision'
+                                  AND e.consumer_key = NEW.current_revision_id
+                           )
+                           OR NOT EXISTS (
+                               SELECT 1
+                                 FROM narrative_dependency_declaration_heads h
+                                 JOIN narrative_dependency_declaration_sets s
+                                   ON s.id = h.active_declaration_set_id
+                                WHERE h.project_id = 'project-a'
+                                  AND h.consumer_kind = 'proposal-revision'
+                                  AND h.consumer_key = NEW.current_revision_id
+                                  AND s.state = 'sealed'
+                           )
+                           OR NOT EXISTS (
+                               SELECT 1
+                                 FROM narrative_dependency_edges e
+                                 JOIN narrative_dependency_edge_states s ON s.edge_id = e.id
+                                WHERE e.project_id = 'project-a'
+                                  AND e.consumer_kind = 'proposal-revision'
+                                  AND e.consumer_key = NEW.current_revision_id
+                           )
+                           OR NOT EXISTS (
+                               SELECT 1 FROM narrative_consumer_freshness f
+                                WHERE f.project_id = 'project-a'
+                                  AND f.consumer_kind = 'proposal-revision'
+                                  AND f.consumer_key = NEW.current_revision_id
+                           )
+                           THEN RAISE(ABORT, 'C2B_TEST_POINTER_BEFORE_MATERIALIZATION')
+                       END;
+                   END;",
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("install final pointer-CAS order guard");
+    }
+
+    fn install_post_freshness_pointer_competitor(db: &Database) {
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, origin_kind,
+                     reconciliation_envelope_json, reconciliation_envelope_digest,
+                     created_at, created_by)
+                 SELECT 'revision-competing-c2b', proposal_id, 2, payload_json, 'enveloped',
+                        reconciliation_envelope_json, reconciliation_envelope_digest,
+                        created_at, created_by
+                   FROM narrative_proposal_revisions
+                  WHERE id = 'revision-parent' AND proposal_id = 'proposal-human';
+
+                 CREATE TEMP TRIGGER c2b_test_compete_after_freshness
+                    AFTER INSERT ON narrative_consumer_freshness
+                    WHEN NEW.project_id = 'project-a'
+                     AND NEW.consumer_kind = 'proposal-revision'
+                     AND NEW.consumer_key <> 'revision-parent'
+                    BEGIN
+                        UPDATE narrative_proposals
+                           SET current_revision_id = 'revision-competing-c2b'
+                         WHERE id = 'proposal-human'
+                           AND current_revision_id = 'revision-parent';
+                    END;",
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("install post-Freshness competing pointer");
+    }
+
     #[test]
     fn c2b_projection_materializes_exact_child_basis_v1_d1_epoch_and_runless_freshness() {
         let db = c2b_projection_fixture_db();
+        install_final_pointer_cas_order_guard(&db);
         let saved =
             narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
                 &db,
@@ -1813,6 +1982,58 @@ mod c2b_atomic_materialization_red {
             ]
         );
 
+        let component_selector = DependencySelector::ComponentContract {
+            contract_id: "chronicle.event-synthesis.prompt".to_owned(),
+            contract_digest: parent_component_contract_digest(),
+        };
+        let expected_d1_digest = compute_dependency_set_digest(&[
+            d1_digest_entry(
+                "component:chronicle.event-synthesis.prompt".to_owned(),
+                "component-contract",
+                &component_selector,
+            ),
+            d1_digest_entry(
+                source_key(),
+                "direct-evidence",
+                &DependencySelector::WholeSource,
+            ),
+        ])
+        .expect("expected child D1 digest");
+        let active_d1 = read_active_dependency_declaration_set(
+            &db,
+            PROJECT_A,
+            "proposal-revision",
+            &child_revision_id,
+        )
+        .expect("read child active D1 head")
+        .expect("child active D1 head must exist");
+        assert_eq!(active_d1.project_id, PROJECT_A);
+        assert_eq!(active_d1.consumer_kind, "proposal-revision");
+        assert_eq!(active_d1.consumer_key, child_revision_id);
+        assert_eq!(active_d1.producer_id, C2B_DECLARATION_PRODUCER_ID);
+        assert_eq!(active_d1.producer_generation, 1);
+        assert_eq!(active_d1.state, DependencyDeclarationSetState::Sealed);
+        assert_eq!(active_d1.dependency_set_digest, expected_d1_digest);
+        assert_eq!(active_d1.entries.len(), 2);
+        let active_head: (String, String, i64, i64) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT active_declaration_set_id, producer_id,
+                            producer_generation, version
+                       FROM narrative_dependency_declaration_heads
+                      WHERE project_id = ?1
+                        AND consumer_kind = 'proposal-revision'
+                        AND consumer_key = ?2",
+                    rusqlite::params![PROJECT_A, child_revision_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?)
+            })
+            .expect("read child D1 head identity");
+        assert_eq!(active_head.0, active_d1.declaration_set_id);
+        assert_eq!(active_head.1, C2B_DECLARATION_PRODUCER_ID);
+        assert_eq!(active_head.2, 1);
+        assert_eq!(active_head.3, 1);
+
         let edge_states: Vec<(String, String, String, String)> = db
             .with_conn(|conn| {
                 let mut statement = conn.prepare(
@@ -1881,6 +2102,7 @@ mod c2b_atomic_materialization_red {
     #[test]
     fn c2b_scope_override_without_native_authority_fails_before_any_dml() {
         let db = c2b_projection_fixture_db();
+        install_child_revision_dml_guard(&db);
         let before = c2b_state_snapshot(&db);
         let error =
             narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
@@ -1935,6 +2157,7 @@ mod c2b_atomic_materialization_red {
         let db = c2b_projection_fixture_db();
         let mut edited = proposal_payload();
         edited["disclosure"]["secret"] = json!(true);
+        install_child_revision_dml_guard(&db);
         let before = c2b_state_snapshot(&db);
 
         let error =
@@ -1971,6 +2194,7 @@ mod c2b_atomic_materialization_red {
             ParentFixtureKind::C2B,
             Some("v99@2099-01-01T00:00:00.000Z"),
         );
+        install_child_revision_dml_guard(&db);
         let before = c2b_state_snapshot(&db);
 
         let error =
@@ -2005,6 +2229,7 @@ mod c2b_atomic_materialization_red {
             Ok::<_, anyhow::Error>(())
         })
         .expect("forge parent V1 owning Run for drift test");
+        install_child_revision_dml_guard(&db);
         let before = c2b_state_snapshot(&db);
 
         let error =
@@ -2056,6 +2281,7 @@ mod c2b_atomic_materialization_red {
             },
         )
         .expect("advance parent D1 generation for drift test");
+        install_child_revision_dml_guard(&db);
         let before = c2b_state_snapshot(&db);
 
         let error =
@@ -2086,6 +2312,7 @@ mod c2b_atomic_materialization_red {
             Ok::<_, anyhow::Error>(())
         })
         .expect("remove current Semantic Epoch for negative test");
+        install_child_revision_dml_guard(&db);
         let before = c2b_state_snapshot(&db);
 
         let error =
@@ -2136,6 +2363,11 @@ mod c2b_atomic_materialization_red {
         assert_eq!(before.cursor_count, after.cursor_count);
         assert_eq!(before.semantic_epoch_count, after.semantic_epoch_count);
         assert_eq!(before.current_epoch_id, after.current_epoch_id);
+        assert_eq!(before.run_rows, after.run_rows);
+        assert_eq!(before.task_rows, after.task_rows);
+        assert_eq!(before.attempt_rows, after.attempt_rows);
+        assert_eq!(before.cursor_rows, after.cursor_rows);
+        assert_eq!(before.semantic_epoch_rows, after.semantic_epoch_rows);
 
         let child_payload: Value = db
             .with_conn(|conn| {
@@ -2190,6 +2422,27 @@ mod c2b_atomic_materialization_red {
     }
 
     #[test]
+    fn c2b_post_freshness_pointer_race_fails_final_cas_and_rolls_back() {
+        let db = c2b_projection_fixture_db();
+        install_post_freshness_pointer_competitor(&db);
+        let before = c2b_state_snapshot(&db);
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                c2b_request(&db),
+                HumanMaterialDerivationKind::ProjectionOnly,
+            )
+            .expect_err("post-Freshness pointer race must fail the final parent CAS");
+        assert!(
+            error.to_string().contains(REVISION_CONFLICT),
+            "unexpected post-Freshness pointer race error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
+
+    #[test]
     fn c2b_lost_response_retry_does_not_duplicate_child_materialization() {
         let db = c2b_projection_fixture_db();
         let request = c2b_request(&db);
@@ -2201,6 +2454,7 @@ mod c2b_atomic_materialization_red {
                 HumanMaterialDerivationKind::ProjectionOnly,
             )
             .expect("first C2B materialization");
+        install_child_revision_dml_guard(&db);
         let after_first = c2b_state_snapshot(&db);
 
         let error =
@@ -2272,6 +2526,7 @@ mod c2b_atomic_materialization_red {
             Ok::<_, anyhow::Error>(())
         })
         .expect("repoint proposal to a foreign proposal revision");
+        install_child_revision_dml_guard(&db);
         let before = c2b_state_snapshot(&db);
 
         let error =
