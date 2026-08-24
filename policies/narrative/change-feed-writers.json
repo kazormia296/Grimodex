@@ -878,7 +878,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": ["narrative.extraction-task"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -907,7 +907,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": ["narrative.extraction-task"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -936,7 +936,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": ["narrative.extraction-task", "narrative.extraction-attempt"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -965,7 +965,12 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": [
+        "narrative.extraction-task",
+        "narrative.extraction-attempt",
+        "narrative.extraction-artifact",
+        "narrative.stage-provenance"
+      ],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -994,7 +999,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": ["narrative.extraction-task", "narrative.extraction-attempt"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
