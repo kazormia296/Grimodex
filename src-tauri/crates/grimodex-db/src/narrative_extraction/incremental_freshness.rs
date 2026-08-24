@@ -13,8 +13,8 @@ use std::sync::Mutex;
 use crate::Database;
 use grimodex_core::narrative_dependency::{
     aggregate_dependency_build_actions, evaluate_dependency_effect, load_dependency_role_registry,
-    DependencyEffectInput, DependencyEffectRegistry, EvidenceFreshness as V2EvidenceFreshness,
-    SourceChangeClass,
+    DependencyEffectInput, DependencyEffectRegistry, DependencyRole,
+    EvidenceFreshness as V2EvidenceFreshness, SourceChangeClass,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -31,7 +31,7 @@ use super::cursor_reservation::{
 };
 use super::declaration_storage::{
     list_dependency_declaration_head_keys_for_sources_in_tx,
-    read_active_dependency_declaration_set_in_tx,
+    list_dependency_declaration_head_keys_in_tx, read_active_dependency_declaration_set_in_tx,
     verify_active_dependency_declaration_set_unchanged_in_conn, ActiveDependencyDeclarationSet,
     ActiveDependencyDeclarationSetRead,
 };
@@ -169,7 +169,7 @@ struct EvaluationPlan {
     v2_declaration_guards: Vec<ActiveDependencyDeclarationSet>,
     v2_declaration_head_keys: Vec<(String, String)>,
     v2_declaration_head_snapshots: Vec<(String, String, ActiveDependencyDeclarationSetRead)>,
-    v2_shadow_source_identities: Vec<String>,
+    v2_shadow_scope: V2ShadowSelectionScope,
     v2_shadow: IncrementalFreshnessShadowSummary,
 }
 
@@ -190,6 +190,17 @@ struct ProducerEpochGuard {
 struct SourceEventSignals<'a> {
     latest: &'a NarrativeChangeEventRecord,
     incarnation_replaced: bool,
+}
+
+/// Selects the D1 head set that a Feed evaluation is allowed to observe.
+/// Ordinary mutations stay source-bounded. Ratified global markers have no
+/// Source locator by design, so their selection is project-wide and every
+/// selected head participates in the publish-time drift guard.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum V2ShadowSelectionScope {
+    SourceBounded(Vec<String>),
+    ComponentSchemaGlobal,
+    ProjectResetGlobal,
 }
 
 /// Run one bounded automatic Freshness cycle on the live workspace
@@ -1197,6 +1208,7 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
         .flat_map(|event| event.application_ids.iter().cloned())
         .collect::<BTreeSet<_>>();
     let signals = event_signals_by_source(&batch.project_id, &batch.events)?;
+    let v2_shadow_scope = select_v2_shadow_scope(&batch.events, signals.keys().cloned());
     let component_changed = batch.events.iter().any(is_component_schema_change);
     let requires_full_graph = batch.events.iter().any(requires_full_graph_evaluation);
     let edges = db.with_conn(|conn| {
@@ -1309,6 +1321,7 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
         evaluate_v2_shadow(
             db,
             &batch.project_id,
+            &v2_shadow_scope,
             &signals,
             &source_change_classes,
             role_registry.as_ref(),
@@ -1324,9 +1337,25 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
         v2_declaration_guards,
         v2_declaration_head_keys,
         v2_declaration_head_snapshots,
-        v2_shadow_source_identities: signals.keys().cloned().collect(),
+        v2_shadow_scope,
         v2_shadow,
     })
+}
+
+fn select_v2_shadow_scope<I>(
+    events: &[NarrativeChangeEventRecord],
+    source_identities: I,
+) -> V2ShadowSelectionScope
+where
+    I: Iterator<Item = String>,
+{
+    if events.iter().any(is_project_epoch_reset_marker) {
+        return V2ShadowSelectionScope::ProjectResetGlobal;
+    }
+    if events.iter().any(is_component_schema_change) {
+        return V2ShadowSelectionScope::ComponentSchemaGlobal;
+    }
+    V2ShadowSelectionScope::SourceBounded(source_identities.collect())
 }
 
 fn source_change_class_from_feed_event(event: &NarrativeChangeEventRecord) -> SourceChangeClass {
@@ -1553,9 +1582,30 @@ fn v2_freshness_rank(freshness: V2EvidenceFreshness) -> u8 {
     }
 }
 
+fn selected_v2_shadow_head_keys_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    selection_scope: &V2ShadowSelectionScope,
+) -> anyhow::Result<Vec<(String, String)>> {
+    match selection_scope {
+        V2ShadowSelectionScope::SourceBounded(source_identities) => {
+            list_dependency_declaration_head_keys_for_sources_in_tx(
+                conn,
+                project_id,
+                source_identities,
+            )
+        }
+        V2ShadowSelectionScope::ComponentSchemaGlobal
+        | V2ShadowSelectionScope::ProjectResetGlobal => {
+            list_dependency_declaration_head_keys_in_tx(conn, project_id)
+        }
+    }
+}
+
 fn evaluate_v2_shadow<'a>(
     db: &Database,
     project_id: &str,
+    selection_scope: &V2ShadowSelectionScope,
     signals: &BTreeMap<String, SourceEventSignals<'a>>,
     source_change_classes: &BTreeMap<String, SourceChangeClass>,
     registry: Option<&DependencyEffectRegistry>,
@@ -1567,23 +1617,18 @@ fn evaluate_v2_shadow<'a>(
     Vec<(String, String, ActiveDependencyDeclarationSetRead)>,
 )> {
     db.with_conn(|conn| {
-        let mut consumer_keys = BTreeSet::<(String, String)>::new();
-        // A sealed D1 set may declare a source for which no V1 compatibility
-        // Edge exists (or whose V1 reverse lookup did not select this Feed
-        // range). Use the D1 entry/source reverse index to discover exactly
-        // those headed Consumers, then let the verified reader decide
-        // whether each head is active or corrupt. This is bounded by the
-        // Feed's affected Source identities, not a scan of every Consumer.
-        let affected_sources = signals.keys().cloned().collect::<Vec<_>>();
-        for key in list_dependency_declaration_head_keys_for_sources_in_tx(
-            conn,
-            project_id,
-            &affected_sources,
-        )? {
-            consumer_keys.insert(key);
-        }
+        let consumer_keys = selected_v2_shadow_head_keys_in_tx(conn, project_id, selection_scope)?;
         let consumer_key_snapshot = consumer_keys.iter().cloned().collect::<Vec<_>>();
         let mut summary = IncrementalFreshnessShadowSummary::default();
+        match selection_scope {
+            V2ShadowSelectionScope::SourceBounded(_) => {}
+            V2ShadowSelectionScope::ComponentSchemaGlobal => summary
+                .diagnostics
+                .push("NEX_V2_SHADOW_INCREMENTAL_COMPONENT_SCHEMA_PROJECT_WIDE".to_owned()),
+            V2ShadowSelectionScope::ProjectResetGlobal => summary
+                .diagnostics
+                .push("NEX_V2_SHADOW_INCREMENTAL_PROJECT_RESET_DEFERRED_TO_REBUILD".to_owned()),
+        }
         if let Some(error) = registry_error {
             summary
                 .diagnostics
@@ -1625,35 +1670,92 @@ fn evaluate_v2_shadow<'a>(
                 consumer_key.clone(),
                 ActiveDependencyDeclarationSetRead::Active(active_set.clone()),
             ));
-            let affected_entries = active_set
-                .entries
-                .iter()
-                .filter(|entry| signals.contains_key(&entry.source_object_identity))
-                .collect::<Vec<_>>();
-            if affected_entries.is_empty() {
+            let selected_entries = match selection_scope {
+                V2ShadowSelectionScope::SourceBounded(_) => active_set
+                    .entries
+                    .iter()
+                    .filter(|entry| signals.contains_key(&entry.source_object_identity))
+                    .collect::<Vec<_>>(),
+                // A schema marker invalidates only declared component
+                // contracts. Other D1 declarations remain outside this
+                // event's semantic effect; they are nevertheless included
+                // in the selected head/set guard above.
+                V2ShadowSelectionScope::ComponentSchemaGlobal => active_set
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.dependency_role == DependencyRole::ComponentContract)
+                    .collect::<Vec<_>>(),
+                // Restore/reset has no mutation-local Source projection. It
+                // is deliberately deferred to the project-wide rebuild, but
+                // every active head is still snapshotted and guarded.
+                V2ShadowSelectionScope::ProjectResetGlobal => Vec::new(),
+            };
+            if matches!(selection_scope, V2ShadowSelectionScope::ProjectResetGlobal) {
+                // The reset marker has no mutation-local projection. Keep
+                // the complete active-head state in the publish guard, but
+                // report the evaluation as explicitly deferred rather than
+                // implying that any declaration was classified here.
+                guards.push(active_set.clone());
                 continue;
             }
-            summary.active_head_count += 1;
-            summary.declaration_count += affected_entries.len();
-            guards.push(active_set.clone());
+            if matches!(
+                selection_scope,
+                V2ShadowSelectionScope::ComponentSchemaGlobal
+            ) {
+                // All project heads are selected and guarded. Only heads
+                // that actually declare component contracts contribute to
+                // the shadow summary; unrelated declarations are not
+                // fabricated as affected by a component schema marker.
+                guards.push(active_set.clone());
+                if selected_entries.is_empty() {
+                    continue;
+                }
+                summary.active_head_count += 1;
+                summary.declaration_count += selected_entries.len();
+            } else if selected_entries.is_empty() {
+                continue;
+            } else {
+                summary.active_head_count += 1;
+                summary.declaration_count += selected_entries.len();
+                guards.push(active_set.clone());
+            }
+            if selected_entries.is_empty() {
+                continue;
+            }
 
             let mut effects = Vec::new();
             let mut evaluated_declaration_count = 0usize;
             let mut selector_mapping_unknown = false;
             let mut effect_mapping_unknown = false;
-            for entry in affected_entries {
-                let Some(event) = signals.get(&entry.source_object_identity) else {
+            for entry in selected_entries {
+                let event = signals.get(&entry.source_object_identity);
+                if event.is_none()
+                    && !matches!(
+                        selection_scope,
+                        V2ShadowSelectionScope::ComponentSchemaGlobal
+                    )
+                {
                     continue;
+                }
+                let selector_change_class_result = match selection_scope {
+                    V2ShadowSelectionScope::ComponentSchemaGlobal => {
+                        Ok(SourceChangeClass::ComponentUnavailable)
+                    }
+                    _ => {
+                        let event =
+                            event.expect("source-bounded D2 selection must have a Feed signal");
+                        let base_change_class = source_change_classes
+                            .get(&entry.source_object_identity)
+                            .copied()
+                            .unwrap_or_else(|| source_change_class_from_feed_event(event.latest));
+                        shadow_change_class_for_selector(
+                            &entry.selector_json,
+                            event.latest,
+                            base_change_class,
+                        )
+                    }
                 };
-                let base_change_class = source_change_classes
-                    .get(&entry.source_object_identity)
-                    .copied()
-                    .unwrap_or_else(|| source_change_class_from_feed_event(event.latest));
-                let selector_change_class = match shadow_change_class_for_selector(
-                    &entry.selector_json,
-                    event.latest,
-                    base_change_class,
-                ) {
+                let selector_change_class = match selector_change_class_result {
                     Ok(change_class) => change_class,
                     Err(error) => {
                         selector_mapping_unknown = true;
@@ -1803,14 +1905,10 @@ fn verify_v2_declaration_inputs_in_tx(
     project_id: &str,
     plan: &EvaluationPlan,
 ) -> anyhow::Result<()> {
-    let current_keys = list_dependency_declaration_head_keys_for_sources_in_tx(
-        conn,
-        project_id,
-        &plan.v2_shadow_source_identities,
-    )?;
+    let current_keys = selected_v2_shadow_head_keys_in_tx(conn, project_id, &plan.v2_shadow_scope)?;
     anyhow::ensure!(
         current_keys == plan.v2_declaration_head_keys,
-        "NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED: affected-source head key set changed after evaluation"
+        "NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED: selected D1 head key set changed after evaluation"
     );
     for (consumer_kind, consumer_key, expected_state) in &plan.v2_declaration_head_snapshots {
         let current_state = read_active_dependency_declaration_set_in_tx(
@@ -1872,14 +1970,14 @@ fn publish_batch_in_tx(
             "NEX_SEMANTIC_EPOCH_CHANGED: Edge producer Epoch changed before publication"
         );
     }
-    // D2 is shadow-only, but the bounded V2 reverse lookup is still part of
-    // the plan's input. Re-run the exact source-bounded key/state snapshot
-    // before any V1 row is written so a no-head -> new-head race (or a head
-    // disappearing/corrupting) cannot acknowledge a Feed range without
-    // evaluating the declaration that was present for its affected Source.
+    // D2 is shadow-only, but the selected V2 head/key/state snapshot is still
+    // part of the plan's input. Re-run the exact source-bounded or global
+    // selection before any V1 row is written so a no-head -> new-head race
+    // (or a head disappearing/corrupting) cannot acknowledge a Feed range
+    // without evaluating the declaration that was selected for this event.
     // The outer caller rolls this transaction back and requeues the existing
-    // reservation. Unrelated heads are outside the bounded lookup and do not
-    // participate in this guard.
+    // reservation. Unrelated Sources/heads remain outside ordinary bounded
+    // selection; global markers intentionally select the complete project.
     verify_v2_declaration_inputs_in_tx(conn, &batch.project_id, plan)?;
     let now = now_string();
     for ((consumer_kind, consumer_key), observations) in &plan.by_consumer {
@@ -2432,6 +2530,18 @@ fn is_component_schema_change(event: &NarrativeChangeEventRecord) -> bool {
             == Some("schema-component-changed")
 }
 
+fn is_project_epoch_reset_marker(event: &NarrativeChangeEventRecord) -> bool {
+    event.object_key.get("kind").and_then(Value::as_str) == Some("project")
+        && matches!(
+            event
+                .structural_impact
+                .as_ref()
+                .and_then(|impact| impact.get("event"))
+                .and_then(Value::as_str),
+            Some("project-restored" | "semantic-epoch-reset")
+        )
+}
+
 fn requires_full_graph_evaluation(event: &NarrativeChangeEventRecord) -> bool {
     let kind = event.object_key.get("kind").and_then(Value::as_str);
     let structural_event = event
@@ -2712,6 +2822,54 @@ mod tests {
         .expect("seed deterministic D2 head");
     }
 
+    fn seed_component_shadow_head(
+        db: &Database,
+        project_id: &str,
+        consumer_key: &str,
+        expected_head_version: i64,
+        producer_generation: i64,
+    ) {
+        write_dependency_declaration_set(
+            db,
+            DependencyDeclarationSetRequest {
+                project_id: project_id.to_owned(),
+                consumer_kind: "narrative-extraction-run".to_owned(),
+                consumer_key: consumer_key.to_owned(),
+                producer_id: format!("nir0-d2-component-race-producer-{producer_generation}"),
+                producer_generation,
+                expected_head_version,
+                declarations: vec![DependencyDeclaration {
+                    source_object_identity: "component-contract:extractor".to_owned(),
+                    role: DependencyRole::ComponentContract,
+                    selector: DependencySelector::ComponentContract {
+                        contract_id: "extractor".to_owned(),
+                        contract_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_owned(),
+                    },
+                }],
+                created_at: OCCURRED_AT.to_owned(),
+            },
+        )
+        .expect("seed component-contract D2 head");
+    }
+
+    fn mark_component_schema_change(db: &Database) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_change_events
+                    SET object_key_json = ?1,
+                        structural_impact_json = ?2
+                  WHERE id = 'event-phase-cas'",
+                params![
+                    r#"{"kind":"component","componentId":"extractor"}"#,
+                    r#"{"event":"schema-component-changed","requiresFullRebuild":true}"#,
+                ],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("mark CAS Feed event as component schema change");
+    }
+
     fn reserve_and_evaluate_batch(db: &Database) -> (ClaimedBatch, EvaluationPlan) {
         let reservation = db
             .with_conn(|conn| with_immediate_transaction(conn, reserve_or_resume_batch_in_tx))
@@ -2727,6 +2885,44 @@ mod tests {
         let (batch, plan) = reserve_and_evaluate_batch(db);
         assert_eq!(plan.affected_edge_count, 1);
         (batch, plan)
+    }
+
+    #[test]
+    fn project_reset_scope_dominates_a_mixed_component_schema_batch() {
+        let marker = |kind: &str, structural_event: &str| NarrativeChangeEventRecord {
+            event_id: format!("marker-{kind}-{structural_event}"),
+            project_id: PROJECT_ID.to_owned(),
+            transaction_id: "marker-transaction".to_owned(),
+            canonical_change_event_uid: "marker-canonical".to_owned(),
+            canonical_sequence: 1,
+            event_ordinal: 0,
+            object_key: serde_json::json!({ "kind": kind }),
+            change_kind: "schema".to_owned(),
+            mutation_kind: "update".to_owned(),
+            before_version: Some(1),
+            before_digest: Some("sha256:before".to_owned()),
+            after_version: Some(2),
+            after_digest: Some("sha256:after".to_owned()),
+            changed_paths: vec!["/".to_owned()],
+            text_impact: None,
+            structural_impact: Some(serde_json::json!({ "event": structural_event })),
+            cause_kind: super::super::change_feed::NarrativeChangeCauseKind::Forward,
+            origin: super::super::change_feed::NarrativeChangeOrigin::Migration,
+            original_transaction_id: None,
+            commit_id: None,
+            journal_id: None,
+            undo_journal_id: None,
+            application_ids: Vec::new(),
+            occurred_at: OCCURRED_AT.to_owned(),
+        };
+        let events = vec![
+            marker("component", "schema-component-changed"),
+            marker("project", "project-restored"),
+        ];
+        assert_eq!(
+            select_v2_shadow_scope(&events, std::iter::empty()),
+            V2ShadowSelectionScope::ProjectResetGlobal
+        );
     }
 
     fn assert_publish_rolled_back(db: &Database, batch: &ClaimedBatch) {
@@ -2965,6 +3161,83 @@ mod tests {
             "unexpected publish failure: {error:#}"
         );
         assert_publish_rolled_back(&db, &batch);
+    }
+
+    #[test]
+    fn publish_rejects_a_new_project_wide_v2_head_after_component_schema_evaluation() {
+        let db = fixture_db();
+        mark_component_schema_change(&db);
+        let (batch, plan) = reserve_and_evaluate(&db);
+        assert_eq!(
+            plan.v2_shadow_scope,
+            V2ShadowSelectionScope::ComponentSchemaGlobal
+        );
+        seed_component_shadow_head(&db, PROJECT_ID, CONSUMER_RUN_ID, 0, 1);
+
+        let error = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
+            })
+            .expect_err("new project-wide V2 head must invalidate the publication plan");
+        assert!(
+            format!("{error:#}").contains("NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED"),
+            "unexpected publish failure: {error:#}"
+        );
+        assert_publish_rolled_back(&db, &batch);
+    }
+
+    #[test]
+    fn publish_rejects_a_changed_project_wide_v2_head_after_component_schema_evaluation() {
+        let db = fixture_db();
+        mark_component_schema_change(&db);
+        seed_component_shadow_head(&db, PROJECT_ID, CONSUMER_RUN_ID, 0, 1);
+        let (batch, plan) = reserve_and_evaluate(&db);
+        seed_component_shadow_head(&db, PROJECT_ID, CONSUMER_RUN_ID, 1, 2);
+
+        let error = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
+            })
+            .expect_err("changed project-wide V2 head must invalidate the publication plan");
+        assert!(
+            format!("{error:#}").contains("NEX_V2_SHADOW_DECLARATION_INPUT_CHANGED"),
+            "unexpected publish failure: {error:#}"
+        );
+        assert_publish_rolled_back(&db, &batch);
+    }
+
+    #[test]
+    fn unrelated_project_v2_head_drift_does_not_block_component_schema_publication() {
+        let db = fixture_db();
+        mark_component_schema_change(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('unrelated-project', 'Unrelated')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed unrelated project");
+        let (batch, plan) = reserve_and_evaluate(&db);
+        seed_component_shadow_head(&db, "unrelated-project", "unrelated-consumer", 0, 1);
+
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
+        })
+        .expect("unrelated project V2 head must stay outside the global project guard");
+
+        db.with_conn(|conn| {
+            let acknowledged: i64 = conn.query_row(
+                "SELECT acknowledged_through_sequence
+                   FROM narrative_change_cursors
+                  WHERE project_id = ?1 AND consumer_id = ?2",
+                params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(acknowledged == 1, "the V1 cursor must be acknowledged");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect V1 acknowledgement after unrelated project drift");
     }
 
     #[test]
