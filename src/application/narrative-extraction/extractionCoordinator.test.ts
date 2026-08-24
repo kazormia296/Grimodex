@@ -170,6 +170,13 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         buildSnapshot: async () => ({
           ok: true as const,
           snapshot: built.snapshot,
+          scopeAuthorityDocuments: [
+            {
+              documentRef: "D000001",
+              sourceKey: "project:scene:one",
+              rawStoryKey: "story-10",
+            },
+          ],
           flush: {
             status: "already-clean" as const,
             blockedDocuments: [],
@@ -196,6 +203,39 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     );
     expect(claimMock).toHaveBeenCalled();
     expect(finishMock).toHaveBeenCalled();
+    expect(finishMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        historicalScopeAuthorityBasis: expect.objectContaining({
+          schemaVersion: 2,
+          contractId: "narrative-scope-authority-basis/2",
+          basisKind: "historical-run-snapshot",
+          projectId: "project-a",
+          source: {
+            sourceKind: "snapshot-document",
+            sourceKey: "snapshot:run-1",
+          },
+          mappings: [
+            expect.objectContaining({
+              documentRef: "D000001",
+              sourceKey: "project:scene:one",
+              sceneRef: "scene:one",
+              readingOrderRef: "reading:one",
+              storyTimeRef: "story:one",
+              readingRank: 0,
+              storyTimeOrder: {
+                status: "resolved",
+                rawStoryKey: "story-10",
+                storyRank: 0,
+              },
+            }),
+          ],
+          digests: expect.objectContaining({
+            corpusDigest: built.snapshot.digest,
+            compositeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+          }),
+        }),
+      }),
+    );
     expect(saveProposalSetMock).toHaveBeenCalled();
   });
 
