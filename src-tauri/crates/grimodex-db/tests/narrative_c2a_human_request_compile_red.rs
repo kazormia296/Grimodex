@@ -1692,14 +1692,7 @@ mod c2b_atomic_materialization_red {
             )]
         );
 
-        let v1_edges: Vec<(
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-        )> = db
+        let v1_edges: Vec<(String, String, String, String, String, Option<String>)> = db
             .with_conn(|conn| {
                 let mut statement = conn.prepare(
                     "SELECT project_id, consumer_kind, consumer_key, source_object_identity,
