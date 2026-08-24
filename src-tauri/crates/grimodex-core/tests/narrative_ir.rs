@@ -139,7 +139,17 @@ fn human_derived_envelope() -> Value {
         .get_mut("revisionBasis")
         .and_then(Value::as_object_mut)
         .expect("interpretation revision basis");
-    basis.remove("producer");
+    for field in [
+        "producer",
+        "runId",
+        "taskId",
+        "contextSet",
+        "contextSetDigest",
+        "componentContractDigest",
+        "finalRequestDigest",
+    ] {
+        basis.remove(field);
+    }
     basis.insert("kind".to_owned(), json!("human-derived"));
     basis.insert("parentRevisionId".to_owned(), json!("revision:1"));
     basis.insert("expectedParentEnvelopeDigest".to_owned(), json!(DIGEST));
