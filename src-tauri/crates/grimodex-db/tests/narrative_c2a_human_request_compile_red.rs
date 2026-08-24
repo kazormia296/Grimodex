@@ -15,8 +15,10 @@ use anyhow::Result;
 use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use grimodex_core::narrative_ir::derive_chronicle_scene_event_scope;
 use grimodex_core::{canonical_json_digest, canonical_json_string};
+use grimodex_db::narrative_extraction::human_material_basis::HumanMaterialDerivationKind;
 use grimodex_db::narrative_extraction::{
     narrative_extraction_create_human_derived_revision,
+    narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization,
     narrative_extraction_create_human_derived_revision_with_scope, narrative_extraction_create_run,
     write_dependency_declaration_set, CreateHumanDerivedRevisionRequest, CreateRunPayload,
     CreateTaskSeed, DependencyDeclaration, DependencyDeclarationSetRequest,
@@ -37,6 +39,8 @@ const TASK_ID: &str = "task-human";
 const PROPOSAL_ID: &str = "proposal-human";
 const PARENT_REVISION_ID: &str = "revision-parent";
 const DECLARATION_PRODUCER_ID: &str = "chronicle-human-c2a";
+const C2B_DECLARATION_PRODUCER_ID: &str = "proposal-revision-source-basis";
+const C2B_EPOCH_ID: &str = "epoch-c2b-parent";
 const DECLARATION_CREATED_AT: &str = "2026-08-24T00:00:00.000Z";
 
 const REVISION_CONFLICT: &str = "NEX_PROPOSAL_REVISION_CONFLICT";
@@ -268,6 +272,12 @@ fn parent_envelope_with_payload(
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParentFixtureKind {
+    C2A,
+    C2B,
+}
+
 fn fixture_db() -> Database {
     fixture_db_for(PARENT_REVISION_ID, true)
 }
@@ -277,13 +287,41 @@ fn zero_edge_fixture_db() -> Database {
 }
 
 fn fixture_db_for(parent_revision_id: &str, include_v1_edge: bool) -> Database {
-    fixture_db_for_payload(parent_revision_id, include_v1_edge, proposal_payload())
+    fixture_db_for_payload_kind(
+        parent_revision_id,
+        include_v1_edge,
+        proposal_payload(),
+        ParentFixtureKind::C2A,
+    )
 }
 
 fn fixture_db_for_payload(
     parent_revision_id: &str,
     include_v1_edge: bool,
     parent_payload: Value,
+) -> Database {
+    fixture_db_for_payload_kind(
+        parent_revision_id,
+        include_v1_edge,
+        parent_payload,
+        ParentFixtureKind::C2A,
+    )
+}
+
+fn c2b_projection_fixture_db() -> Database {
+    fixture_db_for_payload_kind(
+        PARENT_REVISION_ID,
+        true,
+        proposal_payload(),
+        ParentFixtureKind::C2B,
+    )
+}
+
+fn fixture_db_for_payload_kind(
+    parent_revision_id: &str,
+    include_v1_edge: bool,
+    parent_payload: Value,
+    fixture_kind: ParentFixtureKind,
 ) -> Database {
     // The typed API and D1 tables are intentionally missing on the frozen
     // base, so this setup is reached only after D1 publishes the contract.
@@ -416,20 +454,42 @@ fn fixture_db_for_payload(
     })
     .expect("seed V2 parent revision and source basis");
 
+    let declarations = match fixture_kind {
+        ParentFixtureKind::C2A => vec![DependencyDeclaration {
+            source_object_identity: source_key(),
+            role: DependencyRole::DirectEvidence,
+            selector: DependencySelector::WholeSource,
+        }],
+        ParentFixtureKind::C2B => vec![
+            DependencyDeclaration {
+                source_object_identity: source_key(),
+                role: DependencyRole::DirectEvidence,
+                selector: DependencySelector::WholeSource,
+            },
+            DependencyDeclaration {
+                source_object_identity: "component:chronicle.event-synthesis.prompt".to_owned(),
+                role: DependencyRole::ComponentContract,
+                selector: DependencySelector::ComponentContract {
+                    contract_id: "chronicle.event-synthesis.prompt".to_owned(),
+                    contract_digest: parent_component_contract_digest(),
+                },
+            },
+        ],
+    };
+    let declaration_producer_id = match fixture_kind {
+        ParentFixtureKind::C2A => DECLARATION_PRODUCER_ID,
+        ParentFixtureKind::C2B => C2B_DECLARATION_PRODUCER_ID,
+    };
     let declaration_receipt = write_dependency_declaration_set(
         &db,
         DependencyDeclarationSetRequest {
             project_id: PROJECT_A.to_owned(),
             consumer_kind: "proposal-revision".to_owned(),
             consumer_key: parent_revision_id.to_owned(),
-            producer_id: DECLARATION_PRODUCER_ID.to_owned(),
+            producer_id: declaration_producer_id.to_owned(),
             producer_generation: 1,
             expected_head_version: 0,
-            declarations: vec![DependencyDeclaration {
-                source_object_identity: source_key(),
-                role: DependencyRole::DirectEvidence,
-                selector: DependencySelector::WholeSource,
-            }],
+            declarations,
             created_at: DECLARATION_CREATED_AT.to_owned(),
         },
     )
@@ -446,12 +506,24 @@ fn fixture_db_for_payload(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
         assert_eq!(head.0, declaration_receipt.declaration_set_id);
-        assert_eq!(head.1, DECLARATION_PRODUCER_ID);
+        assert_eq!(head.1, declaration_producer_id);
         assert_eq!(head.2, 1);
         assert_eq!(head.3, declaration_receipt.head_version);
         Ok::<_, anyhow::Error>(())
     })
     .expect("inspect D1 active declaration head");
+    if fixture_kind == ParentFixtureKind::C2B {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES (?1, ?2, 0, 'initial', ?3)",
+                rusqlite::params![C2B_EPOCH_ID, PROJECT_A, DECLARATION_CREATED_AT],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed C2B current semantic epoch");
+    }
     db
 }
 
@@ -739,6 +811,73 @@ fn trusted_unresolved(value: &Value) -> TrustedUnresolvedConstraint {
             .expect("golden unresolved constraint id")
             .to_owned(),
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct C2BStateSnapshot {
+    current_revision_id: Option<String>,
+    revision_count: i64,
+    semantic_epoch_count: i64,
+    current_epoch_id: Option<String>,
+    consumer_freshness_count: i64,
+    projection_freshness_count: i64,
+    edge_state_count: i64,
+    declaration_set_count: i64,
+    declaration_head_count: i64,
+    declaration_entry_count: i64,
+    dependency_edge_count: i64,
+    run_count: i64,
+    task_count: i64,
+    attempt_count: i64,
+    cursor_count: i64,
+}
+
+fn c2b_state_snapshot(db: &Database) -> C2BStateSnapshot {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT p.current_revision_id,
+                    (SELECT COUNT(*) FROM narrative_proposal_revisions
+                      WHERE proposal_id = ?1),
+                    (SELECT COUNT(*) FROM narrative_semantic_epochs
+                      WHERE project_id = ?2),
+                    (SELECT id FROM narrative_semantic_epochs
+                      WHERE project_id = ?2 ORDER BY epoch_number DESC LIMIT 1),
+                    (SELECT COUNT(*) FROM narrative_consumer_freshness),
+                    (SELECT COUNT(*) FROM narrative_projection_freshness),
+                    (SELECT COUNT(*) FROM narrative_dependency_edge_states),
+                    (SELECT COUNT(*) FROM narrative_dependency_declaration_sets),
+                    (SELECT COUNT(*) FROM narrative_dependency_declaration_heads),
+                    (SELECT COUNT(*) FROM narrative_dependency_declaration_entries),
+                    (SELECT COUNT(*) FROM narrative_dependency_edges),
+                    (SELECT COUNT(*) FROM narrative_extraction_runs),
+                    (SELECT COUNT(*) FROM narrative_extraction_tasks),
+                    (SELECT COUNT(*) FROM narrative_extraction_attempts),
+                    (SELECT COUNT(*) FROM narrative_change_cursors)
+               FROM narrative_proposals p
+              WHERE p.id = ?3",
+            rusqlite::params![PROPOSAL_ID, PROJECT_A, PROPOSAL_ID],
+            |row| {
+                Ok(C2BStateSnapshot {
+                    current_revision_id: row.get(0)?,
+                    revision_count: row.get(1)?,
+                    semantic_epoch_count: row.get(2)?,
+                    current_epoch_id: row.get(3)?,
+                    consumer_freshness_count: row.get(4)?,
+                    projection_freshness_count: row.get(5)?,
+                    edge_state_count: row.get(6)?,
+                    declaration_set_count: row.get(7)?,
+                    declaration_head_count: row.get(8)?,
+                    declaration_entry_count: row.get(9)?,
+                    dependency_edge_count: row.get(10)?,
+                    run_count: row.get(11)?,
+                    task_count: row.get(12)?,
+                    attempt_count: row.get(13)?,
+                    cursor_count: row.get(14)?,
+                })
+            },
+        )?)
+    })
+    .expect("snapshot C2B materialization state")
 }
 
 #[test]
@@ -1460,4 +1599,329 @@ fn stale_resolver_parent_reaches_typed_writer_without_rewriting_observed_token()
         })
         .expect("read retained parent token");
     assert_eq!(retained_token, observed_before);
+}
+
+mod c2b_atomic_materialization_red {
+    use super::*;
+    use grimodex_core::canonical_json_string;
+    use serde_json::json;
+
+    fn c2b_request(db: &Database) -> CreateHumanDerivedRevisionRequest {
+        request(
+            PARENT_REVISION_ID,
+            PARENT_REVISION_ID,
+            &parent_envelope_digest(db),
+        )
+    }
+
+    fn projection_source_basis(
+        db: &Database,
+        revision_id: &str,
+    ) -> Vec<(i64, String, String, String, Option<String>)> {
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT ordinal, source_kind, source_key, revision_token, observed_at
+                   FROM narrative_revision_source_basis
+                  WHERE revision_id = ?1
+                  ORDER BY ordinal",
+            )?;
+            let rows = statement
+                .query_map([revision_id], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .expect("read projected SourceBasis")
+    }
+
+    fn canonical_whole_source_selector() -> String {
+        canonical_json_string(&json!({"kind": "whole-source"})).expect("canonical selector")
+    }
+
+    fn canonical_component_selector() -> String {
+        canonical_json_string(&json!({
+            "kind": "component-contract",
+            "contractId": "chronicle.event-synthesis.prompt",
+            "contractDigest": parent_component_contract_digest()
+        }))
+        .expect("canonical component selector")
+    }
+
+    #[test]
+    fn c2b_projection_materializes_exact_child_basis_v1_d1_epoch_and_runless_freshness() {
+        let db = c2b_projection_fixture_db();
+        let saved =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                c2b_request(&db),
+                HumanMaterialDerivationKind::ProjectionOnly,
+            )
+            .expect("C2B projection-only materialization");
+        let child_revision_id = saved["revisionId"]
+            .as_str()
+            .expect("C2B child revision id")
+            .to_owned();
+
+        let current_revision_id: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT current_revision_id FROM narrative_proposals WHERE id = ?1",
+                    [PROPOSAL_ID],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read promoted current revision");
+        assert_eq!(current_revision_id, child_revision_id);
+
+        assert_eq!(
+            projection_source_basis(&db, &child_revision_id),
+            vec![(
+                (0_i64),
+                "scene-body".to_owned(),
+                source_key(),
+                source_revision_token(&db),
+                None,
+            )]
+        );
+
+        let v1_edges: Vec<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )> = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT project_id, consumer_kind, consumer_key, source_object_identity,
+                        read_set_json, owning_run_id
+                   FROM narrative_dependency_edges
+                  WHERE project_id = ?1
+                    AND consumer_kind = 'proposal-revision'
+                    AND consumer_key = ?2
+                  ORDER BY source_object_identity",
+                )?;
+                let rows = statement
+                    .query_map(rusqlite::params![PROJECT_A, child_revision_id], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .expect("read projected V1 edges");
+        assert_eq!(
+            v1_edges,
+            vec![(
+                PROJECT_A.to_owned(),
+                "proposal-revision".to_owned(),
+                child_revision_id.clone(),
+                source_key(),
+                serde_json::to_string(&vec![source_revision_token(&db)]).expect("V1 read set"),
+                Some(RUN_ID.to_owned()),
+            )]
+        );
+
+        let d1_entries: Vec<(String, String, String, i64, String, String, String, String)> = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT s.consumer_kind, s.consumer_key, s.producer_id,
+                            s.producer_generation, s.state, e.source_object_identity,
+                            e.dependency_role, e.selector_json
+                       FROM narrative_dependency_declaration_sets s
+                       JOIN narrative_dependency_declaration_entries e
+                         ON e.declaration_set_id = s.id
+                      WHERE s.project_id = ?1
+                        AND s.consumer_kind = 'proposal-revision'
+                        AND s.consumer_key = ?2
+                      ORDER BY e.source_object_identity",
+                )?;
+                let rows = statement
+                    .query_map(rusqlite::params![PROJECT_A, child_revision_id], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .expect("read projected D1 entries");
+        assert_eq!(
+            d1_entries,
+            vec![
+                (
+                    "proposal-revision".to_owned(),
+                    child_revision_id.clone(),
+                    C2B_DECLARATION_PRODUCER_ID.to_owned(),
+                    1,
+                    "sealed".to_owned(),
+                    "component:chronicle.event-synthesis.prompt".to_owned(),
+                    "component-contract".to_owned(),
+                    canonical_component_selector(),
+                ),
+                (
+                    "proposal-revision".to_owned(),
+                    child_revision_id.clone(),
+                    C2B_DECLARATION_PRODUCER_ID.to_owned(),
+                    1,
+                    "sealed".to_owned(),
+                    source_key(),
+                    "direct-evidence".to_owned(),
+                    canonical_whole_source_selector(),
+                ),
+            ]
+        );
+
+        let edge_states: Vec<(String, String, String, String)> = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT e.source_object_identity, s.evidence_freshness,
+                            s.build_action, s.evaluated_at_epoch_id
+                       FROM narrative_dependency_edges e
+                       JOIN narrative_dependency_edge_states s ON s.edge_id = e.id
+                      WHERE e.project_id = ?1
+                        AND e.consumer_kind = 'proposal-revision'
+                        AND e.consumer_key = ?2
+                      ORDER BY e.source_object_identity",
+                )?;
+                let rows = statement
+                    .query_map(rusqlite::params![PROJECT_A, child_revision_id], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .expect("read projected current-epoch edge states");
+        assert_eq!(
+            edge_states,
+            vec![(
+                source_key(),
+                "fresh".to_owned(),
+                "none".to_owned(),
+                C2B_EPOCH_ID.to_owned(),
+            )]
+        );
+
+        let expected_child_dependency_set_digest: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT s.dependency_set_digest
+                       FROM narrative_dependency_declaration_heads h
+                       JOIN narrative_dependency_declaration_sets s
+                         ON s.id = h.active_declaration_set_id
+                      WHERE h.project_id = ?1
+                        AND h.consumer_kind = 'proposal-revision'
+                        AND h.consumer_key = ?2",
+                    rusqlite::params![PROJECT_A, child_revision_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read projected D1 dependency-set digest");
+        let consumer_freshness: (String, String, String, Option<String>, String) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT evidence_freshness, build_action, semantic_epoch_id,
+                            last_evaluated_run_id, dependency_set_digest
+                       FROM narrative_consumer_freshness
+                      WHERE project_id = ?1
+                        AND consumer_kind = 'proposal-revision'
+                        AND consumer_key = ?2",
+                    rusqlite::params![PROJECT_A, child_revision_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )?)
+            })
+            .expect("read projected Consumer Freshness");
+        assert_eq!(
+            consumer_freshness,
+            (
+                "fresh".to_owned(),
+                "none".to_owned(),
+                C2B_EPOCH_ID.to_owned(),
+                None,
+                expected_child_dependency_set_digest,
+            )
+        );
+    }
+
+    #[test]
+    fn c2b_scope_override_without_native_authority_fails_before_any_dml() {
+        let db = c2b_projection_fixture_db();
+        let before = c2b_state_snapshot(&db);
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                c2b_request(&db),
+                HumanMaterialDerivationKind::ScopeOverride,
+            )
+            .expect_err("C2B scope override must fail closed without Native authority");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE"),
+            "unexpected C2B scope error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
+
+    #[test]
+    fn c2b_projection_freshness_trigger_rolls_back_every_materialization_side_effect() {
+        let db = c2b_projection_fixture_db();
+        let before = c2b_state_snapshot(&db);
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TEMP TRIGGER c2b_test_abort_freshness
+                   BEFORE INSERT ON narrative_consumer_freshness
+                   BEGIN
+                       SELECT RAISE(ABORT, 'C2B_TEST_FRESHNESS_ABORT');
+                   END;",
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("install test-only Freshness abort trigger");
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                c2b_request(&db),
+                HumanMaterialDerivationKind::ProjectionOnly,
+            )
+            .expect_err("Freshness trigger must abort C2B materialization");
+        assert!(
+            error.to_string().contains("C2B_TEST_FRESHNESS_ABORT"),
+            "unexpected Freshness trigger error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
 }

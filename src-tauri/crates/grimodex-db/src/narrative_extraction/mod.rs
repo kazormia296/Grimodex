@@ -53,6 +53,7 @@ pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 mod human_derivation;
 pub mod human_material_basis;
+mod human_materialization;
 mod models;
 mod phase_operations;
 mod phase_snapshots;
@@ -329,6 +330,23 @@ pub fn narrative_extraction_create_human_derived_revision_with_scope(
         trusted_project_id,
         trusted_scope,
         request,
+    )
+}
+
+/// Native-owned C2B materialization seam.  The projection path is currently
+/// RED and delegates to the dormant C2A writer; scope override fails before
+/// any DML until its Native authority is wired.
+pub fn narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+    db: &Database,
+    trusted_project_id: &str,
+    request: CreateHumanDerivedRevisionRequest,
+    derivation_kind: human_material_basis::HumanMaterialDerivationKind,
+) -> anyhow::Result<Value> {
+    human_materialization::create_human_derived_revision_with_c2b_projection_materialization(
+        db,
+        trusted_project_id,
+        request,
+        derivation_kind,
     )
 }
 
