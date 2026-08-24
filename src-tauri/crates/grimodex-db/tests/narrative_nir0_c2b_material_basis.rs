@@ -5,12 +5,13 @@
 //! promotion, Freshness publication, and Electron transport.
 
 use grimodex_core::canonical_json_digest;
-use grimodex_core::narrative_dependency::DependencyRole;
+use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use grimodex_db::narrative_extraction::human_material_basis::{
     project_d1_declaration_set, project_v1_expectations, resolve_human_material_basis,
-    validate_d1_parent_authority, validate_v1_expectation_parity, D1DeclarationProjection,
-    D1ParentAuthority, HumanMaterialDerivationKind, HumanMaterialResolutionContext, MaterialBasis,
-    V1ParentAuthority,
+    validate_d1_parent_authority, validate_v1_parent_authority, D1ParentAuthority,
+    D1ParentSnapshot, HumanMaterialDerivationKind, HumanMaterialResolutionContext, MaterialBasis,
+    TrustedDependencyEntry, TrustedEvidenceEntry, TrustedHumanMaterialResolution,
+    TrustedSourceBasisEntry, V1EdgeExpectation, V1ParentAuthority, V1PersistedEdge,
 };
 use grimodex_db::narrative_extraction::CreateHumanDerivedRevisionRequest;
 use serde_json::{json, Value};
@@ -74,7 +75,7 @@ fn dependency_set() -> Value {
         },
         {
             "dependencyId": "dependency:scope",
-            "inputRef": "scope-registry:scene-event",
+            "inputRef": SCENE_SOURCE_KEY,
             "contextIds": [],
             "role": "scope-resolution",
             "selector": {"kind": "whole-source"}
@@ -116,6 +117,65 @@ fn resolution_context(scope_override: bool) -> HumanMaterialResolutionContext {
         scene_ref: "scene:1".to_owned(),
         edited_document_ref: "document:1".to_owned(),
         secret_scope: scope_override,
+    }
+}
+
+fn trusted_scope_resolution(
+    context: &HumanMaterialResolutionContext,
+) -> TrustedHumanMaterialResolution {
+    TrustedHumanMaterialResolution {
+        project_id: context.project_id.clone(),
+        parent_revision_id: context.parent_revision_id.clone(),
+        expected_parent_envelope_digest: context.expected_parent_envelope_digest.clone(),
+        scene_ref: context.scene_ref.clone(),
+        edited_document_ref: context.edited_document_ref.clone(),
+        source_basis: vec![
+            TrustedSourceBasisEntry {
+                source_kind: "scene-body".to_owned(),
+                source_key: SCENE_SOURCE_KEY.to_owned(),
+                revision_token: SOURCE_REVISION_TOKEN.to_owned(),
+            },
+            TrustedSourceBasisEntry {
+                source_kind: "evidence-anchor".to_owned(),
+                source_key: "evidence:scope-resolution-1".to_owned(),
+                revision_token: "v0@2026-01-01T00:00:01.000Z".to_owned(),
+            },
+        ],
+        evidence_set: vec![TrustedEvidenceEntry {
+            evidence_ref: "anchor:arrival".to_owned(),
+            document_ref: "document:1".to_owned(),
+            quote: "Arrival.".to_owned(),
+            quote_digest: "sha256:61b3366c3dc326b93fb56073b11453dea0d2db2fe6f79588ce266188edd24c67"
+                .to_owned(),
+            source_key: SCENE_SOURCE_KEY.to_owned(),
+            revision_token: SOURCE_REVISION_TOKEN.to_owned(),
+        }],
+        dependency_set: vec![
+            TrustedDependencyEntry {
+                dependency_id: "dependency:evidence".to_owned(),
+                input_ref: SCENE_SOURCE_KEY.to_owned(),
+                context_ids: vec![],
+                role: DependencyRole::DirectEvidence,
+                selector: DependencySelector::WholeSource,
+            },
+            TrustedDependencyEntry {
+                dependency_id: "dependency:component-contract".to_owned(),
+                input_ref: "component:chronicle.event-synthesis.prompt".to_owned(),
+                context_ids: vec![],
+                role: DependencyRole::ComponentContract,
+                selector: DependencySelector::ComponentContract {
+                    contract_id: "chronicle.event-synthesis.prompt".to_owned(),
+                    contract_digest: component_contract_digest(),
+                },
+            },
+            TrustedDependencyEntry {
+                dependency_id: "dependency:scope".to_owned(),
+                input_ref: "evidence:scope-resolution-1".to_owned(),
+                context_ids: vec![],
+                role: DependencyRole::ScopeResolution,
+                selector: DependencySelector::WholeSource,
+            },
+        ],
     }
 }
 
@@ -192,15 +252,31 @@ fn scope_override_rejects_unexpected_sidecar_and_replaces_only_scope_dependency(
     );
 
     let parent = material();
+    let context = resolution_context(true);
+    assert!(resolve_human_material_basis(
+        HumanMaterialDerivationKind::ScopeOverride,
+        &parent,
+        &context,
+        None,
+    )
+    .is_err());
+
+    let trusted = trusted_scope_resolution(&context);
     let resolved = resolve_human_material_basis(
         HumanMaterialDerivationKind::ScopeOverride,
         &parent,
-        &resolution_context(true),
-        None,
+        &context,
+        Some(&trusted),
     )
     .expect("scope override material resolution");
+    assert!(resolve_human_material_basis(
+        HumanMaterialDerivationKind::ProjectionOnly,
+        &parent,
+        &resolution_context(false),
+        Some(&trusted),
+    )
+    .is_err());
 
-    assert_eq!(resolved.material_basis.source_basis, parent.source_basis);
     assert_eq!(resolved.material_basis.evidence_set, parent.evidence_set);
 
     let parent_dependencies =
@@ -221,6 +297,48 @@ fn scope_override_rejects_unexpected_sidecar_and_replaces_only_scope_dependency(
         without_scope(&parent_dependencies)
     );
     assert_ne!(child_dependencies, parent_dependencies);
+    assert_ne!(
+        resolved.material_basis.dependency_set_digest,
+        parent.dependency_set_digest
+    );
+    assert!(child_dependencies
+        .as_array()
+        .expect("dependency array")
+        .iter()
+        .any(
+            |entry| entry.get("role").and_then(Value::as_str) == Some("scope-resolution")
+                && entry.get("inputRef").and_then(Value::as_str)
+                    == Some("evidence:scope-resolution-1")
+        ));
+    let child_sources = serde_json::to_value(&resolved.material_basis.source_basis)
+        .expect("child source basis JSON");
+    let parent_sources =
+        serde_json::to_value(&parent.source_basis).expect("parent source basis JSON");
+    let child_non_scope_sources = child_sources
+        .as_array()
+        .expect("source basis array")
+        .iter()
+        .filter(|entry| entry.get("sourceKind").and_then(Value::as_str) != Some("evidence-anchor"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(Value::Array(child_non_scope_sources), parent_sources);
+    assert!(child_sources
+        .as_array()
+        .expect("source basis array")
+        .iter()
+        .any(
+            |entry| entry.get("sourceKind").and_then(Value::as_str) == Some("scene-body")
+                && entry.get("sourceKey").and_then(Value::as_str) == Some(SCENE_SOURCE_KEY)
+        ));
+    assert!(child_sources
+        .as_array()
+        .expect("source basis array")
+        .iter()
+        .any(
+            |entry| entry.get("sourceKind").and_then(Value::as_str) == Some("evidence-anchor")
+                && entry.get("sourceKey").and_then(Value::as_str)
+                    == Some("evidence:scope-resolution-1")
+        ));
 }
 
 #[test]
@@ -244,17 +362,25 @@ fn d1_projection_requires_direct_and_component_declarations_and_parent_parity() 
         .declarations
         .iter()
         .any(|declaration| declaration.role == DependencyRole::ComponentContract));
-    validate_d1_parent_authority(&projection, &authority).expect("parent D1 authority parity");
+    let snapshot = D1ParentSnapshot {
+        project_id: authority.project_id.clone(),
+        consumer_kind: authority.consumer_kind.clone(),
+        consumer_key: authority.consumer_key.clone(),
+        producer_id: authority.producer_id.clone(),
+        producer_generation: authority.producer_generation,
+        declarations: projection.declarations.clone(),
+    };
+    validate_d1_parent_authority(&projection, &snapshot).expect("parent D1 authority parity");
 
-    let mut missing_component: D1DeclarationProjection = projection.clone();
+    let mut missing_component = snapshot.clone();
     missing_component
         .declarations
         .retain(|declaration| declaration.role != DependencyRole::ComponentContract);
-    assert!(validate_d1_parent_authority(&missing_component, &authority).is_err());
+    assert!(validate_d1_parent_authority(&projection, &missing_component).is_err());
 
-    let mut wrong_generation = projection;
+    let mut wrong_generation = snapshot;
     wrong_generation.producer_generation = 0;
-    assert!(validate_d1_parent_authority(&wrong_generation, &authority).is_err());
+    assert!(validate_d1_parent_authority(&projection, &wrong_generation).is_err());
 }
 
 #[test]
@@ -267,29 +393,34 @@ fn v1_projection_is_source_basis_only_and_rejects_shape_or_owner_drift() {
     )
     .expect("projection-only material resolution");
     let authority = v1_parent_authority();
-    let projection = project_v1_expectations(&resolved.material_basis, &authority)
+    let expected = project_v1_expectations(&resolved.material_basis, &authority)
         .expect("V1 compatibility expectation projection");
-    let expected = json!([{
-        "sourceKind": "scene-body",
-        "sourceKey": SCENE_SOURCE_KEY,
-        "revisionTokens": [SOURCE_REVISION_TOKEN],
-        "owningRunId": PARENT_RUN_ID
-    }]);
-    let projection = serde_json::to_value(&projection).expect("V1 projection JSON");
-    assert_eq!(projection, expected);
-    validate_v1_expectation_parity(&projection, &authority).expect("V1 parent parity");
+    assert_eq!(
+        expected,
+        vec![V1EdgeExpectation {
+            source_object_identity: SCENE_SOURCE_KEY.to_owned(),
+            revision_token: SOURCE_REVISION_TOKEN.to_owned(),
+            owning_run_id: PARENT_RUN_ID.to_owned(),
+        }]
+    );
+    let persisted = vec![V1PersistedEdge {
+        source_object_identity: SCENE_SOURCE_KEY.to_owned(),
+        read_set_json: json!([SOURCE_REVISION_TOKEN]).to_string(),
+        owning_run_id: Some(PARENT_RUN_ID.to_owned()),
+    }];
+    validate_v1_parent_authority(&expected, &persisted, &authority).expect("V1 parent parity");
 
-    let mut object_shaped = projection.clone();
-    object_shaped[0]["revisionTokens"] = json!({"token": SOURCE_REVISION_TOKEN});
-    assert!(validate_v1_expectation_parity(&object_shaped, &authority).is_err());
+    let mut object_shaped = persisted.clone();
+    object_shaped[0].read_set_json = json!({"token": SOURCE_REVISION_TOKEN}).to_string();
+    assert!(validate_v1_parent_authority(&expected, &object_shaped, &authority).is_err());
 
-    let mut multi_token = projection.clone();
-    multi_token[0]["revisionTokens"] = json!([SOURCE_REVISION_TOKEN, "v1@later"]);
-    assert!(validate_v1_expectation_parity(&multi_token, &authority).is_err());
+    let mut multi_token = persisted.clone();
+    multi_token[0].read_set_json = json!([SOURCE_REVISION_TOKEN, "v1@later"]).to_string();
+    assert!(validate_v1_parent_authority(&expected, &multi_token, &authority).is_err());
 
-    let mut wrong_owner = projection;
-    wrong_owner[0]["owningRunId"] = json!("run-other");
-    assert!(validate_v1_expectation_parity(&wrong_owner, &authority).is_err());
+    let mut wrong_owner = persisted;
+    wrong_owner[0].owning_run_id = Some("run-other".to_owned());
+    assert!(validate_v1_parent_authority(&expected, &wrong_owner, &authority).is_err());
 }
 
 #[test]
@@ -297,6 +428,15 @@ fn scope_registry_and_order_oracle_source_kinds_fail_closed() {
     for source_kind in ["scope-registry", "order-oracle"] {
         let mut candidate = material_json();
         candidate["sourceBasis"][0]["sourceKind"] = json!(source_kind);
+        let source = candidate["sourceBasis"].clone();
+        let evidence = candidate["evidenceSet"].clone();
+        let dependencies = candidate["dependencySet"].clone();
+        candidate["materialBasisDigest"] = digest(&json!({
+            "sourceBasis": source,
+            "evidenceSet": evidence,
+            "dependencySet": dependencies
+        }))
+        .into();
         let candidate: MaterialBasis =
             serde_json::from_value(candidate).expect("unknown source kind remains typed");
         assert!(
