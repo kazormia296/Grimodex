@@ -741,8 +741,129 @@ fn digest_bytes(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{core_canonical_json_string as canonical_json_string, digest_json};
-    use serde_json::json;
+    use super::{
+        core_canonical_json_string as canonical_json_string, digest_bytes, digest_json,
+        ensure_v2_proposal_payload_digest, validate_v2_nested_digest_fields,
+    };
+    use serde_json::{json, Value};
+
+    const FORGED_DIGEST: &str =
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+
+    fn nested_digest_fixture() -> Value {
+        let producer = json!({
+            "kind": "reconciler-proposal",
+            "id": "chronicle.reconciler",
+            "version": "1"
+        });
+        let semantic_payload = json!({"eventId": "event:arrival"});
+        let assertion_core = digest_json(&json!({
+            "assertionKind": "scene-event@1",
+            "payloadSchemaRef": {"id": "narrative.chronicle.scene-event", "version": "1"},
+            "typedSemanticPayload": semantic_payload.clone(),
+            "modality": "modality-inference",
+            "polarity": "affirmative",
+            "supportClass": "direct-source",
+            "producer": producer.clone()
+        }))
+        .expect("assertion core digest");
+        let scope = json!({
+            "schemaVersion": 2,
+            "registryVersion": "narrative-scope/2",
+            "scene": {"kind": "any"}
+        });
+        let scope_digest = digest_json(&scope).expect("scope digest");
+        let assertion_digest = digest_json(&json!({
+            "assertionCoreDigest": assertion_core.clone(),
+            "scopeDigest": scope_digest.clone()
+        }))
+        .expect("assertion digest");
+        let source_basis = json!([{
+            "sourceKind": "scene",
+            "sourceKey": "scene:arrival",
+            "revisionToken": "rev:1"
+        }]);
+        let evidence_set = json!([{
+            "evidenceRef": "anchor:arrival",
+            "quote": "Arrival.",
+            "quoteDigest": digest_bytes(b"Arrival.")
+        }]);
+        assert_eq!(
+            digest_bytes(b"Arrival."),
+            "sha256:61b3366c3dc326b93fb56073b11453dea0d2db2fe6f79588ce266188edd24c67"
+        );
+        let dependency_set = json!([{
+            "dependencyId": "dependency:arrival",
+            "inputRef": "anchor:arrival",
+            "contextIds": [],
+            "role": "direct-evidence",
+            "selector": {"kind": "whole-source"}
+        }]);
+        let dependency_set_digest = digest_json(&dependency_set).expect("dependency digest");
+        let material_basis_digest = digest_json(&json!({
+            "sourceBasis": source_basis.clone(),
+            "evidenceSet": evidence_set.clone(),
+            "dependencySet": dependency_set.clone()
+        }))
+        .expect("material digest");
+        let context_set = json!([{
+            "contextId": "context:arrival",
+            "inputRef": "scene:arrival",
+            "stageId": "narrative_event_synthesize",
+            "exposure": "model-visible",
+            "selector": {"kind": "whole-source"}
+        }]);
+        let context_set_digest = digest_json(&json!({
+            "version": "chronicle.context-set/1",
+            "entries": context_set.clone()
+        }))
+        .expect("context digest");
+        json!({
+            "schemaVersion": 2,
+            "assertion": {
+                "assertionKind": "scene-event@1",
+                "payloadSchemaRef": {"id": "narrative.chronicle.scene-event", "version": "1"},
+                "payload": semantic_payload,
+                "scope": scope,
+                "modality": "modality-inference",
+                "polarity": "affirmative",
+                "supportClass": "direct-source",
+                "producer": producer
+            },
+            "assertionDigests": {
+                "assertionCoreDigest": assertion_core,
+                "scopeDigest": scope_digest,
+                "assertionDigest": assertion_digest
+            },
+            "effectiveMaterialBasis": {
+                "sourceBasis": source_basis,
+                "evidenceSet": evidence_set,
+                "dependencySet": dependency_set,
+                "dependencySetDigest": dependency_set_digest,
+                "materialBasisDigest": material_basis_digest
+            },
+            "revisionBasis": {
+                "kind": "interpretation",
+                "contextSet": context_set,
+                "contextSetDigest": context_set_digest
+            }
+        })
+    }
+
+    fn forge_digest_field(envelope: &mut Value, field: &str) {
+        let slot = match field {
+            "assertionCoreDigest" | "scopeDigest" | "assertionDigest" => {
+                &mut envelope["assertionDigests"][field]
+            }
+            "dependencySetDigest" | "materialBasisDigest" => {
+                &mut envelope["effectiveMaterialBasis"][field]
+            }
+            "quoteDigest" => &mut envelope["effectiveMaterialBasis"]["evidenceSet"][0][field],
+            "contextSetDigest" => &mut envelope["revisionBasis"][field],
+            other => panic!("unknown nested digest field {other}"),
+        };
+        *slot = Value::String(FORGED_DIGEST.to_owned());
+    }
 
     #[test]
     fn canonical_json_sorts_objects_but_preserves_arrays() {
@@ -759,6 +880,54 @@ mod tests {
         assert_eq!(
             digest_json(&value).expect("read-set digest"),
             "sha256:e5ea4ae7027922fd5e2548e2391a588ccdb0e4887ef2496b3df9eec896cabf6e"
+        );
+    }
+
+    #[test]
+    fn native_recomputes_each_nested_envelope_digest_field() {
+        for field in [
+            "assertionCoreDigest",
+            "scopeDigest",
+            "assertionDigest",
+            "dependencySetDigest",
+            "materialBasisDigest",
+            "quoteDigest",
+            "contextSetDigest",
+        ] {
+            let valid = nested_digest_fixture();
+            validate_v2_nested_digest_fields(valid.as_object().expect("envelope object"))
+                .expect("valid nested digests");
+            let mut forged = valid;
+            forge_digest_field(&mut forged, field);
+            let error = validate_v2_nested_digest_fields(
+                forged.as_object().expect("forged envelope object"),
+            )
+            .expect_err("forged nested digest must fail closed");
+            assert!(
+                error.to_string().contains("NEX_ENVELOPE_DIGEST_MISMATCH"),
+                "forged {field} returned unrelated error: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_recomputes_proposal_payload_digest_at_private_boundary() {
+        let payload = json!({"title": "Arrival"});
+        let mut envelope = json!({
+            "schemaVersion": 2,
+            "projectionBinding": {
+                "proposalPayloadDigest": digest_json(&payload).expect("payload digest")
+            }
+        });
+        ensure_v2_proposal_payload_digest(&envelope, &payload)
+            .expect("valid proposal payload digest");
+        envelope["projectionBinding"]["proposalPayloadDigest"] =
+            Value::String(FORGED_DIGEST.to_owned());
+        let error = ensure_v2_proposal_payload_digest(&envelope, &payload)
+            .expect_err("forged proposal payload digest must fail closed");
+        assert!(
+            error.to_string().contains("NEX_ENVELOPE_DIGEST_MISMATCH"),
+            "forged proposal payload digest returned unrelated error: {error:#}"
         );
     }
 }

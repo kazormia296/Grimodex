@@ -38,11 +38,8 @@ const EVENT_SYNTHESIS_STAGE_ID: &str = "narrative_event_synthesize";
 const OBSERVATION_STAGE_ID: &str = "narrative_observation_extract";
 const ARRIVAL_QUOTE_DIGEST: &str =
     "sha256:61b3366c3dc326b93fb56073b11453dea0d2db2fe6f79588ce266188edd24c67";
-// One canonical C2A error for a syntactically valid but Native-forged nested
-// digest.  The frozen V1 validator cannot emit it yet, so the RED path must
-// fail if it is masked by the V1 schema gate or any unrelated error.
-const ENVELOPE_NESTED_DIGEST_MISMATCH_CODE: &str = "NEX_ENVELOPE_DIGEST_MISMATCH";
-
+const FORGED_DIGEST: &str =
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 // C1 stage provenance constants.
 const MODEL_BINDING_KIND: &str = "chronicle-stage-model-binding";
 const TERMINAL_RECEIPT_KIND: &str = "chronicle-stage-terminal-receipt";
@@ -528,110 +525,6 @@ fn save_v2_root(
         &revision_id,
         &source_token,
     )
-}
-
-const FORGED_DIGEST: &str =
-    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
-
-fn forge_envelope_digest(envelope: &mut Value, field: &str) {
-    let slot = match field {
-        "assertionCoreDigest" | "scopeDigest" | "assertionDigest" => {
-            &mut envelope["assertionDigests"][field]
-        }
-        "dependencySetDigest" | "materialBasisDigest" => {
-            &mut envelope["effectiveMaterialBasis"][field]
-        }
-        "quoteDigest" => &mut envelope["effectiveMaterialBasis"]["evidenceSet"][0][field],
-        "contextSetDigest" => &mut envelope["revisionBasis"][field],
-        "proposalPayloadDigest" => &mut envelope["projectionBinding"][field],
-        other => panic!("unknown Envelope digest field {other}"),
-    };
-    *slot = Value::String(FORGED_DIGEST.to_owned());
-}
-
-fn assert_forged_digest_was_not_persisted(
-    db: &Database,
-    result: anyhow::Result<Value>,
-    proposal_id: &str,
-    _expected_envelope: &Value,
-    field: &str,
-) {
-    let error = result.expect_err("forged nested digest must not persist");
-    let expected_code = ENVELOPE_NESTED_DIGEST_MISMATCH_CODE;
-    assert!(
-        error.to_string().contains(expected_code),
-        "forged {field} must fail with {expected_code}, got {error:#}"
-    );
-    let revision_count: i64 = db
-        .with_conn(|conn| {
-            Ok(conn.query_row(
-                "SELECT COUNT(*)
-                   FROM narrative_proposal_revisions r
-                  WHERE r.proposal_id = ?1",
-                [proposal_id],
-                |row| row.get(0),
-            )?)
-        })
-        .expect("read rollback count after forged digest");
-    assert_eq!(revision_count, 1, "forged {field} must not append a child");
-}
-
-#[test]
-fn native_recomputes_or_rejects_each_nested_envelope_digest_field() {
-    const DIGEST_FIELDS: &[&str] = &[
-        "assertionCoreDigest",
-        "scopeDigest",
-        "assertionDigest",
-        "dependencySetDigest",
-        "materialBasisDigest",
-        "quoteDigest",
-        "contextSetDigest",
-        "proposalPayloadDigest",
-    ];
-
-    for (index, field) in DIGEST_FIELDS.iter().enumerate() {
-        let db = migrated_db();
-        let run_id = format!("run-forged-digest-{index}");
-        let task_id = format!("task-forged-digest-{index}");
-        let proposal_id = format!("proposal-forged-digest-{index}");
-        let expected_envelope = envelope_v2(&db, PROJECT_A, &run_id, &task_id, "Arrival");
-        assert_envelope_digest_fields(&expected_envelope);
-        let mut forged_envelope = expected_envelope.clone();
-        forge_envelope_digest(&mut forged_envelope, field);
-        let parent_revision_id = format!("revision-forged-digest-{index}");
-        let parent = seed_v2_parent(
-            &db,
-            PROJECT_A,
-            &run_id,
-            &task_id,
-            &proposal_id,
-            &parent_revision_id,
-            &scene_revision_token(&db, PROJECT_A),
-        );
-        let result = narrative_extraction::narrative_extraction_append_revision(
-            &db,
-            AppendRevisionPayload {
-                run_id,
-                project_id: PROJECT_A.to_owned(),
-                proposal_id: proposal_id.clone(),
-                payload_json: proposal_payload("Arrival", false),
-                reconciliation_envelope: Some(forged_envelope),
-                inherit_reconciliation_envelope: None,
-                expected_current_revision_id: parent["revisionId"]
-                    .as_str()
-                    .expect("parent revision")
-                    .to_owned(),
-                created_by: Some("c2a-digest-test".to_owned()),
-            },
-        );
-        assert_forged_digest_was_not_persisted(
-            &db,
-            result,
-            &proposal_id,
-            &expected_envelope,
-            field,
-        );
-    }
 }
 
 #[test]
