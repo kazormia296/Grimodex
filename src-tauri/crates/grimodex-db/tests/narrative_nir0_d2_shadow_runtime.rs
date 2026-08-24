@@ -8,11 +8,13 @@ use std::path::Path;
 
 use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use grimodex_db::narrative_extraction::{
-    ensure_test_schema, run_incremental_freshness_cycle, write_dependency_declaration_set,
-    DependencyDeclaration, DependencyDeclarationSetRequest, IncrementalFreshnessCycleOutcome,
+    ensure_restore_epochs_for_workspace, ensure_test_schema,
+    rebuild_narrative_derived_state_for_project, run_incremental_freshness_cycle,
+    write_dependency_declaration_set, DependencyDeclaration, DependencyDeclarationSetRequest,
+    IncrementalFreshnessCycleOutcome, RebuildDerivedStateOutcome,
 };
 use grimodex_db::Database;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 
 const PROJECT_ID: &str = "nir0-d2-project";
@@ -192,6 +194,70 @@ fn seed_v2_text_range_head(db: &Database) {
     .expect("seed sealed V2 range head");
 }
 
+fn seed_v2_field_path_head(db: &Database) {
+    write_dependency_declaration_set(
+        db,
+        DependencyDeclarationSetRequest {
+            project_id: PROJECT_ID.to_owned(),
+            consumer_kind: CONSUMER_KIND.to_owned(),
+            consumer_key: CONSUMER_KEY.to_owned(),
+            producer_id: "nir0-d2-field-producer".to_owned(),
+            producer_generation: 1,
+            expected_head_version: 0,
+            declarations: vec![DependencyDeclaration {
+                source_object_identity: format!("project:scene:{SCENE_ID}"),
+                role: DependencyRole::DirectEvidence,
+                selector: DependencySelector::FieldPath {
+                    object_identity: format!("project:scene:{SCENE_ID}"),
+                    field_path: "/content".to_owned(),
+                },
+            }],
+            created_at: CREATED_AT.to_owned(),
+        },
+    )
+    .expect("seed V2 field-path head");
+}
+
+fn seed_v2_unrelated_source_same_consumer_head(db: &Database) {
+    write_dependency_declaration_set(
+        db,
+        DependencyDeclarationSetRequest {
+            project_id: PROJECT_ID.to_owned(),
+            consumer_kind: CONSUMER_KIND.to_owned(),
+            consumer_key: CONSUMER_KEY.to_owned(),
+            producer_id: "nir0-d2-unrelated-same-consumer-producer".to_owned(),
+            producer_generation: 1,
+            expected_head_version: 0,
+            declarations: vec![declaration(
+                "project:scene:nir0-d2-unrelated-same-consumer",
+                DependencyRole::DirectEvidence,
+            )],
+            created_at: CREATED_AT.to_owned(),
+        },
+    )
+    .expect("seed unrelated V2 head for the existing consumer");
+}
+
+fn seed_v2_snapshot_head(db: &Database) {
+    write_dependency_declaration_set(
+        db,
+        DependencyDeclarationSetRequest {
+            project_id: PROJECT_ID.to_owned(),
+            consumer_kind: CONSUMER_KIND.to_owned(),
+            consumer_key: CONSUMER_KEY.to_owned(),
+            producer_id: "nir0-d2-snapshot-producer".to_owned(),
+            producer_generation: 1,
+            expected_head_version: 0,
+            declarations: vec![declaration(
+                &format!("snapshot:{RUN_ID}"),
+                DependencyRole::DirectEvidence,
+            )],
+            created_at: CREATED_AT.to_owned(),
+        },
+    )
+    .expect("seed V2 snapshot head");
+}
+
 fn seed_unrelated_v2_head(db: &Database) {
     write_dependency_declaration_set(
         db,
@@ -212,10 +278,49 @@ fn seed_unrelated_v2_head(db: &Database) {
     .expect("seed unrelated V2 head");
 }
 
+fn v2_storage_snapshot(db: &Database) -> (i64, i64, i64, Option<String>) {
+    db.with_conn(|conn| {
+        let sets: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_declaration_sets
+              WHERE project_id = ?1",
+            [PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        let entries: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM narrative_dependency_declaration_entries AS entry
+               JOIN narrative_dependency_declaration_sets AS set_row
+                 ON set_row.id = entry.declaration_set_id
+              WHERE set_row.project_id = ?1",
+            [PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        let heads: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_declaration_heads
+              WHERE project_id = ?1",
+            [PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        let digest: Option<String> = conn
+            .query_row(
+                "SELECT dependency_set_digest
+                   FROM narrative_dependency_declaration_sets
+                  WHERE project_id = ?1
+                  ORDER BY id ASC LIMIT 1",
+                [PROJECT_ID],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok::<_, anyhow::Error>((sets, entries, heads, digest))
+    })
+    .expect("snapshot D1 declaration storage")
+}
+
 #[test]
 fn active_v2_head_is_reached_through_public_incremental_cycle_and_keeps_v1_canonical() {
     let db = fixture_db();
     seed_v2_head(&db);
+    let d1_before = v2_storage_snapshot(&db);
 
     let IncrementalFreshnessCycleOutcome::Processed(summary) =
         run_incremental_freshness_cycle(&db).expect("run D2 shadow cycle")
@@ -244,7 +349,54 @@ fn active_v2_head_is_reached_through_public_incremental_cycle_and_keeps_v1_canon
             )?)
         })
         .expect("read V1 authority");
-    assert_eq!(v1_state, ("stale".to_owned(), "rebuild-required".to_owned()));
+    assert_eq!(
+        v1_state,
+        ("stale".to_owned(), "rebuild-required".to_owned())
+    );
+    assert_eq!(v2_storage_snapshot(&db), d1_before);
+}
+
+#[test]
+fn v2_shadow_uses_feed_facts_when_v1_edges_have_conflicting_private_read_sets() {
+    let db = fixture_db();
+    seed_v2_head(&db);
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                 read_set_json, generated_by_transaction_id, created_at, owning_run_id)
+             VALUES ('nir0-d2-v1-conflicting-edge', ?1, 'proposal-revision',
+                     'nir0-d2-v1-conflicting-consumer', ?2, ?3, NULL, ?4, ?5)",
+            params![
+                PROJECT_ID,
+                format!("project:scene:{SCENE_ID}"),
+                json!([
+                    "v1@2026-08-24T00:00:01.000Z",
+                    {
+                        "kind": "text-range",
+                        "from": 0,
+                        "to": 5,
+                        "normalizerVersion": "gdx-canonical-text/1"
+                    }
+                ])
+                .to_string(),
+                CREATED_AT,
+                RUN_ID,
+            ],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed a V1 edge with a conflicting private read-set");
+
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db).expect("run Feed-backed shadow cycle")
+    else {
+        panic!("the Feed range must be processed");
+    };
+    let consumer = &summary.v2_shadow.consumers[0];
+    assert_eq!(consumer.freshness, "stale", "{:?}", summary.v2_shadow);
+    assert_eq!(consumer.required_actions, vec!["rebuild-required"]);
+    assert_eq!(consumer.advisory_actions, vec!["refresh-available"]);
 }
 
 #[test]
@@ -282,11 +434,15 @@ fn corrupt_v2_head_is_observable_but_does_not_block_v1_publication() {
     };
     assert_eq!(summary.affected_edge_count, 1);
     assert!(summary.v2_shadow.active_head_count == 0);
-    assert!(summary
-        .v2_shadow
-        .diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.contains("CORRUPT")), "{:?}", summary.v2_shadow);
+    assert!(
+        summary
+            .v2_shadow
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("CORRUPT")),
+        "{:?}",
+        summary.v2_shadow
+    );
     let freshness: String = db
         .with_conn(|conn| {
             Ok(conn.query_row(
@@ -352,7 +508,11 @@ fn sealed_text_range_selector_changes_the_v2_effect_without_changing_v1() {
         panic!("the Feed range must be processed");
     };
     let consumer = &summary.v2_shadow.consumers[0];
-    assert_eq!(consumer.freshness, "anchor-mismatch", "{:?}", summary.v2_shadow);
+    assert_eq!(
+        consumer.freshness, "anchor-mismatch",
+        "{:?}",
+        summary.v2_shadow
+    );
     assert_eq!(consumer.required_actions, vec!["reanchor-candidate"]);
 
     let v1_state: (String, String) = db
@@ -366,7 +526,68 @@ fn sealed_text_range_selector_changes_the_v2_effect_without_changing_v1() {
             )?)
         })
         .expect("read V1 state after selector-aware shadow");
-    assert_eq!(v1_state, ("stale".to_owned(), "rebuild-required".to_owned()));
+    assert_eq!(
+        v1_state,
+        ("stale".to_owned(), "rebuild-required".to_owned())
+    );
+}
+
+#[test]
+fn canonical_diff_does_not_claim_text_range_proof() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_change_events
+                SET text_impact_json = ?1
+              WHERE id = 'nir0-d2-change-1'",
+            [json!({
+                "normalizerVersion": "gdx-canonical-text/1",
+                "mapping": {
+                    "kind": "canonical-diff",
+                    "changedOldRanges": [{ "from": 0, "to": 5 }],
+                    "changedNewRanges": [{ "from": 0, "to": 5 }]
+                }
+            })
+            .to_string()],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed unproven canonical-diff mapping");
+    seed_v2_text_range_head(&db);
+
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db).expect("run canonical-diff shadow cycle")
+    else {
+        panic!("the Feed range must be processed");
+    };
+    let consumer = &summary.v2_shadow.consumers[0];
+    assert_eq!(consumer.freshness, "unknown", "{:?}", summary.v2_shadow);
+    assert_eq!(consumer.required_actions, vec!["manual"]);
+    assert!(summary
+        .v2_shadow
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.contains("SELECTOR_UNKNOWN")));
+}
+
+#[test]
+fn unprovable_field_path_selector_is_unknown_without_source_scan() {
+    let db = fixture_db();
+    seed_v2_field_path_head(&db);
+
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db).expect("run field-path shadow cycle")
+    else {
+        panic!("the Feed range must be processed");
+    };
+    let consumer = &summary.v2_shadow.consumers[0];
+    assert_eq!(consumer.freshness, "unknown", "{:?}", summary.v2_shadow);
+    assert_eq!(consumer.required_actions, vec!["manual"]);
+    assert!(summary
+        .v2_shadow
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.contains("SELECTOR_UNKNOWN")));
 }
 
 #[test]
@@ -384,4 +605,106 @@ fn unrelated_v2_head_is_not_included_in_this_feed_shadow_or_guard() {
     assert_eq!(summary.v2_shadow.consumers.len(), 1);
     assert_eq!(summary.v2_shadow.consumers[0].consumer_key, CONSUMER_KEY);
     assert_eq!(summary.affected_edge_count, 1);
+}
+
+#[test]
+fn same_consumer_head_for_an_unaffected_v2_source_is_not_shadowed_or_guarded() {
+    let db = fixture_db();
+    seed_v2_unrelated_source_same_consumer_head(&db);
+
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db).expect("unrelated same-consumer head must not block")
+    else {
+        panic!("the Feed range must be processed");
+    };
+    assert_eq!(summary.v2_shadow.active_head_count, 0);
+    assert!(summary.v2_shadow.consumers.is_empty());
+    assert!(summary.v2_shadow.diagnostics.is_empty());
+    assert_eq!(summary.affected_edge_count, 1);
+}
+
+#[test]
+fn restore_rebuild_verifies_v2_only_heads_after_epoch_rotation_without_persistence() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute("DELETE FROM narrative_dependency_edges", [])?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("remove the V1 edge for the rebuild-only V2 consumer");
+    seed_v2_head(&db);
+    let d1_before = v2_storage_snapshot(&db);
+
+    ensure_restore_epochs_for_workspace(&db, "restore-image-sha256:nir0-d2")
+        .expect("rotate the restore Semantic Epoch");
+    let RebuildDerivedStateOutcome::Ran { summary, .. } =
+        rebuild_narrative_derived_state_for_project(&db, PROJECT_ID)
+            .expect("rebuild must retain V1 authority while shadow-verifying D1")
+    else {
+        panic!("rebuild must run after restore epoch rotation");
+    };
+    assert_eq!(summary.v2_shadow.active_head_count, 1);
+    assert_eq!(summary.v2_shadow.declaration_count, 2);
+    assert_eq!(summary.v2_shadow.evaluated_declaration_count, 2);
+    assert_eq!(v2_storage_snapshot(&db), d1_before);
+}
+
+#[test]
+fn restore_rebuild_reports_corrupt_v2_head_without_v2_persistence() {
+    let db = fixture_db();
+    seed_v2_head(&db);
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_dependency_declaration_heads
+                SET producer_generation = producer_generation + 1",
+            [],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("corrupt the active D1 head");
+    let d1_before = v2_storage_snapshot(&db);
+
+    let RebuildDerivedStateOutcome::Ran { summary, .. } =
+        rebuild_narrative_derived_state_for_project(&db, PROJECT_ID)
+            .expect("V1 rebuild must survive a corrupt D1 head")
+    else {
+        panic!("rebuild must run");
+    };
+    assert_eq!(summary.v2_shadow.active_head_count, 0);
+    assert!(summary
+        .v2_shadow
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.contains("CORRUPT")));
+    assert_eq!(v2_storage_snapshot(&db), d1_before);
+}
+
+#[test]
+fn restore_rebuild_resolves_v2_only_snapshot_with_embedded_producer_run() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute("DELETE FROM narrative_dependency_edges", [])?;
+        conn.execute(
+            "UPDATE narrative_extraction_runs
+                SET snapshot_digest = 'sha256:nir0-d2-snapshot'
+              WHERE id = ?1 AND project_id = ?2",
+            params![RUN_ID, PROJECT_ID],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed a sealed snapshot for the V2-only declaration");
+    seed_v2_snapshot_head(&db);
+
+    let RebuildDerivedStateOutcome::Ran { summary, .. } =
+        rebuild_narrative_derived_state_for_project(&db, PROJECT_ID)
+            .expect("rebuild must resolve the snapshot through its producer Run")
+    else {
+        panic!("rebuild must run");
+    };
+    assert_eq!(summary.v2_shadow.active_head_count, 1);
+    assert_eq!(summary.v2_shadow.evaluated_declaration_count, 1);
+    assert!(
+        summary.v2_shadow.diagnostics.is_empty(),
+        "{:?}",
+        summary.v2_shadow
+    );
 }
