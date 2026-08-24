@@ -282,6 +282,7 @@ fn canonical_finding_values(edge_id: &str) -> anyhow::Result<(String, String, St
     Ok((finding_identity, observation_digest, material_basis_digest))
 }
 
+#[allow(clippy::type_complexity)]
 fn application_edge_rows(
     conn: &Connection,
     project_id: &str,
@@ -479,6 +480,7 @@ fn c2zb_rekeys_edges_rehomes_findings_invalidates_derived_state_and_is_idempoten
         assert_eq!(lifecycle.4, expected_observation_digest);
         assert_eq!(lifecycle.5, expected_material_basis_digest);
 
+        #[allow(clippy::type_complexity)]
         let attention: (
             String,
             String,

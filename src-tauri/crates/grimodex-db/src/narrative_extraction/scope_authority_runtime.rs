@@ -15,6 +15,7 @@ use grimodex_core::narrative_scope_authority_basis::{
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::models::ArtifactInput;
 use crate::Database;
@@ -22,6 +23,7 @@ use crate::Database;
 pub const HISTORICAL_SCOPE_AUTHORITY_ARTIFACT_KIND: &str = "source.snapshot@2";
 
 const HISTORICAL_SCOPE_AUTHORITY_TASK_KIND: &str = "source.snapshot@1";
+const HISTORICAL_SCOPE_AUTHORITY_CORPUS_ARTIFACT_KIND: &str = "source.snapshot@1";
 const HISTORICAL_SCOPE_AUTHORITY_SURFACE_PATH: &str = "chronicle.extract";
 
 #[derive(Debug, Deserialize)]
@@ -251,6 +253,87 @@ fn derive_ordered_scene_ids(
     Ok(ordered_scene_ids)
 }
 
+fn invalid_corpus_artifact(reason: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {reason}")
+}
+
+/// The sealed historical basis must stay durably linked to the snapshot
+/// corpus it digests. The typed snapshot finish therefore carries exactly one
+/// `source.snapshot@1` corpus artifact whose snapshot digest matches the
+/// durable Run authority (and thus the basis `corpusDigest`), whose supplied
+/// payload digest matches the Native canonical recomputation, and whose
+/// ordered document closure matches the basis mappings — all in the same
+/// transaction. Without this link, a restart leaves only a `corpusDigest`
+/// that Native can never re-verify against actual bytes.
+fn validate_snapshot_corpus_closure(
+    finish_artifacts: &[ArtifactInput],
+    basis: &NarrativeScopeAuthorityBasisV2,
+    run_snapshot_digest: &str,
+) -> anyhow::Result<()> {
+    let mut corpora = finish_artifacts.iter().filter(|artifact| {
+        artifact.artifact_kind == HISTORICAL_SCOPE_AUTHORITY_CORPUS_ARTIFACT_KIND
+    });
+    let corpus = corpora.next().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_REQUIRED: typed historical basis requires exactly one source.snapshot@1 corpus artifact in the same finish"
+        )
+    })?;
+    anyhow::ensure!(
+        corpora.next().is_none(),
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_REQUIRED: typed historical basis requires exactly one source.snapshot@1 corpus artifact in the same finish"
+    );
+    anyhow::ensure!(
+        corpus.payload_storage.as_deref().unwrap_or("inline-json") == "inline-json"
+            && corpus.payload_ref.is_none(),
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus artifact must be inline-json"
+    );
+    let payload = corpus
+        .payload_json
+        .as_ref()
+        .ok_or_else(|| invalid_corpus_artifact("corpus payload is missing"))?;
+    let canonical_digest = grimodex_core::canonical_json_digest(payload)?;
+    if let Some(claimed) = corpus.payload_digest.as_deref() {
+        anyhow::ensure!(
+            claimed == canonical_digest,
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus payload digest differs from the Native canonical recomputation"
+        );
+    }
+    let snapshot = payload
+        .get("snapshot")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid_corpus_artifact("corpus payload has no snapshot"))?;
+    let snapshot_digest = snapshot
+        .get("digest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_corpus_artifact("corpus snapshot digest is missing"))?;
+    anyhow::ensure!(
+        snapshot_digest == run_snapshot_digest,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus snapshot digest differs from Run snapshotDigest"
+    );
+    anyhow::ensure!(
+        basis.digests.corpus_digest == run_snapshot_digest,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: basis corpusDigest differs from Run snapshotDigest"
+    );
+    let documents = snapshot
+        .get("documents")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_corpus_artifact("corpus snapshot documents are missing"))?;
+    anyhow::ensure!(
+        documents.len() == basis.mappings.len(),
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus document closure differs from the basis mappings"
+    );
+    for (document, mapping) in documents.iter().zip(basis.mappings.iter()) {
+        let document_ref = document.get("ref").and_then(Value::as_str);
+        let source_key = document.get("sourceKey").and_then(Value::as_str);
+        anyhow::ensure!(
+            document_ref == Some(mapping.document_ref.as_str())
+                && source_key == Some(mapping.source_key.as_str()),
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus document order/ref/sourceKey differs from the basis mappings"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn reject_reserved_historical_scope_authority_artifacts(
     artifacts: &[ArtifactInput],
 ) -> anyhow::Result<()> {
@@ -275,6 +358,7 @@ pub(crate) fn persist_historical_scope_authority_basis_in_tx(
     task_id: &str,
     attempt_id: &str,
     submitted_basis: &NarrativeScopeAuthorityBasisV2,
+    finish_artifacts: &[ArtifactInput],
 ) -> anyhow::Result<ArtifactInput> {
     anyhow::ensure!(
         !conn.is_autocommit(),
@@ -357,6 +441,7 @@ pub(crate) fn persist_historical_scope_authority_basis_in_tx(
         submitted_basis == &expected_basis,
         "NEX_SCOPE_AUTHORITY_BINDING_MISMATCH: submitted basis differs from Native re-derivation"
     );
+    validate_snapshot_corpus_closure(finish_artifacts, &expected_basis, &snapshot_digest)?;
 
     let existing_count: i64 = conn.query_row(
         "SELECT COUNT(*)

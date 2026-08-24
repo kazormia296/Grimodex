@@ -900,6 +900,7 @@ fn model_binding() -> Value {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage_receipt(
     project_id: &str,
     run_id: &str,
@@ -929,6 +930,7 @@ fn stage_receipt(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage_receipt_with_state(
     project_id: &str,
     run_id: &str,
@@ -1113,6 +1115,7 @@ fn finish_bundle(
     finish_bundle_with_raw(db, run_id, task_id, attempt_id, closure, raw, None, None)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_bundle_with_raw(
     db: &Database,
     run_id: &str,
@@ -1154,6 +1157,7 @@ fn finish_bundle_with_raw(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_bundle_with_artifacts(
     db: &Database,
     run_id: &str,

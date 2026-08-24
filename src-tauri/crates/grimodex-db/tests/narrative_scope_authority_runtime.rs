@@ -121,10 +121,31 @@ fn basis(first_story_key: &str) -> NarrativeScopeAuthorityBasisV2 {
     basis_for(PROJECT_ID, RUN_ID, first_story_key)
 }
 
-fn finish_with_basis(
+/// The `source.snapshot@1` corpus artifact production sends in the same
+/// typed finish. The sealed basis must bind to this corpus closure.
+fn corpus_artifact_json() -> serde_json::Value {
+    json!({
+        "artifactId": "corpus:run-scope-runtime",
+        "artifactKind": "source.snapshot@1",
+        "payloadStorage": "inline-json",
+        "payloadJson": {
+            "snapshot": {
+                "digest": SNAPSHOT_DIGEST,
+                "documents": [
+                    {"ref": "D000001", "sourceKey": "project:scene:scene-one"},
+                    {"ref": "D000002", "sourceKey": "project:scene:scene-two"}
+                ]
+            },
+            "sourceViews": []
+        }
+    })
+}
+
+fn finish_with_basis_and_artifacts(
     db: &Database,
     attempt_id: String,
     historical_scope_authority_basis: NarrativeScopeAuthorityBasisV2,
+    artifacts: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
     // This is the exact camelCase JSON decode used by the N-API
     // `agent_write_cmd` boundary. Keep it here so a wire-name drift cannot
@@ -136,7 +157,7 @@ fn finish_with_basis(
         "attemptId": attempt_id,
         "leaseOwner": LEASE_OWNER,
         "outputJson": {"snapshotDigest": SNAPSHOT_DIGEST},
-        "artifacts": [],
+        "artifacts": artifacts,
         "historicalScopeAuthorityBasis": historical_scope_authority_basis,
     }))
     .expect("decode typed finish wire payload");
@@ -145,6 +166,19 @@ fn finish_with_basis(
         "wire payload must retain the typed historical companion"
     );
     narrative_extraction::narrative_extraction_finish_task(db, payload)
+}
+
+fn finish_with_basis(
+    db: &Database,
+    attempt_id: String,
+    historical_scope_authority_basis: NarrativeScopeAuthorityBasisV2,
+) -> anyhow::Result<serde_json::Value> {
+    finish_with_basis_and_artifacts(
+        db,
+        attempt_id,
+        historical_scope_authority_basis,
+        json!([corpus_artifact_json()]),
+    )
 }
 
 fn assert_finish_rolled_back(db: &Database) {
@@ -235,7 +269,7 @@ fn typed_finish_rederives_persists_and_loads_the_historical_basis() {
         let stored: (String, String, Option<String>, String) = conn.query_row(
             "SELECT artifact_kind, payload_storage, payload_ref, payload_digest
                FROM narrative_extraction_artifacts
-              WHERE run_id = ?1",
+              WHERE run_id = ?1 AND artifact_kind = 'source.snapshot@2'",
             [RUN_ID],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
@@ -243,6 +277,14 @@ fn typed_finish_rederives_persists_and_loads_the_historical_basis() {
         assert_eq!(stored.1, "inline-json");
         assert_eq!(stored.2, None);
         assert!(stored.3.starts_with("sha256:"));
+        // The sealed basis and the snapshot corpus it digests survive together.
+        let corpus_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_artifacts
+              WHERE run_id = ?1 AND artifact_kind = 'source.snapshot@1'",
+            [RUN_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(corpus_count, 1);
 
         // Historical reads must not depend on mutable live tree state.
         conn.execute(
@@ -259,6 +301,77 @@ fn typed_finish_rederives_persists_and_loads_the_historical_basis() {
             .expect("load historical basis")
             .expect("stored basis");
     assert_eq!(loaded, expected);
+}
+
+#[test]
+fn typed_finish_requires_the_snapshot_corpus_artifact_in_the_same_finish() {
+    // Basis without its corpus: the digest would be unverifiable after
+    // restart, so the whole finish fails closed and rolls back.
+    let db = fixture();
+    let error = finish_with_basis_and_artifacts(&db, claim_attempt(&db), basis("0010"), json!([]))
+        .expect_err("basis without its snapshot corpus must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_REQUIRED"),
+        "unexpected error: {error}"
+    );
+    assert_finish_rolled_back(&db);
+}
+
+#[test]
+fn typed_finish_rejects_a_corpus_artifact_that_does_not_match_the_basis() {
+    for (label, mutate) in [
+        (
+            "digest",
+            Box::new(|corpus: &mut serde_json::Value| {
+                corpus["payloadJson"]["snapshot"]["digest"] = json!(
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                );
+            }) as Box<dyn Fn(&mut serde_json::Value)>,
+        ),
+        (
+            "document-order",
+            Box::new(|corpus: &mut serde_json::Value| {
+                let documents = corpus["payloadJson"]["snapshot"]["documents"]
+                    .as_array_mut()
+                    .expect("documents");
+                documents.swap(0, 1);
+            }),
+        ),
+        (
+            "document-source-key",
+            Box::new(|corpus: &mut serde_json::Value| {
+                corpus["payloadJson"]["snapshot"]["documents"][0]["sourceKey"] =
+                    json!("project:scene:scene-forged");
+            }),
+        ),
+        (
+            "forged-payload-digest",
+            Box::new(|corpus: &mut serde_json::Value| {
+                corpus["payloadDigest"] =
+                    json!("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+            }),
+        ),
+    ] {
+        let db = fixture();
+        let mut corpus = corpus_artifact_json();
+        mutate(&mut corpus);
+        let error = finish_with_basis_and_artifacts(
+            &db,
+            claim_attempt(&db),
+            basis("0010"),
+            json!([corpus]),
+        )
+        .expect_err("corpus drifting from the basis must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID"),
+            "case {label}: unexpected error: {error}"
+        );
+        assert_finish_rolled_back(&db);
+    }
 }
 
 #[test]

@@ -285,17 +285,16 @@ pub fn write_dependency_declaration_set_in_tx(
         // expected version alone never authorises a new write.
         if head.producer_generation == request.producer_generation
             && head.producer_id == request.producer_id
+            && existing.dependency_set_digest == dependency_set_digest
         {
-            if existing.dependency_set_digest == dependency_set_digest {
-                return Ok(DependencyDeclarationSetReceipt {
-                    declaration_set_id: existing.declaration_set_id,
-                    state: DependencyDeclarationSetState::Sealed,
-                    dependency_set_digest: existing.dependency_set_digest,
-                    producer_id: head.producer_id.clone(),
-                    producer_generation: head.producer_generation,
-                    head_version: head.version,
-                });
-            }
+            return Ok(DependencyDeclarationSetReceipt {
+                declaration_set_id: existing.declaration_set_id,
+                state: DependencyDeclarationSetState::Sealed,
+                dependency_set_digest: existing.dependency_set_digest,
+                producer_id: head.producer_id.clone(),
+                producer_generation: head.producer_generation,
+                head_version: head.version,
+            });
         }
 
         anyhow::ensure!(
@@ -649,7 +648,7 @@ fn load_set_row(conn: &Connection, set_id: &str) -> anyhow::Result<Option<Declar
               WHERE id = ?1"
         ),
         [set_id],
-        |row| row_to_set(row),
+        row_to_set,
     )
     .optional()
     .map_err(Into::into)

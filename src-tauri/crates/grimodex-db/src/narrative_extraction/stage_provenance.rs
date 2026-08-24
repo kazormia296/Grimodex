@@ -267,6 +267,7 @@ pub(crate) fn validate_chronicle_synthesis_companion(
 
 /// Typed dormant C2A stage persistence.  The task kind check is intentionally
 /// narrow; no production V2 activation path calls this function.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn persist_chronicle_stage_bundle(
     conn: &Connection,
     project_id: &str,
@@ -612,8 +613,8 @@ fn has_successful_stage_path(
     receipts.iter().any(|root| {
         root.stage_id == stage_id
             && root.parent_stage_execution_id.is_none()
-            && owner_task_id.map_or(true, |task_id| root.task_id == task_id)
-            && owner_attempt_id.map_or(true, |attempt_id| root.attempt_id == attempt_id)
+            && owner_task_id.is_none_or(|task_id| root.task_id == task_id)
+            && owner_attempt_id.is_none_or(|attempt_id| root.attempt_id == attempt_id)
             && ((root.parse_status == "parsed" && root.terminal_status == "succeeded")
                 || (root.parse_status == "invalid"
                     && root.terminal_status == "failed"
@@ -718,26 +719,34 @@ fn validate_receipt(
 }
 
 fn validate_status_pair(receipt: &ChronicleStageTerminalReceipt) -> anyhow::Result<()> {
-    let valid = match (
-        &receipt.parse_status,
-        &receipt.terminal_status,
-        receipt.response_digest.is_some(),
-    ) {
-        (ChronicleStageParseStatus::Parsed, ChronicleStageTerminalStatus::Succeeded, true) => true,
-        (ChronicleStageParseStatus::Invalid, ChronicleStageTerminalStatus::Failed, true) => true,
-        (ChronicleStageParseStatus::NotAttempted, ChronicleStageTerminalStatus::Failed, false) => {
-            true
-        }
+    let valid = matches!(
         (
+            &receipt.parse_status,
+            &receipt.terminal_status,
+            receipt.response_digest.is_some(),
+        ),
+        (
+            ChronicleStageParseStatus::Parsed,
+            ChronicleStageTerminalStatus::Succeeded,
+            true
+        ) | (
+            ChronicleStageParseStatus::Invalid,
+            ChronicleStageTerminalStatus::Failed,
+            true
+        ) | (
+            ChronicleStageParseStatus::NotAttempted,
+            ChronicleStageTerminalStatus::Failed,
+            false
+        ) | (
             ChronicleStageParseStatus::NotAttempted,
             ChronicleStageTerminalStatus::Cancelled,
-            false,
-        ) => true,
-        (ChronicleStageParseStatus::NotAttempted, ChronicleStageTerminalStatus::Skipped, false) => {
-            true
-        }
-        _ => false,
-    };
+            false
+        ) | (
+            ChronicleStageParseStatus::NotAttempted,
+            ChronicleStageTerminalStatus::Skipped,
+            false
+        )
+    );
     anyhow::ensure!(
         valid,
         "NEX_STAGE_TERMINAL_RECEIPT_INVALID: parseStatus and terminalStatus are inconsistent"
@@ -1026,9 +1035,7 @@ fn has_unsafe_identity_host(value: &str) -> bool {
     let normalized = value
         .replace("%2e", ".")
         .replace("%2E", ".")
-        .replace('\u{3002}', ".")
-        .replace('\u{FF0E}', ".")
-        .replace('\u{FF61}', ".");
+        .replace(['\u{3002}', '\u{FF0E}', '\u{FF61}'], ".");
     let candidates = [
         normalized.as_str(),
         normalized.rsplit_once('@').map_or("", |(_, host)| host),

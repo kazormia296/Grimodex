@@ -35,6 +35,7 @@ fn rewound_database() -> Database {
     db
 }
 
+#[allow(clippy::too_many_arguments)]
 fn seed_project(
     conn: &Connection,
     project_id: &str,
@@ -247,6 +248,7 @@ fn assert_schema_31_without_marker(conn: &Connection, project_id: &str) -> anyho
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_second_exact_candidate(
     conn: &Connection,
     project_id: &str,

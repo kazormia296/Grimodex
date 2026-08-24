@@ -1065,12 +1065,14 @@ fn rebuild_derived_state_edges_in_project(
     now: &str,
 ) -> anyhow::Result<RebuildDerivedStateSummary> {
     let consumers = db.with_conn(|conn| list_distinct_consumers(conn, project_id))?;
-    let mut summary = RebuildDerivedStateSummary::default();
     // Full Rebuild verifies the complete active D1 head set once, including
     // V2-only Consumers that have no V1 compatibility Edge. The sidecar is
     // returned in memory and skipped by the persisted Run outcome.
-    summary.v2_shadow =
-        db.with_conn(|conn| verify_v2_shadow_for_rebuild_in_tx(conn, project_id, run_id))?;
+    let mut summary = RebuildDerivedStateSummary {
+        v2_shadow: db
+            .with_conn(|conn| verify_v2_shadow_for_rebuild_in_tx(conn, project_id, run_id))?,
+        ..Default::default()
+    };
     for (consumer_kind, consumer_key) in consumers {
         // Counted inside the per-Consumer closure, which cannot borrow
         // `summary` mutably alongside the counters it already updates.

@@ -92,6 +92,7 @@ fn admit_projection_parent(
     request: &CreateHumanDerivedRevisionRequest,
     requested_kind: HumanMaterialDerivationKind,
 ) -> anyhow::Result<ProjectionAdmission> {
+    #[allow(clippy::type_complexity)]
     let row: Option<(
         String,
         String,

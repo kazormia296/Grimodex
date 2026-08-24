@@ -29,6 +29,7 @@ const FINDING_RULE_DOMAIN: &str = "grimodex:narrative:finding-rule-registry:v1";
 const PRODUCER_GENERATION_DOMAIN: &str = "grimodex:narrative:producer-generation-set:v1";
 const CI_COORDINATE_MISMATCH_DOMAIN: &str = "grimodex:narrative:ci-coordinate-mismatch:v1";
 
+#[allow(clippy::type_complexity)]
 const EXPECTED_PRODUCER_WRITERS: &[(&str, &str, &str, &str, &str, Option<i64>)] = &[
     (
         "proposal-revision-source-basis",

@@ -1540,7 +1540,6 @@ fn shadow_anchor_evidence(
     ) else {
         return ShadowAnchorEvidence::Unknown;
     };
-    let mut overlapped = false;
     for segment in segments {
         let old_from = segment
             .get("oldRange")
@@ -1553,7 +1552,6 @@ fn shadow_anchor_evidence(
         if !ranges_overlap(from, to, old_from, old_to) {
             continue;
         }
-        overlapped = true;
         match segment.get("behavior").and_then(Value::as_str) {
             Some("deleted") | Some("replaced") => return ShadowAnchorEvidence::Missing,
             Some("unchanged") => {
@@ -1565,11 +1563,9 @@ fn shadow_anchor_evidence(
             _ => {}
         }
     }
-    if overlapped {
-        ShadowAnchorEvidence::Unknown
-    } else {
-        ShadowAnchorEvidence::Unknown
-    }
+    // Overlap without a containment or deletion verdict is no evidence either
+    // way, exactly like no overlap at all.
+    ShadowAnchorEvidence::Unknown
 }
 
 fn v2_freshness_rank(freshness: V2EvidenceFreshness) -> u8 {
@@ -1602,6 +1598,7 @@ fn selected_v2_shadow_head_keys_in_tx(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn evaluate_v2_shadow<'a>(
     db: &Database,
     project_id: &str,
@@ -1618,7 +1615,7 @@ fn evaluate_v2_shadow<'a>(
 )> {
     db.with_conn(|conn| {
         let consumer_keys = selected_v2_shadow_head_keys_in_tx(conn, project_id, selection_scope)?;
-        let consumer_key_snapshot = consumer_keys.iter().cloned().collect::<Vec<_>>();
+        let consumer_key_snapshot = consumer_keys.to_vec();
         let mut summary = IncrementalFreshnessShadowSummary::default();
         match selection_scope {
             V2ShadowSelectionScope::SourceBounded(_) => {}

@@ -21,7 +21,7 @@ fn canonical_codex_digest(db: &Database, project_id: &str, entry_id: &str) -> St
             |row| row.get(0),
         )?;
         let snapshot: serde_json::Value = serde_json::from_str(&raw)?;
-        Ok(narrative_snapshot_digest(&snapshot)?)
+        narrative_snapshot_digest(&snapshot)
     })
     .expect("read canonical Codex snapshot")
 }
@@ -41,7 +41,7 @@ fn canonical_snippet_digest(db: &Database, project_id: &str, snippet_id: &str) -
             |row| row.get(0),
         )?;
         let snapshot: serde_json::Value = serde_json::from_str(&raw)?;
-        Ok(narrative_snapshot_digest(&snapshot)?)
+        narrative_snapshot_digest(&snapshot)
     })
     .expect("read canonical Snippet snapshot")
 }

@@ -335,6 +335,42 @@ pub fn clear_restore_session_marker(workspace: &Path) -> AppResult<()> {
     }
 }
 
+/// Terminal restore-session marker phase: the session finished (install
+/// committed and authority handled, or the original image was verifiably
+/// restored) and only the marker unlink is still outstanding. The next open
+/// verifies the workspace identity and converges to deletion instead of
+/// reporting a false `RESTORE_SESSION_INCOMPLETE` Safe Mode.
+pub const RESTORE_SESSION_PHASE_COMMITTED: &str = "committed";
+
+/// Finish a restore session's marker as a commit protocol rather than a
+/// fire-and-forget unlink. `.restore-session.json` gates the next workspace
+/// open into Safe Mode, so silently ignoring a failed unlink after reporting
+/// success to the user creates a durable self-contradiction. When the unlink
+/// fails, escalate the marker to the durable `committed` phase (an atomic
+/// rename that does not require unlink) so the next open can verify and
+/// safely converge to deletion.
+fn finalize_restore_session_marker(ws_path: &Path) {
+    let Err(clear_error) = clear_restore_session_marker(ws_path) else {
+        return;
+    };
+    let rewritten = match read_incomplete_restore_session(ws_path) {
+        Ok(Some(mut marker)) => {
+            marker.phase = RESTORE_SESSION_PHASE_COMMITTED.to_string();
+            write_restore_session_marker(ws_path, &marker)
+        }
+        Ok(None) => Ok(()),
+        Err(read_error) => Err(read_error),
+    };
+    match rewritten {
+        Ok(()) => tracing::warn!(
+            "restore-session marker could not be removed ({clear_error}); escalated to a durable committed marker so the next open converges to deletion"
+        ),
+        Err(write_error) => tracing::error!(
+            "restore-session marker could not be removed ({clear_error}) nor committed ({write_error}); the next open will enter Safe Mode until backups/.restore-session.json is deleted"
+        ),
+    }
+}
+
 fn write_restore_session_marker(workspace: &Path, marker: &RestoreSessionMarker) -> AppResult<()> {
     let backups = workspace.join("backups");
     std::fs::create_dir_all(&backups).map_err(anyhow::Error::from)?;
@@ -471,43 +507,35 @@ pub fn install_staged_workspace_db(
     let backups_dir = ws_path.join("backups");
 
     // 1) Seal and prepare the candidate before detaching the live authority.
-    // Normal restore mints the restore Epoch on this staged image, before the
-    // live image is replaced. The pre-Epoch digest is the stable input to a
-    // domain-separated identity; retrying the same backup then observes the
-    // same identity and does not rotate twice. Safe-mode recovery installs do
-    // not mint an Epoch because they do not publish a normal authority.
+    // Every restore — normal and Safe Mode recovery alike — mints the
+    // deterministic restore Epoch on this staged image, before the live image
+    // is replaced. Restore is a Semantic Epoch generation boundary regardless
+    // of how the workspace gets there: without the staged mint, a Safe Mode
+    // recovery would re-publish the backup's stale Epochs, Edge State, and
+    // Consumer Freshness as current on the next normal open. The pre-Epoch
+    // digest is the stable input to a domain-separated identity; retrying the
+    // same backup then observes the same identity and does not rotate twice.
     let materialized_candidate_digest =
         crate::migration_supervisor::digest_sha256_file(staged_plain)
             .map_err(|error| anyhow::anyhow!("RESTORE_CANDIDATE_DIGEST_FAILED: {error}"))?;
-    let pre_epoch_installed =
-        match (|| -> Result<_, crate::migration_supervisor::MigrationSupervisorError> {
-            crate::migration_supervisor::seal_sqlite_image(staged_plain)?;
-            crate::migration_supervisor::installed_image_token_from_sealed(
-                staged_plain,
-                grimodex_core::SCHEMA_VERSION,
-                None,
-            )
-        })() {
-            Ok(token) => token,
-            Err(error) => {
-                return Err(anyhow::anyhow!(
-                    "復元候補の seal／digest 取得に失敗したため中止しました（live未置換）: {error}"
-                )
-                .into());
-            }
-        };
-    let (installed, restore_identity) = if options.publish_workspace_authority {
-        let restore_seed = options
-            .restore_source_digest
-            .as_deref()
-            .unwrap_or(materialized_candidate_digest.as_str());
-        let restore_identity = format!(
-            "restore-image-sha256:{}",
-            restore_seed.strip_prefix("sha256:").unwrap_or(restore_seed)
-        );
-        #[cfg(feature = "test-failpoints")]
-        hit_restore_failpoint(options.failpoint, RestoreFailpoint::BeforeRestoreEpochMint)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    if let Err(error) = crate::migration_supervisor::seal_sqlite_image(staged_plain) {
+        return Err(anyhow::anyhow!(
+            "復元候補の seal に失敗したため中止しました（live未置換）: {error}"
+        )
+        .into());
+    }
+    let restore_seed = options
+        .restore_source_digest
+        .as_deref()
+        .unwrap_or(materialized_candidate_digest.as_str());
+    let restore_identity = format!(
+        "restore-image-sha256:{}",
+        restore_seed.strip_prefix("sha256:").unwrap_or(restore_seed)
+    );
+    #[cfg(feature = "test-failpoints")]
+    hit_restore_failpoint(options.failpoint, RestoreFailpoint::BeforeRestoreEpochMint)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let installed = {
         let staged_database = Database::new(staged_plain)
             .map_err(|error| anyhow::anyhow!("RESTORE_STAGED_DB_OPEN_FAILED: {error}"))?;
         ensure_restore_epochs_for_workspace(&staged_database, &restore_identity)
@@ -518,19 +546,16 @@ pub fn install_staged_workspace_db(
         drop(staged_database);
         crate::migration_supervisor::seal_sqlite_image(staged_plain)
             .map_err(|error| anyhow::anyhow!("RESTORE_STAGED_EPOCH_SEAL_FAILED: {error}"))?;
-        let installed = crate::migration_supervisor::installed_image_token_from_sealed(
+        crate::migration_supervisor::installed_image_token_from_sealed(
             staged_plain,
             grimodex_core::SCHEMA_VERSION,
             None,
         )
-        .map_err(|error| anyhow::anyhow!("RESTORE_STAGED_EPOCH_DIGEST_FAILED: {error}"))?;
-        #[cfg(feature = "test-failpoints")]
-        hit_restore_failpoint(options.failpoint, RestoreFailpoint::AfterRestoreEpochMint)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        (installed, Some(restore_identity))
-    } else {
-        (pre_epoch_installed, None)
+        .map_err(|error| anyhow::anyhow!("RESTORE_STAGED_EPOCH_DIGEST_FAILED: {error}"))?
     };
+    #[cfg(feature = "test-failpoints")]
+    hit_restore_failpoint(options.failpoint, RestoreFailpoint::AfterRestoreEpochMint)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
     // Detached backup maintenance owns an independent SQLite connection, so
     // `wait_for_sole_owner(old.db)` cannot observe it. Wait for the path-scoped
@@ -721,11 +746,7 @@ pub fn install_staged_workspace_db(
     if let Some(artifact) = safety_artifact.as_ref() {
         let marker = RestoreSessionMarker {
             version: 1,
-            phase: if restore_identity.is_some() {
-                "epoch-minted".to_string()
-            } else {
-                "live-sealed".to_string()
-            },
+            phase: "epoch-minted".to_string(),
             safety_artifact: artifact.retained_path().display().to_string(),
             safety_kind: artifact.kind_str().to_string(),
             rollback_artifact: rollback_path
@@ -845,7 +866,7 @@ pub fn install_staged_workspace_db(
                                     if let Some(cleanup) = rollback_cleanup.as_mut() {
                                         cleanup.disarm();
                                     }
-                                    let _ = clear_restore_session_marker(ws_path);
+                                    finalize_restore_session_marker(ws_path);
                                     (
                                         Err(anyhow::anyhow!(
                                             "{primary_msg}; 元のDBは未置換のまま保持しています"
@@ -972,14 +993,14 @@ pub fn install_staged_workspace_db(
     let _ = retained_safety;
 
     if !options.publish_workspace_authority {
-        let _ = clear_restore_session_marker(ws_path);
+        finalize_restore_session_marker(ws_path);
         drop(exclusive_lease);
         return Ok(());
     }
 
     match publish_active_workspace(ws_state, ws_path.to_path_buf(), exclusive_lease) {
         Ok(_) => {
-            let _ = clear_restore_session_marker(ws_path);
+            finalize_restore_session_marker(ws_path);
             if let Some(on_reopened) = options.on_reopened.take() {
                 on_reopened();
             }
@@ -1013,7 +1034,7 @@ pub fn install_staged_workspace_db(
                             if let Some(cleanup) = rollback_cleanup.as_mut() {
                                 cleanup.disarm();
                             }
-                            let _ = clear_restore_session_marker(ws_path);
+                            finalize_restore_session_marker(ws_path);
                             match publish_active_workspace(
                                 ws_state,
                                 ws_path.to_path_buf(),
@@ -1130,7 +1151,7 @@ fn restore_rollback_error(args: RestoreRollbackArgs<'_>) -> AppResult<()> {
                     if let Some(cleanup) = rollback_cleanup {
                         cleanup.disarm();
                     }
-                    let _ = clear_restore_session_marker(ws_path);
+                    finalize_restore_session_marker(ws_path);
                     Err(anyhow::anyhow!("{primary}; 元のDBへ戻しました").into())
                 }
                 Err(error) => {
@@ -1173,25 +1194,49 @@ fn park_restore_failpoint_if_requested(point: RestoreFailpoint) -> AppResult<()>
     }
 }
 
+/// Test-only rendezvous directly after the exclusive→shared handoff, before
+/// authority publication: writes the ready file, then blocks until the
+/// continue file appears. The subprocess handoff journey uses this window to
+/// prove a concurrent shared writer's WAL survives the rest of the publish.
+#[cfg(feature = "test-failpoints")]
+fn wait_after_shared_handoff_if_requested() -> AppResult<()> {
+    use std::time::{Duration, Instant};
+    let Some(ready_path) = std::env::var_os("GRIMODEX_RESTORE_HANDOFF_READY_PATH") else {
+        return Ok(());
+    };
+    let Some(continue_path) = std::env::var_os("GRIMODEX_RESTORE_HANDOFF_CONTINUE_PATH") else {
+        return Ok(());
+    };
+    let ready_path = PathBuf::from(ready_path);
+    let continue_path = PathBuf::from(continue_path);
+    std::fs::write(&ready_path, "after-shared-handoff\n").map_err(anyhow::Error::from)?;
+    sync_path(&ready_path)?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !continue_path.exists() {
+        if Instant::now() >= deadline {
+            return Err(anyhow::anyhow!("handoff continue file never appeared").into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
 fn publish_active_workspace(
     ws_state: &WorkspaceState,
     ws_path: PathBuf,
     exclusive: workspace_lease::WorkspaceLease,
-) -> AppResult<crate::migration_supervisor::InstalledImageToken> {
+) -> AppResult<()> {
+    // Every candidate-image write (Restore Epoch mint, FTS rebuild, seal,
+    // installed-token capture, CAS verification) completed while the
+    // exclusive restore boundary was held. After the shared handoff another
+    // authority may legitimately write a new WAL at any time, so this
+    // function must never seal, checkpoint, delete sidecars, or digest the
+    // live image again — doing so raced newly written WAL frames away.
     let opened =
         crate::migration_supervisor::reopen_under_shared_lease_for_restore(&ws_path, exclusive)
             .map_err(|error| anyhow::anyhow!("workspace shared handoff after restore: {error}"))?;
-    if let Err(error) = opened.database.rebuild_fts_if_stale() {
-        tracing::warn!("restore: fts rebuild after restore failed: {error}");
-    }
-    crate::migration_supervisor::seal_sqlite_image(&ws_path.join("grimodex.db"))
-        .map_err(|error| anyhow::anyhow!("RESTORE_POST_EPOCH_SEAL_FAILED: {error}"))?;
-    let final_token = crate::migration_supervisor::installed_image_token_from_sealed(
-        &ws_path.join("grimodex.db"),
-        grimodex_core::SCHEMA_VERSION,
-        None,
-    )
-    .map_err(|error| anyhow::anyhow!("RESTORE_POST_EPOCH_DIGEST_FAILED: {error}"))?;
+    #[cfg(feature = "test-failpoints")]
+    wait_after_shared_handoff_if_requested()?;
     let authority = std::sync::Arc::new(WorkspaceAuthority::new(
         opened.database,
         ws_path,
@@ -1199,7 +1244,7 @@ fn publish_active_workspace(
     ));
     let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
     *inner = Some(ActiveWorkspace::new(authority));
-    Ok(final_token)
+    Ok(())
 }
 
 fn reactivate_workspace(

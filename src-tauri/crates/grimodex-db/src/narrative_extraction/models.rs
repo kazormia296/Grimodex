@@ -167,6 +167,9 @@ pub struct ChronicleStageModelBinding {
     pub resolution_status: ChronicleStageResolutionStatus,
 }
 
+// The stage ids mirror their canonical wire names; the shared prefix is part
+// of the contract vocabulary, not a naming accident.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ChronicleStageId {

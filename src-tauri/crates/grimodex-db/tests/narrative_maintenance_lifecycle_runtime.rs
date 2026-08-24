@@ -102,6 +102,7 @@ fn request(run_kind: AutomaticRunKind) -> MaintenanceCycleRequest {
     .expect("valid maintenance request")
 }
 
+#[allow(clippy::type_complexity)]
 fn lifecycle_rows_for_run(
     db: &Database,
     run_id: &str,
@@ -837,6 +838,7 @@ fn startup_interruption_fails_the_exact_attempt_and_preserves_failure_metadata()
     .expect("startup recovery terminalizes all lifecycle rows");
     assert_eq!(result.failed_run_ids, ["interrupted-lifecycle-run"]);
 
+    #[allow(clippy::type_complexity)]
     let metadata: (
         String,
         String,

@@ -259,6 +259,7 @@ pub fn canonical_application_freshness(
         return Ok(None);
     }
 
+    #[allow(clippy::type_complexity)]
     let row: Option<(
         String,
         String,

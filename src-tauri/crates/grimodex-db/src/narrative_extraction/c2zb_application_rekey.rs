@@ -841,7 +841,7 @@ fn apply_project_plan(
         apply_fan_out(conn, plan, fan_out)?;
     }
     for (run_id, attention_rehome) in attention_by_run {
-        let old_key = finding_key(RUN_CONSUMER_KIND, &run_id);
+        let old_key = finding_key(RUN_CONSUMER_KIND, run_id);
         let new_key = finding_key(APPLICATION_CONSUMER_KIND, &attention_rehome.application_id);
         let updated = conn.execute(
             "UPDATE narrative_maintenance_attention

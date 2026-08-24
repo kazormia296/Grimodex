@@ -208,7 +208,7 @@ fn parent_envelope_with_payload(
         "supportClass": "direct-source",
         "producer": producer
     }));
-    let scope_digest = digest(&scope);
+    let scope_digest = digest(scope);
     let assertion_digest = digest(&json!({
         "assertionCoreDigest": assertion_core_digest,
         "scopeDigest": scope_digest
@@ -219,7 +219,7 @@ fn parent_envelope_with_payload(
         "evidenceSet": evidence,
         "dependencySet": dependencies
     }));
-    let proposal_digest = digest(&proposal);
+    let proposal_digest = digest(proposal);
 
     json!({
         "schemaVersion": 2,
@@ -695,13 +695,6 @@ fn assert_code(result: Result<Value>, expected_code: &str) {
         error.to_string().contains(expected_code),
         "expected {expected_code}, got {error:#}"
     );
-}
-
-fn shared_golden_scope(case_id: &str) -> Value {
-    golden_case(case_id)["expected"]["canonicalScopeJson"]
-        .as_str()
-        .map(|canonical| serde_json::from_str(canonical).expect("golden scope JSON"))
-        .expect("golden scope case")
 }
 
 fn golden_case(case_id: &str) -> Value {
@@ -1893,6 +1886,7 @@ mod c2b_atomic_materialization_red {
             )]
         );
 
+        #[allow(clippy::type_complexity)]
         let d1_entries: Vec<(String, String, String, i64, String, String, String, String)> = db
             .with_conn(|conn| {
                 let mut statement = conn.prepare(

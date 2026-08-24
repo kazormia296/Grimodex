@@ -354,6 +354,7 @@ fn ensure_parent_has_dependency_edge(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_human_envelope(
     parent: &Value,
     proposal_payload: &Value,

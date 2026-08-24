@@ -810,6 +810,7 @@ fn validate_lifecycle_timestamps_in_tx(
     handle: &MaintenanceRunHandle,
     completed: bool,
 ) -> anyhow::Result<DateTime<Utc>> {
+    #[allow(clippy::type_complexity)]
     let row: (
         String,
         Option<String>,

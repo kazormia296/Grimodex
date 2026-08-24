@@ -224,16 +224,30 @@ pub fn open_or_migrate_workspace_db_with_failpoint(
 
     // Incomplete / unreadable restore session must not publish authority —
     // Recovery Shell only. Checked *before* fresh-DB creation so a missing
-    // grimodex.db cannot wipe Recovery state while a marker remains.
+    // grimodex.db cannot wipe Recovery state while a marker remains. A marker
+    // in the terminal `committed` phase is the one exception: the restore
+    // finished and only its unlink failed, so this open verifies the
+    // workspace identity and converges to deletion instead of reporting a
+    // false RESTORE_SESSION_INCOMPLETE forever.
     match crate::backup_restore::read_incomplete_restore_session(workspace) {
         Ok(Some(marker)) => {
-            return Ok(WorkspaceOpenDbOutcome::SafeMode {
-                reason: format!(
-                    "WORKSPACE_SAFE_MODE: RESTORE_SESSION_INCOMPLETE: phase={} safetyKind={} safety={}",
-                    marker.phase, marker.safety_kind, marker.safety_artifact
-                ),
-                available_backups: list_recovery_candidates(workspace),
-            });
+            if marker.phase == crate::backup_restore::RESTORE_SESSION_PHASE_COMMITTED
+                && marker.workspace_identity == workspace_identity(workspace)
+            {
+                if let Err(error) = crate::backup_restore::clear_restore_session_marker(workspace) {
+                    tracing::warn!(
+                        "committed restore-session marker still cannot be removed: {error}"
+                    );
+                }
+            } else {
+                return Ok(WorkspaceOpenDbOutcome::SafeMode {
+                    reason: format!(
+                        "WORKSPACE_SAFE_MODE: RESTORE_SESSION_INCOMPLETE: phase={} safetyKind={} safety={}",
+                        marker.phase, marker.safety_kind, marker.safety_artifact
+                    ),
+                    available_backups: list_recovery_candidates(workspace),
+                });
+            }
         }
         Ok(None) => {}
         Err(error) => {

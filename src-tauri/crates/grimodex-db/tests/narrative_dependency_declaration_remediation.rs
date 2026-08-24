@@ -182,7 +182,7 @@ fn in_tx_writer_requires_a_caller_owned_transaction() {
 #[test]
 fn overflow_and_post_insert_cas_failure_leave_no_partial_rows() {
     let db = migrated_db();
-    let initial = write_dependency_declaration_set(&db, request(PROJECT_ID, "producer-a", 1, 0))
+    let _initial = write_dependency_declaration_set(&db, request(PROJECT_ID, "producer-a", 1, 0))
         .expect("write initial set for overflow");
     db.with_conn(|conn| {
         conn.execute(

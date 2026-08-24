@@ -812,7 +812,7 @@ fn application_id_for_commit(db: &Database, commit: &Value) -> String {
 #[test]
 fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
     let db = fixture_db();
-    db.with_conn(|conn| seed_cutover_ready_application(conn))
+    db.with_conn(seed_cutover_ready_application)
         .expect("seed all C2-ZA durable prerequisites");
     let evidence = record_live_scheduler_heartbeat(&db, "c2zc-apply-authority", 1)
         .expect("mint live scheduler heartbeat from production seam");
@@ -933,7 +933,7 @@ fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
 #[test]
 fn second_temporal_node_ensure_initializes_generic_without_false_feed() {
     let db = fixture_db();
-    db.with_conn(|conn| seed_cutover_ready_application(conn))
+    db.with_conn(seed_cutover_ready_application)
         .expect("seed all C2-ZA durable prerequisites");
     let evidence = record_live_scheduler_heartbeat(&db, "c2zc-temporal-authority", 1)
         .expect("mint live scheduler heartbeat from production seam");

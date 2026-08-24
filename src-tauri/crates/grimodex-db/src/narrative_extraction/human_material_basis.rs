@@ -551,13 +551,13 @@ fn required_parent_sources(parent: &MaterialBasis) -> HashSet<String> {
             .dependency_set
             .iter()
             .filter(|dependency| dependency.role != DependencyRole::ScopeResolution)
-            .filter_map(|dependency| {
+            .filter(|&dependency| {
                 parent
                     .source_basis
                     .iter()
                     .any(|source| source.source_key == dependency.input_ref)
-                    .then(|| dependency.input_ref.clone())
-            }),
+            })
+            .map(|dependency| dependency.input_ref.clone()),
     );
     required
 }

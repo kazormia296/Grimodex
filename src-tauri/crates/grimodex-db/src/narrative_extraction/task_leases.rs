@@ -212,6 +212,7 @@ pub(crate) fn verify_task_lease(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn persist_task_artifacts(
     conn: &Connection,
     project_id: &str,
@@ -250,7 +251,7 @@ pub(crate) fn persist_task_artifacts(
     let typed_scope_artifact = historical_scope_authority_basis
         .map(|basis| {
             super::scope_authority_runtime::persist_historical_scope_authority_basis_in_tx(
-                conn, project_id, run_id, task_id, attempt_id, basis,
+                conn, project_id, run_id, task_id, attempt_id, basis, artifacts,
             )
         })
         .transpose()?;

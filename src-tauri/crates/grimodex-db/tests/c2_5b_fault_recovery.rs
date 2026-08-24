@@ -615,7 +615,7 @@ fn interruption_leaves_running_triplet_then_recovery_marks_attempt_interrupted()
         PROJECT_ID,
         &work,
         work.semantic_epoch_id.as_deref(),
-        &[run_id.clone()],
+        std::slice::from_ref(&run_id),
     )
     .expect("terminalize interrupted lifecycle");
     assert_eq!(recovered.failed_run_ids, vec![run_id.clone()]);

@@ -32,6 +32,10 @@ pub const CHRONICLE_SCENE_EVENT_ASSERTION_SCHEMA_VERSION: &str = "1";
 
 const CHRONICLE_RECONCILER_PRODUCER_KIND: &str = "reconciler-proposal";
 
+// Decode-validation type: fields exist to enforce the typed schema at
+// deserialization (deny_unknown_fields + typed enums) and are intentionally
+// not read afterwards.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChronicleSemanticPayload {
@@ -68,7 +72,8 @@ enum ChronicleSignificance {
 enum ChronicleAttribution {
     Narrator,
     Unknown,
-    Character(String),
+    // Decode-validation only: the character id is parsed to prove the shape.
+    Character(#[allow(dead_code)] String),
 }
 
 impl<'de> Deserialize<'de> for ChronicleAttribution {
@@ -112,6 +117,8 @@ enum ChronicleDurationKind {
     Unknown,
 }
 
+// Decode-validation type; see `ChronicleSemanticPayload`.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChronicleObservationSummary {

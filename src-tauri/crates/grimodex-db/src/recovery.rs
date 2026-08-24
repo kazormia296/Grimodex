@@ -1086,7 +1086,7 @@ mod tests {
         let marker = read_incomplete_restore_session(&ws)
             .expect("marker read")
             .expect("marker present");
-        assert_eq!(marker.phase, "live-sealed");
+        assert_eq!(marker.phase, "epoch-minted");
 
         let reopen = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("reopen");
         assert!(
@@ -1467,6 +1467,133 @@ mod tests {
         assert_eq!(marker_at(&ws.join("grimodex.db")), "backup");
         let shared = workspace_lease::try_acquire_shared(&ws).expect("shared lease available");
         drop(shared);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn safe_mode_restore_mints_restore_epoch_for_normal_reopen() {
+        use crate::migration_supervisor::{self, WorkspaceOpenDbOutcome};
+
+        let ws = temp_ws("restore-epoch-journey");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        create_migrated_db(&ws.join("backups/grimodex-auto.db"), "backup");
+        {
+            let db = Database::new(&ws.join("backups/grimodex-auto.db")).expect("backup db");
+            db.execute(
+                "INSERT INTO projects (id, title) VALUES ('restore-project', 'restore fixture')",
+                &[],
+                "seed project",
+            )
+            .expect("seed project");
+            db.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('restore-project-initial', 'restore-project', 0, 'initial',
+                         '2026-08-23T00:00:00.000Z')",
+                &[],
+                "seed epoch",
+            )
+            .expect("seed epoch");
+        }
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, ".db");
+
+        restore_safe_mode_candidate(&state, &candidate_id).expect("safe mode restore");
+
+        // Same shape as a process restart: no marker remains and the next
+        // normal open publishes authority. The restored image must already
+        // carry the deterministic Restore Epoch generation boundary — a Safe
+        // Mode recovery is the same "DB image restore" as a normal restore
+        // and must not re-publish the backup's stale Epoch as current.
+        let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("reopen");
+        let opened = match outcome {
+            WorkspaceOpenDbOutcome::Ready { opened, .. }
+            | WorkspaceOpenDbOutcome::Migrated { opened, .. } => opened,
+            other => panic!("expected published authority, got {other:?}"),
+        };
+        let rows = opened
+            .database
+            .execute(
+                "SELECT COUNT(*) AS restores,
+                        MAX(triggered_by_change_event_uid) AS identity
+                   FROM narrative_semantic_epochs
+                  WHERE project_id = 'restore-project' AND reason = 'restore'",
+                &[],
+                "read restore epochs",
+            )
+            .expect("read restore epochs");
+        assert_eq!(rows[0]["restores"].as_i64().unwrap_or_default(), 1);
+        assert!(rows[0]["identity"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("restore-image-sha256:"));
+        drop(opened);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn committed_restore_marker_converges_on_normal_open() {
+        use crate::backup_restore::{
+            restore_session_marker_path, RestoreSessionMarker, RESTORE_SESSION_PHASE_COMMITTED,
+        };
+        use crate::migration_supervisor::{self, WorkspaceOpenDbOutcome};
+
+        let ws = temp_ws("marker-committed");
+        create_migrated_db(&ws.join("grimodex.db"), "healthy");
+        fs::create_dir_all(ws.join("backups")).expect("backups");
+        let marker = RestoreSessionMarker {
+            version: 1,
+            phase: RESTORE_SESSION_PHASE_COMMITTED.into(),
+            safety_artifact: "x".into(),
+            safety_kind: "logical".into(),
+            rollback_artifact: None,
+            installed_digest: "deadbeef".into(),
+            workspace_identity: migration_supervisor::workspace_identity(&ws),
+        };
+        fs::write(
+            restore_session_marker_path(&ws),
+            serde_json::to_vec_pretty(&marker).expect("json"),
+        )
+        .expect("write committed marker");
+
+        // A committed marker means the restore finished and only its unlink
+        // failed: the next open verifies the identity, converges to deletion,
+        // and publishes normally instead of a false RESTORE_SESSION_INCOMPLETE.
+        let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("open");
+        assert!(
+            matches!(
+                outcome,
+                WorkspaceOpenDbOutcome::Ready { .. } | WorkspaceOpenDbOutcome::Migrated { .. }
+            ),
+            "committed marker must not force Safe Mode"
+        );
+        drop(outcome);
+        assert!(
+            !restore_session_marker_path(&ws).exists(),
+            "committed marker must be consumed by the open"
+        );
+
+        // A committed marker for a different workspace identity is not ours
+        // to consume: fail closed into Safe Mode.
+        let foreign = RestoreSessionMarker {
+            workspace_identity: "some-other-workspace".into(),
+            ..marker
+        };
+        fs::write(
+            restore_session_marker_path(&ws),
+            serde_json::to_vec_pretty(&foreign).expect("json"),
+        )
+        .expect("write foreign committed marker");
+        let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("open");
+        match outcome {
+            WorkspaceOpenDbOutcome::SafeMode { reason, .. } => {
+                assert!(
+                    reason.contains("RESTORE_SESSION_INCOMPLETE"),
+                    "reason={reason}"
+                );
+            }
+            other => panic!("expected SafeMode for foreign committed marker, got {other:?}"),
+        }
         let _ = fs::remove_dir_all(&ws);
     }
 
