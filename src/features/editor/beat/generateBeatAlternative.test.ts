@@ -60,6 +60,8 @@ import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNo
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useAiSettingsStore } from "@/features/chat/store";
+import { DEFAULT_AI_SETTINGS } from "@/features/chat/types";
 import { generateBeatAlternative } from "./generateBeatAlternative";
 
 function emit(event: string, payload: unknown) {
@@ -152,6 +154,7 @@ describe("generateBeatAlternative", () => {
       workspaceSwitchInProgress: false,
     });
     useCodexStore.setState({ entries: [] });
+    useAiSettingsStore.setState({ settings: null });
   });
 
   it("ストリーム完了後に snippetStore.create が呼ばれる", async () => {
@@ -256,7 +259,7 @@ describe("generateBeatAlternative", () => {
           // openai-compatible 専用で、他プロバイダとの組み合わせは
           // resolveChatAuditRoute が fail-closed に拒否する契約のため null。
           model: "gpt-4o",
-          modelProvider: "openai",
+          modelProvider: "openai-compatible",
           modelVariant: "v1",
           modelEndpointId: null,
         },
@@ -265,6 +268,22 @@ describe("generateBeatAlternative", () => {
       .run();
     editor.commands.insertContentAt(editor.state.doc.content.size, {
       type: "paragraph",
+    });
+
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "openai-compatible",
+        openaiCompatibleEndpoints: [
+          {
+            id: "ep-2",
+            label: "Test endpoint",
+            baseUrl: "https://example.test/v1",
+            apiVariant: "v1",
+          },
+        ],
+        activeOpenaiCompatibleEndpointId: "ep-2",
+      },
     });
 
     const promise = generateBeatAlternative(editor, "b1", "scene-1");
@@ -276,7 +295,7 @@ describe("generateBeatAlternative", () => {
     expect(call).toBeDefined();
     expect(call![1]).toMatchObject({
       model: "gpt-4o",
-      provider: "openai",
+      provider: "openai-compatible",
       apiVariant: "v1",
       endpointId: null,
     });
