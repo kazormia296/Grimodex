@@ -7543,6 +7543,10 @@ function validatePolicySchemas(repoRoot, errors) {
       "narrative-dependency-role-registry.schema.json",
       "narrative-dependency-role-registry.json",
     ],
+    [
+      "narrative-dependency-producer-registry.schema.json",
+      "narrative-dependency-producer-registry.json",
+    ],
   ];
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   for (const [schemaName, contractName] of schemaContracts) {

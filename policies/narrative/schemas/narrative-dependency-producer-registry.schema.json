@@ -88,16 +88,8 @@
             "properties": {
               "declarationSetGeneration": { "const": 1 }
             }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "id": { "const": "legacy-application-projection-dependency" }
-            },
-            "required": ["id"]
           },
-          "then": {
+          "else": {
             "not": { "required": ["declarationSetGeneration"] }
           }
         }
