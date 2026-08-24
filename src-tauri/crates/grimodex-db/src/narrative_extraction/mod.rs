@@ -60,6 +60,7 @@ mod phase_snapshots;
 mod phase_undo;
 mod plot_thread_operations;
 mod plot_thread_undo;
+mod project_scope_authority;
 mod publish_runtime;
 mod reconciliation_envelope;
 mod repair;

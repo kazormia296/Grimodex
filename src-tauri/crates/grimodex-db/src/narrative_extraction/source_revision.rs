@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use sha2::Digest;
 
 use super::change_feed;
+use super::project_scope_authority::load_live_project_scope_authority;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CurrentSourceRevision {
@@ -30,6 +31,10 @@ pub(crate) fn resolve_source_revision(
             resolve_domain_projection(conn, project_id, source_key)
         }
         "codex-catalog" => resolve_codex_catalog(conn, project_id, source_key),
+        "project-scope-authority" => {
+            let authority = load_live_project_scope_authority(conn, project_id, source_key)?;
+            ensure_non_empty_token(authority.source.revision_token)
+        }
         "narrative-artifact" => resolve_narrative_artifact(conn, project_id, source_key),
         "import-capture" => resolve_import_capture(conn, source_key),
         "evidence-anchor" | "evidence" => resolve_evidence_anchor(conn, project_id, source_key),

@@ -117,6 +117,41 @@ fn baseline_token() -> String {
     }))
 }
 
+fn empty_project_token() -> String {
+    let scope_registry_revision = digest(json!({
+        "contractId": "narrative-scope-registry-revision/1",
+        "projectId": PROJECT_ID,
+        "scopeRegistry": {
+            "registryVersion": "narrative-scope/2",
+            "reservedAudienceRefs": ["reader"]
+        },
+        "mappings": []
+    }));
+    let reading_order_revision = digest(json!({
+        "contractId": "narrative-reading-order-revision/1",
+        "projectId": PROJECT_ID,
+        "registryVersion": "narrative-scope/2",
+        "mappings": []
+    }));
+    let story_time_order_revision = digest(json!({
+        "contractId": "narrative-story-time-order-revision/1",
+        "projectId": PROJECT_ID,
+        "registryVersion": "narrative-scope/2",
+        "mappings": []
+    }));
+    digest(json!({
+        "contractId": "narrative-project-scope-authority-revision/1",
+        "projectId": PROJECT_ID,
+        "source": {
+            "sourceKind": "project-scope-authority",
+            "sourceKey": SOURCE_IDENTITY
+        },
+        "scopeRegistryRevision": scope_registry_revision,
+        "readingOrderRevision": reading_order_revision,
+        "storyTimeOrderRevision": story_time_order_revision
+    }))
+}
+
 fn fixture_db() -> Database {
     let db = Database::new(Path::new(":memory:")).expect("open database");
     db.migrate().expect("migrate database");
@@ -350,6 +385,40 @@ fn real_tree_scope_and_order_mutations_reach_the_project_aggregate_edge() {
 }
 
 #[test]
+fn real_folder_reorder_reaches_the_project_aggregate_edge_through_typed_feed_metadata() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        // Establish two populated root folders without creating a Feed event.
+        // The baseline Scene order remains A then B, so the independently
+        // sealed Edge token is still current before the real writer runs.
+        conn.execute(
+            "UPDATE tree_nodes SET parent_id = 'folder-b' WHERE id = 'scene-b'",
+            [],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("split the baseline scenes across root folders");
+
+    tree_node_patch(
+        &db,
+        patch_payload("folder-reorder", "folder-b", "sortOrder", json!("Z0")),
+    )
+    .expect("reorder a populated folder through the real tree writer");
+
+    let summary = run_cycle(&db);
+    assert_eq!(summary.affected_edge_count, 1);
+    assert_eq!(summary.affected_consumer_count, 1);
+    assert_eq!(
+        edge_state(&db),
+        Some((
+            "stale".to_owned(),
+            Some("source-revision-changed".to_owned()),
+            "rebuild-required".to_owned(),
+        ))
+    );
+}
+
+#[test]
 fn body_and_display_metadata_do_not_touch_the_project_aggregate_edge() {
     for (case, field, value) in [
         ("title", "title", json!("Renamed only")),
@@ -442,6 +511,135 @@ fn aggregate_create_and_delete_are_content_changes_not_scene_incarnation_or_miss
             mutation.name()
         );
     }
+}
+
+#[test]
+fn empty_project_rebuild_resolves_the_exact_empty_authority() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute("DELETE FROM tree_nodes WHERE project_id = ?1", [PROJECT_ID])?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges SET read_set_json = ?1 WHERE id = ?2",
+            params![json!([empty_project_token()]).to_string(), EDGE_ID],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("install an empty live project with its independent held token");
+
+    let RebuildDerivedStateOutcome::Ran { summary, .. } =
+        rebuild_narrative_derived_state_for_project(&db, PROJECT_ID)
+            .expect("resolve the empty live project authority")
+    else {
+        panic!("the empty-project rebuild must run");
+    };
+    assert_eq!(summary.consumers_evaluated, 1);
+    assert_eq!(summary.edges_evaluated, 1);
+    assert_eq!(
+        edge_state(&db),
+        Some(("fresh".to_owned(), None, "none".to_owned())),
+        "zero live Scenes still form a stable typed authority"
+    );
+}
+
+#[test]
+fn corrupt_live_tree_cycle_fails_closed_with_stable_error() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE tree_nodes SET parent_id = 'folder-b' WHERE id = 'folder-a'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE tree_nodes SET parent_id = 'folder-a' WHERE id = 'folder-b'",
+            [],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("install a durable parent cycle");
+
+    let error = rebuild_narrative_derived_state_for_project(&db, PROJECT_ID)
+        .expect_err("a cyclic live tree must not mint an authority token");
+    assert_eq!(
+        error.to_string(),
+        "NEX_PROJECT_SCOPE_AUTHORITY_TREE_INVALID: active tree contains a parent cycle"
+    );
+    assert_eq!(edge_state(&db), None, "failed resolution must not publish");
+}
+
+#[test]
+fn project_scope_source_key_must_match_edge_project_exactly() {
+    for (source_identity, expected_error) in [
+        (
+            "project:scope-authority:foreign-project",
+            "NEX_SOURCE_PROJECT_MISMATCH: project Scope authority does not belong to project",
+        ),
+        (
+            "project:scope-authority:",
+            "NEX_SOURCE_KEY_INVALID: project-scope-authority sourceKey must be project:scope-authority:<projectId>",
+        ),
+    ] {
+        let db = fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('foreign-project', 'Foreign')",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE narrative_dependency_edges
+                    SET source_object_identity = ?1 WHERE id = ?2",
+                params![source_identity, EDGE_ID],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("install the mismatched aggregate Source identity");
+
+        let error = rebuild_narrative_derived_state_for_project(&db, PROJECT_ID)
+            .expect_err("the aggregate Source identity must fail closed");
+        assert_eq!(error.to_string(), expected_error, "{source_identity}");
+        assert_eq!(edge_state(&db), None, "{source_identity}");
+    }
+}
+
+#[test]
+fn archive_then_unarchive_populated_folder_routes_feed_and_restores_the_baseline_token() {
+    let db = fixture_db();
+
+    tree_node_patch(
+        &db,
+        patch_payload(
+            "archive-folder",
+            "folder-a",
+            "archivedAt",
+            json!(UPDATED_AT),
+        ),
+    )
+    .expect("archive a populated Folder through the real tree writer");
+    let archived = run_cycle(&db);
+    assert_eq!(archived.affected_edge_count, 1);
+    assert_eq!(archived.affected_consumer_count, 1);
+    assert_eq!(
+        edge_state(&db),
+        Some((
+            "stale".to_owned(),
+            Some("source-revision-changed".to_owned()),
+            "rebuild-required".to_owned(),
+        )),
+        "archiving cuts the populated Folder subtree from the live aggregate token"
+    );
+
+    tree_node_patch(
+        &db,
+        patch_payload("unarchive-folder", "folder-a", "archivedAt", Value::Null),
+    )
+    .expect("unarchive the populated Folder through the real tree writer");
+    let unarchived = run_cycle(&db);
+    assert_eq!(unarchived.affected_edge_count, 1);
+    assert_eq!(unarchived.affected_consumer_count, 1);
+    assert_eq!(
+        edge_state(&db),
+        Some(("fresh".to_owned(), None, "none".to_owned())),
+        "unarchiving restores the subtree and independently held baseline token"
+    );
 }
 
 #[test]

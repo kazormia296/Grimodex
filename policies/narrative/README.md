@@ -361,9 +361,9 @@ declared under Consumer identity `(RUN_CONSUMER_KIND =
 "narrative-extraction-run", run_id)` — the _Run_, never the individual
 Proposal — because Lane N's Rebuild-verify diagnostic already queried Edges
 by that exact convention before any Producer declared them; and
-`source_object_identity` uses fixed prefixes (`project:scene:`,
-`snapshot:`, `project:codex-catalog:`, `projection:`, `artifact:`,
-`capture:`, `evidence:`) that `restore_rebuild.rs`'s `infer_source_kind`
+`source_object_identity` uses fixed prefixes (`project:scope-authority:`,
+`project:scene:`, `snapshot:`, `project:codex-catalog:`, `projection:`,
+`artifact:`, `capture:`, `evidence:`) that `restore_rebuild.rs`'s `infer_source_kind`
 already reads in reverse, so a new `dependency_edges::source_object_identity_for`
 builds the same strings forward from a `SourceBasisRow`'s `(sourceKind,
 sourceKey)`, cross-checked against `reconciliation_envelope.rs`'s own
@@ -378,6 +378,13 @@ a separate, still-open question left to Run/Task/Attempt lifecycle code
 (Lane B). `commit.rs` needed no changes at all for this piece — the
 "Producer-time commit path" its own doc comment referred to turned out to
 mean Proposal/Revision generation, not commit _apply_.
+
+`project:scope-authority:<projectId>` is a computed Source added by the NIR-0
+C2B live-authority foundation. It has no durable head of its own: the resolver
+derives one typed revision from a single SQLite snapshot of live `tree_nodes`.
+The source is wired through Incremental Freshness and restore/rebuild, but it
+remains shadow-only until C2B emits a Dependency and the Scope V2 adapter is
+wired.
 
 Verified via `rustfmt --edition 2021 --check`, a brace/paren balance check,
 a Python `sqlite3` replay of the exact `narrative_dependency_edges` upsert

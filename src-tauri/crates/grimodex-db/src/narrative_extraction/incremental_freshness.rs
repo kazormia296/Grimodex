@@ -191,6 +191,7 @@ struct ProducerEpochGuard {
 struct SourceEventSignals<'a> {
     latest: &'a NarrativeChangeEventRecord,
     incarnation_replaced: bool,
+    change_class_override: Option<SourceChangeClass>,
 }
 
 /// Selects the D1 head set that a Feed evaluation is allowed to observe.
@@ -1264,7 +1265,9 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
         .map(|(source_object_identity, signal)| {
             (
                 source_object_identity.clone(),
-                source_change_class_from_feed_event(signal.latest),
+                signal
+                    .change_class_override
+                    .unwrap_or_else(|| source_change_class_from_feed_event(signal.latest)),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -2216,6 +2219,9 @@ fn affected_source_identities(
         if event_may_change_catalog_via_scene_anchor(event) {
             identities.insert(format!("project:codex-catalog:{project_id}"));
         }
+        if event_changes_project_scope_authority(event) {
+            identities.insert(project_scope_authority_identity(project_id));
+        }
     }
     Ok(identities.into_iter().collect())
 }
@@ -2337,6 +2343,13 @@ fn event_signals_by_source<'a>(
                 event,
             );
         }
+        if event_changes_project_scope_authority(event) {
+            upsert_project_scope_authority_signals(
+                &mut result,
+                project_scope_authority_identity(project_id),
+                event,
+            );
+        }
     }
     Ok(result)
 }
@@ -2356,6 +2369,71 @@ fn upsert_event_signals<'a>(
         .or_insert(SourceEventSignals {
             latest: event,
             incarnation_replaced: replaced,
+            change_class_override: None,
+        });
+}
+
+fn project_scope_authority_identity(project_id: &str) -> String {
+    format!("project:scope-authority:{project_id}")
+}
+
+fn event_changes_project_scope_authority(event: &NarrativeChangeEventRecord) -> bool {
+    let node_type = match event.object_key.get("kind").and_then(Value::as_str) {
+        Some("scene") => Some("scene"),
+        Some("component") => event
+            .object_key
+            .get("componentId")
+            .and_then(Value::as_str)
+            .filter(|component_id| {
+                component_id.starts_with("tree-node:") || component_id.starts_with("tree_node:")
+            })
+            .and_then(|_| {
+                event
+                    .structural_impact
+                    .as_ref()
+                    .and_then(|impact| impact.get("nodeType"))
+                    .and_then(Value::as_str)
+            }),
+        _ => None,
+    };
+    event.changed_paths.iter().any(|path| match node_type {
+        // Commit-journal projections deliberately collapse their field paths
+        // to `/`. A Scene key therefore also covers Chronicle-only calendar
+        // patches; only membership transitions or the typed Story-order root
+        // can make that whole-object marker an aggregate axis change.
+        Some("scene") if path == "/" => {
+            event.change_kind == "order"
+                || (event.change_kind == "content"
+                    && matches!(
+                        event.mutation_kind.as_str(),
+                        "create" | "delete" | "restore"
+                    ))
+        }
+        Some("scene") => matches!(
+            path.as_str(),
+            "/parentId" | "/sortOrder" | "/storyTimeOrder" | "/archivedAt"
+        ),
+        Some("folder") => matches!(path.as_str(), "/parentId" | "/sortOrder" | "/archivedAt"),
+        _ => false,
+    })
+}
+
+fn upsert_project_scope_authority_signals<'a>(
+    result: &mut BTreeMap<String, SourceEventSignals<'a>>,
+    identity: String,
+    event: &'a NarrativeChangeEventRecord,
+) {
+    result
+        .entry(identity)
+        .and_modify(|signals| {
+            signals.latest = event;
+            signals.incarnation_replaced = false;
+            signals.change_class_override = Some(SourceChangeClass::SourceContentChanged);
+        })
+        .or_insert(SourceEventSignals {
+            latest: event,
+            incarnation_replaced: false,
+            change_class_override: Some(SourceChangeClass::SourceContentChanged),
         });
 }
 
@@ -2952,6 +3030,120 @@ mod tests {
         let (batch, plan) = reserve_and_evaluate_batch(db);
         assert_eq!(plan.affected_edge_count, 1);
         (batch, plan)
+    }
+
+    #[test]
+    fn project_scope_authority_feed_selection_is_axis_exact() {
+        let event = |kind: &str,
+                     node_type: &str,
+                     change_kind: &str,
+                     mutation_kind: &str,
+                     paths: &[&str]| {
+            let changed_paths = paths
+                .iter()
+                .map(|path| (*path).to_owned())
+                .collect::<Vec<_>>();
+            NarrativeChangeEventRecord {
+                event_id: format!("scope-{kind}-{node_type}-{mutation_kind}"),
+                project_id: PROJECT_ID.to_owned(),
+                transaction_id: "scope-transaction".to_owned(),
+                canonical_change_event_uid: "scope-canonical".to_owned(),
+                canonical_sequence: 1,
+                event_ordinal: 0,
+                object_key: if kind == "scene" {
+                    serde_json::json!({ "kind": "scene", "sceneId": "scene-scope" })
+                } else {
+                    serde_json::json!({
+                        "kind": "component",
+                        "componentId": "tree-node:node-scope",
+                    })
+                },
+                change_kind: change_kind.to_owned(),
+                mutation_kind: mutation_kind.to_owned(),
+                before_version: Some(1),
+                before_digest: Some("sha256:before".to_owned()),
+                after_version: Some(2),
+                after_digest: Some("sha256:after".to_owned()),
+                changed_paths: changed_paths.clone(),
+                text_impact: None,
+                structural_impact: Some(serde_json::json!({
+                    "changedPaths": changed_paths,
+                    "nodeType": node_type,
+                })),
+                cause_kind: super::super::change_feed::NarrativeChangeCauseKind::Forward,
+                origin: super::super::change_feed::NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: None,
+                application_ids: Vec::new(),
+                occurred_at: OCCURRED_AT.to_owned(),
+            }
+        };
+
+        assert!(event_changes_project_scope_authority(&event(
+            "scene",
+            "scene",
+            "metadata",
+            "update",
+            &["/sortOrder"],
+        )));
+        assert!(event_changes_project_scope_authority(&event(
+            "component",
+            "folder",
+            "metadata",
+            "update",
+            &["/parentId"],
+        )));
+        assert!(!event_changes_project_scope_authority(&event(
+            "scene",
+            "scene",
+            "content",
+            "restore",
+            &["/content", "/charCount"],
+        )));
+        assert!(!event_changes_project_scope_authority(&event(
+            "scene",
+            "scene",
+            "calendar",
+            "update",
+            &["/"],
+        )));
+        assert!(event_changes_project_scope_authority(&event(
+            "scene",
+            "scene",
+            "order",
+            "update",
+            &["/"],
+        )));
+        assert!(event_changes_project_scope_authority(&event(
+            "scene",
+            "scene",
+            "content",
+            "create",
+            &["/"],
+        )));
+        assert!(!event_changes_project_scope_authority(&event(
+            "component",
+            "folder",
+            "metadata",
+            "create",
+            &["/"],
+        )));
+        assert!(!event_changes_project_scope_authority(&event(
+            "component",
+            "note",
+            "metadata",
+            "update",
+            &["/sortOrder"],
+        )));
+        assert!(!event_changes_project_scope_authority(&event(
+            "component",
+            "folder",
+            "metadata",
+            "update",
+            &["/storyTimeOrder"],
+        )));
     }
 
     #[test]

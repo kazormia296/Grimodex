@@ -9,6 +9,7 @@
     "scopeSchemaVersion",
     "registryVersion",
     "historicalAuthorityBasis",
+    "liveProjectAuthority",
     "implementationStatus",
     "axes",
     "unresolvedReasons",
@@ -39,6 +40,9 @@
     },
     "historicalAuthorityBasis": {
       "$ref": "#/$defs/historicalAuthorityBasis"
+    },
+    "liveProjectAuthority": {
+      "$ref": "#/$defs/liveProjectAuthority"
     },
     "implementationStatus": { "$ref": "#/$defs/implementationStatus" },
     "adoptionTrack": { "$ref": "#/$defs/scopeAdoptionTrack" },
@@ -385,9 +389,60 @@
           ]
         },
         "blockedOn": {
+          "const": ["c2b-scope-override-wiring"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "liveProjectAuthority": {
+      "type": "object",
+      "required": [
+        "contractId",
+        "basisKind",
+        "sourceKind",
+        "sourceKeyPattern",
+        "persistence",
+        "scopeOverrideActive",
+        "runtimeStopCode",
+        "implementationStatus"
+      ],
+      "properties": {
+        "contractId": {
+          "const": "narrative-project-scope-authority-revision/1"
+        },
+        "basisKind": { "const": "computed-live-project-tree" },
+        "sourceKind": { "const": "project-scope-authority" },
+        "sourceKeyPattern": {
+          "const": "project:scope-authority:<projectId>"
+        },
+        "persistence": { "const": "computed-no-table-or-head" },
+        "scopeOverrideActive": { "const": false },
+        "runtimeStopCode": {
+          "const": "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE"
+        },
+        "implementationStatus": {
+          "$ref": "#/$defs/liveProjectAuthorityImplementationStatus"
+        }
+      },
+      "additionalProperties": false
+    },
+    "liveProjectAuthorityImplementationStatus": {
+      "type": "object",
+      "required": ["state", "productionEntryPoints", "blockedOn"],
+      "properties": {
+        "state": { "const": "shadow" },
+        "productionEntryPoints": {
+          "const": [
+            "build_narrative_project_scope_authority_v1",
+            "load_live_project_scope_authority",
+            "run_incremental_freshness_cycle",
+            "rebuild_narrative_derived_state_for_project"
+          ]
+        },
+        "blockedOn": {
           "const": [
             "c2b-scope-override-wiring",
-            "project-scope-order-authority"
+            "scope-v2-contract-adapter"
           ]
         }
       },

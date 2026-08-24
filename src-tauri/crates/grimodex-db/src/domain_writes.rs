@@ -2398,6 +2398,10 @@ fn tree_feed_event(
     let key_source = after.or(before).ok_or_else(|| {
         anyhow::anyhow!("tree feed event '{node_id}' has neither before nor after state")
     })?;
+    let node_type = key_source
+        .get("nodeType")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("tree feed event '{node_id}' has no nodeType"))?;
     Ok(NarrativeChangeEventInput {
         object_key: tree_object_key(key_source, node_id),
         change_kind: change_kind.to_string(),
@@ -2408,7 +2412,10 @@ fn tree_feed_event(
         after_digest: after.map(narrative_snapshot_digest).transpose()?,
         changed_paths: changed_paths.clone(),
         text_impact: scene_text_impact(before, after)?,
-        structural_impact: Some(json!({ "changedPaths": changed_paths })),
+        structural_impact: Some(json!({
+            "changedPaths": changed_paths,
+            "nodeType": node_type,
+        })),
     })
 }
 

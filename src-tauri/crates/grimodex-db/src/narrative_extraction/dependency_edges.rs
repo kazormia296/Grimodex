@@ -93,7 +93,7 @@ pub(crate) use super::consumer_identity::APPLICATION_CONSUMER_KIND;
 /// carry its prefix -- so `repository.rs` and `legacy_backfill.rs` both copy
 /// it rather than rebuild it here (rebuilding it is what produced the
 /// `project:scene:project:scene:s1` double-prefix defect). This stays as the
-/// canonical forward mapping, tested against all seven kinds below, for the
+/// canonical forward mapping, tested against every current kind below, for the
 /// mutation-time changed-source locator that has to *construct* an identity
 /// from a Change Feed event's `(kind, key)` rather than receive one.
 pub(crate) fn source_identity_prefix_for(source_kind: &str) -> anyhow::Result<&'static str> {
@@ -101,6 +101,7 @@ pub(crate) fn source_identity_prefix_for(source_kind: &str) -> anyhow::Result<&'
     // and `evidence-anchor | evidence`, so both spellings must resolve here
     // too or a legitimate envelope would fail canonicalization.
     Ok(match source_kind {
+        "project-scope-authority" => "project:scope-authority:",
         "scene-body" => "project:scene:",
         "snapshot-document" => "snapshot:",
         "codex-catalog" => "project:codex-catalog:",
@@ -117,6 +118,7 @@ pub(crate) fn source_identity_prefix_for(source_kind: &str) -> anyhow::Result<&'
 /// Every identity prefix, longest first so `project:codex-catalog:` is tested
 /// before any shorter `project:`-shaped one could shadow it.
 pub(crate) const SOURCE_IDENTITY_PREFIXES: &[&str] = &[
+    "project:scope-authority:",
     "project:codex-catalog:",
     "project:scene:",
     "projection:",
@@ -267,7 +269,9 @@ pub(crate) fn canonical_source_object_identity(
 pub(crate) fn validate_stored_source_object_identity(
     source_object_identity: &str,
 ) -> anyhow::Result<()> {
-    let source_kind = if source_object_identity.starts_with("project:codex-catalog:") {
+    let source_kind = if source_object_identity.starts_with("project:scope-authority:") {
+        "project-scope-authority"
+    } else if source_object_identity.starts_with("project:codex-catalog:") {
         "codex-catalog"
     } else if source_object_identity.starts_with("project:scene:") {
         "scene-body"
@@ -1135,6 +1139,10 @@ mod tests {
     #[test]
     fn an_already_qualified_key_is_returned_unchanged() {
         for (kind, key) in [
+            (
+                "project-scope-authority",
+                "project:scope-authority:project-1",
+            ),
             ("scene-body", "project:scene:scene-1"),
             ("snapshot-document", "snapshot:snap-1"),
             ("codex-catalog", "project:codex-catalog:entry-1"),
@@ -1190,6 +1198,7 @@ mod tests {
             "projection:proj-1"
         );
         for kind in [
+            "project-scope-authority",
             "scene-body",
             "snapshot-document",
             "codex-catalog",
@@ -1235,6 +1244,8 @@ mod tests {
     fn stored_source_identity_validation_rejects_empty_and_double_prefixes() {
         validate_stored_source_object_identity("project:scene:scene-1")
             .expect("canonical stored Source identity");
+        validate_stored_source_object_identity("project:scope-authority:project-1")
+            .expect("canonical project Scope authority identity");
         for identity in [
             "project:scene:",
             "project:scene:project:scene:scene-1",

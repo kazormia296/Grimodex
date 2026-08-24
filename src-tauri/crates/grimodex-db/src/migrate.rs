@@ -11788,21 +11788,30 @@ mod tests {
     }
 
     /// The migration freezes its own copy of the prefix list so SCHEMA 28
-    /// keeps meaning what it meant. This binds that copy to the live
-    /// canonicalizer at this point in time, so the two can only diverge on
-    /// purpose.
+    /// keeps meaning what it meant. Every historical prefix must remain
+    /// understood by the live canonicalizer, while later Source kinds may be
+    /// added without rewriting the old migration.
     #[test]
-    fn the_frozen_v28_prefix_table_still_matches_the_live_canonicalizer() {
+    fn the_frozen_v28_prefix_table_remains_a_subset_of_the_live_canonicalizer() {
         use crate::narrative_extraction::SOURCE_IDENTITY_PREFIXES;
 
-        let mut frozen = Database::SOURCE_IDENTITY_PREFIXES_V28.to_vec();
-        let mut live = SOURCE_IDENTITY_PREFIXES.to_vec();
-        frozen.sort_unstable();
-        live.sort_unstable();
         assert_eq!(
-            frozen, live,
-            "SCHEMA 28's frozen prefix list drifted from dependency_edges.rs"
+            Database::SOURCE_IDENTITY_PREFIXES_V28,
+            &[
+                "project:codex-catalog:",
+                "project:scene:",
+                "projection:",
+                "snapshot:",
+                "artifact:",
+                "capture:",
+                "evidence:",
+            ],
+            "SCHEMA 28's historical transition must remain frozen"
         );
+        assert!(Database::SOURCE_IDENTITY_PREFIXES_V28
+            .iter()
+            .all(|prefix| SOURCE_IDENTITY_PREFIXES.contains(prefix)));
+        assert!(SOURCE_IDENTITY_PREFIXES.contains(&"project:scope-authority:"));
 
         assert_eq!(
             Database::RUN_CONSUMER_KIND_V28,
