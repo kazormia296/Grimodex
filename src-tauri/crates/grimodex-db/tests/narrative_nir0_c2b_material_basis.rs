@@ -100,6 +100,19 @@ fn material_json() -> Value {
     })
 }
 
+fn refresh_material_digests(material: &mut Value) {
+    let source = material["sourceBasis"].clone();
+    let evidence = material["evidenceSet"].clone();
+    let dependencies = material["dependencySet"].clone();
+    material["dependencySetDigest"] = digest(&dependencies).into();
+    material["materialBasisDigest"] = digest(&json!({
+        "sourceBasis": source,
+        "evidenceSet": evidence,
+        "dependencySet": dependencies
+    }))
+    .into();
+}
+
 fn material() -> MaterialBasis {
     serde_json::from_value(material_json()).expect("typed material basis")
 }
@@ -242,6 +255,55 @@ fn forged_material_digest_is_rejected_separately_from_positive_projection() {
     )
     .expect_err("a forged parent material digest must fail closed");
     assert!(error.to_string().contains("digest"));
+}
+
+#[test]
+fn material_evidence_and_source_coverage_invariants_fail_closed() {
+    let mut wrong_evidence_token = material_json();
+    wrong_evidence_token["evidenceSet"][0]["revisionToken"] = json!("v0@later");
+    refresh_material_digests(&mut wrong_evidence_token);
+    let wrong_evidence_token: MaterialBasis =
+        serde_json::from_value(wrong_evidence_token).expect("typed evidence token drift");
+    assert!(resolve_human_material_basis(
+        HumanMaterialDerivationKind::ProjectionOnly,
+        &wrong_evidence_token,
+        &resolution_context(false),
+        None,
+    )
+    .is_err());
+
+    let mut missing_direct_evidence = material_json();
+    missing_direct_evidence["dependencySet"][0]["inputRef"] = json!("project:scene:scene-2");
+    refresh_material_digests(&mut missing_direct_evidence);
+    let missing_direct_evidence: MaterialBasis =
+        serde_json::from_value(missing_direct_evidence).expect("typed dependency drift");
+    assert!(resolve_human_material_basis(
+        HumanMaterialDerivationKind::ProjectionOnly,
+        &missing_direct_evidence,
+        &resolution_context(false),
+        None,
+    )
+    .is_err());
+
+    let mut orphan_source = material_json();
+    orphan_source["sourceBasis"]
+        .as_array_mut()
+        .expect("source basis array")
+        .push(json!({
+            "sourceKind": "scene-body",
+            "sourceKey": "project:scene:scene-2",
+            "revisionToken": "v0@2026-01-02T00:00:00.000Z"
+        }));
+    refresh_material_digests(&mut orphan_source);
+    let orphan_source: MaterialBasis =
+        serde_json::from_value(orphan_source).expect("typed orphan source");
+    assert!(resolve_human_material_basis(
+        HumanMaterialDerivationKind::ProjectionOnly,
+        &orphan_source,
+        &resolution_context(false),
+        None,
+    )
+    .is_err());
 }
 
 #[test]

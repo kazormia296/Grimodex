@@ -10,12 +10,17 @@ use std::collections::HashSet;
 use anyhow::{anyhow, Context};
 use grimodex_core::canonical_json_digest;
 use grimodex_core::narrative_dependency::{
-    validate_dependency_selector, DependencyRole, DependencySelector,
+    canonicalize_dependency_selector, validate_dependency_selector, DependencyRole,
+    DependencySelector,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::declaration_storage::DependencyDeclaration;
 use super::dependency_edges::canonical_source_object_identity;
+use super::repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
+
+const D1_PRODUCER_ID: &str = "proposal-revision-source-basis";
 
 /// The exact material carried by a validated parent or derived child.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -127,6 +132,56 @@ pub struct TrustedDependencyEntry {
     pub selector: DependencySelector,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct D1ParentAuthority {
+    pub project_id: String,
+    pub consumer_kind: String,
+    pub consumer_key: String,
+    pub producer_id: String,
+    pub producer_generation: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct D1DeclarationProjection {
+    pub project_id: String,
+    pub consumer_kind: String,
+    pub consumer_key: String,
+    pub producer_id: String,
+    pub producer_generation: i64,
+    pub declarations: Vec<DependencyDeclaration>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct D1ParentSnapshot {
+    pub project_id: String,
+    pub consumer_kind: String,
+    pub consumer_key: String,
+    pub producer_id: String,
+    pub producer_generation: i64,
+    pub declarations: Vec<DependencyDeclaration>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct V1ParentAuthority {
+    pub consumer_kind: String,
+    pub consumer_key: String,
+    pub owning_run_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct V1EdgeExpectation {
+    pub source_object_identity: String,
+    pub revision_token: String,
+    pub owning_run_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct V1PersistedEdge {
+    pub source_object_identity: String,
+    pub read_set_json: String,
+    pub owning_run_id: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MaterialBasisDigestInput<'a> {
@@ -215,6 +270,7 @@ fn validate_source_basis(
 fn validate_evidence_set(
     evidence_set: &[MaterialEvidenceEntry],
     source_keys: &HashSet<String>,
+    source_basis: &[MaterialSourceBasisEntry],
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         !evidence_set.is_empty(),
@@ -243,9 +299,52 @@ fn validate_evidence_set(
             evidence.evidence_ref,
             evidence.source_key
         );
+        let source_revision_token = source_basis
+            .iter()
+            .find(|source| source.source_key == evidence.source_key)
+            .map(|source| source.revision_token.as_str());
+        anyhow::ensure!(
+            source_revision_token == Some(evidence.revision_token.as_str()),
+            "NEX_C2B_MATERIAL_EVIDENCE_TOKEN_MISMATCH: evidenceRef '{}' revisionToken differs from its source basis",
+            evidence.evidence_ref
+        );
         anyhow::ensure!(
             evidence_ids.insert(evidence.evidence_ref.clone()),
             "NEX_C2B_MATERIAL_EVIDENCE_DUPLICATE: evidenceRef '{}' is duplicated",
+            evidence.evidence_ref
+        );
+    }
+    Ok(())
+}
+
+fn validate_material_coverage(
+    material: &MaterialBasis,
+    source_keys: &HashSet<String>,
+) -> anyhow::Result<()> {
+    let mut covered_sources = material
+        .evidence_set
+        .iter()
+        .map(|evidence| evidence.source_key.as_str())
+        .collect::<HashSet<_>>();
+    covered_sources.extend(material.dependency_set.iter().filter_map(|dependency| {
+        source_keys
+            .contains(&dependency.input_ref)
+            .then_some(dependency.input_ref.as_str())
+    }));
+    for source_key in source_keys {
+        anyhow::ensure!(
+            covered_sources.contains(source_key.as_str()),
+            "NEX_C2B_MATERIAL_SOURCE_ORPHAN: sourceBasis entry '{}' is not referenced by evidence or dependencySet",
+            source_key
+        );
+    }
+    for evidence in &material.evidence_set {
+        anyhow::ensure!(
+            material.dependency_set.iter().any(|dependency| {
+                dependency.role == DependencyRole::DirectEvidence
+                    && dependency.input_ref == evidence.source_key
+            }),
+            "NEX_C2B_MATERIAL_EVIDENCE_NOT_DECLARED: evidenceRef '{}' has no matching DirectEvidence dependency",
             evidence.evidence_ref
         );
     }
@@ -292,8 +391,9 @@ fn validate_dependency_set(
 
 fn validate_material_basis(material: &MaterialBasis) -> anyhow::Result<()> {
     let source_keys = validate_source_basis(&material.source_basis)?;
-    validate_evidence_set(&material.evidence_set, &source_keys)?;
+    validate_evidence_set(&material.evidence_set, &source_keys, &material.source_basis)?;
     validate_dependency_set(&material.dependency_set, &source_keys)?;
+    validate_material_coverage(material, &source_keys)?;
 
     let expected_dependency_digest = canonical_digest(&material.dependency_set, "dependencySet")?;
     anyhow::ensure!(
@@ -484,12 +584,22 @@ pub fn resolve_human_material_basis(
             .source_basis
             .iter()
             .find(|source| source.source_key == required_source)
-            .expect("required source comes from parent material");
+            .ok_or_else(|| {
+                anyhow!(
+                    "NEX_C2B_MATERIAL_SCOPE_SOURCE_DROPPED: required parent source '{}' is absent",
+                    required_source
+                )
+            })?;
         let child_entry = child
             .source_basis
             .iter()
             .find(|source| source.source_key == required_source)
-            .expect("validated child source exists");
+            .ok_or_else(|| {
+                anyhow!(
+                    "NEX_C2B_MATERIAL_SCOPE_SOURCE_DROPPED: required child source '{}' is absent",
+                    required_source
+                )
+            })?;
         anyhow::ensure!(
             child_entry == parent_entry,
             "NEX_C2B_MATERIAL_SCOPE_SOURCE_CHANGED: required parent source '{}' changed",
@@ -508,4 +618,253 @@ pub fn resolve_human_material_basis(
     Ok(HumanMaterialResolution {
         material_basis: child,
     })
+}
+
+/// Project every typed Material dependency into the D1 declaration shape.
+/// The producer identity and generation are Native-pinned; callers can only
+/// supply the Consumer authority used for the projection metadata.
+pub fn project_d1_declaration_set(
+    material: &MaterialBasis,
+    authority: &D1ParentAuthority,
+) -> anyhow::Result<D1DeclarationProjection> {
+    validate_material_basis(material)?;
+    ensure_non_empty(&authority.project_id, "projectId")?;
+    ensure_non_empty(&authority.consumer_kind, "consumerKind")?;
+    ensure_non_empty(&authority.consumer_key, "consumerKey")?;
+    anyhow::ensure!(
+        authority.producer_id == D1_PRODUCER_ID,
+        "NEX_C2B_MATERIAL_D1_PRODUCER_INVALID: producerId must be '{}'",
+        D1_PRODUCER_ID
+    );
+    anyhow::ensure!(
+        authority.producer_generation == PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
+        "NEX_C2B_MATERIAL_D1_GENERATION_INVALID: producerGeneration must be {}",
+        PROPOSAL_REVISION_D1_PRODUCER_GENERATION
+    );
+
+    let declarations = material
+        .dependency_set
+        .iter()
+        .map(|dependency| {
+            let selector = canonicalize_typed_selector(&dependency.selector).map_err(|error| {
+                anyhow!(
+                    "NEX_C2B_MATERIAL_D1_SELECTOR_INVALID: dependencyId '{}': {error}",
+                    dependency.dependency_id
+                )
+            })?;
+            Ok(DependencyDeclaration {
+                source_object_identity: dependency.input_ref.clone(),
+                role: dependency.role,
+                selector,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    Ok(D1DeclarationProjection {
+        project_id: authority.project_id.clone(),
+        consumer_kind: authority.consumer_kind.clone(),
+        consumer_key: authority.consumer_key.clone(),
+        producer_id: D1_PRODUCER_ID.to_owned(),
+        producer_generation: PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
+        declarations,
+    })
+}
+
+fn canonicalize_typed_selector(
+    selector: &DependencySelector,
+) -> anyhow::Result<DependencySelector> {
+    let canonical = canonicalize_dependency_selector(selector)
+        .map_err(|error| anyhow!("NEX_C2B_MATERIAL_SELECTOR_CANONICALIZE: {error}"))?;
+    serde_json::from_str(&canonical)
+        .map_err(|error| anyhow!("NEX_C2B_MATERIAL_SELECTOR_CANONICALIZE: {error}"))
+}
+
+fn canonical_declaration_sort_key(
+    declaration: &DependencyDeclaration,
+) -> anyhow::Result<(String, String, String)> {
+    Ok((
+        declaration.source_object_identity.clone(),
+        declaration.role.as_str().to_owned(),
+        canonicalize_dependency_selector(&declaration.selector)
+            .map_err(|error| anyhow!("NEX_C2B_MATERIAL_D1_SELECTOR_INVALID: {error}"))?,
+    ))
+}
+
+fn sorted_declarations(
+    declarations: &[DependencyDeclaration],
+) -> anyhow::Result<Vec<DependencyDeclaration>> {
+    let mut keyed = declarations
+        .iter()
+        .map(|declaration| {
+            let mut canonical_declaration = declaration.clone();
+            canonical_declaration.selector = canonicalize_typed_selector(&declaration.selector)?;
+            let key = canonical_declaration_sort_key(&canonical_declaration)?;
+            Ok((key, canonical_declaration))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    keyed.sort_by(|left, right| left.0.cmp(&right.0));
+    for pair in keyed.windows(2) {
+        anyhow::ensure!(
+            pair[0].0 != pair[1].0,
+            "NEX_C2B_MATERIAL_D1_DECLARATION_DUPLICATE: declaration set contains a duplicate"
+        );
+    }
+    Ok(keyed
+        .into_iter()
+        .map(|(_, declaration)| declaration)
+        .collect())
+}
+
+/// Verify a typed persisted D1 snapshot against the complete expected
+/// projection. Declaration ordering is storage detail; metadata is not.
+pub fn validate_d1_parent_authority(
+    expected: &D1DeclarationProjection,
+    actual: &D1ParentSnapshot,
+) -> anyhow::Result<()> {
+    ensure_non_empty(&expected.project_id, "projectId")?;
+    ensure_non_empty(&expected.consumer_kind, "consumerKind")?;
+    ensure_non_empty(&expected.consumer_key, "consumerKey")?;
+    anyhow::ensure!(
+        expected.producer_id == D1_PRODUCER_ID,
+        "NEX_C2B_MATERIAL_D1_PRODUCER_INVALID: expected producerId is not Native-pinned"
+    );
+    anyhow::ensure!(
+        expected.producer_generation == PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
+        "NEX_C2B_MATERIAL_D1_GENERATION_INVALID: expected producerGeneration is not Native-pinned"
+    );
+    anyhow::ensure!(
+        actual.project_id == expected.project_id
+            && actual.consumer_kind == expected.consumer_kind
+            && actual.consumer_key == expected.consumer_key
+            && actual.producer_id == expected.producer_id
+            && actual.producer_generation == expected.producer_generation,
+        "NEX_C2B_MATERIAL_D1_AUTHORITY_MISMATCH: persisted D1 metadata differs from projection"
+    );
+    let expected_declarations = sorted_declarations(&expected.declarations)?;
+    let actual_declarations = sorted_declarations(&actual.declarations)?;
+    anyhow::ensure!(
+        expected_declarations == actual_declarations,
+        "NEX_C2B_MATERIAL_D1_DECLARATION_MISMATCH: persisted D1 declarations differ from projection"
+    );
+    Ok(())
+}
+
+/// Project V1 compatibility expectations from SourceBasis only. Each source
+/// contributes exactly one whole-source revision token and one owning Run.
+pub fn project_v1_expectations(
+    material: &MaterialBasis,
+    authority: &V1ParentAuthority,
+) -> anyhow::Result<Vec<V1EdgeExpectation>> {
+    validate_material_basis(material)?;
+    ensure_non_empty(&authority.consumer_kind, "consumerKind")?;
+    ensure_non_empty(&authority.consumer_key, "consumerKey")?;
+    ensure_non_empty(&authority.owning_run_id, "owningRunId")?;
+
+    let mut source_identities = HashSet::new();
+    material
+        .source_basis
+        .iter()
+        .map(|source| {
+            let source_object_identity =
+                canonical_source_object_identity(&source.source_kind, &source.source_key).map_err(
+                    |error| {
+                        anyhow!(
+                            "NEX_C2B_MATERIAL_V1_SOURCE_INVALID: sourceKey '{}': {error}",
+                            source.source_key
+                        )
+                    },
+                )?;
+            anyhow::ensure!(
+                source_identities.insert(source_object_identity.clone()),
+                "NEX_C2B_MATERIAL_V1_SOURCE_DUPLICATE: sourceKey '{}' is duplicated",
+                source.source_key
+            );
+            Ok(V1EdgeExpectation {
+                source_object_identity,
+                revision_token: source.revision_token.clone(),
+                owning_run_id: authority.owning_run_id.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Verify the exact V1 edge set. The legacy read-set payload remains typed at
+/// the boundary and is parsed directly as a one-token string array.
+pub fn validate_v1_parent_authority(
+    expected: &[V1EdgeExpectation],
+    persisted: &[V1PersistedEdge],
+    authority: &V1ParentAuthority,
+) -> anyhow::Result<()> {
+    ensure_non_empty(&authority.consumer_kind, "consumerKind")?;
+    ensure_non_empty(&authority.consumer_key, "consumerKey")?;
+    ensure_non_empty(&authority.owning_run_id, "owningRunId")?;
+    anyhow::ensure!(
+        expected.len() == persisted.len(),
+        "NEX_C2B_MATERIAL_V1_EDGE_COUNT_MISMATCH: expected {} edges, found {}",
+        expected.len(),
+        persisted.len()
+    );
+
+    let mut expected_sources = HashSet::<String>::new();
+    for edge in expected {
+        ensure_non_empty(&edge.source_object_identity, "sourceObjectIdentity")?;
+        ensure_non_empty(&edge.revision_token, "revisionToken")?;
+        ensure_non_empty(&edge.owning_run_id, "owningRunId")?;
+        anyhow::ensure!(
+            edge.owning_run_id == authority.owning_run_id,
+            "NEX_C2B_MATERIAL_V1_OWNER_MISMATCH: expected edge owner differs from authority"
+        );
+        anyhow::ensure!(
+            expected_sources.insert(edge.source_object_identity.clone()),
+            "NEX_C2B_MATERIAL_V1_EDGE_DUPLICATE: expected source identity '{}' is duplicated",
+            edge.source_object_identity
+        );
+    }
+
+    let mut persisted_sources = HashSet::<String>::new();
+    for edge in persisted {
+        ensure_non_empty(&edge.source_object_identity, "sourceObjectIdentity")?;
+        anyhow::ensure!(
+            persisted_sources.insert(edge.source_object_identity.clone()),
+            "NEX_C2B_MATERIAL_V1_EDGE_DUPLICATE: persisted source identity '{}' is duplicated",
+            edge.source_object_identity
+        );
+        let expected_edge = expected
+            .iter()
+            .find(|expected_edge| {
+                expected_edge.source_object_identity == edge.source_object_identity
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "NEX_C2B_MATERIAL_V1_EDGE_EXTRA: persisted source identity '{}' is not expected",
+                    edge.source_object_identity
+                )
+            })?;
+        anyhow::ensure!(
+            edge.owning_run_id.as_deref() == Some(expected_edge.owning_run_id.as_str()),
+            "NEX_C2B_MATERIAL_V1_OWNER_MISMATCH: persisted edge '{}' has the wrong owner",
+            edge.source_object_identity
+        );
+        let read_set: Vec<String> = serde_json::from_str(&edge.read_set_json).map_err(|error| {
+            anyhow!(
+                "NEX_C2B_MATERIAL_V1_READ_SET_INVALID: persisted edge '{}': {error}",
+                edge.source_object_identity
+            )
+        })?;
+        anyhow::ensure!(
+            read_set.len() == 1,
+            "NEX_C2B_MATERIAL_V1_READ_SET_CARDINALITY: persisted edge '{}' must contain exactly one revision token",
+            edge.source_object_identity
+        );
+        anyhow::ensure!(
+            read_set[0] == expected_edge.revision_token,
+            "NEX_C2B_MATERIAL_V1_REVISION_MISMATCH: persisted edge '{}' has the wrong revision token",
+            edge.source_object_identity
+        );
+    }
+    anyhow::ensure!(
+        expected_sources == persisted_sources,
+        "NEX_C2B_MATERIAL_V1_EDGE_SET_MISMATCH: persisted V1 edge set differs from expectation"
+    );
+    Ok(())
 }
