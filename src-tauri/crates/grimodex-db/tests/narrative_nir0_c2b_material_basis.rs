@@ -645,11 +645,23 @@ fn v1_projection_is_source_basis_only_and_rejects_shape_or_owner_drift() {
         validate_human_material_parent_bundle(&multi_token, &resolution_context(false)).is_err()
     );
 
-    let mut wrong_owner = parent;
-    wrong_owner.persisted_v1_edges[0].owning_run_id = Some("run-other".to_owned());
+    let mut wrong_owner = parent.clone();
+    wrong_owner.owning_run_id = "run-other".to_owned();
+    for edge in &mut wrong_owner.persisted_v1_edges {
+        edge.owning_run_id = Some("run-other".to_owned());
+    }
     assert!(
         validate_human_material_parent_bundle(&wrong_owner, &resolution_context(false)).is_err()
     );
+
+    let mut generated_transaction = parent;
+    generated_transaction.persisted_v1_edges[0].generated_by_transaction_id =
+        Some("tx-current-revision".to_owned());
+    assert!(validate_human_material_parent_bundle(
+        &generated_transaction,
+        &resolution_context(false)
+    )
+    .is_err());
 }
 
 #[test]
