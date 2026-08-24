@@ -488,7 +488,7 @@ fn enforces_dependency_role_selector_and_adr010_coverage() {
         {
             "dependencyId": "dependency:1",
             "inputRef": "anchor:1",
-            "contextIds": [],
+            "contextIds": ["context:1"],
             "role": "direct-evidence",
             "selector": {"kind": "whole-source"}
         },

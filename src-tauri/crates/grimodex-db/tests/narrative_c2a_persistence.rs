@@ -1298,7 +1298,7 @@ fn persists_native_canonical_envelope_v2_and_project_qualified_identity() {
     assert_eq!(envelope_json, canonical(&expected_a));
     assert_envelope_digest_fields(&persisted);
     assert_eq!(envelope_digest, digest(&persisted));
-    assert_eq!(first["reconciliationEnvelopeDigest"], envelope_digest);
+    assert_eq!(first["envelopeDigest"], envelope_digest);
     assert_eq!(project_id, PROJECT_A);
     let wrong_project_lookup: i64 = db
         .with_conn(|conn| {
