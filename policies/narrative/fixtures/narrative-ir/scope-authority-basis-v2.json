@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 2,
+  "contractId": "narrative-scope-authority-basis/2",
+  "basisKind": "historical-run-snapshot",
+  "projectId": "project-a",
+  "source": {
+    "sourceKind": "snapshot-document",
+    "sourceKey": "snapshot:run-a"
+  },
+  "scopeRegistry": {
+    "registryVersion": "narrative-scope/2",
+    "reservedAudienceRefs": ["reader"]
+  },
+  "mappings": [
+    {
+      "documentRef": "D000001",
+      "sourceKey": "project:scene:scene-one",
+      "sceneRef": "scene:scene-one",
+      "readingOrderRef": "reading:scene-one",
+      "storyTimeRef": "story:scene-one",
+      "readingRank": 0,
+      "storyTimeOrder": {
+        "status": "resolved",
+        "rawStoryKey": "a0",
+        "storyRank": 0
+      }
+    },
+    {
+      "documentRef": "D000002",
+      "sourceKey": "project:scene:scene-two",
+      "sceneRef": "scene:scene-two",
+      "readingOrderRef": "reading:scene-two",
+      "storyTimeRef": "story:scene-two",
+      "readingRank": 1,
+      "storyTimeOrder": {
+        "status": "unresolved",
+        "reason": "not-provided",
+        "rawStoryKey": null
+      }
+    },
+    {
+      "documentRef": "D000003",
+      "sourceKey": "project:scene:scene-three",
+      "sceneRef": "scene:scene-three",
+      "readingOrderRef": "reading:scene-three",
+      "storyTimeRef": "story:scene-three",
+      "readingRank": 2,
+      "storyTimeOrder": {
+        "status": "unresolved",
+        "reason": "ambiguous",
+        "rawStoryKey": "b0"
+      }
+    },
+    {
+      "documentRef": "D000004",
+      "sourceKey": "project:scene:scene-four",
+      "sceneRef": "scene:scene-four",
+      "readingOrderRef": "reading:scene-four",
+      "storyTimeRef": "story:scene-four",
+      "readingRank": 3,
+      "storyTimeOrder": {
+        "status": "unresolved",
+        "reason": "ambiguous",
+        "rawStoryKey": "b0"
+      }
+    }
+  ],
+  "digests": {
+    "corpusDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "scopeRegistryRevision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "readingOrderRevision": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "storyTimeOrderRevision": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "authorityDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "compositeDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+  }
+}
