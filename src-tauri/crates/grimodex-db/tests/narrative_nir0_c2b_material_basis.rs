@@ -5,16 +5,24 @@
 //! promotion, Freshness publication, and Electron transport.
 
 use grimodex_core::canonical_json_digest;
-use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
+use grimodex_core::narrative_dependency::{
+    canonicalize_dependency_selector, compute_dependency_key, compute_dependency_set_digest,
+    DependencyRole, DependencySelector, DependencySetDigestEntry, DEPENDENCY_ROLE_CONTRACT_VERSION,
+};
 use grimodex_db::narrative_extraction::human_material_basis::{
     project_d1_declaration_set, project_v1_expectations, resolve_human_material_basis,
-    validate_d1_parent_authority, validate_v1_parent_authority, D1ParentAuthority,
-    D1ParentSnapshot, HumanMaterialDerivationKind, HumanMaterialResolutionContext, MaterialBasis,
+    validate_human_material_parent_bundle, D1ParentAuthority, HumanMaterialDerivationKind,
+    HumanMaterialParentBundle, HumanMaterialResolutionContext, MaterialBasis,
     TrustedDependencyEntry, TrustedEvidenceEntry, TrustedHumanMaterialResolution,
     TrustedSourceBasisEntry, V1EdgeExpectation, V1ParentAuthority, V1PersistedEdge,
 };
 use grimodex_db::narrative_extraction::CreateHumanDerivedRevisionRequest;
+use grimodex_db::narrative_extraction::{
+    ActiveDependencyDeclarationSet, DependencyDeclarationSetState, SourceBasisRow,
+    StoredDependencyDeclaration,
+};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 const SCENE_SOURCE_KEY: &str = "project:scene:scene-1";
 const SOURCE_REVISION_TOKEN: &str = "v0@2026-01-01T00:00:00.000Z";
@@ -24,6 +32,10 @@ const D1_PRODUCER_ID: &str = "proposal-revision-source-basis";
 
 fn digest(value: &Value) -> String {
     canonical_json_digest(value).expect("canonical digest")
+}
+
+fn sha256_bytes(value: &[u8]) -> String {
+    format!("sha256:{}", hex::encode(Sha256::digest(value)))
 }
 
 fn source_basis() -> Value {
@@ -115,6 +127,40 @@ fn refresh_material_digests(material: &mut Value) {
 
 fn material() -> MaterialBasis {
     serde_json::from_value(material_json()).expect("typed material basis")
+}
+
+#[test]
+fn material_dependency_selector_rejects_nested_unknown_and_noncanonical_fields() {
+    let mut unknown_field = material_json();
+    unknown_field["dependencySet"][0]["selector"]["futureField"] = json!(true);
+    refresh_material_digests(&mut unknown_field);
+    assert!(serde_json::from_value::<MaterialBasis>(unknown_field).is_err());
+
+    let mut noncanonical_field = material_json();
+    noncanonical_field["dependencySet"][1]["selector"]["contract_digest"] =
+        json!(component_contract_digest());
+    refresh_material_digests(&mut noncanonical_field);
+    assert!(serde_json::from_value::<MaterialBasis>(noncanonical_field).is_err());
+}
+
+#[test]
+fn evidence_quote_digest_preserves_exact_utf8_bytes_without_trimming() {
+    let quote = "  Arrival.\n世界  ";
+    let mut exact_quote = material_json();
+    exact_quote["evidenceSet"][0]["quote"] = json!(quote);
+    exact_quote["evidenceSet"][0]["quoteDigest"] = json!(sha256_bytes(quote.as_bytes()));
+    refresh_material_digests(&mut exact_quote);
+    let exact_quote: MaterialBasis =
+        serde_json::from_value(exact_quote).expect("exact quote material");
+
+    let resolved = resolve_human_material_basis(
+        HumanMaterialDerivationKind::ProjectionOnly,
+        &parent_bundle(&exact_quote),
+        &resolution_context(false),
+        None,
+    )
+    .expect("exact quote projection");
+    assert_eq!(resolved.material_basis.evidence_set[0].quote, quote);
 }
 
 fn resolution_context(scope_override: bool) -> HumanMaterialResolutionContext {
@@ -213,12 +259,108 @@ fn v1_parent_authority() -> V1ParentAuthority {
     }
 }
 
+fn source_basis_rows(material: &MaterialBasis) -> Vec<SourceBasisRow> {
+    material
+        .source_basis
+        .iter()
+        .enumerate()
+        .map(|(ordinal, source)| SourceBasisRow {
+            ordinal: ordinal as i64,
+            source_kind: source.source_kind.clone(),
+            source_key: source.source_key.clone(),
+            revision_token: source.revision_token.clone(),
+            observed_at: source.revision_observed_at.clone(),
+        })
+        .collect()
+}
+
+fn active_dependency_set(material: &MaterialBasis) -> ActiveDependencyDeclarationSet {
+    let projection = project_d1_declaration_set(material, &d1_parent_authority())
+        .expect("build typed parent D1 projection");
+    let declaration_set_id = "d1-set-parent";
+    let entries = projection
+        .declarations
+        .iter()
+        .enumerate()
+        .map(|(index, declaration)| {
+            let selector_json = canonicalize_dependency_selector(&declaration.selector)
+                .expect("canonical selector");
+            let selector_digest =
+                digest(&serde_json::from_str(&selector_json).expect("selector JSON value"));
+            let dependency_key =
+                compute_dependency_key(declaration.role.as_str(), &declaration.selector)
+                    .expect("dependency key");
+            StoredDependencyDeclaration {
+                id: format!("d1-entry-{index}"),
+                declaration_set_id: declaration_set_id.to_owned(),
+                source_object_identity: declaration.source_object_identity.clone(),
+                dependency_key,
+                dependency_role: declaration.role,
+                role_contract_version: DEPENDENCY_ROLE_CONTRACT_VERSION.to_owned(),
+                selector_json,
+                selector_digest,
+            }
+        })
+        .collect::<Vec<_>>();
+    let digest_entries = entries
+        .iter()
+        .map(|entry| DependencySetDigestEntry {
+            source_object_identity: entry.source_object_identity.clone(),
+            dependency_key: entry.dependency_key.clone(),
+            selector_digest: entry.selector_digest.clone(),
+        })
+        .collect::<Vec<_>>();
+    ActiveDependencyDeclarationSet {
+        declaration_set_id: declaration_set_id.to_owned(),
+        project_id: "project-a".to_owned(),
+        consumer_kind: "proposal-revision".to_owned(),
+        consumer_key: PARENT_REVISION_ID.to_owned(),
+        producer_id: D1_PRODUCER_ID.to_owned(),
+        producer_generation: 1,
+        dependency_set_digest: compute_dependency_set_digest(&digest_entries)
+            .expect("dependency set digest"),
+        state: DependencyDeclarationSetState::Sealed,
+        entries,
+    }
+}
+
+fn persisted_v1_edges(material: &MaterialBasis) -> Vec<V1PersistedEdge> {
+    material
+        .source_basis
+        .iter()
+        .map(|source| V1PersistedEdge {
+            project_id: "project-a".to_owned(),
+            consumer_kind: "proposal-revision".to_owned(),
+            consumer_key: PARENT_REVISION_ID.to_owned(),
+            source_object_identity: source.source_key.clone(),
+            read_set_json: json!([source.revision_token]).to_string(),
+            owning_run_id: Some(PARENT_RUN_ID.to_owned()),
+            generated_by_transaction_id: None,
+        })
+        .collect()
+}
+
+fn parent_bundle(basis: &MaterialBasis) -> HumanMaterialParentBundle {
+    let context = resolution_context(false);
+    HumanMaterialParentBundle {
+        project_id: context.project_id,
+        consumer_kind: "proposal-revision".to_owned(),
+        consumer_key: context.parent_revision_id,
+        owning_run_id: PARENT_RUN_ID.to_owned(),
+        expected_parent_envelope_digest: context.expected_parent_envelope_digest,
+        material_basis: basis.clone(),
+        source_basis: source_basis_rows(basis),
+        active_dependency_declaration_set: active_dependency_set(&material()),
+        persisted_v1_edges: persisted_v1_edges(basis),
+    }
+}
+
 #[test]
 fn projection_preserves_all_material_sets_and_digests() {
     let parent = material();
     let resolved = resolve_human_material_basis(
         HumanMaterialDerivationKind::ProjectionOnly,
-        &parent,
+        &parent_bundle(&parent),
         &resolution_context(false),
         None,
     )
@@ -241,6 +383,38 @@ fn projection_preserves_all_material_sets_and_digests() {
 }
 
 #[test]
+fn current_parent_bundle_is_cas_bound_and_rejects_foreign_parent_state() {
+    let basis = material();
+    let context = resolution_context(false);
+    let parent = parent_bundle(&basis);
+    validate_human_material_parent_bundle(&parent, &context)
+        .expect("current parent bundle is valid");
+
+    let mut wrong_project = parent.clone();
+    wrong_project.project_id = "project-other".to_owned();
+    assert!(validate_human_material_parent_bundle(&wrong_project, &context).is_err());
+
+    let mut wrong_consumer = parent.clone();
+    wrong_consumer.consumer_kind = "narrative-extraction-run".to_owned();
+    assert!(validate_human_material_parent_bundle(&wrong_consumer, &context).is_err());
+
+    let mut wrong_run = parent.clone();
+    wrong_run.owning_run_id = "run-other".to_owned();
+    assert!(validate_human_material_parent_bundle(&wrong_run, &context).is_err());
+
+    let mut wrong_source_row = parent.clone();
+    wrong_source_row.source_basis[0].revision_token = "v0@foreign".to_owned();
+    assert!(validate_human_material_parent_bundle(&wrong_source_row, &context).is_err());
+
+    let mut wrong_head_state = parent;
+    wrong_head_state
+        .active_dependency_declaration_set
+        .dependency_set_digest =
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_owned();
+    assert!(validate_human_material_parent_bundle(&wrong_head_state, &context).is_err());
+}
+
+#[test]
 fn forged_material_digest_is_rejected_separately_from_positive_projection() {
     let mut forged_json = material_json();
     forged_json["materialBasisDigest"] =
@@ -250,7 +424,7 @@ fn forged_material_digest_is_rejected_separately_from_positive_projection() {
 
     let error = resolve_human_material_basis(
         HumanMaterialDerivationKind::ProjectionOnly,
-        &forged,
+        &parent_bundle(&forged),
         &resolution_context(false),
         None,
     )
@@ -267,7 +441,7 @@ fn material_evidence_and_source_coverage_invariants_fail_closed() {
         serde_json::from_value(wrong_evidence_token).expect("typed evidence token drift");
     assert!(resolve_human_material_basis(
         HumanMaterialDerivationKind::ProjectionOnly,
-        &wrong_evidence_token,
+        &parent_bundle(&wrong_evidence_token),
         &resolution_context(false),
         None,
     )
@@ -280,7 +454,7 @@ fn material_evidence_and_source_coverage_invariants_fail_closed() {
         serde_json::from_value(missing_direct_evidence).expect("typed dependency drift");
     assert!(resolve_human_material_basis(
         HumanMaterialDerivationKind::ProjectionOnly,
-        &missing_direct_evidence,
+        &parent_bundle(&missing_direct_evidence),
         &resolution_context(false),
         None,
     )
@@ -300,7 +474,7 @@ fn material_evidence_and_source_coverage_invariants_fail_closed() {
         serde_json::from_value(orphan_source).expect("typed orphan source");
     assert!(resolve_human_material_basis(
         HumanMaterialDerivationKind::ProjectionOnly,
-        &orphan_source,
+        &parent_bundle(&orphan_source),
         &resolution_context(false),
         None,
     )
@@ -320,7 +494,7 @@ fn scope_override_rejects_unexpected_sidecar_and_replaces_only_scope_dependency(
     let context = resolution_context(true);
     assert!(resolve_human_material_basis(
         HumanMaterialDerivationKind::ScopeOverride,
-        &parent,
+        &parent_bundle(&parent),
         &context,
         None,
     )
@@ -329,14 +503,14 @@ fn scope_override_rejects_unexpected_sidecar_and_replaces_only_scope_dependency(
     let trusted = trusted_scope_resolution(&context);
     let resolved = resolve_human_material_basis(
         HumanMaterialDerivationKind::ScopeOverride,
-        &parent,
+        &parent_bundle(&parent),
         &context,
         Some(&trusted),
     )
     .expect("scope override material resolution");
     assert!(resolve_human_material_basis(
         HumanMaterialDerivationKind::ProjectionOnly,
-        &parent,
+        &parent_bundle(&parent),
         &resolution_context(false),
         Some(&trusted),
     )
@@ -407,10 +581,11 @@ fn scope_override_rejects_unexpected_sidecar_and_replaces_only_scope_dependency(
 }
 
 #[test]
-fn d1_projection_requires_direct_and_component_declarations_and_parent_parity() {
+fn d1_projection_requires_direct_and_component_declarations_and_child_authority() {
+    let parent = parent_bundle(&material());
     let resolved = resolve_human_material_basis(
         HumanMaterialDerivationKind::ProjectionOnly,
-        &material(),
+        &parent,
         &resolution_context(false),
         None,
     )
@@ -430,32 +605,14 @@ fn d1_projection_requires_direct_and_component_declarations_and_parent_parity() 
     let mut wrong_consumer = authority.clone();
     wrong_consumer.consumer_kind = "narrative-extraction-run".to_owned();
     assert!(project_d1_declaration_set(&resolved.material_basis, &wrong_consumer).is_err());
-    let snapshot = D1ParentSnapshot {
-        project_id: authority.project_id.clone(),
-        consumer_kind: authority.consumer_kind.clone(),
-        consumer_key: authority.consumer_key.clone(),
-        producer_id: authority.producer_id.clone(),
-        producer_generation: authority.producer_generation,
-        declarations: projection.declarations.clone(),
-    };
-    validate_d1_parent_authority(&projection, &snapshot).expect("parent D1 authority parity");
-
-    let mut missing_component = snapshot.clone();
-    missing_component
-        .declarations
-        .retain(|declaration| declaration.role != DependencyRole::ComponentContract);
-    assert!(validate_d1_parent_authority(&projection, &missing_component).is_err());
-
-    let mut wrong_generation = snapshot;
-    wrong_generation.producer_generation = 0;
-    assert!(validate_d1_parent_authority(&projection, &wrong_generation).is_err());
 }
 
 #[test]
 fn v1_projection_is_source_basis_only_and_rejects_shape_or_owner_drift() {
+    let parent = parent_bundle(&material());
     let resolved = resolve_human_material_basis(
         HumanMaterialDerivationKind::ProjectionOnly,
-        &material(),
+        &parent,
         &resolution_context(false),
         None,
     )
@@ -471,47 +628,28 @@ fn v1_projection_is_source_basis_only_and_rejects_shape_or_owner_drift() {
             owning_run_id: PARENT_RUN_ID.to_owned(),
         }]
     );
-    let persisted = vec![V1PersistedEdge {
-        project_id: "project-a".to_owned(),
-        consumer_kind: "proposal-revision".to_owned(),
-        consumer_key: PARENT_REVISION_ID.to_owned(),
-        source_object_identity: SCENE_SOURCE_KEY.to_owned(),
-        read_set_json: json!([SOURCE_REVISION_TOKEN]).to_string(),
-        owning_run_id: Some(PARENT_RUN_ID.to_owned()),
-        generated_by_transaction_id: None,
-    }];
-    validate_v1_parent_authority(&expected, &persisted, &authority).expect("V1 parent parity");
+    validate_human_material_parent_bundle(&parent, &resolution_context(false))
+        .expect("current V1 parent parity");
 
-    let mut object_shaped = persisted.clone();
-    object_shaped[0].read_set_json = json!({"token": SOURCE_REVISION_TOKEN}).to_string();
-    assert!(validate_v1_parent_authority(&expected, &object_shaped, &authority).is_err());
+    let mut object_shaped = parent.clone();
+    object_shaped.persisted_v1_edges[0].read_set_json =
+        json!({"token": SOURCE_REVISION_TOKEN}).to_string();
+    assert!(
+        validate_human_material_parent_bundle(&object_shaped, &resolution_context(false)).is_err()
+    );
 
-    let mut multi_token = persisted.clone();
-    multi_token[0].read_set_json = json!([SOURCE_REVISION_TOKEN, "v1@later"]).to_string();
-    assert!(validate_v1_parent_authority(&expected, &multi_token, &authority).is_err());
+    let mut multi_token = parent.clone();
+    multi_token.persisted_v1_edges[0].read_set_json =
+        json!([SOURCE_REVISION_TOKEN, "v1@later"]).to_string();
+    assert!(
+        validate_human_material_parent_bundle(&multi_token, &resolution_context(false)).is_err()
+    );
 
-    let mut wrong_owner = persisted;
-    wrong_owner[0].owning_run_id = Some("run-other".to_owned());
-    assert!(validate_v1_parent_authority(&expected, &wrong_owner, &authority).is_err());
-
-    let mut foreign_project = vec![V1PersistedEdge {
-        project_id: "project-other".to_owned(),
-        consumer_kind: "proposal-revision".to_owned(),
-        consumer_key: PARENT_REVISION_ID.to_owned(),
-        source_object_identity: SCENE_SOURCE_KEY.to_owned(),
-        read_set_json: json!([SOURCE_REVISION_TOKEN]).to_string(),
-        owning_run_id: Some(PARENT_RUN_ID.to_owned()),
-        generated_by_transaction_id: None,
-    }];
-    assert!(validate_v1_parent_authority(&expected, &foreign_project, &authority).is_err());
-
-    foreign_project[0].project_id = "project-a".to_owned();
-    foreign_project[0].consumer_key = "revision-other".to_owned();
-    assert!(validate_v1_parent_authority(&expected, &foreign_project, &authority).is_err());
-
-    foreign_project[0].consumer_key = PARENT_REVISION_ID.to_owned();
-    foreign_project[0].generated_by_transaction_id = Some("tx-current".to_owned());
-    assert!(validate_v1_parent_authority(&expected, &foreign_project, &authority).is_err());
+    let mut wrong_owner = parent;
+    wrong_owner.persisted_v1_edges[0].owning_run_id = Some("run-other".to_owned());
+    assert!(
+        validate_human_material_parent_bundle(&wrong_owner, &resolution_context(false)).is_err()
+    );
 }
 
 #[test]
@@ -533,7 +671,7 @@ fn scope_registry_and_order_oracle_source_kinds_fail_closed() {
         assert!(
             resolve_human_material_basis(
                 HumanMaterialDerivationKind::ProjectionOnly,
-                &candidate,
+                &parent_bundle(&candidate),
                 &resolution_context(false),
                 None,
             )
