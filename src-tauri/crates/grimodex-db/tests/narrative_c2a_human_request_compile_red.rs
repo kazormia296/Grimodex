@@ -1605,6 +1605,7 @@ mod c2b_atomic_materialization_red {
     use super::*;
     use grimodex_core::canonical_json_string;
     use serde_json::json;
+    use sha2::{Digest, Sha256};
 
     fn c2b_request(db: &Database) -> CreateHumanDerivedRevisionRequest {
         request(
@@ -1652,6 +1653,19 @@ mod c2b_atomic_materialization_red {
             "contractDigest": parent_component_contract_digest()
         }))
         .expect("canonical component selector")
+    }
+
+    fn v1_identity_set_digest(identities: &[String]) -> String {
+        let mut sorted = identities.iter().map(String::as_str).collect::<Vec<_>>();
+        sorted.sort_unstable();
+        let mut canonical = String::new();
+        for identity in sorted {
+            canonical.push_str(&identity.len().to_string());
+            canonical.push(':');
+            canonical.push_str(identity);
+            canonical.push('\n');
+        }
+        hex::encode(Sha256::digest(canonical.as_bytes()))
     }
 
     #[test]
@@ -1817,21 +1831,7 @@ mod c2b_atomic_materialization_red {
             )]
         );
 
-        let expected_child_dependency_set_digest: String = db
-            .with_conn(|conn| {
-                Ok(conn.query_row(
-                    "SELECT s.dependency_set_digest
-                       FROM narrative_dependency_declaration_heads h
-                       JOIN narrative_dependency_declaration_sets s
-                         ON s.id = h.active_declaration_set_id
-                      WHERE h.project_id = ?1
-                        AND h.consumer_kind = 'proposal-revision'
-                        AND h.consumer_key = ?2",
-                    rusqlite::params![PROJECT_A, child_revision_id],
-                    |row| row.get(0),
-                )?)
-            })
-            .expect("read projected D1 dependency-set digest");
+        let expected_v1_dependency_set_digest = v1_identity_set_digest(&[source_key()]);
         let consumer_freshness: (String, String, String, Option<String>, String) = db
             .with_conn(|conn| {
                 Ok(conn.query_row(
@@ -1861,7 +1861,7 @@ mod c2b_atomic_materialization_red {
                 "none".to_owned(),
                 C2B_EPOCH_ID.to_owned(),
                 None,
-                expected_child_dependency_set_digest,
+                expected_v1_dependency_set_digest,
             )
         );
     }
