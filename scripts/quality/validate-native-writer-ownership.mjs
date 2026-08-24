@@ -109,6 +109,41 @@ const WRITER_TO_MODULES = {
   "narrative.dependency-declaration": [
     "src-tauri/crates/grimodex-db/src/narrative_extraction/declaration_storage.rs",
   ],
+  // C2A execution-state task rows have a deliberately wider writer set: the
+  // scheduler, lease/runtime paths, freshness recovery, and maintenance
+  // lifecycle all transition task state. Keep this list exact so a generic
+  // Rust SQL caller cannot inherit task authority.
+  "narrative.extraction-task": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_lifecycle.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs",
+  ],
+  // Attempt transitions are not lease-owned task mutations, so task_leases.rs
+  // is intentionally absent from this writer's allowlist.
+  "narrative.extraction-attempt": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_lifecycle.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+  ],
+  // Artifacts are emitted by the task repository and removed with the domain
+  // cleanup writer; no scheduler/maintenance module owns their rows.
+  "narrative.extraction-artifact": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+  ],
+  // Stage model bindings and terminal receipts are future v34 exports. The
+  // base checkout has no table/module yet, but the owner boundary is fixed
+  // here so a later schema-bearing writer cannot silently broaden it.
+  "narrative.stage-provenance": [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+  ],
   // schema_data_migrations records which data migrations have completed, and
   // the schema checkpoint reads it to decide whether a migration re-runs.
   // That makes it migration authority rather than diagnostics: a forged

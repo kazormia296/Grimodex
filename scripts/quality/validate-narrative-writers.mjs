@@ -100,6 +100,15 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
   narrative_dependency_declaration_heads: [
     "narrativeDependencyDeclarationHeads",
   ],
+  narrative_extraction_tasks: ["narrativeExtractionTasks"],
+  narrative_extraction_attempts: ["narrativeExtractionAttempts"],
+  narrative_extraction_artifacts: ["narrativeExtractionArtifacts"],
+  // C2A stage provenance tables are intentionally registry/validator-only on
+  // this base; D1/C2A publishes the schema exports with the durable writer.
+  narrative_extraction_stage_model_bindings: [
+    "narrativeExtractionStageModelBindings",
+  ],
+  narrative_extraction_stage_receipts: ["narrativeExtractionStageReceipts"],
 };
 
 // These tables are Native-only authority/provenance state. Keep the list
@@ -118,6 +127,11 @@ const NARRATIVE_AUTHORITY_TABLES = [
   "narrative_dependency_declaration_sets",
   "narrative_dependency_declaration_entries",
   "narrative_dependency_declaration_heads",
+  "narrative_extraction_tasks",
+  "narrative_extraction_attempts",
+  "narrative_extraction_artifacts",
+  "narrative_extraction_stage_model_bindings",
+  "narrative_extraction_stage_receipts",
 ];
 
 const MUTATION_METHODS = new Set(["insert", "update", "delete"]);
