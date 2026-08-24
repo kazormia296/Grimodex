@@ -3609,28 +3609,9 @@ impl Database {
                 ON narrative_extraction_stage_model_bindings(project_id, run_id, task_id, attempt_id);
             CREATE INDEX IF NOT EXISTS idx_narrative_stage_receipts_owner
                 ON narrative_extraction_stage_receipts(project_id, run_id, task_id, attempt_id);
-            CREATE TRIGGER IF NOT EXISTS narrative_proposal_revisions_v2_monotonicity_guard
-                BEFORE INSERT ON narrative_proposal_revisions
-                WHEN EXISTS (
-                    SELECT 1
-                      FROM narrative_proposals p
-                      JOIN narrative_proposal_revisions current_revision
-                        ON current_revision.id = p.current_revision_id
-                     WHERE p.id = NEW.proposal_id
-                       AND current_revision.origin_kind = 'enveloped'
-                       AND json_extract(current_revision.reconciliation_envelope_json,
-                                        '$.schemaVersion') = 2
-                )
-                AND (
-                    NEW.origin_kind <> 'enveloped'
-                    OR NEW.reconciliation_envelope_json IS NULL
-                    OR json_extract(NEW.reconciliation_envelope_json,
-                                    '$.schemaVersion') IS NOT 2
-                )
-                BEGIN
-                    SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');
-                END;",
+            ",
         )?;
+        Self::repair_narrative_v2_monotonicity_trigger(&conn)?;
 
         // New Run columns: run_kind distinguishes cursor-bound Runs (the
         // Freshness evaluator) from non-cursor-bound Runs (interpretation,
@@ -3907,6 +3888,67 @@ impl Database {
             }
         }
 
+        Ok(())
+    }
+
+    fn repair_narrative_v2_monotonicity_trigger(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch("SAVEPOINT narrative_c2a_trigger_repair")?;
+        let repair = conn.execute_batch(
+            r#"
+            DROP TRIGGER IF EXISTS narrative_proposal_revisions_v2_monotonicity_guard;
+            CREATE TRIGGER narrative_proposal_revisions_v2_monotonicity_guard
+                BEFORE INSERT ON narrative_proposal_revisions
+                WHEN EXISTS (
+                    SELECT 1
+                      FROM narrative_proposals p
+                      JOIN narrative_proposal_revisions current_revision
+                        ON current_revision.id = p.current_revision_id
+                     WHERE p.id = NEW.proposal_id
+                       AND current_revision.origin_kind = 'enveloped'
+                       AND json_extract(current_revision.reconciliation_envelope_json,
+                                        '$.schemaVersion') = 2
+                )
+                AND (
+                    NEW.origin_kind <> 'enveloped'
+                    OR NEW.reconciliation_envelope_json IS NULL
+                    OR json_extract(NEW.reconciliation_envelope_json,
+                                    '$.schemaVersion') IS NOT 2
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');
+                END;
+            "#,
+        );
+        match repair {
+            Ok(()) => {
+                if let Err(error) = conn.execute_batch("RELEASE narrative_c2a_trigger_repair") {
+                    if let Err(unwind) = conn.execute_batch(
+                        "ROLLBACK TO narrative_c2a_trigger_repair;
+                         RELEASE narrative_c2a_trigger_repair",
+                    ) {
+                        tracing::error!(
+                            target: "narrative.migrate",
+                            %unwind,
+                            "failed to unwind C2A trigger repair after release failure"
+                        );
+                    }
+                    return Err(error.into());
+                }
+            }
+            Err(error) => {
+                if let Err(unwind) = conn.execute_batch(
+                    "ROLLBACK TO narrative_c2a_trigger_repair;
+                     RELEASE narrative_c2a_trigger_repair",
+                ) {
+                    tracing::error!(
+                        target: "narrative.migrate",
+                        %unwind,
+                        "failed to unwind C2A trigger repair"
+                    );
+                }
+                return Err(error.into());
+            }
+        }
         Ok(())
     }
 
@@ -8489,9 +8531,9 @@ mod tests {
             .expect("restore preflight must converge a current schema with a stale trigger");
 
         db.with_conn(|conn| {
-            assert!(grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
-                conn
-            )?);
+            assert!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
             let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
             assert_eq!(version, grimodex_core::SCHEMA_VERSION);
             for (case, envelope_json) in [
