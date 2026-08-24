@@ -1,17 +1,26 @@
 //! C2B Human-derived projection materialization seam.
 //!
 //! This domain entry point composes the dormant C2A revision writer with the
-//! C2B material authorities in one Native-owned transaction. Scope override
-//! remains unavailable until its Registry/Oracle sources are ratified.
+//! C2B material authorities in one Native-owned transaction. ScopeOverride
+//! resolves the live project authority and publishes the child authorities
+//! before the final proposal pointer CAS.
+
+use std::collections::HashSet;
 
 use anyhow::{anyhow, Context};
 use grimodex_core::canonical_json_string;
+use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use grimodex_core::narrative_ir::{
-    classify_chronicle_scene_event_changes, ChronicleChangeDisposition,
+    classify_chronicle_scene_event_changes, digest_narrative_scope_v2, validate_narrative_scope_v2,
+    ChronicleChangeDisposition,
+};
+use grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityMappingV1;
+use grimodex_core::narrative_scope_authority_basis::{
+    NarrativeScopeAuthorityStoryTimeOrderV2, NarrativeScopeAuthorityUnresolvedReasonV2,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::declaration_storage::{
     read_active_dependency_declaration_set_in_tx, write_dependency_declaration_set_in_tx,
@@ -22,9 +31,11 @@ use super::human_derivation;
 use super::human_material_basis::{
     project_d1_declaration_set, resolve_human_material_basis, D1ParentAuthority,
     HumanMaterialDerivationKind, HumanMaterialParentBundle, HumanMaterialResolutionContext,
-    MaterialBasis, V1PersistedEdge, D1_PRODUCER_ID,
+    MaterialBasis, TrustedDependencyEntry, TrustedEvidenceEntry, TrustedHumanMaterialResolution,
+    TrustedSourceBasisEntry, V1PersistedEdge, D1_PRODUCER_ID,
 };
-use super::models::CreateHumanDerivedRevisionRequest;
+use super::models::{CreateHumanDerivedRevisionRequest, TrustedScopeV2Projection};
+use super::project_scope_authority::load_live_project_scope_authority;
 use super::reconciliation_envelope::load_source_basis_rows;
 use super::repository::{
     record_revision_dependency_edges_in_tx, PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
@@ -84,6 +95,7 @@ struct ProjectionAdmission {
     parent_revision_id: String,
     material_basis: MaterialBasis,
     semantic_epoch_id: String,
+    scope_projection: Option<TrustedScopeV2Projection>,
 }
 
 fn admit_projection_parent(
@@ -192,16 +204,18 @@ fn admit_projection_parent(
             ));
         }
     };
-    anyhow::ensure!(
-        actual_kind == requested_kind,
-        "NEX_C2B_DERIVATION_KIND_MISMATCH: caller derivation kind does not match Native classification"
-    );
-    if actual_kind == HumanMaterialDerivationKind::ScopeOverride {
+    if actual_kind != requested_kind {
+        if requested_kind == HumanMaterialDerivationKind::ScopeOverride
+            && actual_kind == HumanMaterialDerivationKind::ProjectionOnly
+        {
+            return Err(anyhow!(
+                "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE: Native scope authority is not available for C2B materialization"
+            ));
+        }
         return Err(anyhow!(
-            "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE: Native scope authority is not available for C2B materialization"
+            "NEX_C2B_DERIVATION_KIND_MISMATCH: caller derivation kind does not match Native classification"
         ));
     }
-
     let source_basis = load_source_basis_rows(conn, &current_revision_id)?;
     let active_dependency_declaration_set = match read_active_dependency_declaration_set_in_tx(
         conn,
@@ -258,12 +272,30 @@ fn admit_projection_parent(
         edited_document_ref: edited.disclosure.reveal_document_ref,
         secret_scope: edited.disclosure.secret,
     };
-    let resolution = resolve_human_material_basis(
-        HumanMaterialDerivationKind::ProjectionOnly,
-        &parent,
-        &context,
-        None,
-    )?;
+    let (resolution, scope_projection) = match actual_kind {
+        HumanMaterialDerivationKind::ProjectionOnly => (
+            resolve_human_material_basis(
+                HumanMaterialDerivationKind::ProjectionOnly,
+                &parent,
+                &context,
+                None,
+            )?,
+            None,
+        ),
+        HumanMaterialDerivationKind::ScopeOverride => {
+            let (trusted_material, scope_projection) =
+                resolve_live_scope_override_authority(conn, trusted_project_id, &parent, &context)?;
+            (
+                resolve_human_material_basis(
+                    HumanMaterialDerivationKind::ScopeOverride,
+                    &parent,
+                    &context,
+                    Some(&trusted_material),
+                )?,
+                scope_projection,
+            )
+        }
+    };
     let semantic_epoch_id = super::semantic_epoch::get_current_epoch(conn, trusted_project_id)?
         .map(|epoch| epoch.id)
         .ok_or_else(|| {
@@ -278,6 +310,250 @@ fn admit_projection_parent(
         parent_revision_id: current_revision_id,
         material_basis: resolution.material_basis,
         semantic_epoch_id,
+        scope_projection,
+    })
+}
+
+const SCOPE_AUTHORITY_SOURCE_KIND: &str = "project-scope-authority";
+const SCOPE_AUTHORITY_CONTEXT_ID: &str = "context:chronicle-scope-resolver";
+const SCOPE_AUTHORITY_DEPENDENCY_ID: &str = "dependency:scope-resolution";
+
+fn resolve_live_scope_override_authority(
+    conn: &Connection,
+    trusted_project_id: &str,
+    parent: &HumanMaterialParentBundle,
+    context: &HumanMaterialResolutionContext,
+) -> anyhow::Result<(
+    TrustedHumanMaterialResolution,
+    Option<TrustedScopeV2Projection>,
+)> {
+    let authority_source_key = format!("project:scope-authority:{trusted_project_id}");
+    let authority =
+        load_live_project_scope_authority(conn, trusted_project_id, &authority_source_key)
+            .map_err(|error| anyhow!("NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE: {error}"))?;
+    anyhow::ensure!(
+        authority.source.source_kind == SCOPE_AUTHORITY_SOURCE_KIND
+            && authority.source.source_key == authority_source_key
+            && !authority.source.revision_token.trim().is_empty(),
+        "NEX_C2B_SCOPE_AUTHORITY_INVALID: live authority Source identity is invalid"
+    );
+
+    let matching_mappings = authority
+        .mappings
+        .iter()
+        .filter(|mapping| mapping.scene_ref == context.scene_ref)
+        .collect::<Vec<_>>();
+    let mapping = match matching_mappings.as_slice() {
+        [] => {
+            return Err(anyhow!(
+                "NEX_C2B_SCOPE_AUTHORITY_SCENE_MISSING: live authority has no mapping for '{}'",
+                context.scene_ref
+            ));
+        }
+        [mapping] => *mapping,
+        _ => {
+            return Err(anyhow!(
+                "NEX_C2B_SCOPE_AUTHORITY_SCENE_AMBIGUOUS: live authority has multiple mappings for '{}'",
+                context.scene_ref
+            ));
+        }
+    };
+
+    let trusted_material = build_scope_override_material_sidecar(
+        parent,
+        context,
+        &authority_source_key,
+        &authority.source.revision_token,
+    )?;
+    let scope_projection = if context.secret_scope {
+        Some(build_live_scope_v2_projection(
+            &authority,
+            mapping,
+            &authority_source_key,
+        )?)
+    } else {
+        None
+    };
+    Ok((trusted_material, scope_projection))
+}
+
+fn build_live_scope_v2_projection(
+    authority: &grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
+    mapping: &NarrativeProjectScopeAuthorityMappingV1,
+    authority_source_key: &str,
+) -> anyhow::Result<TrustedScopeV2Projection> {
+    let reader_count = authority
+        .scope_registry
+        .reserved_audience_refs
+        .iter()
+        .filter(|audience| audience.as_str() == "reader")
+        .count();
+    anyhow::ensure!(
+        reader_count == 1,
+        "NEX_C2B_SCOPE_AUTHORITY_AUDIENCE_INVALID: live authority must reserve exactly one reader audience"
+    );
+
+    let story_time = match &mapping.story_time_order {
+        NarrativeScopeAuthorityStoryTimeOrderV2::Resolved { .. } => {
+            exact_scope_interval(&mapping.story_time_ref)
+        }
+        NarrativeScopeAuthorityStoryTimeOrderV2::Unresolved { reason, .. } => json!({
+            "kind": "unresolved",
+            "reason": unresolved_scope_reason(reason),
+        }),
+    };
+    let scope = json!({
+        "schemaVersion": 2,
+        "registryVersion": "narrative-scope/2",
+        "timeline": {"kind": "any"},
+        "worldline": {"kind": "any"},
+        "scene": {"kind": "exact", "ref": mapping.scene_ref},
+        "viewpoint": {"kind": "any"},
+        "knowledgeHolder": {"kind": "any"},
+        "audience": {"kind": "exact", "ref": "reader"},
+        "narrativeLayer": {"kind": "any"},
+        "storyTime": story_time,
+        "readingOrder": exact_scope_interval(&mapping.reading_order_ref),
+    });
+    validate_narrative_scope_v2(&scope).map_err(|error| {
+        anyhow!("NEX_C2B_SCOPE_AUTHORITY_INVALID: live Scope V2 is invalid: {error}")
+    })?;
+    let digest = digest_narrative_scope_v2(&scope).map_err(|error| {
+        anyhow!("NEX_C2B_SCOPE_AUTHORITY_INVALID: live Scope V2 digest failed: {error}")
+    })?;
+    Ok(TrustedScopeV2Projection {
+        scope,
+        digest,
+        source_key: authority_source_key.to_owned(),
+    })
+}
+
+fn exact_scope_interval(reference: &str) -> Value {
+    json!({
+        "kind": "interval",
+        "from": {"ref": reference, "inclusive": true},
+        "until": {"ref": reference, "inclusive": true}
+    })
+}
+
+fn unresolved_scope_reason(reason: &NarrativeScopeAuthorityUnresolvedReasonV2) -> &'static str {
+    match reason {
+        NarrativeScopeAuthorityUnresolvedReasonV2::NotProvided => "not-provided",
+        NarrativeScopeAuthorityUnresolvedReasonV2::Ambiguous => "ambiguous",
+    }
+}
+
+fn build_scope_override_material_sidecar(
+    parent: &HumanMaterialParentBundle,
+    context: &HumanMaterialResolutionContext,
+    authority_source_key: &str,
+    authority_revision_token: &str,
+) -> anyhow::Result<TrustedHumanMaterialResolution> {
+    anyhow::ensure!(
+        !authority_revision_token.trim().is_empty(),
+        "NEX_C2B_SCOPE_AUTHORITY_INVALID: live authority revision token is empty"
+    );
+
+    let mut required_source_keys = parent
+        .material_basis
+        .evidence_set
+        .iter()
+        .map(|evidence| evidence.source_key.clone())
+        .collect::<HashSet<_>>();
+    required_source_keys.extend(
+        parent
+            .material_basis
+            .dependency_set
+            .iter()
+            .filter(|dependency| dependency.role != DependencyRole::ScopeResolution)
+            .filter_map(|dependency| {
+                parent
+                    .material_basis
+                    .source_basis
+                    .iter()
+                    .any(|source| source.source_key == dependency.input_ref)
+                    .then(|| dependency.input_ref.clone())
+            }),
+    );
+
+    let mut source_basis = Vec::with_capacity(required_source_keys.len() + 1);
+    for source in &parent.material_basis.source_basis {
+        if !required_source_keys.contains(&source.source_key) {
+            continue;
+        }
+        anyhow::ensure!(
+            source.source_key != authority_source_key,
+            "NEX_C2B_SCOPE_AUTHORITY_SOURCE_COLLISION: current authority Source is also required as an immutable parent observation"
+        );
+        source_basis.push(TrustedSourceBasisEntry {
+            source_kind: source.source_kind.clone(),
+            source_key: source.source_key.clone(),
+            revision_token: source.revision_token.clone(),
+            revision_observed_at: source.revision_observed_at.clone(),
+        });
+    }
+    source_basis.push(TrustedSourceBasisEntry {
+        source_kind: SCOPE_AUTHORITY_SOURCE_KIND.to_owned(),
+        source_key: authority_source_key.to_owned(),
+        revision_token: authority_revision_token.to_owned(),
+        revision_observed_at: None,
+    });
+
+    let evidence_set = parent
+        .material_basis
+        .evidence_set
+        .iter()
+        .map(|evidence| TrustedEvidenceEntry {
+            evidence_ref: evidence.evidence_ref.clone(),
+            document_ref: evidence.document_ref.clone(),
+            quote: evidence.quote.clone(),
+            quote_digest: evidence.quote_digest.clone(),
+            source_key: evidence.source_key.clone(),
+            revision_token: evidence.revision_token.clone(),
+        })
+        .collect();
+
+    let mut dependency_ids = HashSet::new();
+    let mut dependency_set = Vec::new();
+    for dependency in parent
+        .material_basis
+        .dependency_set
+        .iter()
+        .filter(|dependency| dependency.role != DependencyRole::ScopeResolution)
+    {
+        anyhow::ensure!(
+            dependency_ids.insert(dependency.dependency_id.clone()),
+            "NEX_C2B_SCOPE_AUTHORITY_DEPENDENCY_COLLISION: parent dependency ids are not unique"
+        );
+        dependency_set.push(TrustedDependencyEntry {
+            dependency_id: dependency.dependency_id.clone(),
+            input_ref: dependency.input_ref.clone(),
+            context_ids: dependency.context_ids.clone(),
+            role: dependency.role,
+            selector: dependency.selector.clone(),
+        });
+    }
+    anyhow::ensure!(
+        dependency_ids.insert(SCOPE_AUTHORITY_DEPENDENCY_ID.to_owned()),
+        "NEX_C2B_SCOPE_AUTHORITY_DEPENDENCY_COLLISION: parent already uses the reserved Scope dependency id"
+    );
+    dependency_set.push(TrustedDependencyEntry {
+        dependency_id: SCOPE_AUTHORITY_DEPENDENCY_ID.to_owned(),
+        input_ref: authority_source_key.to_owned(),
+        context_ids: vec![SCOPE_AUTHORITY_CONTEXT_ID.to_owned()],
+        role: DependencyRole::ScopeResolution,
+        selector: DependencySelector::WholeSource,
+    });
+
+    Ok(TrustedHumanMaterialResolution {
+        project_id: context.project_id.clone(),
+        parent_revision_id: context.parent_revision_id.clone(),
+        expected_parent_envelope_digest: context.expected_parent_envelope_digest.clone(),
+        scene_ref: context.scene_ref.clone(),
+        edited_document_ref: context.edited_document_ref.clone(),
+        source_basis,
+        evidence_set,
+        dependency_set,
     })
 }
 
@@ -287,21 +563,19 @@ pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization(
     request: CreateHumanDerivedRevisionRequest,
     derivation_kind: HumanMaterialDerivationKind,
 ) -> anyhow::Result<Value> {
-    if derivation_kind == HumanMaterialDerivationKind::ScopeOverride {
-        return Err(anyhow!(
-            "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE: Native scope authority is not available for C2B materialization"
-        ));
-    }
-
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             let admission =
                 admit_projection_parent(conn, trusted_project_id, &request, derivation_kind)?;
-            let mut saved = human_derivation::create_human_derived_revision_in_tx(
+            let trusted_material_basis = (derivation_kind == HumanMaterialDerivationKind::ScopeOverride)
+                .then_some(&admission.material_basis);
+            let mut saved = human_derivation::create_human_derived_revision_in_tx_with_authorities(
                 conn,
                 trusted_project_id,
                 None,
+                admission.scope_projection.as_ref(),
+                trusted_material_basis,
                 &request,
             )?;
             let child_receipt: HumanRevisionReceiptProjection =

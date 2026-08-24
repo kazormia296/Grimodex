@@ -341,9 +341,9 @@ pub fn narrative_extraction_create_human_derived_revision_with_scope(
     )
 }
 
-/// Native-owned C2B materialization seam. Projection-only derives and
-/// publishes the complete child material atomically; scope override fails
-/// before any DML until its Native Registry/Oracle authority is wired.
+/// Native-owned C2B materialization seam. Projection-only and ScopeOverride
+/// derive and publish the complete child material atomically against the
+/// Native live project Scope authority.
 pub fn narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
     db: &Database,
     trusted_project_id: &str,
