@@ -696,6 +696,56 @@ fn public_v2_append_is_activation_disabled_for_v2_and_legacy_current_without_poi
     }
 }
 
+#[test]
+fn public_v2_append_rejects_forged_digest_at_activation_boundary() {
+    let db = migrated_db();
+    let run_id = "run-public-v2-forged-digest";
+    let task_id = "task-public-v2-forged-digest";
+    let proposal_id = "proposal-public-v2-forged-digest";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let parent = save_legacy_root(&db, PROJECT_A, run_id, task_id, proposal_id);
+    let expected_current = parent["revisionId"]
+        .as_str()
+        .expect("parent revision")
+        .to_owned();
+    let mut forged = envelope_v2(&db, PROJECT_A, run_id, task_id, "Arrival");
+    forged["projectionBinding"]["proposalPayloadDigest"] = json!(FORGED_DIGEST);
+
+    let error = narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: run_id.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            proposal_id: proposal_id.to_owned(),
+            payload_json: proposal_payload("Arrival", false),
+            reconciliation_envelope: Some(forged),
+            inherit_reconciliation_envelope: None,
+            expected_current_revision_id: expected_current.clone(),
+            created_by: Some("c2a-activation-forged-digest".to_owned()),
+        },
+    )
+    .expect_err("public V2 append must remain activation-disabled");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_NARRATIVE_V2_ACTIVATION_DISABLED"),
+        "public V2 activation boundary changed: {error:#}"
+    );
+    let (current_revision, revision_count): (String, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT current_revision_id,
+                        (SELECT COUNT(*) FROM narrative_proposal_revisions WHERE proposal_id = ?1)
+                   FROM narrative_proposals WHERE id = ?1",
+                rusqlite::params![proposal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read forged V2 activation rollback");
+    assert_eq!(current_revision, expected_current);
+    assert_eq!(revision_count, 1);
+}
+
 fn save_legacy_root(
     db: &Database,
     project_id: &str,
