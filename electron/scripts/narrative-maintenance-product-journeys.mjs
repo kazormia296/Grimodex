@@ -2273,6 +2273,42 @@ async function prepareLegacySchemaMarker(workspace) {
   const databasePath = path.join(workspace, "grimodex.db");
   try {
     await execFile("sqlite3", [databasePath, "PRAGMA user_version = 30;"]);
+    // The setup launch itself is a real workspace open, so a current-schema
+    // workspace may already contain the canonical Backfill/Verify lifecycle
+    // before this helper rewinds the marker. Remove only those setup-owned
+    // automatic rows; otherwise the legacy-marker open correctly reuses the
+    // old completed Backfill and this journey cannot observe a new migration
+    // boundary. Keep the Semantic Epoch: the legacy backfill should bind to
+    // the existing project authority, just as it would in a real upgrade.
+    await execFile("sqlite3", [
+      databasePath,
+      `BEGIN;
+       DELETE FROM narrative_extraction_attempts
+        WHERE task_id IN (
+          SELECT id
+            FROM narrative_extraction_tasks
+           WHERE run_id IN (
+             SELECT id
+               FROM narrative_extraction_runs
+              WHERE run_kind IN ('backfill', 'dependency-verify')
+           )
+        );
+       DELETE FROM narrative_extraction_task_edges
+        WHERE run_id IN (
+          SELECT id
+            FROM narrative_extraction_runs
+           WHERE run_kind IN ('backfill', 'dependency-verify')
+        );
+       DELETE FROM narrative_extraction_tasks
+        WHERE run_id IN (
+          SELECT id
+            FROM narrative_extraction_runs
+           WHERE run_kind IN ('backfill', 'dependency-verify')
+        );
+       DELETE FROM narrative_extraction_runs
+        WHERE run_kind IN ('backfill', 'dependency-verify');
+       COMMIT;`,
+    ]);
     await execFile("sqlite3", [
       databasePath,
       "DELETE FROM schema_data_migrations WHERE migration_id = 'narrative-c2-finding-identity-v31';",
