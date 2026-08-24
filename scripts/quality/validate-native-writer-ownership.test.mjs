@@ -49,4 +49,3 @@ test("C2A protected tables use the exact Native writer registry and pass ownersh
   });
   assert.deepEqual(result.violations, []);
 });
-
