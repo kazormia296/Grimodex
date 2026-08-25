@@ -220,6 +220,7 @@ fn disabled_runtime_still_allows_in_flight_work_to_terminalize_and_release_lease
             chronicle_stage_bundle: None,
             chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
     .expect("finish in-flight task after disable");

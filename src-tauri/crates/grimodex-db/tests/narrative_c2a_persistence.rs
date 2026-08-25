@@ -2142,6 +2142,7 @@ fn finish_bundle_with_artifacts_and_parsed_output_digest(
             }),
             chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
 }
@@ -2331,6 +2332,7 @@ fn observation_terminal_receipt_is_durable_before_a_later_synthesis_closure() {
             chronicle_stage_bundle: None,
             chronicle_stage_receipts: vec![receipt],
             historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
     .expect("Observation terminalization must seal its receipt before synthesis exists");
@@ -2438,6 +2440,7 @@ fn later_synthesis_bundle_reuses_the_previously_terminalized_observation_receipt
             chronicle_stage_bundle: None,
             chronicle_stage_receipts: vec![typed_observation_receipt],
             historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
     .expect("terminalize Observation before the later synthesis closure");
@@ -2863,6 +2866,7 @@ fn chronicle_synthesis_requires_typed_closure_raw_output_link_atomically() {
             chronicle_stage_bundle: None,
             chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
     .expect_err("typed Chronicle output without closure must fail closed");

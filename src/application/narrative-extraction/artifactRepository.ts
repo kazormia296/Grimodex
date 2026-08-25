@@ -18,6 +18,25 @@ const hydrateInFlight = new Map<
   Promise<GetRunReviewBundleResult | null>
 >();
 
+/**
+ * Artifact and review-bundle payloads are JSON-only durable projections.
+ * Clone them at every process-local boundary: stages routinely yield while
+ * Native work is in flight, so retaining a caller's object reference would
+ * let a later consumer execute bytes other than the sealed Native artifact.
+ */
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function cloneArtifact(
+  artifact: NarrativeExtractionArtifact,
+): NarrativeExtractionArtifact {
+  return {
+    ...artifact,
+    payloadJson: artifact.payloadJson ? cloneJson(artifact.payloadJson) : null,
+  };
+}
+
 function artifactIndexKey(runId: string, artifactKind: string): string {
   return `${runId}:${artifactKind}`;
 }
@@ -43,15 +62,18 @@ export function buildInlineJsonArtifact(
   payloadJson: Readonly<Record<string, unknown>>,
   artifactId: string = crypto.randomUUID(),
 ): InlineJsonArtifactDraft {
+  const draftPayload = cloneJson(payloadJson);
   return {
     artifactId,
     artifactKind,
-    payloadJson,
+    payloadJson: draftPayload,
     artifactInput: {
       artifactId,
       artifactKind,
       payloadStorage: "inline-json",
-      payloadJson,
+      // Keep draft-facing and transport-facing values isolated too. A draft
+      // holder can never mutate the exact payload passed to FinishTask.
+      payloadJson: cloneJson(draftPayload),
     },
   };
 }
@@ -69,7 +91,7 @@ export function rememberInlineJsonArtifact(input: {
     attemptId: input.attemptId,
     artifactKind: input.draft.artifactKind,
     payloadStorage: "inline-json",
-    payloadJson: input.draft.payloadJson,
+    payloadJson: cloneJson(input.draft.payloadJson),
     payloadRef: null,
     payloadDigest: null,
     createdAt: new Date().toISOString(),
@@ -78,7 +100,7 @@ export function rememberInlineJsonArtifact(input: {
     artifactIndexKey(input.runId, input.draft.artifactKind),
     stored,
   );
-  return stored;
+  return cloneArtifact(stored);
 }
 
 function rememberBundleArtifact(artifact: ReviewBundleArtifact): void {
@@ -92,7 +114,7 @@ function rememberBundleArtifact(artifact: ReviewBundleArtifact): void {
     attemptId: artifact.attemptId,
     artifactKind: artifact.artifactKind,
     payloadStorage: "inline-json",
-    payloadJson: artifact.payloadJson,
+    payloadJson: cloneJson(artifact.payloadJson),
     payloadRef: artifact.payloadRef,
     payloadDigest: artifact.payloadDigest,
     createdAt: artifact.createdAt,
@@ -121,22 +143,25 @@ export async function hydrateInlineArtifactsFromNative(input: {
         `Chronicle extraction review bundle unavailable for run ${input.runId}`,
       );
     }
-    return reused;
+    return cloneJson(reused);
   }
 
   const pending = narrativeExtractionGetRunReviewBundle({
     runId: input.runId,
     projectId: input.projectId,
   }).then((bundle) => {
-    for (const artifact of bundle.artifacts) {
+    // The promise is shared only as an internal coalescing mechanism. Never
+    // leak its Native-owned object graph to either caller.
+    const sealedBundle = cloneJson(bundle);
+    for (const artifact of sealedBundle.artifacts) {
       rememberBundleArtifact(artifact);
     }
-    return bundle;
+    return sealedBundle;
   });
 
   hydrateInFlight.set(key, pending);
   try {
-    return await pending;
+    return cloneJson(await pending);
   } finally {
     // Drop completed/failed entry so later restores re-read mutable proposal state.
     // Concurrent callers still coalesce via the in-flight Map entry above.
@@ -152,18 +177,26 @@ export async function hydrateInlineArtifactsFromNative(input: {
 export async function hydrateChronicleStageReceiptsFromNative(input: {
   readonly runId: string;
   readonly projectId: string;
+  /** Reuse the exact already-hydrated review bundle when the caller also
+   * needs terminal ProposalSet state. This avoids validating receipts from
+   * one read and resuming from a later mutable read. */
+  readonly bundle?: GetRunReviewBundleResult;
 }): Promise<readonly ChronicleStageTerminalReceiptV1[]> {
-  const bundle = await hydrateInlineArtifactsFromNative(input);
-  const stageReceipts = (bundle as unknown as {
-    readonly stageReceipts?: unknown;
-  }).stageReceipts;
+  const bundle =
+    input.bundle ?? (await hydrateInlineArtifactsFromNative(input));
+  const stageReceipts = (
+    bundle as unknown as {
+      readonly stageReceipts?: unknown;
+    }
+  ).stageReceipts;
   if (!Array.isArray(stageReceipts)) {
     throw new Error(
       "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: Native hydration did not return a durable stage receipt roster",
     );
   }
+  const clonedReceipts = cloneJson(stageReceipts);
   const seenExecutionIds = new Set<string>();
-  for (const receipt of stageReceipts) {
+  for (const receipt of clonedReceipts) {
     await assertChronicleStageTerminalReceiptV1(receipt);
     if (
       receipt.stageExecution.projectId !== input.projectId ||
@@ -175,7 +208,7 @@ export async function hydrateChronicleStageReceiptsFromNative(input: {
       );
     }
   }
-  return stageReceipts;
+  return clonedReceipts;
 }
 
 export async function loadInlineJsonArtifact<T extends object>(
@@ -186,7 +219,7 @@ export async function loadInlineJsonArtifact<T extends object>(
   const key = artifactIndexKey(runId, artifactKind);
   const cached = inlineArtifactIndex.get(key);
   if (cached?.payloadJson) {
-    return cached.payloadJson as T;
+    return cloneJson(cached.payloadJson) as T;
   }
 
   if (!options?.projectId) {
@@ -199,13 +232,13 @@ export async function loadInlineJsonArtifact<T extends object>(
   });
   const hydrated = inlineArtifactIndex.get(key);
   if (!hydrated?.payloadJson) return null;
-  return hydrated.payloadJson as T;
+  return cloneJson(hydrated.payloadJson) as T;
 }
 
 export function listInlineJsonArtifacts(
   runId: string,
 ): readonly NarrativeExtractionArtifact[] {
-  return [...inlineArtifactIndex.values()].filter(
-    (artifact) => artifact.runId === runId,
-  );
+  return [...inlineArtifactIndex.values()]
+    .filter((artifact) => artifact.runId === runId)
+    .map(cloneArtifact);
 }

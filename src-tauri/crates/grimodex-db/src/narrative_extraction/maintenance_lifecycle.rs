@@ -13,7 +13,7 @@ use uuid::Uuid;
 use super::commit::digest_plan;
 use super::execution_state::{next_run_lifecycle_timestamp_in_tx, parse_run_lifecycle_instant};
 use super::maintenance_runtime::{
-    canonical_work_key_for_epoch, explicit_failure_code, retry_backoff_ms,
+    canonical_work_key_for_epoch, classify_failure, explicit_failure_code, retry_backoff_ms,
     select_unique_latest_lifecycle_evidence, spec_with_active_system_work_marker,
     LifecycleEvidence, NarrativeSystemWorkMarker,
 };
@@ -64,6 +64,40 @@ impl MaintenanceFailureKind {
     fn is_retryable(self) -> bool {
         matches!(self, Self::Transient | Self::Interrupted)
     }
+}
+
+/// Resolve an explicit failure code back to the only lifecycle policy bucket
+/// that may persist it. The exact-code classifier is the Rust-owned authority
+/// for retryability; Maintenance interruption remains distinct because its
+/// next-attempt contract reclaims a new Run instead of retrying the same Run.
+fn failure_kind_for_explicit_code(code: &str) -> MaintenanceFailureKind {
+    if code == "NEX_MAINTENANCE_INTERRUPTED" {
+        MaintenanceFailureKind::Interrupted
+    } else if classify_failure(code).retryable {
+        MaintenanceFailureKind::Transient
+    } else {
+        MaintenanceFailureKind::Manual
+    }
+}
+
+/// An explicit immutable failure identity and its retry policy are one writer
+/// invariant. Refuse contradictory caller inputs before any lifecycle row is
+/// mutated instead of persisting a manual code with retryable metadata (or the
+/// reverse).
+fn validate_explicit_failure_policy(
+    failure_kind: MaintenanceFailureKind,
+    error_message: &str,
+) -> anyhow::Result<()> {
+    let Some(failure_code) = explicit_failure_code(error_message) else {
+        return Ok(());
+    };
+    let expected_kind = failure_kind_for_explicit_code(failure_code);
+    anyhow::ensure!(
+        failure_kind == expected_kind,
+        "NEX_MAINTENANCE_FAILURE_POLICY_MISMATCH: explicit failure code \
+         '{failure_code}' requires {expected_kind:?}, but caller supplied {failure_kind:?}"
+    );
+    Ok(())
 }
 
 /// Ensure the failure message leads with an explicit `NEX_*` code. A message
@@ -1137,6 +1171,7 @@ pub(crate) fn fail_maintenance_run_in_tx(
         !error_message.trim().is_empty(),
         "NEX_MAINTENANCE_LIFECYCLE_FAILURE_INVALID: error message must not be empty"
     );
+    validate_explicit_failure_policy(failure_kind, error_message)?;
     validate_handle_in_tx(conn, handle)?;
     let completed_at = next_maintenance_terminal_timestamp_in_tx(conn, handle)?;
     // The exact code carried by the message is the primary immutable
@@ -1396,6 +1431,55 @@ mod tests {
               WHERE id = ?1",
             params![handle.attempt_id],
         )?;
+        Ok(())
+    }
+
+    fn assert_failure_policy_rejection_did_not_mutate_lifecycle(
+        conn: &Connection,
+        handle: &MaintenanceRunHandle,
+    ) -> anyhow::Result<()> {
+        let state: (
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = conn.query_row(
+            "SELECT r.status, t.status, a.status,
+                    a.failure_code, a.retry_disposition,
+                    a.policy_version, a.next_attempt_at
+               FROM narrative_extraction_runs r
+               JOIN narrative_extraction_tasks t ON t.run_id = r.id
+               JOIN narrative_extraction_attempts a ON a.task_id = t.id
+              WHERE r.id = ?1",
+            params![handle.run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )?;
+        assert_eq!(
+            state,
+            (
+                "running".to_string(),
+                "running".to_string(),
+                "running".to_string(),
+                None,
+                None,
+                None,
+                None,
+            ),
+            "policy mismatch must not mutate Run, Task, or Attempt"
+        );
         Ok(())
     }
 
@@ -1847,6 +1931,130 @@ mod tests {
             Ok(())
         })
         .expect("failure metadata");
+    }
+
+    #[test]
+    fn failure_terminalizer_rejects_explicit_code_policy_mismatch_before_dml() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create(conn, "backfill")?;
+            let error = fail_maintenance_run_in_tx(
+                conn,
+                &handle,
+                MaintenanceFailureKind::Transient,
+                "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: database is locked",
+            )
+            .expect_err("a manual explicit code must not acquire retryable metadata");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_MAINTENANCE_FAILURE_POLICY_MISMATCH"),
+                "unexpected policy mismatch error: {error:#}"
+            );
+            assert_failure_policy_rejection_did_not_mutate_lifecycle(conn, &handle)?;
+            Ok(())
+        })
+        .expect("pre-DML policy mismatch rejection");
+    }
+
+    #[test]
+    fn failure_terminalizer_rejects_retryable_explicit_code_with_manual_kind_before_dml() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create(conn, "dependency-verify")?;
+            let error = fail_maintenance_run_in_tx(
+                conn,
+                &handle,
+                MaintenanceFailureKind::Manual,
+                "NEX_MAINTENANCE_TRANSIENT: database is locked",
+            )
+            .expect_err("a retryable explicit code must not acquire manual metadata");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_MAINTENANCE_FAILURE_POLICY_MISMATCH"),
+                "unexpected policy mismatch error: {error:#}"
+            );
+            assert_failure_policy_rejection_did_not_mutate_lifecycle(conn, &handle)?;
+            Ok(())
+        })
+        .expect("reverse pre-DML policy mismatch rejection");
+    }
+
+    #[test]
+    fn failure_terminalizer_rejects_exact_interruption_with_transient_kind_before_dml() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create(conn, "semantic-index-rebuild")?;
+            let error = fail_maintenance_run_in_tx(
+                conn,
+                &handle,
+                MaintenanceFailureKind::Transient,
+                "NEX_MAINTENANCE_INTERRUPTED: process interruption",
+            )
+            .expect_err("an exact interruption must retain its new-Run recovery semantics");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_MAINTENANCE_FAILURE_POLICY_MISMATCH"),
+                "unexpected interruption policy mismatch error: {error:#}"
+            );
+            assert_failure_policy_rejection_did_not_mutate_lifecycle(conn, &handle)?;
+            Ok(())
+        })
+        .expect("interruption-vs-transient mismatch rejection");
+    }
+
+    #[test]
+    fn failure_terminalizer_accepts_exact_interruption_with_interrupted_kind() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create(conn, "dependency-verify")?;
+            fail_maintenance_run_in_tx(
+                conn,
+                &handle,
+                MaintenanceFailureKind::Interrupted,
+                "NEX_MAINTENANCE_INTERRUPTED: process interruption",
+            )?;
+            let metadata: (
+                String,
+                String,
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+            ) = conn.query_row(
+                "SELECT r.status, t.status, a.status,
+                            a.failure_code, a.retry_disposition,
+                            a.policy_version, a.next_attempt_at
+                       FROM narrative_extraction_runs r
+                       JOIN narrative_extraction_tasks t ON t.run_id = r.id
+                       JOIN narrative_extraction_attempts a ON a.task_id = t.id
+                      WHERE r.id = ?1",
+                params![handle.run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )?;
+            assert_eq!(metadata.0, "failed");
+            assert_eq!(metadata.1, "failed");
+            assert_eq!(metadata.2, "failed");
+            assert_eq!(metadata.3, "NEX_MAINTENANCE_INTERRUPTED");
+            assert_eq!(metadata.4, "retryable");
+            assert_eq!(metadata.5, FAILURE_POLICY_VERSION);
+            assert!(metadata.6.is_some());
+            Ok(())
+        })
+        .expect("exact interruption policy acceptance");
     }
 
     #[test]

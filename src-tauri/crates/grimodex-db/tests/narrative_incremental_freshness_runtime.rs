@@ -2329,6 +2329,7 @@ fn generic_task_apis_cannot_take_over_the_system_owned_freshness_lifecycle() {
             chronicle_stage_bundle: None,
             chronicle_stage_receipts: Vec::new(),
             historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
     .expect_err("generic finish must be denied");

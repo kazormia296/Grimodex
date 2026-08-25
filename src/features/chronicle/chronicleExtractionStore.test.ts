@@ -187,6 +187,16 @@ describe("chronicleExtractionStore", () => {
     expect(updated?.reconciliationEnvelopeDigest).toBe(
       `sha256:${"b".repeat(64)}`,
     );
+    expect(updated?.probableDuplicateChoice).toBeNull();
+    expect(updated?.safety).toMatchObject({
+      fresh: false,
+      noDuplicate: false,
+      riskLow: false,
+    });
+    expect(useChronicleExtractionStore.getState().bulkApproveSafe()).toBe(0);
+    expect(
+      useChronicleExtractionStore.getState().projection?.proposals[0]?.status,
+    ).toBe("unreviewed");
   });
 
   it("bulkApproveSafe only approves safe unreviewed proposals", () => {

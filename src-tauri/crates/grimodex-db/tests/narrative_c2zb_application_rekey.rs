@@ -1136,10 +1136,85 @@ fn c2zb_marker_failpoint_rolls_back_and_retry_is_safe() {
 }
 
 #[test]
-fn legacy_backfill_v3_emits_application_edges_bound_to_the_owning_run() {
+fn legacy_backfill_v3_refuses_pre_c2zb_marker_before_creating_run_or_edge_state() {
+    let db = current_db_rewound_to_schema_31();
+    db.with_conn(|conn| seed_project(conn, EXACT, false))
+        .expect("seed legacy Application on pre-marker fixture");
+
+    let before = db
+        .with_conn(|conn| {
+            Ok::<_, anyhow::Error>((
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+                    [EXACT.project_id],
+                    |row| row.get::<_, i64>(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id = ?1",
+                    [EXACT.project_id],
+                    |row| row.get::<_, i64>(0),
+                )?,
+            ))
+        })
+        .expect("snapshot pre-marker durable state");
+
+    let error = bootstrap_legacy_dependency_backfill_for_project(&db, EXACT.project_id)
+        .expect_err("v3 Backfill must reject a pre-C2-ZB workspace before phase 1");
+    assert!(
+        error.to_string().contains("NEX_C2ZB_MARKER_MISSING"),
+        "unexpected precondition error: {error:#}"
+    );
+
+    db.with_conn(|conn| {
+        let after = (
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+                [EXACT.project_id],
+                |row| row.get::<_, i64>(0),
+            )?,
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id = ?1",
+                [EXACT.project_id],
+                |row| row.get::<_, i64>(0),
+            )?,
+        );
+        assert_eq!(
+            after, before,
+            "precondition failure must not write Run or Edge state"
+        );
+        let v3_run_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs
+              WHERE project_id = ?1 AND work_key = ?2",
+            params![EXACT.project_id, BACKFILL_V3_WORK_KEY],
+            |row| row.get(0),
+        )?;
+        assert_eq!(v3_run_count, 0, "phase-1 Backfill Run must not be created");
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify pre-marker Backfill refusal is DML-free");
+}
+
+#[test]
+fn legacy_backfill_v3_emits_application_edges_bound_to_the_owning_run_after_c2zb() {
     let db = current_db_rewound_to_schema_31();
     db.with_conn(|conn| seed_project(conn, EXACT, false))
         .expect("seed legacy Application for the future Backfill writer");
+    db.migrate()
+        .expect("C2-ZB marker must be installed before the v3 Backfill writer runs");
+
+    db.with_conn(|conn| {
+        let marker_version: i64 = conn.query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [APPLICATION_REKEY_MARKER],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            marker_version, 1,
+            "fixture must carry the exact C2-ZB marker"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify C2-ZB marker");
 
     let outcome = bootstrap_legacy_dependency_backfill_for_project(&db, EXACT.project_id)
         .expect("run legacy Backfill writer");

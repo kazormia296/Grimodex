@@ -32,7 +32,10 @@ import {
   resetChronicleExtractionApiCachesForTests,
   restoreChronicleExtractionReview,
 } from "./chronicleExtractionApi";
-import { resetChronicleExtractionStoreForTests } from "./chronicleExtractionStore";
+import {
+  resetChronicleExtractionStoreForTests,
+  useChronicleExtractionStore,
+} from "./chronicleExtractionStore";
 
 function sampleProposal(
   overrides?: Partial<CreateChronicleEventProposalPayloadV1>,
@@ -69,7 +72,11 @@ describe("getChronicleExtractionReview cold-start restore", () => {
   });
 
   it("hydrates Map from Native bundle and restores proposals with Native revision ids", async () => {
-    const proposal = sampleProposal();
+    const plannedProposal = sampleProposal();
+    const proposal = sampleProposal({
+      title: "Current human revision",
+      note: "A current-revision decision must survive cold hydration.",
+    });
     const nativeRevisionId = "rev-native-abc";
     const nativeProposalId = "prop-native-xyz";
 
@@ -121,10 +128,10 @@ describe("getChronicleExtractionReview cold-start restore", () => {
           payloadStorage: "inline-json",
           payloadJson: {
             proposalSetId: "set-cold-1",
-            proposals: [proposal],
+            proposals: [plannedProposal],
             planned: [
               {
-                proposal,
+                proposal: plannedProposal,
                 match: { status: "none" },
                 hypothesisId: "hyp-1",
               },
@@ -232,9 +239,143 @@ describe("getChronicleExtractionReview cold-start restore", () => {
     expect(row.proposalId).not.toMatch(/^local-proposal-/);
     expect(row.status).toBe("approved");
     expect(row.reconciliationEnvelopeSchemaVersion).toBe(2);
-    expect(row.displayTitle).toBe("Cold start event");
+    expect(row.displayTitle).toBe("Current human revision");
     expect(row.probableDuplicateChoice).toBe("create-as-new");
+    expect(row.safety).toMatchObject({
+      fresh: false,
+      noDuplicate: false,
+      riskLow: false,
+    });
     expect(row.evidence[0]?.quote).toBe("quoted text");
+  });
+
+  it("uses the current human revision payload and never carries a prior revision decision forward", async () => {
+    const plannedPayload = sampleProposal({
+      title: "Initial terminal proposal",
+    });
+    const currentPayload = sampleProposal({
+      title: "Human revised terminal proposal",
+      note: "The revision is the reviewable payload.",
+    });
+
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-cold-current-revision",
+        projectId: "project-cold",
+        surfacePathId: "chronicle.extract",
+        scopeJson: {},
+        specJson: {},
+        specDigest: "spec",
+        snapshotDigest: null,
+        catalogDigest: null,
+        registryDigest: null,
+        status: "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        completedAt: "2026-01-01T00:01:00.000Z",
+        version: 1,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 9,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-cold-current-revision",
+      projectId: "project-cold",
+      artifacts: [
+        {
+          artifactId: "art-current-proposals",
+          runId: "run-cold-current-revision",
+          taskId: "task-plan",
+          attemptId: "attempt-plan",
+          artifactKind: CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
+          payloadStorage: "inline-json",
+          payloadJson: {
+            proposalSetId:
+              "chronicle-plan-proposals:run-cold-current-revision:task-plan",
+            proposals: [plannedPayload],
+            planned: [
+              {
+                proposal: plannedPayload,
+                match: { status: "none" },
+                hypothesisId: "hyp-current",
+              },
+            ],
+          },
+          payloadRef: null,
+          payloadDigest: null,
+          createdAt: "2026-01-01T00:00:30.000Z",
+        },
+      ],
+      proposalSet: {
+        proposalSetId:
+          "chronicle-plan-proposals:run-cold-current-revision:task-plan",
+        runId: "run-cold-current-revision",
+        projectId: "project-cold",
+        setKind: "chronicle.extract.review@1",
+        status: "draft",
+        summaryJson: {},
+        createdAt: "2026-01-01T00:00:40.000Z",
+        updatedAt: "2026-01-01T00:00:40.000Z",
+        version: 1,
+      },
+      proposals: [
+        {
+          proposalId: "prop-current-revision",
+          proposalSetId:
+            "chronicle-plan-proposals:run-cold-current-revision:task-plan",
+          proposalKey: "ev-cold-1:0",
+          kind: "chronicle.create-event@1",
+          status: "unreviewed",
+          payloadJson: currentPayload,
+          currentRevisionId: "revision-2-current",
+          createdAt: "2026-01-01T00:00:40.000Z",
+          updatedAt: "2026-01-01T00:00:50.000Z",
+          reconciliationEnvelopeSchemaVersion: 2,
+          latestDecision: {
+            decisionId: "decision-on-revision-1",
+            proposalId: "prop-current-revision",
+            revisionId: "revision-1-terminal",
+            decision: "approved",
+            decisionJson: { probableDuplicateChoice: "create-as-new" },
+            createdAt: "2026-01-01T00:00:45.000Z",
+            createdBy: "reviewer",
+          },
+        },
+      ],
+    });
+
+    const restored = await getChronicleExtractionReview(
+      "run-cold-current-revision",
+      {
+        projectId: "project-cold",
+        workspacePath: "/ws/cold",
+        openRevision: 3,
+      },
+    );
+
+    const [row] = restored.proposals;
+    expect(row).toMatchObject({
+      proposalId: "prop-current-revision",
+      revisionId: "revision-2-current",
+      status: "unreviewed",
+      displayTitle: "Human revised terminal proposal",
+      payload: currentPayload,
+    });
+    expect(row?.probableDuplicateChoice).toBeNull();
+    expect(row?.safety).toMatchObject({
+      fresh: false,
+      noDuplicate: false,
+      riskLow: false,
+    });
+    expect(useChronicleExtractionStore.getState().bulkApproveSafe()).toBe(0);
   });
 
   it("fails closed when Native proposal set is missing", async () => {

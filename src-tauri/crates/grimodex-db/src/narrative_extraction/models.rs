@@ -88,6 +88,13 @@ pub struct FinishTaskPayload {
     /// from the durable Run and project tree before persistence.
     #[serde(default)]
     pub historical_scope_authority_basis: Option<NarrativeScopeAuthorityBasisV2>,
+    /// Chronicle's terminal ProposalSet must be saved in this Task's same
+    /// immediate transaction.  It is deliberately a typed FinishTask
+    /// companion rather than a second renderer-issued save command: a crash
+    /// can therefore leave either neither the review ledger nor both the
+    /// ledger and completed plan Task, never an orphaned ProposalSet.
+    #[serde(default)]
+    pub chronicle_plan_proposal_set: Option<ChroniclePlanProposalSetFinish>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -277,6 +284,16 @@ pub struct SaveProposalSetPayload {
     #[serde(default)]
     pub summary_json: Option<Value>,
     pub proposals: Vec<ProposalSeed>,
+}
+
+/// Native-validated terminal ledger input for `chronicle.plan-proposals@1`.
+/// The nested payload remains the generic proposal-set shape for its proposal
+/// rows, but only this typed FinishTask route may bind it to the Chronicle
+/// plan Task/Attempt and make the Run complete.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChroniclePlanProposalSetFinish {
+    pub proposal_set: SaveProposalSetPayload,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

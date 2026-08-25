@@ -662,6 +662,7 @@ fn finish_task_rejects_after_lease_expiry() {
             chronicle_stage_bundle: None,
             chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
     .expect_err("finish must reject expired lease");
@@ -1527,6 +1528,7 @@ fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
             chronicle_stage_bundle: None,
             chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
     .expect("finish with artifacts");
@@ -1672,6 +1674,7 @@ fn get_run_review_bundle_rejects_corrupt_current_chronicle_resume_artifact() {
             chronicle_stage_bundle: None,
             chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
     .expect("finish snapshot task");
@@ -1753,6 +1756,7 @@ fn get_run_review_bundle_hydrates_only_the_verified_current_chronicle_attempt() 
             chronicle_stage_bundle: None,
             chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
     .expect("finish current Chronicle snapshot attempt");

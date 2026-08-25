@@ -76,6 +76,7 @@ use super::application_contributions::{
     reproject_user_ownership_from_authority_in_tx, ContributionField, ContributionProvenance,
     ContributionTargetState, UNRESOLVED_TARGET_PREFIX,
 };
+use super::c2zb_application_rekey::require_current_c2zb_marker;
 use super::dependency_edges::{
     canonical_source_object_identity, record_dependency_edge_in_tx, APPLICATION_CONSUMER_KIND,
 };
@@ -570,6 +571,12 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
 
     let (run_id, reused) = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            // C2-ZB must have finished re-keying the historical Run Edges
+            // before this v3 writer creates phase-1 Run state or phase-2
+            // Application Edges.  This is intentionally the first operation
+            // in the transaction: a direct/pre-open caller must not be able
+            // to leave a running v3 owner on a pre-marker workspace.
+            require_current_c2zb_marker(conn)?;
             let epoch_id = match get_current_epoch(conn, project_id)? {
                 Some(epoch) => epoch.id,
                 None => create_epoch_in_tx(conn, project_id, "initial", None)?,

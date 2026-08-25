@@ -229,9 +229,15 @@ export async function saveProposalSet(
   return narrativeExtractionSaveProposalSet(payload);
 }
 
-export async function saveChronicleProposalSet(
+/**
+ * Build the immutable rows for Chronicle's terminal ProposalSet without
+ * persisting them.  The coordinator passes this exact payload through its
+ * typed plan Task finish so Native can commit the rows, plan artifact, and
+ * Task/Run completion atomically.
+ */
+export async function buildChronicleProposalSetPayload(
   input: SaveChronicleProposalSetInput,
-): Promise<SaveProposalSetResult> {
+): Promise<SaveProposalSetPayload> {
   const proposals: ProposalSeed[] = await Promise.all(
     input.proposals.map(async (proposal) => ({
       proposalKey: proposal.proposalKey,
@@ -277,7 +283,7 @@ export async function saveChronicleProposalSet(
         })),
     })),
   );
-  return saveProposalSet({
+  return {
     runId: input.runId,
     projectId: input.projectId,
     proposalSetId: input.proposalSetId,
@@ -290,7 +296,18 @@ export async function saveChronicleProposalSet(
         : {}),
     },
     proposals,
-  });
+  };
+}
+
+/**
+ * Legacy direct save wrapper retained for non-terminal callers. Chronicle's
+ * production coordinator must use `buildChronicleProposalSetPayload` and the
+ * typed FinishTask boundary instead.
+ */
+export async function saveChronicleProposalSet(
+  input: SaveChronicleProposalSetInput,
+): Promise<SaveProposalSetResult> {
+  return saveProposalSet(await buildChronicleProposalSetPayload(input));
 }
 
 export async function createHumanDerivedRevision(

@@ -1,4 +1,7 @@
-import type { ChronicleExtractionRequest } from "@/application/narrative-extraction/extractionCoordinator";
+import type {
+  ChronicleExtractionRequest,
+  ChronicleSavedProposalSeed,
+} from "@/application/narrative-extraction/extractionCoordinator";
 import {
   CHRONICLE_EXTRACT_ARTIFACT_KINDS,
   CHRONICLE_EXTRACT_SURFACE_PATH,
@@ -23,13 +26,17 @@ import {
 import type {
   GetRunReviewBundleResult,
   ReviewBundleProposal,
-  SavedProposalSeed,
 } from "@/application/narrative-extraction/nativeApi";
 import { compileCreateChronicleEventOperation } from "./extraction/compiler";
 import type { NarrativeCorpusSnapshot } from "@/features/narrative-extraction/source/types";
 import type { ResolvedEvidenceAnchor } from "@/features/narrative-extraction/evidence/types";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
-import type { ChronicleExistingMatch } from "./extraction/existingEventMatcher";
+import { assertProposalPayload as assertChronicleProposalPayload } from "@/features/narrative-extraction/proposals/chronicleSceneEventAdapter";
+import { stableJsonStringify } from "@/features/narrative-extraction/source/digest";
+import type {
+  ChronicleExistingMatch,
+  ExistingChronicleEventCatalogRecord,
+} from "./extraction/existingEventMatcher";
 import {
   buildProposalSafetyFlags,
   emptyTaskCounts,
@@ -88,6 +95,52 @@ function resolveProposalSetId(
   return artifactId ?? proposalSetIdByRunId.get(runId) ?? null;
 }
 
+/**
+ * `startChronicleExtraction` dynamically imports the coordinator, so it must
+ * capture all caller-owned coordinates before that first await.  The
+ * coordinator independently seals its own request; this outer copy prevents
+ * the review projection from later being labelled with a mutated workspace,
+ * scope, or catalog after the durable Run was created.
+ */
+function captureStartChronicleExtractionRequest(
+  request: StartChronicleExtractionRequest,
+): StartChronicleExtractionRequest {
+  const cloneCatalog = (
+    catalog: readonly ExistingChronicleEventCatalogRecord[] | undefined,
+  ): readonly ExistingChronicleEventCatalogRecord[] | undefined =>
+    catalog?.map((event) => ({
+      ref: event.ref,
+      sourceKey: event.sourceKey,
+      title: event.title,
+      note: event.note,
+      version: event.version,
+      linkedDocumentSourceKeys: [...event.linkedDocumentSourceKeys],
+      participantEntityRefs: [...event.participantEntityRefs],
+      startTime: event.startTime,
+      endTime: event.endTime,
+      digest: event.digest,
+      applicationProvenanceKeys: [...(event.applicationProvenanceKeys ?? [])],
+    }));
+  return {
+    projectId: request.projectId,
+    folderId: request.folderId,
+    ...(request.language === undefined ? {} : { language: request.language }),
+    sceneIds: [...request.sceneIds],
+    authority: {
+      projectId: request.authority.projectId,
+      currentProjectId: request.authority.currentProjectId,
+      workspacePath: request.authority.workspacePath,
+      workspaceOpenRevision: request.authority.workspaceOpenRevision,
+    },
+    workspacePath: request.workspacePath,
+    openRevision: request.openRevision,
+    ...(request.existingEvents === undefined
+      ? {}
+      : { existingEvents: cloneCatalog(request.existingEvents) }),
+    ...(request.useAi === undefined ? {} : { useAi: request.useAi }),
+  };
+}
+
 function sceneIdFromDocumentRef(
   snapshot: NarrativeCorpusSnapshot | null,
   documentRef: string,
@@ -127,16 +180,16 @@ function evidenceQuotesForProposal(
   });
 }
 
-function isProposalPayload(
+function assertCurrentChronicleProposalPayload(
   value: unknown,
-): value is CreateChronicleEventProposalPayloadV1 {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.eventId === "string" &&
-    typeof record.title === "string" &&
-    Array.isArray(record.evidenceAnchorIds)
-  );
+): asserts value is CreateChronicleEventProposalPayloadV1 {
+  try {
+    assertChronicleProposalPayload(value);
+  } catch {
+    throw new Error(
+      "NEX_CHRONICLE_RESUME_PROPOSAL_SET_INCONSISTENT: Native review bundle has an invalid current Chronicle payload",
+    );
+  }
 }
 
 function plannedProposalKey(
@@ -160,6 +213,13 @@ function buildReviewProposalFromPlanned(args: {
   readonly titleBySceneId: ReadonlyMap<string, string>;
   readonly probableDuplicateChoice?: ProbableDuplicateChoice | null;
 }): ChronicleReviewProposal {
+  // Match/safety is computed against the immutable plan-time payload. A
+  // human-derived revision may change title/disclosure after the sealed Event
+  // catalog is no longer available, so reusing that old match result would
+  // make bulk approval treat an unevaluated revision as duplicate-safe.
+  const payloadStillMatchesPlan =
+    stableJsonStringify(args.payload) ===
+    stableJsonStringify(args.planned.proposal);
   const evidence = evidenceQuotesForProposal(
     args.payload,
     args.anchorsById,
@@ -169,12 +229,20 @@ function buildReviewProposalFromPlanned(args: {
   const fragmented = evidence.some(
     (item) => item.method === "fragmented" || item.blocked,
   );
-  const safety = buildProposalSafetyFlags({
+  const planSafety = buildProposalSafetyFlags({
     match: args.planned.match,
     actuality: args.payload.actuality,
     evidenceMethods: evidence.map((item) => item.method),
     lossless: !fragmented,
   });
+  const safety = payloadStillMatchesPlan
+    ? planSafety
+    : {
+        ...planSafety,
+        fresh: false,
+        noDuplicate: false,
+        riskLow: false,
+      };
   return {
     proposalId: args.proposalId,
     revisionId: args.revisionId,
@@ -189,6 +257,10 @@ function buildReviewProposalFromPlanned(args: {
     match: args.planned.match,
     evidence,
     safety,
+    // Callers already bind this choice to the current revision. A new human
+    // revision clears the parent choice in the store, while a decision made
+    // after that edit must survive cold hydration even though its match proof
+    // remains conservatively non-bulk-safe.
     probableDuplicateChoice: args.probableDuplicateChoice ?? null,
     blockedReason: fragmented
       ? "断片 Evidence のため適用不可（確認のみ）"
@@ -222,9 +294,8 @@ function savedSeedsFromBundle(
 ): SavedReviewSeed[] {
   return proposals.flatMap((proposal) => {
     if (!proposal.currentRevisionId) return [];
-    const payload = isProposalPayload(proposal.payloadJson)
-      ? proposal.payloadJson
-      : undefined;
+    const payload = proposal.payloadJson;
+    assertCurrentChronicleProposalPayload(payload);
     return [
       {
         proposalId: proposal.proposalId,
@@ -235,16 +306,19 @@ function savedSeedsFromBundle(
           proposal.reconciliationEnvelopeSchemaVersion,
         status: proposal.status,
         payload,
-        probableDuplicateChoice: probableDuplicateChoiceFromDecisionJson(
-          proposal.latestDecision?.decisionJson,
-        ),
+        probableDuplicateChoice:
+          proposal.latestDecision?.revisionId === proposal.currentRevisionId
+            ? probableDuplicateChoiceFromDecisionJson(
+                proposal.latestDecision.decisionJson,
+              )
+            : null,
       },
     ];
   });
 }
 
 function savedSeedsFromCoordinator(
-  proposals: readonly SavedProposalSeed[],
+  proposals: readonly ChronicleSavedProposalSeed[],
 ): SavedReviewSeed[] {
   return proposals.map((proposal) => ({
     proposalId: proposal.proposalId,
@@ -254,6 +328,8 @@ function savedSeedsFromCoordinator(
     reconciliationEnvelopeDigest: proposal.reconciliationEnvelopeDigest,
     reconciliationEnvelopeSchemaVersion:
       proposal.reconciliationEnvelopeSchemaVersion,
+    payload: proposal.payload,
+    probableDuplicateChoice: proposal.probableDuplicateChoice,
   }));
 }
 
@@ -362,19 +438,20 @@ export function buildChronicleExtractionReviewProjection(args: {
 export async function startChronicleExtraction(
   request: StartChronicleExtractionRequest,
 ): Promise<{ runId: string }> {
+  const capturedRequest = captureStartChronicleExtractionRequest(request);
   const coordinatorRequest: ChronicleExtractionRequest = {
-    projectId: request.projectId,
-    folderId: request.folderId,
-    language: request.language ?? "ja",
-    sceneIds: request.sceneIds,
-    authority: request.authority,
-    existingEvents: request.existingEvents,
+    projectId: capturedRequest.projectId,
+    folderId: capturedRequest.folderId,
+    language: capturedRequest.language ?? "ja",
+    sceneIds: capturedRequest.sceneIds,
+    authority: capturedRequest.authority,
+    existingEvents: capturedRequest.existingEvents,
   };
 
   const { runChronicleExtractionCoordinator } =
     await import("@/application/narrative-extraction/extractionCoordinator");
   const result = await runChronicleExtractionCoordinator(coordinatorRequest, {
-    useAi: request.useAi ?? true,
+    useAi: capturedRequest.useAi ?? true,
   });
 
   rememberProposalSetId(result.runId, result.savedProposalSetId);
@@ -383,13 +460,13 @@ export async function startChronicleExtraction(
     await loadInlineJsonArtifact<ProposalPlanArtifactPayload>(
       result.runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
-      { projectId: request.projectId },
+      { projectId: capturedRequest.projectId },
     );
   const evidenceArtifact =
     await loadInlineJsonArtifact<ResolvedEvidenceArtifactPayload>(
       result.runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence,
-      { projectId: request.projectId },
+      { projectId: capturedRequest.projectId },
     );
 
   let coverage: ChronicleExtractionCoverage = {
@@ -403,7 +480,7 @@ export async function startChronicleExtraction(
   let status: ChronicleExtractionReviewProjection["status"] = "completed";
 
   try {
-    const runProjection = await getRun(result.runId, request.projectId);
+    const runProjection = await getRun(result.runId, capturedRequest.projectId);
     status = runProjection.run.status;
     coverage = {
       mode:
@@ -450,9 +527,9 @@ export async function startChronicleExtraction(
 
   const projection = buildChronicleExtractionReviewProjection({
     runId: result.runId,
-    projectId: request.projectId,
-    workspacePath: request.workspacePath,
-    openRevision: request.openRevision,
+    projectId: capturedRequest.projectId,
+    workspacePath: capturedRequest.workspacePath,
+    openRevision: capturedRequest.openRevision,
     proposalSetId: result.savedProposalSetId,
     status,
     coverage,
@@ -596,11 +673,7 @@ export async function getChronicleExtractionReview(
   const planned = plannedRowsFromArtifact(proposalArtifact);
   if (planned.length === 0 && bundle.proposals.length > 0) {
     for (const [index, native] of bundle.proposals.entries()) {
-      if (!isProposalPayload(native.payloadJson)) {
-        throw new Error(
-          `Native proposal ${native.proposalId} missing chronicle payload`,
-        );
-      }
+      assertCurrentChronicleProposalPayload(native.payloadJson);
       planned.push({
         proposal: native.payloadJson,
         match: { status: "none" },

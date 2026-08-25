@@ -322,6 +322,17 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
             revisionId,
             reconciliationEnvelopeDigest,
             status: "unreviewed",
+            // The durable Event catalog is not present in the review store,
+            // so any human-derived payload must be rematched before it can be
+            // bulk-approved. Do not inherit a parent revision's duplicate
+            // decision or plan-time freshness proof.
+            probableDuplicateChoice: null,
+            safety: {
+              ...current.safety,
+              fresh: false,
+              noDuplicate: false,
+              riskLow: false,
+            },
           }),
         },
       });

@@ -2,10 +2,15 @@
 
 use anyhow::Context;
 use chrono::Utc;
-use grimodex_core::narrative_ir::validate_chronicle_scene_event_proposal_payload;
+use grimodex_core::{
+    canonical_json_digest,
+    narrative_ir::{
+        validate_chronicle_scene_event_proposal_payload, CHRONICLE_EVENT_PROPOSAL_KIND,
+    },
+};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use super::declaration_storage::{
@@ -33,8 +38,9 @@ pub const PROPOSAL_REVISION_D1_PRODUCER_GENERATION: i64 = 1;
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
-    CreateRunPayload, CreateTaskSeed, FailTaskPayload, FinishTaskPayload, ListResumableRunsPayload,
-    ProposalSeed, ReviseAndDecidePayload, SaveProposalSetPayload,
+    ChroniclePlanProposalSetFinish, ChronicleStageId, CreateRunPayload, CreateTaskSeed,
+    FailTaskPayload, FinishTaskPayload, ListResumableRunsPayload, ProposalSeed,
+    ReviseAndDecidePayload, SaveProposalSetPayload,
 };
 use super::reconciliation_envelope::{
     ensure_v2_proposal_payload_digest, envelope_schema_version, validate_envelope_source_tokens,
@@ -47,6 +53,40 @@ use super::task_leases::{
 use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
 use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
+
+const CHRONICLE_EXTRACT_SURFACE_PATH: &str = "chronicle.extract";
+const CHRONICLE_RUN_SPEC_KIND: &str = "chronicle.extract.run-spec@2";
+const CHRONICLE_EXTRACT_TASK_CHAIN: [&str; 9] = [
+    "source.snapshot@1",
+    "source.window-plan@1",
+    "chronicle.observe-events@1",
+    "evidence.resolve@1",
+    "chronicle.merge-local-observations@1",
+    "chronicle.cluster-event-observations@1",
+    "chronicle.synthesize-event@1",
+    "chronicle.match-existing-events@1",
+    "chronicle.plan-proposals@1",
+];
+const CHRONICLE_PLAN_PREDECESSOR_TASK_KINDS: [&str; 8] = [
+    "source.snapshot@1",
+    "source.window-plan@1",
+    "chronicle.observe-events@1",
+    "evidence.resolve@1",
+    "chronicle.merge-local-observations@1",
+    "chronicle.cluster-event-observations@1",
+    "chronicle.synthesize-event@1",
+    "chronicle.match-existing-events@1",
+];
+const CHRONICLE_PLAN_TASK_KIND: &str = "chronicle.plan-proposals@1";
+const CHRONICLE_PLAN_ARTIFACT_KIND: &str = "chronicle.proposal-plan@1";
+const CHRONICLE_RAW_OBSERVATIONS_ARTIFACT_KIND: &str = "chronicle.raw-observations@1";
+const CHRONICLE_WINDOW_PLAN_ARTIFACT_KIND: &str = "source.window-plan@1";
+const CHRONICLE_EVENT_CLUSTERS_ARTIFACT_KIND: &str = "chronicle.event-clusters@1";
+const CHRONICLE_EVENT_HYPOTHESES_ARTIFACT_KIND: &str = "chronicle.event-hypotheses@1";
+const CHRONICLE_PROPOSAL_SET_KIND: &str = "chronicle.extract.review@1";
+const CHRONICLE_PLAN_BINDING_FIELD: &str = "chroniclePlanTaskBinding";
+const CHRONICLE_PLAN_BINDING_KIND: &str = "chronicle.plan-proposal-set-binding@1";
+const CHRONICLE_PLAN_MANIFEST_KIND: &str = "chronicle.plan-proposal-set-manifest@1";
 
 pub(crate) fn ensure_proposal_not_applied(
     conn: &Connection,
@@ -132,6 +172,457 @@ fn ensure_generic_task_api_allowed(conn: &Connection, run_id: &str) -> anyhow::R
     Ok(())
 }
 
+fn is_sha256_digest(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// The current coordinator seals its runtime inputs inside a versioned Run
+/// spec.  Older Chronicle rows remain readable for recovery UI, but cannot be
+/// mistaken for this resume-capable production contract.
+fn is_current_chronicle_run_spec(surface_path_id: &str, spec_json: &Value) -> bool {
+    surface_path_id == CHRONICLE_EXTRACT_SURFACE_PATH
+        && spec_json.get("kind").and_then(Value::as_str) == Some(CHRONICLE_RUN_SPEC_KIND)
+}
+
+/// A legacy Chronicle Run has no current sealing fields and remains readable
+/// (and creatable) for recovery compatibility.  Once a caller supplies any
+/// v2 coordinate, however, it must satisfy the complete v2 contract; a
+/// partial/downgraded marker must never silently become "legacy".
+fn has_current_chronicle_run_spec_markers(
+    surface_path_id: &str,
+    spec_json: &Value,
+    catalog_digest: Option<&str>,
+) -> bool {
+    if surface_path_id != CHRONICLE_EXTRACT_SURFACE_PATH {
+        return false;
+    }
+    // A v2 Run always seals the catalog. This catches a stored kind/version
+    // downgrade even if an attacker also strips the visible JSON markers.
+    if catalog_digest.is_some() {
+        return true;
+    }
+    let Some(object) = spec_json.as_object() else {
+        return false;
+    };
+    object.get("kind").and_then(Value::as_str) == Some(CHRONICLE_RUN_SPEC_KIND)
+        || object.get("version").and_then(Value::as_u64) == Some(2)
+        || object.contains_key("executionMode")
+        || object.contains_key("existingEventsCatalogDigest")
+        || object.contains_key("coordinatorContractDigest")
+}
+
+fn validate_current_chronicle_run_spec(
+    surface_path_id: &str,
+    spec_json: &Value,
+    spec_digest: &str,
+    catalog_digest: Option<&str>,
+) -> anyhow::Result<bool> {
+    if !has_current_chronicle_run_spec_markers(surface_path_id, spec_json, catalog_digest) {
+        return Ok(false);
+    }
+    anyhow::ensure!(
+        is_current_chronicle_run_spec(surface_path_id, spec_json),
+        "NEX_CHRONICLE_RUN_SPEC_INVALID: Chronicle Run v2 markers require kind '{CHRONICLE_RUN_SPEC_KIND}'"
+    );
+    let object = spec_json.as_object().ok_or_else(|| {
+        anyhow::anyhow!("NEX_CHRONICLE_RUN_SPEC_INVALID: Chronicle Run specJson must be an object")
+    })?;
+    const FIELDS: [&str; 7] = [
+        "kind",
+        "domain",
+        "version",
+        "taskChain",
+        "executionMode",
+        "existingEventsCatalogDigest",
+        "coordinatorContractDigest",
+    ];
+    anyhow::ensure!(
+        object.len() == FIELDS.len() && FIELDS.iter().all(|field| object.contains_key(*field)),
+        "NEX_CHRONICLE_RUN_SPEC_INVALID: Chronicle Run specJson has an unsupported shape"
+    );
+    anyhow::ensure!(
+        object.get("domain").and_then(Value::as_str) == Some("chronicle")
+            && object.get("version").and_then(Value::as_u64) == Some(2),
+        "NEX_CHRONICLE_RUN_SPEC_INVALID: Chronicle Run spec domain/version is unsupported"
+    );
+    let expected_task_chain = json!(CHRONICLE_EXTRACT_TASK_CHAIN);
+    anyhow::ensure!(
+        object.get("taskChain") == Some(&expected_task_chain),
+        "NEX_CHRONICLE_RUN_SPEC_INVALID: Chronicle Run taskChain is not the exact production DAG"
+    );
+    anyhow::ensure!(
+        matches!(
+            object.get("executionMode").and_then(Value::as_str),
+            Some("ai" | "deterministic-fallback")
+        ),
+        "NEX_CHRONICLE_RUN_SPEC_INVALID: Chronicle Run executionMode is unsupported"
+    );
+    let sealed_catalog_digest = object
+        .get("existingEventsCatalogDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RUN_SPEC_INVALID: Chronicle Run existingEventsCatalogDigest is missing"
+            )
+        })?;
+    let coordinator_contract_digest = object
+        .get("coordinatorContractDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RUN_SPEC_INVALID: Chronicle Run coordinatorContractDigest is missing"
+            )
+        })?;
+    anyhow::ensure!(
+        is_sha256_digest(sealed_catalog_digest) && is_sha256_digest(coordinator_contract_digest),
+        "NEX_CHRONICLE_RUN_SPEC_INVALID: Chronicle Run sealed digests must be lowercase sha256"
+    );
+    anyhow::ensure!(
+        catalog_digest == Some(sealed_catalog_digest),
+        "NEX_CHRONICLE_RUN_SPEC_CATALOG_MISMATCH: catalogDigest does not match specJson.existingEventsCatalogDigest"
+    );
+    let expected_spec_digest = canonical_json_digest(spec_json)?;
+    anyhow::ensure!(
+        spec_digest == expected_spec_digest,
+        "NEX_CHRONICLE_RUN_SPEC_DIGEST_MISMATCH: stored specDigest does not match Native canonical specJson"
+    );
+    Ok(true)
+}
+
+fn validate_chronicle_run_value(run: &Value) -> anyhow::Result<bool> {
+    let object = run.as_object().ok_or_else(|| {
+        anyhow::anyhow!("NEX_CHRONICLE_RUN_SPEC_INVALID: stored Run projection is not an object")
+    })?;
+    let surface_path_id = object
+        .get("surfacePathId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_CHRONICLE_RUN_SPEC_INVALID: stored Run surfacePathId is missing")
+        })?;
+    let spec_json = object.get("specJson").ok_or_else(|| {
+        anyhow::anyhow!("NEX_CHRONICLE_RUN_SPEC_INVALID: stored Run specJson is missing")
+    })?;
+    let spec_digest = object
+        .get("specDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_CHRONICLE_RUN_SPEC_INVALID: stored Run specDigest is missing")
+        })?;
+    let catalog_digest = object.get("catalogDigest").and_then(Value::as_str);
+    validate_current_chronicle_run_spec(surface_path_id, spec_json, spec_digest, catalog_digest)
+}
+
+fn current_chronicle_run_spec_for_run(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<bool> {
+    let (surface_path_id, spec_json_text, spec_digest, catalog_digest): (
+        String,
+        String,
+        String,
+        Option<String>,
+    ) = conn.query_row(
+        "SELECT surface_path_id, spec_json, spec_digest, catalog_digest
+           FROM narrative_extraction_runs
+          WHERE id = ?1 AND project_id = ?2",
+        params![run_id, project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let spec_json: Value = serde_json::from_str(&spec_json_text).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RUN_SPEC_INVALID: stored Chronicle Run specJson is malformed: {error}"
+        )
+    })?;
+    validate_current_chronicle_run_spec(
+        &surface_path_id,
+        &spec_json,
+        &spec_digest,
+        catalog_digest.as_deref(),
+    )
+}
+
+/// Return the sealed execution mode for a current Chronicle Run. Legacy rows
+/// deliberately remain generic-compatible; a marker-bearing row has already
+/// been fully canonical-validated before this returns a mode.
+fn current_chronicle_execution_mode_for_run(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let (surface_path_id, spec_json_text, spec_digest, catalog_digest): (
+        String,
+        String,
+        String,
+        Option<String>,
+    ) = conn.query_row(
+        "SELECT surface_path_id, spec_json, spec_digest, catalog_digest
+           FROM narrative_extraction_runs
+          WHERE id = ?1 AND project_id = ?2",
+        params![run_id, project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let spec_json: Value = serde_json::from_str(&spec_json_text).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RUN_SPEC_INVALID: stored Chronicle Run specJson is malformed: {error}"
+        )
+    })?;
+    if !validate_current_chronicle_run_spec(
+        &surface_path_id,
+        &spec_json,
+        &spec_digest,
+        catalog_digest.as_deref(),
+    )? {
+        return Ok(None);
+    }
+    let execution_mode = spec_json
+        .get("executionMode")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RUN_SPEC_INVALID: validated current Chronicle Run has no executionMode"
+            )
+        })?;
+    Ok(Some(execution_mode.to_string()))
+}
+
+/// Load the only artifact from a completed predecessor's current Attempt and
+/// re-CAS its inline JSON.  The zero-work mode exception below relies on this
+/// durable predecessor, never on a caller-supplied output count.
+fn load_current_completed_chronicle_artifact_payload(
+    conn: &Connection,
+    run_id: &str,
+    task_kind: &str,
+    artifact_kind: &str,
+) -> anyhow::Result<Value> {
+    let (task_id, attempt_id): (String, String) = conn
+        .query_row(
+            "SELECT t.id, a.id
+               FROM narrative_extraction_tasks t
+               JOIN narrative_extraction_attempts a
+                 ON a.task_id = t.id
+                AND a.attempt_number = t.attempt_count
+                AND a.status = 'completed'
+              WHERE t.run_id = ?1 AND t.task_kind = ?2 AND t.status = 'completed'",
+            params![run_id, task_kind],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_AI_ZERO_WORK_PROOF_MISSING: completed predecessor '{task_kind}' has no completed current Attempt: {error}"
+            )
+        })?;
+    let mut statement = conn.prepare(
+        "SELECT payload_storage, payload_json, payload_digest
+           FROM narrative_extraction_artifacts
+          WHERE run_id = ?1 AND task_id = ?2 AND attempt_id = ?3
+            AND artifact_kind = ?4
+          ORDER BY created_at ASC, id ASC",
+    )?;
+    let rows = statement
+        .query_map(params![run_id, task_id, attempt_id, artifact_kind], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        rows.len() == 1,
+        "NEX_CHRONICLE_AI_ZERO_WORK_PROOF_MISSING: predecessor '{task_kind}' requires exactly one current '{artifact_kind}' artifact"
+    );
+    let (storage, payload_json, payload_digest) = rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("unreachable checked predecessor artifact row"))?;
+    anyhow::ensure!(
+        storage == "inline-json",
+        "NEX_CHRONICLE_AI_ZERO_WORK_PROOF_MISSING: predecessor '{task_kind}' artifact '{artifact_kind}' is not inline-json"
+    );
+    let payload: Value = payload_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_AI_ZERO_WORK_PROOF_MISSING: predecessor '{task_kind}' artifact '{artifact_kind}' has no payload"
+            )
+        })?;
+    let expected_digest = canonical_json_digest(&payload)?;
+    anyhow::ensure!(
+        payload_digest.as_deref() == Some(expected_digest.as_str()),
+        "NEX_CHRONICLE_AI_ZERO_WORK_PROOF_MISSING: predecessor '{task_kind}' artifact '{artifact_kind}' digest is not Native canonical JSON"
+    );
+    Ok(payload)
+}
+
+fn current_completed_chronicle_artifact_array_is_empty(
+    conn: &Connection,
+    run_id: &str,
+    task_kind: &str,
+    artifact_kind: &str,
+    array_field: &str,
+) -> anyhow::Result<bool> {
+    let payload =
+        load_current_completed_chronicle_artifact_payload(conn, run_id, task_kind, artifact_kind)?;
+    let values = payload.get(array_field).and_then(Value::as_array).ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_AI_ZERO_WORK_PROOF_MISSING: predecessor '{task_kind}' artifact '{artifact_kind}' has no '{array_field}' array"
+        )
+    })?;
+    Ok(values.is_empty())
+}
+
+/// A current Chronicle Run must not cross its sealed AI/fallback boundary at
+/// generic FinishTask. AI observation/synthesis output later becomes durable
+/// causal input, so bind it to exact artifacts and task-local C1 provenance.
+/// The only no-receipt exception is Native-proved zero work: a canonical
+/// completed predecessor roster is exactly empty. Receipt authenticity/audit
+/// lifecycle checks remain inside `persist_task_artifacts` in this same
+/// immediate transaction.
+fn validate_current_chronicle_ai_task_finish_input(
+    conn: &Connection,
+    payload: &FinishTaskPayload,
+    output_json: &Value,
+) -> anyhow::Result<()> {
+    let Some(execution_mode) =
+        current_chronicle_execution_mode_for_run(conn, &payload.project_id, &payload.run_id)?
+    else {
+        return Ok(());
+    };
+    if execution_mode == "deterministic-fallback" {
+        anyhow::ensure!(
+            payload.chronicle_stage_bundle.is_none() && payload.chronicle_stage_receipts.is_empty(),
+            "NEX_CHRONICLE_EXECUTION_MODE_MISMATCH: deterministic-fallback Chronicle Run cannot persist AI stage provenance"
+        );
+        return Ok(());
+    }
+    let task_kind: String = conn.query_row(
+        "SELECT task_kind FROM narrative_extraction_tasks WHERE id = ?1 AND run_id = ?2",
+        params![payload.task_id, payload.run_id],
+        |row| row.get(0),
+    )?;
+    let has_receipt_for = |stage_id: ChronicleStageId| {
+        payload.chronicle_stage_receipts.iter().any(|receipt| {
+            receipt.stage_execution.task_id == payload.task_id
+                && receipt.stage_execution.attempt_id == payload.attempt_id
+                && &receipt.stage_execution.stage_id == &stage_id
+        })
+    };
+    match task_kind.as_str() {
+        "chronicle.observe-events@1" => {
+            let observation_count = output_json
+                .get("observationCount")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_CHRONICLE_AI_OBSERVATION_OUTPUT_INVALID: AI Observation output requires observationCount"
+                    )
+                })?;
+            let observation_artifacts = payload
+                .artifacts
+                .iter()
+                .filter(|artifact| {
+                    artifact.artifact_kind == CHRONICLE_RAW_OBSERVATIONS_ARTIFACT_KIND
+                })
+                .collect::<Vec<_>>();
+            anyhow::ensure!(
+                observation_artifacts.len() == 1,
+                "NEX_CHRONICLE_AI_OBSERVATION_OUTPUT_INVALID: AI Observation requires exactly one chronicle.raw-observations@1 artifact"
+            );
+            let observations = observation_artifacts[0]
+                .payload_json
+                .as_ref()
+                .and_then(|value| value.get("observations"))
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_CHRONICLE_AI_OBSERVATION_OUTPUT_INVALID: raw-observations artifact has no observations array"
+                    )
+                })?;
+            anyhow::ensure!(
+                observations.len() as u64 == observation_count,
+                "NEX_CHRONICLE_AI_OBSERVATION_OUTPUT_INVALID: observationCount does not match current raw-observations artifact"
+            );
+            let native_proved_zero_windows = observation_count == 0
+                && current_completed_chronicle_artifact_array_is_empty(
+                    conn,
+                    &payload.run_id,
+                    "source.window-plan@1",
+                    CHRONICLE_WINDOW_PLAN_ARTIFACT_KIND,
+                    "windows",
+                )?;
+            anyhow::ensure!(
+                native_proved_zero_windows
+                    || has_receipt_for(ChronicleStageId::NarrativeObservationExtract),
+                "NEX_CHRONICLE_AI_STAGE_PROVENANCE_REQUIRED: AI Observation finish requires a task-local terminal receipt unless its canonical completed window plan proves zero windows"
+            );
+        }
+        "chronicle.synthesize-event@1" => {
+            let hypothesis_count = output_json
+                .get("hypothesisCount")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_CHRONICLE_AI_SYNTHESIS_OUTPUT_INVALID: AI Synthesis output requires hypothesisCount"
+                    )
+                })?;
+            let hypothesis_artifacts = payload
+                .artifacts
+                .iter()
+                .filter(|artifact| {
+                    artifact.artifact_kind == CHRONICLE_EVENT_HYPOTHESES_ARTIFACT_KIND
+                })
+                .collect::<Vec<_>>();
+            anyhow::ensure!(
+                hypothesis_artifacts.len() == 1,
+                "NEX_CHRONICLE_AI_SYNTHESIS_OUTPUT_INVALID: AI Synthesis requires exactly one chronicle.event-hypotheses@1 artifact"
+            );
+            let hypotheses = hypothesis_artifacts[0]
+                .payload_json
+                .as_ref()
+                .and_then(|value| value.get("hypotheses"))
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_CHRONICLE_AI_SYNTHESIS_OUTPUT_INVALID: hypotheses artifact has no hypotheses array"
+                    )
+                })?;
+            anyhow::ensure!(
+                hypotheses.len() as u64 == hypothesis_count,
+                "NEX_CHRONICLE_AI_SYNTHESIS_OUTPUT_INVALID: hypothesisCount does not match current hypotheses artifact"
+            );
+            let native_proved_zero_clusters = hypothesis_count == 0
+                && current_completed_chronicle_artifact_array_is_empty(
+                    conn,
+                    &payload.run_id,
+                    "chronicle.cluster-event-observations@1",
+                    CHRONICLE_EVENT_CLUSTERS_ARTIFACT_KIND,
+                    "clusters",
+                )?;
+            anyhow::ensure!(
+                native_proved_zero_clusters
+                    || (payload.chronicle_stage_bundle.is_some()
+                        && has_receipt_for(ChronicleStageId::NarrativeEventSynthesize)),
+                "NEX_CHRONICLE_AI_STAGE_PROVENANCE_REQUIRED: AI Synthesis finish requires its typed C1 bundle and task-local terminal receipt unless its canonical completed cluster roster proves zero clusters"
+            );
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn chronicle_plan_proposal_set_id(run_id: &str, task_id: &str) -> String {
+    format!("chronicle-plan-proposals:{run_id}:{task_id}")
+}
+
 pub(crate) fn insert_attempt(
     conn: &Connection,
     attempt_id: &str,
@@ -198,6 +689,29 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     validate_run_id(&run_id)?;
+    let current_chronicle_spec = validate_current_chronicle_run_spec(
+        &payload.surface_path_id,
+        &payload.spec_json,
+        &payload.spec_digest,
+        payload.catalog_digest.as_deref(),
+    )?;
+    if current_chronicle_spec {
+        let mut seen = HashSet::with_capacity(payload.tasks.len());
+        for task in &payload.tasks {
+            anyhow::ensure!(
+                CHRONICLE_EXTRACT_TASK_CHAIN.contains(&task.task_kind.as_str())
+                    && seen.insert(task.task_kind.as_str()),
+                "NEX_CHRONICLE_RUN_TASK_TOPOLOGY_INVALID: current Chronicle Run tasks must be the exact production DAG"
+            );
+        }
+        anyhow::ensure!(
+            seen.len() == CHRONICLE_EXTRACT_TASK_CHAIN.len()
+                && CHRONICLE_EXTRACT_TASK_CHAIN
+                    .iter()
+                    .all(|task_kind| seen.contains(task_kind)),
+            "NEX_CHRONICLE_RUN_TASK_TOPOLOGY_INVALID: current Chronicle Run tasks must include each production DAG kind exactly once"
+        );
+    }
     let coverage_json = serde_json::to_string(
         payload
             .coverage_json
@@ -599,6 +1113,7 @@ pub fn get_run(db: &Database, run_id: String, project_id: String) -> anyhow::Res
             params![run_id],
             row_to_run_value,
         )?;
+        validate_chronicle_run_value(&run)?;
 
         let mut stmt = conn.prepare(
             "SELECT id, run_id, task_kind, status, input_json, output_json, priority,
@@ -744,6 +1259,12 @@ pub fn claim_task(
             require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
             ensure_generic_task_api_allowed(conn, &payload.run_id)?;
+            validate_current_chronicle_claim_prefix(
+                conn,
+                &payload.project_id,
+                &payload.run_id,
+                payload.task_kinds.as_deref(),
+            )?;
             let claimed = claim_next_task(conn, &payload)?;
             Ok(match claimed {
                 Some(task) => json!({
@@ -754,6 +1275,788 @@ pub fn claim_task(
             })
         })
     })
+}
+
+/// Current Chronicle Runs are sequential even though the generic task API can
+/// select an arbitrary kind.  Require the coordinator to claim the sole next
+/// durable prefix task; this closes the public-IPC path that could otherwise
+/// lease plan-proposals before its inputs existed.
+fn validate_current_chronicle_claim_prefix(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    requested_task_kinds: Option<&[String]>,
+) -> anyhow::Result<()> {
+    if !current_chronicle_run_spec_for_run(conn, project_id, run_id)? {
+        return Ok(());
+    }
+    let mut statement = conn.prepare(
+        "SELECT task_kind, status
+           FROM narrative_extraction_tasks
+          WHERE run_id = ?1",
+    )?;
+    let rows = statement
+        .query_map(params![run_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut statuses = HashMap::with_capacity(rows.len());
+    for (task_kind, status) in rows {
+        anyhow::ensure!(
+            statuses.insert(task_kind.clone(), status).is_none(),
+            "NEX_CHRONICLE_CLAIM_TOPOLOGY_INVALID: current Chronicle Run duplicates task kind '{task_kind}'"
+        );
+    }
+    anyhow::ensure!(
+        statuses.len() == CHRONICLE_EXTRACT_TASK_CHAIN.len()
+            && CHRONICLE_EXTRACT_TASK_CHAIN
+                .iter()
+                .all(|kind| statuses.contains_key(*kind)),
+        "NEX_CHRONICLE_CLAIM_TOPOLOGY_INVALID: current Chronicle Run does not contain the exact production task DAG"
+    );
+    let mut encountered_incomplete = false;
+    for task_kind in CHRONICLE_EXTRACT_TASK_CHAIN {
+        let status = statuses
+            .get(task_kind)
+            .map(String::as_str)
+            .ok_or_else(|| anyhow::anyhow!("unreachable checked Chronicle task topology"))?;
+        match status {
+            "completed" => {
+                anyhow::ensure!(
+                    !encountered_incomplete,
+                    "NEX_CHRONICLE_CLAIM_TOPOLOGY_INVALID: current Chronicle Run has a completed Task after an incomplete predecessor"
+                );
+            }
+            "queued" => {
+                encountered_incomplete = true;
+            }
+            "running" => {
+                anyhow::ensure!(
+                    !encountered_incomplete,
+                    "NEX_CHRONICLE_CLAIM_TOPOLOGY_INVALID: current Chronicle Run has a running Task after an incomplete predecessor"
+                );
+                encountered_incomplete = true;
+            }
+            _ => anyhow::bail!(
+                "NEX_CHRONICLE_CLAIM_TOPOLOGY_INVALID: current Chronicle Run task '{task_kind}' has unsupported status '{status}'"
+            ),
+        }
+    }
+    let next_kind = CHRONICLE_EXTRACT_TASK_CHAIN.iter().find(|task_kind| {
+        statuses
+            .get(**task_kind)
+            .map(String::as_str)
+            .is_some_and(|status| status != "completed")
+    });
+    let Some(next_kind) = next_kind else {
+        return Ok(());
+    };
+    let requested_task_kinds = requested_task_kinds.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_CLAIM_KIND_REQUIRED: current Chronicle Run claims must name the next sealed DAG task"
+        )
+    })?;
+    anyhow::ensure!(
+        requested_task_kinds.len() == 1 && requested_task_kinds[0] == *next_kind,
+        "NEX_CHRONICLE_CLAIM_PREDECESSOR_INCOMPLETE: current Chronicle Run may only claim next task '{next_kind}'"
+    );
+    Ok(())
+}
+
+/// A public claim API can select an arbitrary task kind.  Chronicle's plan
+/// task is terminal, so accepting it before the preceding DAG prefix is
+/// durable would let a stale/empty review ledger survive a later resume.
+/// Check this before FinishTask changes the Task, Attempt, artifacts, or
+/// ProposalSet; the immediate transaction then rolls back entirely on error.
+fn validate_chronicle_plan_predecessors_completed(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<()> {
+    let mut statement = conn.prepare(
+        "SELECT task_kind, status
+           FROM narrative_extraction_tasks
+          WHERE run_id = ?1",
+    )?;
+    let rows = statement
+        .query_map(params![run_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut statuses = HashMap::with_capacity(rows.len());
+    for (task_kind, status) in rows {
+        anyhow::ensure!(
+            statuses.insert(task_kind.clone(), status).is_none(),
+            "NEX_CHRONICLE_PLAN_TOPOLOGY_INVALID: current Chronicle Run duplicates task kind '{task_kind}'"
+        );
+    }
+    anyhow::ensure!(
+        statuses.len() == CHRONICLE_EXTRACT_TASK_CHAIN.len()
+            && CHRONICLE_EXTRACT_TASK_CHAIN
+                .iter()
+                .all(|kind| statuses.contains_key(*kind)),
+        "NEX_CHRONICLE_PLAN_TOPOLOGY_INVALID: current Chronicle Run does not contain the exact production task DAG"
+    );
+    for task_kind in CHRONICLE_PLAN_PREDECESSOR_TASK_KINDS {
+        anyhow::ensure!(
+            statuses.get(task_kind).map(String::as_str) == Some("completed"),
+            "NEX_CHRONICLE_PLAN_PREDECESSOR_INCOMPLETE: terminal Chronicle plan requires completed predecessor '{task_kind}'"
+        );
+    }
+    // The `project_id` is intentionally part of the helper boundary even
+    // though ensure_run_project already ran: this makes a future direct call
+    // fail closed rather than treating an unowned Run as a valid prefix.
+    ensure_run_project(conn, run_id, project_id)?;
+    Ok(())
+}
+
+fn validate_chronicle_plan_proposal_set_finish_input(
+    conn: &Connection,
+    payload: &FinishTaskPayload,
+    output_json: &Value,
+) -> anyhow::Result<()> {
+    let task_kind: String = conn.query_row(
+        "SELECT task_kind FROM narrative_extraction_tasks WHERE id = ?1 AND run_id = ?2",
+        params![payload.task_id, payload.run_id],
+        |row| row.get(0),
+    )?;
+    let current_chronicle_spec =
+        current_chronicle_run_spec_for_run(conn, &payload.project_id, &payload.run_id)?;
+    if !current_chronicle_spec || task_kind != CHRONICLE_PLAN_TASK_KIND {
+        anyhow::ensure!(
+            payload.chronicle_plan_proposal_set.is_none(),
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_FORBIDDEN: typed Chronicle ProposalSet finish is only valid for the current Chronicle plan Task"
+        );
+        return Ok(());
+    }
+
+    let finish = payload.chronicle_plan_proposal_set.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_REQUIRED: current Chronicle plan Task must terminalize its ProposalSet in the same transaction"
+        )
+    })?;
+    validate_chronicle_plan_predecessors_completed(conn, &payload.project_id, &payload.run_id)?;
+    let proposal_set = &finish.proposal_set;
+    anyhow::ensure!(
+        proposal_set.run_id == payload.run_id && proposal_set.project_id == payload.project_id,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_IDENTITY_MISMATCH: typed ProposalSet Run/Project differs from finishing Task"
+    );
+    anyhow::ensure!(
+        proposal_set.set_kind == CHRONICLE_PROPOSAL_SET_KIND,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_KIND_INVALID: Chronicle plan must persist chronicle.extract.review@1"
+    );
+    let expected_set_id = chronicle_plan_proposal_set_id(&payload.run_id, &payload.task_id);
+    anyhow::ensure!(
+        proposal_set.proposal_set_id.as_deref() == Some(expected_set_id.as_str()),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ID_INVALID: typed ProposalSet id is not the deterministic Run/Task owner id"
+    );
+    if let Some(summary) = proposal_set.summary_json.as_ref() {
+        let object = summary.as_object().ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_SUMMARY_INVALID: summaryJson must be an object"
+            )
+        })?;
+        anyhow::ensure!(
+            !object.contains_key(CHRONICLE_PLAN_BINDING_FIELD),
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_SUMMARY_INVALID: Native owns chroniclePlanTaskBinding"
+        );
+    }
+
+    let output = output_json.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_OUTPUT_INVALID: plan Task output must be an object"
+        )
+    })?;
+    anyhow::ensure!(
+        output.get("proposalSetId").and_then(Value::as_str) == Some(expected_set_id.as_str()),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_OUTPUT_INVALID: output proposalSetId does not bind the deterministic ProposalSet"
+    );
+    anyhow::ensure!(
+        output.get("proposalCount").and_then(Value::as_u64)
+            == Some(proposal_set.proposals.len() as u64),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_OUTPUT_INVALID: output proposalCount does not match typed ProposalSet"
+    );
+
+    let plan_artifacts = payload
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.artifact_kind == CHRONICLE_PLAN_ARTIFACT_KIND)
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        plan_artifacts.len() == 1,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: plan Task requires exactly one chronicle.proposal-plan@1 artifact"
+    );
+    let artifact = plan_artifacts[0];
+    anyhow::ensure!(
+        artifact.payload_storage.as_deref().unwrap_or("inline-json") == "inline-json"
+            && artifact.payload_ref.is_none(),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan must be an inline-json artifact"
+    );
+    let artifact_payload = artifact.payload_json.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan has no payloadJson"
+        )
+    })?;
+    let artifact_object = artifact_payload.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan payload must be an object"
+        )
+    })?;
+    anyhow::ensure!(
+        artifact_object.get("proposalSetId").and_then(Value::as_str) == Some(expected_set_id.as_str()),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan does not bind the deterministic ProposalSet"
+    );
+    let artifact_proposals = artifact_object
+        .get("proposals")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan proposals must be an array"
+            )
+        })?;
+    anyhow::ensure!(
+        artifact_proposals.len() == proposal_set.proposals.len(),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan and typed ProposalSet have different counts"
+    );
+    let mut proposal_keys = HashSet::new();
+    for (index, (artifact_proposal, saved_proposal)) in artifact_proposals
+        .iter()
+        .zip(proposal_set.proposals.iter())
+        .enumerate()
+    {
+        let event_id = artifact_proposal
+            .get("eventId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan entry {index} has no eventId"
+                )
+            })?;
+        let expected_key = format!("{event_id}:{index}");
+        anyhow::ensure!(
+            saved_proposal.proposal_key == expected_key
+                && saved_proposal.kind == CHRONICLE_EVENT_PROPOSAL_KIND,
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: typed ProposalSet proposal {index} is not the exact plan payload row"
+        );
+        anyhow::ensure!(
+            proposal_keys.insert(saved_proposal.proposal_key.as_str()),
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: duplicate proposalKey in typed ProposalSet"
+        );
+        validate_chronicle_scene_event_proposal_payload(artifact_proposal).map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan entry {index} is invalid: {error}"
+            )
+        })?;
+        anyhow::ensure!(
+            canonical_json_digest(artifact_proposal)?
+                == canonical_json_digest(&saved_proposal.payload_json)?,
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: typed ProposalSet payload differs from proposal plan entry {index}"
+        );
+    }
+    // Fresh review projection prefers `planned[].proposal` when the planner
+    // supplied presentation/match metadata.  It must therefore be another
+    // exact view of the terminal `proposals[]` roster, never an independently
+    // mutable payload paired with a saved Proposal revision id.
+    if let Some(planned_value) = artifact_object.get("planned") {
+        let planned = planned_value.as_array().ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan planned must be an array"
+            )
+        })?;
+        anyhow::ensure!(
+            planned.len() == artifact_proposals.len(),
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan planned roster differs from proposals"
+        );
+        for (index, (planned_row, artifact_proposal)) in
+            planned.iter().zip(artifact_proposals.iter()).enumerate()
+        {
+            let planned_object = planned_row.as_object().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan planned entry {index} is not an object"
+                )
+            })?;
+            let planned_proposal = planned_object.get("proposal").ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan planned entry {index} has no proposal"
+                )
+            })?;
+            let event_id = planned_proposal
+                .get("eventId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan planned entry {index} has no proposal eventId"
+                    )
+                })?;
+            let expected_key = format!("{event_id}:{index}");
+            anyhow::ensure!(
+                proposal_set.proposals[index].proposal_key == expected_key
+                    && canonical_json_digest(planned_proposal)?
+                        == canonical_json_digest(artifact_proposal)?,
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID: proposal plan planned entry {index} differs from the typed ProposalSet proposal"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Load the exact proposal-plan artifact emitted by the current terminal
+/// Task/Attempt and prove its stored digest still describes its full canonical
+/// payload.  The immutable terminal manifest carries this digest so both the
+/// proposal roster and planner-facing `planned` metadata are sealed against
+/// post-commit rewrites.
+fn load_chronicle_plan_artifact_payload(
+    conn: &Connection,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+) -> anyhow::Result<(Value, String)> {
+    let mut statement = conn.prepare(
+        "SELECT payload_storage, payload_json, payload_digest
+           FROM narrative_extraction_artifacts
+          WHERE run_id = ?1 AND task_id = ?2 AND attempt_id = ?3
+            AND artifact_kind = ?4
+          ORDER BY created_at ASC, id ASC",
+    )?;
+    let rows = statement
+        .query_map(
+            params![run_id, task_id, attempt_id, CHRONICLE_PLAN_ARTIFACT_KIND],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        rows.len() == 1,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: owner Task requires exactly one current proposal-plan artifact"
+    );
+    let (storage, artifact_json, artifact_digest) = rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("unreachable checked proposal-plan artifact row"))?;
+    anyhow::ensure!(
+        storage == "inline-json",
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan artifact is not inline-json"
+    );
+    let artifact_value: Value = artifact_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan artifact has no payload"
+            )
+        })?;
+    let expected_digest = canonical_json_digest(&artifact_value)?;
+    anyhow::ensure!(
+        artifact_digest.as_deref() == Some(expected_digest.as_str()),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan artifact payloadDigest is not Native canonical JSON"
+    );
+    Ok((artifact_value, expected_digest))
+}
+
+fn load_chronicle_plan_proposal_manifest(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    proposal_set_id: &str,
+    reject_existing_binding: bool,
+) -> anyhow::Result<Value> {
+    let (set_kind, summary_json): (String, String) = conn.query_row(
+        "SELECT set_kind, summary_json
+           FROM narrative_proposal_sets
+          WHERE id = ?1 AND run_id = ?2 AND project_id = ?3",
+        params![proposal_set_id, run_id, project_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    anyhow::ensure!(
+        set_kind == CHRONICLE_PROPOSAL_SET_KIND,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: persisted ProposalSet kind is not Chronicle review"
+    );
+    let mut summary: Value = serde_json::from_str(&summary_json).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: persisted ProposalSet summaryJson is malformed: {error}"
+        )
+    })?;
+    let summary_object = summary.as_object_mut().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: persisted ProposalSet summaryJson is not an object"
+        )
+    })?;
+    let existing_binding = summary_object.remove(CHRONICLE_PLAN_BINDING_FIELD);
+    anyhow::ensure!(
+        !reject_existing_binding || existing_binding.is_none(),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Native plan binding already existed before terminal persistence"
+    );
+
+    let mut statement = conn.prepare(
+        "SELECT p.proposal_key, p.kind, r.payload_json,
+                r.reconciliation_envelope_json, r.reconciliation_envelope_digest
+           FROM narrative_proposals p
+           JOIN narrative_proposal_revisions r
+             ON r.proposal_id = p.id AND r.revision_number = 1
+          WHERE p.proposal_set_id = ?1
+          ORDER BY p.proposal_key ASC",
+    )?;
+    let rows = statement
+        .query_map(params![proposal_set_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut proposals = Vec::with_capacity(rows.len());
+    let mut validation_seeds = Vec::with_capacity(rows.len());
+    for (proposal_key, kind, payload_json, envelope_json, envelope_digest) in rows {
+        anyhow::ensure!(
+            kind == CHRONICLE_EVENT_PROPOSAL_KIND,
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: persisted ProposalSet has a non-Chronicle proposal kind"
+        );
+        let payload: Value = serde_json::from_str(&payload_json).map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: persisted Proposal payload is malformed: {error}"
+            )
+        })?;
+        validate_chronicle_scene_event_proposal_payload(&payload).map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: persisted Proposal payload is invalid: {error}"
+            )
+        })?;
+        let envelope = envelope_json
+            .as_deref()
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: persisted reconciliation Envelope is malformed: {error}"
+                )
+            })?;
+        match (&envelope, envelope_digest.as_deref()) {
+            (Some(envelope), Some(digest)) => anyhow::ensure!(
+                canonical_json_digest(envelope)? == digest,
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: persisted reconciliation Envelope digest is invalid"
+            ),
+            (None, None) => {}
+            _ => anyhow::bail!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: persisted reconciliation Envelope/digest presence differs"
+            ),
+        }
+        validation_seeds.push(ProposalSeed {
+            proposal_id: None,
+            proposal_key: proposal_key.clone(),
+            kind: kind.clone(),
+            payload_json: payload.clone(),
+            reconciliation_envelope: envelope.clone(),
+        });
+        proposals.push(json!({
+            "proposalKey": proposal_key,
+            "kind": kind,
+            "payloadJson": payload,
+            "reconciliationEnvelope": envelope,
+            "reconciliationEnvelopeDigest": envelope_digest,
+        }));
+    }
+    // Re-run the durable receipt roster validation on read.  The manifest
+    // binds its exact summary bytes, while this rejects a roster that still
+    // hashes consistently but no longer refers to verified C1 receipts.
+    let prepared_summary = super::stage_provenance::prepare_chronicle_v2_proposal_set_summary(
+        conn,
+        project_id,
+        run_id,
+        Some(&summary),
+        &validation_seeds,
+    )?;
+    anyhow::ensure!(
+        canonical_json_digest(&prepared_summary)? == canonical_json_digest(&summary)?,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: persisted ProposalSet summary is not the Native canonical receipt summary"
+    );
+    let (_, proposal_plan_artifact_digest) =
+        load_chronicle_plan_artifact_payload(conn, run_id, task_id, attempt_id)?;
+    Ok(json!({
+        "kind": CHRONICLE_PLAN_MANIFEST_KIND,
+        "version": 1,
+        "projectId": project_id,
+        "runId": run_id,
+        "taskId": task_id,
+        "attemptId": attempt_id,
+        "proposalSetId": proposal_set_id,
+        "setKind": set_kind,
+        "summaryJson": summary,
+        "proposalPlanArtifactDigest": proposal_plan_artifact_digest,
+        "proposals": proposals,
+    }))
+}
+
+fn save_chronicle_plan_proposal_set_in_tx(
+    conn: &Connection,
+    payload: &FinishTaskPayload,
+    finish: &ChroniclePlanProposalSetFinish,
+) -> anyhow::Result<Value> {
+    // Match the generic ProposalSet writer's policy boundary.  A Run may have
+    // begun while extraction was allowed, but its terminal review ledger must
+    // not bypass a later Native runtime disable merely because it is composed
+    // into FinishTask's transaction.
+    require_narrative_extraction_allowed(conn)?;
+    let proposal_set_id = finish
+        .proposal_set
+        .proposal_set_id
+        .as_deref()
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_CHRONICLE_PLAN_PROPOSAL_SET_ID_INVALID: proposalSetId is required")
+        })?;
+    let saved = save_proposal_set_in_tx(conn, &finish.proposal_set)?;
+    let proposal_set_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_proposal_sets WHERE run_id = ?1 AND project_id = ?2",
+        params![payload.run_id, payload.project_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        proposal_set_count == 1,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_AMBIGUOUS: Chronicle Run must have exactly one ProposalSet"
+    );
+    let manifest = load_chronicle_plan_proposal_manifest(
+        conn,
+        &payload.project_id,
+        &payload.run_id,
+        &payload.task_id,
+        &payload.attempt_id,
+        proposal_set_id,
+        true,
+    )?;
+    let manifest_digest = canonical_json_digest(&manifest)?;
+    let summary_json: String = conn.query_row(
+        "SELECT summary_json FROM narrative_proposal_sets WHERE id = ?1",
+        params![proposal_set_id],
+        |row| row.get(0),
+    )?;
+    let mut summary: Value = serde_json::from_str(&summary_json)?;
+    let summary_object = summary.as_object_mut().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: persisted ProposalSet summaryJson is not an object"
+        )
+    })?;
+    summary_object.insert(
+        CHRONICLE_PLAN_BINDING_FIELD.to_string(),
+        json!({
+            "kind": CHRONICLE_PLAN_BINDING_KIND,
+            "version": 1,
+            "taskId": payload.task_id,
+            "attemptId": payload.attempt_id,
+            "proposalSetId": proposal_set_id,
+            "proposalManifestDigest": manifest_digest,
+        }),
+    );
+    conn.execute(
+        "UPDATE narrative_proposal_sets
+            SET summary_json = ?1, updated_at = datetime('now'), version = version + 1
+          WHERE id = ?2 AND run_id = ?3 AND project_id = ?4",
+        params![
+            serde_json::to_string(&summary)?,
+            proposal_set_id,
+            payload.run_id,
+            payload.project_id,
+        ],
+    )?;
+    validate_chronicle_plan_proposal_set_binding_for_resume(
+        conn,
+        &payload.project_id,
+        &payload.run_id,
+        &payload.task_id,
+        &payload.attempt_id,
+    )?;
+    Ok(saved)
+}
+
+fn validate_chronicle_plan_proposal_set_binding_for_resume(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+) -> anyhow::Result<String> {
+    let proposal_set_id = chronicle_plan_proposal_set_id(run_id, task_id);
+    let proposal_set_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_proposal_sets WHERE run_id = ?1 AND project_id = ?2",
+        params![run_id, project_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        proposal_set_count == 1,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_AMBIGUOUS: Chronicle Run must have exactly one ProposalSet"
+    );
+    let (summary_json, output_json, status): (String, Option<String>, String) = conn.query_row(
+        "SELECT s.summary_json, t.output_json, t.status
+           FROM narrative_proposal_sets s
+           JOIN narrative_extraction_tasks t ON t.id = ?1 AND t.run_id = ?2
+          WHERE s.id = ?3 AND s.run_id = ?2 AND s.project_id = ?4",
+        params![task_id, run_id, proposal_set_id, project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    anyhow::ensure!(
+        status == "completed",
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: ProposalSet owner Task is not completed"
+    );
+    let output: Value = output_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: completed owner Task has no outputJson"
+            )
+        })?;
+    anyhow::ensure!(
+        output.get("proposalSetId").and_then(Value::as_str) == Some(proposal_set_id.as_str()),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: owner Task output does not bind ProposalSet"
+    );
+    let mut summary: Value = serde_json::from_str(&summary_json)?;
+    let binding = summary
+        .as_object_mut()
+        .and_then(|object| object.remove(CHRONICLE_PLAN_BINDING_FIELD))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: ProposalSet is missing Native task binding"
+            )
+        })?;
+    let binding_object = binding.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Native task binding is not an object"
+        )
+    })?;
+    anyhow::ensure!(
+        binding_object.len() == 6
+            && binding_object.get("kind").and_then(Value::as_str)
+                == Some(CHRONICLE_PLAN_BINDING_KIND)
+            && binding_object.get("version").and_then(Value::as_u64) == Some(1)
+            && binding_object.get("taskId").and_then(Value::as_str) == Some(task_id)
+            && binding_object.get("attemptId").and_then(Value::as_str) == Some(attempt_id)
+            && binding_object.get("proposalSetId").and_then(Value::as_str)
+                == Some(proposal_set_id.as_str()),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Native task binding identity is invalid"
+    );
+    let manifest_digest = binding_object
+        .get("proposalManifestDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Native task binding has no proposalManifestDigest"
+            )
+        })?;
+    anyhow::ensure!(
+        is_sha256_digest(manifest_digest),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Native task binding manifest digest is invalid"
+    );
+    let manifest = load_chronicle_plan_proposal_manifest(
+        conn,
+        project_id,
+        run_id,
+        task_id,
+        attempt_id,
+        &proposal_set_id,
+        false,
+    )?;
+    anyhow::ensure!(
+        canonical_json_digest(&manifest)? == manifest_digest,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: ProposalSet summary/proposals/envelopes/receipt refs differ from Native task binding"
+    );
+    let manifest_proposals = manifest
+        .get("proposals")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Native proposal manifest has no proposal roster"
+            )
+        })?;
+    anyhow::ensure!(
+        output.get("proposalCount").and_then(Value::as_u64)
+            == Some(manifest_proposals.len() as u64),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: owner Task output proposalCount differs from Native proposal manifest"
+    );
+    // The durable artifact is a second public projection of the same terminal
+    // result. Its full canonical payload digest is also in the manifest that
+    // the binding above verified, so a later rewrite of `planned` metadata
+    // cannot evade terminal-proof validation.
+    let (artifact_value, _) =
+        load_chronicle_plan_artifact_payload(conn, run_id, task_id, attempt_id)?;
+    anyhow::ensure!(
+        artifact_value.get("proposalSetId").and_then(Value::as_str)
+            == Some(proposal_set_id.as_str()),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan artifact does not bind the Native ProposalSet"
+    );
+    let artifact_proposals = artifact_value
+        .get("proposals")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan artifact has no proposal roster"
+            )
+        })?;
+    anyhow::ensure!(
+        artifact_proposals.len() == manifest_proposals.len(),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan artifact count differs from Native proposal manifest"
+    );
+    // The manifest is sorted by immutable proposalKey so its digest is stable
+    // across SQLite row order.  The plan artifact, conversely, preserves the
+    // planner's event/index order.  Never zip those two independently ordered
+    // rosters: UUID-like event IDs are not lexically ordered by planner index.
+    let mut manifest_by_key = HashMap::with_capacity(manifest_proposals.len());
+    for manifest_proposal in manifest_proposals {
+        let proposal_key = manifest_proposal
+            .get("proposalKey")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Native proposal manifest has an entry without proposalKey"
+                )
+            })?;
+        anyhow::ensure!(
+            manifest_by_key
+                .insert(proposal_key, manifest_proposal)
+                .is_none(),
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Native proposal manifest has duplicate proposalKey"
+        );
+    }
+    for (index, artifact_proposal) in artifact_proposals.iter().enumerate() {
+        let event_id = artifact_proposal
+            .get("eventId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan entry {index} has no eventId"
+                )
+            })?;
+        let expected_key = format!("{event_id}:{index}");
+        let manifest_proposal = manifest_by_key.get(expected_key.as_str()).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan entry {index} has no matching immutable proposalKey"
+            )
+        })?;
+        let manifest_payload = manifest_proposal.get("payloadJson").ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Native proposal manifest entry {index} has no payload"
+            )
+        })?;
+        anyhow::ensure!(
+            manifest_proposal.get("proposalKey").and_then(Value::as_str)
+                == Some(expected_key.as_str())
+                && manifest_proposal.get("kind").and_then(Value::as_str)
+                    == Some(CHRONICLE_EVENT_PROPOSAL_KIND)
+                && canonical_json_digest(manifest_payload)?
+                    == canonical_json_digest(artifact_proposal)?,
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan entry {index} differs from Native proposal manifest"
+        );
+    }
+    Ok(proposal_set_id)
 }
 
 pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<Value> {
@@ -790,6 +2093,8 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                 attempt_is_current == Some(1),
                 "attempt is not the current running attempt owned by task"
             );
+            validate_current_chronicle_ai_task_finish_input(conn, &payload, &output_value)?;
+            validate_chronicle_plan_proposal_set_finish_input(conn, &payload, &output_value)?;
             let lifecycle_at = grimodex_core::now_rfc3339_millis();
 
             let updated = conn.execute(
@@ -838,14 +2143,29 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                 &payload.artifacts,
             )?;
 
+            // The terminal review ledger belongs to this exact current
+            // Task/Attempt.  Keep it inside the same immediate transaction as
+            // artifact persistence and completion so neither a process crash
+            // nor a reclaimed attempt can create an orphan/duplicate
+            // ProposalSet between save and finish.
+            let proposal_set = payload
+                .chronicle_plan_proposal_set
+                .as_ref()
+                .map(|finish| save_chronicle_plan_proposal_set_in_tx(conn, &payload, finish))
+                .transpose()?;
+
             maybe_complete_run(conn, &payload.run_id)?;
 
-            Ok(json!({
+            let mut result = json!({
                 "taskId": payload.task_id,
                 "attemptId": payload.attempt_id,
                 "status": "completed",
                 "task": load_task_row(conn, &payload.task_id, &payload.run_id)?,
-            }))
+            });
+            if let Some(proposal_set) = proposal_set {
+                result["proposalSet"] = proposal_set;
+            }
+            Ok(result)
         })
     })
 }
@@ -976,6 +2296,8 @@ pub fn get_run_review_bundle(
 ) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         ensure_run_project(conn, &run_id, &project_id)?;
+        let current_chronicle_spec =
+            current_chronicle_run_spec_for_run(conn, &project_id, &run_id)?;
 
         // A generic review bundle remains useful for historical/other
         // surfaces, but Chronicle's coordinator treats this read as its
@@ -1046,18 +2368,79 @@ pub fn get_run_review_bundle(
             None => artifacts,
         };
 
-        let proposal_set: Option<Value> = conn
-            .query_row(
-                "SELECT id, run_id, project_id, set_kind, status, summary_json,
-                        created_at, updated_at, version
-                   FROM narrative_proposal_sets
-                  WHERE run_id = ?1 AND project_id = ?2
-                  ORDER BY created_at DESC, id DESC
-                  LIMIT 1",
-                params![run_id, project_id],
-                row_to_proposal_set_value,
+        // Current Chronicle Runs have exactly one terminal review family.  Do
+        // not select the most recently inserted set: bind the review bundle
+        // to the immutable first revision, the exact finishing Task/Attempt,
+        // its canonical plan artifact, and the Native manifest instead.
+        let current_chronicle_proposal_set_id = if current_chronicle_spec {
+            let plan_attempt: Option<(String, String)> = conn
+                .query_row(
+                "SELECT t.id, a.id
+                   FROM narrative_extraction_tasks t
+                   JOIN narrative_extraction_attempts a
+                     ON a.task_id = t.id
+                    AND a.attempt_number = t.attempt_count
+                    AND a.status = 'completed'
+                  WHERE t.run_id = ?1
+                    AND t.task_kind = ?2
+                    AND t.status = 'completed'",
+                params![run_id, CHRONICLE_PLAN_TASK_KIND],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .optional()?;
+                .optional()?;
+            match plan_attempt {
+                Some((task_id, attempt_id)) => {
+                    Some(validate_chronicle_plan_proposal_set_binding_for_resume(
+                        conn,
+                        &project_id,
+                        &run_id,
+                        &task_id,
+                        &attempt_id,
+                    )?)
+                }
+                None => {
+                    let proposal_set_count: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_proposal_sets
+                          WHERE run_id = ?1 AND project_id = ?2",
+                        params![run_id, project_id],
+                        |row| row.get(0),
+                    )?;
+                    anyhow::ensure!(
+                        proposal_set_count == 0,
+                        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: incomplete Chronicle plan Task has a durable ProposalSet"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let proposal_set: Option<Value> = match current_chronicle_proposal_set_id.as_deref() {
+            Some(proposal_set_id) => conn
+                .query_row(
+                    "SELECT id, run_id, project_id, set_kind, status, summary_json,
+                            created_at, updated_at, version
+                       FROM narrative_proposal_sets
+                      WHERE id = ?1 AND run_id = ?2 AND project_id = ?3",
+                    params![proposal_set_id, run_id, project_id],
+                    row_to_proposal_set_value,
+                )
+                .optional()?,
+            None if !current_chronicle_spec => conn
+                .query_row(
+                    "SELECT id, run_id, project_id, set_kind, status, summary_json,
+                            created_at, updated_at, version
+                       FROM narrative_proposal_sets
+                      WHERE run_id = ?1 AND project_id = ?2
+                      ORDER BY created_at DESC, id DESC
+                      LIMIT 1",
+                    params![run_id, project_id],
+                    row_to_proposal_set_value,
+                )
+                .optional()?,
+            None => None,
+        };
 
         let mut proposals = Vec::new();
         if let Some(set) = proposal_set.as_ref() {
@@ -1065,19 +2448,67 @@ pub fn get_run_review_bundle(
                 .get("proposalSetId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("proposal set missing id"))?;
-            let mut proposal_stmt = conn.prepare(
-                "SELECT p.id, p.proposal_set_id, p.proposal_key, p.kind, p.status, p.payload_json,
-                        p.current_revision_id, p.created_at, p.updated_at,
-                        r.origin_kind, r.reconciliation_envelope_digest,
+            // Resume maps the returned payload to `currentRevisionId`, so a
+            // current Chronicle Run must read the revision row itself rather
+            // than the denormalized initial payload on `narrative_proposals`.
+            // The inner join also turns a missing/current-pointer-corrupt
+            // revision into a fail-closed bundle error below.
+            let proposal_query = if current_chronicle_spec {
+                "SELECT p.id, p.proposal_set_id, p.proposal_key, p.kind, p.status,
+                        r.payload_json AS payload_json, p.current_revision_id,
+                        p.created_at, p.updated_at, r.origin_kind,
+                        r.reconciliation_envelope_digest,
+                        r.reconciliation_envelope_json
+                   FROM narrative_proposals p
+                   INNER JOIN narrative_proposal_revisions r
+                           ON r.id = p.current_revision_id
+                          AND r.proposal_id = p.id
+                  WHERE p.proposal_set_id = ?1
+                  ORDER BY p.created_at ASC, p.id ASC"
+            } else {
+                "SELECT p.id, p.proposal_set_id, p.proposal_key, p.kind, p.status,
+                        p.payload_json, p.current_revision_id, p.created_at,
+                        p.updated_at, r.origin_kind,
+                        r.reconciliation_envelope_digest,
                         r.reconciliation_envelope_json
                    FROM narrative_proposals p
                    LEFT JOIN narrative_proposal_revisions r ON r.id = p.current_revision_id
                   WHERE p.proposal_set_id = ?1
-                  ORDER BY p.created_at ASC, p.id ASC",
-            )?;
+                  ORDER BY p.created_at ASC, p.id ASC"
+            };
+            let mut proposal_stmt = conn.prepare(proposal_query)?;
             let rows: Vec<Value> = proposal_stmt
                 .query_map(params![proposal_set_id], row_to_proposal_value)?
                 .collect::<Result<_, _>>()?;
+
+            if current_chronicle_spec {
+                let persisted_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposals WHERE proposal_set_id = ?1",
+                    params![proposal_set_id],
+                    |row| row.get(0),
+                )?;
+                anyhow::ensure!(
+                    rows.len() == persisted_count as usize,
+                    "NEX_CHRONICLE_RESUME_PROPOSAL_SET_INCONSISTENT: current Chronicle ProposalSet has a missing current revision row"
+                );
+                for proposal in &rows {
+                    anyhow::ensure!(
+                        proposal.get("kind").and_then(Value::as_str)
+                            == Some(CHRONICLE_EVENT_PROPOSAL_KIND),
+                        "NEX_CHRONICLE_RESUME_PROPOSAL_SET_INCONSISTENT: current Chronicle ProposalSet has a non-Chronicle proposal kind"
+                    );
+                    let payload = proposal.get("payloadJson").ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "NEX_CHRONICLE_RESUME_PROPOSAL_SET_INCONSISTENT: current Chronicle revision has no payload"
+                        )
+                    })?;
+                    validate_chronicle_scene_event_proposal_payload(payload).map_err(|error| {
+                        anyhow::anyhow!(
+                            "NEX_CHRONICLE_RESUME_PROPOSAL_SET_INCONSISTENT: current Chronicle revision payload is invalid: {error}"
+                        )
+                    })?;
+                }
+            }
 
             for mut proposal in rows {
                 let proposal_id = proposal
@@ -1299,55 +2730,68 @@ fn save_proposal_set_atomic(
     db: &Database,
     payload: SaveProposalSetPayload,
 ) -> anyhow::Result<Value> {
-    let proposal_set_id = payload
-        .proposal_set_id
-        .clone()
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
-
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
-            let summary_value = super::stage_provenance::prepare_chronicle_v2_proposal_set_summary(
-                conn,
-                &payload.project_id,
-                &payload.run_id,
-                payload.summary_json.as_ref(),
-                &payload.proposals,
-            )?;
-            let summary_json = serde_json::to_string(&summary_value)?;
-
-            conn.execute(
-                "INSERT INTO narrative_proposal_sets
-                    (id, run_id, project_id, set_kind, status, summary_json,
-                     created_at, updated_at, version)
-                 VALUES (?1, ?2, ?3, ?4, 'draft', ?5, datetime('now'), datetime('now'), 0)",
-                params![
-                    proposal_set_id,
-                    payload.run_id,
-                    payload.project_id,
-                    payload.set_kind,
-                    summary_json,
-                ],
-            )?;
-
-            let mut saved = Vec::new();
-            for proposal in &payload.proposals {
-                saved.push(insert_proposal_seed(
-                    conn,
-                    &proposal_set_id,
-                    &payload.run_id,
-                    &payload.project_id,
-                    proposal,
-                )?);
-            }
-
-            Ok(json!({
-                "proposalSetId": proposal_set_id,
-                "proposals": saved,
-            }))
+            anyhow::ensure!(
+                !current_chronicle_run_spec_for_run(conn, &payload.project_id, &payload.run_id)?,
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_TYPED_FINISH_REQUIRED: current Chronicle Runs may persist ProposalSets only through chronicle.plan-proposals@1 FinishTask"
+            );
+            save_proposal_set_in_tx(conn, &payload)
         })
     })
+}
+
+/// Ambient-transaction proposal writer.  The generic public save wraps this
+/// in its own immediate transaction; Chronicle's typed plan finish invokes it
+/// from the Task terminal transaction so save and completion cannot diverge.
+fn save_proposal_set_in_tx(
+    conn: &Connection,
+    payload: &SaveProposalSetPayload,
+) -> anyhow::Result<Value> {
+    let proposal_set_id = payload
+        .proposal_set_id
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let summary_value = super::stage_provenance::prepare_chronicle_v2_proposal_set_summary(
+        conn,
+        &payload.project_id,
+        &payload.run_id,
+        payload.summary_json.as_ref(),
+        &payload.proposals,
+    )?;
+    let summary_json = serde_json::to_string(&summary_value)?;
+
+    conn.execute(
+        "INSERT INTO narrative_proposal_sets
+            (id, run_id, project_id, set_kind, status, summary_json,
+             created_at, updated_at, version)
+         VALUES (?1, ?2, ?3, ?4, 'draft', ?5, datetime('now'), datetime('now'), 0)",
+        params![
+            proposal_set_id,
+            payload.run_id,
+            payload.project_id,
+            payload.set_kind,
+            summary_json,
+        ],
+    )?;
+
+    let mut saved = Vec::new();
+    for proposal in &payload.proposals {
+        saved.push(insert_proposal_seed(
+            conn,
+            &proposal_set_id,
+            &payload.run_id,
+            &payload.project_id,
+            proposal,
+        )?);
+    }
+
+    Ok(json!({
+        "proposalSetId": proposal_set_id,
+        "proposals": saved,
+    }))
 }
 
 fn insert_proposal_seed(
@@ -2756,6 +4200,263 @@ mod unit_tests {
         .expect("create manual Run with task");
     }
 
+    fn test_sha256(byte: char) -> String {
+        format!("sha256:{}", byte.to_string().repeat(64))
+    }
+
+    fn current_chronicle_create_payload_with_mode(
+        run_id: &str,
+        execution_mode: &str,
+    ) -> CreateRunPayload {
+        let catalog_digest = test_sha256('a');
+        let spec_json = json!({
+            "kind": CHRONICLE_RUN_SPEC_KIND,
+            "domain": "chronicle",
+            "version": 2,
+            "taskChain": CHRONICLE_EXTRACT_TASK_CHAIN,
+            "executionMode": execution_mode,
+            "existingEventsCatalogDigest": catalog_digest,
+            "coordinatorContractDigest": test_sha256('b'),
+        });
+        let spec_digest = canonical_json_digest(&spec_json).expect("canonical current Run spec");
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: CHRONICLE_EXTRACT_SURFACE_PATH.to_string(),
+            scope_json: json!({ "folderId": "folder-1", "sceneIds": ["scene-1"] }),
+            spec_json,
+            spec_digest,
+            snapshot_digest: Some(test_sha256('c')),
+            catalog_digest: Some(catalog_digest),
+            registry_digest: None,
+            coverage_json: Some(json!({ "mode": "complete" })),
+            tasks: CHRONICLE_EXTRACT_TASK_CHAIN
+                .iter()
+                .enumerate()
+                .map(|(index, task_kind)| CreateTaskSeed {
+                    task_id: Some(format!("{run_id}-task-{index}")),
+                    task_kind: (*task_kind).to_string(),
+                    input_json: Some(json!({ "stage": index + 1 })),
+                    priority: Some((CHRONICLE_EXTRACT_TASK_CHAIN.len() - index) as i64),
+                })
+                .collect(),
+        }
+    }
+
+    fn current_chronicle_create_payload(run_id: &str) -> CreateRunPayload {
+        current_chronicle_create_payload_with_mode(run_id, "deterministic-fallback")
+    }
+
+    fn create_current_chronicle_run(db: &Database, run_id: &str) {
+        create_run(db, current_chronicle_create_payload(run_id))
+            .expect("create current Chronicle Run");
+    }
+
+    fn mark_current_plan_predecessors_completed(db: &Database, run_id: &str) {
+        db.with_conn(|conn| {
+            let changed = conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET status = 'completed', completed_at = '2026-08-26T00:00:00.000Z'
+                  WHERE run_id = ?1 AND task_kind != ?2",
+                params![run_id, CHRONICLE_PLAN_TASK_KIND],
+            )?;
+            anyhow::ensure!(
+                changed == CHRONICLE_PLAN_PREDECESSOR_TASK_KINDS.len(),
+                "test setup must complete exactly the sealed plan predecessors"
+            );
+            Ok(())
+        })
+        .expect("complete current Chronicle plan predecessors");
+    }
+
+    fn claim_current_plan(db: &Database, run_id: &str) -> (String, String) {
+        mark_current_plan_predecessors_completed(db, run_id);
+        let claimed = claim_task(
+            db,
+            ClaimTaskPayload {
+                run_id: run_id.to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "chronicle-plan-test".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: Some(vec![CHRONICLE_PLAN_TASK_KIND.to_string()]),
+            },
+        )
+        .expect("claim only current terminal plan task");
+        let task = claimed.get("task").expect("claimed task");
+        (
+            task["taskId"].as_str().expect("task id").to_string(),
+            task["attemptId"].as_str().expect("attempt id").to_string(),
+        )
+    }
+
+    fn mark_current_task_completed_with_artifact(
+        db: &Database,
+        run_id: &str,
+        task_kind: &str,
+        artifact_kind: &str,
+        payload_json: Value,
+    ) {
+        db.with_conn(|conn| {
+            let task_id: String = conn.query_row(
+                "SELECT id FROM narrative_extraction_tasks WHERE run_id = ?1 AND task_kind = ?2",
+                params![run_id, task_kind],
+                |row| row.get(0),
+            )?;
+            let attempt_id = format!("{task_id}-completed-attempt");
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET status = 'completed', attempt_count = 1,
+                        completed_at = '2026-08-26T00:00:00.000Z'
+                  WHERE id = ?1",
+                params![task_id],
+            )?;
+            insert_attempt(
+                conn,
+                &attempt_id,
+                &task_id,
+                1,
+                "completed",
+                "2026-08-26T00:00:00.000Z",
+            )?;
+            insert_artifacts_for_attempt(
+                conn,
+                run_id,
+                &task_id,
+                &attempt_id,
+                &[ArtifactInput {
+                    artifact_id: Some(format!("{task_id}-{artifact_kind}")),
+                    artifact_kind: artifact_kind.to_string(),
+                    payload_storage: Some("inline-json".to_string()),
+                    payload_json: Some(payload_json.clone()),
+                    payload_ref: None,
+                    payload_digest: Some(canonical_json_digest(&payload_json)?),
+                }],
+            )?;
+            Ok(())
+        })
+        .expect("seed canonical completed predecessor artifact");
+    }
+
+    fn mark_current_task_completed_without_artifact(db: &Database, run_id: &str, task_kind: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET status = 'completed', completed_at = '2026-08-26T00:00:00.000Z'
+                  WHERE run_id = ?1 AND task_kind = ?2",
+                params![run_id, task_kind],
+            )?;
+            Ok(())
+        })
+        .expect("seed completed Chronicle prefix task");
+    }
+
+    fn valid_chronicle_proposal(event_id: &str, title: &str) -> Value {
+        json!({
+            "eventId": event_id,
+            "title": title,
+            "note": null,
+            "actuality": "actual",
+            "significance": "scene-level",
+            "semanticType": "event",
+            "evidenceAnchorIds": ["anchor:one"],
+            "evidenceDocumentRefs": ["document:one"],
+            "disclosure": {
+                "secret": false,
+                "revealDocumentRef": "document:one",
+            },
+            "unresolvedMetadata": {
+                "participantSurfaces": [],
+                "locationSurface": null,
+                "temporalExpressions": [],
+            },
+        })
+    }
+
+    fn current_plan_finish_payload(
+        run_id: &str,
+        task_id: &str,
+        attempt_id: &str,
+        proposals: Vec<Value>,
+        planned_proposals: Option<Vec<Value>>,
+    ) -> FinishTaskPayload {
+        let proposal_set_id = chronicle_plan_proposal_set_id(run_id, task_id);
+        let planned = planned_proposals.map(|rows| {
+            rows.into_iter()
+                .enumerate()
+                .map(|(index, proposal)| {
+                    json!({
+                        "proposal": proposal,
+                        "match": { "status": "none" },
+                        "hypothesisId": format!("hypothesis:{index}"),
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+        let mut artifact_payload = json!({
+            "proposalSetId": proposal_set_id,
+            "proposals": proposals,
+        });
+        if let Some(planned) = planned {
+            artifact_payload
+                .as_object_mut()
+                .expect("test artifact object")
+                .insert("planned".to_string(), Value::Array(planned));
+        }
+        let proposal_rows = artifact_payload["proposals"]
+            .as_array()
+            .expect("test proposal roster")
+            .iter()
+            .enumerate()
+            .map(|(index, proposal)| ProposalSeed {
+                proposal_id: None,
+                proposal_key: format!(
+                    "{}:{index}",
+                    proposal["eventId"]
+                        .as_str()
+                        .expect("test proposal event id")
+                ),
+                kind: CHRONICLE_EVENT_PROPOSAL_KIND.to_string(),
+                payload_json: proposal.clone(),
+                reconciliation_envelope: None,
+            })
+            .collect::<Vec<_>>();
+        FinishTaskPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            task_id: task_id.to_string(),
+            attempt_id: attempt_id.to_string(),
+            lease_owner: "chronicle-plan-test".to_string(),
+            output_json: Some(json!({
+                "proposalSetId": proposal_set_id,
+                "proposalCount": proposal_rows.len(),
+            })),
+            artifacts: vec![ArtifactInput {
+                artifact_id: Some(format!("{task_id}-proposal-plan")),
+                artifact_kind: CHRONICLE_PLAN_ARTIFACT_KIND.to_string(),
+                payload_storage: Some("inline-json".to_string()),
+                payload_json: Some(artifact_payload),
+                payload_ref: None,
+                payload_digest: None,
+            }],
+            chronicle_stage_bundle: None,
+            chronicle_stage_receipts: vec![],
+            historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: Some(ChroniclePlanProposalSetFinish {
+                proposal_set: SaveProposalSetPayload {
+                    run_id: run_id.to_string(),
+                    project_id: "project-1".to_string(),
+                    proposal_set_id: Some(proposal_set_id),
+                    set_kind: CHRONICLE_PROPOSAL_SET_KIND.to_string(),
+                    summary_json: Some(json!({
+                        "proposalCount": proposal_rows.len(),
+                        "surfacePathId": CHRONICLE_EXTRACT_SURFACE_PATH,
+                    })),
+                    proposals: proposal_rows,
+                },
+            }),
+        }
+    }
+
     #[test]
     fn create_and_get_run_round_trip() {
         let db = test_db();
@@ -2789,6 +4490,690 @@ mod unit_tests {
         assert_eq!(loaded["run"]["status"], "running");
         assert_eq!(loaded["tasks"].as_array().map(|v| v.len()), Some(1));
         assert_eq!(loaded["taskCounts"]["queued"], 1);
+    }
+
+    #[test]
+    fn legacy_v1_chronicle_run_with_task_chain_remains_creatable_and_readable() {
+        let db = test_db();
+        let legacy_spec = json!({
+            "domain": "chronicle",
+            "version": 1,
+            "taskChain": CHRONICLE_EXTRACT_TASK_CHAIN,
+        });
+        create_run(
+            &db,
+            CreateRunPayload {
+                run_id: Some("legacy-v1-task-chain".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: CHRONICLE_EXTRACT_SURFACE_PATH.to_string(),
+                scope_json: json!({}),
+                spec_json: legacy_spec,
+                spec_digest: "legacy-v1-spec".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![CreateTaskSeed {
+                    task_id: Some("legacy-v1-task".to_string()),
+                    task_kind: "legacy-extract".to_string(),
+                    input_json: None,
+                    priority: None,
+                }],
+            },
+        )
+        .expect("unmarked legacy Chronicle Run remains compatible");
+
+        get_run(
+            &db,
+            "legacy-v1-task-chain".to_string(),
+            "project-1".to_string(),
+        )
+        .expect("legacy Chronicle Run remains readable");
+    }
+
+    #[test]
+    fn current_chronicle_create_requires_exact_task_roster_before_dml() {
+        let db = test_db();
+        let mut missing = current_chronicle_create_payload("current-missing-task");
+        missing.tasks.pop();
+        let error = create_run(&db, missing).expect_err("current Run cannot omit a sealed task");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RUN_TASK_TOPOLOGY_INVALID"));
+
+        let mut duplicate = current_chronicle_create_payload("current-duplicate-task");
+        duplicate.tasks[8].task_kind = CHRONICLE_EXTRACT_TASK_CHAIN[0].to_string();
+        let error = create_run(&db, duplicate).expect_err("current Run cannot duplicate a task");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RUN_TASK_TOPOLOGY_INVALID"));
+
+        let persisted: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_extraction_runs",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count rejected current Runs");
+        assert_eq!(persisted, 0, "topology validation precedes Run DML");
+    }
+
+    #[test]
+    fn current_chronicle_marker_tamper_and_generic_proposal_save_fail_closed() {
+        let db = test_db();
+        create_current_chronicle_run(&db, "current-spec-tamper");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET spec_json = '{\"domain\":\"chronicle\",\"version\":1}'
+                  WHERE id = 'current-spec-tamper'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("tamper stored v2 kind while retaining sealed catalog digest");
+        let error = get_run(
+            &db,
+            "current-spec-tamper".to_string(),
+            "project-1".to_string(),
+        )
+        .expect_err("non-null current catalog marker must reject kind downgrade");
+        assert!(error.to_string().contains("NEX_CHRONICLE_RUN_SPEC_INVALID"));
+
+        create_current_chronicle_run(&db, "current-generic-save");
+        let error = save_proposal_set(
+            &db,
+            SaveProposalSetPayload {
+                run_id: "current-generic-save".to_string(),
+                project_id: "project-1".to_string(),
+                proposal_set_id: Some("poison-set".to_string()),
+                set_kind: "arbitrary.poison@1".to_string(),
+                summary_json: None,
+                proposals: vec![],
+            },
+        )
+        .expect_err("public generic save cannot poison a current Chronicle Run");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_PLAN_PROPOSAL_SET_TYPED_FINISH_REQUIRED"));
+        let sets: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_sets WHERE run_id = 'current-generic-save'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count generic-save rows");
+        assert_eq!(sets, 0, "generic save rejection precedes ProposalSet DML");
+    }
+
+    #[test]
+    fn current_chronicle_claim_rejects_running_suffix_and_terminal_statuses() {
+        let db = test_db();
+        create_current_chronicle_run(&db, "current-running-suffix");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET status = 'running'
+                  WHERE run_id = ?1 AND task_kind = ?2",
+                params!["current-running-suffix", CHRONICLE_EXTRACT_TASK_CHAIN[1]],
+            )?;
+            Ok(())
+        })
+        .expect("create out-of-order running suffix");
+        let error = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "current-running-suffix".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "test-owner".to_string(),
+                lease_duration_secs: None,
+                task_kinds: Some(vec![CHRONICLE_EXTRACT_TASK_CHAIN[0].to_string()]),
+            },
+        )
+        .expect_err("running suffix must fail before it leases the prefix task");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_CLAIM_TOPOLOGY_INVALID"));
+
+        create_current_chronicle_run(&db, "current-failed-task");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET status = 'failed'
+                  WHERE run_id = ?1 AND task_kind = ?2",
+                params!["current-failed-task", CHRONICLE_EXTRACT_TASK_CHAIN[0]],
+            )?;
+            Ok(())
+        })
+        .expect("create terminal task status");
+        let error = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "current-failed-task".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "test-owner".to_string(),
+                lease_duration_secs: None,
+                task_kinds: Some(vec![CHRONICLE_EXTRACT_TASK_CHAIN[0].to_string()]),
+            },
+        )
+        .expect_err("failed current Chronicle task cannot be treated as resumable");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_CLAIM_TOPOLOGY_INVALID"));
+    }
+
+    #[test]
+    fn current_ai_observation_rejects_generic_finish_without_receipt_before_dml() {
+        let db = test_db();
+        let run_id = "current-ai-generic-observation";
+        create_run(
+            &db,
+            current_chronicle_create_payload_with_mode(run_id, "ai"),
+        )
+        .expect("create current AI Chronicle Run");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET status = 'completed'
+                  WHERE run_id = ?1 AND task_kind IN (?2, ?3)",
+                params![
+                    run_id,
+                    CHRONICLE_EXTRACT_TASK_CHAIN[0],
+                    CHRONICLE_EXTRACT_TASK_CHAIN[1],
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("complete required prefix before Observe claim");
+        let claimed = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: run_id.to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "ai-observation-test".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: Some(vec!["chronicle.observe-events@1".to_string()]),
+            },
+        )
+        .expect("claim AI Observation task");
+        let task = claimed.get("task").expect("claimed observe task");
+        let task_id = task["taskId"]
+            .as_str()
+            .expect("observe task id")
+            .to_string();
+        let attempt_id = task["attemptId"]
+            .as_str()
+            .expect("observe attempt id")
+            .to_string();
+        let error = finish_task(
+            &db,
+            FinishTaskPayload {
+                run_id: run_id.to_string(),
+                project_id: "project-1".to_string(),
+                task_id: task_id.clone(),
+                attempt_id: attempt_id.clone(),
+                lease_owner: "ai-observation-test".to_string(),
+                // A genuine non-empty output cannot downgrade to generic
+                // completion merely by omitting its task-local receipt.
+                output_json: Some(json!({ "observationCount": 1 })),
+                artifacts: vec![ArtifactInput {
+                    artifact_id: Some("generic-raw-observations".to_string()),
+                    artifact_kind: CHRONICLE_RAW_OBSERVATIONS_ARTIFACT_KIND.to_string(),
+                    payload_storage: Some("inline-json".to_string()),
+                    payload_json: Some(json!({ "observations": [{ "localId": "forged" }] })),
+                    payload_ref: None,
+                    payload_digest: None,
+                }],
+                chronicle_stage_bundle: None,
+                chronicle_stage_receipts: vec![],
+                historical_scope_authority_basis: None,
+                chronicle_plan_proposal_set: None,
+            },
+        )
+        .expect_err("AI Observe cannot downgrade to a generic no-receipt finish");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_AI_STAGE_PROVENANCE_REQUIRED"));
+        let state: (String, String, i64) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT t.status, a.status,
+                            (SELECT COUNT(*) FROM narrative_extraction_artifacts WHERE run_id = ?1)
+                       FROM narrative_extraction_tasks t
+                       JOIN narrative_extraction_attempts a ON a.id = ?2
+                      WHERE t.id = ?3",
+                    params![run_id, attempt_id, task_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read rejected AI Observation state");
+        assert_eq!(state, ("running".to_string(), "running".to_string(), 0));
+    }
+
+    #[test]
+    fn current_ai_zero_work_allows_no_receipt_only_with_canonical_empty_predecessor_roster() {
+        let db = test_db();
+        let observation_run = "current-ai-zero-windows";
+        create_run(
+            &db,
+            current_chronicle_create_payload_with_mode(observation_run, "ai"),
+        )
+        .expect("create zero-window AI Run");
+        mark_current_task_completed_without_artifact(
+            &db,
+            observation_run,
+            CHRONICLE_EXTRACT_TASK_CHAIN[0],
+        );
+        mark_current_task_completed_with_artifact(
+            &db,
+            observation_run,
+            "source.window-plan@1",
+            CHRONICLE_WINDOW_PLAN_ARTIFACT_KIND,
+            json!({ "windows": [] }),
+        );
+        let observation_claim = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: observation_run.to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "zero-work-test".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: Some(vec!["chronicle.observe-events@1".to_string()]),
+            },
+        )
+        .expect("claim zero-window Observation");
+        let observation_task = observation_claim.get("task").expect("Observation task");
+        finish_task(
+            &db,
+            FinishTaskPayload {
+                run_id: observation_run.to_string(),
+                project_id: "project-1".to_string(),
+                task_id: observation_task["taskId"]
+                    .as_str()
+                    .expect("Observation task id")
+                    .to_string(),
+                attempt_id: observation_task["attemptId"]
+                    .as_str()
+                    .expect("Observation attempt id")
+                    .to_string(),
+                lease_owner: "zero-work-test".to_string(),
+                output_json: Some(json!({ "observationCount": 0 })),
+                artifacts: vec![ArtifactInput {
+                    artifact_id: Some("zero-window-observations".to_string()),
+                    artifact_kind: CHRONICLE_RAW_OBSERVATIONS_ARTIFACT_KIND.to_string(),
+                    payload_storage: Some("inline-json".to_string()),
+                    payload_json: Some(json!({ "observations": [] })),
+                    payload_ref: None,
+                    payload_digest: None,
+                }],
+                chronicle_stage_bundle: None,
+                chronicle_stage_receipts: vec![],
+                historical_scope_authority_basis: None,
+                chronicle_plan_proposal_set: None,
+            },
+        )
+        .expect("canonical zero-window proof permits deterministic-empty Observation");
+
+        let synthesis_run = "current-ai-zero-clusters";
+        create_run(
+            &db,
+            current_chronicle_create_payload_with_mode(synthesis_run, "ai"),
+        )
+        .expect("create zero-cluster AI Run");
+        for task_kind in CHRONICLE_EXTRACT_TASK_CHAIN[..6].iter() {
+            if *task_kind == "chronicle.cluster-event-observations@1" {
+                mark_current_task_completed_with_artifact(
+                    &db,
+                    synthesis_run,
+                    task_kind,
+                    CHRONICLE_EVENT_CLUSTERS_ARTIFACT_KIND,
+                    json!({ "clusters": [] }),
+                );
+            } else {
+                mark_current_task_completed_without_artifact(&db, synthesis_run, task_kind);
+            }
+        }
+        let synthesis_claim = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: synthesis_run.to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "zero-work-test".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: Some(vec!["chronicle.synthesize-event@1".to_string()]),
+            },
+        )
+        .expect("claim zero-cluster Synthesis");
+        let synthesis_task = synthesis_claim.get("task").expect("Synthesis task");
+        finish_task(
+            &db,
+            FinishTaskPayload {
+                run_id: synthesis_run.to_string(),
+                project_id: "project-1".to_string(),
+                task_id: synthesis_task["taskId"]
+                    .as_str()
+                    .expect("Synthesis task id")
+                    .to_string(),
+                attempt_id: synthesis_task["attemptId"]
+                    .as_str()
+                    .expect("Synthesis attempt id")
+                    .to_string(),
+                lease_owner: "zero-work-test".to_string(),
+                output_json: Some(json!({ "hypothesisCount": 0 })),
+                artifacts: vec![ArtifactInput {
+                    artifact_id: Some("zero-cluster-hypotheses".to_string()),
+                    artifact_kind: CHRONICLE_EVENT_HYPOTHESES_ARTIFACT_KIND.to_string(),
+                    payload_storage: Some("inline-json".to_string()),
+                    payload_json: Some(json!({ "hypotheses": [] })),
+                    payload_ref: None,
+                    payload_digest: None,
+                }],
+                chronicle_stage_bundle: None,
+                chronicle_stage_receipts: vec![],
+                historical_scope_authority_basis: None,
+                chronicle_plan_proposal_set: None,
+            },
+        )
+        .expect("canonical zero-cluster proof permits deterministic-empty Synthesis");
+    }
+
+    #[test]
+    fn current_plan_finish_is_atomic_and_exactly_once_after_a_precommit_failure() {
+        let db = test_db();
+        let run_id = "current-plan-atomic";
+        create_current_chronicle_run(&db, run_id);
+        let (task_id, attempt_id) = claim_current_plan(&db, run_id);
+        let proposal = valid_chronicle_proposal("event:atomic", "Atomic proposal");
+        let valid = current_plan_finish_payload(
+            run_id,
+            &task_id,
+            &attempt_id,
+            vec![proposal.clone()],
+            Some(vec![proposal]),
+        );
+        let mut invalid = valid.clone();
+        invalid.output_json = Some(json!({
+            "proposalSetId": chronicle_plan_proposal_set_id(run_id, &task_id),
+            "proposalCount": 2,
+        }));
+
+        let error = finish_task(&db, invalid).expect_err(
+            "invalid terminal typed payload must roll back before it saves a ProposalSet",
+        );
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_PLAN_PROPOSAL_SET_OUTPUT_INVALID"));
+        let before: (String, String, i64, i64) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT t.status, a.status,
+                            (SELECT COUNT(*) FROM narrative_proposal_sets WHERE run_id = ?1),
+                            (SELECT COUNT(*) FROM narrative_extraction_artifacts WHERE run_id = ?1)
+                       FROM narrative_extraction_tasks t
+                       JOIN narrative_extraction_attempts a ON a.id = ?2
+                      WHERE t.id = ?3",
+                    params![run_id, attempt_id, task_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read rolled-back plan state");
+        assert_eq!(before, ("running".to_string(), "running".to_string(), 0, 0));
+
+        // Abort only after save_proposal_set_in_tx has inserted the Set,
+        // Proposal, and initial Revision, when Native adds the immutable plan
+        // binding to summary_json. The surrounding BEGIN IMMEDIATE must roll
+        // the whole family and Task/Attempt/artifact terminalization back.
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_current_plan_after_proposal_save
+                 BEFORE UPDATE OF summary_json ON narrative_proposal_sets
+                 WHEN NEW.summary_json LIKE '%chroniclePlanTaskBinding%'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'test-current-plan-post-save-failure');
+                 END;",
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("install post-save rollback trigger");
+        let post_save_error = finish_task(&db, valid.clone())
+            .expect_err("post-save failure must roll back the entire terminal transaction");
+        assert!(
+            post_save_error
+                .to_string()
+                .contains("test-current-plan-post-save-failure"),
+            "unexpected post-save failure: {post_save_error:#}"
+        );
+        let post_save_rollback: (String, String, String, i64, i64, i64, i64) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT r.status, t.status, a.status,
+                            (SELECT COUNT(*) FROM narrative_extraction_artifacts WHERE run_id = ?1),
+                            (SELECT COUNT(*) FROM narrative_proposal_sets WHERE run_id = ?1),
+                            (SELECT COUNT(*) FROM narrative_proposals
+                              WHERE proposal_set_id = ?4),
+                            (SELECT COUNT(*) FROM narrative_proposal_revisions
+                              WHERE proposal_id IN (
+                                SELECT id FROM narrative_proposals WHERE proposal_set_id = ?4
+                              ))
+                       FROM narrative_extraction_runs r
+                       JOIN narrative_extraction_tasks t ON t.id = ?2 AND t.run_id = r.id
+                       JOIN narrative_extraction_attempts a ON a.id = ?3 AND a.task_id = t.id
+                      WHERE r.id = ?1",
+                    params![
+                        run_id,
+                        task_id,
+                        attempt_id,
+                        chronicle_plan_proposal_set_id(run_id, &task_id)
+                    ],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                        ))
+                    },
+                )
+                .map_err(Into::into)
+            })
+            .expect("read post-save rolled-back state");
+        assert_eq!(
+            post_save_rollback,
+            (
+                "running".to_string(),
+                "running".to_string(),
+                "running".to_string(),
+                0,
+                0,
+                0,
+                0,
+            )
+        );
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP TRIGGER fail_current_plan_after_proposal_save")?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("remove post-save rollback trigger before exact retry");
+
+        let replay = valid.clone();
+        let finished = finish_task(&db, valid).expect("valid typed plan finish");
+        assert_eq!(
+            finished["proposalSet"]["proposalSetId"],
+            chronicle_plan_proposal_set_id(run_id, &task_id)
+        );
+        let replay_error = finish_task(&db, replay).expect_err(
+            "a lost response replay cannot complete the reclaimed/closed attempt twice",
+        );
+        assert!(
+            replay_error
+                .to_string()
+                .contains("task lease owner mismatch")
+                || replay_error
+                    .to_string()
+                    .contains("attempt is not the current running attempt")
+        );
+        let after: (String, String, i64, i64, i64) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT (SELECT status FROM narrative_extraction_runs WHERE id = ?1),
+                            (SELECT status FROM narrative_extraction_tasks WHERE id = ?2),
+                            (SELECT COUNT(*) FROM narrative_proposal_sets WHERE run_id = ?1),
+                            (SELECT COUNT(*) FROM narrative_proposals
+                              WHERE proposal_set_id = ?3),
+                            (SELECT COUNT(*) FROM narrative_proposal_revisions
+                              WHERE proposal_id IN (
+                                SELECT id FROM narrative_proposals WHERE proposal_set_id = ?3
+                              ))",
+                    params![
+                        run_id,
+                        task_id,
+                        chronicle_plan_proposal_set_id(run_id, &task_id)
+                    ],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .map_err(Into::into)
+            })
+            .expect("read exactly-once terminal state");
+        assert_eq!(
+            after,
+            ("completed".to_string(), "completed".to_string(), 1, 1, 1,)
+        );
+    }
+
+    #[test]
+    fn current_plan_binds_nonlexical_and_planned_rosters_and_rejects_mismatch() {
+        let db = test_db();
+        let run_id = "current-plan-nonlexical";
+        create_current_chronicle_run(&db, run_id);
+        let (task_id, attempt_id) = claim_current_plan(&db, run_id);
+        // Planner order intentionally differs from lexical event-id order.
+        // Manifest is key-sorted, so resume validation must look by derived
+        // proposalKey rather than zip the two representations.
+        let first = valid_chronicle_proposal("event:z", "Z first in plan");
+        let second = valid_chronicle_proposal("event:a", "A second in plan");
+        let finished = finish_task(
+            &db,
+            current_plan_finish_payload(
+                run_id,
+                &task_id,
+                &attempt_id,
+                vec![first.clone(), second.clone()],
+                Some(vec![first.clone(), second.clone()]),
+            ),
+        )
+        .expect("nonlexical plan roster must terminalize through key lookup");
+        assert_eq!(
+            finished["proposalSet"]["proposals"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+
+        let mismatch_run = "current-plan-planned-mismatch";
+        create_current_chronicle_run(&db, mismatch_run);
+        let (mismatch_task, mismatch_attempt) = claim_current_plan(&db, mismatch_run);
+        let mismatched_planned = valid_chronicle_proposal("event:z", "Displayed but not saved");
+        let error = finish_task(
+            &db,
+            current_plan_finish_payload(
+                mismatch_run,
+                &mismatch_task,
+                &mismatch_attempt,
+                vec![first],
+                Some(vec![mismatched_planned]),
+            ),
+        )
+        .expect_err("fresh planned payload cannot diverge from saved terminal proposal");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_PLAN_PROPOSAL_SET_ARTIFACT_INVALID"));
+        let rows: (String, i64, i64) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT (SELECT status FROM narrative_extraction_tasks WHERE id = ?1),
+                            (SELECT COUNT(*) FROM narrative_proposal_sets WHERE run_id = ?2),
+                            (SELECT COUNT(*) FROM narrative_extraction_artifacts WHERE run_id = ?2)",
+                    params![mismatch_task, mismatch_run],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read planned mismatch rollback state");
+        assert_eq!(rows, ("running".to_string(), 0, 0));
+    }
+
+    #[test]
+    fn current_review_bundle_rejects_a_current_revision_pointer_owned_by_another_proposal() {
+        let db = test_db();
+        let run_id = "current-cross-proposal-revision";
+        create_current_chronicle_run(&db, run_id);
+        let (task_id, attempt_id) = claim_current_plan(&db, run_id);
+        let first = valid_chronicle_proposal("event:z", "Z");
+        let second = valid_chronicle_proposal("event:a", "A");
+        finish_task(
+            &db,
+            current_plan_finish_payload(run_id, &task_id, &attempt_id, vec![first, second], None),
+        )
+        .expect("finish current terminal set before pointer corruption");
+
+        let proposal_set_id = chronicle_plan_proposal_set_id(run_id, &task_id);
+        let ((first_proposal, _), (_, second_revision)): ((String, String), (String, String)) = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT id, current_revision_id
+                       FROM narrative_proposals
+                      WHERE proposal_set_id = ?1
+                      ORDER BY proposal_key ASC",
+                )?;
+                let rows = statement
+                    .query_map(params![proposal_set_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok((rows[0].clone(), rows[1].clone()))
+            })
+            .expect("read sibling proposal revisions");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposals SET current_revision_id = ?1 WHERE id = ?2",
+                params![second_revision, first_proposal],
+            )?;
+            // Isolate the current plan artifact/read boundary: old completed
+            // predecessors are not relevant to the pointer-ownership test.
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET status = 'queued'
+                  WHERE run_id = ?1 AND task_kind != ?2",
+                params![run_id, CHRONICLE_PLAN_TASK_KIND],
+            )?;
+            Ok(())
+        })
+        .expect("corrupt cross-proposal current revision pointer");
+
+        let error = get_run_review_bundle(&db, run_id.to_string(), "project-1".to_string())
+            .expect_err("current proposal pointer must own its joined revision");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_PROPOSAL_SET_INCONSISTENT"));
     }
 
     #[test]
@@ -2960,6 +5345,7 @@ mod unit_tests {
                     chronicle_stage_bundle: None,
                     chronicle_stage_receipts: vec![],
                     historical_scope_authority_basis: None,
+                    chronicle_plan_proposal_set: None,
                 },
             ));
             assert_forbidden(fail_task(
@@ -3226,6 +5612,7 @@ mod unit_tests {
                 chronicle_stage_bundle: None,
                 chronicle_stage_receipts: vec![],
                 historical_scope_authority_basis: None,
+                chronicle_plan_proposal_set: None,
             },
         )
         .expect("finish task");

@@ -386,6 +386,7 @@ fn generic_finish_cannot_mint_the_reserved_scope_authority_carrier() {
             chronicle_stage_bundle: None,
             chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
     .expect_err("generic finish must reject the reserved authority carrier");

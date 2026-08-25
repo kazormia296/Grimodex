@@ -346,7 +346,13 @@ function assertNarrativeFrame(
   }
 }
 
-function assertProposalPayload(
+/**
+ * Exact Chronicle proposal payload contract shared by production emission and
+ * cold/resume review hydration.  Consumers must not replace this with a
+ * shape-only guard: a human/legacy revision can otherwise pair an arbitrary
+ * payload with a current revision id.
+ */
+export function assertProposalPayload(
   value: unknown,
 ): asserts value is CreateChronicleEventProposalPayloadV1 {
   if (!isRecord(value))

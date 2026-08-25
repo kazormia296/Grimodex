@@ -87,6 +87,13 @@ export interface FinishTaskPayload {
    */
   readonly chronicleStageReceipts?: readonly ChronicleStageTerminalReceiptV1[];
   readonly historicalScopeAuthorityBasis?: NarrativeScopeAuthorityBasisV2;
+  /**
+   * The terminal Chronicle ProposalSet is persisted with this plan Task in
+   * one Native immediate transaction.  A separate save command would leave a
+   * crash window where a durable review ledger exists but its owning Task is
+   * still resumable.
+   */
+  readonly chroniclePlanProposalSet?: ChroniclePlanProposalSetFinish;
 }
 
 /**
@@ -142,6 +149,8 @@ export interface FinishTaskResult {
   readonly taskId: string;
   readonly attemptId: string;
   readonly status: string;
+  /** Present only for the typed Chronicle plan terminalization route. */
+  readonly proposalSet?: SaveProposalSetResult;
 }
 
 export interface ProposalSeed {
@@ -162,6 +171,11 @@ export interface SaveProposalSetPayload {
   readonly setKind: string;
   readonly summaryJson?: Readonly<Record<string, unknown>>;
   readonly proposals: readonly ProposalSeed[];
+}
+
+/** Typed terminal companion for `chronicle.plan-proposals@1`. */
+export interface ChroniclePlanProposalSetFinish {
+  readonly proposalSet: SaveProposalSetPayload;
 }
 
 export type ChronicleStageReceiptRef = ChronicleStageProvenanceReceiptRefV1;
