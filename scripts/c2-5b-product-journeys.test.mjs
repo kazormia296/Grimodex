@@ -854,8 +854,8 @@ test("restore fixture requires a typed completed legacy Backfill boundary", asyn
   );
   assert.match(
     seedBody,
-    /backfillOutcome\.outcome\s*!==\s*"ran"/,
-    "the fixture must reject a missing or reused Backfill outcome",
+    /!\["ran",\s*"alreadyRun"\]\.includes\(backfillOutcome\.outcome\)/,
+    "the fixture must accept only a typed run or a startup-created alreadyRun outcome",
   );
   assert.match(
     seedBody,

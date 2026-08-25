@@ -1968,11 +1968,13 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       );
     }
     // Establish the same durable legacy boundary that a real workspace has
-    // before restore.  Calling the typed production route is important here:
+    // before restore. Calling the typed production route is important here:
     // an empty/epochless fixture makes the first post-restore open dispatch a
     // Backfill, so the journey can no longer prove the required Verify ->
-    // Rebuild -> confirmation Verify chain.  The fixture deliberately rejects
-    // a reused/no-op response and validates the persisted Run/Epoch pair.
+    // Rebuild -> confirmation Verify chain. A production startup scheduler
+    // may win the race before this explicit retry; accept that alreadyRun
+    // response when the canonical persisted Run/Epoch checks below confirm
+    // the fresh fixture boundary.
     const backfillOutcome = await context.harness.invokeOk(
       context.page,
       "retry_narrative_legacy_backfill",
@@ -1980,12 +1982,12 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
     );
     if (
       !backfillOutcome ||
-      backfillOutcome.outcome !== "ran" ||
+      !["ran", "alreadyRun"].includes(backfillOutcome.outcome) ||
       typeof backfillOutcome.runId !== "string" ||
       backfillOutcome.runId.trim() === ""
     ) {
       throw new Error(
-        `restore fixture requires a fresh typed legacy Backfill outcome: ${JSON.stringify(backfillOutcome)}`,
+        `restore fixture requires a fresh typed/production legacy Backfill outcome: ${JSON.stringify(backfillOutcome)}`,
       );
     }
     const backfillRuns = await context.query(
@@ -2059,6 +2061,7 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
     }
     context.record("restore-fixture-backfill-boundary-seeded", {
       runId: backfillRun.id,
+      outcome: backfillOutcome.outcome,
       semanticEpochId: backfillRun.semanticEpochId,
       epochNumber: Number(initialEpoch.epochNumber),
       reason: initialEpoch.reason,
