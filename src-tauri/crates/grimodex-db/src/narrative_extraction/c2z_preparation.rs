@@ -1122,7 +1122,7 @@ fn inspect_verify_gate(
         result.reasons = vec!["verify-outcome-missing".to_string()];
         return Ok(result);
     };
-    let outcome: Value = match serde_json::from_str(&outcome_json) {
+    let outcome: Value = match serde_json::from_str(outcome_json) {
         Ok(value) => value,
         Err(error) => {
             result.reasons = vec![format!("verify-outcome-malformed: {error}")];
@@ -1287,7 +1287,7 @@ fn inspect_rebuild_gate(
             "derived-state-rebuild-summary-missing",
         ));
     };
-    let outcome: Value = match serde_json::from_str(&outcome_json) {
+    let outcome: Value = match serde_json::from_str(outcome_json) {
         Ok(value) => value,
         Err(_) => {
             return Ok(ReadinessGate::incomplete(

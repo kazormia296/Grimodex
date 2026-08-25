@@ -2178,6 +2178,7 @@ mod c2b_atomic_materialization_red {
             .expect("ScopeOverride child revision id")
             .to_owned();
 
+        #[allow(clippy::type_complexity)]
         let (child_envelope, source_rows, edge_count, scope_declaration_count, freshness_count): (
             Value,
             Vec<(String, String, String)>,

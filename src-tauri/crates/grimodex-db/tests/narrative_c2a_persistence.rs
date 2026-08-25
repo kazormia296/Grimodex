@@ -1255,6 +1255,7 @@ fn valid_stage_closure(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn valid_stage_closure_with_raw_refs(
     project_id: &str,
     run_id: &str,
@@ -1577,6 +1578,7 @@ fn finish_bundle_with_artifacts(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_bundle_with_artifacts_and_parsed_output_digest(
     db: &Database,
     run_id: &str,

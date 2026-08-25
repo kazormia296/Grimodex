@@ -470,14 +470,14 @@ fn build_scope_override_material_sidecar(
             .dependency_set
             .iter()
             .filter(|dependency| dependency.role != DependencyRole::ScopeResolution)
-            .filter_map(|dependency| {
+            .filter(|&dependency| {
                 parent
                     .material_basis
                     .source_basis
                     .iter()
                     .any(|source| source.source_key == dependency.input_ref)
-                    .then(|| dependency.input_ref.clone())
-            }),
+            })
+            .map(|dependency| dependency.input_ref.clone()),
     );
 
     let mut source_basis = Vec::with_capacity(required_source_keys.len() + 1);

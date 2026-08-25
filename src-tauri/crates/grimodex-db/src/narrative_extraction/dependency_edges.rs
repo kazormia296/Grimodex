@@ -255,10 +255,7 @@ pub(crate) fn canonical_source_object_identity(
             !rest.is_empty(),
             "NEX_SOURCE_KEY_INVALID: {source_kind} sourceKey must be {prefix}<id>"
         );
-        if LEGACY_SOURCE_IDENTITY_PREFIXES
-            .iter()
-            .any(|legacy_prefix| prefix == *legacy_prefix)
-        {
+        if LEGACY_SOURCE_IDENTITY_PREFIXES.contains(&prefix) {
             anyhow::ensure!(
                 !starts_with_legacy_source_prefix(rest),
                 "NEX_SOURCE_KEY_INVALID: {source_kind} sourceKey '{source_key}' is already prefixed twice"
