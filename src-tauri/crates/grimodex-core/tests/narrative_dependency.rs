@@ -1,9 +1,12 @@
 use grimodex_core::narrative_dependency::{
     aggregate_dependency_build_actions, canonicalize_dependency_selector,
     canonicalize_dependency_set, compute_dependency_key, compute_dependency_set_digest,
-    evaluate_dependency_effect, load_dependency_role_registry, validate_dependency_selector,
+    evaluate_dependency_effect, load_dependency_role_registry,
+    validate_dependency_registry_implementation_status, validate_dependency_selector,
     validate_dependency_selector_value, ActionRequirement, BuildAction, DependencyEffect,
-    DependencyEffectInput, DependencySelector, DependencySetDigestEntry, EvidenceFreshness,
+    DependencyEffectInput, DependencyImplementationState, DependencyRegistryImplementationStatus,
+    DependencySelector, DependencySetDigestEntry, EvidenceFreshness,
+    DEPENDENCY_SHADOW_PRODUCTION_ENTRY_POINTS,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -67,6 +70,38 @@ fn unknown_role_and_combination_fail_closed() {
     )
     .expect_err("undefined combination must be rejected");
     assert!(unknown_combination.to_string().contains("no effect rule"));
+}
+
+#[test]
+fn production_registry_is_typed_shadow_and_rejects_declared_or_wired() {
+    let registry = load_dependency_role_registry().expect("dependency role policy parses");
+    assert_eq!(
+        registry.implementation_status.state,
+        DependencyImplementationState::Shadow
+    );
+    assert_eq!(
+        registry.implementation_status.production_entry_points,
+        DEPENDENCY_SHADOW_PRODUCTION_ENTRY_POINTS
+            .iter()
+            .map(|entry_point| (*entry_point).to_owned())
+            .collect::<Vec<_>>()
+    );
+    for state in [
+        DependencyImplementationState::Declared,
+        DependencyImplementationState::Wired,
+    ] {
+        let error = validate_dependency_registry_implementation_status(
+            &DependencyRegistryImplementationStatus {
+                state,
+                production_entry_points: DEPENDENCY_SHADOW_PRODUCTION_ENTRY_POINTS
+                    .iter()
+                    .map(|entry_point| (*entry_point).to_owned())
+                    .collect(),
+            },
+        )
+        .expect_err("D2 loader must reject non-shadow runtime states");
+        assert!(error.to_string().contains("implementationStatus.state"));
+    }
 }
 
 #[test]

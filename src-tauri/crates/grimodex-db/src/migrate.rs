@@ -12,6 +12,64 @@ enum ConvergedPreviousFinalize {
 }
 
 impl Database {
+    /// C2-ZC's activation marker is deliberately kept behind the schema-owner
+    /// module.  `schema_data_migrations` is not a general-purpose runtime
+    /// table: C2-ZB and every later schema/data contract must serialize its
+    /// writes through this owner so a cutover cannot race a migration
+    /// checkpoint or silently acquire a second marker-writing authority.
+    pub(crate) const C2_ZC_CUTOVER_MIGRATION_ID: &'static str =
+        "narrative-c2-canonical-freshness-v1";
+    pub(crate) const C2_ZC_CUTOVER_CONTRACT_VERSION: i64 = 1;
+
+    pub(crate) fn read_c2zc_cutover_marker(conn: &Connection) -> anyhow::Result<Option<i64>> {
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                  WHERE type = 'table' AND name = 'schema_data_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            anyhow::bail!("NEX_C2ZC_CUTOVER_MARKER_MISSING: schema_data_migrations is unavailable");
+        }
+        conn.query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [Self::C2_ZC_CUTOVER_MIGRATION_ID],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub(crate) fn record_c2zc_cutover_marker(
+        conn: &Connection,
+        applied_at: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !applied_at.trim().is_empty() && applied_at.trim() == applied_at,
+            "NEX_C2ZC_CUTOVER_MARKER_TIMESTAMP_INVALID: appliedAt must be non-empty and unpadded"
+        );
+        let current = Self::read_c2zc_cutover_marker(conn)?;
+        if let Some(version) = current {
+            anyhow::ensure!(
+                version == Self::C2_ZC_CUTOVER_CONTRACT_VERSION,
+                "NEX_C2ZC_CUTOVER_MARKER_UNSUPPORTED: marker contract version {version} is not current"
+            );
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)",
+            params![
+                Self::C2_ZC_CUTOVER_MIGRATION_ID,
+                Self::C2_ZC_CUTOVER_CONTRACT_VERSION,
+                applied_at,
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn migrate(&self) -> anyhow::Result<()> {
         self.migrate_impl(false)
     }
@@ -3415,6 +3473,22 @@ impl Database {
                 expires_at              TEXT NOT NULL,
                 PRIMARY KEY(project_id)
             );
+            -- Durable wake outbox: a Semantic Epoch rotation commits its wake
+            -- identity in the same transaction, so a lost observer event (or
+            -- an idempotent replay that suppresses re-emission) can never
+            -- strand a rotated Epoch without a maintenance wake. Rows stay
+            -- pending until main acknowledges the delivered wake.
+            CREATE TABLE IF NOT EXISTS narrative_maintenance_wake_outbox (
+                id          TEXT NOT NULL PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                operation   TEXT NOT NULL CHECK(length(operation) > 0),
+                reason      TEXT NOT NULL CHECK(length(reason) > 0),
+                created_at  TEXT NOT NULL,
+                acked_at    TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_wake_outbox_pending
+                ON narrative_maintenance_wake_outbox(project_id)
+                WHERE acked_at IS NULL;
             CREATE INDEX IF NOT EXISTS idx_narrative_semantic_epochs_project
                 ON narrative_semantic_epochs(project_id, epoch_number);
             CREATE INDEX IF NOT EXISTS idx_narrative_dependency_edges_source
@@ -3433,6 +3507,144 @@ impl Database {
                 ON narrative_application_contributions(project_id, application_id);
             CREATE INDEX IF NOT EXISTS idx_narrative_finding_observations_key
                 ON narrative_maintenance_finding_observations(project_id, finding_key, semantic_epoch_id);",
+        )?;
+
+        // SCHEMA_VERSION 33 / NIR-0 D1: sealed Dependency Declaration Set
+        // storage.  V1 `narrative_dependency_edges` remains unchanged and
+        // remains the canonical Freshness input until a later shadow/cutover
+        // lane.  A declaration set is complete only inside the writer's one
+        // transaction; `sealed` is the sole durable state.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_dependency_declaration_sets (
+                id                    TEXT NOT NULL,
+                project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_kind         TEXT NOT NULL CHECK(length(consumer_kind) > 0),
+                consumer_key          TEXT NOT NULL CHECK(length(consumer_key) > 0),
+                producer_id           TEXT NOT NULL CHECK(length(producer_id) > 0),
+                producer_generation   INTEGER NOT NULL CHECK(producer_generation >= 0),
+                dependency_set_digest TEXT NOT NULL
+                    CHECK(length(dependency_set_digest) = 71
+                      AND dependency_set_digest GLOB 'sha256:*'
+                      AND substr(dependency_set_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                state                 TEXT NOT NULL CHECK(state = 'sealed'),
+                created_at            TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, consumer_kind, consumer_key,
+                       producer_generation)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_dependency_declaration_entries (
+                id                    TEXT NOT NULL,
+                declaration_set_id    TEXT NOT NULL
+                    REFERENCES narrative_dependency_declaration_sets(id) ON DELETE CASCADE,
+                source_object_identity TEXT NOT NULL CHECK(length(source_object_identity) > 0),
+                dependency_key        TEXT NOT NULL
+                    CHECK(length(dependency_key) = 71 AND dependency_key GLOB 'sha256:*'
+                      AND substr(dependency_key, 8) NOT GLOB '*[^0-9a-f]*'),
+                dependency_role       TEXT NOT NULL CHECK(length(dependency_role) > 0),
+                role_contract_version TEXT NOT NULL
+                    CHECK(length(role_contract_version) > 0),
+                selector_json         TEXT NOT NULL
+                    CHECK(json_valid(selector_json) AND json_type(selector_json) = 'object'),
+                selector_digest        TEXT NOT NULL
+                    CHECK(length(selector_digest) = 71 AND selector_digest GLOB 'sha256:*'
+                      AND substr(selector_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                created_at            TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(declaration_set_id, source_object_identity, dependency_key)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_dependency_declaration_heads (
+                project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_kind           TEXT NOT NULL CHECK(length(consumer_kind) > 0),
+                consumer_key             TEXT NOT NULL CHECK(length(consumer_key) > 0),
+                active_declaration_set_id TEXT NOT NULL
+                    REFERENCES narrative_dependency_declaration_sets(id),
+                producer_id              TEXT NOT NULL CHECK(length(producer_id) > 0),
+                producer_generation     INTEGER NOT NULL CHECK(producer_generation >= 0),
+                version                 INTEGER NOT NULL CHECK(version >= 1),
+                updated_at              TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_kind, consumer_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_declaration_sets_consumer
+                ON narrative_dependency_declaration_sets(project_id, consumer_kind, consumer_key);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_declaration_entries_set
+                ON narrative_dependency_declaration_entries(declaration_set_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_declaration_entries_source
+                ON narrative_dependency_declaration_entries(source_object_identity);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_declaration_heads_set
+                ON narrative_dependency_declaration_heads(active_declaration_set_id);",
+        )?;
+
+        // SCHEMA_VERSION 34 / NIR-0 C2A: durable, non-authoritative Chronicle
+        // stage audit metadata.  The pure closure remains an input-side
+        // contract, but a successful task completion stores the verified
+        // model bindings and terminal receipts atomically with the task output
+        // and extraction artifacts. The C1 closure remains ephemeral and is
+        // never retained as a durable row (ADR 011 §2.1/plan 34f).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_extraction_stage_model_bindings (
+                id                  TEXT NOT NULL PRIMARY KEY,
+                project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id              TEXT NOT NULL,
+                task_id             TEXT NOT NULL,
+                attempt_id          TEXT NOT NULL,
+                stage_execution_id  TEXT NOT NULL,
+                binding_json        TEXT NOT NULL
+                    CHECK(json_valid(binding_json)
+                      AND json_type(binding_json) = 'object'),
+                binding_digest      TEXT NOT NULL
+                    CHECK(length(binding_digest) = 71
+                      AND binding_digest GLOB 'sha256:*'
+                      AND substr(binding_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                created_at          TEXT NOT NULL,
+                UNIQUE(project_id, stage_execution_id)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_extraction_stage_receipts (
+                id                    TEXT NOT NULL PRIMARY KEY,
+                project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id               TEXT NOT NULL,
+                task_id              TEXT NOT NULL,
+                attempt_id           TEXT NOT NULL,
+                stage_execution_id   TEXT NOT NULL,
+                receipt_json         TEXT NOT NULL
+                    CHECK(json_valid(receipt_json)
+                      AND json_type(receipt_json) = 'object'),
+                receipt_digest       TEXT NOT NULL
+                    CHECK(length(receipt_digest) = 71
+                      AND receipt_digest GLOB 'sha256:*'
+                      AND substr(receipt_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                model_binding_digest TEXT NOT NULL
+                    CHECK(length(model_binding_digest) = 71
+                      AND model_binding_digest GLOB 'sha256:*'
+                      AND substr(model_binding_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                terminal_status      TEXT NOT NULL
+                    CHECK(terminal_status IN ('succeeded', 'failed', 'cancelled', 'skipped')),
+                created_at           TEXT NOT NULL,
+                UNIQUE(project_id, stage_execution_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_stage_model_bindings_owner
+                ON narrative_extraction_stage_model_bindings(project_id, run_id, task_id, attempt_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_stage_receipts_owner
+                ON narrative_extraction_stage_receipts(project_id, run_id, task_id, attempt_id);
+            ",
+        )?;
+        Self::repair_narrative_v2_monotonicity_trigger(&conn)?;
+
+        // Epoch markers used to advance the durable Project object head with
+        // their synthetic reset state; the writer no longer does, and any
+        // head still pointing at a marker event is deleted so the next real
+        // Project mutation chains from genuine domain state instead of
+        // reporting a discontinuity against the sentinel.
+        conn.execute(
+            "DELETE FROM narrative_change_object_heads
+              WHERE EXISTS (
+                    SELECT 1
+                      FROM narrative_change_events e
+                     WHERE e.project_id = narrative_change_object_heads.project_id
+                       AND e.id = narrative_change_object_heads.event_id
+                       AND json_extract(e.object_key_json, '$.kind') = 'project'
+                       AND json_extract(e.structural_impact_json, '$.event')
+                               IN ('project-restored', 'semantic-epoch-reset'))",
+            [],
         )?;
 
         // New Run columns: run_kind distinguishes cursor-bound Runs (the
@@ -3636,16 +3848,188 @@ impl Database {
         // transient Run or Semantic Epoch.
         Self::migrate_narrative_finding_identity_v31(&conn)?;
 
-        // Stamp only after every fresh/rescue migration above has succeeded.
-        // Headless MCP uses this as its schema-skew gate; advancing earlier
-        // could make a partially migrated database look compatible after a
-        // crash or later migration failure.
-        anyhow::ensure!(
-            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(&conn)?,
-            "workspace schema did not satisfy current schema invariants after migration"
-        );
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        // SCHEMA 32 / C2-ZB: move legacy Backfill Run Edges onto their
+        // durable Application identities. The savepoint is schema-owned and
+        // spans every project's read-only preflight, all graph/derived-state
+        // writes, touched-project migration Epochs, and the completion marker.
+        // `user_version` remains unchanged until the checkpoint below.
+        conn.execute_batch("SAVEPOINT narrative_c2_schema_32")?;
+        let c2zb_result = (|| -> anyhow::Result<()> {
+            let c2zb_marker_due = crate::narrative_extraction::c2zb_application_rekey::migrate_narrative_application_rekey_v32(
+                &conn,
+            )?;
 
+            // The schema migration engine is the sole writer of
+            // schema_data_migrations. Keep the C2-ZB marker inside the same
+            // savepoint, after all data re-key writes and before the
+            // checkpoint/user_version stamp, so marker-trigger failures and
+            // deferred-constraint failures can unwind the whole migration.
+            // The marker is written exactly once, when the data phase ran: an
+            // existing marker is either a current-version no-op or fails
+            // closed upstream, and its contract_version/applied_at provenance
+            // is never rewritten here.
+            if c2zb_marker_due {
+                conn.execute(
+                    "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+                     VALUES (?1, ?2, ?3)",
+                    params![
+                        crate::narrative_extraction::c2zb_application_rekey::C2_ZB_MIGRATION_ID,
+                        crate::narrative_extraction::c2zb_application_rekey::C2_ZB_CONTRACT_VERSION,
+                        chrono::Utc::now()
+                            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                            .to_string(),
+                    ],
+                )
+                .context("recording the C2-ZB Application re-key marker")?;
+            }
+
+            // The marker is part of the checkpoint, not a substitute for it.
+            // Keep both the invariant check and the user_version stamp inside
+            // the same savepoint as every C2-ZB write. A trigger, interrupted
+            // connection, or any other post-rekey failure must roll back the
+            // edge/history/derived-state changes, marker, and schema version
+            // together so the next open can retry the complete migration.
+            anyhow::ensure!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(&conn)?,
+                "workspace schema did not satisfy current schema invariants after migration"
+            );
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            Ok(())
+        })();
+        match c2zb_result {
+            Ok(()) => {
+                if let Err(error) = conn.execute_batch("RELEASE narrative_c2_schema_32") {
+                    if let Err(unwind) = conn.execute_batch(
+                        "ROLLBACK TO narrative_c2_schema_32; RELEASE narrative_c2_schema_32",
+                    ) {
+                        tracing::error!(
+                            target: "narrative.migrate",
+                            %unwind,
+                            "failed to unwind the C2-ZB schema savepoint after RELEASE failed"
+                        );
+                    }
+                    return Err(error.into());
+                }
+            }
+            Err(error) => {
+                if let Err(unwind) = conn.execute_batch(
+                    "ROLLBACK TO narrative_c2_schema_32; RELEASE narrative_c2_schema_32",
+                ) {
+                    tracing::error!(
+                        target: "narrative.migrate",
+                        %unwind,
+                        "failed to unwind the C2-ZB schema savepoint"
+                    );
+                }
+                return Err(error);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn repair_narrative_v2_monotonicity_trigger(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch("SAVEPOINT narrative_c2a_trigger_repair")?;
+        let repair = conn.execute_batch(
+            r#"
+            DROP TRIGGER IF EXISTS narrative_proposal_revisions_v2_monotonicity_guard;
+            CREATE TRIGGER narrative_proposal_revisions_v2_monotonicity_guard
+                BEFORE INSERT ON narrative_proposal_revisions
+                WHEN EXISTS (
+                    SELECT 1
+                      FROM narrative_proposals p
+                      JOIN narrative_proposal_revisions current_revision
+                        ON current_revision.id = p.current_revision_id
+                     WHERE p.id = NEW.proposal_id
+                       AND current_revision.origin_kind = 'enveloped'
+                       AND json_extract(current_revision.reconciliation_envelope_json,
+                                        '$.schemaVersion') = 2
+                )
+                AND (
+                    NEW.origin_kind <> 'enveloped'
+                    OR NEW.reconciliation_envelope_json IS NULL
+                    OR json_extract(NEW.reconciliation_envelope_json,
+                                    '$.schemaVersion') IS NOT 2
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');
+                END;
+            DROP TRIGGER IF EXISTS narrative_proposals_v2_pointer_monotonicity_guard;
+            CREATE TRIGGER narrative_proposals_v2_pointer_monotonicity_guard
+                BEFORE UPDATE OF current_revision_id ON narrative_proposals
+                WHEN EXISTS (
+                    SELECT 1
+                      FROM narrative_proposal_revisions old_revision
+                     WHERE old_revision.id = OLD.current_revision_id
+                       AND old_revision.origin_kind = 'enveloped'
+                       AND json_extract(old_revision.reconciliation_envelope_json,
+                                        '$.schemaVersion') = 2
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM narrative_proposal_revisions new_revision
+                     WHERE new_revision.id = NEW.current_revision_id
+                       AND new_revision.origin_kind = 'enveloped'
+                       AND json_extract(new_revision.reconciliation_envelope_json,
+                                        '$.schemaVersion') = 2
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');
+                END;
+            DROP TRIGGER IF EXISTS narrative_proposal_revisions_v2_immutable_update_guard;
+            CREATE TRIGGER narrative_proposal_revisions_v2_immutable_update_guard
+                BEFORE UPDATE ON narrative_proposal_revisions
+                WHEN OLD.origin_kind = 'enveloped'
+                 AND json_extract(OLD.reconciliation_envelope_json,
+                                  '$.schemaVersion') = 2
+                 AND (
+                    OLD.id IS NOT NEW.id
+                    OR OLD.proposal_id IS NOT NEW.proposal_id
+                    OR OLD.revision_number IS NOT NEW.revision_number
+                    OR OLD.payload_json IS NOT NEW.payload_json
+                    OR OLD.plan_fragment_json IS NOT NEW.plan_fragment_json
+                    OR OLD.plan_fragment_digest IS NOT NEW.plan_fragment_digest
+                    OR OLD.origin_kind IS NOT NEW.origin_kind
+                    OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json
+                    OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest
+                    OR OLD.created_at IS NOT NEW.created_at
+                    OR OLD.created_by IS NOT NEW.created_by
+                 )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_V2_IMMUTABLE');
+                END;
+            "#,
+        );
+        match repair {
+            Ok(()) => {
+                if let Err(error) = conn.execute_batch("RELEASE narrative_c2a_trigger_repair") {
+                    if let Err(unwind) = conn.execute_batch(
+                        "ROLLBACK TO narrative_c2a_trigger_repair;
+                         RELEASE narrative_c2a_trigger_repair",
+                    ) {
+                        tracing::error!(
+                            target: "narrative.migrate",
+                            %unwind,
+                            "failed to unwind C2A trigger repair after release failure"
+                        );
+                    }
+                    return Err(error.into());
+                }
+            }
+            Err(error) => {
+                if let Err(unwind) = conn.execute_batch(
+                    "ROLLBACK TO narrative_c2a_trigger_repair;
+                     RELEASE narrative_c2a_trigger_repair",
+                ) {
+                    tracing::error!(
+                        target: "narrative.migrate",
+                        %unwind,
+                        "failed to unwind C2A trigger repair"
+                    );
+                }
+                return Err(error.into());
+            }
+        }
         Ok(())
     }
 
@@ -5483,8 +5867,10 @@ impl Database {
             &crate::narrative_extraction::ObservationDigestInput {
                 stable_subject,
                 edge_id,
+                failure_code: None,
                 reason_code,
                 evidence_freshness: freshness,
+                evidence_detail_digest: None,
             },
         )
     }
@@ -5501,8 +5887,10 @@ impl Database {
             &crate::narrative_extraction::MaterialBasisInput {
                 stable_subject,
                 edge_id,
+                failure_code: None,
                 reason_code,
                 evidence_freshness: freshness,
+                evidence_detail_digest: None,
             },
         )
     }
@@ -7959,8 +8347,10 @@ mod tests {
             &crate::narrative_extraction::MaterialBasisInput {
                 stable_subject: "edge-finding-identity-1",
                 edge_id: Some("edge-finding-identity-1"),
+                failure_code: None,
                 reason_code: "source-missing",
                 evidence_freshness: "source-missing",
+                evidence_detail_digest: None,
             },
         )
         .expect("compute current material basis");
@@ -8153,6 +8543,131 @@ mod tests {
         drop(db);
         std::fs::remove_dir_all(path.parent().expect("test directory"))
             .expect("remove migration test directory");
+    }
+
+    #[test]
+    fn restore_preflight_repairs_a_stale_c2a_trigger_on_current_schema() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-stale-trigger', 'Stale trigger')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, summary_json, created_at, updated_at)
+                 VALUES ('set-stale-trigger', 'run-stale-trigger', 'project-stale-trigger',
+                         'chronicle.extract.review@1', '{}', datetime('now'), datetime('now'))",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                     current_revision_id, created_at, updated_at)
+                 VALUES ('proposal-stale-trigger', 'set-stale-trigger',
+                         'event:stale-trigger', 'chronicle.create-event@1', 'unreviewed',
+                         '{}', 'revision-stale-trigger-parent', datetime('now'), datetime('now'))",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, origin_kind,
+                     reconciliation_envelope_json, created_at, created_by)
+                 VALUES ('revision-stale-trigger-parent', 'proposal-stale-trigger', 1, '{}',
+                         'enveloped', '{\"schemaVersion\":2}', datetime('now'), 'migration-test')",
+                [],
+            )?;
+            conn.execute_batch(
+                r#"
+                DROP TRIGGER narrative_proposal_revisions_v2_monotonicity_guard;
+                CREATE TRIGGER narrative_proposal_revisions_v2_monotonicity_guard
+                    BEFORE INSERT ON narrative_proposal_revisions
+                    WHEN EXISTS (
+                        SELECT 1
+                          FROM narrative_proposals p
+                          JOIN narrative_proposal_revisions current_revision
+                            ON current_revision.id = p.current_revision_id
+                         WHERE p.id = NEW.proposal_id
+                           AND current_revision.origin_kind = 'enveloped'
+                           AND json_extract(current_revision.reconciliation_envelope_json,
+                                            '$.schemaVersion') = 2
+                    )
+                    AND (
+                        NEW.origin_kind <> 'enveloped'
+                        OR NEW.reconciliation_envelope_json IS NULL
+                        OR json_extract(NEW.reconciliation_envelope_json,
+                                        '$.schemaVersion') <> 2
+                    )
+                    BEGIN
+                        SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');
+                    END;
+                "#,
+            )?;
+            assert!(!grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                conn
+            )?);
+            Ok(())
+        })
+        .expect("seed current schema with stale C2A trigger");
+
+        db.migrate_for_restore_preflight()
+            .expect("restore preflight must converge a current schema with a stale trigger");
+
+        db.with_conn(|conn| {
+            assert!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            for (case, envelope_json) in [
+                ("missing-schema-version", "{}"),
+                ("null-schema-version", r#"{"schemaVersion":null}"#),
+            ] {
+                let child_id = format!("revision-stale-trigger-{case}");
+                let error = conn
+                    .execute(
+                        "INSERT INTO narrative_proposal_revisions
+                            (id, proposal_id, revision_number, payload_json, origin_kind,
+                             reconciliation_envelope_json, created_at, created_by)
+                         VALUES (?1, 'proposal-stale-trigger', 2, '{}', 'enveloped', ?2,
+                                 datetime('now'), 'migration-test')",
+                        params![child_id, envelope_json],
+                    )
+                    .expect_err("repaired trigger must reject a non-V2 child envelope");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"),
+                    "{case}: unexpected trigger error: {error}"
+                );
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_revisions WHERE id = ?1",
+                    [&child_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0, "{case}: rejected child persisted");
+            }
+
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, origin_kind,
+                     reconciliation_envelope_json, created_at, created_by)
+                 VALUES ('revision-stale-trigger-numeric-boundary', 'proposal-stale-trigger',
+                         2, '{}', 'enveloped', '{\"schemaVersion\":2.0}',
+                         datetime('now'), 'migration-test')",
+                [],
+            )?;
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_revisions
+                  WHERE id = 'revision-stale-trigger-numeric-boundary'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 1, "integer-valued 2.0 boundary must remain accepted");
+            Ok(())
+        })
+        .expect("verify repaired C2A trigger and schema checkpoint");
     }
 
     #[test]

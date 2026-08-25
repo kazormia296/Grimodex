@@ -236,6 +236,25 @@ describe("registerEventBus: napi TSFn 配線", () => {
     expect(order).toEqual(["observer", "broadcast"]);
   });
 
+  it("trusted narrative epoch wake is observer-only and never reaches BrowserWindow", () => {
+    const backend = makeBackend();
+    const observer = vi.fn();
+    const win = makeWindow(1);
+    allWindows.push(win);
+    registerEventBus(backend, observer);
+
+    backend.capturedCallback?.(
+      "narrative-maintenance:epoch-rotated",
+      '{"projectId":"project-1"}',
+    );
+
+    expect(observer).toHaveBeenCalledWith(
+      "narrative-maintenance:epoch-rotated",
+      { projectId: "project-1" },
+    );
+    expect(win.webContents.send).not.toHaveBeenCalled();
+  });
+
   it("napi 発でも allowlist 外チャネルは warn して破棄する（Phase 3 の更新漏れ検出）", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const backend = makeBackend();

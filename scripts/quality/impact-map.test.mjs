@@ -75,6 +75,44 @@ test("the Narrative runtime suite executes incremental Freshness integration", (
       "cargo check --manifest-path electron/native/grimodex-node/Cargo.toml",
     ),
   );
+  assert.ok(
+    commandLines.includes(
+      "node --test scripts/product-journey-phase1.test.mjs scripts/c2-5b-product-journeys.test.mjs",
+    ),
+  );
+});
+
+test("the Narrative semantic suite executes terminal timestamp and projection gates", () => {
+  const commandText = JSON.stringify(
+    LIGHT_SUITE_DEFINITIONS["narrative-semantic-contract"].commands,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::execution_state::tests::run_transition_persists_millisecond_rfc3339_timestamps/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::repository::unit_tests::every_generic_public_task_api_rejects_runtime_owned_automatic_runs/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::repository::unit_tests::list_resumable_runs_orders_mixed_legacy_and_rfc3339_instants/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::legacy_backfill::tests::backfill_owner_finalizer_survives_generic_cancel_phase_gap/,
+  );
+  assert.match(commandText, /narrative_scope_authority_runtime/);
+  assert.match(commandText, /narrative_scope_authority_basis/);
+  assert.match(commandText, /scopeAuthorityBasisV2\.contract\.test\.ts/);
+  assert.match(commandText, /projectSnapshotAdapter\.test\.ts/);
+  assert.match(commandText, /extractionCoordinator\.test\.ts/);
+  assert.match(commandText, /electron\/shared\/ipcContract\.test\.ts/);
+  assert.match(
+    commandText,
+    /narrative_extraction::restore_rebuild::tests::rebuild_finalization_after_epoch_rotation_is_failed_and_returns_error/,
+  );
+  assert.match(commandText, /narrative_terminal_failure_projection/);
 });
 
 test("incremental Freshness runtime changes select the Narrative runtime gate", async () => {
@@ -201,8 +239,15 @@ test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async
     "src/features/narrative-semantic-core/contracts/narrativeIr.ts",
     "src/features/narrative-semantic-core/contracts/scopeRelation.ts",
     "src/features/narrative-extraction/source/digest.ts",
+    "src/features/narrative-extraction/source/scopeAuthorityBasisV2.ts",
+    "src/features/narrative-extraction/source/types.ts",
+    "src/features/tree/api.ts",
+    "src/application/narrative-extraction/nativeApi.ts",
+    "src/application/narrative-extraction/projectSnapshotAdapter.ts",
+    "electron/shared/ipcContract.ts",
     "src-tauri/crates/grimodex-core/src/canonical_json.rs",
     "src-tauri/crates/grimodex-core/src/narrative_ir.rs",
+    "src-tauri/crates/grimodex-core/src/narrative_scope_authority_basis.rs",
     "src/features/narrative-extraction/reconciler/stageExecution.ts",
     "src/features/narrative-extraction/reconciler/types.ts",
     "src/features/narrative-extraction/reconciler/v2Adapter.ts",
@@ -213,20 +258,39 @@ test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async
     "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
     "src/application/narrative-extraction/extractionCoordinator.ts",
     "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/scope_authority_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
   ];
   const tests = [
     "src/features/narrative-semantic-core/contracts/scopeV2.test.ts",
     "src/features/narrative-semantic-core/contracts/narrativeIr.test.ts",
     "src/features/narrative-semantic-core/contracts/scopeRelation.test.ts",
     "src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts",
+    "src/features/narrative-extraction/source/scopeAuthorityBasisV2.contract.test.ts",
+    "src/features/tree/api.listProjection.test.ts",
+    "src/application/narrative-extraction/projectSnapshotAdapter.test.ts",
+    "src/application/narrative-extraction/extractionCoordinator.test.ts",
+    "electron/shared/ipcContract.test.ts",
     "src-tauri/crates/grimodex-core/tests/canonical_json.rs",
     "src-tauri/crates/grimodex-core/tests/narrative_ir.rs",
+    "src-tauri/crates/grimodex-core/tests/narrative_scope_authority_basis.rs",
     "src/features/narrative-extraction/reconciler/stageExecution.test.ts",
     "src/features/narrative-extraction/reconciler/v2Adapter.test.ts",
     "src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts",
     "src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts",
     "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts",
     "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+    "src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs",
+    "src-tauri/crates/grimodex-db/tests/narrative_scope_authority_runtime.rs",
     "scripts/quality/impact-map.test.mjs",
   ];
 

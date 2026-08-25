@@ -252,10 +252,13 @@ describe("generateBeatAlternative", () => {
           beatType: "free",
           pov: null,
           collapsed: false,
+          // 別プロバイダ(OpenAI)のモデルを beat に固定。endpoint override は
+          // openai-compatible 専用で、他プロバイダとの組み合わせは
+          // resolveChatAuditRoute が fail-closed に拒否する契約のため null。
           model: "gpt-4o",
           modelProvider: "openai",
           modelVariant: "v1",
-          modelEndpointId: "ep-2",
+          modelEndpointId: null,
         },
         content: [{ type: "text", text: "主人公が決断する" }],
       })
@@ -275,7 +278,7 @@ describe("generateBeatAlternative", () => {
       model: "gpt-4o",
       provider: "openai",
       apiVariant: "v1",
-      endpointId: "ep-2",
+      endpointId: null,
     });
 
     emit("inline-ai:stream-done", {

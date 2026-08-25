@@ -35,10 +35,11 @@
 //! `snapshot:<runId>` Source of that Revision must name, and it stays true
 //! after the Proposal is gone.
 //!
-//! [`RUN_CONSUMER_KIND`] is not a legacy value. `legacy_backfill.rs` still
-//! declares Edges under it for Applications that have no Revision to
-//! attribute a read to; re-keying those to the reserved `application` kind
-//! is Gate C2-Z's legacy/Generic parity work.
+//! [`RUN_CONSUMER_KIND`] is not a legacy value. It remains a legitimate
+//! Run-wide Consumer for producers that truly declare Run-grained work.
+//! Legacy Backfill's v3 writer declares Application-grained Edges with the
+//! fresh Backfill Run in `owning_run_id`; SCHEMA 32 C2-ZB re-keys the durable
+//! v2 Run-shaped evidence before that post-open writer repairs any remainder.
 //!
 //! Declaration is an upsert per Source, never a delete-then-redeclare. Under
 //! Run grain that was a hard constraint -- clearing a Run's Edge set on one
@@ -69,6 +70,10 @@ pub(crate) use super::consumer_identity::RUN_CONSUMER_KIND;
 /// vocabulary and re-exported here for the same reason as
 /// [`RUN_CONSUMER_KIND`].
 pub(crate) use super::consumer_identity::PROPOSAL_REVISION_CONSUMER_KIND;
+
+/// Application Consumers are keyed by `narrative_proposal_applications.id`;
+/// their declaring Run is required separately in `owning_run_id`.
+pub(crate) use super::consumer_identity::APPLICATION_CONSUMER_KIND;
 
 /// Builds a `source_object_identity` string from a Source's `(kind, key)`
 /// pair. The prefixes are the same ones `restore_rebuild.rs`'s
@@ -252,6 +257,43 @@ pub(crate) fn canonical_source_object_identity(
     }
 }
 
+/// Validate a stored `source_object_identity` against the same canonical
+/// `(source_kind, source_key)` grammar used by producer writers.  Stored
+/// Edges only retain the canonical identity, so infer the source kind from
+/// its unambiguous prefix and run the canonicalizer in its validation mode.
+/// Empty suffixes, double prefixes, and unknown prefixes therefore fail
+/// closed at migration/evaluation boundaries instead of becoming a plausible
+/// but unresolvable Source.
+pub(crate) fn validate_stored_source_object_identity(
+    source_object_identity: &str,
+) -> anyhow::Result<()> {
+    let source_kind = if source_object_identity.starts_with("project:codex-catalog:") {
+        "codex-catalog"
+    } else if source_object_identity.starts_with("project:scene:") {
+        "scene-body"
+    } else if source_object_identity.starts_with("projection:") {
+        "domain-projection"
+    } else if source_object_identity.starts_with("snapshot:") {
+        "snapshot-document"
+    } else if source_object_identity.starts_with("artifact:") {
+        "narrative-artifact"
+    } else if source_object_identity.starts_with("capture:") {
+        "import-capture"
+    } else if source_object_identity.starts_with("evidence:") {
+        "evidence-anchor"
+    } else {
+        anyhow::bail!(
+            "NEX_SOURCE_KEY_INVALID: unrecognized stored Source identity '{source_object_identity}'"
+        );
+    };
+    let canonical = canonical_source_object_identity(source_kind, source_object_identity)?;
+    anyhow::ensure!(
+        canonical == source_object_identity,
+        "NEX_SOURCE_KEY_INVALID: stored Source identity '{source_object_identity}' is not canonical"
+    );
+    Ok(())
+}
+
 /// One row of `narrative_dependency_edges`: a declaration that Consumer
 /// `(consumer_kind, consumer_key)` read Source `source_object_identity` when
 /// it last produced its current output.
@@ -310,11 +352,12 @@ fn row_to_edge(row: &Row<'_>) -> rusqlite::Result<DependencyEdge> {
 ///
 /// `owning_run_id` is provenance, not an arbitrary resolver hint. A supplied
 /// value must be an exact, non-blank id; for a Run Consumer it must equal the
-/// Consumer key, and for a `snapshot:<runId>` Source it is required to equal
-/// the embedded Run id. A Proposal Revision Edge must always name a persisted
-/// Run in the same project, regardless of Source kind. Historical/corrupt rows
-/// can still bypass these code-only invariants, so `restore_rebuild` validates
-/// them again before evaluating any Proposal Revision Edge.
+/// Consumer key, and for a `snapshot:<runId>` Source a Run/Proposal Revision
+/// Edge must equal the embedded Run id. Application Edges always retain their
+/// fresh same-project Backfill owner, while a snapshot dependency may retain
+/// the historical Apply Run embedded in its Source identity. Historical/
+/// corrupt rows can still bypass these code-only invariants, so
+/// `restore_rebuild` validates them again before evaluating any declared Edge.
 ///
 /// Returns the Edge's `id` (stable across upserts of the same key).
 #[allow(clippy::too_many_arguments)]
@@ -394,10 +437,13 @@ fn validate_owning_run_identity(
         }
     }
 
-    if consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND {
+    if matches!(
+        consumer_kind,
+        PROPOSAL_REVISION_CONSUMER_KIND | APPLICATION_CONSUMER_KIND
+    ) {
         let owning_run_id = owning_run_id.ok_or_else(|| {
             anyhow::anyhow!(
-                "NEX_DEPENDENCY_OWNING_RUN_REQUIRED: proposal-revision Edge must record its declaring Run"
+                "NEX_DEPENDENCY_OWNING_RUN_REQUIRED: {consumer_kind} Edge must record its declaring Run"
             )
         })?;
         let owning_project_id = project_id_for_run(conn, owning_run_id)?.ok_or_else(|| {
@@ -427,10 +473,22 @@ fn validate_owning_run_identity(
                 "NEX_DEPENDENCY_OWNING_RUN_REQUIRED: snapshot-document Edge must record its declaring Run"
             )
         })?;
-        anyhow::ensure!(
-            snapshot_run_id == owning_run_id,
-            "NEX_DEPENDENCY_OWNING_RUN_MISMATCH: snapshot Run '{snapshot_run_id}' does not match owningRunId '{owning_run_id}'"
-        );
+        if consumer_kind == APPLICATION_CONSUMER_KIND {
+            let snapshot_project_id = project_id_for_run(conn, snapshot_run_id)?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_DEPENDENCY_OWNING_RUN_MISSING: snapshot Run '{snapshot_run_id}' names no persisted Run"
+                )
+            })?;
+            anyhow::ensure!(
+                snapshot_project_id == project_id,
+                "NEX_DEPENDENCY_OWNING_RUN_PROJECT_MISMATCH: snapshot Run '{snapshot_run_id}' belongs to another project"
+            );
+        } else {
+            anyhow::ensure!(
+                snapshot_run_id == owning_run_id,
+                "NEX_DEPENDENCY_OWNING_RUN_MISMATCH: snapshot Run '{snapshot_run_id}' does not match owningRunId '{owning_run_id}'"
+            );
+        }
     }
 
     Ok(())
@@ -860,6 +918,43 @@ mod tests {
                 "unexpected error: {cross_project_non_snapshot}"
             );
 
+            let application_foreign_snapshot = record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                APPLICATION_CONSUMER_KIND,
+                "application-foreign-snapshot",
+                "snapshot:foreign-run",
+                r#"["sha256:snapshot"]"#,
+                None,
+                Some("run-1"),
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect_err("Application snapshot dependency must reject a foreign embedded Run");
+            assert!(
+                application_foreign_snapshot
+                    .to_string()
+                    .contains("NEX_DEPENDENCY_OWNING_RUN_PROJECT_MISMATCH"),
+                "unexpected error: {application_foreign_snapshot}"
+            );
+            let application_missing_snapshot = record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                APPLICATION_CONSUMER_KIND,
+                "application-missing-snapshot",
+                "snapshot:missing-apply-run",
+                r#"["sha256:snapshot"]"#,
+                None,
+                Some("run-1"),
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect_err("Application snapshot dependency must reject a missing embedded Run");
+            assert!(
+                application_missing_snapshot
+                    .to_string()
+                    .contains("NEX_DEPENDENCY_OWNING_RUN_MISSING"),
+                "unexpected error: {application_missing_snapshot}"
+            );
+
             let valid = record_dependency_edge_in_tx(
                 conn,
                 "project-1",
@@ -1134,6 +1229,25 @@ mod tests {
             error.to_string().contains("NEX_SOURCE_KEY_INVALID"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn stored_source_identity_validation_rejects_empty_and_double_prefixes() {
+        validate_stored_source_object_identity("project:scene:scene-1")
+            .expect("canonical stored Source identity");
+        for identity in [
+            "project:scene:",
+            "project:scene:project:scene:scene-1",
+            "snapshot:snapshot:run-1",
+            "not-a-source:1",
+        ] {
+            let error = validate_stored_source_object_identity(identity)
+                .expect_err("malformed stored Source identity must fail closed");
+            assert!(
+                error.to_string().contains("NEX_SOURCE_KEY_INVALID"),
+                "unexpected error for {identity}: {error}"
+            );
+        }
     }
 
     #[test]

@@ -52,12 +52,124 @@ const REQUIRED_ATTENTION_APPLICATION_CONDITIONS = Object.freeze([
   "snooze-not-expired",
 ]);
 
+const CANONICAL_TERMINAL_FINDING_RULE = Object.freeze({
+  ruleId: "narrative.maintenance-contract-failure",
+  // Version 2 folds evidenceDetailDigest into the Observation/Material Basis
+  // digests so two graph-repair Findings over different Verify reports are
+  // distinguishable (Changed) instead of replaying as the same evidence.
+  version: 2,
+  identityScope: "maintenance-work",
+  observationStorageClass: "durable-derived-history",
+  writerAuthority: "maintenance-run-finalization-transaction",
+  observationFields: Object.freeze([
+    "stableSubject",
+    "failureCode",
+    "reasonCode",
+    "evidenceFreshness",
+    "evidenceDetailDigest",
+  ]),
+  materialBasisFields: Object.freeze([
+    "stableSubject",
+    "failureCode",
+    "reasonCode",
+    "evidenceFreshness",
+    "evidenceDetailDigest",
+  ]),
+});
+
+// C2-5B owns the three maintenance lifecycle classifications below.  Keep
+// this table exact and code-based: a failure code is not retryable merely
+// because it shares a prefix or substring with a known code from another
+// phase, and transport-level JavaScript retries do not consume this ledger
+// policy's Attempt budget.
+const C25B_FAILURE_POLICY_EXPECTATIONS = Object.freeze({
+  NEX_MAINTENANCE_TRANSIENT: Object.freeze({
+    retryDisposition: "retryable",
+    maxAttempts: 3,
+    backoffPolicy: "exponential-bounded",
+    nextAttemptPolicy: "requeue-same-sealed-system-work",
+    findingRoute: "none",
+  }),
+  NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
+  NEX_MAINTENANCE_INTERRUPTED: Object.freeze({
+    retryDisposition: "retryable",
+    maxAttempts: 3,
+    backoffPolicy: "exponential-bounded",
+    nextAttemptPolicy: "requeue-new-run-same-sealed-system-work",
+    findingRoute: "none",
+  }),
+  // Recovery-synthesized manual halts and the non-clean-Verify repair gate
+  // are runtime Finding routes too: the machine-readable contract must name
+  // every code the Maintenance Inbox can carry.
+  NEX_MAINTENANCE_RETRY_EXHAUSTED: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
+  NEX_MAINTENANCE_FAILURE_DETAIL_MISSING: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
+  NEX_MAINTENANCE_FAILURE_LEDGER_MISSING: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
+  NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
+  NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
+});
+
+const C25B_FAILURE_CODE_ORDER = Object.freeze([
+  "NEX_MAINTENANCE_TRANSIENT",
+  "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
+  "NEX_MAINTENANCE_INTERRUPTED",
+  "NEX_MAINTENANCE_RETRY_EXHAUSTED",
+  "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING",
+  "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING",
+  "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+  "NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR",
+]);
+
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function hasExactStringSet(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    new Set(actual).size === expected.length &&
+    expected.every((value) => actual.includes(value))
+  );
 }
 
 function readJson(repoRoot, relativePath, errors, label) {
@@ -204,12 +316,14 @@ function validateFailurePolicy(failurePolicy, errors) {
     return;
   }
   const seen = new Set();
+  const policiesByCode = new Map();
   for (const policy of failurePolicy.policies) {
     if (!isObject(policy) || !isNonEmptyString(policy.failureCode)) continue;
     if (seen.has(policy.failureCode)) {
       errors.push(`duplicate failureCode: ${policy.failureCode}`);
     }
     seen.add(policy.failureCode);
+    policiesByCode.set(policy.failureCode, policy);
     const isRetryable = policy.retryDisposition === "retryable";
     const hasNextAttemptPolicy = policy.nextAttemptPolicy !== "none";
     if (isRetryable && !hasNextAttemptPolicy) {
@@ -222,6 +336,88 @@ function validateFailurePolicy(failurePolicy, errors) {
         `${policy.failureCode} is not retryable (${policy.retryDisposition}) but declares a nextAttemptPolicy other than "none"`,
       );
     }
+  }
+
+  // C2-5B is a canonical contract: every policy document, including test
+  // fixtures, must carry all three exact registrations and their ordered
+  // Finding routing matrix. Runtime activation is intentionally out of scope.
+  for (const failureCode of C25B_FAILURE_CODE_ORDER) {
+    const expected = C25B_FAILURE_POLICY_EXPECTATIONS[failureCode];
+    const policy = policiesByCode.get(failureCode);
+    if (!policy) {
+      errors.push(
+        `C2-5B failure policy is missing the exact registration for ${failureCode}`,
+      );
+      continue;
+    }
+    for (const field of [
+      "retryDisposition",
+      "maxAttempts",
+      "backoffPolicy",
+      "nextAttemptPolicy",
+    ]) {
+      if (policy[field] !== expected[field]) {
+        errors.push(
+          `${failureCode} ${field} must be exactly ${JSON.stringify(expected[field])} for C2-5B failure policy; got ${JSON.stringify(policy[field])}`,
+        );
+      }
+    }
+  }
+
+  const routingMatrix = failurePolicy.findingRoutingMatrix;
+  if (!Array.isArray(routingMatrix)) {
+    errors.push(
+      "C2-5B failure policy must declare findingRoutingMatrix for its exact Finding routing contract",
+    );
+    return;
+  }
+  const actualOrder = routingMatrix.map((route) =>
+    isObject(route) ? route.failureCode : undefined,
+  );
+  if (
+    actualOrder.length !== C25B_FAILURE_CODE_ORDER.length ||
+    actualOrder.some(
+      (failureCode, index) => failureCode !== C25B_FAILURE_CODE_ORDER[index],
+    )
+  ) {
+    errors.push(
+      `C2-5B findingRoutingMatrix must use the canonical order: ${C25B_FAILURE_CODE_ORDER.join(", ")}`,
+    );
+  }
+  const routedCodes = new Set();
+  for (const route of routingMatrix) {
+    if (!isObject(route) || !isNonEmptyString(route.failureCode)) continue;
+    if (routedCodes.has(route.failureCode)) {
+      errors.push(
+        `C2-5B findingRoutingMatrix contains duplicate failureCode: ${route.failureCode}`,
+      );
+    }
+    routedCodes.add(route.failureCode);
+    const expected = C25B_FAILURE_POLICY_EXPECTATIONS[route.failureCode];
+    if (!expected) {
+      errors.push(
+        `C2-5B findingRoutingMatrix contains unknown failureCode ${route.failureCode}; matching by prefix or substring is forbidden`,
+      );
+      continue;
+    }
+    if (route.findingRoute !== expected.findingRoute) {
+      errors.push(
+        `${route.failureCode} Finding route must be exactly '${expected.findingRoute}' for C2-5B failure policy; got '${route.findingRoute}'`,
+      );
+    }
+  }
+  for (const failureCode of C25B_FAILURE_CODE_ORDER) {
+    const expected = C25B_FAILURE_POLICY_EXPECTATIONS[failureCode];
+    if (!routedCodes.has(failureCode)) {
+      errors.push(
+        `C2-5B findingRoutingMatrix is missing the exact route for ${failureCode} (expected '${expected.findingRoute}')`,
+      );
+    }
+  }
+  if (routedCodes.size !== Object.keys(C25B_FAILURE_POLICY_EXPECTATIONS).length) {
+    errors.push(
+      "C2-5B findingRoutingMatrix must contain exactly the canonical C2-5B failure codes; unknown or cross-phase codes are not routed by substring",
+    );
   }
 }
 
@@ -245,6 +441,64 @@ function validateFindingRuleRegistry(findingContract, errors) {
       );
     }
     seen.add(key);
+    if (rule.identityScope === "maintenance-work") {
+      if (rule.observationStorageClass !== "durable-derived-history") {
+        errors.push(
+          `maintenance-work rule must declare observationStorageClass durable-derived-history: ${key}`,
+        );
+      }
+      if (rule.writerAuthority !== "maintenance-run-finalization-transaction") {
+        errors.push(
+          `maintenance-work rule must declare writerAuthority maintenance-run-finalization-transaction: ${key}`,
+        );
+      }
+    }
+  }
+
+  const canonicalRules = findingContract.rules.filter(
+    (rule) =>
+      isObject(rule) &&
+      rule.ruleId === CANONICAL_TERMINAL_FINDING_RULE.ruleId &&
+      rule.version === CANONICAL_TERMINAL_FINDING_RULE.version,
+  );
+  if (canonicalRules.length !== 1) {
+    errors.push(
+      `narrative-finding-contract.json must contain exactly one canonical terminal rule ${CANONICAL_TERMINAL_FINDING_RULE.ruleId}@${CANONICAL_TERMINAL_FINDING_RULE.version}; found ${canonicalRules.length}`,
+    );
+  }
+  const canonicalRuleIdEntries = findingContract.rules.filter(
+    (rule) =>
+      isObject(rule) && rule.ruleId === CANONICAL_TERMINAL_FINDING_RULE.ruleId,
+  );
+  if (canonicalRuleIdEntries.length > 1) {
+    errors.push(
+      `narrative-finding-contract.json canonical terminal ruleId must not have another version: ${CANONICAL_TERMINAL_FINDING_RULE.ruleId}`,
+    );
+  }
+  const [canonicalRule] = canonicalRules;
+  if (!canonicalRule) return;
+  for (const property of [
+    "identityScope",
+    "observationStorageClass",
+    "writerAuthority",
+  ]) {
+    if (canonicalRule[property] !== CANONICAL_TERMINAL_FINDING_RULE[property]) {
+      errors.push(
+        `canonical terminal rule ${CANONICAL_TERMINAL_FINDING_RULE.ruleId}@${CANONICAL_TERMINAL_FINDING_RULE.version} must declare ${property}=${CANONICAL_TERMINAL_FINDING_RULE[property]}`,
+      );
+    }
+  }
+  for (const property of ["observationFields", "materialBasisFields"]) {
+    if (
+      !hasExactStringSet(
+        canonicalRule[property],
+        CANONICAL_TERMINAL_FINDING_RULE[property],
+      )
+    ) {
+      errors.push(
+        `canonical terminal rule ${CANONICAL_TERMINAL_FINDING_RULE.ruleId}@${CANONICAL_TERMINAL_FINDING_RULE.version} must declare the exact ${property} set`,
+      );
+    }
   }
 }
 
@@ -299,6 +553,50 @@ function validateAuthorityMatrixLinkage(
     errors.push(
       "maintenance-finding-observation authority writePolicy must be evaluator-publish-only",
     );
+  }
+  const terminalFindingAuthorities = authorityMatrix.authorities.filter(
+    (entry) =>
+      isObject(entry) &&
+      entry.concern === "maintenance-terminal-finding-observation",
+  );
+  if (terminalFindingAuthorities.length !== 1) {
+    errors.push(
+      `semantic-core-authorities.json must contain exactly one maintenance-terminal-finding-observation concern required by C2-5B-C; found ${terminalFindingAuthorities.length}`,
+    );
+  }
+  const [terminalFindingAuthority] = terminalFindingAuthorities;
+  if (terminalFindingAuthority) {
+    if (
+      terminalFindingAuthority.canonicalAuthority !==
+      "maintenance-run-finalization-transaction"
+    ) {
+      errors.push(
+        "maintenance-terminal-finding-observation canonicalAuthority must be maintenance-run-finalization-transaction",
+      );
+    }
+    if (terminalFindingAuthority.writePolicy !== "maintenance-finalization-only") {
+      errors.push(
+        "maintenance-terminal-finding-observation writePolicy must be maintenance-finalization-only",
+      );
+    }
+    const canonicalTerminalRule =
+      isObject(findingContract) && Array.isArray(findingContract.rules)
+        ? findingContract.rules.find(
+          (rule) =>
+            isObject(rule) &&
+            rule.ruleId === CANONICAL_TERMINAL_FINDING_RULE.ruleId &&
+            rule.version === CANONICAL_TERMINAL_FINDING_RULE.version,
+          )
+        : null;
+    if (
+      canonicalTerminalRule &&
+      canonicalTerminalRule.writerAuthority !==
+        terminalFindingAuthority.canonicalAuthority
+    ) {
+      errors.push(
+        "canonical terminal Finding writerAuthority must match maintenance-terminal-finding-observation canonicalAuthority",
+      );
+    }
   }
   if (
     isObject(findingContract) &&

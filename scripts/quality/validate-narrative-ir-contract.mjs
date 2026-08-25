@@ -1162,17 +1162,37 @@ export function validateNarrativeIrContract(
     sourceLiteralPins?.auditVersion?.literal ===
       "export const CHRONICLE_STAGE_AUDIT_VERSION = 2 as const;" &&
     Array.isArray(sourceLiteralPins?.digestDomains) &&
-    sourceLiteralPins.digestDomains.length === 3 &&
+    sourceLiteralPins.digestDomains.length === 6 &&
     sourceLiteralPins.digestDomains.every(
       (pin) =>
-        pin?.path ===
-          "src/features/narrative-extraction/reconciler/stageProvenance.ts" &&
+        [
+          "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+          "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+        ].includes(pin?.path) &&
         typeof pin?.literal === "string" &&
         [
           "chronicle-stage-model-binding/1",
           "chronicle-stage-terminal-receipt/1",
           "chronicle-stage-provenance-closure/1",
         ].includes(pin.literal),
+    ) &&
+    // The TS reconciler and the Rust typed writer each independently
+    // declare the digest domains; every domain must be pinned on BOTH
+    // sides, or an edit to one side's constant would pass the policy gate
+    // while breaking cross-boundary digest verification at runtime.
+    [
+      "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+    ].every((pinPath) =>
+      [
+        "chronicle-stage-model-binding/1",
+        "chronicle-stage-terminal-receipt/1",
+        "chronicle-stage-provenance-closure/1",
+      ].every((domain) =>
+        sourceLiteralPins.digestDomains.some(
+          (pin) => pin?.path === pinPath && pin?.literal === domain,
+        ),
+      ),
     );
   const implementationPinsValid =
     JSON.stringify(sourceLiteralPins?.implementationPins) ===
@@ -1193,7 +1213,7 @@ export function validateNarrativeIrContract(
         path.join(repoRoot, sourceLiteralPins.auditVersion.path),
         "utf8",
       ).includes(sourceLiteralPins.auditVersion.literal),
-    "Stage provenance source literal pins must cover audit v2 and all three digest domains",
+    "Stage provenance source literal pins must cover audit v2 and all three digest domains on both the TS reconciler and the Rust typed writer",
   );
   pushIf(
     errors,
@@ -1246,6 +1266,8 @@ export function validateNarrativeIrContract(
       "stageProvenanceClosureDigest-forbidden" &&
       stageProvenance?.persistence?.owner ===
         "C2A atomic task output/artifact persistence" &&
+      stageProvenance?.persistence?.appliesTo ===
+        "application-closure-sidecar" &&
       stageProvenance?.persistence?.status === "deferred" &&
       stageProvenance?.persistence?.lifecycle === "ephemeral" &&
       stageProvenance?.persistence?.authority === "none" &&
@@ -1257,6 +1279,63 @@ export function validateNarrativeIrContract(
       stageProvenance?.persistence?.membership ===
         "caller-supplied-receipt-set",
     "Stage provenance must remain an ephemeral non-authoritative sidecar with C2A persistence deferred",
+  );
+  // Terminal stage receipts ARE durably persisted (schema-34 receipt/model-
+  // binding tables written by the typed C2A finish). The policy must declare
+  // that implemented layer separately from the ephemeral closure sidecar,
+  // and both directions must hold: the declared writer entry point and its
+  // tables must exist in Rust source, and the durable tables must exist in
+  // the migration schema — a declaration the runtime does not honor (in
+  // either direction) fails the contract.
+  const receiptEntryPoint =
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs::persist_receipt";
+  const receiptTables = [
+    "narrative_extraction_stage_model_bindings",
+    "narrative_extraction_stage_receipts",
+  ];
+  const [receiptWriterModule, receiptWriterSymbol] =
+    receiptEntryPoint.split("::");
+  let receiptWriterInSource = false;
+  let receiptTablesInSchema = false;
+  try {
+    const writerSource = readFileSync(
+      path.join(repoRoot, receiptWriterModule),
+      "utf8",
+    );
+    receiptWriterInSource =
+      writerSource.includes(`fn ${receiptWriterSymbol}(`) &&
+      receiptTables.every((table) =>
+        writerSource.includes(`INSERT INTO ${table}`),
+      );
+    const migrateSource = readFileSync(
+      path.join(repoRoot, "src-tauri/crates/grimodex-db/src/migrate.rs"),
+      "utf8",
+    );
+    receiptTablesInSchema = receiptTables.every((table) =>
+      migrateSource.includes(`CREATE TABLE IF NOT EXISTS ${table}`),
+    );
+  } catch {
+    receiptWriterInSource = false;
+    receiptTablesInSchema = false;
+  }
+  const terminalReceiptPersistence = stageProvenance?.terminalReceiptPersistence;
+  pushIf(
+    errors,
+    terminalReceiptPersistence?.owner === "native-typed-c2a-finish" &&
+      terminalReceiptPersistence?.appliesTo ===
+        "stage-terminal-receipts-and-model-bindings" &&
+      terminalReceiptPersistence?.status === "implemented-durable" &&
+      terminalReceiptPersistence?.lifecycle === "durable" &&
+      terminalReceiptPersistence?.authority === "audit-only" &&
+      terminalReceiptPersistence?.authoritative === false &&
+      terminalReceiptPersistence?.storage === "sqlite-workspace-db" &&
+      JSON.stringify(terminalReceiptPersistence?.tables) ===
+        JSON.stringify(receiptTables) &&
+      JSON.stringify(terminalReceiptPersistence?.productionEntryPoints) ===
+        JSON.stringify([receiptEntryPoint]) &&
+      receiptWriterInSource &&
+      receiptTablesInSchema,
+    "Terminal stage receipt persistence must be declared implemented-durable audit-only with its exact persist_receipt entry point, and that writer plus its receipt/model-binding tables must exist in Rust source and the migration schema",
   );
   pushIf(
     errors,
@@ -1285,17 +1364,40 @@ export function validateNarrativeIrContract(
         JSON.stringify(REQUIRED_TYPED_WRITER_VALIDATION),
     "Narrative IR V2 monotonicity semantic authority must remain the complete typed writer",
   );
+  // The V2 monotonicity trigger landed with the post-C2-ZB schema-bearing
+  // migration. The policy must declare the implemented runtime status and its
+  // exact production entry point, and the entry point must actually exist in
+  // source — a policy that claims a state the runtime does not have (in
+  // either direction) fails the contract.
+  const monotonicityEntryPoint =
+    "src-tauri/crates/grimodex-db/src/migrate.rs::repair_narrative_v2_monotonicity_trigger";
+  const [monotonicityTriggerModule, monotonicityTriggerSymbol] =
+    monotonicityEntryPoint.split("::");
+  let monotonicityTriggerInSource = false;
+  try {
+    const migrateSource = readFileSync(
+      path.join(repoRoot, monotonicityTriggerModule),
+      "utf8",
+    );
+    monotonicityTriggerInSource =
+      migrateSource.includes(`fn ${monotonicityTriggerSymbol}(`) &&
+      migrateSource.includes(`Self::${monotonicityTriggerSymbol}(`) &&
+      migrateSource.includes("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN");
+  } catch {
+    monotonicityTriggerInSource = false;
+  }
   pushIf(
     errors,
     monotonicity?.structuralDefense?.kind === "sqlite-before-insert-trigger" &&
       monotonicity?.structuralDefense?.role === "structural-defense-only" &&
-      monotonicity?.structuralDefense?.state === "deferred-until-after-c2-zb" &&
-      Array.isArray(monotonicity?.structuralDefense?.productionEntryPoints) &&
-      monotonicity.structuralDefense.productionEntryPoints.length === 0 &&
+      monotonicity?.structuralDefense?.state === "implemented-wired" &&
+      JSON.stringify(monotonicity?.structuralDefense?.productionEntryPoints) ===
+        JSON.stringify([monotonicityEntryPoint]) &&
       monotonicity?.structuralDefense?.errorCode ===
         "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN" &&
-      monotonicity?.contractFreezeOnly === true,
-    "V2 downgrade trigger must remain contract-only structural defense deferred until after C2-ZB with NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
+      monotonicity?.contractFreezeOnly === false &&
+      monotonicityTriggerInSource,
+    "V2 downgrade trigger structural defense must be declared implemented-wired with its exact migrate.rs production entry point, and that trigger install/repair path must exist in source with NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
   );
 
   const chroniclePilot = contract.chroniclePilot;
@@ -1323,6 +1425,15 @@ export function validateNarrativeIrContract(
       "author-supplied",
     ]) && human?.contextExposureForbidden?.includes("model-visible"),
     "Human-derived Context Set must exclude model-visible exposure",
+  );
+  pushIf(
+    errors,
+    human?.contextLineage?.inheritedEntryMarker === "inheritedFromRevisionId" &&
+      human?.contextLineage?.inheritedEntriesKeepParentExposure === true &&
+      human?.contextLineage?.inheritedFromMustEqualParentRevisionId === true &&
+      human?.contextLineage?.exposureRulesApplyTo ===
+        "own-derivation-entries-only",
+    "Human-derived Context lineage must inherit parent entries verbatim under inheritedFromRevisionId (parent exposure preserved, marker bound to the immediate parent) with exposure rules applying only to own-derivation entries",
   );
   pushIf(
     errors,

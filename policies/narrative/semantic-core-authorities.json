@@ -39,6 +39,12 @@
       "writePolicy": "evaluator-publish-only"
     },
     {
+      "concern": "maintenance-terminal-finding-observation",
+      "canonicalAuthority": "maintenance-run-finalization-transaction",
+      "compatibilityMirror": null,
+      "writePolicy": "maintenance-finalization-only"
+    },
+    {
       "concern": "maintenance-attention",
       "canonicalAuthority": "attention-typed-writer",
       "compatibilityMirror": null,

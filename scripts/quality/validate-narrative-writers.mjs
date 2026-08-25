@@ -93,6 +93,22 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
   narrative_change_object_heads: ["narrativeChangeObjectHeads"],
   narrative_change_cursors: ["narrativeChangeCursors"],
   narrative_change_sets: ["narrativeChangeSets"],
+  narrative_dependency_declaration_sets: ["narrativeDependencyDeclarationSets"],
+  narrative_dependency_declaration_entries: [
+    "narrativeDependencyDeclarationEntries",
+  ],
+  narrative_dependency_declaration_heads: [
+    "narrativeDependencyDeclarationHeads",
+  ],
+  narrative_extraction_tasks: ["narrativeExtractionTasks"],
+  narrative_extraction_attempts: ["narrativeExtractionAttempts"],
+  narrative_extraction_artifacts: ["narrativeExtractionArtifacts"],
+  // C2A stage provenance tables are durable SCHEMA 34 Native-owned rows. The
+  // typed Rust stage-provenance writer is their sole production writer.
+  narrative_extraction_stage_model_bindings: [
+    "narrativeExtractionStageModelBindings",
+  ],
+  narrative_extraction_stage_receipts: ["narrativeExtractionStageReceipts"],
 };
 
 // These tables are Native-only authority/provenance state. Keep the list
@@ -108,6 +124,14 @@ const NARRATIVE_AUTHORITY_TABLES = [
   "narrative_change_object_heads",
   "narrative_change_cursors",
   "narrative_change_sets",
+  "narrative_dependency_declaration_sets",
+  "narrative_dependency_declaration_entries",
+  "narrative_dependency_declaration_heads",
+  "narrative_extraction_tasks",
+  "narrative_extraction_attempts",
+  "narrative_extraction_artifacts",
+  "narrative_extraction_stage_model_bindings",
+  "narrative_extraction_stage_receipts",
 ];
 
 const MUTATION_METHODS = new Set(["insert", "update", "delete"]);

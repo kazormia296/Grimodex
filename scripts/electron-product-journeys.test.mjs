@@ -833,7 +833,7 @@ test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics"
   });
   t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
 
-  assert.equal(MAIN_PROCESS_NOISE_ALLOWLIST.length, 4);
+  assert.equal(MAIN_PROCESS_NOISE_ALLOWLIST.length, 5);
   const launched = await harness.launch("configure");
   mainStderr.emit(
     "data",
@@ -867,6 +867,44 @@ test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics"
     })),
     [{ phase: "configure", message: "Fatal: database corruption\n" }],
   );
+});
+
+test("trusted restore reload allows only the exact Ubuntu Xvfb Skia mailbox line", async (t) => {
+  const mainStderr = new EventEmitter();
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: mainStderr }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => app,
+    },
+    closeApp: async () => {
+      mainStderr.emit("end");
+    },
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  const phase = "c2-5b-restore-verify-rebuild-verify/open";
+  const launched = await harness.launch(phase);
+  mainStderr.emit(
+    "data",
+    "[146128:0824/022134.434622:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n",
+  );
+  await harness.close(launched.app, launched.page, phase);
+
+  const diagnostics = await harness.finalizeDiagnostics();
+  assert.equal(diagnostics.mainErrorCount, 1);
+  assert.deepEqual(diagnostics.unallowedMainErrors, []);
+  assert.equal(diagnostics.mainCleanPass, true);
 });
 
 test("shared-image mailbox noise remains gated outside configure and for near matches", async (t) => {

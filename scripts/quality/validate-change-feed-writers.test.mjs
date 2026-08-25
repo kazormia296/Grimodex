@@ -181,6 +181,33 @@ describe("validate-change-feed-writers", () => {
     const byId = new Map(
       manifest.operations.map((operation) => [operation.id, operation]),
     );
+    const workflowWriters = Object.fromEntries(
+      [
+        "narrative.workflow.create-run",
+        "narrative.workflow.cancel-run",
+        "narrative.workflow.claim-task",
+        "narrative.workflow.finish-task",
+        "narrative.workflow.fail-task",
+      ].map((operationId) => [operationId, byId.get(operationId)?.writerIds]),
+    );
+    assert.deepEqual(workflowWriters, {
+      "narrative.workflow.create-run": ["narrative.extraction-task"],
+      "narrative.workflow.cancel-run": ["narrative.extraction-task"],
+      "narrative.workflow.claim-task": [
+        "narrative.extraction-task",
+        "narrative.extraction-attempt",
+      ],
+      "narrative.workflow.finish-task": [
+        "narrative.extraction-task",
+        "narrative.extraction-attempt",
+        "narrative.extraction-artifact",
+        "narrative.stage-provenance",
+      ],
+      "narrative.workflow.fail-task": [
+        "narrative.extraction-task",
+        "narrative.extraction-attempt",
+      ],
+    });
     assert.equal(byId.get("agent.sql-bundle.mutate")?.feedPolicy, "excluded");
     assert.equal(
       byId.get("agent.sql-bundle.mutate")?.exclusionReason,

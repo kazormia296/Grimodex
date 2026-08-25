@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -11,6 +16,29 @@ const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../..",
 );
+const REGISTRY_PATH = path.join(
+  REPO_ROOT,
+  "policies/narrative/protected-writers.json",
+);
+
+const C2A_PROTECTED_TABLES = [
+  "narrative_extraction_tasks",
+  "narrative_extraction_attempts",
+  "narrative_extraction_artifacts",
+  "narrative_extraction_stage_model_bindings",
+  "narrative_extraction_stage_receipts",
+];
+
+const C2A_DRIZZLE_TABLES = [
+  ["narrative_extraction_tasks", "narrativeExtractionTasks"],
+  ["narrative_extraction_attempts", "narrativeExtractionAttempts"],
+  ["narrative_extraction_artifacts", "narrativeExtractionArtifacts"],
+  [
+    "narrative_extraction_stage_model_bindings",
+    "narrativeExtractionStageModelBindings",
+  ],
+  ["narrative_extraction_stage_receipts", "narrativeExtractionStageReceipts"],
+];
 
 function writeActiveFixtureRegistry(root) {
   const policiesDir = path.join(root, "policies/narrative");
@@ -77,6 +105,95 @@ function writeStructuralOnlyProjectRegistry(root) {
 }
 
 describe("validate-narrative-writers", () => {
+  it("activates C2A execution and stage tables without a closure table", () => {
+    const registry = JSON.parse(readFileSync(REGISTRY_PATH, "utf8"));
+    const entries = registry.filter((entry) =>
+      C2A_PROTECTED_TABLES.includes(entry.table),
+    );
+
+    assert.deepEqual(
+      entries.map((entry) => entry.table).sort(),
+      [...C2A_PROTECTED_TABLES].sort(),
+    );
+    assert.ok(entries.every((entry) => entry.enforcement === "active"));
+    assert.ok(
+      entries.every((entry) => entry.protection === "table"),
+      "C2A execution/stage rows require whole-table Native ownership",
+    );
+    assert.equal(
+      registry.some((entry) =>
+        /^narrative_extraction_.*closure/.test(entry.table),
+      ),
+      false,
+      "the ephemeral stage-provenance closure must not become a table",
+    );
+  });
+
+  it("maps existing C2A Drizzle exports to active protected tables", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "narrative-writers-"));
+    const srcDir = path.join(root, "src/renderer");
+    mkdirSync(srcDir, { recursive: true });
+    const imports = C2A_DRIZZLE_TABLES.map(([, identifier]) => identifier).join(
+      ", ",
+    );
+    const mutations = C2A_DRIZZLE_TABLES.map(
+      ([, identifier]) =>
+        `await db.insert(${identifier}).values({});\nawait db.update(${identifier}).set({});\nawait db.delete(${identifier});`,
+    ).join("\n");
+    writeFileSync(
+      path.join(srcDir, "generic.ts"),
+      `import { ${imports} } from '@/db/schema';\n${mutations}\n`,
+    );
+
+    const result = validateNarrativeWriters({
+      repoRoot: root,
+      registryPath: REGISTRY_PATH,
+    });
+    assert.deepEqual(
+      result.violations.map((violation) => violation.table).sort(),
+      C2A_DRIZZLE_TABLES.map(([table]) => table).sort(),
+    );
+  });
+
+  it("rejects generic renderer, browser, and MCP SQL DML for every C2A table", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "narrative-writers-"));
+    const surfaces = [
+      ["src/renderer", "renderer"],
+      ["src/features/browser-generic", "browser"],
+      ["electron/mcp-generic", "mcp"],
+    ];
+    const operations = (table) =>
+      [
+        `INSERT INTO ${table} (id) VALUES ('generic-${table}')`,
+        `UPDATE ${table} SET id = 'generic-${table}-updated'`,
+        `DELETE FROM ${table}`,
+      ].map((sql) => `await db.execute(${JSON.stringify(sql)});`);
+
+    for (const [relativeDir, surface] of surfaces) {
+      const dir = path.join(root, relativeDir);
+      mkdirSync(dir, { recursive: true });
+      for (const table of C2A_PROTECTED_TABLES) {
+        writeFileSync(
+          path.join(dir, `${surface}-${table}.ts`),
+          `${operations(table).join("\n")}\n`,
+        );
+      }
+    }
+
+    const result = validateNarrativeWriters({
+      repoRoot: root,
+      registryPath: REGISTRY_PATH,
+    });
+    assert.equal(
+      result.violations.length,
+      surfaces.length * C2A_PROTECTED_TABLES.length,
+    );
+    assert.deepEqual(
+      [...new Set(result.violations.map((violation) => violation.table))].sort(),
+      [...C2A_PROTECTED_TABLES].sort(),
+    );
+  });
+
   it("passes for the bundled registry with fixture-only active tables", () => {
     const result = validateNarrativeWriters({ repoRoot: REPO_ROOT });
     assert.equal(result.violations.length, 0);

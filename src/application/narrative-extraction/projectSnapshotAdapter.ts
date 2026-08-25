@@ -41,6 +41,7 @@ import {
 import { waitForTreeTopologyMutationsIdle } from "@/application/tree/treeTopologyMutationRegistry";
 import { buildNarrativeCorpusSnapshot } from "@/features/narrative-extraction/source/buildSnapshot";
 import { freezeDeep } from "@/features/narrative-extraction/source/immutability";
+import type { NarrativeScopeAuthorityDocumentInputV2 } from "@/features/narrative-extraction/source/scopeAuthorityBasisV2";
 import type {
   NarrativeCorpusSnapshot,
   NarrativeSnapshotDiagnostic,
@@ -114,6 +115,7 @@ export type ProjectNarrativeSnapshotResult =
   | {
       ok: true;
       snapshot: NarrativeCorpusSnapshot;
+      scopeAuthorityDocuments: readonly NarrativeScopeAuthorityDocumentInputV2[];
       flush: ScopeFlushResult;
     }
   | {
@@ -577,6 +579,7 @@ const NARRATIVE_SOURCE_ROW_FIELDS = [
   "title",
   "content",
   "sortOrder",
+  "storyTimeOrder",
   "orderIndex",
   "version",
   "updatedAt",
@@ -1204,7 +1207,35 @@ export async function buildProjectNarrativeSnapshot(
         ],
       };
     }
-    return { ok: true, snapshot: buildResult.snapshot, flush };
+    const publicationRowsBySourceKey = new Map<
+      string,
+      ProjectNarrativeSourceRow
+    >(
+      publicationRows.map(
+        (row) => [`project:scene:${row.nodeId}`, row] as const,
+      ),
+    );
+    const scopeAuthorityDocuments = buildResult.snapshot.documents.map(
+      (document): NarrativeScopeAuthorityDocumentInputV2 => {
+        const row = publicationRowsBySourceKey.get(document.sourceKey);
+        if (!row) {
+          throw new Error(
+            `Published snapshot document has no fenced source row: ${document.sourceKey}`,
+          );
+        }
+        return {
+          documentRef: document.ref,
+          sourceKey: `project:scene:${row.nodeId}`,
+          rawStoryKey: row.storyTimeOrder,
+        };
+      },
+    );
+    return {
+      ok: true,
+      snapshot: buildResult.snapshot,
+      scopeAuthorityDocuments: freezeDeep(scopeAuthorityDocuments),
+      flush,
+    };
   } finally {
     sourceReadLease?.release();
   }

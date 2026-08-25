@@ -47,12 +47,16 @@
 //! same hazard `cursor_reservation.rs`'s own mutating functions guard
 //! against, for the same reason.
 
+use std::collections::HashSet;
+
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::consumer_identity::{consumer_finding_key, validate_consumer_identity};
 use super::cursor_reservation::acknowledge_cursor_reservation_in_tx;
 use super::dependency_edges::consumer_dependency_set_digest;
-use super::evaluator::{BuildAction, EdgeObservation, EvidenceFreshness, FindingReasonCode};
+use super::evaluator::{
+    unknown_edge_observation, BuildAction, EdgeObservation, EvidenceFreshness, FindingReasonCode,
+};
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::finding_identity::{
     material_basis_digest, observation_digest, stable_finding_identity, MaterialBasisInput,
@@ -247,6 +251,178 @@ pub(crate) fn write_consumer_freshness_in_tx(
     Ok(())
 }
 
+/// Seed a declared Consumer whose operation wrote no Source mutation.
+///
+/// An idempotent `temporal.node.ensure` still owns a real Application and
+/// Generic Edge, but `change_feed::events_from_journal_entities` deliberately
+/// omits its `ensure-existing` journal entity.  This owner-level seed keeps
+/// the Consumer visible to the canonical read without inventing a Feed event:
+/// every declared Edge receives the ratified `Unknown`/`Manual` state, and
+/// the Generic Consumer row is written with the current dependency digest.
+/// A later real Source mutation re-enters the normal incremental evaluator.
+///
+/// Callers own the surrounding transaction.  This is the only writer path
+/// for this conservative initialization; callers must not issue raw SQL for
+/// either Generic Freshness table.
+pub(crate) fn seed_consumer_freshness_unknown_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    edge_ids: &[String],
+    semantic_epoch_id: &str,
+    updated_at: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "Narrative Publish Runtime requires a caller-owned transaction"
+    );
+    anyhow::ensure!(
+        !edge_ids.is_empty(),
+        "NEX_PUBLISH_RUNTIME_NO_EDGES: at least one declared Edge is required to seed Generic Freshness"
+    );
+    let observation = unknown_edge_observation();
+    for edge_id in edge_ids {
+        write_edge_state_in_tx(
+            conn,
+            project_id,
+            edge_id,
+            &observation,
+            semantic_epoch_id,
+            updated_at,
+        )?;
+    }
+    let dependency_set_digest =
+        consumer_dependency_set_digest(conn, project_id, consumer_kind, consumer_key)?;
+    write_consumer_freshness_in_tx(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        &observation,
+        semantic_epoch_id,
+        None,
+        Some(&dependency_set_digest),
+        updated_at,
+    )?;
+    Ok(())
+}
+
+/// Publish a complete Consumer Freshness result without associating it with a
+/// Run. The supplied Edge set must be the exact current declaration for this
+/// Consumer; otherwise a partial result could overwrite the Consumer's
+/// whole-set Freshness with an incomplete dependency digest.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn publish_complete_runless_freshness_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    edges_and_observations: &[(String, EdgeObservation)],
+    semantic_epoch_id: &str,
+    now: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "Narrative Publish Runtime requires a caller-owned transaction"
+    );
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
+    validate_consumer_identity(consumer_kind, consumer_key)?;
+    anyhow::ensure!(
+        !semantic_epoch_id.trim().is_empty(),
+        "semanticEpochId is required"
+    );
+    anyhow::ensure!(!now.trim().is_empty(), "now is required");
+    anyhow::ensure!(
+        !edges_and_observations.is_empty(),
+        "NEX_PUBLISH_RUNTIME_NO_EDGES: at least one edge observation is required to publish a complete Consumer Freshness result"
+    );
+
+    ensure_epoch_belongs_to_project(conn, project_id, semantic_epoch_id)?;
+    let current_epoch_id = super::semantic_epoch::get_current_epoch(conn, project_id)?
+        .map(|epoch| epoch.id)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_PUBLISH_RUNTIME_STALE_EPOCH: project '{project_id}' has no current semantic epoch"
+            )
+        })?;
+    anyhow::ensure!(
+        current_epoch_id == semantic_epoch_id,
+        "NEX_PUBLISH_RUNTIME_STALE_EPOCH: semantic epoch '{semantic_epoch_id}' is not current for project '{project_id}' (current '{current_epoch_id}')"
+    );
+
+    let mut statement = conn.prepare(
+        "SELECT id
+           FROM narrative_dependency_edges
+          WHERE project_id = ?1
+            AND consumer_kind = ?2
+            AND consumer_key = ?3
+          ORDER BY id ASC",
+    )?;
+    let stored_edge_ids = statement
+        .query_map(params![project_id, consumer_kind, consumer_key], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let provided_edge_ids = edges_and_observations
+        .iter()
+        .map(|(edge_id, _)| edge_id.clone())
+        .collect::<HashSet<_>>();
+    let stored_edge_id_set = stored_edge_ids.iter().cloned().collect::<HashSet<_>>();
+    let edge_set_mismatch = provided_edge_ids.len() != edges_and_observations.len()
+        || provided_edge_ids != stored_edge_id_set
+        || edges_and_observations
+            .iter()
+            .any(|(edge_id, _)| edge_id.trim().is_empty())
+        || stored_edge_ids
+            .iter()
+            .any(|edge_id| edge_id.trim().is_empty());
+    anyhow::ensure!(
+        !edge_set_mismatch,
+        "NEX_PUBLISH_RUNTIME_RUNLESS_EDGE_SET_MISMATCH: observations must contain each declared dependency edge exactly once for consumer '{consumer_kind}:{consumer_key}'"
+    );
+
+    for (edge_id, observation) in edges_and_observations {
+        write_edge_state_in_tx(
+            conn,
+            project_id,
+            edge_id,
+            observation,
+            semantic_epoch_id,
+            now,
+        )?;
+    }
+
+    let worst = worst_edge_state_for_consumer(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        semantic_epoch_id,
+    )?
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_PUBLISH_RUNTIME_NO_EDGE_STATE: no Edge State at epoch '{semantic_epoch_id}' for complete Consumer Freshness publish"
+        )
+    })?;
+    let dependency_set_digest =
+        consumer_dependency_set_digest(conn, project_id, consumer_kind, consumer_key)?;
+    write_consumer_freshness_in_tx(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        &worst,
+        semantic_epoch_id,
+        None,
+        Some(&dependency_set_digest),
+        now,
+    )?;
+
+    Ok(())
+}
+
 /// The worst stored Edge State across every Edge this Consumer declares,
 /// restricted to the current Semantic Epoch.
 ///
@@ -283,7 +459,7 @@ pub(crate) fn write_consumer_freshness_in_tx(
 /// nothing.
 ///
 /// Returns `None` only when the Consumer declares no Edges at all.
-fn worst_edge_state_for_consumer(
+pub(crate) fn worst_edge_state_for_consumer(
     conn: &Connection,
     project_id: &str,
     consumer_kind: &str,
@@ -397,11 +573,13 @@ fn edge_material_basis_digest(
         &MaterialBasisInput {
             stable_subject: edge_id,
             edge_id: Some(edge_id),
+            failure_code: None,
             reason_code: observation
                 .reason_code
                 .map(FindingReasonCode::as_str)
                 .unwrap_or(""),
             evidence_freshness: observation.freshness.as_str(),
+            evidence_detail_digest: None,
         },
     )
 }
@@ -421,11 +599,13 @@ fn edge_observation_digest(edge_id: &str, observation: &EdgeObservation) -> anyh
         &ObservationDigestInput {
             stable_subject: edge_id,
             edge_id: Some(edge_id),
+            failure_code: None,
             reason_code: observation
                 .reason_code
                 .map(FindingReasonCode::as_str)
                 .unwrap_or(""),
             evidence_freshness: observation.freshness.as_str(),
+            evidence_detail_digest: None,
         },
     )
 }

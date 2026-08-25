@@ -4,6 +4,32 @@
   "adr": "docs/adr/009-narrative-scope-relation-contract.md",
   "scopeSchemaVersion": 2,
   "registryVersion": "narrative-scope/2",
+  "historicalAuthorityBasis": {
+    "contractId": "narrative-scope-authority-basis/2",
+    "schema": "policies/narrative/schemas/narrative-scope-authority-basis-v2.schema.json",
+    "futureCarrierArtifactKind": "source.snapshot@2",
+    "basisKind": "historical-run-snapshot",
+    "sourceKind": "snapshot-document",
+    "sourceKeyPattern": "snapshot:<runId>",
+    "currentOracle": false,
+    "runtimeStopCode": "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE",
+    "v1Compatibility": {
+      "implicitUpgrade": "forbidden",
+      "rebuildRequired": true
+    },
+    "implementationStatus": {
+      "state": "shadow",
+      "productionEntryPoints": [
+        "runChronicleExtractionCoordinator",
+        "persist_historical_scope_authority_basis_in_tx",
+        "load_historical_scope_authority_basis"
+      ],
+      "blockedOn": [
+        "c2b-scope-override-wiring",
+        "project-scope-order-authority"
+      ]
+    }
+  },
   "implementationStatus": {
     "state": "declared",
     "productionEntryPoints": [],

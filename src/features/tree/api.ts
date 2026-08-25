@@ -351,6 +351,7 @@ export async function loadProjectNarrativeSourceRows(
       title: treeNodes.title,
       content: treeNodes.content,
       sortOrder: treeNodes.sortOrder,
+      storyTimeOrder: treeNodes.storyTimeOrder,
       version: treeNodes.version,
       updatedAt: treeNodes.updatedAt,
       sourceUri: treeNodes.sourceUri,

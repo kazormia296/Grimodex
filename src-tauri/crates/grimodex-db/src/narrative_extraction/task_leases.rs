@@ -4,6 +4,7 @@ use chrono::{Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
+use super::execution_state::next_run_lifecycle_timestamp_in_tx;
 use super::models::ClaimTaskPayload;
 use super::repository::{
     ensure_run_project, insert_artifacts_for_attempt, insert_attempt, row_to_task_value,
@@ -108,6 +109,23 @@ pub(crate) fn claim_next_task(
     let attempt_number = attempt_count + 1;
     let attempt_id = Uuid::new_v4().to_string();
     let started_at = heartbeat_at.clone();
+    // The task heartbeat uses wall time, but a pending Run's first start is a
+    // project-scoped lifecycle authority. Allocate it before mutating the
+    // Task/Attempt so malformed or exhausted imported Run instants fail closed
+    // without leaving a partial claim behind.
+    let existing_run_started_at: Option<String> = conn.query_row(
+        "SELECT started_at FROM narrative_extraction_runs WHERE id = ?1",
+        params![payload.run_id],
+        |row| row.get(0),
+    )?;
+    let run_started_at = if existing_run_started_at.is_none() {
+        Some(next_run_lifecycle_timestamp_in_tx(
+            conn,
+            &payload.project_id,
+        )?)
+    } else {
+        None
+    };
 
     let updated = conn.execute(
         "UPDATE narrative_extraction_tasks
@@ -151,9 +169,9 @@ pub(crate) fn claim_next_task(
     conn.execute(
         "UPDATE narrative_extraction_runs
             SET status = CASE WHEN status = 'pending' THEN 'running' ELSE status END,
-                started_at = COALESCE(started_at, datetime('now'))
+                started_at = COALESCE(started_at, ?2)
           WHERE id = ?1",
-        params![payload.run_id],
+        params![payload.run_id, run_started_at],
     )?;
 
     Ok(Some(ClaimedTask {
@@ -194,14 +212,54 @@ pub(crate) fn verify_task_lease(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn persist_task_artifacts(
     conn: &Connection,
+    project_id: &str,
     run_id: &str,
     task_id: &str,
     attempt_id: &str,
+    output_json: &serde_json::Value,
+    chronicle_stage_bundle: Option<&super::models::ChronicleStageC1ExecutionBinding>,
+    historical_scope_authority_basis: Option<
+        &grimodex_core::narrative_scope_authority_basis::NarrativeScopeAuthorityBasisV2,
+    >,
     artifacts: &[super::models::ArtifactInput],
 ) -> anyhow::Result<()> {
-    insert_artifacts_for_attempt(conn, run_id, task_id, attempt_id, artifacts)
+    // source.snapshot@2 is never accepted through the generic artifact list,
+    // including when the typed sidecar is also present.
+    super::scope_authority_runtime::reject_reserved_historical_scope_authority_artifacts(
+        artifacts,
+    )?;
+    if let Some(binding) = chronicle_stage_bundle {
+        super::stage_provenance::persist_chronicle_stage_bundle(
+            conn,
+            project_id,
+            run_id,
+            task_id,
+            attempt_id,
+            binding,
+            output_json,
+            artifacts,
+        )?;
+    } else {
+        // Generic/V1 finishes deliberately retain their pre-C2A behavior, but
+        // reserved Chronicle C2A kinds may not bypass the explicit typed
+        // binding by smuggling stage JSON through the generic path.
+        super::stage_provenance::reject_reserved_chronicle_stage_bundle(output_json, artifacts)?;
+    }
+    let typed_scope_artifact = historical_scope_authority_basis
+        .map(|basis| {
+            super::scope_authority_runtime::persist_historical_scope_authority_basis_in_tx(
+                conn, project_id, run_id, task_id, attempt_id, basis, artifacts,
+            )
+        })
+        .transpose()?;
+    let mut durable_artifacts =
+        Vec::with_capacity(artifacts.len() + usize::from(typed_scope_artifact.is_some()));
+    durable_artifacts.extend_from_slice(artifacts);
+    durable_artifacts.extend(typed_scope_artifact);
+    insert_artifacts_for_attempt(conn, run_id, task_id, attempt_id, &durable_artifacts)
 }
 
 pub(crate) fn claimed_task_to_value(claimed: &ClaimedTask) -> serde_json::Value {
@@ -240,7 +298,7 @@ pub(crate) fn with_immediate_transaction<T>(
     conn.execute_batch("BEGIN IMMEDIATE")?;
     match operation(conn) {
         Ok(value) => {
-            conn.execute_batch("COMMIT")?;
+            grimodex_core::commit_or_rollback(conn)?;
             Ok(value)
         }
         Err(error) => {

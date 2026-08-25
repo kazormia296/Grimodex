@@ -878,7 +878,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": ["narrative.extraction-task"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -907,7 +907,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": ["narrative.extraction-task"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -936,7 +936,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": ["narrative.extraction-task", "narrative.extraction-attempt"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -965,7 +965,12 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": [
+        "narrative.extraction-task",
+        "narrative.extraction-attempt",
+        "narrative.extraction-artifact",
+        "narrative.stage-provenance"
+      ],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -994,7 +999,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": ["narrative.extraction-task", "narrative.extraction-attempt"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -4483,6 +4488,33 @@
         "transactionId"
       ],
       "canonical": { "origin": "mcp", "opType": "event.relation" }
+    },
+    {
+      "id": "narrative.dependency-declaration.store",
+      "authorityRoute": "interpreter-projection",
+      "controls": [
+        "proposal-revision",
+        "decision",
+        "prepared-commit",
+        "application-id",
+        "source-basis-occ",
+        "field-authority",
+        "typed-writer"
+      ],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "runtimeEvidence": { "status": "excluded", "reason": "shadow-storage" },
+      "reason": "D1 persists sealed Dependency declarations as a non-authoritative shadow; V1 narrative_dependency_edges remains the canonical Freshness input until a later cutover lane.",
+      "exclusionReason": "derived-state",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/declaration_storage.rs",
+        "symbol": "write_dependency_declaration_set"
+      },
+      "routes": [],
+      "writerIds": ["narrative.dependency-declaration"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
     },
     {
       "id": "narrative.maintenance-attention.set",

@@ -199,7 +199,7 @@ function runGit(args, cwd) {
     child.stdout.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", reject);
-    child.on("exit", (code) => {
+    child.on("close", (code) => {
       const out = Buffer.concat(stdout).toString("utf8").trim();
       const err = Buffer.concat(stderr).toString("utf8").trim();
       if (code !== 0) {
@@ -224,7 +224,7 @@ function runCommand(command, args, cwd, env = process.env) {
     child.stdout.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", reject);
-    child.on("exit", (code) => {
+    child.on("close", (code) => {
       const out = Buffer.concat(stdout).toString("utf8").trim();
       const err = Buffer.concat(stderr).toString("utf8").trim();
       if (code !== 0) {

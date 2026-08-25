@@ -3,6 +3,8 @@
 pub(crate) mod application_contributions;
 mod attention;
 mod c2z_preparation;
+pub(crate) mod c2zb_application_rekey;
+mod c2zc_canonical_cutover;
 pub mod change_feed;
 mod chronicle_operations;
 mod codex_operations;
@@ -12,6 +14,7 @@ mod commit;
 mod consumer_identity;
 mod contribution_target_state;
 mod cursor_reservation;
+pub mod declaration_storage;
 mod dependency_edges;
 mod detail_operations;
 mod evaluator;
@@ -24,7 +27,33 @@ mod foreshadow_undo;
 mod inbox_read_model;
 mod incremental_freshness;
 mod legacy_backfill;
+pub mod maintenance_contracts;
+mod maintenance_lifecycle;
+pub mod maintenance_route_registry;
 pub mod maintenance_runtime;
+pub mod maintenance_skip_evidence;
+pub use declaration_storage::{
+    read_active_dependency_declaration_set, verify_dependency_declaration_storage,
+    write_dependency_declaration_set, write_dependency_declaration_set_in_tx,
+    ActiveDependencyDeclarationSet, DependencyDeclaration, DependencyDeclarationSetReceipt,
+    DependencyDeclarationSetRequest, DependencyDeclarationSetState, StoredDependencyDeclaration,
+};
+pub use maintenance_contracts::{
+    bundled_dependency_producer_registry, current_maintenance_coordinates, DependencyProducerEntry,
+    DependencyProducerRegistry, DependencyProducerWriter, MaintenanceContractCoordinates,
+};
+pub use maintenance_skip_evidence::{
+    evaluate_completed_run_skip, persist_completed_run_skip_evidence,
+    persist_completed_run_skip_evidence_in_tx, read_completed_run_skip_evidence,
+    CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
+    CompletedRunSkipReason, COMPLETED_RUN_SKIP_EVIDENCE_FIELD, REBUILD_RUN_KIND_CONTRACT_VERSION,
+    VERIFY_RUN_KIND_CONTRACT_VERSION,
+};
+pub use reconciliation_envelope::SourceBasisRow;
+pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
+mod human_derivation;
+pub mod human_material_basis;
+mod human_materialization;
 mod models;
 mod phase_operations;
 mod phase_snapshots;
@@ -36,10 +65,12 @@ mod reconciliation_envelope;
 mod repair;
 mod repository;
 mod restore_rebuild;
+mod scope_authority_runtime;
 mod semantic_bindings;
 mod semantic_epoch;
 mod semantic_index_diagnostics;
 mod source_revision;
+mod stage_provenance;
 mod task_leases;
 mod temporal_constraints;
 mod temporal_nodes;
@@ -47,6 +78,7 @@ mod temporal_operations;
 mod temporal_projections;
 mod temporal_snapshots;
 mod temporal_undo;
+mod terminal_failure;
 mod undo;
 
 pub(crate) const INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID: &str =
@@ -83,7 +115,7 @@ pub(crate) use cursor_reservation::{
 #[allow(unused_imports)]
 pub(crate) use dependency_edges::{
     canonical_source_object_identity, delete_edges_for_consumer_in_tx, find_edges_by_consumer,
-    find_edges_by_source, record_dependency_edge_in_tx, DependencyEdge,
+    find_edges_by_source, record_dependency_edge_in_tx, DependencyEdge, APPLICATION_CONSUMER_KIND,
     PROPOSAL_REVISION_CONSUMER_KIND, RUN_CONSUMER_KIND, SOURCE_IDENTITY_PREFIXES,
 };
 #[allow(unused_imports)]
@@ -103,6 +135,7 @@ pub use finding_identity::{
     bundled_finding_rule_registry, material_basis_digest, observation_digest,
     stable_finding_identity, FindingRule, FindingRuleRegistry, MaterialBasisInput,
     ObservationDigestInput, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
+    MAINTENANCE_FAILURE_FINDING_RULE_ID, MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
 };
 pub use finding_observation::FindingObservationRow;
 // EvidenceFreshness / FindingReasonCode: canonical home is `evaluator`
@@ -122,25 +155,50 @@ pub use c2z_preparation::{
     FreshnessParityReport, FreshnessStatusMismatch, InvalidLegacyDependency,
     ProjectCutoverReadiness, ReadinessGate, ReadinessState, RekeyCollision, RekeyInvalidItem,
     RekeyMappingKind, UnattributedRekeyItem, UnsupportedGenericFreshness, VerifyReadiness,
-    WorkspaceCutoverReadiness, APPLICATION_CONSUMER_KIND, REQUIRED_VERIFY_CHECKS,
+    WorkspaceCutoverReadiness, REQUIRED_VERIFY_CHECKS,
 };
-pub use inbox_read_model::{build_maintenance_inbox, InboxEntry};
+pub use c2zc_canonical_cutover::{
+    canonical_application_freshness, cut_over_workspace_freshness,
+    inspect_workspace_cutover_readiness_with_liveness, record_live_scheduler_heartbeat,
+    CanonicalCutoverReadiness, CanonicalCutoverReceipt, CanonicalFreshnessAuthority,
+    CanonicalFreshnessRow, SchedulerLivenessEvidence, C2_ZC_CUTOVER_CONTRACT_VERSION,
+    C2_ZC_CUTOVER_MIGRATION_ID,
+};
+pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
 pub use incremental_freshness::{
     run_incremental_freshness_cycle, IncrementalFreshnessBatchSummary,
-    IncrementalFreshnessCycleOutcome,
+    IncrementalFreshnessCycleOutcome, IncrementalFreshnessShadowConsumerSummary,
+    IncrementalFreshnessShadowSummary, NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
 };
-#[allow(unused_imports)]
-pub(crate) use legacy_backfill::backfill_project_semantic_build_graph_in_tx;
+pub use maintenance_route_registry::{
+    route_descriptor_by_id, route_descriptor_for_run_kind, route_descriptors,
+    route_id_for_run_kind, MaintenanceRouteDescriptor,
+    NARRATIVE_MAINTENANCE_ROUTE_REGISTRY_VERSION,
+};
 pub use maintenance_runtime::{
     canonical_work_key, canonical_work_key_for_epoch, classify_failure, coalesce_desired_work,
-    decide_execution, decide_run_recovery, decide_run_recovery_for_epoch, plan_maintenance_trigger,
-    read_run_ledger, read_run_ledger_for_epoch, retry_backoff_ms, terminalize_interrupted_runs,
-    terminalize_interrupted_runs_for_epoch, terminalize_stale_interrupted_runs,
-    terminalize_stale_interrupted_runs_for_epoch, AutomaticRunKind, DesiredWork, FailureClass,
-    FailureClassification, InterruptedRunTerminalization, MaintenanceExecutionDecision,
-    MaintenanceExecutionMode, MaintenanceTrigger, RecoveryAction, RecoveryDecision, RecoveryMode,
-    RunLedgerCounts, StaleActiveRun, WorkKey, LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES,
+    decide_execution, decide_run_recovery, decide_run_recovery_for_epoch,
+    discover_durable_maintenance_work, discover_durable_maintenance_work_with_config,
+    discover_durable_maintenance_work_with_coordinates, effective_maintenance_coordinates,
+    plan_maintenance_trigger, preflight_maintenance_cycle_request, read_run_ledger,
+    read_run_ledger_for_epoch, recovery_canonical_key, retry_backoff_ms,
+    terminalize_interrupted_runs, terminalize_interrupted_runs_for_epoch,
+    terminalize_stale_interrupted_runs, terminalize_stale_interrupted_runs_for_epoch,
+    AutomaticRunKind, DesiredWork, FailureClass, FailureClassification,
+    InterruptedRunTerminalization, MaintenanceExecutionDecision, MaintenanceExecutionMode,
+    MaintenanceTrigger, NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiFault,
+    NarrativeMaintenanceCiSetup, NarrativeMaintenanceCiTrigger, NarrativeSystemWorkMarker,
+    RecoveryAction, RecoveryDecision, RecoveryMode, RunLedgerCounts, StaleActiveRun, WorkKey,
+    LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
     REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+};
+pub use maintenance_runtime::{
+    complete_foreground_system_work_run, find_running_foreground_system_work_run,
+    find_running_foreground_system_work_slot, run_system_work_cycle,
+    run_system_work_cycle_with_modes, run_system_work_cycle_with_modes_and_config,
+    run_system_work_cycle_with_modes_and_config_and_foreground_owner, ForegroundSystemWorkRun,
+    MaintenanceCycleRequest, MaintenanceCycleResult, MaintenanceCycleStatus,
+    MaintenanceWorkRequest, MaintenanceWorkspaceBinding, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
 };
 #[allow(unused_imports)]
 pub(crate) use publish_runtime::{
@@ -151,6 +209,11 @@ pub(crate) use restore_rebuild::{
     rebuild_repair_dependency_edges_in_tx, rebuild_verify_dependency_edges,
     rotate_epoch_for_restore_in_tx, RebuildVerifyReport,
 };
+pub use terminal_failure::{
+    project_terminal_failure_for_run, resolve_terminal_failure_for_run,
+    TerminalFailureProjectionOutcome, TerminalFailureResolutionOutcome,
+    TERMINAL_FAILURE_CONSUMER_KIND,
+};
 
 // Gate C2 Run Kind Policy: the five named operations replacing the old
 // two-value `rebuildNarrativeDependencyIndex(mode: verify|repair)`
@@ -159,7 +222,8 @@ pub(crate) use restore_rebuild::{
 // `electron/native/grimodex-node/src/lib.rs`, a different crate.
 pub use legacy_backfill::{
     bootstrap_legacy_dependency_backfill_for_project, get_backfill_status_for_project,
-    BackfillStatus, BackfillSummary, LegacyBackfillBootstrapOutcome,
+    inject_legacy_backfill_fault_for_project, inject_legacy_backfill_fault_for_work,
+    BackfillStatus, BackfillSummary, LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
 };
 pub use repair::{
     repair_narrative_dependency_declarations_for_project,
@@ -167,9 +231,13 @@ pub use repair::{
     RepairPlan,
 };
 pub use restore_rebuild::{
+    ack_maintenance_wakes, durable_graph_state_digest, ensure_restore_epochs_for_workspace,
+    list_pending_maintenance_wakes,
     rebuild_narrative_derived_state_for_project, run_dependency_verify_for_project,
+    run_dependency_verify_for_project_with_coordinates,
     verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
-    RebuildDerivedStateOutcome, RebuildDerivedStateSummary, VerifyRunOutcome,
+    PendingMaintenanceWake, RebuildDerivedStateOutcome, RebuildDerivedStateSummary,
+    RebuildShadowVerificationSummary, VerifyRunOutcome,
 };
 #[allow(unused_imports)]
 pub(crate) use semantic_epoch::{create_epoch_in_tx, list_epochs};
@@ -202,17 +270,24 @@ pub(crate) use field_authority::{
 };
 pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,
-    ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
-    EntityBindingSeed, FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload,
-    GetNarrativeBackfillStatusPayload, HumanFieldLockPayload, ListResumableRunsPayload,
-    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
-    NarrativeMaintenanceInboxListPayload, PrepareCommitPayload, ProposalSeed,
-    RebuildNarrativeDerivedStatePayload, ReconciliationEnvelopeInheritance,
-    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
-    ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    ChronicleStageC1ExecutionBinding, ChronicleStageExecution, ChronicleStageModelBinding,
+    ChronicleStageProvenanceClosure, ChronicleStageReceiptRef, ChronicleStageTerminalReceipt,
+    ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateHumanDerivedRevisionRequest,
+    CreateRunPayload, CreateTaskSeed, EntityBindingSeed, FailTaskPayload, FinishTaskPayload,
+    GetCommitStatusPayload, GetNarrativeBackfillStatusPayload, HumanFieldLockPayload,
+    ListResumableRunsPayload, NarrativeAdapterIdentity, NarrativeMaintenanceAttentionClearPayload,
+    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
+    PrepareCommitPayload, ProposalSeed, RebuildNarrativeDerivedStatePayload,
+    ReconciliationEnvelopeInheritance, RepairNarrativeDependencyDeclarationsPayload,
+    RetryNarrativeLegacyBackfillPayload, ReviseAndDecidePayload, RunRefPayload,
+    SaveProposalSetPayload, TrustedHumanDerivationScope, TrustedRevealBasis, TrustedScopeBoundary,
+    TrustedScopeInterval, TrustedUnresolvedConstraint, UndoCommitPayload,
     VerifyNarrativeDependencyGraphPayload,
 };
 pub use repository::ensure_test_schema;
+pub use scope_authority_runtime::{
+    load_historical_scope_authority_basis, HISTORICAL_SCOPE_AUTHORITY_ARTIFACT_KIND,
+};
 pub use temporal_operations::TemporalScenePatchPayload;
 
 use serde_json::Value;
@@ -234,6 +309,52 @@ pub fn narrative_extraction_create_run(
     payload: CreateRunPayload,
 ) -> anyhow::Result<Value> {
     repository::create_run(db, payload)
+}
+
+/// Native-only Chronicle Human Derivation writer.  The trusted project
+/// boundary is deliberately separate from the renderer-shaped request; the
+/// implementation fixes actor/derivation metadata and consumes (but never
+/// mutates) the D1 sealed declaration head.
+pub fn narrative_extraction_create_human_derived_revision(
+    db: &Database,
+    trusted_project_id: &str,
+    request: CreateHumanDerivedRevisionRequest,
+) -> anyhow::Result<Value> {
+    human_derivation::create_human_derived_revision(db, trusted_project_id, request)
+}
+
+/// Native-only scope-aware Human Derivation writer.  The renderer-shaped
+/// request remains unchanged; a trusted resolver supplies the non-Serde
+/// context only when a secret Scope must be re-derived.
+pub fn narrative_extraction_create_human_derived_revision_with_scope(
+    db: &Database,
+    trusted_project_id: &str,
+    trusted_scope: Option<TrustedHumanDerivationScope>,
+    request: CreateHumanDerivedRevisionRequest,
+) -> anyhow::Result<Value> {
+    human_derivation::create_human_derived_revision_with_scope(
+        db,
+        trusted_project_id,
+        trusted_scope,
+        request,
+    )
+}
+
+/// Native-owned C2B materialization seam. Projection-only derives and
+/// publishes the complete child material atomically; scope override fails
+/// before any DML until its Native Registry/Oracle authority is wired.
+pub fn narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+    db: &Database,
+    trusted_project_id: &str,
+    request: CreateHumanDerivedRevisionRequest,
+    derivation_kind: human_material_basis::HumanMaterialDerivationKind,
+) -> anyhow::Result<Value> {
+    human_materialization::create_human_derived_revision_with_c2b_projection_materialization(
+        db,
+        trusted_project_id,
+        request,
+        derivation_kind,
+    )
 }
 
 pub fn narrative_extraction_get_run(
@@ -390,16 +511,14 @@ pub fn narrative_extraction_set_human_field_lock(
 /// read authority either way, per the Run Kind Policy's
 /// `duringBackfillProductBehavior`).
 ///
-/// **Currently unwired.** It was called from `open.rs`'s post-swap zone
-/// until that turned every workspace open into a second-connection writer
-/// and started failing foreground deferred transactions with
-/// SQLITE_BUSY_SNAPSHOT; see the comment at the former call site in
-/// `open.rs` for the hazard and what re-wiring requires. Retained because
-/// it is the intended automatic-once entry point once that is fixed.
+/// The durable C2-5B phase owner invokes the per-project implementation on
+/// its live `Database` connection. This facade remains a compatibility entry
+/// point for callers that need best-effort workspace bootstrap; it does not
+/// own phase discovery or dispatch.
 pub fn narrative_extraction_bootstrap_legacy_backfill(db: &Database) {
     let project_ids: Vec<String> = match db.with_conn(|conn| {
         let mut statement =
-            conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, rowid ASC")?;
+            conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, id ASC")?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)

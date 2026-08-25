@@ -36,6 +36,30 @@ does not add a Scope V2 runtime, a schema/table migration, or a Disclosure
 runtime connection; it only prevents a future Narrative IR activation from
 silently claiming Scope adoption.
 
+### Historical run-relative scope basis (NIR-0 / C2B)
+
+`narrative-scope-authority-basis/2` is a sealed, historical basis for one
+`snapshot:<runId>`. It records the document-to-scene mapping and the
+independent Reading Order and Story Time projections used by that run. It is
+not a live Scope Registry, a current-project Order Oracle, or a producer or
+resolver of scope authority. Duplicate Story keys remain explicitly
+unresolved; a unique key must resolve to its UTF-16 lexical rank. Neither case
+falls back to Reading Order.
+
+The carrier token `source.snapshot@2` is reserved to the typed snapshot-task
+writer/reader. The Electron coordinator supplies a closed basis companion;
+Native independently re-derives it from the durable Run scope and tree rows
+before it stores one shadow artifact. Generic artifact input cannot mint this
+carrier. The existing `source.snapshot@1` source identity authority remains
+unchanged, and the shadow artifact is not promoted into live Scope authority.
+V1 data has no implicit upgrade path; a rebuild is required.
+
+The historical producer/reader is a `shadow` foundation only. Until C2B
+ScopeOverride wiring and a separate project-scope order authority establish a
+live/current Oracle, runtime ScopeOverride handling continues to stop with the
+exact `NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE` code. This slice adds no new IPC
+command, persistence migration, or current-Revision promotion.
+
 ## Context
 
 ADR 005の旧`NarrativeScope`は、Timeline、Worldline、Scene、Viewpoint、

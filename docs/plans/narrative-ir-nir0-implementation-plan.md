@@ -379,14 +379,20 @@ interface HumanDerivedRevisionBasisV2 {
 
 `parentAssertionDigest` binds the derivation source. It does not claim that parent and child Assertions are identical. Identity is implied only by the `projection-only` invariants.
 
-A Human-derived Revision may use only these Context entry exposures:
+A Human-derived Revision's own derivation Context entries may use only these
+exposures:
 
 ```text
 deterministic-stage
 author-supplied
 ```
 
-`model-visible` is forbidden because no model execution occurred.
+`model-visible` is forbidden for own entries because no model execution
+occurred. Contexts copied from the immediate parent Revision are carried
+verbatim under the explicit lineage marker `inheritedFromRevisionId`
+(which must equal `parentRevisionId`); an inherited entry keeps its original
+exposure — `model-visible` included — as audit provenance of the parent
+execution, and rewriting it would falsify that provenance (ADR 011 §4.1).
 
 ### 4.4 Producer and Revision Actor are separate
 
@@ -1102,7 +1108,9 @@ NIR-0 is complete only when all of the following are true.
 28. Every Chronicle pilot AI Stage carries Run / Task / Attempt / Stage identity.
 29. Structured repair is a child Stage execution in the same Attempt.
 30. Context Set is the only dynamic model-input authority for the pilot.
-31. Human-derived Context Set contains no `model-visible` entry.
+31. Human-derived Context Set contains no own (non-inherited) `model-visible`
+    entry; inherited parent entries keep their exposure under
+    `inheritedFromRevisionId` lineage (ADR 011 §4.1).
 32. Raw response retention is not falsely claimed.
 33. Interpreter modules cannot import or call SQL, DB mutation, Prepared Commit, Typed Writer, Agent Writer, or generic MCP SQL paths.
 34. Static validation detects a new unauthorized Freshness authority in code, not only a policy declaration.

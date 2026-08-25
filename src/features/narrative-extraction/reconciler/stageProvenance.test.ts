@@ -62,6 +62,14 @@ async function receiptFor(
     finalRequestDigest,
     modelExecutionBinding,
     responseDigest: RESPONSE_DIGEST,
+    rawObservationsDigest:
+      stageExecution.stageId === NARRATIVE_STAGE_IDS.eventSynthesis
+        ? DIGEST
+        : null,
+    parsedOutputDigest:
+      stageExecution.stageId === NARRATIVE_STAGE_IDS.eventSynthesis
+        ? DIGEST
+        : null,
     parseStatus,
     terminalStatus,
   });

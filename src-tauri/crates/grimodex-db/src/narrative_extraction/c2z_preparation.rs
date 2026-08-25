@@ -13,22 +13,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::commit::digest_plan;
+pub(crate) use super::consumer_identity::APPLICATION_CONSUMER_KIND;
 use super::dependency_edges::{
-    canonical_source_object_identity, RUN_CONSUMER_KIND, SOURCE_IDENTITY_PREFIXES,
+    canonical_source_object_identity, validate_stored_source_object_identity, RUN_CONSUMER_KIND,
 };
-use super::maintenance_runtime::{REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX};
+use super::legacy_backfill::{is_valid_completed_backfill_marker, CompletedBackfillMarker};
+use super::maintenance_lifecycle::load_completed_maintenance_run_in_tx;
+use super::maintenance_runtime::{
+    load_durable_maintenance_runs, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+};
+use super::maintenance_runtime::{
+    select_latest_relevant_run_for_readiness, validate_phase_success_outcome,
+};
 use super::restore_rebuild::{
-    DependencyGraphVerifyReport, REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION,
+    validate_graph_state_digest, DependencyGraphVerifyReport, REBUILD_CONTRACT_VERSION,
+    VERIFY_CONTRACT_VERSION,
 };
 use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
-
-/// The reserved Consumer kind targeted by the C2-Z Application re-key.
-///
-/// This literal is intentionally local to the preparation report. The
-/// `application` kind remains reserved in `consumer_identity.rs` until the
-/// canonical Producer/evaluator path lands; adding it to that vocabulary here
-/// would make a dry-run look like an implemented Consumer.
-pub const APPLICATION_CONSUMER_KIND: &str = "application";
 
 /// All Verify checks required by the C2-Z policy. A stored Verify outcome must
 /// explicitly report machine-readable coverage for this complete set before it
@@ -146,6 +147,7 @@ pub struct ProjectCutoverReadiness {
     pub derived_state_rebuild: ReadinessGate,
     pub parity: ReadinessGate,
     pub no_active_backfill_or_repair: ReadinessGate,
+    pub phase_lifecycle: ReadinessGate,
     pub incremental_runtime: ReadinessGate,
 }
 
@@ -190,20 +192,21 @@ pub struct InvalidLegacyDependency {
 }
 
 type LegacyDependencyLoad = (BTreeMap<String, Vec<String>>, Vec<InvalidLegacyDependency>);
-type BackfillRunRow = (String, String, Option<String>);
-type VerifyRunRow = (
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
 type IncrementalCursorRow = (
     i64,
     Option<String>,
     Option<String>,
     Option<String>,
     Option<i64>,
+    Option<String>,
+);
+type IncrementalLatestRunRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
     Option<String>,
 );
 
@@ -334,6 +337,7 @@ struct RunEdgeForRekey {
     id: String,
     run_id: String,
     source_object_identity: String,
+    read_set_json: String,
     owning_run_id: Option<String>,
     owning_run_exists_in_project: bool,
 }
@@ -462,7 +466,7 @@ pub fn inspect_legacy_generic_freshness_parity(
     })
 }
 
-/// Pure read-only planner for moving legacy Backfill Run Edges to the reserved
+/// Pure read-only planner for moving legacy Backfill Run Edges to the
 /// Application Consumer kind. It never inserts, updates, deletes, or records
 /// a migration marker.
 pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<ApplicationRekeyPlan> {
@@ -523,11 +527,7 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
             });
             continue;
         }
-        if edge.source_object_identity.trim().is_empty()
-            || !SOURCE_IDENTITY_PREFIXES
-                .iter()
-                .any(|prefix| edge.source_object_identity.starts_with(prefix))
-        {
+        if validate_stored_source_object_identity(&edge.source_object_identity).is_err() {
             invalid.push(RekeyInvalidItem {
                 edge_id: Some(edge.id.clone()),
                 application_id: None,
@@ -543,6 +543,18 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
             });
             continue;
         }
+
+        let old_read_token = match single_rekey_read_set_token(&edge.read_set_json) {
+            Ok(token) => token,
+            Err(_) => {
+                invalid.push(RekeyInvalidItem {
+                    edge_id: Some(edge.id.clone()),
+                    application_id: None,
+                    reason: "run-edge-read-set-invalid".to_string(),
+                });
+                continue;
+            }
+        };
 
         let key = (edge.run_id.clone(), edge.source_object_identity.clone());
         let candidates = expected_by_run_source
@@ -612,6 +624,25 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
                 mapping_kind: mapping_kind.clone(),
             });
         }
+        let matching_read_set = planned_candidates.iter().any(|candidate| {
+            single_rekey_read_set_token(&candidate.planned_read_set_json)
+                .map(|token| token == old_read_token)
+                .unwrap_or(false)
+        });
+        if !matching_read_set {
+            invalid.push(RekeyInvalidItem {
+                edge_id: Some(edge.id.clone()),
+                application_id: planned_candidates
+                    .first()
+                    .map(|candidate| candidate.application_id.clone()),
+                reason: if mapping_kind == RekeyMappingKind::Exact {
+                    "run-edge-read-set-mismatch".to_string()
+                } else {
+                    "run-edge-read-set-mismatch-fan-out".to_string()
+                },
+            });
+            continue;
+        }
         if mapping_kind == RekeyMappingKind::Exact {
             exact.extend(planned_candidates);
         } else {
@@ -662,8 +693,7 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
 /// only when every Project is ready; missing Projects are reported as
 /// incomplete rather than vacuously passing.
 pub fn inspect_workspace_cutover_readiness(conn: &Connection) -> Result<WorkspaceCutoverReadiness> {
-    let mut statement =
-        conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, rowid ASC")?;
+    let mut statement = conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, id ASC")?;
     let project_ids = statement
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -700,6 +730,8 @@ pub fn inspect_project_cutover_readiness(
     let parity_report = inspect_legacy_generic_freshness_parity(conn, project_id)?;
     let parity = gate_from_state(parity_report.state, "legacy-generic-parity");
     let no_active_backfill_or_repair = inspect_active_gate(conn, project_id)?;
+    let phase_lifecycle =
+        inspect_phase_lifecycle_gate(conn, project_id, current_epoch_id.as_deref())?;
     let incremental_runtime =
         inspect_incremental_runtime_gate(conn, project_id, current_epoch_id.as_deref())?;
 
@@ -713,6 +745,7 @@ pub fn inspect_project_cutover_readiness(
         derived_state_rebuild.state,
         parity.state,
         no_active_backfill_or_repair.state,
+        phase_lifecycle.state,
         incremental_runtime.state,
     ]);
     Ok(ProjectCutoverReadiness {
@@ -725,6 +758,7 @@ pub fn inspect_project_cutover_readiness(
         derived_state_rebuild,
         parity,
         no_active_backfill_or_repair,
+        phase_lifecycle,
         incremental_runtime,
     })
 }
@@ -931,7 +965,7 @@ fn load_legacy_dependencies_for_rekey(
 fn load_run_edges(conn: &Connection, project_id: &str) -> Result<Vec<RunEdgeForRekey>> {
     let mut statement = conn.prepare(
         "SELECT edge.id, edge.consumer_key, edge.source_object_identity,
-                edge.owning_run_id,
+                edge.read_set_json, edge.owning_run_id,
                 CASE WHEN run.id IS NULL THEN 0 ELSE 1 END
            FROM narrative_dependency_edges edge
            LEFT JOIN narrative_extraction_runs run
@@ -944,11 +978,28 @@ fn load_run_edges(conn: &Connection, project_id: &str) -> Result<Vec<RunEdgeForR
             id: row.get(0)?,
             run_id: row.get(1)?,
             source_object_identity: row.get(2)?,
-            owning_run_id: row.get(3)?,
-            owning_run_exists_in_project: row.get::<_, i64>(4)? != 0,
+            read_set_json: row.get(3)?,
+            owning_run_id: row.get(4)?,
+            owning_run_exists_in_project: row.get::<_, i64>(5)? != 0,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn single_rekey_read_set_token(read_set_json: &str) -> Result<String> {
+    let values: Vec<Value> = serde_json::from_str(read_set_json)?;
+    anyhow::ensure!(
+        values.len() == 1,
+        "C2-Z re-key read set must contain exactly one observed token"
+    );
+    let token = values[0]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("C2-Z re-key read set token must be a string"))?;
+    anyhow::ensure!(
+        !token.trim().is_empty() && token.trim() == token,
+        "C2-Z re-key read set token must be non-empty and unpadded"
+    );
+    Ok(token.to_string())
 }
 
 fn find_existing_application_edge(
@@ -982,29 +1033,41 @@ fn inspect_backfill_gate(
     let Some(epoch_id) = epoch_id else {
         return Ok(ReadinessGate::incomplete("current-semantic-epoch-missing"));
     };
-    let row: Option<BackfillRunRow> = conn
-        .query_row(
-            "SELECT id, status, semantic_epoch_id
-               FROM narrative_extraction_runs
-              WHERE project_id = ?1 AND run_kind = 'backfill'
-                AND work_key = 'legacy-dependency-backfill:v2'
-              ORDER BY created_at DESC, id DESC LIMIT 1",
-            params![project_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()?;
-    let Some((_, status, run_epoch_id)) = row else {
+    let runs = load_durable_maintenance_runs(conn, project_id)?;
+    let run = select_latest_relevant_run_for_readiness(&runs, Some(epoch_id), true, |run| {
+        run.run_kind == "backfill"
+    })?;
+    let Some(run) = run else {
         return Ok(ReadinessGate::incomplete("legacy-backfill-run-missing"));
     };
-    if status != "completed" {
-        return Ok(if matches!(status.as_str(), "pending" | "running") {
+    if run.status != "completed" {
+        return Ok(if matches!(run.status.as_str(), "pending" | "running") {
             ReadinessGate::blocked("legacy-backfill-active")
         } else {
             ReadinessGate::blocked("legacy-backfill-not-completed")
         });
     }
-    if run_epoch_id.as_deref() != Some(epoch_id) {
+    if run.semantic_epoch_id.as_deref() != Some(epoch_id) {
         return Ok(ReadinessGate::blocked("legacy-backfill-epoch-mismatch"));
+    }
+    if load_completed_maintenance_run_in_tx(conn, &run.run_id).is_err() {
+        return Ok(ReadinessGate::blocked("legacy-backfill-lifecycle-invalid"));
+    }
+    let marker_valid = is_valid_completed_backfill_marker(
+        conn,
+        project_id,
+        &CompletedBackfillMarker {
+            run_kind: &run.run_kind,
+            status: &run.status,
+            spec_json: run.spec_json.as_deref(),
+            semantic_epoch_id: run.semantic_epoch_id.as_deref(),
+            work_key: run.work_key.as_deref(),
+            completed_at: run.completed_at.as_deref(),
+            outcome_summary_json: run.outcome_summary_json.as_deref(),
+        },
+    )?;
+    if !marker_valid {
+        return Ok(ReadinessGate::blocked("legacy-backfill-marker-invalid"));
     }
     Ok(ReadinessGate::passed())
 }
@@ -1019,44 +1082,30 @@ fn inspect_verify_gate(
             "current-semantic-epoch-missing",
         )));
     };
-    let row: Option<VerifyRunRow> = conn
-        .query_row(
-            "SELECT id, status, semantic_epoch_id, work_key, outcome_summary_json
-               FROM narrative_extraction_runs
-              WHERE project_id = ?1 AND run_kind = 'dependency-verify'
-              ORDER BY created_at DESC, id DESC LIMIT 1",
-            params![project_id],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((run_id, status, run_epoch_id, work_key, outcome_json)) = row else {
+    let runs = load_durable_maintenance_runs(conn, project_id)?;
+    let run = select_latest_relevant_run_for_readiness(&runs, Some(epoch_id), false, |run| {
+        run.run_kind == "dependency-verify"
+    })?;
+    let Some(run) = run else {
         return Ok(VerifyReadiness::from_gate(ReadinessGate::incomplete(
             "verify-run-missing",
         )));
     };
     let mut result = VerifyReadiness::from_gate(ReadinessGate::incomplete("verify-incomplete"));
-    result.run_id = Some(run_id);
-    if status != "completed" {
+    result.run_id = Some(run.run_id.clone());
+    if run.status != "completed" {
         result.state = ReadinessState::Blocked;
         result.reasons = vec!["verify-run-not-completed".to_string()];
         return Ok(result);
     }
     result.completed = true;
-    if run_epoch_id.as_deref() != Some(epoch_id) {
+    if run.semantic_epoch_id.as_deref() != Some(epoch_id) {
         result.state = ReadinessState::Blocked;
         result.reasons = vec!["verify-epoch-mismatch".to_string()];
         return Ok(result);
     }
     let expected_work_key = format!("{VERIFY_WORK_KEY_PREFIX}{epoch_id}");
-    match work_key.as_deref() {
+    match run.work_key.as_deref() {
         None => {
             result.state = ReadinessState::Incomplete;
             result.reasons = vec!["verify-work-key-missing".to_string()];
@@ -1069,7 +1118,7 @@ fn inspect_verify_gate(
         }
         Some(_) => {}
     }
-    let Some(outcome_json) = outcome_json else {
+    let Some(outcome_json) = run.outcome_summary_json.as_deref() else {
         result.reasons = vec!["verify-outcome-missing".to_string()];
         return Ok(result);
     };
@@ -1115,6 +1164,36 @@ fn inspect_verify_gate(
     if outcome.get("reportDigest").and_then(Value::as_str) != Some(expected_digest.as_str()) {
         result.state = ReadinessState::Blocked;
         result.reasons = vec!["verify-report-digest-mismatch".to_string()];
+        return Ok(result);
+    }
+    if load_completed_maintenance_run_in_tx(conn, &run.run_id).is_err() {
+        result.state = ReadinessState::Blocked;
+        result.reasons = vec!["verify-lifecycle-invalid".to_string()];
+        return Ok(result);
+    }
+    if validate_phase_success_outcome(
+        "dependency-verify",
+        project_id,
+        run.work_key.as_deref().unwrap_or_default(),
+        Some(epoch_id),
+        &outcome,
+    )
+    .is_err()
+    {
+        result.state = ReadinessState::Blocked;
+        result.reasons = vec!["verify-outcome-invalid".to_string()];
+        return Ok(result);
+    }
+    if let Err(error) = validate_graph_state_digest(
+        conn,
+        project_id,
+        outcome
+            .get("graphStateDigest")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    ) {
+        result.state = ReadinessState::Blocked;
+        result.reasons = vec![format!("verify-graph-state-invalid: {error}")];
         return Ok(result);
     }
     result.report_clean = report.is_clean();
@@ -1171,40 +1250,26 @@ fn inspect_rebuild_gate(
     let Some(epoch_id) = epoch_id else {
         return Ok(ReadinessGate::incomplete("current-semantic-epoch-missing"));
     };
-    let row: Option<VerifyRunRow> = conn
-        .query_row(
-            "SELECT id, status, semantic_epoch_id, work_key, outcome_summary_json
-               FROM narrative_extraction_runs
-              WHERE project_id = ?1 AND run_kind = 'semantic-index-rebuild'
-              ORDER BY created_at DESC, id DESC LIMIT 1",
-            params![project_id],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((_, status, run_epoch_id, work_key, outcome_json)) = row else {
+    let runs = load_durable_maintenance_runs(conn, project_id)?;
+    let run = select_latest_relevant_run_for_readiness(&runs, Some(epoch_id), false, |run| {
+        run.run_kind == "semantic-index-rebuild"
+    })?;
+    let Some(run) = run else {
         return Ok(ReadinessGate::incomplete(
             "derived-state-rebuild-run-missing",
         ));
     };
-    if status != "completed" {
+    if run.status != "completed" {
         return Ok(ReadinessGate::blocked(
             "derived-state-rebuild-not-completed",
         ));
     }
-    if run_epoch_id.as_deref() != Some(epoch_id) {
+    if run.semantic_epoch_id.as_deref() != Some(epoch_id) {
         return Ok(ReadinessGate::blocked(
             "derived-state-rebuild-epoch-mismatch",
         ));
     }
-    match work_key.as_deref() {
+    match run.work_key.as_deref() {
         None => {
             return Ok(ReadinessGate::incomplete(
                 "derived-state-rebuild-work-key-missing",
@@ -1217,7 +1282,7 @@ fn inspect_rebuild_gate(
         }
         Some(_) => {}
     }
-    let Some(outcome_json) = outcome_json else {
+    let Some(outcome_json) = run.outcome_summary_json.as_deref() else {
         return Ok(ReadinessGate::incomplete(
             "derived-state-rebuild-summary-missing",
         ));
@@ -1261,6 +1326,11 @@ fn inspect_rebuild_gate(
         Some(_) => {}
     }
 
+    if load_completed_maintenance_run_in_tx(conn, &run.run_id).is_err() {
+        return Ok(ReadinessGate::blocked(
+            "derived-state-rebuild-lifecycle-invalid",
+        ));
+    }
     let Some(summary) = outcome.get("summary").and_then(Value::as_object) else {
         return Ok(ReadinessGate::incomplete(
             "derived-state-rebuild-summary-missing",
@@ -1285,6 +1355,19 @@ fn inspect_rebuild_gate(
     if summary_digest != expected_summary_digest {
         return Ok(ReadinessGate::blocked(
             "derived-state-rebuild-summary-digest-mismatch",
+        ));
+    }
+    if validate_phase_success_outcome(
+        "semantic-index-rebuild",
+        project_id,
+        run.work_key.as_deref().unwrap_or_default(),
+        Some(epoch_id),
+        &outcome,
+    )
+    .is_err()
+    {
+        return Ok(ReadinessGate::blocked(
+            "derived-state-rebuild-outcome-invalid",
         ));
     }
     if REQUIRED_REBUILD_SUMMARY_FIELDS
@@ -1312,11 +1395,154 @@ fn inspect_rebuild_gate(
     }
 }
 
+/// The maintenance lifecycle contract behind each phase Run: exactly one
+/// Task and exactly one Attempt, all terminalized together. A completed Run
+/// row alone proves neither that the phase actually executed under the
+/// lifecycle owner nor when it did; this gate proves both the closure and
+/// the Backfill -> Rebuild -> confirmation-Verify causal order from parsed
+/// lifecycle instants, failing closed on unparseable or tied evidence.
+fn inspect_phase_lifecycle_gate(
+    conn: &Connection,
+    project_id: &str,
+    epoch_id: Option<&str>,
+) -> Result<ReadinessGate> {
+    let Some(epoch_id) = epoch_id else {
+        return Ok(ReadinessGate::incomplete("current-semantic-epoch-missing"));
+    };
+
+    struct PhaseRun {
+        run_id: String,
+        created_at: String,
+        completed_at: Option<String>,
+    }
+
+    let latest_phase = |run_kind: &str, work_key: Option<&str>| -> Result<Option<PhaseRun>> {
+        let (sql, params_vec): (String, Vec<&str>) = match work_key {
+            Some(work_key) => (
+                "SELECT id, status, semantic_epoch_id, created_at, completed_at
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
+                  ORDER BY created_at DESC, id DESC LIMIT 1"
+                    .to_string(),
+                vec![project_id, run_kind, work_key],
+            ),
+            None => (
+                "SELECT id, status, semantic_epoch_id, created_at, completed_at
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = ?2
+                  ORDER BY created_at DESC, id DESC LIMIT 1"
+                    .to_string(),
+                vec![project_id, run_kind],
+            ),
+        };
+        type PhaseRunRow = (String, String, Option<String>, String, Option<String>);
+        let row: Option<PhaseRunRow> = conn
+            .query_row(&sql, rusqlite::params_from_iter(params_vec), |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .optional()?;
+        Ok(
+            row.and_then(|(run_id, status, run_epoch, created_at, completed_at)| {
+                (status == "completed" && run_epoch.as_deref() == Some(epoch_id)).then_some(
+                    PhaseRun {
+                        run_id,
+                        created_at,
+                        completed_at,
+                    },
+                )
+            }),
+        )
+    };
+
+    let backfill = latest_phase("backfill", Some("legacy-dependency-backfill:v3"))?;
+    let verify = latest_phase("dependency-verify", None)?;
+    let rebuild = latest_phase("semantic-index-rebuild", None)?;
+    let (Some(backfill), Some(verify), Some(rebuild)) = (backfill, verify, rebuild) else {
+        // The per-phase gates report the precise missing/blocked reason.
+        return Ok(ReadinessGate::incomplete(
+            "phase-lifecycle-evidence-missing",
+        ));
+    };
+
+    for (phase, run) in [
+        ("backfill", &backfill),
+        ("verify", &verify),
+        ("rebuild", &rebuild),
+    ] {
+        let (task_total, task_closed): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN status = 'completed'
+                                       AND completed_at IS NOT NULL THEN 1 ELSE 0 END), 0)
+               FROM narrative_extraction_tasks WHERE run_id = ?1",
+            params![run.run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let (attempt_total, attempt_closed): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN a.status = 'completed'
+                                       AND a.completed_at IS NOT NULL THEN 1 ELSE 0 END), 0)
+               FROM narrative_extraction_attempts a
+               JOIN narrative_extraction_tasks t ON t.id = a.task_id
+              WHERE t.run_id = ?1",
+            params![run.run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if task_total != 1 || task_closed != 1 || attempt_total != 1 || attempt_closed != 1 {
+            return Ok(ReadinessGate::blocked(format!(
+                "phase-lifecycle-closure-invalid:{phase}"
+            )));
+        }
+    }
+
+    let parse_instant = |value: Option<&str>| -> Option<chrono::DateTime<chrono::Utc>> {
+        value.and_then(|value| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|parsed| parsed.with_timezone(&chrono::Utc))
+        })
+    };
+    let backfill_completed = parse_instant(backfill.completed_at.as_deref());
+    let rebuild_created = parse_instant(Some(rebuild.created_at.as_str()));
+    let rebuild_completed = parse_instant(rebuild.completed_at.as_deref());
+    let verify_created = parse_instant(Some(verify.created_at.as_str()));
+    let (
+        Some(backfill_completed),
+        Some(rebuild_created),
+        Some(rebuild_completed),
+        Some(verify_created),
+    ) = (
+        backfill_completed,
+        rebuild_created,
+        rebuild_completed,
+        verify_created,
+    )
+    else {
+        return Ok(ReadinessGate::blocked("phase-lifecycle-instant-invalid"));
+    };
+    // The clean Verify the readiness gate accepted must be the confirmation
+    // Verify that strictly followed the Rebuild, and the Rebuild must not
+    // predate the Backfill boundary. Equal instants cannot prove order.
+    if !(backfill_completed <= rebuild_created && rebuild_completed < verify_created) {
+        return Ok(ReadinessGate::blocked("phase-causality-unproven"));
+    }
+    Ok(ReadinessGate::passed())
+}
+
 fn inspect_active_gate(conn: &Connection, project_id: &str) -> Result<ReadinessGate> {
+    // Every automatic maintenance kind blocks an irreversible cutover while
+    // active: a running Verify or Rebuild changes the very evidence the
+    // other gates are reading.
     let active_runs: i64 = conn.query_row(
         "SELECT COUNT(*) FROM narrative_extraction_runs
           WHERE project_id = ?1 AND status IN ('pending', 'running')
-            AND run_kind IN ('backfill', 'dependency-repair')",
+            AND run_kind IN ('backfill', 'dependency-repair',
+                             'dependency-verify', 'semantic-index-rebuild')",
         params![project_id],
         |row| row.get(0),
     )?;
@@ -1381,7 +1607,7 @@ fn inspect_incremental_runtime_gate(
             },
         )
         .optional()?;
-    let Some((acknowledged, last_error, cursor_epoch, active_run_id, reserved, _lease_expires_at)) =
+    let Some((acknowledged, last_error, cursor_epoch, active_run_id, reserved, lease_expires_at)) =
         cursor
     else {
         return Ok(ReadinessGate::incomplete(
@@ -1391,20 +1617,46 @@ fn inspect_incremental_runtime_gate(
     if acknowledged > feed_head {
         return Ok(ReadinessGate::blocked("cursor-acknowledges-past-feed-head"));
     }
+    if acknowledged < feed_head {
+        return Ok(ReadinessGate::incomplete(
+            "cursor-acknowledges-before-feed-head",
+        ));
+    }
     if last_error
         .as_deref()
         .is_some_and(|error| !error.trim().is_empty())
     {
         return Ok(ReadinessGate::blocked("incremental-freshness-cursor-error"));
     }
-    match (active_run_id.as_deref(), reserved, cursor_epoch.as_deref()) {
-        (None, None, None) => {}
-        (Some(run_id), Some(reserved), Some(cursor_epoch)) => {
+    match (
+        active_run_id.as_deref(),
+        reserved,
+        cursor_epoch.as_deref(),
+        lease_expires_at.as_deref(),
+    ) {
+        // A cursor's epoch and lease belong to the reservation owner.  A
+        // cursor with no owner must have all reservation columns cleared;
+        // accepting a current epoch without a run would let a stale lease
+        // masquerade as durable quiescence.
+        (None, None, None, None) => {}
+        (Some(run_id), Some(reserved), Some(cursor_epoch), Some(lease_expires_at)) => {
             if reserved < acknowledged || reserved > feed_head {
                 return Ok(ReadinessGate::blocked("cursor-reservation-range-invalid"));
             }
             if cursor_epoch != epoch_id {
                 return Ok(ReadinessGate::blocked("cursor-reservation-epoch-mismatch"));
+            }
+            if lease_expires_at.trim().is_empty() {
+                return Ok(ReadinessGate::blocked("cursor-reservation-lease-invalid"));
+            }
+            let lease_valid: bool = conn.query_row(
+                "SELECT julianday(?1) IS NOT NULL
+                   AND julianday(?1) > julianday('now')",
+                [lease_expires_at],
+                |row| row.get(0),
+            )?;
+            if !lease_valid {
+                return Ok(ReadinessGate::blocked("cursor-reservation-lease-invalid"));
             }
             let active: Option<(String, String)> = conn
                 .query_row(
@@ -1419,18 +1671,137 @@ fn inspect_incremental_runtime_gate(
             if run_project_id != project_id || !matches!(status.as_str(), "pending" | "running") {
                 return Ok(ReadinessGate::blocked("cursor-active-run-invalid"));
             }
+            // A reservation, even a well-formed one with a future lease, is
+            // active work rather than completed liveness evidence.  Do not
+            // let an older completed Run below satisfy the gate while this
+            // reservation still owns the cursor.
+            return Ok(ReadinessGate::incomplete(
+                "incremental-freshness-reservation-active",
+            ));
         }
         _ => return Ok(ReadinessGate::blocked("cursor-reservation-shape-invalid")),
     }
-    // The scheduler runs in Electron main and has no durable liveness bit.
-    // Structural cursor consistency is useful evidence, but cannot be
-    // promoted to a cutover PASS from this read-only DB view.
-    Ok(ReadinessGate {
-        state: ReadinessState::Incomplete,
-        completed: true,
-        passed: false,
-        reasons: vec!["scheduler-liveness-not-provable-from-db".to_string()],
-    })
+    let latest: Option<IncrementalLatestRunRow> = conn
+        .query_row(
+            "SELECT id, project_id, semantic_epoch_id, status, completed_at,
+                    work_key, outcome_summary_json
+               FROM narrative_extraction_runs
+              WHERE project_id = ?1
+                AND run_kind = 'freshness-evaluation'
+                AND consumer_id = ?2
+              ORDER BY (julianday(created_at) IS NULL) DESC,
+                       julianday(created_at) DESC, created_at DESC, id DESC
+              LIMIT 1",
+            params![project_id, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((run_id, run_project_id, run_epoch, status, completed_at, work_key, outcome_json)) =
+        latest
+    else {
+        return Ok(ReadinessGate::incomplete(
+            "incremental-freshness-completed-run-missing",
+        ));
+    };
+    if run_project_id != project_id
+        || run_epoch.as_deref() != Some(epoch_id)
+        || status != "completed"
+        || !completed_at.as_deref().is_some_and(is_canonical_instant)
+        || work_key
+            .as_deref()
+            .is_none_or(|key| incremental_work_key_range(key, epoch_id).is_none())
+    {
+        return Ok(ReadinessGate::incomplete(
+            "incremental-freshness-completed-run-not-current",
+        ));
+    }
+    let Some(outcome_json) = outcome_json else {
+        return Ok(ReadinessGate::incomplete(
+            "incremental-freshness-completed-outcome-missing",
+        ));
+    };
+    let outcome: Value = match serde_json::from_str(&outcome_json) {
+        Ok(value) => value,
+        Err(_) => {
+            return Ok(ReadinessGate::blocked(
+                "incremental-freshness-completed-outcome-malformed",
+            ))
+        }
+    };
+    let outcome_run_id = outcome.get("runId").and_then(Value::as_str);
+    let outcome_project_id = outcome.get("projectId").and_then(Value::as_str);
+    let through_sequence = outcome
+        .get("throughSequenceInclusive")
+        .and_then(Value::as_i64);
+    let from_sequence = outcome.get("fromSequenceExclusive").and_then(Value::as_i64);
+    let has_more = outcome.get("hasMore").and_then(Value::as_bool);
+    let Some(from_sequence) = from_sequence else {
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-completed-outcome-sequence-invalid",
+        ));
+    };
+    if from_sequence < 0 || from_sequence > feed_head {
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-completed-outcome-sequence-invalid",
+        ));
+    }
+    let Some((work_key_from, work_key_through)) = work_key
+        .as_deref()
+        .and_then(|key| incremental_work_key_range(key, epoch_id))
+    else {
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-completed-work-key-invalid",
+        ));
+    };
+    if outcome_run_id != Some(run_id.as_str())
+        || outcome_project_id != Some(project_id)
+        || work_key_from != from_sequence
+        || work_key_through != feed_head
+        || through_sequence != Some(feed_head)
+        || has_more != Some(false)
+    {
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-completed-outcome-not-at-feed-head",
+        ));
+    }
+    // The database can prove that the last observed run reached the Feed
+    // head, but it cannot prove that a scheduler is still alive and able to
+    // process the next event.  Keep this gate incomplete until a real
+    // external scheduler-health evidence seam exists; a completed Run must
+    // never self-attest its producer's liveness.
+    Ok(ReadinessGate::incomplete(
+        "incremental-freshness-scheduler-liveness-evidence-unavailable",
+    ))
+}
+
+fn is_canonical_instant(value: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|parsed| parsed.to_rfc3339_opts(chrono::SecondsFormat::Millis, true) == value)
+        .unwrap_or(false)
+}
+
+fn incremental_work_key_range(key: &str, epoch_id: &str) -> Option<(i64, i64)> {
+    let mut parts = key.split(':');
+    if parts.next()? != "incremental-freshness" || parts.next()? != epoch_id {
+        return None;
+    }
+    let from = parts.next()?.parse::<i64>().ok()?;
+    let through = parts.next()?.parse::<i64>().ok()?;
+    let digest = parts.next()?;
+    if parts.next().is_some() || digest.trim().is_empty() {
+        return None;
+    }
+    Some((from, through))
 }
 
 #[cfg(test)]
@@ -1477,7 +1848,7 @@ mod tests {
              VALUES (?1, ?2, 'maintenance', '{}', '{}', 'digest-c2z', 'completed',
                      '{}', '2026-08-20T00:00:00.000Z',
                      '2026-08-20T00:00:01.000Z', 0, 'backfill', ?3,
-                     'legacy-dependency-backfill:v2')",
+                     'legacy-dependency-backfill:v3')",
             params![RUN_ID, project_id, EPOCH_ID],
         )?;
         conn.execute(
@@ -2064,7 +2435,7 @@ mod tests {
                      status, coverage_json, created_at, run_kind, semantic_epoch_id, work_key)
                  VALUES ('run-foreign', 'project-c2z-foreign', 'maintenance', '{}', '{}',
                          'digest', 'completed', '{}', '2026-08-20T00:00:00.000Z',
-                         'backfill', ?1, 'legacy-dependency-backfill:v2')",
+                         'backfill', ?1, 'legacy-dependency-backfill:v3')",
                 params![EPOCH_ID],
             )?;
             seed_run_edge_with_legacy_dependency(conn, "foreign", "run-foreign")?;

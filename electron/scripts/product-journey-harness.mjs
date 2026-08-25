@@ -28,7 +28,7 @@ const MAIN_PROCESS_DRAIN_TIMEOUT_MS = 2_000;
  * unavoidable main-process/Chromium stderr noise and deliberately requires a
  * phase, an owner-readable reason, and a short expiry.
  */
-const PRODUCT_JOURNEY_ELECTRON_PHASES = Object.freeze([
+export const PRODUCT_JOURNEY_ELECTRON_PHASES = Object.freeze([
   "configure",
   "editor-persistence/write",
   "editor-persistence/restart",
@@ -55,6 +55,26 @@ const PRODUCT_JOURNEY_ELECTRON_PHASES = Object.freeze([
   "map-native-roundtrip/restart",
   "snapshot-native-roundtrip/write",
   "snapshot-native-roundtrip/restart",
+  "c2-5b-schema-backfill-verify/open",
+  "c2-5b-restore-verify-rebuild-verify/restore-fixture",
+  "c2-5b-restore-verify-rebuild-verify/open",
+  "c2-5b-graph-digest-no-skip/baseline",
+  "c2-5b-graph-digest-no-skip/changed",
+  "c2-5b-rule-digest-no-skip/baseline",
+  "c2-5b-rule-digest-no-skip/changed",
+  "c2-5b-producer-generation-no-skip/baseline",
+  "c2-5b-producer-generation-no-skip/changed",
+  "c2-5b-transient-bounded-retry/open",
+  "c2-5b-terminal-failure-inbox/open",
+  "c2-5b-terminal-failure-inbox/reopened",
+  "c2-5b-interrupted-run-recovery/interrupted",
+  "c2-5b-interrupted-run-recovery/recovered",
+  "c2-5b-no-automatic-repair/restore-fixture",
+  "c2-5b-no-automatic-repair/open",
+  "c2-5b-foreground-write-workspace-wake/settle-primary",
+  "c2-5b-foreground-write-workspace-wake/authoring",
+  "c2-5b-incremental-liveness/before-restart",
+  "c2-5b-incremental-liveness/after-restart",
 ]);
 
 export const MAIN_PROCESS_NOISE_ALLOWLIST = Object.freeze([
@@ -93,6 +113,17 @@ export const MAIN_PROCESS_NOISE_ALLOWLIST = Object.freeze([
     expiresOn: "2026-09-30",
     pattern:
       /^\[\d+:\d+\/\d+\.\d+:ERROR:gpu\/command_buffer\/service\/shared_image\/shared_image_manager\.cc:\d+\] SharedImageManager::ProduceMemory: Trying to Produce a Memory representation from a non-existent mailbox\.\r?\n?$/,
+  }),
+  Object.freeze({
+    id: "ubuntu-xvfb-restore-reload-shared-image-skia",
+    phases: Object.freeze([
+      "c2-5b-restore-verify-rebuild-verify/open",
+    ]),
+    reason:
+      "Observed on Ubuntu Xvfb during the trusted production renderer reload after Settings backup restore; only this exact C2-5B phase is allowed.",
+    expiresOn: "2026-09-30",
+    pattern:
+      /^\[\d+:\d+\/\d+\.\d+:ERROR:gpu\/command_buffer\/service\/shared_image\/shared_image_manager\.cc:\d+\] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox\.\r?\n?$/,
   }),
 ]);
 

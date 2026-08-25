@@ -8,7 +8,7 @@
       "existingRunKindColumnValue": "backfill",
       "purpose": "Deterministic versioned transform from the existing limited Application Dependency data to the Generic Dependency Graph, once per project after a schema upgrade.",
       "trigger": "automatic-once-after-schema-upgrade",
-      "triggerDetail": "A post-open bootstrap step, not the SCHEMA migration transaction itself: the migration only creates tables/columns/indexes and leaves a backfill-required marker; Workspace open succeeds first, then bootstrap detects the marker and creates the Run.",
+      "triggerDetail": "The SCHEMA 32 owner performs the C2-ZB Application re-key atomically for durable legacy evidence. A post-open bootstrap Backfill still runs the v3 transform for evidence created outside that migration boundary; it creates the fresh owning Run after workspace open and never switches the canonical Freshness readers (that remains C2-ZC).",
       "sameWorkKeyReuse": "reuse-running-and-completed",
       "epochBound": true,
       "cursorBound": false,
@@ -57,15 +57,14 @@
         "retryNarrativeLegacyBackfill",
         "getNarrativeBackfillStatus"
       ],
+      "runtimeRoute": {
+        "registryVersion": "narrative-maintenance-route/v1",
+        "routeId": "dependency-backfill",
+        "productionEntryPoint": "run_narrative_maintenance_cycle"
+      },
       "implementationStatus": {
-        "state": "unwired-blocked",
-        "triggerSymbol": "narrative_extraction_bootstrap_legacy_backfill",
-        "productionEntryPoints": ["retryNarrativeLegacyBackfill"],
-        "blockedReason": "The post-open bootstrap was wired and then removed: running it on the detached workspace-maintenance connection made every Workspace open a second writer, and a commit from a second connection fails the foreground's in-flight deferred transaction with SQLITE_BUSY_SNAPSHOT, which busy_timeout cannot retry. Because migrate seeds default-project, this fired on every open, including brand-new workspaces.",
-        "blockedOn": [
-          "run-the-backfill-on-the-live-workspace-authority-connection",
-          "or-make-domain-writes-deferred-transactions-immediate"
-        ]
+        "state": "wired",
+        "productionEntryPoints": ["run_narrative_maintenance_cycle"]
       }
     },
     {
@@ -78,8 +77,14 @@
         "restore-semantic-epoch-rotation",
         "migration-semantic-epoch-rotation",
         "integrity-repair-completed",
-        "dependency-rule-or-normalizer-contract-digest-changed",
-        "before-c2z-cutover"
+        "dependency-rule-or-normalizer-contract-digest-changed"
+      ],
+      "futureTriggerObligations": [
+        {
+          "condition": "before-c2z-cutover",
+          "gate": "C2-ZC",
+          "satisfiesCurrentWiredStatus": false
+        }
       ],
       "manualTriggerAllowed": true,
       "sameWorkKeyReuse": "reuse-running-only",
@@ -115,12 +120,14 @@
       ],
       "forbidSideEffectRepair": true,
       "adminCommands": ["verifyNarrativeDependencyGraph"],
+      "runtimeRoute": {
+        "registryVersion": "narrative-maintenance-route/v1",
+        "routeId": "dependency-verify",
+        "productionEntryPoint": "run_narrative_maintenance_cycle"
+      },
       "implementationStatus": {
-        "state": "unwired-blocked",
-        "triggerSymbol": "run_dependency_verify_for_project",
-        "productionEntryPoints": ["verifyNarrativeDependencyGraph"],
-        "blockedReason": "The Verify checks themselves are implemented and tested, but nothing subscribes them to the declared triggerEvents: no production caller fires Verify on backfill completion, Semantic Epoch rotation, integrity repair, or contract-digest change. Only the manual Admin IPC starts a Verify Run today.",
-        "blockedOn": ["c2-t2-trigger-event-subscription"]
+        "state": "wired",
+        "productionEntryPoints": ["run_narrative_maintenance_cycle"]
       }
     },
     {
@@ -142,8 +149,14 @@
         "contract-version-mismatch",
         "dependency-set-digest-mismatch",
         "verify-reports-derived-rebuild-required",
-        "restore-completed",
-        "before-c2z-cutover"
+        "restore-completed"
+      ],
+      "futureTriggerObligations": [
+        {
+          "condition": "before-c2z-cutover",
+          "gate": "C2-ZC",
+          "satisfiesCurrentWiredStatus": false
+        }
       ],
       "manualTriggerAllowed": true,
       "sameWorkKeyReuse": "reuse-running-only",
@@ -164,12 +177,14 @@
         "domain-undo-journal"
       ],
       "adminCommands": ["rebuildNarrativeDerivedState"],
+      "runtimeRoute": {
+        "registryVersion": "narrative-maintenance-route/v1",
+        "routeId": "dependency-rebuild-derived",
+        "productionEntryPoint": "run_narrative_maintenance_cycle"
+      },
       "implementationStatus": {
-        "state": "unwired-blocked",
-        "triggerSymbol": "rebuild_narrative_derived_state_for_project",
-        "productionEntryPoints": ["rebuildNarrativeDerivedState"],
-        "blockedReason": "The orchestrator is implemented and tested, but nothing detects the declared conditions and starts it: no production caller fires Rebuild-Derived on Semantic Epoch rotation, a missing derived row, a contract-version or dependency-set-digest mismatch, or a Verify report asking for it. Only the manual Admin IPC starts a Rebuild-Derived Run today.",
-        "blockedOn": ["c2-t2-derived-state-invalidation-detection"]
+        "state": "wired",
+        "productionEntryPoints": ["run_narrative_maintenance_cycle"]
       }
     },
     {

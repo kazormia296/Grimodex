@@ -52,12 +52,31 @@ fn valid_envelope() -> Value {
             "assertionId": null,
             "assertionKind": "scene-event@1",
             "payloadSchemaRef": {"id": "narrative.chronicle.scene-event", "version": "1"},
-            "payload": {"eventId": "event:1"},
+            "payload": {
+                "eventId": "event:1",
+                "summary": "A arrives.",
+                "actuality": "actual",
+                "significance": "major",
+                "attribution": "narrator",
+                "narrativeFrame": "story-world",
+                "observationRefs": ["observation:1"],
+                "originalObservationRefs": ["observation:1"],
+                "mergedObservationRefs": ["observation:1"],
+                "observationSummaries": [{
+                    "observationRef": "observation:1",
+                    "predicate": "arrival",
+                    "semanticType": "arrival",
+                    "participants": [{"surface": "A", "role": "subject"}],
+                    "locationSurface": "station",
+                    "temporalExpressions": ["morning"],
+                    "durationKind": "instant"
+                }]
+            },
             "scope": scope,
             "modality": "modality-explicit-text",
             "polarity": "affirmative",
             "supportClass": "direct-source",
-            "producer": {"kind": "reconciler-proposal", "id": "chronicle", "version": "1"}
+            "producer": {"kind": "reconciler-proposal", "id": "chronicle.reconciler", "version": "1"}
         },
         "assertionDigests": {
             "assertionCoreDigest": DIGEST,
@@ -67,13 +86,23 @@ fn valid_envelope() -> Value {
         "changeIntent": {"changeKind": "add"},
         "effectiveMaterialBasis": {
             "sourceBasis": [{"sourceKind": "scene", "sourceKey": "scene:1", "revisionToken": "rev:1"}],
-            "evidenceSet": [{"evidenceRef": "anchor:1"}],
+            "evidenceSet": [{"evidenceRef": "anchor:1", "documentRef": "document:1"}],
             "dependencySet": [{
                 "dependencyId": "dependency:1",
                 "inputRef": "anchor:1",
-                "contextIds": [],
+                "contextIds": ["context:1"],
                 "role": "direct-evidence",
                 "selector": {"kind": "whole-source"}
+            }, {
+                "dependencyId": "dependency:component",
+                "inputRef": "component:chronicle.event-synthesis.prompt",
+                "contextIds": [],
+                "role": "component-contract",
+                "selector": {
+                    "kind": "component-contract",
+                    "contractId": "chronicle.event-synthesis.prompt",
+                    "contractDigest": DIGEST
+                }
             }],
             "dependencySetDigest": DIGEST,
             "materialBasisDigest": DIGEST
@@ -82,8 +111,14 @@ fn valid_envelope() -> Value {
             "kind": "interpretation",
             "runId": "run:1",
             "taskId": "task:1",
-            "producer": {"kind": "reconciler-proposal", "id": "chronicle", "version": "1"},
-            "contextSet": [],
+            "producer": {"kind": "reconciler-proposal", "id": "chronicle.reconciler", "version": "1"},
+            "contextSet": [{
+                "contextId": "context:1",
+                "inputRef": "anchor:1",
+                "stageId": "narrative_event_synthesize",
+                "exposure": "model-visible",
+                "selector": {"kind": "whole-source"}
+            }],
             "contextSetDigest": DIGEST,
             "componentContractDigest": DIGEST,
             "finalRequestDigest": DIGEST
@@ -96,6 +131,58 @@ fn valid_envelope() -> Value {
             "adapterContractVersion": "1"
         }
     })
+}
+
+fn human_derived_envelope() -> Value {
+    let mut envelope = valid_envelope();
+    let basis = envelope
+        .get_mut("revisionBasis")
+        .and_then(Value::as_object_mut)
+        .expect("interpretation revision basis");
+    for field in [
+        "producer",
+        "runId",
+        "taskId",
+        "contextSet",
+        "contextSetDigest",
+        "componentContractDigest",
+        "finalRequestDigest",
+    ] {
+        basis.remove(field);
+    }
+    basis.insert("kind".to_owned(), json!("human-derived"));
+    basis.insert("parentRevisionId".to_owned(), json!("revision:1"));
+    basis.insert("expectedParentEnvelopeDigest".to_owned(), json!(DIGEST));
+    basis.insert("parentAssertionDigest".to_owned(), json!(DIGEST));
+    basis.insert(
+        "rootInterpretationRevisionId".to_owned(),
+        json!("revision:1"),
+    );
+    basis.insert(
+        "derivation".to_owned(),
+        json!({
+            "adapterId": "chronicle.scene-event",
+            "adapterVersion": "1",
+            "kind": "projection-only",
+            "proposalPayloadChangedPaths": ["/title"]
+        }),
+    );
+    basis.insert(
+        "revisionActor".to_owned(),
+        json!({"kind": "human", "surfaceId": "chronicle-review"}),
+    );
+    basis.insert(
+        "derivationContextSet".to_owned(),
+        json!([{
+            "contextId": "context:1",
+            "inputRef": "anchor:1",
+            "stageId": "narrative_event_synthesize",
+            "exposure": "author-supplied",
+            "selector": {"kind": "whole-source"}
+        }]),
+    );
+    basis.insert("derivationContextSetDigest".to_owned(), json!(DIGEST));
+    envelope
 }
 
 #[test]
@@ -200,6 +287,79 @@ fn validates_envelope_and_rejects_unknown_vocabularies_and_add_targets() {
         candidate["assertion"]["payload"] = payload;
         assert!(validate_chronicle_scene_event_v2(&candidate).is_err());
     }
+
+    let mut candidate = valid_envelope();
+    candidate["assertion"]["payload"] = json!({});
+    assert!(
+        validate_chronicle_scene_event_v2(&candidate).is_err(),
+        "an empty semantic payload must not become valid merely by recomputing digests"
+    );
+
+    let mut candidate = valid_envelope();
+    candidate["assertion"]["producer"]["id"] = json!("reconciler-run-42");
+    candidate["revisionBasis"]["producer"]["id"] = json!("reconciler-run-42");
+    candidate["assertion"]["producer"]["version"] = json!("2026-08");
+    candidate["revisionBasis"]["producer"]["version"] = json!("2026-08");
+    assert!(
+        validate_chronicle_scene_event_v2(&candidate).is_ok(),
+        "producer identity/version are execution-bound, not hard-coded"
+    );
+
+    let mut candidate = valid_envelope();
+    candidate["assertion"]["payload"]["attribution"] = json!("character:alice");
+    candidate["assertion"]["payload"]["observationSummaries"][0]
+        .as_object_mut()
+        .expect("summary")
+        .remove("semanticType");
+    candidate["assertion"]["payload"]["observationSummaries"][0]
+        .as_object_mut()
+        .expect("summary")
+        .remove("locationSurface");
+    candidate["assertion"]["payload"]["observationSummaries"][0]["participants"] = json!([]);
+    candidate["assertion"]["payload"]["observationSummaries"][0]["temporalExpressions"] = json!([]);
+    assert!(validate_chronicle_scene_event_v2(&candidate).is_ok());
+
+    let mut candidate = valid_envelope();
+    candidate["assertion"]["payload"]["observationSummaries"][0]["durationKind"] =
+        json!("unbounded");
+    assert!(validate_chronicle_scene_event_v2(&candidate).is_err());
+}
+
+#[test]
+fn applies_basis_specific_chronicle_producer_contracts() {
+    let human = human_derived_envelope();
+    assert!(
+        validate_chronicle_scene_event_v2(&human).is_ok(),
+        "Human-derived revisionBasis intentionally omits producer"
+    );
+
+    let mut human_with_producer = human_derived_envelope();
+    human_with_producer["revisionBasis"]["producer"] = json!({
+        "kind": "reconciler-proposal",
+        "id": "reconciler-run-42",
+        "version": "2026-08"
+    });
+    assert!(
+        validate_chronicle_scene_event_v2(&human_with_producer).is_err(),
+        "Human-derived revisionBasis must reject a producer claim"
+    );
+
+    let mut interpretation_mismatch = valid_envelope();
+    interpretation_mismatch["revisionBasis"]["producer"]["id"] = json!("other-reconciler");
+    assert!(
+        validate_chronicle_scene_event_v2(&interpretation_mismatch).is_err(),
+        "model-derived assertion and revision producers must remain equal"
+    );
+
+    let mut interpretation_without_producer = valid_envelope();
+    interpretation_without_producer["revisionBasis"]
+        .as_object_mut()
+        .expect("interpretation revision basis")
+        .remove("producer");
+    assert!(
+        validate_chronicle_scene_event_v2(&interpretation_without_producer).is_err(),
+        "model-derived revisionBasis must retain its producer requirement"
+    );
 }
 
 #[test]
@@ -324,6 +484,7 @@ fn enforces_dependency_role_selector_and_adr010_coverage() {
     assert!(validate_narrative_revision_envelope_v2(&ranking_only).is_err());
 
     let mut quality_context = valid_envelope();
+    quality_context["revisionBasis"]["contextSet"][0]["inputRef"] = json!("quality:context");
     quality_context["effectiveMaterialBasis"]["dependencySet"] = json!([
         {
             "dependencyId": "dependency:1",
@@ -335,7 +496,7 @@ fn enforces_dependency_role_selector_and_adr010_coverage() {
         {
             "dependencyId": "dependency:quality",
             "inputRef": "quality:context",
-            "contextIds": [],
+            "contextIds": ["context:1"],
             "role": "quality-context",
             "selector": {"kind": "whole-source"}
         }
@@ -522,4 +683,55 @@ fn scope_derivation_exposes_typed_result_without_runtime_side_effects() {
     )
     .expect("scope derivation");
     let _: ChronicleScopeDerivation = result;
+}
+
+#[test]
+fn enforces_human_context_lineage_rules() {
+    // An inherited parent Context keeps its true model-visible exposure under
+    // the explicit lineage marker, and stays subject to Dependency coverage.
+    let mut inherited = human_derived_envelope();
+    inherited["effectiveMaterialBasis"]["dependencySet"][0]["contextIds"] = json!(["context:1"]);
+    inherited["revisionBasis"]["derivationContextSet"] = json!([{
+        "contextId": "context:1",
+        "inputRef": "anchor:1",
+        "stageId": "narrative_event_synthesize",
+        "exposure": "model-visible",
+        "selector": {"kind": "whole-source"},
+        "inheritedFromRevisionId": "revision:1"
+    }]);
+    assert!(
+        validate_chronicle_scene_event_v2(&inherited).is_ok(),
+        "inherited model-visible context with lineage marker must be valid"
+    );
+
+    // The same exposure WITHOUT the lineage marker is this derivation's own
+    // context and stays forbidden.
+    let mut own_model_visible = inherited.clone();
+    own_model_visible["revisionBasis"]["derivationContextSet"][0]
+        .as_object_mut()
+        .expect("entry")
+        .remove("inheritedFromRevisionId");
+    assert!(
+        validate_chronicle_scene_event_v2(&own_model_visible).is_err(),
+        "own model-visible context must remain forbidden"
+    );
+
+    // Lineage must name the immediate parent revision.
+    let mut wrong_parent = inherited.clone();
+    wrong_parent["revisionBasis"]["derivationContextSet"][0]["inheritedFromRevisionId"] =
+        json!("revision:other");
+    assert!(
+        validate_chronicle_scene_event_v2(&wrong_parent).is_err(),
+        "lineage marker naming a non-parent revision must be rejected"
+    );
+
+    // Interpretation Context Sets record the run's own execution inputs and
+    // never carry the lineage marker.
+    let mut interpretation = valid_envelope();
+    interpretation["revisionBasis"]["contextSet"][0]["inheritedFromRevisionId"] =
+        json!("revision:1");
+    assert!(
+        validate_chronicle_scene_event_v2(&interpretation).is_err(),
+        "interpretation context entries must not carry a lineage marker"
+    );
 }

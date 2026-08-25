@@ -6,6 +6,10 @@ import StarterKit from "@tiptap/starter-kit";
 
 import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 import { IPC } from "../shared/ipcContract.js";
+import {
+  NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS,
+} from "./narrativeMaintenance.js";
+import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<
@@ -68,6 +72,16 @@ function invokeHandler(): (
   if (!handler) throw new Error("grim:invoke handler was not registered");
   return handler;
 }
+
+const activeNarrativeMaintenanceCiSeam: NarrativeMaintenanceCiSeam = {
+  active: true,
+  ownerToken: "c2-5b-product-journey-owner-v1",
+  fault: null,
+  trigger: "foreground-workspace-wake",
+  setup: null,
+  productJourneyBarrierId: "barrier-test",
+  correlation: "correlation-test",
+};
 
 async function issueAgentCapability(
   toolName: string,
@@ -1592,6 +1606,296 @@ describe("registerIpcRouter fail-soft logging", () => {
     expect(warn.mock.calls.flat().join(" ")).not.toContain("db_execute");
     expect(warn.mock.calls.flat().join(" ")).not.toContain("SECRET SQL");
     warn.mockRestore();
+  });
+
+  it("schedules one delayed exact release only for a successful foreground patch", async () => {
+    vi.useFakeTimers();
+    try {
+      const release = vi.fn(async () => '{"status":"completed"}');
+      const claim = vi.fn(async () => '{"status":"claimed","runId":"run-1"}');
+      const treeNodePatch = vi.fn(async () => '{"patched":true}');
+      registerIpcRouter(
+        {
+          treeNodePatch,
+          claimNarrativeMaintenanceForegroundBarrier: claim,
+          releaseNarrativeMaintenanceForegroundBarrier: release,
+        } as unknown as NapiBackendLike,
+        {},
+        undefined,
+        undefined,
+        activeNarrativeMaintenanceCiSeam,
+      );
+      const envelope = await invokeHandler()(
+        { sender: { id: 888 } },
+        "tree_node_patch",
+        {
+          payload: {
+            projectId: "p1",
+            requestId: "patch-request-1",
+            sessionId: "patch-session-1",
+            eventUid: "patch-event-1",
+            origin: "human",
+            nodeId: "scene-1",
+            updatedAt: "2026-08-23T00:00:00.000Z",
+            patch: { content: "{}" },
+            bumpVersion: true,
+            baseVersion: 0,
+            changeEvent: {
+              eventUid: "patch-event-1",
+              sessionId: "patch-session-1",
+              timestamp: 1,
+            },
+          },
+        },
+      );
+      expect(envelope.ok).toBe(true);
+      expect(release).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(
+        NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS - 1,
+      );
+      expect(release).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.resolve();
+      expect(release).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledWith("p1", "run-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("claims the exact project before arming a timer and never releases a wrong project", async () => {
+    vi.useFakeTimers();
+    try {
+      const claim = vi.fn(async (projectId: string) =>
+        projectId === "p1"
+          ? '{"status":"claimed","runId":"run-1"}'
+          : '{"status":"not-held"}',
+      );
+      const release = vi.fn(async () => '{"status":"completed"}');
+      const treeNodePatch = vi.fn(async () => '{"patched":true}');
+      registerIpcRouter(
+        {
+          treeNodePatch,
+          claimNarrativeMaintenanceForegroundBarrier: claim,
+          releaseNarrativeMaintenanceForegroundBarrier: release,
+        } as unknown as NapiBackendLike,
+        {},
+        undefined,
+        undefined,
+        activeNarrativeMaintenanceCiSeam,
+      );
+
+      const invoke = invokeHandler();
+      const patchArgs = (projectId: string, suffix: string) => ({
+        payload: {
+          projectId,
+          requestId: `claim-request-${suffix}`,
+          sessionId: `claim-session-${suffix}`,
+          eventUid: `claim-event-${suffix}`,
+          origin: "human",
+          nodeId: "scene-1",
+          updatedAt: "2026-08-23T00:00:00.000Z",
+          patch: { content: "{}" },
+          bumpVersion: true,
+          baseVersion: 0,
+          changeEvent: {
+            eventUid: `claim-event-${suffix}`,
+            sessionId: `claim-session-${suffix}`,
+            timestamp: 1,
+          },
+        },
+      });
+      const wrong = await invoke(
+        { sender: { id: 886 } },
+        "tree_node_patch",
+        patchArgs("wrong-project", "wrong"),
+      );
+      expect(wrong.ok).toBe(true);
+      expect(claim).toHaveBeenCalledWith("wrong-project");
+      await vi.runAllTimersAsync();
+      expect(release).not.toHaveBeenCalled();
+
+      const exact = await invoke(
+        { sender: { id: 886 } },
+        "tree_node_patch",
+        patchArgs("p1", "exact"),
+      );
+      expect(exact.ok).toBe(true);
+      expect(claim).toHaveBeenLastCalledWith("p1");
+      expect(release).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(
+        NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS,
+      );
+      await vi.runOnlyPendingTimersAsync();
+      expect(release).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledWith("p1", "run-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails closed on malformed or rejected native claims without arming a timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const claim = vi
+        .fn()
+        .mockResolvedValueOnce(
+          '{"status":"claimed","runId":"run-1","projectId":"p1"}',
+        )
+        .mockRejectedValueOnce(new Error("workspace swapped"));
+      const release = vi.fn();
+      const treeNodePatch = vi.fn(async () => '{"patched":true}');
+      registerIpcRouter(
+        {
+          treeNodePatch,
+          claimNarrativeMaintenanceForegroundBarrier: claim,
+          releaseNarrativeMaintenanceForegroundBarrier: release,
+        } as unknown as NapiBackendLike,
+        {},
+        undefined,
+        undefined,
+        activeNarrativeMaintenanceCiSeam,
+      );
+      const invoke = invokeHandler();
+      const patchArgs = (suffix: string) => ({
+        payload: {
+          projectId: "p1",
+          requestId: `malformed-request-${suffix}`,
+          sessionId: `malformed-session-${suffix}`,
+          eventUid: `malformed-event-${suffix}`,
+          origin: "human",
+          nodeId: "scene-1",
+          updatedAt: "2026-08-23T00:00:00.000Z",
+          patch: { content: "{}" },
+          bumpVersion: true,
+          baseVersion: 0,
+          changeEvent: {
+            eventUid: `malformed-event-${suffix}`,
+            sessionId: `malformed-session-${suffix}`,
+            timestamp: 1,
+          },
+        },
+      });
+      await invoke(
+        { sender: { id: 885 } },
+        "tree_node_patch",
+        patchArgs("first"),
+      );
+      await invoke(
+        { sender: { id: 885 } },
+        "tree_node_patch",
+        patchArgs("second"),
+      );
+      await vi.runAllTimersAsync();
+      expect(claim).toHaveBeenCalledTimes(2);
+      expect(release).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not schedule for an inactive seam", async () => {
+    const release = vi.fn();
+    const treeNodePatch = vi.fn(async () => '{"patched":true}');
+    registerIpcRouter(
+      { treeNodePatch, releaseNarrativeMaintenanceForegroundBarrier: release } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+    );
+    const envelope = await invokeHandler()(
+      { sender: { id: 887 } },
+      "tree_node_patch",
+      {
+        payload: {
+          projectId: "p1",
+          requestId: "patch-request-inactive",
+          sessionId: "patch-session-inactive",
+          eventUid: "patch-event-inactive",
+          origin: "human",
+          nodeId: "scene-1",
+          updatedAt: "2026-08-23T00:00:00.000Z",
+          patch: { content: "{}" },
+          bumpVersion: true,
+          baseVersion: 0,
+        },
+      },
+    );
+    expect(envelope.ok).toBe(true);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule for a failed foreground patch", async () => {
+    const release = vi.fn();
+    const failedPatch = vi.fn(async () => {
+      throw new Error("patch failed");
+    });
+    registerIpcRouter(
+      { treeNodePatch: failedPatch, releaseNarrativeMaintenanceForegroundBarrier: release } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      activeNarrativeMaintenanceCiSeam,
+    );
+    const failedEnvelope = await invokeHandler()(
+      { sender: { id: 889 } },
+      "tree_node_patch",
+      {
+        payload: {
+          projectId: "p1",
+          requestId: "patch-request-2",
+          sessionId: "patch-session-2",
+          eventUid: "patch-event-2",
+          origin: "human",
+          nodeId: "scene-1",
+          updatedAt: "2026-08-23T00:00:00.000Z",
+          patch: { content: "{}" },
+          bumpVersion: true,
+          baseVersion: 0,
+        },
+      },
+    );
+    expect(failedEnvelope.ok).toBe(false);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule for a successful patch under a non-foreground seam", async () => {
+    const release = vi.fn();
+    const treeNodePatch = vi.fn(async () => '{"patched":true}');
+    registerIpcRouter(
+      { treeNodePatch, releaseNarrativeMaintenanceForegroundBarrier: release } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      {
+        ...activeNarrativeMaintenanceCiSeam,
+        trigger: "dependency-gap",
+      },
+    );
+    const envelope = await invokeHandler()(
+      { sender: { id: 890 } },
+      "tree_node_patch",
+      {
+        payload: {
+          projectId: "p1",
+          requestId: "patch-request-3",
+          sessionId: "patch-session-3",
+          eventUid: "patch-event-3",
+          origin: "human",
+          nodeId: "scene-1",
+          updatedAt: "2026-08-23T00:00:00.000Z",
+          patch: { content: "{}" },
+          bumpVersion: true,
+          baseVersion: 0,
+        },
+      },
+    );
+    expect(envelope.ok).toBe(true);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(release).not.toHaveBeenCalled();
   });
 });
 

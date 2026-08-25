@@ -49,6 +49,43 @@ export const PRODUCT_CHAT_SCOPES = Object.freeze(
 export const PRODUCT_JOURNEY_ROLLOUT_MODE = "shadow";
 
 /**
+ * C2-5B's durable maintenance acceptance catalog is part of the canonical
+ * product catalog.  The runner can still select the eleven-entry C2-5B set
+ * explicitly for focused acceptance, while normal canonical execution keeps
+ * the IDs visible to impact selection instead of silently omitting the lane.
+ */
+const NARRATIVE_MAINTENANCE_JOURNEY_SPECS = Object.freeze([
+  [
+    "schema-backfill-verify",
+    "schema migration marker/open -> Backfill -> Verify",
+  ],
+  [
+    "restore-verify-rebuild-verify",
+    "restore epoch -> Verify -> Rebuild -> Verify",
+  ],
+  ["graph-digest-no-skip", "graph digest change -> no skip"],
+  ["rule-digest-no-skip", "rule digest change -> no skip"],
+  ["producer-generation-no-skip", "producer generation change -> no skip"],
+  ["transient-bounded-retry", "transient failure -> bounded retry -> success"],
+  ["terminal-failure-inbox", "terminal contract failure -> durable Inbox"],
+  ["interrupted-run-recovery", "process interruption -> durable recovery"],
+  ["no-automatic-repair", "dependency gap -> Verify/Rebuild without Repair"],
+  ["foreground-write-workspace-wake", "foreground write -> workspace wake"],
+  ["incremental-liveness", "incremental feed -> restart -> current epoch"],
+]);
+
+export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG = freezeEntries(
+  NARRATIVE_MAINTENANCE_JOURNEY_SPECS.map(([suffix, description]) => ({
+    id: `c2-5b-${suffix}`,
+    domains: ["narrative-maintenance"],
+    interactions: ["narrative-maintenance->sqlite"],
+    contracts: [`c2-5b:${suffix}`],
+    capabilities: ["electron", "napi"],
+    description,
+  })),
+);
+
+/**
  * Dependency-free product journey catalog.
  *
  * Keep this file free of Playwright, Electron, YAML, and workspace package
@@ -177,6 +214,7 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     contracts: ["native-command-roundtrip:project-snapshot"],
     capabilities: ["electron", "napi"],
   },
+  ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
 ]);
 
 /**
@@ -238,6 +276,35 @@ export const PRODUCT_JOURNEY_COVERAGE_BACKLOG = freezeEntries([
 ]);
 
 /**
+ * Every main-process maintenance owner is a direct C2-5B impact source.  The
+ * trigger and reacceptance paths are listed even when their production seam is
+ * still landing on the integration branch, so an isolated change cannot fall
+ * through to an unrelated/default selector.
+ */
+export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
+  "electron/main/index.ts",
+  "electron/main/foregroundBarrierRelease.test.ts",
+  "electron/main/narrativeMaintenance.ts",
+  "electron/main/narrativeMaintenance.test.ts",
+  "electron/main/narrativeMaintenance.phase1.test.ts",
+  "electron/main/narrativeMaintenance.followup.test.ts",
+  "electron/main/narrativeMaintenance.reacceptance.test.ts",
+  "electron/main/narrativeMaintenance.reacceptance.wire.test.ts",
+  "electron/main/narrativeMaintenance.wiring.test.ts",
+  "electron/main/narrativeMaintenance.electronRoute.test.ts",
+  "electron/main/narrativeMaintenanceBootstrap.ts",
+  "electron/main/narrativeMaintenanceBootstrap.test.ts",
+  "electron/main/narrativeMaintenanceCiSeam.ts",
+  "electron/main/narrativeMaintenanceCiSeam.test.ts",
+  "electron/main/narrativeMaintenanceTriggers.ts",
+  "electron/main/narrativeMaintenanceTriggers.test.ts",
+]);
+export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB =
+  "electron/main/narrativeMaintenance*.ts";
+export const NARRATIVE_MAINTENANCE_FOREGROUND_OWNER_GLOB =
+  "electron/main/foregroundBarrier*.ts";
+
+/**
  * Rules are deliberately explicit. A path is safe to skip only when it
  * matches a neutral rule; every unknown path falls back to the full catalog.
  */
@@ -273,6 +340,30 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
       "electron/native/grimodex-node/**",
     ],
     forceAll: true,
+  },
+  {
+    id: "narrative-maintenance-product-journeys",
+    domains: ["narrative-maintenance"],
+    paths: [
+      "electron/scripts/narrative-maintenance-product-journeys.mjs",
+      "electron/scripts/product-journeys.mjs",
+      "scripts/c2-5b-product-journeys.test.mjs",
+      "scripts/product-journey-phase1.test.mjs",
+      "electron/main/narrativeFreshness.ts",
+      "electron/main/narrativeFreshness.test.ts",
+      NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB,
+      NARRATIVE_MAINTENANCE_FOREGROUND_OWNER_GLOB,
+      ...NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
+      "electron/native/grimodex-node/**",
+      "src-tauri/crates/grimodex-db/src/migrate.rs",
+      "src-tauri/crates/grimodex-db/src/backup_restore.rs",
+      "src-tauri/crates/grimodex-core/src/workspace_schema.rs",
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/**",
+      "src-tauri/crates/grimodex-db/tests/narrative_*",
+      "src/features/narrative-extraction/maintenance/**",
+      "policies/narrative/narrative-run-kind-policy.json",
+      "policies/narrative/narrative-failure-policy.json",
+    ],
   },
   {
     id: "editor",
@@ -511,6 +602,10 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
     id: "native-command-roundtrip:project-snapshot",
     domains: ["project-snapshot", "sqlite"],
   },
+  ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map((journey) => ({
+    id: journey.contracts[0],
+    domains: ["narrative-maintenance"],
+  })),
 ]);
 
 export const PRODUCT_SCOPE_TRANSITIONS = freezeEntries([
@@ -614,6 +709,10 @@ export const PRODUCT_INTERACTION_REQUIREMENTS = freezeEntries([
   {
     id: "workspace-lifecycle->chat",
     domains: ["workspace-lifecycle", "chat"],
+  },
+  {
+    id: "narrative-maintenance->sqlite",
+    domains: ["narrative-maintenance", "sqlite"],
   },
   {
     id: "editor->project-lifecycle",

@@ -8,6 +8,7 @@
     "adr",
     "scopeSchemaVersion",
     "registryVersion",
+    "historicalAuthorityBasis",
     "implementationStatus",
     "axes",
     "unresolvedReasons",
@@ -35,6 +36,9 @@
     "registryVersion": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*/[1-9][0-9]*$"
+    },
+    "historicalAuthorityBasis": {
+      "$ref": "#/$defs/historicalAuthorityBasis"
     },
     "implementationStatus": { "$ref": "#/$defs/implementationStatus" },
     "adoptionTrack": { "$ref": "#/$defs/scopeAdoptionTrack" },
@@ -315,6 +319,79 @@
           }
         }
       ]
+    },
+    "historicalAuthorityBasis": {
+      "type": "object",
+      "required": [
+        "contractId",
+        "schema",
+        "futureCarrierArtifactKind",
+        "basisKind",
+        "sourceKind",
+        "sourceKeyPattern",
+        "currentOracle",
+        "runtimeStopCode",
+        "v1Compatibility",
+        "implementationStatus"
+      ],
+      "properties": {
+        "contractId": {
+          "const": "narrative-scope-authority-basis/2"
+        },
+        "schema": {
+          "const": "policies/narrative/schemas/narrative-scope-authority-basis-v2.schema.json"
+        },
+        "futureCarrierArtifactKind": {
+          "const": "source.snapshot@2"
+        },
+        "basisKind": {
+          "const": "historical-run-snapshot"
+        },
+        "sourceKind": {
+          "const": "snapshot-document"
+        },
+        "sourceKeyPattern": {
+          "const": "snapshot:<runId>"
+        },
+        "currentOracle": { "const": false },
+        "runtimeStopCode": {
+          "const": "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE"
+        },
+        "v1Compatibility": {
+          "type": "object",
+          "required": ["implicitUpgrade", "rebuildRequired"],
+          "properties": {
+            "implicitUpgrade": { "const": "forbidden" },
+            "rebuildRequired": { "const": true }
+          },
+          "additionalProperties": false
+        },
+        "implementationStatus": {
+          "$ref": "#/$defs/historicalAuthorityImplementationStatus"
+        }
+      },
+      "additionalProperties": false
+    },
+    "historicalAuthorityImplementationStatus": {
+      "type": "object",
+      "required": ["state", "productionEntryPoints", "blockedOn"],
+      "properties": {
+        "state": { "const": "shadow" },
+        "productionEntryPoints": {
+          "const": [
+            "runChronicleExtractionCoordinator",
+            "persist_historical_scope_authority_basis_in_tx",
+            "load_historical_scope_authority_basis"
+          ]
+        },
+        "blockedOn": {
+          "const": [
+            "c2b-scope-override-wiring",
+            "project-scope-order-authority"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "scopeCapabilityStatus": {
       "type": "object",

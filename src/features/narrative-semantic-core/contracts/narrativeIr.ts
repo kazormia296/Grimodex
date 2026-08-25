@@ -147,6 +147,12 @@ export interface NarrativeContextSetEntry {
   readonly stageId: string;
   readonly exposure: ContextExposure;
   readonly selector: DependencySelector;
+  /**
+   * Human-derivation lineage marker: present only on entries copied verbatim
+   * from the immediate parent revision's Context Set. Inherited entries keep
+   * their original exposure (including `model-visible`) as audit provenance.
+   */
+  readonly inheritedFromRevisionId?: string;
 }
 
 export interface NarrativeDependencySetEntry {
@@ -340,6 +346,7 @@ function validateProducer(value: unknown, path: string): Invalid | undefined {
 function validateContextEntry(
   value: unknown,
   path: string,
+  allowInherited: boolean,
 ): Invalid | undefined {
   if (!isRecord(value)) return invalid("invalid-revision-basis", path);
   const required = requireFields(value, [
@@ -350,11 +357,24 @@ function validateContextEntry(
     "selector",
   ]);
   if (required) return invalid(required.reason, `${path}.${required.path}`);
-  const unknown = rejectUnknownFields(
-    value,
-    new Set(["contextId", "inputRef", "stageId", "exposure", "selector"]),
-  );
+  const allowed = allowInherited
+    ? new Set([
+        "contextId",
+        "inputRef",
+        "stageId",
+        "exposure",
+        "selector",
+        "inheritedFromRevisionId",
+      ])
+    : new Set(["contextId", "inputRef", "stageId", "exposure", "selector"]);
+  const unknown = rejectUnknownFields(value, allowed);
   if (unknown) return invalid(unknown.reason, `${path}.${unknown.path}`);
+  if (
+    "inheritedFromRevisionId" in value &&
+    !isNonEmptyString(value.inheritedFromRevisionId)
+  ) {
+    return invalid("invalid-revision-basis", `${path}.inheritedFromRevisionId`);
+  }
   if (
     !isNonEmptyString(value.contextId) ||
     !isNonEmptyString(value.inputRef) ||
@@ -368,18 +388,29 @@ function validateContextEntry(
   return undefined;
 }
 
+// `humanDerived` switches the Context Set into the human-derivation lineage
+// mode: an entry may carry `inheritedFromRevisionId` and, when it does, it is
+// a verbatim copy of a parent Context whose original exposure (including
+// `model-visible`) is preserved as audit provenance. Entries WITHOUT the
+// lineage marker are this derivation's own dynamic inputs and must never be
+// `model-visible` — a human derivation presents nothing to a model.
 function validateContextSet(
   value: unknown,
   path: string,
-  forbidModelVisible: boolean,
+  humanDerived: boolean,
 ): Invalid | undefined {
   if (!Array.isArray(value)) return invalid("invalid-revision-basis", path);
   for (const [index, entry] of value.entries()) {
-    const result = validateContextEntry(entry, `${path}[${index}]`);
+    const result = validateContextEntry(
+      entry,
+      `${path}[${index}]`,
+      humanDerived,
+    );
     if (result) return result;
     if (
-      forbidModelVisible &&
+      humanDerived &&
       isRecord(entry) &&
+      !("inheritedFromRevisionId" in entry) &&
       entry.exposure === "model-visible"
     ) {
       return invalid(
@@ -813,11 +844,30 @@ function validateHumanBasis(
   ) {
     return invalid("invalid-revision-basis", "revisionBasis.revisionActor");
   }
-  return validateContextSet(
+  const contextResult = validateContextSet(
     value.derivationContextSet,
     "revisionBasis.derivationContextSet",
     true,
   );
+  if (contextResult) return contextResult;
+  // Lineage must point at the immediate parent: an inherited entry that names
+  // any other revision would fabricate a Context closure this basis cannot
+  // prove.
+  if (Array.isArray(value.derivationContextSet)) {
+    for (const [index, entry] of value.derivationContextSet.entries()) {
+      if (
+        isRecord(entry) &&
+        "inheritedFromRevisionId" in entry &&
+        entry.inheritedFromRevisionId !== value.parentRevisionId
+      ) {
+        return invalid(
+          "invalid-revision-basis",
+          `revisionBasis.derivationContextSet[${index}].inheritedFromRevisionId`,
+        );
+      }
+    }
+  }
+  return undefined;
 }
 
 function validateRevisionBasis(value: unknown): Invalid | undefined {

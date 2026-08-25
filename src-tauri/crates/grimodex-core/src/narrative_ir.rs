@@ -5,6 +5,7 @@
 //! Canonical scope bytes and digests always go through [`crate::canonical_json`]
 //! so that Rust and TypeScript share one canonicalization primitive.
 
+use serde::{de::Error as _, Deserialize, Deserializer};
 use serde_json::{json, Map, Value};
 use thiserror::Error;
 
@@ -28,6 +29,124 @@ pub const CHRONICLE_EVENT_PROPOSAL_SCHEMA_ID: &str = "narrative.chronicle-event.
 pub const CHRONICLE_EVENT_PROPOSAL_SCHEMA_VERSION: &str = "1";
 pub const CHRONICLE_SCENE_EVENT_ASSERTION_SCHEMA_ID: &str = "narrative.chronicle.scene-event";
 pub const CHRONICLE_SCENE_EVENT_ASSERTION_SCHEMA_VERSION: &str = "1";
+
+const CHRONICLE_RECONCILER_PRODUCER_KIND: &str = "reconciler-proposal";
+
+// Decode-validation type: fields exist to enforce the typed schema at
+// deserialization (deny_unknown_fields + typed enums) and are intentionally
+// not read afterwards.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChronicleSemanticPayload {
+    event_id: String,
+    summary: String,
+    actuality: ChronicleActuality,
+    significance: ChronicleSignificance,
+    attribution: ChronicleAttribution,
+    narrative_frame: ChronicleNarrativeFrame,
+    observation_refs: Vec<String>,
+    original_observation_refs: Vec<String>,
+    merged_observation_refs: Vec<String>,
+    observation_summaries: Vec<ChronicleObservationSummary>,
+    #[serde(default)]
+    semantic_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ChronicleActuality {
+    Actual,
+    Attempted,
+    Prevented,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ChronicleSignificance {
+    Major,
+    SceneLevel,
+}
+
+#[derive(Debug)]
+enum ChronicleAttribution {
+    Narrator,
+    Unknown,
+    // Decode-validation only: the character id is parsed to prove the shape.
+    Character(#[allow(dead_code)] String),
+}
+
+impl<'de> Deserialize<'de> for ChronicleAttribution {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        if value == "narrator" {
+            return Ok(Self::Narrator);
+        }
+        if value == "unknown" {
+            return Ok(Self::Unknown);
+        }
+        if let Some(character) = value.strip_prefix("character:") {
+            if !character.trim().is_empty() {
+                return Ok(Self::Character(character.to_owned()));
+            }
+        }
+        Err(D::Error::custom("unsupported attribution"))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ChronicleNarrativeFrame {
+    StoryWorld,
+    Flashback,
+    Dream,
+    Reported,
+    Hypothetical,
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ChronicleDurationKind {
+    Instant,
+    BoundedInterval,
+    OngoingProcess,
+    Unknown,
+}
+
+// Decode-validation type; see `ChronicleSemanticPayload`.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChronicleObservationSummary {
+    observation_ref: String,
+    predicate: String,
+    #[serde(default)]
+    semantic_type: Option<String>,
+    participants: Vec<ChronicleParticipantSummary>,
+    #[serde(default)]
+    location_surface: Option<String>,
+    temporal_expressions: Vec<String>,
+    duration_kind: ChronicleDurationKind,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChronicleParticipantSummary {
+    surface: String,
+    role: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChronicleProducer {
+    kind: String,
+    id: String,
+    version: String,
+}
 
 const SCOPE_AXES: [&str; 9] = [
     "timeline",
@@ -396,18 +515,38 @@ fn validate_producer(value: &Value, path: &str) -> Result<(), NarrativeIrValidat
     Ok(())
 }
 
-fn validate_context_entry(value: &Value, path: &str) -> Result<(), NarrativeIrValidationError> {
+fn validate_context_entry(
+    value: &Value,
+    path: &str,
+    allow_inherited: bool,
+) -> Result<(), NarrativeIrValidationError> {
     let value = object(value, path)?;
-    reject_unknown(
-        value,
-        &["contextId", "inputRef", "stageId", "exposure", "selector"],
-        path,
-    )?;
+    let allowed: &[&str] = if allow_inherited {
+        &[
+            "contextId",
+            "inputRef",
+            "stageId",
+            "exposure",
+            "selector",
+            "inheritedFromRevisionId",
+        ]
+    } else {
+        &["contextId", "inputRef", "stageId", "exposure", "selector"]
+    };
+    reject_unknown(value, allowed, path)?;
     for field in ["contextId", "inputRef", "stageId"] {
         if !non_empty_string(require(value, field, path)?) {
             return Err(validation_error(
                 "invalid-revision-basis",
                 format!("{path}.{field}"),
+            ));
+        }
+    }
+    if let Some(inherited) = value.get("inheritedFromRevisionId") {
+        if !non_empty_string(inherited) {
+            return Err(validation_error(
+                "invalid-revision-basis",
+                format!("{path}.inheritedFromRevisionId"),
             ));
         }
     }
@@ -419,18 +558,29 @@ fn validate_context_entry(value: &Value, path: &str) -> Result<(), NarrativeIrVa
     Ok(())
 }
 
+/// `human_derived` switches the Context Set into the human-derivation lineage
+/// mode: an entry may carry `inheritedFromRevisionId` and, when it does, it is
+/// a verbatim copy of a parent Context whose original exposure (including
+/// `model-visible`) is preserved as audit provenance. Entries WITHOUT the
+/// lineage marker are this derivation's own dynamic inputs and must never be
+/// `model-visible` — a human derivation presents nothing to a model.
 fn validate_context_set(
     value: &Value,
     path: &str,
-    forbid_model_visible: bool,
+    human_derived: bool,
 ) -> Result<(), NarrativeIrValidationError> {
     let values = value
         .as_array()
         .ok_or_else(|| validation_error("invalid-revision-basis", path))?;
+    // An empty Context Set is valid: a run that presented no dynamic input
+    // records none. The TypeScript mirror and the ratified contract-string
+    // parity corpus both accept it, so rejecting here would be runtime drift.
     for (index, entry) in values.iter().enumerate() {
         let entry_path = format!("{path}[{index}]");
-        validate_context_entry(entry, &entry_path)?;
-        if forbid_model_visible
+        validate_context_entry(entry, &entry_path, human_derived)?;
+        let inherited = entry.get("inheritedFromRevisionId").is_some();
+        if human_derived
+            && !inherited
             && entry.get("exposure").and_then(Value::as_str) == Some("model-visible")
         {
             return Err(validation_error(
@@ -446,6 +596,9 @@ fn validate_source_basis(value: &Value, path: &str) -> Result<(), NarrativeIrVal
     let values = value
         .as_array()
         .ok_or_else(|| validation_error("invalid-material-basis", path))?;
+    if values.is_empty() {
+        return Err(validation_error("invalid-material-basis", path));
+    }
     for (index, entry) in values.iter().enumerate() {
         let entry_path = format!("{path}[{index}]");
         let entry = object(entry, &entry_path)?;
@@ -483,6 +636,9 @@ fn validate_evidence_set(value: &Value, path: &str) -> Result<(), NarrativeIrVal
     let values = value
         .as_array()
         .ok_or_else(|| validation_error("invalid-material-basis", path))?;
+    if values.is_empty() {
+        return Err(validation_error("invalid-material-basis", path));
+    }
     for (index, entry) in values.iter().enumerate() {
         let entry_path = format!("{path}[{index}]");
         let entry = object(entry, &entry_path)?;
@@ -527,6 +683,9 @@ fn validate_dependency_set(value: &Value, path: &str) -> Result<(), NarrativeIrV
     let values = value
         .as_array()
         .ok_or_else(|| validation_error("invalid-material-basis", path))?;
+    if values.is_empty() {
+        return Err(validation_error("invalid-material-basis", path));
+    }
     let registry = load_dependency_role_registry()
         .map_err(|_| validation_error("invalid-material-basis", path))?;
     for (index, entry) in values.iter().enumerate() {
@@ -925,7 +1084,28 @@ fn validate_human_basis(value: &Map<String, Value>) -> Result<(), NarrativeIrVal
         require(value, "derivationContextSet", path)?,
         "revisionBasis.derivationContextSet",
         true,
-    )
+    )?;
+    // Lineage must point at the immediate parent: an inherited entry that
+    // names any other revision would fabricate a Context closure this basis
+    // cannot prove.
+    let parent_revision_id = require(value, "parentRevisionId", path)?
+        .as_str()
+        .unwrap_or_default();
+    if let Some(entries) = value.get("derivationContextSet").and_then(Value::as_array) {
+        for (index, entry) in entries.iter().enumerate() {
+            if let Some(inherited) = entry.get("inheritedFromRevisionId").and_then(Value::as_str) {
+                if inherited != parent_revision_id {
+                    return Err(validation_error(
+                        "invalid-revision-basis",
+                        format!(
+                            "revisionBasis.derivationContextSet[{index}].inheritedFromRevisionId"
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_revision_basis(value: &Value) -> Result<(), NarrativeIrValidationError> {
@@ -1165,6 +1345,39 @@ pub fn validate_chronicle_scene_event_v2(value: &Value) -> Result<(), NarrativeI
     validate_narrative_revision_envelope_v2(value)?;
     let envelope = object(value, "envelope")?;
     let assertion = object(require(envelope, "assertion", "envelope")?, "assertion")?;
+    let assertion_producer = validate_chronicle_reconciler_producer(
+        require(assertion, "producer", "assertion")?,
+        "assertion.producer",
+    )?;
+    let revision_basis = object(
+        require(envelope, "revisionBasis", "envelope")?,
+        "revisionBasis",
+    )?;
+    match revision_basis.get("kind").and_then(Value::as_str) {
+        Some("interpretation") => {
+            let basis_producer = validate_chronicle_reconciler_producer(
+                require(revision_basis, "producer", "revisionBasis")?,
+                "revisionBasis.producer",
+            )?;
+            if assertion_producer != basis_producer {
+                return Err(validation_error("producer-mismatch", "assertion.producer"));
+            }
+        }
+        Some("human-derived") => {
+            // Human-derived revision bases deliberately carry the Native Human
+            // actor and parent CAS instead of a model/reconciler producer. The
+            // structural validator already rejects unknown Human-basis keys;
+            // keep this branch explicit so the Chronicle adapter does not
+            // accidentally impose the model-derived producer equality rule on
+            // a Human child.
+        }
+        _ => {
+            return Err(validation_error(
+                "invalid-revision-basis",
+                "revisionBasis.kind",
+            ));
+        }
+    }
     if require(assertion, "payloadSchemaRef", "assertion")?
         .get("id")
         .and_then(Value::as_str)
@@ -1180,18 +1393,8 @@ pub fn validate_chronicle_scene_event_v2(value: &Value) -> Result<(), NarrativeI
         ));
     }
     let payload = require(assertion, "payload", "assertion")?;
-    let payload = payload
-        .as_object()
-        .ok_or_else(|| validation_error("invalid-payload-schema-ref", "assertion.payload"))?;
-    if ["secret", "disclosure", "revealDocumentRef"]
-        .iter()
-        .any(|key| payload.contains_key(*key))
-    {
-        return Err(validation_error(
-            "invalid-payload-schema-ref",
-            "assertion.payload",
-        ));
-    }
+    validate_chronicle_semantic_payload(payload)?;
+    validate_chronicle_material_contract(envelope)?;
     let change = object(
         require(envelope, "changeIntent", "envelope")?,
         "changeIntent",
@@ -1228,6 +1431,109 @@ pub fn validate_chronicle_scene_event_v2(value: &Value) -> Result<(), NarrativeI
     Ok(())
 }
 
+/// Chronicle C1 narrows the generic Envelope material contract.  These
+/// checks intentionally remain small cross-field invariants: the proposal
+/// payload itself is validated by the Native proposal writer, while this
+/// boundary proves that the sealed material/context/dependency coordinates
+/// are present and that exactly one component contract is bound to the
+/// revision-basis digest.
+fn validate_chronicle_material_contract(
+    envelope: &Map<String, Value>,
+) -> Result<(), NarrativeIrValidationError> {
+    let material = object(
+        require(envelope, "effectiveMaterialBasis", "envelope")?,
+        "effectiveMaterialBasis",
+    )?;
+    let evidence = require(material, "evidenceSet", "effectiveMaterialBasis")?
+        .as_array()
+        .ok_or_else(|| {
+            validation_error(
+                "invalid-material-basis",
+                "effectiveMaterialBasis.evidenceSet",
+            )
+        })?;
+    if evidence.is_empty() {
+        return Err(validation_error(
+            "invalid-material-basis",
+            "effectiveMaterialBasis.evidenceSet",
+        ));
+    }
+    for (index, entry) in evidence.iter().enumerate() {
+        let entry = object(
+            entry,
+            &format!("effectiveMaterialBasis.evidenceSet[{index}]"),
+        )?;
+        if !non_empty_string(require(
+            entry,
+            "documentRef",
+            &format!("effectiveMaterialBasis.evidenceSet[{index}]"),
+        )?) {
+            return Err(validation_error(
+                "invalid-material-basis",
+                format!("effectiveMaterialBasis.evidenceSet[{index}].documentRef"),
+            ));
+        }
+    }
+
+    let dependencies = require(material, "dependencySet", "effectiveMaterialBasis")?
+        .as_array()
+        .ok_or_else(|| {
+            validation_error(
+                "invalid-material-basis",
+                "effectiveMaterialBasis.dependencySet",
+            )
+        })?;
+    if dependencies.is_empty() {
+        return Err(validation_error(
+            "invalid-material-basis",
+            "effectiveMaterialBasis.dependencySet",
+        ));
+    }
+    let component_dependencies = dependencies
+        .iter()
+        .filter(|dependency| {
+            dependency.get("role").and_then(Value::as_str) == Some("component-contract")
+        })
+        .collect::<Vec<_>>();
+    if component_dependencies.len() != 1 {
+        return Err(validation_error(
+            "invalid-material-basis",
+            "effectiveMaterialBasis.dependencySet.component-contract",
+        ));
+    }
+    let component = object(
+        component_dependencies[0],
+        "effectiveMaterialBasis.dependencySet.component-contract",
+    )?;
+    let selector = object(
+        require(
+            component,
+            "selector",
+            "effectiveMaterialBasis.dependencySet.component-contract",
+        )?,
+        "effectiveMaterialBasis.dependencySet.component-contract.selector",
+    )?;
+    if selector.get("kind").and_then(Value::as_str) != Some("component-contract") {
+        return Err(validation_error(
+            "invalid-material-basis",
+            "effectiveMaterialBasis.dependencySet.component-contract.selector.kind",
+        ));
+    }
+    let basis = object(
+        require(envelope, "revisionBasis", "envelope")?,
+        "revisionBasis",
+    )?;
+    if basis.get("kind").and_then(Value::as_str) == Some("interpretation")
+        && selector.get("contractDigest") != basis.get("componentContractDigest")
+    {
+        return Err(validation_error(
+            "invalid-material-basis",
+            "effectiveMaterialBasis.dependencySet.component-contract.selector.contractDigest",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_non_empty_string_array(
     value: &Value,
     path: &str,
@@ -1245,7 +1551,109 @@ fn validate_non_empty_string_array(
     Ok(())
 }
 
-fn validate_proposal_payload(value: &Value) -> Result<(), NarrativeIrValidationError> {
+fn validate_chronicle_semantic_payload(value: &Value) -> Result<(), NarrativeIrValidationError> {
+    let payload: ChronicleSemanticPayload = serde_json::from_value(value.clone())
+        .map_err(|_| validation_error("invalid-semantic-payload", "assertion.payload"))?;
+    let non_empty = |value: &str| !value.trim().is_empty();
+    if !non_empty(&payload.event_id)
+        || !non_empty(&payload.summary)
+        || payload.observation_refs.is_empty()
+        || payload.original_observation_refs.is_empty()
+        || payload.merged_observation_refs.is_empty()
+        || payload.observation_summaries.is_empty()
+        || payload
+            .observation_refs
+            .iter()
+            .any(|value| !non_empty(value))
+        || payload
+            .original_observation_refs
+            .iter()
+            .any(|value| !non_empty(value))
+        || payload
+            .merged_observation_refs
+            .iter()
+            .any(|value| !non_empty(value))
+        || payload
+            .semantic_type
+            .as_deref()
+            .is_some_and(|value| !non_empty(value))
+    {
+        return Err(validation_error(
+            "invalid-semantic-payload",
+            "assertion.payload",
+        ));
+    }
+    for refs in [
+        &payload.observation_refs,
+        &payload.original_observation_refs,
+        &payload.merged_observation_refs,
+    ] {
+        let mut unique = refs.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.len() != refs.len() {
+            return Err(validation_error(
+                "invalid-semantic-payload",
+                "assertion.payload.observationRefs",
+            ));
+        }
+    }
+    for summary in &payload.observation_summaries {
+        if !non_empty(&summary.observation_ref)
+            || !non_empty(&summary.predicate)
+            || summary
+                .semantic_type
+                .as_deref()
+                .is_some_and(|value| !non_empty(value))
+            || summary
+                .location_surface
+                .as_deref()
+                .is_some_and(|value| !non_empty(value))
+            || summary
+                .temporal_expressions
+                .iter()
+                .any(|value| !non_empty(value))
+        {
+            return Err(validation_error(
+                "invalid-semantic-payload",
+                "assertion.payload.observationSummaries",
+            ));
+        }
+        if summary
+            .participants
+            .iter()
+            .any(|participant| !non_empty(&participant.surface) || !non_empty(&participant.role))
+        {
+            return Err(validation_error(
+                "invalid-semantic-payload",
+                "assertion.payload.observationSummaries.participants",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_chronicle_reconciler_producer(
+    value: &Value,
+    path: &str,
+) -> Result<ChronicleProducer, NarrativeIrValidationError> {
+    let producer: ChronicleProducer = serde_json::from_value(value.clone())
+        .map_err(|_| validation_error("invalid-producer", path))?;
+    if producer.kind != CHRONICLE_RECONCILER_PRODUCER_KIND
+        || !is_contract_non_empty(&producer.id)
+        || !is_contract_non_empty(&producer.version)
+    {
+        return Err(validation_error("invalid-producer", path));
+    }
+    Ok(producer)
+}
+
+/// Validate the Chronicle scene-event proposal payload independently from its
+/// Envelope. Native persistence uses this same typed contract before it
+/// accepts a V2 root or derives a Human child.
+pub fn validate_chronicle_scene_event_proposal_payload(
+    value: &Value,
+) -> Result<(), NarrativeIrValidationError> {
     let path = "proposalPayload";
     let value = object(value, path)?;
     reject_unknown(
@@ -1588,7 +1996,7 @@ pub fn derive_chronicle_scene_event_scope(
     if !is_contract_non_empty(scene_ref) {
         return Err(validation_error("empty-reference", "sceneRef"));
     }
-    validate_proposal_payload(proposal_payload)?;
+    validate_chronicle_scene_event_proposal_payload(proposal_payload)?;
     let proposal = object(proposal_payload, "proposalPayload")?;
     let (audience, reading_order, story_time) = derive_reveal_scope(proposal, reveal_basis)?;
     let scope = json!({

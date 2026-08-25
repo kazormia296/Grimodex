@@ -24,7 +24,7 @@
       "status": "declared",
       "consumerKeyMeaning": "narrative_extraction_runs.id -- the Run whose Proposals and Artifacts the declared Sources were read for.",
       "durableIdentitySource": "narrative_extraction_runs.id",
-      "notes": "Still declared after the Proposal Revision re-key, and not a legacy value: legacy_backfill.rs's record_legacy_dependency_edges_in_tx declares Edges for Applications that have no Revision to attribute a read to, and a Run remains a legitimate Consumer of its own Run-wide Sources. Re-keying the Backfill to the reserved 'application' kind is C2-Z's legacy/Generic parity work, not this slice's."
+      "notes": "Still declared for legitimate Run-owned Sources outside the legacy Backfill writer. C2-ZB's legacy_backfill.rs emits Application-grained Edges instead, each carrying its fresh Backfill Run in narrative_dependency_edges.owning_run_id."
     },
     {
       "kind": "proposal-revision",
@@ -42,10 +42,10 @@
     },
     {
       "kind": "application",
-      "status": "reserved",
+      "status": "declared",
       "consumerKeyMeaning": "narrative_proposal_applications.id -- one applied Projection of one Proposal Revision.",
       "durableIdentitySource": "narrative_proposal_applications.id",
-      "notes": "This is the identity legacy narrative_projection_freshness is already keyed by (application_id PRIMARY KEY), so it is the one Consumer kind whose legacy/Generic parity can be checked row for row at the C2-Z cutover. No Producer declares Edges under this kind yet."
+      "notes": "This is the identity legacy narrative_projection_freshness is already keyed by (application_id PRIMARY KEY). C2-ZB's legacy Backfill Producer declares Edges under this kind using application_id; every such Edge must carry an existing same-project owning Run. Canonical Freshness readers remain unchanged until C2-ZC."
     },
     {
       "kind": "application-contribution",

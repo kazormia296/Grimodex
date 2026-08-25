@@ -31,6 +31,7 @@ import { registerIpcRouter } from "./ipc.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
+import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
 import {
@@ -60,6 +61,10 @@ import {
   shouldUseProductJourneyAi,
   wrapBackendForProductJourneyAi,
 } from "./productJourneyAi.js";
+import {
+  configureNarrativeMaintenanceCiSeam,
+  type NarrativeMaintenanceCiBackend,
+} from "./narrativeMaintenanceCiSeam.js";
 
 const WEB_EDITOR_HANDOFF_EVENT = "web-editor-handoff:requested";
 const WEB_EDITOR_HANDOFF_PAYLOAD = {
@@ -152,8 +157,20 @@ if (!gotSingleInstanceLock) {
       registerAppProtocolHandler(path.join(__dirname, "..", "dist"));
     }
     // .node ロード失敗は fail-soft（backend=null → 明示エラー envelope）
+    const initializedBackend = initBackend();
+    // The product-journey seam is deliberately configured at this one startup
+    // point: after native initialization, before any scheduler can observe a
+    // workspace event. Unauthorized launches return inactive without reading
+    // or forwarding the test-only environment values.
+    const narrativeMaintenanceCiSeam = await configureNarrativeMaintenanceCiSeam(
+      initializedBackend as unknown as NarrativeMaintenanceCiBackend | null,
+      {
+        isPackaged: app.isPackaged,
+        env: process.env,
+      },
+    );
     const backend = wrapBackendForProductJourneyAi(
-      initBackend(),
+      initializedBackend,
       shouldUseProductJourneyAi({ isPackaged: app.isPackaged }),
     );
     // Phase 4: final Tauri releaseのOS keyringかsafeStorageへ、1回だけ
@@ -393,6 +410,12 @@ if (!gotSingleInstanceLock) {
       broadcastBackendEvent,
     );
     const narrativeFreshness = createNarrativeFreshnessScheduler(backend);
+    // Main-only system-work seam. Trigger discovery is owned by this process;
+    // renderer/preload never supplies project scope, paths, or phase data.
+    const {
+      scheduler: narrativeMaintenance,
+      coordinator: narrativeMaintenanceTriggers,
+    } = bootstrapNarrativeMaintenance(backend, narrativeMaintenanceCiSeam);
     licenseValidation.start();
     narrativeFreshness.start();
     app.on("will-quit", () => {
@@ -402,6 +425,8 @@ if (!gotSingleInstanceLock) {
       updater.dispose();
       licenseValidation.dispose();
       narrativeFreshness.dispose();
+      narrativeMaintenanceTriggers?.dispose();
+      narrativeMaintenance?.dispose();
       cliAi.disposeAll();
       void codexApp.dispose();
       void externalMount.disposeAll();
@@ -438,12 +463,14 @@ if (!gotSingleInstanceLock) {
       },
       keyStore,
       broadcastBackendEvent,
+      narrativeMaintenanceCiSeam,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には
     // 届かない（FE 購読者なしのデバッグチャネル — TSFn 実証は
     // workspace:opened が担う）。
-    registerEventBus(backend, (channel) => {
+    registerEventBus(backend, (channel, payload) => {
+      narrativeMaintenanceTriggers?.handleBackendEvent(channel, payload);
       if (channel === "workspace:opened") {
         void codexApp.handleWorkspaceChanged();
       }

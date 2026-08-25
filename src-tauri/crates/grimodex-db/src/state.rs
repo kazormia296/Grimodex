@@ -3,6 +3,7 @@
 //! napi 側は `Backend` の `AppState` でこの型をそのまま保持する。
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{AppError, AppResult};
@@ -21,11 +22,19 @@ pub struct WorkspaceAuthority {
     db: Database,
     path: PathBuf,
     lease: WorkspaceLease,
+    identity: u64,
 }
+
+static NEXT_WORKSPACE_AUTHORITY_ID: AtomicU64 = AtomicU64::new(1);
 
 impl WorkspaceAuthority {
     pub fn new(db: Database, path: PathBuf, lease: WorkspaceLease) -> Self {
-        Self { db, path, lease }
+        Self {
+            db,
+            path,
+            lease,
+            identity: NEXT_WORKSPACE_AUTHORITY_ID.fetch_add(1, Ordering::Relaxed),
+        }
     }
 
     pub fn db(&self) -> &Database {
@@ -38,6 +47,13 @@ impl WorkspaceAuthority {
 
     pub fn lease(&self) -> &WorkspaceLease {
         &self.lease
+    }
+
+    /// Monotonic process-local authority instance identity. Unlike an Arc
+    /// address, it cannot be reused when a same-path restore drops and
+    /// replaces the previous authority.
+    pub fn identity(&self) -> u64 {
+        self.identity
     }
 
     /// Build authority for tests / fixtures (acquires a shared lease on `path`).

@@ -76,6 +76,12 @@ string_enum!(SourceChangeClass {
     RankingInputChanged => "ranking-input-changed",
 });
 
+string_enum!(DependencyImplementationState {
+    Declared => "declared",
+    Shadow => "shadow",
+    Wired => "wired",
+});
+
 string_enum!(EvidenceFreshness {
     Fresh => "fresh",
     Stale => "stale",
@@ -312,10 +318,49 @@ pub struct DependencyEffectRule {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DependencyEffectRegistry {
     pub role_contract_version: String,
+    pub implementation_status: DependencyRegistryImplementationStatus,
     pub roles: Vec<DependencyRole>,
     pub consumer_kinds: Vec<NarrativeConsumerKind>,
     pub source_change_classes: Vec<SourceChangeClass>,
     pub effect_rules: Vec<DependencyEffectRule>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DependencyRegistryImplementationStatus {
+    pub state: DependencyImplementationState,
+    pub production_entry_points: Vec<String>,
+}
+
+pub const DEPENDENCY_SHADOW_PRODUCTION_ENTRY_POINTS: [&str; 2] = [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+];
+
+/// D2's production registry boundary is typed and fail-closed. The role
+/// evaluator may run only while the policy advertises the shadow state and
+/// the exact incremental plus restore/rebuild source paths; `declared` and
+/// `wired` are not valid runtime states for this lane.
+pub fn validate_dependency_registry_implementation_status(
+    status: &DependencyRegistryImplementationStatus,
+) -> Result<(), DependencyContractError> {
+    if status.state != DependencyImplementationState::Shadow {
+        return Err(DependencyContractError::InvalidRegistry(format!(
+            "implementationStatus.state must be 'shadow', got '{}'",
+            status.state.as_str()
+        )));
+    }
+    if status.production_entry_points
+        != DEPENDENCY_SHADOW_PRODUCTION_ENTRY_POINTS
+            .iter()
+            .map(|entry_point| (*entry_point).to_owned())
+            .collect::<Vec<_>>()
+    {
+        return Err(DependencyContractError::InvalidRegistry(
+            "implementationStatus.productionEntryPoints must name the incremental and restore/rebuild shadow source files exactly"
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -870,6 +915,8 @@ pub fn load_dependency_role_registry() -> Result<DependencyEffectRegistry, Depen
     #[serde(rename_all = "camelCase")]
     struct RawRegistry {
         role_contract_version: String,
+        #[serde(rename = "implementationStatus")]
+        implementation_status: RawImplementationStatus,
         roles: Vec<RawRole>,
         source_change_classes: Vec<SourceChangeClass>,
         effect_rules: Vec<DependencyEffectRule>,
@@ -880,17 +927,29 @@ pub fn load_dependency_role_registry() -> Result<DependencyEffectRegistry, Depen
         id: DependencyRole,
     }
 
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RawImplementationStatus {
+        state: DependencyImplementationState,
+        production_entry_points: Vec<String>,
+    }
+
     let raw: RawRegistry = serde_json::from_str(include_str!(
         "../../../../policies/narrative/narrative-dependency-role-registry.json"
     ))
     .map_err(|error| DependencyContractError::PolicyParse(error.to_string()))?;
     let registry = DependencyEffectRegistry {
         role_contract_version: raw.role_contract_version,
+        implementation_status: DependencyRegistryImplementationStatus {
+            state: raw.implementation_status.state,
+            production_entry_points: raw.implementation_status.production_entry_points,
+        },
         roles: raw.roles.into_iter().map(|role| role.id).collect(),
         consumer_kinds: ALL_CONSUMER_KINDS.to_vec(),
         source_change_classes: raw.source_change_classes,
         effect_rules: raw.effect_rules,
     };
+    validate_dependency_registry_implementation_status(&registry.implementation_status)?;
     validate_dependency_effect_registry(&registry)?;
     Ok(registry)
 }

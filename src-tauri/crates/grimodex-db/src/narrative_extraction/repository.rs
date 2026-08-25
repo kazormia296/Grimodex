@@ -2,6 +2,7 @@
 
 use anyhow::Context;
 use chrono::Utc;
+use grimodex_core::narrative_ir::validate_chronicle_scene_event_proposal_payload;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -10,6 +11,17 @@ use super::dependency_edges::{
     canonical_source_object_identity, record_dependency_edge_in_tx, validate_run_id,
     PROPOSAL_REVISION_CONSUMER_KIND,
 };
+use super::execution_state::next_run_lifecycle_timestamp_in_tx;
+
+/// Generation of the current Proposal Revision dependency declaration writer.
+/// This is paired with the bundled producer registry; bump both when the
+/// writer's declaration semantics change.
+pub(crate) const PROPOSAL_REVISION_DEPENDENCY_GENERATION: &str = "proposal-revision-dependency/v1";
+
+/// Numeric producer generation reserved for a Proposal Revision's D1 sealed
+/// Declaration Set. This is intentionally separate from the V1 string
+/// generation above; C2B must not derive it by parsing or copying that value.
+pub const PROPOSAL_REVISION_D1_PRODUCER_GENERATION: i64 = 1;
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
@@ -17,8 +29,8 @@ use super::models::{
     ProposalSeed, ReviseAndDecidePayload, SaveProposalSetPayload,
 };
 use super::reconciliation_envelope::{
-    validate_envelope_source_tokens, validate_reconciliation_envelope, SourceBasisRow,
-    ORIGIN_ENVELOPED, ORIGIN_LEGACY_UNBOUND,
+    ensure_v2_proposal_payload_digest, envelope_schema_version, validate_envelope_source_tokens,
+    validate_reconciliation_envelope, SourceBasisRow, ORIGIN_ENVELOPED, ORIGIN_LEGACY_UNBOUND,
 };
 use super::task_leases::{
     claim_next_task, claimed_task_to_value, load_task_row, persist_task_artifacts,
@@ -91,15 +103,23 @@ fn ensure_generic_task_api_allowed(conn: &Connection, run_id: &str) -> anyhow::R
     let system_owned: bool = conn.query_row(
         "SELECT EXISTS(
            SELECT 1 FROM narrative_extraction_runs
-            WHERE id = ?1 AND run_kind = 'freshness-evaluation'
-              AND consumer_id = ?2
+            WHERE id = ?1
+              AND (
+                (run_kind = 'freshness-evaluation' AND consumer_id = ?2)
+                OR run_kind IN (
+                  'backfill',
+                  'dependency-verify',
+                  'dependency-repair',
+                  'semantic-index-rebuild'
+                )
+              )
          )",
         params![run_id, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
         |row| row.get(0),
     )?;
     anyhow::ensure!(
         !system_owned,
-        "NEX_SYSTEM_RUN_API_FORBIDDEN: incremental Freshness lifecycle is owned by its automatic runtime"
+        "NEX_SYSTEM_RUN_API_FORBIDDEN: automatic maintenance Run lifecycle is owned by its runtime"
     );
     Ok(())
 }
@@ -187,13 +207,14 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
+            let run_timestamp = next_run_lifecycle_timestamp_in_tx(conn, &payload.project_id)?;
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                      snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
                      created_at, started_at, version)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                         datetime('now'), CASE WHEN ?10 = 'running' THEN datetime('now') ELSE NULL END, 0)",
+                         ?12, CASE WHEN ?10 = 'running' THEN ?12 ELSE NULL END, 0)",
                 params![
                     run_id,
                     payload.project_id,
@@ -206,6 +227,7 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
                     payload.registry_digest,
                     status,
                     coverage_json,
+                    run_timestamp,
                 ],
             )?;
 
@@ -230,6 +252,7 @@ pub(crate) enum SystemRunWorkKeyReuse {
     /// `dependency-backfill`: an automatic-once trigger firing again while a
     /// prior attempt is still running, or after one already completed, must
     /// not create a second Run.
+    #[allow(dead_code)]
     RunningAndCompleted,
     /// `dependency-verify` / `dependency-rebuild-derived`: a second trigger
     /// while one is already running reuses it; a completed Run does not
@@ -239,8 +262,8 @@ pub(crate) enum SystemRunWorkKeyReuse {
     RunningOnly,
     /// `dependency-repair`: `sameWorkKeyReuse: "no-automatic-reuse-decision"`
     /// — exclusivity is the Repair lease's job, not work-key dedup here.
-    /// No production caller yet -- `create_system_run` below has none
-    /// (repair.rs's `seal_repair_plan` claims the lease directly instead).
+    /// The automatic phase owner cannot request this variant; the manual
+    /// Repair planner claims its lease directly.
     #[allow(dead_code)]
     None,
 }
@@ -261,11 +284,9 @@ pub(crate) enum SystemRunWorkKeyReuse {
 /// trigger (e.g. the post-open Backfill bootstrap) can fire repeatedly
 /// without racing itself.
 ///
-/// No production caller yet -- every current system Run Kind trigger
-/// (Backfill's post-open bootstrap, Verify/Rebuild-Derived's manual
-/// triggers, Repair's plan sealing) already runs inside its own
-/// transaction and calls [`create_system_run_in_tx`] directly; this
-/// standalone wrapper is for a future caller starting outside one.
+/// The standalone wrapper is retained for callers that start outside an
+/// ambient transaction. The Rust phase owner uses the `_in_tx` helper so Run
+/// creation can share the same live Database transaction as the phase writes.
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_system_run(
@@ -341,10 +362,21 @@ pub(crate) fn create_system_run_in_tx(
     if let Some(reused) = find_reusable_system_run(conn, project_id, run_kind, work_key, &reuse)? {
         return Ok(reused);
     }
-    let spec_json_text = serde_json::to_string(spec_json)?;
+    // The foreground product-journey marker is supplied by the native
+    // maintenance owner through a process-local guard. It is merged before
+    // insertion so the persisted JSON is immutable for the lifetime of the
+    // Run; arbitrary callers cannot smuggle a conflicting marker.
+    let persisted_spec_json =
+        super::maintenance_runtime::spec_with_active_system_work_marker(spec_json)?;
+    let spec_json_text = serde_json::to_string(&persisted_spec_json)?;
     let scope_json_text = serde_json::to_string(&default_object_json())?;
     let coverage_json_text = serde_json::to_string(&default_object_json())?;
     let run_id = Uuid::new_v4().to_string();
+    // Run authority is a lifecycle instant, not UUID insertion order. Keep
+    // automatic/system rows strictly monotonic at the persisted millisecond
+    // precision so a Verify -> Rebuild -> confirmation Verify chain created
+    // in one transaction window remains unambiguous after restart/import.
+    let run_timestamp = next_system_run_timestamp(conn, project_id)?;
     conn.execute(
         "INSERT INTO narrative_extraction_runs
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -352,8 +384,8 @@ pub(crate) fn create_system_run_in_tx(
              run_kind, semantic_epoch_id, work_key,
              request_id, idempotency_domain, request_payload_digest, actor_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6,
-                 'running', ?7, datetime('now'), datetime('now'), 0,
-                 ?3, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 'running', ?7, ?8, ?8, 0,
+                 ?3, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             run_id,
             project_id,
@@ -362,6 +394,7 @@ pub(crate) fn create_system_run_in_tx(
             spec_json_text,
             spec_digest,
             coverage_json_text,
+            run_timestamp,
             semantic_epoch_id,
             work_key,
             request.map(|request| request.request_id),
@@ -376,6 +409,10 @@ pub(crate) fn create_system_run_in_tx(
         "reused": false,
         "replayed": false,
     }))
+}
+
+fn next_system_run_timestamp(conn: &Connection, project_id: &str) -> anyhow::Result<String> {
+    next_run_lifecycle_timestamp_in_tx(conn, project_id)
 }
 
 /// Who asked for a system Run, and which request it was.
@@ -632,7 +669,8 @@ pub fn list_resumable_runs(
                           WHERE a.proposal_id = p.id
                        )
                   )
-              ORDER BY COALESCE(r.completed_at, r.started_at, r.created_at) DESC,
+              ORDER BY julianday(COALESCE(r.completed_at, r.started_at, r.created_at)) DESC,
+                       COALESCE(r.completed_at, r.started_at, r.created_at) DESC,
                        r.id DESC
               LIMIT ?3",
         )?;
@@ -659,14 +697,15 @@ pub fn cancel_run(db: &Database, run_id: String, project_id: String) -> anyhow::
         with_immediate_transaction(conn, |conn| {
             ensure_run_project(conn, &run_id, &project_id)?;
             ensure_generic_task_api_allowed(conn, &run_id)?;
+            let lifecycle_at = next_run_lifecycle_timestamp_in_tx(conn, &project_id)?;
             let updated = conn.execute(
                 "UPDATE narrative_extraction_runs
                     SET status = 'cancelled',
-                        completed_at = datetime('now'),
+                        completed_at = ?2,
                         version = version + 1
                   WHERE id = ?1
                     AND status IN ('pending', 'running')",
-                params![run_id],
+                params![run_id, lifecycle_at],
             )?;
             anyhow::ensure!(updated == 1, "run is not cancellable");
 
@@ -676,11 +715,11 @@ pub fn cancel_run(db: &Database, run_id: String, project_id: String) -> anyhow::
                         lease_owner = NULL,
                         lease_expires_at = NULL,
                         heartbeat_at = NULL,
-                        completed_at = datetime('now'),
+                        completed_at = ?2,
                         version = version + 1
                   WHERE run_id = ?1
                     AND status IN ('queued', 'running')",
-                params![run_id],
+                params![run_id, lifecycle_at],
             )?;
 
             Ok(json!({ "runId": run_id, "status": "cancelled" }))
@@ -710,12 +749,11 @@ pub fn claim_task(
 }
 
 pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<Value> {
-    let output_json = serde_json::to_string(
-        payload
-            .output_json
-            .as_ref()
-            .unwrap_or(&default_object_json()),
-    )?;
+    let output_value = payload
+        .output_json
+        .clone()
+        .unwrap_or_else(default_object_json);
+    let output_json = serde_json::to_string(&output_value)?;
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
@@ -727,6 +765,24 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                 &payload.run_id,
                 &payload.lease_owner,
             )?;
+            let attempt_is_current: Option<i64> = conn
+                .query_row(
+                    "SELECT 1
+                       FROM narrative_extraction_attempts a
+                       JOIN narrative_extraction_tasks t ON t.id = a.task_id
+                      WHERE a.id = ?1
+                        AND a.task_id = ?2
+                        AND a.status = 'running'
+                        AND a.attempt_number = t.attempt_count",
+                    params![payload.attempt_id, payload.task_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            anyhow::ensure!(
+                attempt_is_current == Some(1),
+                "attempt is not the current running attempt owned by task"
+            );
+            let lifecycle_at = grimodex_core::now_rfc3339_millis();
 
             let updated = conn.execute(
                 "UPDATE narrative_extraction_tasks
@@ -736,27 +792,40 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                         lease_owner = NULL,
                         lease_expires_at = NULL,
                         heartbeat_at = NULL,
-                        completed_at = datetime('now'),
+                        completed_at = ?4,
                         version = version + 1
                   WHERE id = ?2 AND run_id = ?3 AND status = 'running'",
-                params![output_json, payload.task_id, payload.run_id],
+                params![output_json, payload.task_id, payload.run_id, lifecycle_at],
             )?;
             anyhow::ensure!(updated == 1, "task is not running");
 
-            conn.execute(
+            let attempt_updated = conn.execute(
                 "UPDATE narrative_extraction_attempts
                     SET status = 'completed',
-                        completed_at = datetime('now'),
+                        completed_at = ?4,
                         output_json = ?1
-                  WHERE id = ?2 AND task_id = ?3",
-                params![output_json, payload.attempt_id, payload.task_id],
+                  WHERE id = ?2 AND task_id = ?3 AND status = 'running'",
+                params![
+                    output_json,
+                    payload.attempt_id,
+                    payload.task_id,
+                    lifecycle_at
+                ],
             )?;
+            anyhow::ensure!(
+                attempt_updated == 1,
+                "attempt completion lost ownership or status race"
+            );
 
             persist_task_artifacts(
                 conn,
+                &payload.project_id,
                 &payload.run_id,
                 &payload.task_id,
                 &payload.attempt_id,
+                &output_value,
+                payload.chronicle_stage_bundle.as_ref(),
+                payload.historical_scope_authority_basis.as_ref(),
                 &payload.artifacts,
             )?;
 
@@ -791,6 +860,7 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
                 &payload.run_id,
                 &payload.lease_owner,
             )?;
+            let lifecycle_at = grimodex_core::now_rfc3339_millis();
 
             let updated = conn.execute(
                 "UPDATE narrative_extraction_tasks
@@ -800,7 +870,7 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
                         lease_owner = NULL,
                         lease_expires_at = NULL,
                         heartbeat_at = NULL,
-                        completed_at = CASE WHEN ?1 = 'failed' THEN datetime('now') ELSE NULL END,
+                        completed_at = CASE WHEN ?1 = 'failed' THEN ?6 ELSE NULL END,
                         version = version + 1
                   WHERE id = ?4 AND run_id = ?5 AND status = 'running'",
                 params![
@@ -809,6 +879,7 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
                     payload.error_message,
                     payload.task_id,
                     payload.run_id,
+                    lifecycle_at,
                 ],
             )?;
             anyhow::ensure!(updated == 1, "task is not running");
@@ -816,13 +887,14 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
             conn.execute(
                 "UPDATE narrative_extraction_attempts
                     SET status = 'failed',
-                        completed_at = datetime('now'),
+                        completed_at = ?3,
                         error_message = ?1,
                         output_json = COALESCE(?2, output_json)
-                  WHERE id = ?3 AND task_id = ?4",
+                  WHERE id = ?4 AND task_id = ?5",
                 params![
                     payload.error_message,
                     output_json,
+                    lifecycle_at,
                     payload.attempt_id,
                     payload.task_id,
                 ],
@@ -831,15 +903,18 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
             if requeue {
                 maybe_complete_run(conn, &payload.run_id)?;
             } else {
+                let run_lifecycle_at =
+                    next_run_lifecycle_timestamp_in_tx(conn, &payload.project_id)?;
                 conn.execute(
                     "UPDATE narrative_extraction_runs
                         SET status = 'failed',
-                            completed_at = datetime('now'),
+                            completed_at = ?2,
                             outcome_summary_json = ?1,
                             version = version + 1
-                      WHERE id = ?2 AND status = 'running'",
+                      WHERE id = ?3 AND status = 'running'",
                     params![
                         json!({ "failedTaskId": payload.task_id }).to_string(),
+                        run_lifecycle_at,
                         payload.run_id,
                     ],
                 )?;
@@ -865,13 +940,19 @@ fn maybe_complete_run(conn: &Connection, run_id: &str) -> anyhow::Result<()> {
         |row| row.get(0),
     )?;
     if remaining == 0 {
+        let project_id: String = conn.query_row(
+            "SELECT project_id FROM narrative_extraction_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        let run_lifecycle_at = next_run_lifecycle_timestamp_in_tx(conn, &project_id)?;
         conn.execute(
             "UPDATE narrative_extraction_runs
                 SET status = 'completed',
-                    completed_at = datetime('now'),
+                    completed_at = ?2,
                     version = version + 1
               WHERE id = ?1 AND status = 'running'",
-            params![run_id],
+            params![run_id, run_lifecycle_at],
         )?;
     }
     Ok(())
@@ -991,6 +1072,14 @@ pub fn get_run_review_bundle(
 }
 
 pub fn save_proposal_set(db: &Database, payload: SaveProposalSetPayload) -> anyhow::Result<Value> {
+    save_proposal_set_with_v2_mode(db, payload, false)
+}
+
+fn save_proposal_set_with_v2_mode(
+    db: &Database,
+    payload: SaveProposalSetPayload,
+    allow_dormant_v2: bool,
+) -> anyhow::Result<Value> {
     let proposal_set_id = payload
         .proposal_set_id
         .clone()
@@ -1029,6 +1118,7 @@ pub fn save_proposal_set(db: &Database, payload: SaveProposalSetPayload) -> anyh
                     &payload.run_id,
                     &payload.project_id,
                     proposal,
+                    allow_dormant_v2,
                 )?);
             }
 
@@ -1046,6 +1136,7 @@ fn insert_proposal_seed(
     run_id: &str,
     project_id: &str,
     seed: &ProposalSeed,
+    allow_dormant_v2: bool,
 ) -> anyhow::Result<Value> {
     let proposal_id = seed
         .proposal_id
@@ -1061,6 +1152,29 @@ fn insert_proposal_seed(
         seed.reconciliation_envelope.as_ref(),
     )?;
     if let Some(envelope) = seed.reconciliation_envelope.as_ref() {
+        if envelope_schema_version(envelope) == Some(2) {
+            anyhow::ensure!(
+                allow_dormant_v2,
+                "NEX_NARRATIVE_V2_ACTIVATION_DISABLED: production ProposalSet ingress cannot activate Envelope V2"
+            );
+            let envelope_kind = envelope
+                .pointer("/projectionBinding/proposalKind")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_ENVELOPE_PROPOSAL_KIND_MISMATCH: V2 projectionBinding.proposalKind is missing"
+                    )
+                })?;
+            anyhow::ensure!(
+                seed.kind == envelope_kind,
+                "NEX_ENVELOPE_PROPOSAL_KIND_MISMATCH: ProposalSeed.kind does not match projectionBinding.proposalKind"
+            );
+            validate_chronicle_scene_event_proposal_payload(&seed.payload_json).map_err(
+                |error| anyhow::anyhow!("NEX_ENVELOPE_PROPOSAL_PAYLOAD_INVALID: {error}"),
+            )?;
+            ensure_v2_proposal_evidence_binding(envelope, &seed.payload_json)?;
+        }
+        ensure_v2_proposal_payload_digest(envelope, &seed.payload_json)?;
         validate_envelope_source_tokens(conn, project_id, run_id, envelope)?;
     }
     let origin_kind = if validated_envelope.is_some() {
@@ -1131,7 +1245,93 @@ fn insert_proposal_seed(
     }))
 }
 
-fn insert_source_basis_rows(
+/// Bind the typed proposal's evidence anchors/documents to the exact V2
+/// material evidence set.  The Core proposal validator owns field shape and
+/// vocabulary; this narrow cross-field check prevents storing two divergent
+/// provenance claims for one revision.
+pub(crate) fn ensure_v2_proposal_evidence_binding(
+    envelope: &Value,
+    proposal_payload: &Value,
+) -> anyhow::Result<()> {
+    let proposal = proposal_payload.as_object().ok_or_else(|| {
+        anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: proposal is not an object")
+    })?;
+    let anchor_ids = proposal
+        .get("evidenceAnchorIds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: evidenceAnchorIds missing")
+        })?;
+    let document_refs = proposal
+        .get("evidenceDocumentRefs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: evidenceDocumentRefs missing")
+        })?;
+    let material = envelope
+        .get("effectiveMaterialBasis")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: material basis missing")
+        })?;
+    let evidence = material
+        .get("evidenceSet")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: evidenceSet missing"))?;
+    let mut material_ids = Vec::with_capacity(evidence.len());
+    let mut material_documents = Vec::with_capacity(evidence.len());
+    for entry in evidence {
+        let entry = entry.as_object().ok_or_else(|| {
+            anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: evidence entry is not an object")
+        })?;
+        material_ids.push(
+            entry
+                .get("evidenceRef")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: evidenceRef missing")
+                })?
+                .to_owned(),
+        );
+        material_documents.push(
+            entry
+                .get("documentRef")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: documentRef missing")
+                })?
+                .to_owned(),
+        );
+    }
+    let collect_strings = |values: &[Value]| -> anyhow::Result<Vec<String>> {
+        values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: evidence reference must be non-empty"))
+            })
+            .collect()
+    };
+    let mut expected_ids = collect_strings(anchor_ids)?;
+    let mut expected_documents = collect_strings(document_refs)?;
+    expected_ids.sort();
+    expected_documents.sort();
+    material_ids.sort();
+    material_documents.sort();
+    anyhow::ensure!(
+        expected_ids.windows(2).all(|window| window[0] != window[1])
+            && expected_documents.windows(2).all(|window| window[0] != window[1])
+            && expected_ids == material_ids
+            && expected_documents == material_documents,
+        "NEX_ENVELOPE_PROVENANCE_MISMATCH: proposal evidence anchors/documents do not exactly match Envelope evidenceSet"
+    );
+    Ok(())
+}
+
+pub(crate) fn insert_source_basis_rows(
     conn: &Connection,
     revision_id: &str,
     rows: &[SourceBasisRow],
@@ -1196,7 +1396,8 @@ fn insert_source_basis_rows(
 /// fully-qualified identity `source_object_identity_for` would build --
 /// re-deriving it here would prepend the prefix a second time and produce
 /// an Edge no later resolver could ever match back to its real Source.
-fn record_revision_dependency_edges_in_tx(
+// NARRATIVE_DEPENDENCY_PRODUCER: proposal-revision-source-basis
+pub(super) fn record_revision_dependency_edges_in_tx(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
@@ -1286,6 +1487,24 @@ fn append_revision_on_conn(
         current_revision_id
     );
 
+    let current_is_v2 = current_origin_kind == ORIGIN_ENVELOPED
+        && current_envelope_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<Value>(json).ok())
+            .and_then(|envelope| envelope_schema_version(&envelope))
+            == Some(2);
+    if current_is_v2 {
+        let child_is_v2 = payload
+            .reconciliation_envelope
+            .as_ref()
+            .and_then(envelope_schema_version)
+            == Some(2);
+        anyhow::ensure!(
+            child_is_v2 && payload.inherit_reconciliation_envelope.is_none(),
+            "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN: a V2 current requires a V2 child envelope"
+        );
+    }
+
     anyhow::ensure!(
         !(payload.reconciliation_envelope.is_some()
             && payload.inherit_reconciliation_envelope.is_some()),
@@ -1333,6 +1552,11 @@ fn append_revision_on_conn(
         envelope_input,
     )?;
     if let Some(envelope) = envelope_input {
+        anyhow::ensure!(
+            envelope_schema_version(envelope) != Some(2),
+            "NEX_NARRATIVE_V2_ACTIVATION_DISABLED: production revision append cannot activate Envelope V2"
+        );
+        ensure_v2_proposal_payload_digest(envelope, &payload.payload_json)?;
         validate_envelope_source_tokens(conn, &payload.project_id, &payload.run_id, envelope)?;
     }
     let origin_kind = if validated_envelope.is_some() {
@@ -1997,6 +2221,24 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
               OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json
               OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest
             BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_IMMUTABLE'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_proposal_revisions_v2_immutable_update_guard
+            BEFORE UPDATE ON narrative_proposal_revisions
+            WHEN OLD.origin_kind = 'enveloped'
+             AND json_extract(OLD.reconciliation_envelope_json, '$.schemaVersion') = 2
+             AND (
+                OLD.id IS NOT NEW.id
+                OR OLD.proposal_id IS NOT NEW.proposal_id
+                OR OLD.revision_number IS NOT NEW.revision_number
+                OR OLD.payload_json IS NOT NEW.payload_json
+                OR OLD.plan_fragment_json IS NOT NEW.plan_fragment_json
+                OR OLD.plan_fragment_digest IS NOT NEW.plan_fragment_digest
+                OR OLD.origin_kind IS NOT NEW.origin_kind
+                OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json
+                OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest
+                OR OLD.created_at IS NOT NEW.created_at
+                OR OLD.created_by IS NOT NEW.created_by
+             )
+            BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_V2_IMMUTABLE'); END;
         CREATE TRIGGER IF NOT EXISTS narrative_source_basis_immutable_update
             BEFORE UPDATE ON narrative_revision_source_basis
             BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END;
@@ -2048,6 +2290,10 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod unit_tests {
+    use super::super::{
+        transition_run_status_in_tx, ClaimTaskPayload, FailTaskPayload, FinishTaskPayload,
+        NarrativeRunStatus,
+    };
     use super::*;
     use crate::Database;
     use serde_json::json;
@@ -2089,6 +2335,89 @@ mod unit_tests {
         })
         .expect("seed project");
         db
+    }
+
+    fn insert_automatic_run_for_api_test(db: &Database, run_id: &str, run_kind: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, created_at, started_at, run_kind,
+                     semantic_epoch_id, work_key, version)
+                 VALUES (?1, 'project-1', ?2, '{}', '{}', 'digest', 'running', '{}',
+                         '2026-08-23T10:00:00.000Z', '2026-08-23T10:00:00.000Z', ?2,
+                         NULL, ?1, 0)",
+                params![run_id, run_kind],
+            )?;
+            if run_kind == "freshness-evaluation" {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET consumer_id = ?2 WHERE id = ?1",
+                    params![run_id, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("insert automatic Run");
+    }
+
+    fn insert_imported_run_with_lifecycle(
+        db: &Database,
+        run_id: &str,
+        created_at: &str,
+        started_at: Option<&str>,
+        completed_at: Option<&str>,
+    ) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, created_at, started_at, completed_at, version)
+                 VALUES (?1, 'project-1', 'chronicle.extract', '{}', '{}', 'imported',
+                         'completed', '{}', ?2, ?3, ?4, 0)",
+                params![run_id, created_at, started_at, completed_at],
+            )?;
+            Ok(())
+        })
+        .expect("insert imported lifecycle Run");
+    }
+
+    fn run_lifecycle(db: &Database, run_id: &str) -> (String, Option<String>, Option<String>) {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT created_at, started_at, completed_at
+                   FROM narrative_extraction_runs WHERE id = ?1",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read Run lifecycle")
+    }
+
+    fn create_run_with_task(db: &Database, run_id: &str, task_id: &str) {
+        create_run(
+            db,
+            CreateRunPayload {
+                run_id: Some(run_id.to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: format!("spec-{run_id}"),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![CreateTaskSeed {
+                    task_id: Some(task_id.to_string()),
+                    task_kind: "extract".to_string(),
+                    input_json: Some(json!({})),
+                    priority: None,
+                }],
+            },
+        )
+        .expect("create manual Run with task");
     }
 
     #[test]
@@ -2164,6 +2493,548 @@ mod unit_tests {
             })
             .expect("count persisted Runs");
         assert_eq!(persisted, 0);
+    }
+
+    #[test]
+    fn generic_task_api_rejects_every_runtime_owned_automatic_run_kind() {
+        let db = full_migrated_db();
+        for (index, run_kind) in [
+            "freshness-evaluation",
+            "backfill",
+            "dependency-verify",
+            "semantic-index-rebuild",
+            "dependency-repair",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let run_id = format!("automatic-run-{index}");
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, created_at, started_at, run_kind,
+                         semantic_epoch_id, work_key, version)
+                     VALUES (?1, 'project-1', ?2, '{}', '{}', 'digest', 'running', '{}',
+                             '2026-08-23T10:00:00.000Z', '2026-08-23T10:00:00.000Z', ?2,
+                             NULL, ?1, 0)",
+                    params![run_id, run_kind],
+                )?;
+                if run_kind == "freshness-evaluation" {
+                    conn.execute(
+                        "UPDATE narrative_extraction_runs
+                            SET consumer_id = ?2 WHERE id = ?1",
+                        params![run_id, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+                    )?;
+                }
+                let error = ensure_generic_task_api_allowed(conn, &run_id)
+                    .expect_err("generic lifecycle APIs must not own automatic Runs");
+                assert!(
+                    error.to_string().contains("NEX_SYSTEM_RUN_API_FORBIDDEN"),
+                    "unexpected error for {run_kind}: {error}"
+                );
+                Ok(())
+            })
+            .expect("automatic Run authority guard");
+        }
+    }
+
+    #[test]
+    fn every_generic_public_task_api_rejects_runtime_owned_automatic_runs() {
+        let db = full_migrated_db();
+        let assert_forbidden = |result: anyhow::Result<Value>| {
+            let error = result.expect_err("automatic Run must be owned by its runtime");
+            assert!(
+                error.to_string().contains("NEX_SYSTEM_RUN_API_FORBIDDEN"),
+                "unexpected generic API error: {error}"
+            );
+        };
+
+        for (index, run_kind) in [
+            "freshness-evaluation",
+            "backfill",
+            "dependency-verify",
+            "semantic-index-rebuild",
+            "dependency-repair",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let run_id = format!("automatic-public-api-{index}");
+            insert_automatic_run_for_api_test(&db, &run_id, run_kind);
+
+            assert_forbidden(cancel_run(&db, run_id.clone(), "project-1".to_string()));
+            assert_forbidden(claim_task(
+                &db,
+                ClaimTaskPayload {
+                    run_id: run_id.clone(),
+                    project_id: "project-1".to_string(),
+                    lease_owner: "generic-api-test".to_string(),
+                    lease_duration_secs: None,
+                    task_kinds: None,
+                },
+            ));
+            assert_forbidden(finish_task(
+                &db,
+                FinishTaskPayload {
+                    run_id: run_id.clone(),
+                    project_id: "project-1".to_string(),
+                    task_id: "not-owned-task".to_string(),
+                    attempt_id: "not-owned-attempt".to_string(),
+                    lease_owner: "generic-api-test".to_string(),
+                    output_json: None,
+                    artifacts: vec![],
+                    chronicle_stage_bundle: None,
+                    historical_scope_authority_basis: None,
+                },
+            ));
+            assert_forbidden(fail_task(
+                &db,
+                FailTaskPayload {
+                    run_id: run_id.clone(),
+                    project_id: "project-1".to_string(),
+                    task_id: "not-owned-task".to_string(),
+                    attempt_id: "not-owned-attempt".to_string(),
+                    lease_owner: "generic-api-test".to_string(),
+                    error_message: "generic API must not own this Run".to_string(),
+                    output_json: None,
+                    requeue: Some(false),
+                },
+            ));
+
+            let (status, completed_at): (String, Option<String>) = db
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT status, completed_at
+                           FROM narrative_extraction_runs WHERE id = ?1",
+                        params![run_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(Into::into)
+                })
+                .expect("read guarded automatic Run");
+            assert_eq!(status, "running");
+            assert_eq!(completed_at, None);
+        }
+    }
+
+    #[test]
+    fn automatic_owner_finalizer_wins_backfill_and_rebuild_interleaving() {
+        let db = full_migrated_db();
+        let epoch_id = seed_epoch(&db, "project-1");
+        for (index, (run_kind, work_key)) in [
+            ("backfill", "backfill-phase-gap"),
+            ("semantic-index-rebuild", "rebuild-phase-gap"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let created = create_system_run(
+                &db,
+                "project-1",
+                run_kind,
+                &epoch_id,
+                work_key,
+                &json!({ "phase": "committed-before-finalize" }),
+                "system-spec-digest",
+                if run_kind == "backfill" {
+                    SystemRunWorkKeyReuse::RunningAndCompleted
+                } else {
+                    SystemRunWorkKeyReuse::RunningOnly
+                },
+                None,
+            )
+            .expect("create owner Run");
+            let run_id = created["runId"].as_str().expect("owner Run id").to_string();
+
+            let generic_error = cancel_run(&db, run_id.clone(), "project-1".to_string())
+                .expect_err("generic cancellation must lose the phase-gap race");
+            assert!(generic_error
+                .to_string()
+                .contains("NEX_SYSTEM_RUN_API_FORBIDDEN"));
+
+            db.with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)?;
+                    record_run_outcome_in_tx(
+                        conn,
+                        &run_id,
+                        &json!({ "phase": "committed-before-finalize", "owner": true }),
+                    )?;
+                    Ok(())
+                })
+            })
+            .expect("owner finalizer completes atomically");
+
+            let (status, completed_at, outcome): (String, String, String) = db
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT status, completed_at, outcome_summary_json
+                           FROM narrative_extraction_runs WHERE id = ?1",
+                        params![run_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(Into::into)
+                })
+                .expect("read owner-finalized Run");
+            assert_eq!(
+                status, "completed",
+                "owner Run {index} must remain authoritative"
+            );
+            assert!(completed_at.ends_with('Z'));
+            assert!(outcome.contains("committed-before-finalize"));
+        }
+    }
+
+    #[test]
+    fn generic_cancel_persists_millisecond_timestamp_for_resumable_ordering() {
+        let db = full_migrated_db();
+        create_run(
+            &db,
+            CreateRunPayload {
+                run_id: Some("manual-run-1".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: "digest-1".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![],
+            },
+        )
+        .expect("create pending manual Run");
+
+        cancel_run(&db, "manual-run-1".to_string(), "project-1".to_string())
+            .expect("cancel pending manual Run");
+
+        let completed_at: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT completed_at FROM narrative_extraction_runs WHERE id = 'manual-run-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read cancelled Run timestamp");
+        assert!(
+            completed_at.ends_with('Z') && completed_at.contains('.'),
+            "Run lifecycle timestamps must be RFC3339 with milliseconds: {completed_at}"
+        );
+    }
+
+    #[test]
+    fn every_manual_run_lifecycle_route_stays_after_imported_future_authority() {
+        let db = full_migrated_db();
+        let future = "2099-01-01T00:00:00.000Z";
+        insert_imported_run_with_lifecycle(
+            &db,
+            "imported-future",
+            future,
+            Some(future),
+            Some(future),
+        );
+
+        // Manual create is a project-scoped lifecycle allocation, including
+        // the implicit start for a Run seeded with work.
+        create_run_with_task(&db, "manual-create", "task-create");
+        let (created, started, completed) = run_lifecycle(&db, "manual-create");
+        assert!(
+            created.as_str() > future,
+            "manual create moved behind imported authority"
+        );
+        assert_eq!(started.as_deref(), Some(created.as_str()));
+        assert_eq!(completed, None);
+
+        // A pending Run can acquire its first lifecycle start through the
+        // task-lease claim route, which must use the same authority.
+        create_run(
+            &db,
+            CreateRunPayload {
+                run_id: Some("manual-claim".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: "spec-manual-claim".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![],
+            },
+        )
+        .expect("create pending Run");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_tasks
+                    (id, run_id, task_kind, status, input_json, priority,
+                     attempt_count, created_at, version)
+                 VALUES ('task-claim', 'manual-claim', 'extract', 'queued', '{}', 0, 0, ?1, 0)",
+                params![future],
+            )?;
+            Ok(())
+        })
+        .expect("insert queued task for pending Run");
+        let claim = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "manual-claim".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "lifecycle-test".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: None,
+            },
+        )
+        .expect("claim pending Run task");
+        assert_eq!(claim["claimed"], true);
+        let (_, started, _) = run_lifecycle(&db, "manual-claim");
+        assert!(
+            started.as_deref().is_some_and(|value| value > future),
+            "task claim moved Run start behind imported authority: {started:?}"
+        );
+
+        // Generic cancellation, completion, and failure all terminalize via
+        // the same project-scoped cursor.
+        create_run(
+            &db,
+            CreateRunPayload {
+                run_id: Some("manual-cancel".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: "spec-manual-cancel".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![],
+            },
+        )
+        .expect("create cancellable Run");
+        cancel_run(&db, "manual-cancel".to_string(), "project-1".to_string())
+            .expect("cancel manual Run");
+        let (created, _, completed) = run_lifecycle(&db, "manual-cancel");
+        assert!(completed
+            .as_deref()
+            .is_some_and(|value| value > created.as_str()));
+
+        create_run_with_task(&db, "manual-finish", "task-finish");
+        let claim = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "manual-finish".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "finish-owner".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: None,
+            },
+        )
+        .expect("claim finish task");
+        let task = &claim["task"];
+        finish_task(
+            &db,
+            FinishTaskPayload {
+                run_id: "manual-finish".to_string(),
+                project_id: "project-1".to_string(),
+                task_id: task["taskId"].as_str().expect("finish task id").to_string(),
+                attempt_id: task["attemptId"]
+                    .as_str()
+                    .expect("finish attempt id")
+                    .to_string(),
+                lease_owner: "finish-owner".to_string(),
+                output_json: Some(json!({"ok": true})),
+                artifacts: vec![],
+                chronicle_stage_bundle: None,
+                historical_scope_authority_basis: None,
+            },
+        )
+        .expect("finish task");
+        let (created, _, completed) = run_lifecycle(&db, "manual-finish");
+        assert!(completed
+            .as_deref()
+            .is_some_and(|value| value > created.as_str()));
+
+        create_run_with_task(&db, "manual-fail", "task-fail");
+        let claim = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "manual-fail".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "fail-owner".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: None,
+            },
+        )
+        .expect("claim fail task");
+        let task = &claim["task"];
+        fail_task(
+            &db,
+            FailTaskPayload {
+                run_id: "manual-fail".to_string(),
+                project_id: "project-1".to_string(),
+                task_id: task["taskId"].as_str().expect("fail task id").to_string(),
+                attempt_id: task["attemptId"]
+                    .as_str()
+                    .expect("fail attempt id")
+                    .to_string(),
+                lease_owner: "fail-owner".to_string(),
+                error_message: "expected failure".to_string(),
+                output_json: None,
+                requeue: Some(false),
+            },
+        )
+        .expect("fail task");
+        let (created, _, completed) = run_lifecycle(&db, "manual-fail");
+        assert!(completed
+            .as_deref()
+            .is_some_and(|value| value > created.as_str()));
+    }
+
+    #[test]
+    fn malformed_imported_lifecycle_is_ignored_and_maximum_fails_closed() {
+        // A malformed imported lifecycle component is corrupted ordering
+        // evidence: `next_run_lifecycle_timestamp_in_tx` cannot prove any
+        // allocation orders after it, so the allocator fails closed with
+        // NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID instead of silently ordering
+        // new work past the broken row.
+        let malformed = full_migrated_db();
+        insert_imported_run_with_lifecycle(
+            &malformed,
+            "imported-malformed",
+            "not-an-instant",
+            None,
+            None,
+        );
+        let malformed_error = create_run(
+            &malformed,
+            CreateRunPayload {
+                run_id: Some("run-after-malformed".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: "malformed".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![],
+            },
+        )
+        .expect_err("malformed imported ordering evidence must fail the allocator closed");
+        assert!(malformed_error
+            .to_string()
+            .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));
+
+        let overflow = full_migrated_db();
+        insert_imported_run_with_lifecycle(
+            &overflow,
+            "imported-overflow",
+            "9999-12-31T23:59:59.999Z",
+            Some("9999-12-31T23:59:59.999Z"),
+            Some("9999-12-31T23:59:59.999Z"),
+        );
+        let error = create_run(
+            &overflow,
+            CreateRunPayload {
+                run_id: Some("must-not-overflow".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: "overflow".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![],
+            },
+        )
+        .expect_err("maximum imported lifecycle must fail closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_OVERFLOW"));
+    }
+
+    #[test]
+    fn list_resumable_runs_orders_mixed_legacy_and_rfc3339_instants() {
+        let db = full_migrated_db();
+        db.with_conn(|conn| {
+            for (run_id, status, created_at, started_at, completed_at) in [
+                (
+                    "run-legacy-space",
+                    "running",
+                    "2026-08-23 09:59:00",
+                    Some("2026-08-23 10:00:00"),
+                    None,
+                ),
+                (
+                    "run-rfc3339-millis",
+                    "completed",
+                    "2026-08-23T09:58:00.000Z",
+                    Some("2026-08-23T09:58:00.000Z"),
+                    Some("2026-08-23T09:59:59.900Z"),
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, created_at, started_at, completed_at, version)
+                     VALUES (?1, 'project-1', 'chronicle.extract', '{}', '{}', 'digest',
+                             ?2, '{}', ?3, ?4, ?5, 0)",
+                    params![run_id, status, created_at, started_at, completed_at],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("insert mixed timestamp Runs");
+
+        for run_id in ["run-legacy-space", "run-rfc3339-millis"] {
+            save_proposal_set(
+                &db,
+                SaveProposalSetPayload {
+                    run_id: run_id.to_string(),
+                    project_id: "project-1".to_string(),
+                    proposal_set_id: Some(format!("set-{run_id}")),
+                    set_kind: "chronicle.extract.review@1".to_string(),
+                    summary_json: None,
+                    proposals: vec![ProposalSeed {
+                        proposal_id: Some(format!("proposal-{run_id}")),
+                        proposal_key: format!("key-{run_id}"),
+                        kind: "chronicle.event.create@1".to_string(),
+                        payload_json: json!({ "title": run_id }),
+                        reconciliation_envelope: None,
+                    }],
+                },
+            )
+            .expect("insert resumable ProposalSet");
+        }
+
+        let listed = list_resumable_runs(
+            &db,
+            ListResumableRunsPayload {
+                project_id: "project-1".to_string(),
+                surface_path_id: None,
+                limit: Some(10),
+            },
+        )
+        .expect("list mixed timestamp Runs");
+        let run_ids: Vec<&str> = listed
+            .as_array()
+            .expect("resumable list")
+            .iter()
+            .map(|run| run["runId"].as_str().expect("runId"))
+            .collect();
+        assert_eq!(
+            run_ids,
+            vec!["run-legacy-space", "run-rfc3339-millis"],
+            "ordering must compare instants, not the legacy space versus RFC3339 separator"
+        );
     }
 
     /// Inserts a minimal `tree_nodes` scene row so `scene_body_envelope`

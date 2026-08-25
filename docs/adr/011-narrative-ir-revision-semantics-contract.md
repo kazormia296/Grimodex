@@ -182,6 +182,28 @@ the strongest class and a scope override carries the cumulative union of
 projection-only and scope-affecting paths. Unknown paths and client metadata
 fail closed; assertion override is reserved/rejected in NIR-0.
 
+### 4.1 Human-derived Context lineage
+
+A Human-derived `derivationContextSet` records two distinct things and keeps
+them apart explicitly:
+
+- **Own derivation Contexts** — the dynamic inputs of this derivation itself
+  (for example a deterministic Scope resolver input). These entries carry no
+  lineage marker and must never be `model-visible`: a human derivation
+  presents nothing to a model.
+- **Inherited parent Contexts** — verbatim copies of the immediate parent
+  revision's Context Set, each carrying
+  `inheritedFromRevisionId = parentRevisionId`. Inherited entries preserve
+  their original exposure, `model-visible` included; the exposure is audit
+  provenance of the execution that actually presented the input and must not
+  be rewritten to satisfy the Human exposure rule.
+
+The lineage marker is what lets a projection-only child keep the parent's
+Dependency Set unchanged: Dependency `contextIds` resolve against the union of
+inherited and own entries, and an inherited `model-visible` Context remains
+subject to Dependency coverage. A marker naming any revision other than the
+immediate parent fails closed.
+
 ### 5. Material basis and stale validation
 
 A Human-derived child is a first-class `proposal-revision` Consumer with its
@@ -189,6 +211,14 @@ own Revision ID. It materializes its own Source Basis, Evidence Set,
 Dependency Set, sealed declarations, V1 compatibility Edges, Edge States, and
 Consumer Freshness. It never obtains Freshness through hidden root-lineage
 lookup, and a zero-edge current Revision is forbidden.
+
+A scope-override child must additionally rebuild its Material Basis (§6.3
+semantics): add the scope-resolution Dependency for the resolver input,
+refresh Scope/Registry/Oracle inputs, remove obsolete Scope Dependencies, and
+recompute `dependencySetDigest` and `materialBasisDigest`. Until that
+materialization is wired, C2A persistence of a scope-override child fails
+closed with `NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE` — the same boundary C2B
+already enforces — after the trusted scope authority-binding checks run.
 
 Interpretation saves retain live Source revision-token equality and refuse a
 stale read (including `NEX_READ_SET_STALE`). Human-derived saves preserve the

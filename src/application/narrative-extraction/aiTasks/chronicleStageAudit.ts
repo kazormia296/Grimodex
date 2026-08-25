@@ -52,6 +52,8 @@ export interface ChronicleStageAuditMetadata {
   readonly modelExecutionBinding: StageModelExecutionBindingV1;
   readonly modelBindingDigest: Sha256Digest;
   readonly responseDigest?: Sha256Digest | null;
+  readonly rawObservationsDigest?: Sha256Digest | null;
+  readonly parsedOutputDigest?: Sha256Digest | null;
   readonly parseStatus?: ChronicleParseStatus;
   readonly terminalStatus?: ChronicleTerminalStatus;
   /** Present only for terminal v2 metadata. */
@@ -112,6 +114,8 @@ function stageMetadata(
   terminal?: Pick<
     ChronicleStageAuditMetadata,
     | "responseDigest"
+    | "rawObservationsDigest"
+    | "parsedOutputDigest"
     | "parseStatus"
     | "terminalStatus"
     | "stageExecutionReceiptDigest"
@@ -141,6 +145,12 @@ function stageMetadata(
     ...(terminal?.responseDigest === undefined
       ? {}
       : { responseDigest: terminal.responseDigest }),
+    ...(terminal?.rawObservationsDigest === undefined
+      ? {}
+      : { rawObservationsDigest: terminal.rawObservationsDigest }),
+    ...(terminal?.parsedOutputDigest === undefined
+      ? {}
+      : { parsedOutputDigest: terminal.parsedOutputDigest }),
     ...(terminal?.parseStatus === undefined
       ? {}
       : { parseStatus: terminal.parseStatus }),
@@ -250,6 +260,8 @@ export interface BuildChronicleStageAuditTerminalInput extends ChronicleStageAud
   readonly responseText: string;
   /** Trusted transport digest; avoids rehashing when Web Crypto is unavailable. */
   readonly responseDigest?: Sha256Digest;
+  readonly rawObservationsDigest?: Sha256Digest | null;
+  readonly parsedOutputDigest?: Sha256Digest | null;
   readonly parseStatus: ChronicleParseStatus;
   readonly terminalStatus: ChronicleTerminalStatus;
   /** Exact binding sealed by the route callback, or unresolved when omitted. */
@@ -293,6 +305,8 @@ export async function buildChronicleStageAuditTerminal(
     modelExecutionBinding,
     modelBindingDigest,
     responseDigest,
+    rawObservationsDigest: input.rawObservationsDigest ?? null,
+    parsedOutputDigest: input.parsedOutputDigest ?? null,
     parseStatus: input.parseStatus,
     terminalStatus: input.terminalStatus,
   });
@@ -305,6 +319,8 @@ export async function buildChronicleStageAuditTerminal(
     modelBindingDigest,
     {
       responseDigest,
+      rawObservationsDigest: input.rawObservationsDigest ?? null,
+      parsedOutputDigest: input.parsedOutputDigest ?? null,
       parseStatus: input.parseStatus,
       terminalStatus: input.terminalStatus,
       stageExecutionReceiptDigest: receipt.stageExecutionReceiptDigest,

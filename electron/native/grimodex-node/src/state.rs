@@ -7,12 +7,16 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;
 
 use grimodex_db::events::EventSink;
 use grimodex_db::ime_export::ImeExportRequestGate;
+use grimodex_db::narrative_extraction::{
+    ForegroundSystemWorkRun, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
+    NarrativeMaintenanceCiFault, RecoveryMode, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
+};
 use grimodex_db::{GlobalSettingsPath, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
@@ -97,6 +101,492 @@ impl grimodex_ai::emit::StreamEmitter for EventQueue {
 }
 
 const MAX_STREAM_ABORT_TOMBSTONES: usize = 256;
+
+/// Recovery bookkeeping for one main-process maintenance runtime.
+///
+/// A workspace swap advances the generation and clears the set of recovered
+/// canonical WorkKeys. Startup recovery is selected independently for each
+/// identity that has not yet completed a cycle successfully; an invalid
+/// request, deferred adapter, or failed cycle therefore leaves that identity
+/// in StartupRecovery.
+struct NarrativeMaintenanceRecoveryState {
+    workspace_generation: u64,
+    authority_id: Option<String>,
+    recovered_work_keys: HashSet<String>,
+}
+
+pub struct NarrativeMaintenanceRecoveryGate {
+    state: Mutex<NarrativeMaintenanceRecoveryState>,
+}
+
+// The generation is process-local, but it must not restart at the same value
+// after a fresh Backend is created.  A durable foreground marker from an old
+// process therefore cannot be released merely because the workspace metadata
+// (and hence authority ID) is unchanged; StartupRecovery gets the first say.
+fn checked_next_narrative_maintenance_generation(current: u64) -> u64 {
+    if current == 0 || current >= NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION {
+        1
+    } else {
+        current + 1
+    }
+}
+
+static NARRATIVE_MAINTENANCE_GENERATION_SEED: OnceLock<u64> = OnceLock::new();
+static NARRATIVE_MAINTENANCE_GENERATION_CURSOR: AtomicU64 = AtomicU64::new(0);
+static NARRATIVE_MAINTENANCE_GENERATION_USED: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+
+fn process_narrative_maintenance_generation_seed() -> u64 {
+    *NARRATIVE_MAINTENANCE_GENERATION_SEED.get_or_init(|| {
+        let random_bits = uuid::Uuid::new_v4().as_u128();
+        let masked = random_bits & u128::from(NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION);
+        match u64::try_from(masked) {
+            Ok(seed) if seed > 0 => seed,
+            _ => 1,
+        }
+    })
+}
+
+fn cursor_narrative_maintenance_generation() -> u64 {
+    let seed = process_narrative_maintenance_generation_seed();
+    let previous = match NARRATIVE_MAINTENANCE_GENERATION_CURSOR.fetch_update(
+        Ordering::AcqRel,
+        Ordering::Acquire,
+        |current| {
+            Some(if current == 0 {
+                seed
+            } else {
+                checked_next_narrative_maintenance_generation(current)
+            })
+        },
+    ) {
+        Ok(previous) => previous,
+        Err(_) => 0,
+    };
+    if previous == 0 {
+        seed
+    } else {
+        checked_next_narrative_maintenance_generation(previous)
+    }
+}
+
+/// Allocate a generation that is safe to serialize through JavaScript's
+/// Number representation. The registry closes the small race where a
+/// workspace-swap rollover and a fresh Backend allocation would otherwise
+/// choose the same value; it also makes every same-process allocation unique
+/// until the complete 53-bit space is exhausted.
+fn allocate_narrative_maintenance_generation(preferred: Option<u64>) -> u64 {
+    let used = NARRATIVE_MAINTENANCE_GENERATION_USED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut candidate = preferred
+        .filter(|value| *value > 0 && *value <= NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION)
+        .unwrap_or_else(cursor_narrative_maintenance_generation);
+    loop {
+        let inserted = used
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(candidate);
+        if inserted {
+            return candidate;
+        }
+        candidate = cursor_narrative_maintenance_generation();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct NarrativeMaintenanceFaultIdentity {
+    pub(crate) authority_id: String,
+    pub(crate) generation: u64,
+    pub(crate) project_id: String,
+    pub(crate) run_kind: String,
+    pub(crate) semantic_epoch_id: Option<String>,
+    pub(crate) work_key: String,
+    pub(crate) run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NarrativeMaintenanceFaultClaimKey {
+    authority_id: String,
+    generation: u64,
+    project_id: String,
+    run_kind: String,
+    semantic_epoch_id: Option<String>,
+    work_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NarrativeMaintenanceFaultClaim {
+    key: NarrativeMaintenanceFaultClaimKey,
+    fault: NarrativeMaintenanceCiFault,
+}
+
+impl NarrativeMaintenanceFaultClaim {
+    pub(crate) fn fault(&self) -> NarrativeMaintenanceCiFault {
+        self.fault
+    }
+}
+
+#[derive(Default)]
+struct NarrativeMaintenanceFaultState {
+    pending: HashSet<NarrativeMaintenanceFaultClaimKey>,
+    consumed: HashSet<NarrativeMaintenanceFaultIdentity>,
+}
+
+/// One-shot native storage for the authorized product-journey configuration.
+/// Main performs the launch gate, while this state validates it again and
+/// rejects every second configuration attempt. Fault consumption is kept
+/// separate from configuration so a replay, a different authority, or a
+/// different workspace-generation binding cannot reuse the same injection.
+pub struct NarrativeMaintenanceCiSeamState {
+    configured: AtomicBool,
+    config: Mutex<Option<NarrativeMaintenanceCiConfig>>,
+    faults: Mutex<NarrativeMaintenanceFaultState>,
+}
+
+impl Default for NarrativeMaintenanceCiSeamState {
+    fn default() -> Self {
+        Self {
+            configured: AtomicBool::new(false),
+            config: Mutex::new(None),
+            faults: Mutex::new(NarrativeMaintenanceFaultState::default()),
+        }
+    }
+}
+
+impl NarrativeMaintenanceCiSeamState {
+    pub fn configure(&self, config: NarrativeMaintenanceCiConfig) -> anyhow::Result<()> {
+        config.validate()?;
+        if self.configured.swap(true, Ordering::AcqRel) {
+            anyhow::bail!(
+                "NEX_MAINTENANCE_CI_SEAM_ALREADY_CONFIGURED: product journey seam is one-shot"
+            );
+        }
+        let mut slot = self
+            .config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(config);
+        Ok(())
+    }
+
+    pub fn config(&self) -> Option<NarrativeMaintenanceCiConfig> {
+        self.config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Reserve the configured fault for one exact live authority/work
+    /// identity. The Run id is deliberately attached only after the native
+    /// lifecycle owner creates it; this pending reservation closes the race
+    /// between two concurrent cycle calls without allowing a speculative
+    /// failed call to consume the one-shot permanently.
+    pub(crate) fn claim_fault_for_binding(
+        &self,
+        fault: NarrativeMaintenanceCiFault,
+        binding: &MaintenanceWorkspaceBinding,
+        project_id: &str,
+        run_kind: &str,
+        semantic_epoch_id: Option<&str>,
+        work_key: &str,
+    ) -> anyhow::Result<Option<NarrativeMaintenanceFaultClaim>> {
+        binding.validate()?;
+        validate_fault_identity_component(&binding.authority_id, "authorityId")?;
+        validate_fault_identity_component(project_id, "projectId")?;
+        validate_fault_identity_component(run_kind, "runKind")?;
+        validate_fault_identity_component(work_key, "workKey")?;
+        if let Some(epoch_id) = semantic_epoch_id {
+            validate_fault_identity_component(epoch_id, "semanticEpochId")?;
+        }
+        let key = NarrativeMaintenanceFaultClaimKey {
+            authority_id: binding.authority_id.clone(),
+            generation: binding.generation,
+            project_id: project_id.to_string(),
+            run_kind: run_kind.to_string(),
+            semantic_epoch_id: semantic_epoch_id.map(str::to_string),
+            work_key: work_key.to_string(),
+        };
+        let mut faults = self
+            .faults
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The configured seam is one-shot for the whole AppState.  The
+        // persisted identity still records every binding component, but a
+        // workspace swap, another project, or a replay must never turn that
+        // one fault into a second injection under a different key.
+        if !faults.pending.is_empty() || !faults.consumed.is_empty() {
+            return Ok(None);
+        }
+        faults.pending.insert(key.clone());
+        Ok(Some(NarrativeMaintenanceFaultClaim { key, fault }))
+    }
+
+    /// Bind a reserved fault to the real Run id and the epoch selected by the
+    /// lifecycle owner. A claim can be committed exactly once; a mismatched
+    /// authority/generation or empty Run id fails closed.
+    pub(crate) fn commit_fault_for_run(
+        &self,
+        claim: &NarrativeMaintenanceFaultClaim,
+        run_id: &str,
+        semantic_epoch_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let result = (|| {
+            validate_fault_identity_component(run_id, "runId")?;
+            let semantic_epoch_id = semantic_epoch_id.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_FAULT_CLAIM_INVALID: the created Run must carry a Semantic Epoch"
+                )
+            })?;
+            validate_fault_identity_component(semantic_epoch_id, "semanticEpochId")?;
+            if let Some(expected_epoch_id) = claim.key.semantic_epoch_id.as_deref() {
+                anyhow::ensure!(
+                    semantic_epoch_id == expected_epoch_id,
+                    "NEX_MAINTENANCE_FAULT_CLAIM_INVALID: Run Semantic Epoch does not match the claimed work identity"
+                );
+            }
+            let mut faults = self
+                .faults
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            anyhow::ensure!(
+                faults.pending.remove(&claim.key),
+                "NEX_MAINTENANCE_FAULT_CLAIM_INVALID: fault claim is not pending"
+            );
+            faults.consumed.insert(NarrativeMaintenanceFaultIdentity {
+                authority_id: claim.key.authority_id.clone(),
+                generation: claim.key.generation,
+                project_id: claim.key.project_id.clone(),
+                run_kind: claim.key.run_kind.clone(),
+                semantic_epoch_id: Some(semantic_epoch_id.to_string()),
+                work_key: claim.key.work_key.clone(),
+                run_id: run_id.to_string(),
+            });
+            Ok(())
+        })();
+        if result.is_err() {
+            // A post-claim validation/commit error must not strand the
+            // process-local reservation. The durable lifecycle transaction
+            // is rolled back by its caller before this cleanup is observed.
+            self.release_fault_claim(claim);
+        }
+        result
+    }
+
+    pub(crate) fn release_fault_claim(&self, claim: &NarrativeMaintenanceFaultClaim) {
+        self.faults
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+            .remove(&claim.key);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consumed_fault_identities(&self) -> Vec<NarrativeMaintenanceFaultIdentity> {
+        self.faults
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .consumed
+            .iter()
+            .cloned()
+            .collect()
+    }
+}
+
+fn validate_fault_identity_component(value: &str, name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!value.is_empty(), "{name} is required");
+    anyhow::ensure!(value == value.trim(), "{name} must be trimmed");
+    anyhow::ensure!(!value.contains('\0'), "{name} must not contain NUL");
+    Ok(())
+}
+
+/// Process-local retry handles for foreground Runs selected by the
+/// product-journey barrier. The durable marker remains the source of truth;
+/// these handles only avoid rediscovery after transient post-response
+/// failures, including an old authority retained across a workspace swap.
+pub struct NarrativeMaintenanceForegroundBarrierState {
+    pending: Mutex<HashMap<String, ForegroundSystemWorkRun>>,
+}
+
+impl Default for NarrativeMaintenanceForegroundBarrierState {
+    fn default() -> Self {
+        Self {
+            pending: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl NarrativeMaintenanceForegroundBarrierState {
+    pub fn remember(&self, barrier: ForegroundSystemWorkRun) -> anyhow::Result<()> {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = pending.get(&barrier.run_id) {
+            anyhow::ensure!(
+                existing == &barrier,
+                "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_PENDING_CONFLICT: another exact foreground Run is awaiting release"
+            );
+            return Ok(());
+        }
+        pending.insert(barrier.run_id.clone(), barrier);
+        Ok(())
+    }
+
+    pub fn pending_for_run_and_binding(
+        &self,
+        run_id: &str,
+        project_id: &str,
+        authority_id: &str,
+        generation: u64,
+        product_journey_barrier_id: &str,
+        correlation: &str,
+    ) -> Option<ForegroundSystemWorkRun> {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let barrier = pending.get(run_id)?;
+        (barrier.project_id == project_id
+            && barrier.marker.authority_id == authority_id
+            && barrier.marker.generation == generation
+            && barrier.marker.product_journey_barrier_id == product_journey_barrier_id
+            && barrier.marker.correlation == correlation)
+            .then(|| barrier.clone())
+    }
+
+    pub fn clear_if_run(&self, run_id: &str) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.remove(run_id);
+    }
+}
+
+impl Default for NarrativeMaintenanceRecoveryGate {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(NarrativeMaintenanceRecoveryState {
+                workspace_generation: allocate_narrative_maintenance_generation(None),
+                authority_id: None,
+                recovered_work_keys: HashSet::new(),
+            }),
+        }
+    }
+}
+
+impl NarrativeMaintenanceRecoveryGate {
+    /// Atomically bind a live authority identity to its recovery generation.
+    /// The identity is process-local and supplied by the pinned Arc in the
+    /// N-API adapter; changing it clears every recovered WorkKey before the
+    /// new binding is returned.
+    pub fn binding_for_authority(&self, authority_id: &str) -> MaintenanceWorkspaceBinding {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.authority_id.as_deref() != Some(authority_id) {
+            if state.authority_id.is_some() {
+                state.workspace_generation = allocate_narrative_maintenance_generation(Some(
+                    checked_next_narrative_maintenance_generation(state.workspace_generation),
+                ));
+            }
+            state.authority_id = Some(authority_id.to_string());
+            state.recovered_work_keys.clear();
+        }
+        MaintenanceWorkspaceBinding {
+            authority_id: authority_id.to_string(),
+            generation: state.workspace_generation,
+        }
+    }
+
+    pub fn mode_for_binding(
+        &self,
+        binding: &MaintenanceWorkspaceBinding,
+        work_key: &str,
+    ) -> RecoveryMode {
+        let recovered = self
+            .state
+            .lock()
+            .map(|state| {
+                state.authority_id.as_deref() == Some(binding.authority_id.as_str())
+                    && state.workspace_generation == binding.generation
+                    && state.recovered_work_keys.contains(work_key)
+            })
+            .unwrap_or(false);
+        if recovered {
+            RecoveryMode::SameProcessLive
+        } else {
+            RecoveryMode::StartupRecovery
+        }
+    }
+
+    /// Must be called only after a cycle is fully accepted for this exact
+    /// authority snapshot. A late ACK from an old authority is ignored.
+    pub fn mark_recovered_for_binding(
+        &self,
+        binding: &MaintenanceWorkspaceBinding,
+        work_key: &str,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.authority_id.as_deref() == Some(binding.authority_id.as_str())
+            && state.workspace_generation == binding.generation
+        {
+            state.recovered_work_keys.insert(work_key.to_string());
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn current_generation(&self) -> u64 {
+        self.state
+            .lock()
+            .map(|state| state.workspace_generation)
+            .unwrap_or_default()
+    }
+
+    pub fn mark_workspace_swapped(&self) -> u64 {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.workspace_generation = allocate_narrative_maintenance_generation(Some(
+            checked_next_narrative_maintenance_generation(state.workspace_generation),
+        ));
+        state.authority_id = None;
+        state.recovered_work_keys.clear();
+        state.workspace_generation
+    }
+
+    #[allow(dead_code)]
+    pub fn mode_for(&self, generation: u64, work_key: &str) -> RecoveryMode {
+        let recovered = self
+            .state
+            .lock()
+            .map(|state| {
+                state.workspace_generation == generation
+                    && state.recovered_work_keys.contains(work_key)
+            })
+            .unwrap_or(false);
+        if recovered {
+            RecoveryMode::SameProcessLive
+        } else {
+            RecoveryMode::StartupRecovery
+        }
+    }
+
+    /// Must be called only after the live cycle has validated and completed.
+    #[allow(dead_code)]
+    pub fn mark_recovered(&self, generation: u64, work_key: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.workspace_generation == generation {
+            state.recovered_work_keys.insert(work_key.to_string());
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct StreamCancellation {
@@ -283,6 +773,21 @@ pub struct AppState {
     /// Session::run's mutable owner. Callers must use `try_lock` and return the
     /// stable `RERANKER_BUSY` marker instead of waiting behind an inference.
     pub semantic_reranker: Mutex<grimodex_semantic::reranker::RerankerRuntime>,
+    /// Workspace-generation-scoped startup-recovery gate for the main-only
+    /// narrative maintenance cycle.
+    pub narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate,
+    /// One-shot, CI-only product-journey configuration. This is deliberately
+    /// not part of the renderer/preload bridge or shared IPC contract.
+    pub narrative_maintenance_ci_seam: NarrativeMaintenanceCiSeamState,
+    /// Exact native-owned foreground Run awaiting the post-response authoring
+    /// write. A failed release remains here for a later retry; a process
+    /// restart can rediscover the same durable marker from SQLite.
+    pub narrative_maintenance_foreground_barrier: NarrativeMaintenanceForegroundBarrierState,
+    /// Serializes the two N-API mutation adapters that may rotate a
+    /// Narrative Semantic Epoch. The lock covers the idempotency preflight
+    /// and the shared-Rust transaction so exactly one first execution emits
+    /// the observer-only main wake; replays/no-ops do not emit it.
+    pub narrative_maintenance_mutation_lock: Mutex<()>,
 }
 
 impl AppState {
@@ -360,6 +865,11 @@ impl AppState {
             semantic_reranker: Mutex::new(grimodex_semantic::reranker::RerankerRuntime::new(
                 reranker_resource_root,
             )),
+            narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate::default(),
+            narrative_maintenance_ci_seam: NarrativeMaintenanceCiSeamState::default(),
+            narrative_maintenance_foreground_barrier:
+                NarrativeMaintenanceForegroundBarrierState::default(),
+            narrative_maintenance_mutation_lock: Mutex::new(()),
         })
     }
 }
@@ -458,6 +968,444 @@ mod tests {
             }
             SinkState::Registered(_) => panic!("登録前は Pending のまま"),
         }
+    }
+
+    #[test]
+    fn foreground_barrier_retry_state_is_exact_run_scoped() {
+        let state = NarrativeMaintenanceForegroundBarrierState::default();
+        let marker = grimodex_db::narrative_extraction::NarrativeSystemWorkMarker {
+            trigger: "workspace-opened".to_string(),
+            canonical_work_key: "narrative-maintenance:v1/dependency-verify/project-1/dependency-verify:epoch-1/epoch/epoch-1".to_string(),
+            authority_id: "authority:workspace-1".to_string(),
+            generation: 1,
+            product_journey_barrier_id: "barrier-1".to_string(),
+            correlation: "correlation-1".to_string(),
+        };
+        let barrier = ForegroundSystemWorkRun {
+            run_id: "run-1".to_string(),
+            project_id: "project-1".to_string(),
+            marker,
+        };
+
+        state
+            .remember(barrier.clone())
+            .expect("remember exact barrier");
+        assert_eq!(
+            state
+                .pending_for_run_and_binding(
+                    "run-1",
+                    "project-1",
+                    "authority:workspace-1",
+                    1,
+                    "barrier-1",
+                    "correlation-1",
+                )
+                .expect("pending exact barrier"),
+            barrier
+        );
+        assert!(state
+            .pending_for_run_and_binding(
+                "unrelated-run",
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_none());
+        state.clear_if_run("unrelated-run");
+        assert!(state
+            .pending_for_run_and_binding(
+                "run-1",
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_some());
+        state
+            .remember(barrier.clone())
+            .expect("duplicate exact barrier is idempotent");
+        let mut conflicting = barrier.clone();
+        conflicting.run_id = "run-2".to_string();
+        state
+            .remember(conflicting)
+            .expect("a distinct durable Run is retained independently");
+        state.clear_if_run("run-1");
+        assert!(state
+            .pending_for_run_and_binding(
+                "run-1",
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_none());
+        assert!(state
+            .pending_for_run_and_binding(
+                "run-2",
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_some());
+        state.clear_if_run("run-2");
+        assert!(state
+            .pending_for_run_and_binding(
+                "run-2",
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn narrative_recovery_gate_is_generation_and_work_key_scoped() {
+        let gate = NarrativeMaintenanceRecoveryGate::default();
+        let generation_one = gate.current_generation();
+        let key_a = "narrative-maintenance:v1/backfill/project-a/key-a";
+        let key_b = "narrative-maintenance:v1/backfill/project-a/key-b";
+
+        assert_eq!(
+            gate.mode_for(generation_one, key_a),
+            RecoveryMode::StartupRecovery
+        );
+        gate.mark_recovered(generation_one, key_a);
+        assert_eq!(
+            gate.mode_for(generation_one, key_a),
+            RecoveryMode::SameProcessLive
+        );
+        assert_eq!(
+            gate.mode_for(generation_one, key_b),
+            RecoveryMode::StartupRecovery,
+            "an unscanned/deferred WorkKey must not inherit another key's ACK"
+        );
+
+        let generation_two = gate.mark_workspace_swapped();
+        assert_ne!(generation_two, generation_one);
+        assert_eq!(
+            gate.mode_for(generation_two, key_a),
+            RecoveryMode::StartupRecovery,
+            "workspace handoff clears prior generation identities"
+        );
+        gate.mark_recovered(generation_two, key_a);
+        assert_eq!(
+            gate.mode_for(generation_two, key_a),
+            RecoveryMode::SameProcessLive
+        );
+        assert_eq!(
+            gate.mode_for(generation_two, key_b),
+            RecoveryMode::StartupRecovery
+        );
+    }
+
+    #[test]
+    fn maintenance_generation_is_safe_and_rolls_over_without_zero() {
+        const MAX_SAFE_GENERATION: u64 = (1u64 << 53) - 1;
+        let gate = NarrativeMaintenanceRecoveryGate::default();
+        let generation = gate.current_generation();
+        assert!(generation > 0);
+        assert!(generation <= MAX_SAFE_GENERATION);
+        let mut allocations = HashSet::new();
+        for _ in 0..8 {
+            assert!(allocations.insert(allocate_narrative_maintenance_generation(None)));
+        }
+        assert_eq!(checked_next_narrative_maintenance_generation(0), 1);
+        assert_eq!(
+            checked_next_narrative_maintenance_generation(MAX_SAFE_GENERATION - 1),
+            MAX_SAFE_GENERATION
+        );
+        assert_eq!(
+            checked_next_narrative_maintenance_generation(MAX_SAFE_GENERATION),
+            1
+        );
+
+        let near_max = NarrativeMaintenanceRecoveryGate {
+            state: Mutex::new(NarrativeMaintenanceRecoveryState {
+                workspace_generation: MAX_SAFE_GENERATION - 1,
+                authority_id: None,
+                recovered_work_keys: HashSet::new(),
+            }),
+        };
+        let first_rollover = near_max.mark_workspace_swapped();
+        assert!(first_rollover > 0 && first_rollover <= MAX_SAFE_GENERATION);
+        let second_rollover = near_max.mark_workspace_swapped();
+        assert!(second_rollover > 0 && second_rollover <= MAX_SAFE_GENERATION);
+        assert_ne!(first_rollover, second_rollover);
+        assert!(near_max.current_generation() <= MAX_SAFE_GENERATION);
+
+        let at_max = NarrativeMaintenanceRecoveryGate {
+            state: Mutex::new(NarrativeMaintenanceRecoveryState {
+                workspace_generation: MAX_SAFE_GENERATION,
+                authority_id: None,
+                recovered_work_keys: HashSet::new(),
+            }),
+        };
+        let at_max_rollover = at_max.mark_workspace_swapped();
+        assert!(at_max_rollover > 0 && at_max_rollover <= MAX_SAFE_GENERATION);
+    }
+
+    #[test]
+    fn fresh_recovery_gate_does_not_reuse_a_prior_process_generation() {
+        let first_process = NarrativeMaintenanceRecoveryGate::default();
+        let restarted_process = NarrativeMaintenanceRecoveryGate::default();
+        assert_ne!(
+            first_process.current_generation(),
+            restarted_process.current_generation(),
+            "a fresh process must enter StartupRecovery under a new binding"
+        );
+    }
+
+    #[test]
+    fn narrative_recovery_gate_is_authority_identity_scoped() {
+        let gate = NarrativeMaintenanceRecoveryGate::default();
+        let first = gate.binding_for_authority("authority-one");
+        let key = "narrative-maintenance:v1/backfill/project/key";
+
+        assert_eq!(
+            gate.mode_for_binding(&first, key),
+            RecoveryMode::StartupRecovery
+        );
+        gate.mark_recovered_for_binding(&first, key);
+        assert_eq!(
+            gate.mode_for_binding(&first, key),
+            RecoveryMode::SameProcessLive
+        );
+
+        let second = gate.binding_for_authority("authority-two");
+        assert_ne!(first, second);
+        assert_eq!(
+            gate.mode_for_binding(&second, key),
+            RecoveryMode::StartupRecovery,
+            "an old authority ACK must not recover the replacement authority"
+        );
+        gate.mark_recovered_for_binding(&first, key);
+        assert_eq!(
+            gate.mode_for_binding(&second, key),
+            RecoveryMode::StartupRecovery,
+            "late old-authority ACK must remain harmless"
+        );
+    }
+
+    #[test]
+    fn ci_fault_claim_is_one_shot_across_binding_project_and_replay() {
+        let seam = NarrativeMaintenanceCiSeamState::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-one".to_string(),
+            generation: 7,
+        };
+        let claim = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::TransientIo,
+                &binding,
+                "project-one",
+                "backfill",
+                None,
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("claim exact fault identity")
+            .expect("first claim is available");
+        seam.commit_fault_for_run(&claim, "run-one", Some("epoch-one"))
+            .expect("bind claim to real Run and epoch");
+
+        let consumed = seam.consumed_fault_identities();
+        assert_eq!(consumed.len(), 1);
+        assert_eq!(consumed[0].authority_id, "authority-one");
+        assert_eq!(consumed[0].generation, 7);
+        assert_eq!(consumed[0].project_id, "project-one");
+        assert_eq!(consumed[0].run_id, "run-one");
+        assert_eq!(consumed[0].semantic_epoch_id.as_deref(), Some("epoch-one"));
+
+        for (other_binding, project, epoch, work_key) in [
+            (
+                binding.clone(),
+                "project-one",
+                None,
+                "legacy-dependency-backfill:v2",
+            ),
+            (
+                MaintenanceWorkspaceBinding {
+                    authority_id: "authority-two".to_string(),
+                    generation: 8,
+                },
+                "project-one",
+                None,
+                "legacy-dependency-backfill:v2",
+            ),
+            (
+                binding.clone(),
+                "project-two",
+                None,
+                "legacy-dependency-backfill:v2",
+            ),
+            (
+                binding.clone(),
+                "project-one",
+                Some("epoch-two"),
+                "legacy-dependency-backfill:v2",
+            ),
+            (binding.clone(), "project-one", None, "different-work"),
+        ] {
+            assert!(
+                seam.claim_fault_for_binding(
+                    NarrativeMaintenanceCiFault::TransientIo,
+                    &other_binding,
+                    project,
+                    "backfill",
+                    epoch,
+                    work_key,
+                )
+                .expect("replay validation")
+                .is_none(),
+                "a consumed fault cannot be replayed under another identity"
+            );
+        }
+
+        let pending = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::TransientIo,
+                &MaintenanceWorkspaceBinding {
+                    authority_id: "authority-three".to_string(),
+                    generation: 9,
+                },
+                "project-three",
+                "backfill",
+                None,
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("pending claim validation");
+        assert!(pending.is_none(), "consumed state remains one-shot");
+    }
+
+    #[test]
+    fn ci_fault_claim_is_globally_one_shot_while_any_distinct_key_is_pending() {
+        let seam = NarrativeMaintenanceCiSeamState::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-pending".to_string(),
+            generation: 11,
+        };
+        let first = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::TransientIo,
+                &binding,
+                "project-one",
+                "backfill",
+                None,
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("first pending claim validation")
+            .expect("first pending claim");
+        let second = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::TransientIo,
+                &binding,
+                "project-two",
+                "backfill",
+                None,
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("distinct pending claim validation");
+        assert!(
+            second.is_none(),
+            "a second project must not reserve a globally one-shot pending fault"
+        );
+        seam.release_fault_claim(&first);
+    }
+
+    #[test]
+    fn ci_fault_claim_allows_only_one_pending_identity_globally() {
+        let seam = Arc::new(NarrativeMaintenanceCiSeamState::default());
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let claims = std::thread::scope(|scope| {
+            let first_seam = Arc::clone(&seam);
+            let first_barrier = Arc::clone(&barrier);
+            let first = scope.spawn(move || {
+                first_barrier.wait();
+                first_seam
+                    .claim_fault_for_binding(
+                        NarrativeMaintenanceCiFault::TransientIo,
+                        &MaintenanceWorkspaceBinding {
+                            authority_id: "authority-one".to_string(),
+                            generation: 1,
+                        },
+                        "project-one",
+                        "backfill",
+                        None,
+                        "legacy-dependency-backfill:v2",
+                    )
+                    .expect("first pending reservation")
+                    .is_some()
+            });
+            let second_seam = Arc::clone(&seam);
+            let second_barrier = Arc::clone(&barrier);
+            let second = scope.spawn(move || {
+                second_barrier.wait();
+                second_seam
+                    .claim_fault_for_binding(
+                        NarrativeMaintenanceCiFault::TransientIo,
+                        &MaintenanceWorkspaceBinding {
+                            authority_id: "authority-two".to_string(),
+                            generation: 2,
+                        },
+                        "project-two",
+                        "backfill",
+                        None,
+                        "legacy-dependency-backfill:v2",
+                    )
+                    .expect("second pending reservation")
+                    .is_some()
+            });
+            [
+                first.join().expect("first reservation thread"),
+                second.join().expect("second reservation thread"),
+            ]
+        });
+        assert_eq!(claims.into_iter().filter(|claimed| *claimed).count(), 1);
+    }
+
+    #[test]
+    fn failed_fault_claim_commit_releases_pending_reservation_for_retry() {
+        let seam = NarrativeMaintenanceCiSeamState::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-commit-error".to_string(),
+            generation: 12,
+        };
+        let claim = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::ContractViolation,
+                &binding,
+                "project-one",
+                "backfill",
+                Some("epoch-one"),
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("claim validation")
+            .expect("pending claim");
+        assert!(
+            seam.commit_fault_for_run(&claim, "run-one", Some("epoch-two"))
+                .is_err(),
+            "a mismatched commit must fail closed"
+        );
+        assert!(
+            seam.claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::ContractViolation,
+                &binding,
+                "project-one",
+                "backfill",
+                Some("epoch-one"),
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("retry claim validation")
+            .is_some(),
+            "a failed post-claim commit must not strand the one-shot reservation"
+        );
     }
 
     /// テスト用の雑な一意サフィックス (uuid 依存を増やさない)。

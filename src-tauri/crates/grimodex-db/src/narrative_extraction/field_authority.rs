@@ -10,6 +10,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use uuid::Uuid;
 
+use super::c2zc_canonical_cutover::is_generic_freshness_canonical;
 use super::codex_operations::{
     parse_entity_bind_existing_payload, parse_entry_create_payload, parse_entry_patch_payload,
     parse_relation_create_payload, CommitMap,
@@ -246,6 +247,13 @@ pub(crate) fn propagate_source_change_freshness_in_tx(
     updated_at: &str,
     session_id: &str,
 ) -> anyhow::Result<usize> {
+    // After C2-ZC activation the Change Feed/incremental evaluator owns the
+    // Generic row.  Updating the compatibility projection here would create a
+    // second silent authority, so leave both its value and its reconciliation
+    // events untouched; the live evaluator will publish the canonical result.
+    if is_generic_freshness_canonical(conn)? {
+        return Ok(0);
+    }
     let mut statement = conn.prepare(
         "SELECT d.application_id, d.observed_revision_token
            FROM narrative_projection_dependencies d

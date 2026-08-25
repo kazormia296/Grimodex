@@ -569,6 +569,8 @@ export interface ChronicleStageTerminalReceiptV1 {
   readonly modelBindingDigest: Sha256Digest;
   /** Null means no response was received (skip, cancellation, or pre-response failure). */
   readonly responseDigest: Sha256Digest | null;
+  readonly rawObservationsDigest: Sha256Digest | null;
+  readonly parsedOutputDigest: Sha256Digest | null;
   readonly parseStatus: ChronicleStageParseStatus;
   readonly terminalStatus: ChronicleStageTerminalStatus;
   readonly stageExecutionReceiptDigest: Sha256Digest;
@@ -583,6 +585,8 @@ export interface BuildChronicleStageTerminalReceiptV1Input {
   readonly modelExecutionBinding: StageModelExecutionBindingV1;
   readonly modelBindingDigest?: Sha256Digest;
   readonly responseDigest: Sha256Digest | null;
+  readonly rawObservationsDigest?: Sha256Digest | null;
+  readonly parsedOutputDigest?: Sha256Digest | null;
   readonly parseStatus: ChronicleStageParseStatus;
   readonly terminalStatus: ChronicleStageTerminalStatus;
 }
@@ -599,6 +603,8 @@ function receiptDigestPayload(
     finalRequestDigest: input.finalRequestDigest,
     modelBindingDigest: input.modelBindingDigest,
     responseDigest: input.responseDigest,
+    rawObservationsDigest: input.rawObservationsDigest,
+    parsedOutputDigest: input.parsedOutputDigest,
     parseStatus: input.parseStatus,
     terminalStatus: input.terminalStatus,
   };
@@ -654,6 +660,21 @@ function assertStageReceiptFields(
   assertDigest(input.modelBindingDigest, "Stage terminal modelBindingDigest");
   if (input.responseDigest !== null) {
     assertDigest(input.responseDigest, "Stage terminal responseDigest");
+  }
+  for (const [digest, label] of [
+    [input.rawObservationsDigest, "Stage terminal rawObservationsDigest"],
+    [input.parsedOutputDigest, "Stage terminal parsedOutputDigest"],
+  ] as const) {
+    if (digest !== null) assertDigest(digest, label);
+  }
+  if (
+    input.stageExecution.stageId === NARRATIVE_STAGE_IDS.eventSynthesis &&
+    input.terminalStatus === "succeeded" &&
+    (input.rawObservationsDigest === null || input.parsedOutputDigest === null)
+  ) {
+    throw new TypeError(
+      "Successful synthesis terminal must bind rawObservationsDigest and parsedOutputDigest",
+    );
   }
   if (!["parsed", "invalid", "not-attempted"].includes(input.parseStatus)) {
     throw new TypeError("Stage terminal parseStatus is unsupported");
@@ -716,6 +737,8 @@ export async function buildChronicleStageTerminalReceiptV1(
     modelExecutionBinding: input.modelExecutionBinding,
     modelBindingDigest: computedModelBindingDigest,
     responseDigest: input.responseDigest,
+    rawObservationsDigest: input.rawObservationsDigest ?? null,
+    parsedOutputDigest: input.parsedOutputDigest ?? null,
     parseStatus: input.parseStatus,
     terminalStatus: input.terminalStatus,
   } satisfies Omit<
@@ -747,6 +770,8 @@ export async function assertChronicleStageTerminalReceiptV1(
       "modelExecutionBinding",
       "modelBindingDigest",
       "responseDigest",
+      "rawObservationsDigest",
+      "parsedOutputDigest",
       "parseStatus",
       "terminalStatus",
       "stageExecutionReceiptDigest",
@@ -783,6 +808,8 @@ export async function assertChronicleStageTerminalReceiptV1(
     modelExecutionBinding: receipt.modelExecutionBinding,
     modelBindingDigest: receipt.modelBindingDigest,
     responseDigest: receipt.responseDigest,
+    rawObservationsDigest: receipt.rawObservationsDigest,
+    parsedOutputDigest: receipt.parsedOutputDigest,
     parseStatus: receipt.parseStatus,
     terminalStatus: receipt.terminalStatus,
   });

@@ -255,6 +255,18 @@
         {
           "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
           "literal": "chronicle-stage-provenance-closure/1"
+        },
+        {
+          "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+          "literal": "chronicle-stage-model-binding/1"
+        },
+        {
+          "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+          "literal": "chronicle-stage-terminal-receipt/1"
+        },
+        {
+          "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+          "literal": "chronicle-stage-provenance-closure/1"
         }
       ],
       "implementationPins": [
@@ -362,6 +374,7 @@
     "envelopeChange": "stageProvenanceClosureDigest-forbidden",
     "persistence": {
       "owner": "C2A atomic task output/artifact persistence",
+      "appliesTo": "application-closure-sidecar",
       "status": "deferred",
       "lifecycle": "ephemeral",
       "authority": "none",
@@ -370,6 +383,22 @@
       "retention": "not-retained",
       "scope": "request-scoped",
       "membership": "caller-supplied-receipt-set"
+    },
+    "terminalReceiptPersistence": {
+      "owner": "native-typed-c2a-finish",
+      "appliesTo": "stage-terminal-receipts-and-model-bindings",
+      "status": "implemented-durable",
+      "lifecycle": "durable",
+      "authority": "audit-only",
+      "authoritative": false,
+      "storage": "sqlite-workspace-db",
+      "tables": [
+        "narrative_extraction_stage_model_bindings",
+        "narrative_extraction_stage_receipts"
+      ],
+      "productionEntryPoints": [
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs::persist_receipt"
+      ]
     },
     "forbidden": [
       "credentials",
@@ -400,11 +429,13 @@
     "structuralDefense": {
       "kind": "sqlite-before-insert-trigger",
       "role": "structural-defense-only",
-      "state": "deferred-until-after-c2-zb",
-      "productionEntryPoints": [],
+      "state": "implemented-wired",
+      "productionEntryPoints": [
+        "src-tauri/crates/grimodex-db/src/migrate.rs::repair_narrative_v2_monotonicity_trigger"
+      ],
       "errorCode": "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"
     },
-    "contractFreezeOnly": true
+    "contractFreezeOnly": false
   },
   "chroniclePilot": {
     "assertionKind": "scene-event@1",
@@ -455,6 +486,12 @@
     ],
     "contextExposureAllowed": ["deterministic-stage", "author-supplied"],
     "contextExposureForbidden": ["model-visible"],
+    "contextLineage": {
+      "inheritedEntryMarker": "inheritedFromRevisionId",
+      "inheritedEntriesKeepParentExposure": true,
+      "inheritedFromMustEqualParentRevisionId": true,
+      "exposureRulesApplyTo": "own-derivation-entries-only"
+    },
     "classification": {
       "pathClasses": {
         "projectionOnly": ["/title", "/note"],

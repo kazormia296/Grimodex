@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error::{AppError, AppResult};
+use crate::narrative_extraction::ensure_restore_epochs_for_workspace;
 use crate::open::{claim_workspace_maintenance_exclusive, SwitchingGuard};
 use crate::state::{ActiveWorkspace, PinnedWorkspaceDb, WorkspaceAuthority, WorkspaceState};
 use crate::workspace_lease;
@@ -34,6 +35,10 @@ pub struct InstallStagedOptions<'a> {
     pub publish_workspace_authority: bool,
     pub on_reopened: Option<Box<dyn FnOnce() + 'a>>,
     pub exclusive_lease: Option<workspace_lease::WorkspaceLease>,
+    /// Stable digest of the materialized backup bytes, captured before
+    /// preflight may rewrite SQLite page layout. Normal backup restores use
+    /// this as the exactly-once Epoch identity seed.
+    pub restore_source_digest: Option<String>,
     #[cfg(feature = "test-failpoints")]
     pub failpoint: Option<RestoreFailpoint>,
 }
@@ -49,6 +54,8 @@ pub enum RestoreFailpoint {
     AfterReplace,
     BeforeLiveVerify,
     LiveVerifyFailure,
+    BeforeRestoreEpochMint,
+    AfterRestoreEpochMint,
 }
 
 #[cfg(feature = "test-failpoints")]
@@ -61,6 +68,8 @@ impl RestoreFailpoint {
             Self::AfterReplace => "restore.after_replace",
             Self::BeforeLiveVerify => "restore.before_live_verify",
             Self::LiveVerifyFailure => "restore.live_verify_failure",
+            Self::BeforeRestoreEpochMint => "restore.before_epoch_mint",
+            Self::AfterRestoreEpochMint => "restore.after_epoch_mint",
         }
     }
 }
@@ -72,8 +81,24 @@ impl<'a> InstallStagedOptions<'a> {
             publish_workspace_authority: true,
             on_reopened: Some(Box::new(on_reopened)),
             exclusive_lease: None,
+            restore_source_digest: None,
             #[cfg(feature = "test-failpoints")]
             failpoint: None,
+        }
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    pub fn normal_restore_with_failpoint(
+        on_reopened: impl FnOnce() + 'a,
+        failpoint: RestoreFailpoint,
+    ) -> Self {
+        Self {
+            detach_active_workspace: true,
+            publish_workspace_authority: true,
+            on_reopened: Some(Box::new(on_reopened)),
+            exclusive_lease: None,
+            restore_source_digest: None,
+            failpoint: Some(failpoint),
         }
     }
 
@@ -83,6 +108,7 @@ impl<'a> InstallStagedOptions<'a> {
             publish_workspace_authority: false,
             on_reopened: None,
             exclusive_lease: Some(exclusive_lease),
+            restore_source_digest: None,
             #[cfg(feature = "test-failpoints")]
             failpoint: None,
         }
@@ -98,6 +124,7 @@ impl<'a> InstallStagedOptions<'a> {
             publish_workspace_authority: false,
             on_reopened: None,
             exclusive_lease: Some(exclusive_lease),
+            restore_source_digest: None,
             failpoint: Some(failpoint),
         }
     }
@@ -207,6 +234,8 @@ pub fn restore_backup_core(
         return Err(anyhow::anyhow!("復元DBの同期に失敗しました: {error}").into());
     }
     drop(staged_output);
+    let restore_source_digest = crate::migration_supervisor::digest_sha256_file(&staged_plain)
+        .map_err(|error| anyhow::anyhow!("RESTORE_CANDIDATE_DIGEST_FAILED: {error}"))?;
     verify_sqlite_ok(&staged_plain)?;
 
     // `quick_check` alone accepts valid SQLite files from a schema version this
@@ -214,12 +243,9 @@ pub fn restore_backup_core(
     // the live DB so an incompatible backup leaves the current session intact.
     preflight_candidate(&staged_plain)?;
 
-    let result = install_staged_workspace_db(
-        ws_state,
-        &ws_path,
-        &staged_plain,
-        InstallStagedOptions::normal_restore(on_reopened),
-    );
+    let mut install_options = InstallStagedOptions::normal_restore(on_reopened);
+    install_options.restore_source_digest = Some(restore_source_digest);
+    let result = install_staged_workspace_db(ws_state, &ws_path, &staged_plain, install_options);
     if result.is_ok() {
         staged_cleanup.disarm();
     }
@@ -309,6 +335,55 @@ pub fn clear_restore_session_marker(workspace: &Path) -> AppResult<()> {
     }
 }
 
+/// Terminal restore-session marker phase: the session finished (install
+/// committed and authority handled, or the original image was verifiably
+/// restored) and only the marker unlink is still outstanding. The next open
+/// verifies the workspace identity and converges to deletion instead of
+/// reporting a false `RESTORE_SESSION_INCOMPLETE` Safe Mode.
+pub const RESTORE_SESSION_PHASE_COMMITTED: &str = "committed";
+
+/// Finish a restore session's marker as a commit protocol rather than a
+/// fire-and-forget unlink. `.restore-session.json` gates the next workspace
+/// open into Safe Mode, so silently ignoring a failed unlink after reporting
+/// success to the user creates a durable self-contradiction. When the unlink
+/// fails, escalate the marker to the durable `committed` phase (an atomic
+/// rename that does not require unlink) so the next open can verify and
+/// safely converge to deletion.
+///
+/// When neither step can complete — the unlink failed *and* the marker can
+/// be neither read nor rewritten to `committed` — this returns an error:
+/// the restored data is intact, but the caller must not report a clean
+/// success while the next open is guaranteed to enter Safe Mode over a
+/// stale incomplete marker.
+fn finalize_restore_session_marker(ws_path: &Path) -> AppResult<()> {
+    let Err(clear_error) = clear_restore_session_marker(ws_path) else {
+        return Ok(());
+    };
+    let rewritten = match read_incomplete_restore_session(ws_path) {
+        Ok(Some(mut marker)) => {
+            marker.phase = RESTORE_SESSION_PHASE_COMMITTED.to_string();
+            write_restore_session_marker(ws_path, &marker)
+        }
+        Ok(None) => Ok(()),
+        Err(read_error) => Err(read_error),
+    };
+    match rewritten {
+        Ok(()) => {
+            tracing::warn!(
+                "restore-session marker could not be removed ({clear_error}); escalated to a durable committed marker so the next open converges to deletion"
+            );
+            Ok(())
+        }
+        Err(write_error) => Err(anyhow::anyhow!(
+            "RESTORE_SESSION_MARKER_FINALIZE_FAILED: restore-session marker could not be \
+             removed ({clear_error}) nor committed ({write_error}); the restored image is \
+             installed, but the next open would enter Safe Mode until \
+             backups/.restore-session.json is deleted"
+        )
+        .into()),
+    }
+}
+
 fn write_restore_session_marker(workspace: &Path, marker: &RestoreSessionMarker) -> AppResult<()> {
     let backups = workspace.join("backups");
     std::fs::create_dir_all(&backups).map_err(anyhow::Error::from)?;
@@ -344,7 +419,7 @@ pub fn create_persistent_live_safety_artifact(
 
     let logical = backups_dir.join(format!("grimodex-pre-restore-{stamp}.db"));
     match vacuum_live_into(db_path, &logical) {
-        Ok(()) => {
+        Ok(_) => {
             sync_path(&logical)?;
             verify_sqlite_ok(&logical)?;
             Ok(LiveSafetyArtifact::LogicalDb { path: logical })
@@ -443,6 +518,57 @@ pub fn install_staged_workspace_db(
 
     let db_path = ws_path.join("grimodex.db");
     let backups_dir = ws_path.join("backups");
+
+    // 1) Seal and prepare the candidate before detaching the live authority.
+    // Every restore — normal and Safe Mode recovery alike — mints the
+    // deterministic restore Epoch on this staged image, before the live image
+    // is replaced. Restore is a Semantic Epoch generation boundary regardless
+    // of how the workspace gets there: without the staged mint, a Safe Mode
+    // recovery would re-publish the backup's stale Epochs, Edge State, and
+    // Consumer Freshness as current on the next normal open. The pre-Epoch
+    // digest is the stable input to a domain-separated identity; retrying the
+    // same backup then observes the same identity and does not rotate twice.
+    let materialized_candidate_digest =
+        crate::migration_supervisor::digest_sha256_file(staged_plain)
+            .map_err(|error| anyhow::anyhow!("RESTORE_CANDIDATE_DIGEST_FAILED: {error}"))?;
+    if let Err(error) = crate::migration_supervisor::seal_sqlite_image(staged_plain) {
+        return Err(anyhow::anyhow!(
+            "復元候補の seal に失敗したため中止しました（live未置換）: {error}"
+        )
+        .into());
+    }
+    let restore_seed = options
+        .restore_source_digest
+        .as_deref()
+        .unwrap_or(materialized_candidate_digest.as_str());
+    let restore_identity = format!(
+        "restore-image-sha256:{}",
+        restore_seed.strip_prefix("sha256:").unwrap_or(restore_seed)
+    );
+    #[cfg(feature = "test-failpoints")]
+    hit_restore_failpoint(options.failpoint, RestoreFailpoint::BeforeRestoreEpochMint)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let installed = {
+        let staged_database = Database::new(staged_plain)
+            .map_err(|error| anyhow::anyhow!("RESTORE_STAGED_DB_OPEN_FAILED: {error}"))?;
+        ensure_restore_epochs_for_workspace(&staged_database, &restore_identity)
+            .map_err(|error| anyhow::anyhow!("RESTORE_EPOCH_MINT_FAILED: {error}"))?;
+        if let Err(error) = staged_database.rebuild_fts_if_stale() {
+            tracing::warn!("restore: staged FTS rebuild after Epoch mint failed: {error}");
+        }
+        drop(staged_database);
+        crate::migration_supervisor::seal_sqlite_image(staged_plain)
+            .map_err(|error| anyhow::anyhow!("RESTORE_STAGED_EPOCH_SEAL_FAILED: {error}"))?;
+        crate::migration_supervisor::installed_image_token_from_sealed(
+            staged_plain,
+            grimodex_core::SCHEMA_VERSION,
+            None,
+        )
+        .map_err(|error| anyhow::anyhow!("RESTORE_STAGED_EPOCH_DIGEST_FAILED: {error}"))?
+    };
+    #[cfg(feature = "test-failpoints")]
+    hit_restore_failpoint(options.failpoint, RestoreFailpoint::AfterRestoreEpochMint)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
     // Detached backup maintenance owns an independent SQLite connection, so
     // `wait_for_sole_owner(old.db)` cannot observe it. Wait for the path-scoped
@@ -544,31 +670,6 @@ pub fn install_staged_workspace_db(
         }
     };
 
-    // 1) Seal staged + digest before any live mutation.
-    let installed =
-        match (|| -> Result<_, crate::migration_supervisor::MigrationSupervisorError> {
-            crate::migration_supervisor::seal_sqlite_image(staged_plain)?;
-            crate::migration_supervisor::installed_image_token_from_sealed(
-                staged_plain,
-                grimodex_core::SCHEMA_VERSION,
-                None,
-            )
-        })() {
-            Ok(token) => token,
-            Err(error) => {
-                drop(exclusive_lease);
-                return Err(abort_install(
-                    ws_state,
-                    &db_path,
-                    ws_path,
-                    detached_active,
-                    anyhow::anyhow!(
-                    "復元候補の seal／digest 取得に失敗したため中止しました（live未置換）: {error}"
-                ),
-                ));
-            }
-        };
-
     // 2) Persistent WAL-preserving safety artifact (retained after success).
     let safety_artifact = if live_exists {
         match create_persistent_live_safety_artifact(ws_path, &db_path) {
@@ -658,7 +759,7 @@ pub fn install_staged_workspace_db(
     if let Some(artifact) = safety_artifact.as_ref() {
         let marker = RestoreSessionMarker {
             version: 1,
-            phase: "live-sealed".to_string(),
+            phase: "epoch-minted".to_string(),
             safety_artifact: artifact.retained_path().display().to_string(),
             safety_kind: artifact.kind_str().to_string(),
             rollback_artifact: rollback_path
@@ -778,7 +879,7 @@ pub fn install_staged_workspace_db(
                                     if let Some(cleanup) = rollback_cleanup.as_mut() {
                                         cleanup.disarm();
                                     }
-                                    let _ = clear_restore_session_marker(ws_path);
+                                    let _ = finalize_restore_session_marker(ws_path);
                                     (
                                         Err(anyhow::anyhow!(
                                             "{primary_msg}; 元のDBは未置換のまま保持しています"
@@ -902,16 +1003,21 @@ pub fn install_staged_workspace_db(
         }
     }
 
-    let _ = clear_restore_session_marker(ws_path);
     let _ = retained_safety;
 
     if !options.publish_workspace_authority {
+        finalize_restore_session_marker(ws_path)?;
         drop(exclusive_lease);
         return Ok(());
     }
 
     match publish_active_workspace(ws_state, ws_path.to_path_buf(), exclusive_lease) {
-        Ok(()) => {
+        Ok(_) => {
+            // The authority is live and the restored data is intact, but a
+            // finalize failure means the next open would still enter Safe
+            // Mode: that is not a clean success and must not be reported as
+            // one.
+            finalize_restore_session_marker(ws_path)?;
             if let Some(on_reopened) = options.on_reopened.take() {
                 on_reopened();
             }
@@ -919,6 +1025,13 @@ pub fn install_staged_workspace_db(
         }
         Err(restore_error) => {
             let restore_error_msg = restore_error.to_string();
+            let rollback_installed =
+                crate::migration_supervisor::installed_image_token_from_sealed(
+                    &db_path,
+                    grimodex_core::SCHEMA_VERSION,
+                    None,
+                )
+                .unwrap_or_else(|_| installed.clone());
             match rollback_source.as_ref() {
                 Some(RestoreRollbackSource::LogicalImage(_)) => {
                     let Some(rollback_path) = rollback_path.as_deref() else {
@@ -931,20 +1044,20 @@ pub fn install_staged_workspace_db(
                         ws_path,
                         &db_path,
                         rollback_path,
-                        &installed,
+                        &rollback_installed,
                         "RESTORE_HANDOFF_CONFLICT",
                     ) {
                         Ok(exclusive) => {
                             if let Some(cleanup) = rollback_cleanup.as_mut() {
                                 cleanup.disarm();
                             }
-                            let _ = clear_restore_session_marker(ws_path);
+                            let _ = finalize_restore_session_marker(ws_path);
                             match publish_active_workspace(
                                 ws_state,
                                 ws_path.to_path_buf(),
                                 exclusive,
                             ) {
-                                Ok(()) => Err(anyhow::anyhow!(
+                                Ok(_) => Err(anyhow::anyhow!(
                                     "復元DBを再オープンできなかったため元のDBへ戻しました: {restore_error_msg}"
                                 )
                                 .into()),
@@ -1055,7 +1168,7 @@ fn restore_rollback_error(args: RestoreRollbackArgs<'_>) -> AppResult<()> {
                     if let Some(cleanup) = rollback_cleanup {
                         cleanup.disarm();
                     }
-                    let _ = clear_restore_session_marker(ws_path);
+                    let _ = finalize_restore_session_marker(ws_path);
                     Err(anyhow::anyhow!("{primary}; 元のDBへ戻しました").into())
                 }
                 Err(error) => {
@@ -1098,17 +1211,49 @@ fn park_restore_failpoint_if_requested(point: RestoreFailpoint) -> AppResult<()>
     }
 }
 
+/// Test-only rendezvous directly after the exclusive→shared handoff, before
+/// authority publication: writes the ready file, then blocks until the
+/// continue file appears. The subprocess handoff journey uses this window to
+/// prove a concurrent shared writer's WAL survives the rest of the publish.
+#[cfg(feature = "test-failpoints")]
+fn wait_after_shared_handoff_if_requested() -> AppResult<()> {
+    use std::time::{Duration, Instant};
+    let Some(ready_path) = std::env::var_os("GRIMODEX_RESTORE_HANDOFF_READY_PATH") else {
+        return Ok(());
+    };
+    let Some(continue_path) = std::env::var_os("GRIMODEX_RESTORE_HANDOFF_CONTINUE_PATH") else {
+        return Ok(());
+    };
+    let ready_path = PathBuf::from(ready_path);
+    let continue_path = PathBuf::from(continue_path);
+    std::fs::write(&ready_path, "after-shared-handoff\n").map_err(anyhow::Error::from)?;
+    sync_path(&ready_path)?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !continue_path.exists() {
+        if Instant::now() >= deadline {
+            return Err(anyhow::anyhow!("handoff continue file never appeared").into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
 fn publish_active_workspace(
     ws_state: &WorkspaceState,
     ws_path: PathBuf,
     exclusive: workspace_lease::WorkspaceLease,
 ) -> AppResult<()> {
+    // Every candidate-image write (Restore Epoch mint, FTS rebuild, seal,
+    // installed-token capture, CAS verification) completed while the
+    // exclusive restore boundary was held. After the shared handoff another
+    // authority may legitimately write a new WAL at any time, so this
+    // function must never seal, checkpoint, delete sidecars, or digest the
+    // live image again — doing so raced newly written WAL frames away.
     let opened =
         crate::migration_supervisor::reopen_under_shared_lease_for_restore(&ws_path, exclusive)
             .map_err(|error| anyhow::anyhow!("workspace shared handoff after restore: {error}"))?;
-    if let Err(error) = opened.database.rebuild_fts_if_stale() {
-        tracing::warn!("restore: fts rebuild after restore failed: {error}");
-    }
+    #[cfg(feature = "test-failpoints")]
+    wait_after_shared_handoff_if_requested()?;
     let authority = std::sync::Arc::new(WorkspaceAuthority::new(
         opened.database,
         ws_path,
@@ -1411,6 +1556,10 @@ pub(crate) fn wait_for_sole_owner(authority: &PinnedWorkspaceDb) -> AppResult<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::narrative_extraction::{
+        canonical_work_key_for_epoch, AutomaticRunKind, REBUILD_DERIVED_WORK_KEY,
+        VERIFY_WORK_KEY_PREFIX,
+    };
     use crate::open::{
         spawn_workspace_maintenance_worker, try_claim_workspace_maintenance,
         workspace_maintenance_exclusive_waiters,
@@ -1663,6 +1812,201 @@ mod tests {
         assert_eq!(marker(&state), "v1");
         assert!(!dir.join("grimodex.db.restore-tmp").exists());
         assert_no_internal_restore_files(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn normal_restore_mints_staged_epoch_and_same_image_retry_is_exactly_once() {
+        let (dir, state) = fixture("restore-epoch-staged");
+        with_db_state(&state, |db| {
+            db.execute(
+                "INSERT INTO projects (id, title) VALUES ('restore-project', 'Restore project')",
+                &[],
+                "seed restore project",
+            )?;
+            db.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('restore-project-initial', 'restore-project', 0, 'initial',
+                         '2026-08-23T00:00:00.000Z')",
+                &[],
+                "seed restore epoch",
+            )?;
+            Ok(())
+        })
+        .expect("seed project and initial epoch");
+        let backup_name = "grimodex-20200101-000000.db";
+        backup_active(&state, &dir.join("backups").join(backup_name));
+        set_marker(&state, "live-after-backup");
+
+        restore_backup_core(&state, backup_name, || {}).expect("first normal restore");
+        let first = with_db_state(&state, |db| {
+            let rows = db.execute(
+                "SELECT COUNT(*) AS total,
+                        SUM(CASE WHEN reason = 'restore' THEN 1 ELSE 0 END) AS restores,
+                        MAX(triggered_by_change_event_uid) AS identity,
+                        MAX(CASE WHEN reason = 'restore' THEN id END) AS epoch_id
+                   FROM narrative_semantic_epochs
+                  WHERE project_id = 'restore-project'",
+                &[],
+                "read restore epochs",
+            )?;
+            Ok((
+                rows[0]["total"].as_i64().unwrap_or_default(),
+                rows[0]["restores"].as_i64().unwrap_or_default(),
+                rows[0]["identity"].as_str().unwrap_or_default().to_string(),
+                rows[0]["epoch_id"].as_str().unwrap_or_default().to_string(),
+            ))
+        })
+        .expect("read first staged restore epoch");
+        assert_eq!(first.0, 2);
+        assert_eq!(first.1, 1);
+        assert!(first.2.starts_with("restore-image-sha256:"));
+        let first_epoch_id = uuid::Uuid::parse_str(&first.3).expect("restore epoch id is UUID");
+        assert_eq!(first_epoch_id.as_bytes()[6] >> 4, 5);
+        assert_eq!(first_epoch_id.as_bytes()[8] & 0xc0, 0x80);
+        let first_rebuild_work = canonical_work_key_for_epoch(
+            "restore-project",
+            AutomaticRunKind::RebuildDerived,
+            REBUILD_DERIVED_WORK_KEY,
+            Some(&first.3),
+        )
+        .expect("canonical rebuild work coordinate");
+        let first_verify_work = canonical_work_key_for_epoch(
+            "restore-project",
+            AutomaticRunKind::Verify,
+            &format!("{VERIFY_WORK_KEY_PREFIX}{}", first.3),
+            Some(&first.3),
+        )
+        .expect("canonical verify work coordinate");
+
+        restore_backup_core(&state, backup_name, || {}).expect("retry same normal restore");
+        let second = with_db_state(&state, |db| {
+            let rows = db.execute(
+                "SELECT COUNT(*) AS total,
+                        SUM(CASE WHEN reason = 'restore' THEN 1 ELSE 0 END) AS restores,
+                        MAX(triggered_by_change_event_uid) AS identity,
+                        MAX(CASE WHEN reason = 'restore' THEN id END) AS epoch_id
+                   FROM narrative_semantic_epochs
+                  WHERE project_id = 'restore-project'",
+                &[],
+                "read retried restore epochs",
+            )?;
+            Ok((
+                rows[0]["total"].as_i64().unwrap_or_default(),
+                rows[0]["restores"].as_i64().unwrap_or_default(),
+                rows[0]["identity"].as_str().unwrap_or_default().to_string(),
+                rows[0]["epoch_id"].as_str().unwrap_or_default().to_string(),
+            ))
+        })
+        .expect("read retried staged restore epoch");
+        assert_eq!(second, first);
+        let second_rebuild_work = canonical_work_key_for_epoch(
+            "restore-project",
+            AutomaticRunKind::RebuildDerived,
+            REBUILD_DERIVED_WORK_KEY,
+            Some(&second.3),
+        )
+        .expect("retried canonical rebuild work coordinate");
+        let second_verify_work = canonical_work_key_for_epoch(
+            "restore-project",
+            AutomaticRunKind::Verify,
+            &format!("{VERIFY_WORK_KEY_PREFIX}{}", second.3),
+            Some(&second.3),
+        )
+        .expect("retried canonical verify work coordinate");
+        assert_eq!(second_rebuild_work, first_rebuild_work);
+        assert_eq!(second_verify_work, first_verify_work);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    #[test]
+    fn normal_restore_epoch_failpoints_never_leave_live_image_epochless() {
+        let (dir, state) = fixture("restore-epoch-failpoints");
+        with_db_state(&state, |db| {
+            db.execute(
+                "INSERT INTO projects (id, title) VALUES ('restore-failpoint-project', 'Restore')",
+                &[],
+                "seed restore project",
+            )?;
+            db.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('restore-failpoint-initial', 'restore-failpoint-project', 0,
+                         'initial', '2026-08-23T00:00:00.000Z')",
+                &[],
+                "seed restore epoch",
+            )?;
+            Ok(())
+        })
+        .expect("seed project and initial epoch");
+
+        let staged_before = dir.join("candidate-before.db");
+        backup_active(&state, &staged_before);
+        let before = install_staged_workspace_db(
+            &state,
+            &dir,
+            &staged_before,
+            InstallStagedOptions::normal_restore_with_failpoint(
+                || {},
+                RestoreFailpoint::BeforeRestoreEpochMint,
+            ),
+        )
+        .expect_err("before-mint failpoint must abort before detaching live");
+        assert!(before.to_string().contains("restore.before_epoch_mint"));
+        let live_epoch_count = with_db_state(&state, |db| {
+            let rows = db.execute(
+                "SELECT COUNT(*) AS n FROM narrative_semantic_epochs
+                  WHERE project_id = 'restore-failpoint-project'",
+                &[],
+                "count live epochs",
+            )?;
+            Ok(rows[0]["n"].as_i64().unwrap_or_default())
+        })
+        .expect("live authority remains available");
+        assert_eq!(live_epoch_count, 1);
+        let _ = std::fs::remove_file(staged_before);
+
+        let staged_after = dir.join("candidate-after.db");
+        backup_active(&state, &staged_after);
+        let after = install_staged_workspace_db(
+            &state,
+            &dir,
+            &staged_after,
+            InstallStagedOptions::normal_restore_with_failpoint(
+                || {},
+                RestoreFailpoint::AfterRestoreEpochMint,
+            ),
+        )
+        .expect_err("after-mint failpoint must abort before live replacement");
+        assert!(
+            after.to_string().contains("restore.after_epoch_mint"),
+            "unexpected after-mint error: {after}"
+        );
+        let (live_count, staged_count) = with_db_state(&state, |db| {
+            let live = db.execute(
+                "SELECT COUNT(*) AS n FROM narrative_semantic_epochs
+                  WHERE project_id = 'restore-failpoint-project'",
+                &[],
+                "count live epochs",
+            )?;
+            let staged = Database::new(&staged_after)?;
+            let staged = staged.execute(
+                "SELECT COUNT(*) AS n FROM narrative_semantic_epochs
+                  WHERE project_id = 'restore-failpoint-project'",
+                &[],
+                "count staged epochs",
+            )?;
+            Ok((
+                live[0]["n"].as_i64().unwrap_or_default(),
+                staged[0]["n"].as_i64().unwrap_or_default(),
+            ))
+        })
+        .expect("compare live and staged images");
+        assert_eq!(live_count, 1, "live image was not replaced");
+        assert_eq!(staged_count, 2, "staged image contains the restore Epoch");
+        let _ = std::fs::remove_file(staged_after);
         let _ = std::fs::remove_dir_all(dir);
     }
 

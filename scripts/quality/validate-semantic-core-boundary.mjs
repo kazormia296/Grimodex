@@ -31,7 +31,12 @@ const REPO_ROOT = path.resolve(
 // into the ratified Object Addressing vocabulary. It is a data-only migration:
 // no table, column, or authority changes, so the concern matrix below is
 // unchanged.
-export const EXPECTED_SCHEMA_VERSION = 31;
+// SCHEMA 33 (NIR-0 D1) adds sealed Dependency declaration storage. It is a
+// shadow persistence boundary only; V1 remains the canonical Freshness
+// authority, so the authority matrix is still unchanged.
+// SCHEMA 34 (NIR-0 C2A) adds non-authoritative Chronicle V2 persistence and
+// stage-provenance closure storage; V1 remains the production fallback.
+export const EXPECTED_SCHEMA_VERSION = 34;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,
@@ -7537,6 +7542,10 @@ function validatePolicySchemas(repoRoot, errors) {
     [
       "narrative-dependency-role-registry.schema.json",
       "narrative-dependency-role-registry.json",
+    ],
+    [
+      "narrative-dependency-producer-registry.schema.json",
+      "narrative-dependency-producer-registry.json",
     ],
   ];
   const ajv = new Ajv2020({ allErrors: true, strict: false });
