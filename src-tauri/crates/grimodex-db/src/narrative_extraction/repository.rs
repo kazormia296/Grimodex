@@ -2620,6 +2620,43 @@ mod unit_tests {
     }
 
     #[test]
+    fn create_run_and_snapshot_resolve_keep_a_new_source_prefix_opaque() {
+        let db = test_db();
+        let run_id = "project:scope-authority:legacy-run";
+        create_run(
+            &db,
+            CreateRunPayload {
+                run_id: Some(run_id.to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: "digest-legacy".to_string(),
+                snapshot_digest: Some("sha256:legacy-snapshot".to_string()),
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![],
+            },
+        )
+        .expect("a legacy Run id beginning with the new Source prefix remains valid");
+
+        let source_key = format!("snapshot:{run_id}");
+        let resolved = db
+            .with_conn(|conn| {
+                crate::narrative_extraction::source_revision::resolve_source_revision(
+                    conn,
+                    "project-1",
+                    run_id,
+                    "snapshot-document",
+                    &source_key,
+                )
+            })
+            .expect("the historical Snapshot Source must still resolve");
+        assert_eq!(resolved.revision_token, "sha256:legacy-snapshot");
+    }
+
+    #[test]
     fn generic_task_api_rejects_every_runtime_owned_automatic_run_kind() {
         let db = full_migrated_db();
         for (index, run_kind) in [

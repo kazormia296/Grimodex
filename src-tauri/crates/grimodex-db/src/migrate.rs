@@ -11285,6 +11285,44 @@ mod tests {
         assert_eq!(edge_identities(&conn), vec!["projection:projection-1"]);
     }
 
+    #[test]
+    fn migrate_dependency_edge_identity_v28_keeps_a_new_prefix_opaque_in_a_bare_projection_key() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(&conn, &[("e1", "run-1", "project:scope-authority:legacy")]);
+        conn.execute_batch(
+            "CREATE TABLE narrative_revision_source_basis (
+                revision_id TEXT NOT NULL,
+                ordinal     INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key  TEXT NOT NULL
+             );
+             CREATE TABLE narrative_proposal_revisions (id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposals (id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposal_sets (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, run_id TEXT NOT NULL);
+             INSERT INTO narrative_proposal_sets VALUES ('set-1', 'proj-1', 'run-1');
+             INSERT INTO narrative_proposals VALUES ('proposal-1', 'set-1');
+             INSERT INTO narrative_proposal_revisions VALUES ('revision-1', 'proposal-1');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('revision-1', 0, 'domain-projection', 'project:scope-authority:legacy');",
+        )
+        .expect("seed the declaring Source Basis");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        let identity = edge_identities(&conn);
+        assert_eq!(identity, vec!["projection:project:scope-authority:legacy"]);
+        assert_eq!(
+            crate::narrative_extraction::canonical_source_object_identity(
+                "domain-projection",
+                &identity[0]
+            )
+            .expect("the migration must produce an identity accepted by the current validator"),
+            identity[0]
+        );
+    }
+
     /// An Edge names its own Run through `consumer_key`, so a declaration
     /// belonging to a *different* Run says nothing about this Edge's Source
     /// -- two Runs can use the same bare key for different objects. Scoping
