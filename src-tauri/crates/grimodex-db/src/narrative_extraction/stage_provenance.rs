@@ -32,18 +32,18 @@ const SYNTHESIS_STAGE_ID: &str = "narrative_event_synthesize";
 const REPAIR_STAGE_ID: &str = "narrative_structured_repair";
 const CHRONICLE_EVENT_SYNTHESIS_OUTPUT_KIND: &str = "chronicle.event-synthesis-output@1";
 const CHRONICLE_RAW_OBSERVATIONS_KIND: &str = "chronicle.raw-observations@1";
+const CHRONICLE_PARSED_OUTPUT_DIGEST_DOMAIN: &str = "chronicle.parsed-output/1";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChronicleEventSynthesisOutputShape {
     kind: String,
     observation_count: u64,
+    event_count: u64,
     observation_refs: Vec<String>,
-    stage_provenance_closure_digest: String,
-    /// Seals the exact raw-observations artifact this output was derived
-    /// from. Without it, a genuine transport receipt could be paired with an
-    /// arbitrary shape-valid observations artifact.
     raw_observations_digest: String,
+    parsed_output_digest: String,
+    stage_provenance_closure_digest: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +128,7 @@ pub(crate) fn validate_chronicle_synthesis_companion(
     output_json: &Value,
     artifacts: &[ArtifactInput],
     closure: &ChronicleStageProvenanceClosure,
+    synthesis_owner_pairs: &[(String, String)],
 ) -> anyhow::Result<()> {
     let output: ChronicleEventSynthesisOutputShape = serde_json::from_value(output_json.clone())
         .map_err(|error| {
@@ -135,9 +136,7 @@ pub(crate) fn validate_chronicle_synthesis_companion(
         })?;
     // A Scene or range containing no events is a normal input: zero
     // observations are a first-class successful result whose provenance is
-    // recorded like any other. `eventCount` is deliberately not a
-    // Native-verified field — nothing durable grounds it, so Native does not
-    // attest it.
+    // recorded like any other.
     anyhow::ensure!(
         output.kind == CHRONICLE_EVENT_SYNTHESIS_OUTPUT_KIND,
         "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: kind/count contract is invalid"
@@ -147,6 +146,7 @@ pub(crate) fn validate_chronicle_synthesis_companion(
         "stageProvenanceClosureDigest",
     )?;
     ensure_digest(&output.raw_observations_digest, "rawObservationsDigest")?;
+    ensure_digest(&output.parsed_output_digest, "parsedOutputDigest")?;
     let mut raw_observations: Option<&ArtifactInput> = None;
     for artifact in artifacts {
         anyhow::ensure!(
@@ -268,7 +268,67 @@ pub(crate) fn validate_chronicle_synthesis_companion(
         }),
         "NEX_CHRONICLE_RAW_OBSERVATIONS_INVALID: synthesis observationRefs must resolve to raw localIds"
     );
+    ensure_digest(raw_digest, "raw observation payloadDigest")?;
+    anyhow::ensure!(
+        raw_digest == canonical_json_digest(raw_value)?,
+        "NEX_CHRONICLE_RAW_OBSERVATIONS_DIGEST_MISMATCH: raw observation payload digest differs from Native recomputation"
+    );
+    anyhow::ensure!(
+        output.parsed_output_digest
+            == canonical_parsed_output_digest(
+                &output.kind,
+                output.observation_count,
+                output.event_count,
+                &output.observation_refs,
+                &output.raw_observations_digest,
+            )?,
+        "NEX_CHRONICLE_SYNTHESIS_OUTPUT_DIGEST_MISMATCH: parsedOutputDigest differs from Native recomputation"
+    );
+    let owner_receipt = closure.receipts.iter().find(|receipt| {
+        receipt.stage_execution.stage_id == ChronicleStageId::NarrativeEventSynthesize
+            && receipt.stage_execution.parent_stage_execution_id.is_none()
+            && receipt.terminal_status == ChronicleStageTerminalStatus::Succeeded
+            && synthesis_owner_pairs.iter().any(|(owner_task, owner_attempt)| {
+                receipt.stage_execution.task_id == *owner_task
+                    && receipt.stage_execution.attempt_id == *owner_attempt
+            })
+    }).ok_or_else(|| {
+        anyhow!(
+            "NEX_CHRONICLE_SYNTHESIS_PROVENANCE_MISSING: owner synthesis terminal receipt is required"
+        )
+    })?;
+    anyhow::ensure!(
+        raw_digest == output.raw_observations_digest
+            && owner_receipt.raw_observations_digest.as_deref()
+                == Some(output.raw_observations_digest.as_str()),
+        "NEX_CHRONICLE_SYNTHESIS_PROVENANCE_DIGEST_MISMATCH: receipt rawObservationsDigest does not match raw artifact"
+    );
+    anyhow::ensure!(
+        owner_receipt.parsed_output_digest.as_deref()
+            == Some(output.parsed_output_digest.as_str()),
+        "NEX_CHRONICLE_SYNTHESIS_PROVENANCE_DIGEST_MISMATCH: receipt parsedOutputDigest does not match typed output"
+    );
     Ok(())
+}
+
+/// Canonical digest of the typed parser projection. The closure digest is
+/// deliberately excluded: the closure contains the terminal receipt which
+/// carries this digest, so including it would create a circular definition.
+fn canonical_parsed_output_digest(
+    kind: &str,
+    observation_count: u64,
+    event_count: u64,
+    observation_refs: &[String],
+    raw_observations_digest: &str,
+) -> anyhow::Result<String> {
+    Ok(canonical_json_digest(&serde_json::json!({
+        "domain": CHRONICLE_PARSED_OUTPUT_DIGEST_DOMAIN,
+        "kind": kind,
+        "observationCount": observation_count,
+        "eventCount": event_count,
+        "observationRefs": observation_refs,
+        "rawObservationsDigest": raw_observations_digest,
+    }))?)
 }
 
 /// Typed dormant C2A stage persistence.  The task kind check is intentionally
@@ -320,18 +380,6 @@ pub(crate) fn persist_chronicle_stage_bundle(
     ] {
         ensure_digest(digest, field)?;
     }
-    // The reserved raw-observation artifact has a Chronicle-specific digest
-    // contract. Validate that domain companion first so malformed Chronicle
-    // input cannot be reclassified as a generic artifact failure.
-    validate_chronicle_synthesis_companion(output_json, artifacts, &binding.closure)?;
-    for artifact in artifacts {
-        validate_artifact_digest(artifact)?;
-    }
-    anyhow::ensure!(
-        binding.closure.stage_provenance_closure_digest
-            == binding.stage_provenance_closure_digest,
-        "NEX_CHRONICLE_SYNTHESIS_CLOSURE_DIGEST_MISMATCH: trusted binding does not match typed closure"
-    );
     // The production DAG runs AI synthesis under its own
     // `chronicle.synthesize-event@1` task and stamps that task/attempt into
     // the stage execution; the single-task flow stamps the finish owner.
@@ -352,6 +400,23 @@ pub(crate) fn persist_chronicle_stage_bundle(
             .collect::<rusqlite::Result<Vec<(String, String)>>>()?;
         synthesis_owner_pairs.extend(rows);
     }
+    // The reserved raw-observation artifact has a Chronicle-specific digest
+    // contract. Validate that domain companion first so malformed Chronicle
+    // input cannot be reclassified as a generic artifact failure.
+    validate_chronicle_synthesis_companion(
+        output_json,
+        artifacts,
+        &binding.closure,
+        &synthesis_owner_pairs,
+    )?;
+    for artifact in artifacts {
+        validate_artifact_digest(artifact)?;
+    }
+    anyhow::ensure!(
+        binding.closure.stage_provenance_closure_digest
+            == binding.stage_provenance_closure_digest,
+        "NEX_CHRONICLE_SYNTHESIS_CLOSURE_DIGEST_MISMATCH: trusted binding does not match typed closure"
+    );
     validate_owner_execution_digests(&binding.closure, binding, &synthesis_owner_pairs)?;
     validate_receipt_lifecycle_bindings(conn, project_id, run_id, &binding.closure)?;
     persist_stage_bundle_if_present(
@@ -849,6 +914,29 @@ fn validate_receipt(
     if let Some(response_digest) = receipt.response_digest.as_deref() {
         ensure_digest(response_digest, "responseDigest")?;
     }
+    for (field, digest) in [
+        (
+            "rawObservationsDigest",
+            receipt.raw_observations_digest.as_deref(),
+        ),
+        (
+            "parsedOutputDigest",
+            receipt.parsed_output_digest.as_deref(),
+        ),
+    ] {
+        if let Some(digest) = digest {
+            ensure_digest(digest, field)?;
+        }
+    }
+    if receipt.stage_execution.stage_id == ChronicleStageId::NarrativeEventSynthesize
+        && receipt.terminal_status == ChronicleStageTerminalStatus::Succeeded
+    {
+        anyhow::ensure!(
+            receipt.raw_observations_digest.is_some()
+                && receipt.parsed_output_digest.is_some(),
+            "NEX_STAGE_TERMINAL_RECEIPT_INVALID: successful synthesis receipt must bind rawObservationsDigest and parsedOutputDigest"
+        );
+    }
     validate_status_pair(receipt)?;
     validate_model_binding(&receipt.model_execution_binding)?;
     let binding_value = serde_json::to_value(&receipt.model_execution_binding)?;
@@ -870,6 +958,8 @@ fn validate_receipt(
         "finalRequestDigest": receipt.final_request_digest,
         "modelBindingDigest": receipt.model_binding_digest,
         "responseDigest": receipt.response_digest,
+        "rawObservationsDigest": receipt.raw_observations_digest,
+        "parsedOutputDigest": receipt.parsed_output_digest,
         "parseStatus": parse_status_name(&receipt.parse_status),
         "terminalStatus": terminal_status_name(&receipt.terminal_status)
     }))?;

@@ -47,6 +47,7 @@ const CLOSURE_KIND: &str = "chronicle-stage-provenance-closure";
 const MODEL_BINDING_DOMAIN: &str = "chronicle-stage-model-binding/1";
 const TERMINAL_RECEIPT_DOMAIN: &str = "chronicle-stage-terminal-receipt/1";
 const CLOSURE_DOMAIN: &str = "chronicle-stage-provenance-closure/1";
+const PARSED_OUTPUT_DIGEST_DOMAIN: &str = "chronicle.parsed-output/1";
 
 fn digest(value: &Value) -> String {
     canonical_json_digest(value).expect("canonical digest")
@@ -964,6 +965,27 @@ fn stage_receipt_with_state(
         stage_execution["parentStageExecutionId"] =
             Value::String(parent_stage_execution_id.to_owned());
     }
+    let raw_observations_digest =
+        if stage_id == EVENT_SYNTHESIS_STAGE_ID && terminal_status == "succeeded" {
+            Some(digest(&raw_observations(&["observation:arrival"])))
+        } else {
+            None
+        };
+    let parsed_output_digest =
+        if stage_id == EVENT_SYNTHESIS_STAGE_ID && terminal_status == "succeeded" {
+            raw_observations_digest.as_ref().map(|raw_digest| {
+                digest(&json!({
+                    "domain": PARSED_OUTPUT_DIGEST_DOMAIN,
+                    "kind": "chronicle.event-synthesis-output@1",
+                    "observationCount": 1,
+                    "eventCount": 1,
+                    "observationRefs": ["observation:arrival"],
+                    "rawObservationsDigest": raw_digest
+                }))
+            })
+        } else {
+            None
+        };
     let without_digest = json!({
         "kind": TERMINAL_RECEIPT_KIND,
         "version": 1,
@@ -975,6 +997,8 @@ fn stage_receipt_with_state(
         "modelExecutionBinding": binding,
         "modelBindingDigest": binding_digest,
         "responseDigest": response_digest,
+        "rawObservationsDigest": raw_observations_digest,
+        "parsedOutputDigest": parsed_output_digest,
         "parseStatus": parse_status,
         "terminalStatus": terminal_status
     });
@@ -987,6 +1011,8 @@ fn stage_receipt_with_state(
         "finalRequestDigest": without_digest["finalRequestDigest"],
         "modelBindingDigest": without_digest["modelBindingDigest"],
         "responseDigest": without_digest["responseDigest"],
+        "rawObservationsDigest": without_digest["rawObservationsDigest"],
+        "parsedOutputDigest": without_digest["parsedOutputDigest"],
         "parseStatus": without_digest["parseStatus"],
         "terminalStatus": without_digest["terminalStatus"]
     }));
@@ -1004,6 +1030,28 @@ fn valid_stage_closure(
     component_digest: &str,
     request_digest: &str,
 ) -> Value {
+    valid_stage_closure_with_raw_refs(
+        project_id,
+        run_id,
+        owner_task_id,
+        owner_attempt_id,
+        context_digest,
+        component_digest,
+        request_digest,
+        &["observation:arrival"],
+    )
+}
+
+fn valid_stage_closure_with_raw_refs(
+    project_id: &str,
+    run_id: &str,
+    owner_task_id: &str,
+    owner_attempt_id: &str,
+    context_digest: &str,
+    component_digest: &str,
+    request_digest: &str,
+    raw_refs: &[&str],
+) -> Value {
     let observation_receipt = stage_receipt(
         project_id,
         run_id,
@@ -1016,7 +1064,7 @@ fn valid_stage_closure(
         request_digest,
         &json!({"observations": [observation_payload()]}),
     );
-    let synthesis_receipt = stage_receipt(
+    let mut synthesis_receipt = stage_receipt(
         project_id,
         run_id,
         owner_task_id,
@@ -1028,6 +1076,30 @@ fn valid_stage_closure(
         request_digest,
         &json!({"proposal": proposal_payload("Arrival", false)}),
     );
+    let raw_observations_digest = digest(&raw_observations(raw_refs));
+    synthesis_receipt["rawObservationsDigest"] = Value::String(raw_observations_digest.clone());
+    synthesis_receipt["parsedOutputDigest"] = Value::String(digest(&json!({
+        "domain": PARSED_OUTPUT_DIGEST_DOMAIN,
+        "kind": "chronicle.event-synthesis-output@1",
+        "observationCount": raw_refs.len(),
+        "eventCount": 1,
+        "observationRefs": raw_refs,
+        "rawObservationsDigest": raw_observations_digest
+    })));
+    synthesis_receipt["stageExecutionReceiptDigest"] = Value::String(digest(&json!({
+        "domain": TERMINAL_RECEIPT_DOMAIN,
+        "stageExecution": synthesis_receipt["stageExecution"],
+        "contextSetVersion": synthesis_receipt["contextSetVersion"],
+        "contextSetDigest": synthesis_receipt["contextSetDigest"],
+        "componentContractDigest": synthesis_receipt["componentContractDigest"],
+        "finalRequestDigest": synthesis_receipt["finalRequestDigest"],
+        "modelBindingDigest": synthesis_receipt["modelBindingDigest"],
+        "responseDigest": synthesis_receipt["responseDigest"],
+        "rawObservationsDigest": synthesis_receipt["rawObservationsDigest"],
+        "parsedOutputDigest": synthesis_receipt["parsedOutputDigest"],
+        "parseStatus": synthesis_receipt["parseStatus"],
+        "terminalStatus": synthesis_receipt["terminalStatus"]
+    })));
     // C1 requires canonical code-unit ordering by stageExecutionId.
     let receipts = json!([synthesis_receipt, observation_receipt]);
     closure_for_receipts(
@@ -1278,11 +1350,50 @@ fn finish_bundle_with_artifacts(
     artifacts: Vec<ArtifactInput>,
     output_closure_digest: Option<&str>,
 ) -> anyhow::Result<Value> {
+    finish_bundle_with_artifacts_and_parsed_output_digest(
+        db,
+        run_id,
+        task_id,
+        attempt_id,
+        closure,
+        observation_count,
+        observation_refs,
+        artifacts,
+        output_closure_digest,
+        None,
+    )
+}
+
+fn finish_bundle_with_artifacts_and_parsed_output_digest(
+    db: &Database,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    closure: Value,
+    observation_count: u64,
+    observation_refs: Value,
+    artifacts: Vec<ArtifactInput>,
+    output_closure_digest: Option<&str>,
+    parsed_output_digest_override: Option<&str>,
+) -> anyhow::Result<Value> {
     let closure_digest = closure["stageProvenanceClosureDigest"]
         .as_str()
         .expect("closure digest")
         .to_owned();
     seed_closure_evidence(db, run_id, task_id, &closure);
+    let owner_receipt = closure["receipts"]
+        .as_array()
+        .expect("closure receipts")
+        .iter()
+        .find(|receipt| {
+            receipt["stageExecution"]["stageId"] == EVENT_SYNTHESIS_STAGE_ID
+                && receipt["terminalStatus"] == "succeeded"
+        })
+        .expect("successful owner synthesis receipt");
+    let parsed_output_digest = parsed_output_digest_override.map_or_else(
+        || owner_receipt["parsedOutputDigest"].clone(),
+        |digest| json!(digest),
+    );
     let typed_closure: ChronicleStageProvenanceClosure =
         serde_json::from_value(closure.clone()).expect("typed ephemeral closure");
     let raw_observations_digest = artifacts
@@ -1293,8 +1404,10 @@ fn finish_bundle_with_artifacts(
     let output = json!({
         "kind": "chronicle.event-synthesis-output@1",
         "observationCount": observation_count,
+        "eventCount": 1,
         "observationRefs": observation_refs,
         "rawObservationsDigest": raw_observations_digest,
+        "parsedOutputDigest": parsed_output_digest,
         "stageProvenanceClosureDigest": output_closure_digest
             .map_or_else(|| closure["stageProvenanceClosureDigest"].clone(), |digest| json!(digest))
     });
@@ -1415,6 +1528,8 @@ fn persists_a_valid_atomic_stage_bundle_with_receipts_bindings_output_and_artifa
                 "finalRequestDigest": receipt["finalRequestDigest"],
                 "modelBindingDigest": receipt["modelBindingDigest"],
                 "responseDigest": receipt["responseDigest"],
+                "rawObservationsDigest": receipt["rawObservationsDigest"],
+                "parsedOutputDigest": receipt["parsedOutputDigest"],
                 "parseStatus": receipt["parseStatus"],
                 "terminalStatus": receipt["terminalStatus"]
             }))
@@ -1865,6 +1980,94 @@ fn chronicle_synthesis_requires_native_raw_observation_digest() {
 }
 
 #[test]
+fn chronicle_synthesis_requires_native_parsed_output_digest() {
+    let db = migrated_db();
+    let run_id = "run-stage-parsed-output-digest";
+    let task_id = "task-stage-parsed-output-digest";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let closure = valid_stage_closure(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+    );
+    let error = finish_bundle_with_artifacts_and_parsed_output_digest(
+        &db,
+        run_id,
+        task_id,
+        &attempt_id,
+        closure,
+        1,
+        json!(["observation:arrival"]),
+        vec![artifact(
+            &format!("{task_id}-raw-observations"),
+            "chronicle.raw-observations@1",
+            raw_observations(&["observation:arrival"]),
+        )],
+        None,
+        Some(FORGED_DIGEST),
+    )
+    .expect_err("forged parsed output digest must roll back atomically");
+    assert!(error
+        .to_string()
+        .contains("NEX_CHRONICLE_SYNTHESIS_OUTPUT_DIGEST_MISMATCH"));
+    let (task_status, attempt_status, artifact_count, receipt_count): (String, String, i64, i64) =
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT t.status, a.status,
+                        (SELECT COUNT(*) FROM narrative_extraction_artifacts
+                          WHERE run_id = ?1 AND task_id = ?2),
+                        (SELECT COUNT(*) FROM narrative_extraction_stage_receipts
+                          WHERE run_id = ?1)
+                   FROM narrative_extraction_tasks t
+                   JOIN narrative_extraction_attempts a ON a.id = ?3
+                  WHERE t.id = ?2 AND t.run_id = ?1",
+                rusqlite::params![run_id, task_id, attempt_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?)
+        })
+        .expect("read parsed output digest rollback");
+    assert_eq!(task_status, "running");
+    assert_eq!(attempt_status, "running");
+    assert_eq!(artifact_count, 0);
+    assert_eq!(receipt_count, 0);
+}
+
+#[test]
+fn chronicle_synthesis_accepts_a_valid_zero_result() {
+    let db = migrated_db();
+    let run_id = "run-stage-zero-result";
+    let task_id = "task-stage-zero-result";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let closure = valid_stage_closure_with_raw_refs(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+        &[],
+    );
+    finish_bundle_with_raw(
+        &db,
+        run_id,
+        task_id,
+        &attempt_id,
+        closure,
+        raw_observations(&[]),
+        None,
+        None,
+    )
+    .expect("zero raw observations are a valid typed synthesis result");
+}
+
+#[test]
 fn typed_stage_bundle_requires_exactly_one_native_raw_artifact() {
     for case in ["extra-artifact", "missing-payload", "missing-digest"] {
         let db = migrated_db();
@@ -1960,7 +2163,7 @@ fn typed_stage_bundle_requires_observation_refs_exact_raw_local_id_set() {
     let task_id = "task-stage-raw-cardinality";
     create_run(&db, PROJECT_A, run_id, task_id);
     let attempt_id = claim_task(&db, PROJECT_A, run_id);
-    let closure = valid_stage_closure(
+    let closure = valid_stage_closure_with_raw_refs(
         PROJECT_A,
         run_id,
         task_id,
@@ -1968,6 +2171,7 @@ fn typed_stage_bundle_requires_observation_refs_exact_raw_local_id_set() {
         &context_set_digest(),
         &component_contract_digest(),
         &final_request_digest(),
+        &["observation:arrival", "observation:departure"],
     );
     let raw = raw_observations(&["observation:arrival", "observation:departure"]);
     let raw_artifact = artifact(
@@ -2657,9 +2861,67 @@ fn production_dag_synthesis_task_receipt_finishes_the_plan_proposals_bundle() {
                 [run_id],
                 |row| row.get(0),
             )?)
-        })
-        .expect("count persisted receipts");
+    })
+    .expect("count persisted receipts");
     assert_eq!(receipt_count, 2);
+}
+
+#[test]
+fn direct_sql_v2_current_rejects_every_immutable_revision_update_surface() {
+    for (field, value_sql) in [
+        ("id", "'revision-v2-update-forged-id'"),
+        ("proposal_id", "'proposal-v2-update-forged'"),
+        ("revision_number", "99"),
+        ("payload_json", r#"'{"forged":true}'"#),
+        ("plan_fragment_json", "'{}'"),
+        (
+            "plan_fragment_digest",
+            "'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+        ),
+        ("origin_kind", "'legacy-unbound'"),
+        ("reconciliation_envelope_json", "'{\"schemaVersion\":2}'"),
+        (
+            "reconciliation_envelope_digest",
+            "'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'",
+        ),
+        ("created_at", "'2099-01-01T00:00:00.000Z'"),
+        ("created_by", "'forged-writer'"),
+    ] {
+        let db = migrated_db();
+        let parent = seed_v2_parent(
+            &db,
+            PROJECT_A,
+            &format!("run-v2-update-{field}"),
+            &format!("task-v2-update-{field}"),
+            &format!("proposal-v2-update-{field}"),
+            &format!("revision-v2-update-{field}"),
+            &scene_revision_token(&db, PROJECT_A),
+        );
+        let revision_id = parent["revisionId"].as_str().expect("revision id");
+        let sql =
+            format!("UPDATE narrative_proposal_revisions SET {field} = {value_sql} WHERE id = ?1");
+        let error = db
+            .with_conn(|conn| {
+                conn.execute(&sql, rusqlite::params![revision_id])?;
+                Ok(())
+            })
+            .expect_err("V2 revision updates must be immutable");
+        assert!(
+            error.to_string().contains("NEX_REVISION_V2_IMMUTABLE"),
+            "{field}: unexpected immutable update error: {error:#}"
+        );
+
+        let row_count: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_revisions WHERE id = ?1",
+                    rusqlite::params![revision_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read immutable V2 revision");
+        assert_eq!(row_count, 1, "{field}: rejected update must not remove row");
+    }
 }
 
 #[test]

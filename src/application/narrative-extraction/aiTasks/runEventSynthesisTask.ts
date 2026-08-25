@@ -4,6 +4,7 @@ import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
+import { digestStableJson } from "@/features/narrative-extraction/source/digest";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { normalizeEventSynthesis } from "@/features/chronicle/extraction/eventSynthesis";
 import { parseRawEventSynthesisResult } from "@/features/chronicle/extraction/schemas";
@@ -43,6 +44,8 @@ import type { Sha256Digest } from "@/features/narrative-extraction/source/types"
 
 export const NARRATIVE_EVENT_SYNTHESIZE_PATH =
   "narrative_event_synthesize" as const;
+
+const CHRONICLE_PARSED_OUTPUT_DIGEST_DOMAIN = "chronicle.parsed-output/1";
 
 export type EventSynthesisSend = (
   messages: Parameters<typeof sendChatMessageWithThinking>[0],
@@ -147,6 +150,11 @@ async function recordEventStageAudit(
 ): Promise<void> {
   if (!input.stageExecution) return;
   const digests = await buildChroniclePromptDigests(promptArtifact);
+  const digestBinding = await chronicleStageDigestBinding(
+    input,
+    responseText,
+    parseStatus,
+  );
   const terminal =
     capturedTerminalMetadata ??
     (await buildChronicleStageAuditTerminal({
@@ -155,6 +163,8 @@ async function recordEventStageAudit(
       responseText,
       parseStatus,
       terminalStatus,
+      rawObservationsDigest: digestBinding.rawObservationsDigest,
+      parsedOutputDigest: digestBinding.parsedOutputDigest,
       modelExecutionBinding,
       onReceipt: onStageReceipt,
     }));
@@ -224,6 +234,47 @@ function synthesisParseStatus(
   } catch {
     return "invalid";
   }
+}
+
+async function chronicleStageDigestBinding(
+  input: RunEventSynthesisTaskInput,
+  responseText: string,
+  parseStatus: "parsed" | "invalid",
+): Promise<{
+  readonly rawObservationsDigest: Sha256Digest;
+  readonly parsedOutputDigest: Sha256Digest | null;
+}> {
+  const rawObservationsDigest = await digestStableJson({
+    kind: "chronicle.raw-observations@1",
+    version: 1,
+    observations: input.observations,
+  });
+  let parsedOutputDigest: Sha256Digest | null = null;
+  if (parseStatus === "parsed") {
+    const jsonText = extractJsonObject(responseText);
+    if (jsonText) {
+      try {
+        const parsed = parseRawEventSynthesisResult(JSON.parse(jsonText));
+        if (parsed.ok && parsed.value.clusterRef === input.clusterRef) {
+          parsedOutputDigest = await digestStableJson({
+            domain: CHRONICLE_PARSED_OUTPUT_DIGEST_DOMAIN,
+            kind: "chronicle.event-synthesis-output@1",
+            observationCount: input.observations.length,
+            eventCount: parsed.value.events.length,
+            // The typed C2A output binds the complete raw observation set;
+            // Native then checks that the artifact's local-id set is exact.
+            observationRefs: input.observations.map(
+              (observation) => observation.localId,
+            ),
+            rawObservationsDigest,
+          });
+        }
+      } catch {
+        parsedOutputDigest = null;
+      }
+    }
+  }
+  return { rawObservationsDigest, parsedOutputDigest };
 }
 
 /**
@@ -310,12 +361,19 @@ export async function runEventSynthesisTask(
             responseText,
             input.clusterRef,
           );
+          const digestBinding = await chronicleStageDigestBinding(
+            input,
+            responseText,
+            parseStatus,
+          );
           const terminal = await buildChronicleStageAuditTerminal({
             stageExecution: input.stageExecution!,
             ...promptDigests,
             responseText,
             responseDigest,
             parseStatus,
+            rawObservationsDigest: digestBinding.rawObservationsDigest,
+            parsedOutputDigest: digestBinding.parsedOutputDigest,
             terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
             modelExecutionBinding:
               stageModelBindingFromAuditMetadata(metadata) ??

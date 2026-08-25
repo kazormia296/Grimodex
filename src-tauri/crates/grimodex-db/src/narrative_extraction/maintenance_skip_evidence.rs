@@ -19,9 +19,11 @@ use serde_json::Value;
 
 use super::commit::digest_plan;
 use super::maintenance_runtime::{REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX};
+pub use super::restore_rebuild::durable_graph_state_digest;
 use super::restore_rebuild::{
-    verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
-    RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION,
+    is_canonical_graph_state_digest, verify_narrative_dependency_graph_for_project,
+    DependencyGraphVerifyReport, RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION,
+    VERIFY_CONTRACT_VERSION,
 };
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
@@ -67,6 +69,8 @@ pub struct CompletedRunSkipEvidence {
     /// report shape can see. Evidence sealed before this field existed
     /// deserializes to the empty string and can never match, so old clean
     /// Verifies re-run once and reseal.
+    /// Fingerprint of the graph/projection snapshot that produced the Verify
+    /// report. This is the CAS value for clean-run reuse.
     #[serde(default)]
     pub graph_state_digest: String,
 }
@@ -452,8 +456,12 @@ pub fn evaluate_completed_run_skip(
                 reason: CompletedRunSkipReason::GraphStateMismatch,
             });
         }
-        if !live_verify_report_matches_sealed(conn, &expected.project_id, &evidence.report_digest)?
-        {
+        if !live_verify_report_matches_sealed(
+            conn,
+            &expected.project_id,
+            &evidence.report_digest,
+            &evidence.graph_state_digest,
+        )? {
             return Ok(CompletedRunSkipDecision::Rerun {
                 reason: CompletedRunSkipReason::DerivedStateInvalid,
             });
@@ -555,7 +563,12 @@ pub fn read_completed_run_skip_evidence(
         if parsed.graph_state_digest != durable_graph_state_digest(conn, project_id)? {
             return Ok(None);
         }
-        if !live_verify_report_matches_sealed(conn, project_id, &parsed.report_digest)? {
+        if !live_verify_report_matches_sealed(
+            conn,
+            project_id,
+            &parsed.report_digest,
+            &parsed.graph_state_digest,
+        )? {
             return Ok(None);
         }
     }
@@ -563,41 +576,6 @@ pub fn read_completed_run_skip_evidence(
         return Ok(None);
     }
     Ok(Some(parsed))
-}
-
-/// Deterministic digest of the project's complete Durable Graph Edge table:
-/// every row, every durable column, ordered by id. This is the data-side
-/// coordinate a clean Verify seals so its reuse is compare-and-swapped
-/// against the graph content as it stands, not only against contract
-/// generations and the defect-shaped report.
-pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> Result<String> {
-    let mut statement = conn.prepare(
-        "SELECT id, consumer_kind, consumer_key, source_object_identity, read_set_json,
-                generated_by_transaction_id, created_at, owning_run_id
-           FROM narrative_dependency_edges
-          WHERE project_id = ?1
-          ORDER BY id ASC",
-    )?;
-    let rows = statement
-        .query_map([project_id], |row| {
-            Ok(serde_json::json!({
-                "id": row.get::<_, String>(0)?,
-                "consumerKind": row.get::<_, String>(1)?,
-                "consumerKey": row.get::<_, String>(2)?,
-                "sourceObjectIdentity": row.get::<_, String>(3)?,
-                "readSetJson": row.get::<_, String>(4)?,
-                "generatedByTransactionId": row.get::<_, Option<String>>(5)?,
-                "createdAt": row.get::<_, String>(6)?,
-                "owningRunId": row.get::<_, Option<String>>(7)?,
-            }))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let canonical = serde_json::json!({
-        "domain": "grimodex:narrative:durable-graph-state:v1",
-        "projectId": project_id,
-        "edges": rows,
-    });
-    Ok(format!("sha256:{}", digest_plan(&canonical)))
 }
 
 /// Recompute the read-only Verify report against live derived state before a
@@ -608,7 +586,15 @@ fn live_verify_report_matches_sealed(
     conn: &Connection,
     project_id: &str,
     sealed_report_digest: &str,
+    sealed_graph_state_digest: &str,
 ) -> Result<bool> {
+    if !is_canonical_graph_state_digest(sealed_graph_state_digest) {
+        return Ok(false);
+    }
+    let live_graph_state_digest = durable_graph_state_digest(conn, project_id)?;
+    if live_graph_state_digest != sealed_graph_state_digest {
+        return Ok(false);
+    }
     let report = verify_narrative_dependency_graph_for_project(conn, project_id)?;
     if !report.is_clean() {
         return Ok(false);
@@ -730,6 +716,22 @@ pub fn persist_completed_run_skip_evidence_in_tx(
         evidence.report_digest == outcome_digest,
         "NEX_MAINTENANCE_SKIP_REPORT_DIGEST_MISMATCH: evidence report digest does not match Run '{run_id}'"
     );
+    let outcome_graph_state_digest = outcome
+        .get("graphStateDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_MAINTENANCE_SKIP_GRAPH_STATE_DIGEST_MISSING: Verify outcome has no graph state digest"
+            )
+        })?;
+    ensure!(
+        outcome_graph_state_digest == evidence.graph_state_digest,
+        "NEX_MAINTENANCE_SKIP_GRAPH_STATE_DIGEST_MISMATCH: evidence graph state digest does not match Run '{run_id}'"
+    );
+    ensure!(
+        durable_graph_state_digest(conn, &evidence.project_id)? == evidence.graph_state_digest,
+        "NEX_MAINTENANCE_SKIP_GRAPH_STATE_CHANGED: graph state changed before skip evidence was sealed"
+    );
     let evidence_value = serde_json::to_value(evidence)?;
     if let Some(existing) = outcome.get(COMPLETED_RUN_SKIP_EVIDENCE_FIELD) {
         let existing_semantics =
@@ -845,6 +847,10 @@ fn validate_evidence_shape(evidence: &CompletedRunSkipEvidence) -> Result<()> {
         "producerGenerationSetDigest",
     )?;
     validate_digest(&evidence.report_digest, "reportDigest")?;
+    ensure!(
+        is_canonical_graph_state_digest(&evidence.graph_state_digest),
+        "graphStateDigest must be a canonical sha256 digest"
+    );
     ensure!(
         is_supported_run_kind(&evidence.run_kind),
         "NEX_MAINTENANCE_SKIP_RUN_KIND_UNSUPPORTED: '{}' cannot carry completed-run skip evidence",

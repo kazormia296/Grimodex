@@ -57,6 +57,18 @@ export interface NarrativeMaintenanceCycleRequest {
   workspaceBinding?: NarrativeMaintenanceWorkspaceBinding;
 }
 
+export interface NarrativeMaintenanceDeliveryFailure {
+  schemaVersion: 1;
+  scope: "work" | "wake";
+  projectId: string;
+  runKind?: NarrativeMaintenanceRunKind;
+  workKey?: string;
+  semanticEpochId?: string | null;
+  workspaceBinding?: NarrativeMaintenanceWorkspaceBinding | null;
+  retryCount: number;
+  error: string;
+}
+
 /**
  * A cycle is only drained after the backend explicitly accepts it.  In
  * particular, workspace-unavailable is not an empty/successful cycle: the
@@ -107,8 +119,14 @@ export interface NarrativeMaintenanceBackendLike {
   runNarrativeMaintenanceCycle?(
     request: NarrativeMaintenanceCycleRequest,
   ): Promise<unknown>;
+  /**
+   * Persist a terminal delivery failure before the scheduler drops its
+   * process-local claim. Native returns an explicit accepted receipt.
+   */
+  recordNarrativeMaintenanceDeliveryFailure?(
+    failure: NarrativeMaintenanceDeliveryFailure,
+  ): Promise<unknown> | unknown;
 }
-
 export interface NarrativeMaintenanceScheduler {
   start(): void;
   request(work: NarrativeMaintenanceRequest): void;
@@ -593,6 +611,35 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
   throw new Error("native maintenance cycle returned invalid status");
 }
 
+function deliveryFailureReceiptAccepted(raw: unknown): boolean {
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw) as unknown;
+    } catch {
+      throw new Error(
+        "native maintenance delivery failure receipt returned malformed JSON",
+      );
+    }
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      "native maintenance delivery failure receipt returned invalid status",
+    );
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.status !== "accepted" ||
+    !isNonEmptyTrimmedString(record.receiptId) ||
+    Object.keys(record).some((key) => !["status", "receiptId"].includes(key))
+  ) {
+    throw new Error(
+      "native maintenance delivery failure receipt was not accepted",
+    );
+  }
+  return true;
+}
+
 const NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE =
   "NEX_MAINTENANCE_TRANSIENT";
 
@@ -843,6 +890,28 @@ export function createNarrativeMaintenanceScheduler(
     const getter = backend?.getNarrativeMaintenanceWorkspaceBinding;
     if (typeof getter !== "function") return undefined;
     return normalizeWorkspaceBinding(getter.call(backend));
+  };
+  const persistDeliveryFailure = async (
+    failure: NarrativeMaintenanceDeliveryFailure,
+  ): Promise<boolean> => {
+    const recordFailure = backend?.recordNarrativeMaintenanceDeliveryFailure;
+    if (typeof recordFailure !== "function") {
+      warn(
+        "[narrative-maintenance] Native failure receipt API is unavailable; retaining trigger",
+      );
+      return false;
+    }
+    try {
+      return deliveryFailureReceiptAccepted(
+        await recordFailure.call(backend, failure),
+      );
+    } catch (receiptError) {
+      warn(
+        "[narrative-maintenance] failed to persist delivery failure receipt; retaining trigger:",
+        receiptError,
+      );
+      return false;
+    }
   };
 
   const runCycle = async (): Promise<void> => {
@@ -1176,22 +1245,42 @@ export function createNarrativeMaintenanceScheduler(
               firstRetryCount ??= retryCount;
             } else {
               // Delivery failed before Native created any Run/Attempt/Inbox
-              // evidence, so dropping the item would silently halt automatic
-              // maintenance. Park a durable wake instead: the trigger stays
-              // out of the hot retry loop, and the next explicit event
-              // (workspace open, epoch rotation, new request, outbox drain)
-              // clears the park and re-delivers through discovery.
-              retryCounts.delete(key);
-              const wakeKey = scopedWakeKey(work.projectId, cycleBinding);
-              durableWakeProjects.set(wakeKey, {
+              // evidence. Persist the durable failure receipt first; only
+              // then may this work leave the bounded retry queue. Keep a
+              // project-scoped wake parked so a later explicit event can
+              // rediscover the trigger without a hot retry loop.
+              retryCounts.set(key, retryCount);
+              const accepted = await persistDeliveryFailure({
+                schemaVersion: 1,
+                scope: "work",
                 projectId: work.projectId,
-                workspaceBinding: cycleBinding,
+                runKind: work.runKind,
+                workKey: work.workKey,
+                semanticEpochId: work.semanticEpochId,
+                workspaceBinding: work.workspaceBinding ?? null,
+                retryCount,
+                error: error instanceof Error ? error.message : String(error),
               });
-              deferredWakeProjects.add(wakeKey);
-              warn(
-                `[narrative-maintenance] retry exhausted for canonical key ${key}; parking durable wake for project ${work.projectId}`,
-                error,
-              );
+              if (accepted) {
+                retryCounts.delete(key);
+                const wakeKey = scopedWakeKey(work.projectId, cycleBinding);
+                durableWakeProjects.set(wakeKey, {
+                  projectId: work.projectId,
+                  workspaceBinding: cycleBinding,
+                });
+                deferredWakeProjects.add(wakeKey);
+                warn(
+                  `[narrative-maintenance] retry exhausted for canonical key ${key}; failure receipt persisted and durable wake parked for project ${work.projectId}`,
+                  error,
+                );
+              } else {
+                requeueWork(work);
+                requeuedCount += 1;
+                firstRetryCount ??= Math.min(
+                  retryCount,
+                  NARRATIVE_MAINTENANCE_MAX_RETRIES,
+                );
+              }
             }
           }
           if (sendingWakeProjects.length > 0) {
@@ -1207,19 +1296,37 @@ export function createNarrativeMaintenanceScheduler(
                 requeuedCount += 1;
                 firstRetryCount ??= retryCount;
               } else {
-                // Same parking rule as exhausted work delivery: the durable
-                // backlog signal must survive exhaustion, just outside the
-                // hot retry loop.
-                durableWakeRetryCounts.delete(wakeKey);
-                durableWakeProjects.set(wakeKey, {
+                const accepted = await persistDeliveryFailure({
+                  schemaVersion: 1,
+                  scope: "wake",
                   projectId,
                   workspaceBinding: cycleBinding,
+                  retryCount,
+                  error: error instanceof Error ? error.message : String(error),
                 });
-                deferredWakeProjects.add(wakeKey);
-                warn(
-                  `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; parking durable wake`,
-                  error,
-                );
+                if (accepted) {
+                  durableWakeRetryCounts.delete(wakeKey);
+                  durableWakeProjects.set(wakeKey, {
+                    projectId,
+                    workspaceBinding: cycleBinding,
+                  });
+                  deferredWakeProjects.add(wakeKey);
+                  warn(
+                    `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; failure receipt persisted and durable wake parked`,
+                    error,
+                  );
+                } else {
+                  durableWakeRetryCounts.set(wakeKey, retryCount);
+                  durableWakeProjects.set(wakeKey, {
+                    projectId,
+                    workspaceBinding: cycleBinding,
+                  });
+                  requeuedCount += 1;
+                  firstRetryCount ??= Math.min(
+                    retryCount,
+                    NARRATIVE_MAINTENANCE_MAX_RETRIES,
+                  );
+                }
               }
             }
           }

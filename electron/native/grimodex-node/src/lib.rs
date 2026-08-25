@@ -23,6 +23,7 @@ mod state;
 #[cfg(test)]
 mod test_link_stubs;
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Instant;
@@ -107,6 +108,7 @@ use grimodex_db::{
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
 use state::{AppState, EventQueue, EventTsfn};
+use uuid::Uuid;
 
 const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
 const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT: &str = "narrative-maintenance:epoch-rotated";
@@ -2340,6 +2342,154 @@ impl Backend {
                 }
             }
             Ok(json)
+        })
+        .await
+    }
+
+    /// Persist a scheduler delivery failure before Electron drops its
+    /// process-local identity. The receipt is append-only and workspace-scoped
+    /// so a later process can surface the exact failed trigger during startup.
+    #[napi]
+    pub async fn record_narrative_maintenance_delivery_failure(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let _mutation_guard = state
+                .narrative_maintenance_mutation_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let invalid = |message: &str| AppError::Anyhow(anyhow::anyhow!("{message}"));
+            let object = payload.as_object().ok_or_else(|| {
+                invalid("NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: payload must be an object")
+            })?;
+            if object
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_u64)
+                != Some(1)
+            {
+                return Err(invalid(
+                    "NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: schemaVersion must be 1",
+                ));
+            }
+            let scope = object
+                .get("scope")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    invalid("NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: scope is required")
+                })?;
+            if !matches!(scope, "work" | "wake") {
+                return Err(invalid(
+                    "NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: scope is unsupported",
+                ));
+            }
+            let project_id = object
+                .get("projectId")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| {
+                    !value.trim().is_empty()
+                        && !value.contains('\0')
+                        && !value.contains('/')
+                        && !value.contains('\\')
+                })
+                .ok_or_else(|| {
+                    invalid("NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: projectId is invalid")
+                })?;
+            let retry_count = object
+                .get("retryCount")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|value| *value > 0 && *value <= 1_000_000)
+                .ok_or_else(|| {
+                    invalid("NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: retryCount is invalid")
+                })?;
+            let error = object
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty() && value.len() <= 16 * 1024)
+                .ok_or_else(|| {
+                    invalid("NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: error is invalid")
+                })?;
+            if scope == "work" {
+                let run_kind = object
+                    .get("runKind")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        invalid(
+                            "NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: work runKind is required",
+                        )
+                    })?;
+                if !matches!(
+                    run_kind,
+                    "backfill" | "dependency-verify" | "semantic-index-rebuild"
+                ) {
+                    return Err(invalid(
+                        "NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: runKind is not automatic",
+                    ));
+                }
+                object
+                    .get("workKey")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.trim().is_empty() && value.len() <= 4096)
+                    .ok_or_else(|| {
+                        invalid("NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: workKey is required")
+                    })?;
+            }
+            if let Some(binding) = object.get("workspaceBinding") {
+                if !binding.is_null() {
+                    let binding = binding.as_object().ok_or_else(|| {
+                        invalid(
+                            "NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: workspaceBinding is invalid",
+                        )
+                    })?;
+                    if binding
+                        .get("authorityId")
+                        .and_then(serde_json::Value::as_str)
+                        .is_none_or(|value| value.trim().is_empty())
+                        || binding
+                            .get("generation")
+                            .and_then(serde_json::Value::as_u64)
+                            .is_none_or(|value| value == 0)
+                    {
+                        return Err(invalid(
+                            "NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: workspaceBinding is invalid",
+                        ));
+                    }
+                }
+            }
+            let workspace_path = active_workspace_path(&state.ws)?;
+            let receipt_id = Uuid::new_v4().to_string();
+            let recorded_at = grimodex_core::now_rfc3339_millis();
+            let directory = workspace_path.join(".grimodex");
+            std::fs::create_dir_all(&directory)
+                .map_err(|error| AppError::Anyhow(anyhow::Error::from(error)))?;
+            let path = directory.join("narrative-maintenance-delivery-failures.jsonl");
+            let record = serde_json::json!({
+                "schemaVersion": 1,
+                "receiptId": receipt_id,
+                "recordedAt": recorded_at,
+                "scope": scope,
+                "projectId": project_id,
+                "retryCount": retry_count,
+                "error": error,
+                "payload": payload,
+            });
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|error| AppError::Anyhow(anyhow::Error::from(error)))?;
+            serde_json::to_writer(&mut file, &record)
+                .map_err(|error| AppError::Anyhow(anyhow::Error::from(error)))?;
+            file.write_all(b"\n")
+                .map_err(|error| AppError::Anyhow(anyhow::Error::from(error)))?;
+            file.sync_data()
+                .map_err(|error| AppError::Anyhow(anyhow::Error::from(error)))?;
+            Ok(serde_json::json!({
+                "status": "accepted",
+                "receiptId": record["receiptId"],
+            })
+            .to_string())
         })
         .await
     }

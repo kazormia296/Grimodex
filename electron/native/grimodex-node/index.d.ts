@@ -82,6 +82,7 @@ export declare class Backend {
    * successful drain.
    */
   runNarrativeMaintenanceCycle(payload: any): Promise<string>
+  recordNarrativeMaintenanceDeliveryFailure(payload: any): Promise<string>
   /**
    * Main-owned pre-response claim for one exact foreground product-journey
    * Run. This only proves that the current authority owns a matching

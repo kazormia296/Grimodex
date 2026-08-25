@@ -20,6 +20,7 @@ import {
   NARRATIVE_STAGE_IDS,
 } from "@/features/narrative-extraction/reconciler/stageExecution";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
+import { digestStableJson } from "@/features/narrative-extraction/source/digest";
 
 const blockPolicyMock = vi.hoisted(() => vi.fn(() => false));
 const blockLicenseMock = vi.hoisted(() => vi.fn(() => false));
@@ -1038,5 +1039,61 @@ describe("structured repair root-object contract", () => {
 
     expect(componentContractDigests[0]).toBe(componentContractDigests[1]);
     expect(contextSetDigests[0]).not.toBe(contextSetDigests[1]);
+  });
+
+  it("seals the canonical typed parsed-output digest in the event audit", async () => {
+    const stageExecution = createEventStageExecution({
+      projectId: "project-test",
+      runId: "run-event-output-digest",
+      taskId: "task-event-output-digest",
+      attemptId: "attempt-event-output-digest",
+      stageExecutionId: "event-stage-output-digest",
+    });
+    recordAiUsageMock.mockClear();
+
+    await expect(
+      runEventSynthesisTask({
+        clusterRef: "cluster-1",
+        observations: [observation],
+        projectId: "project-test",
+        stageExecution,
+        send: async () => ({
+          text: eventSynthesisResponse("cluster-1"),
+          ...usage,
+        }),
+        repairOnFailure: false,
+      }),
+    ).resolves.toHaveLength(1);
+
+    const audit = recordAiUsageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload.surface === "narrative_event_synthesize");
+    const stageAudit = (
+      audit?.metadata as
+        | {
+            readonly chronicleStageAudit?: {
+              readonly rawObservationsDigest?: string;
+              readonly parsedOutputDigest?: string;
+            };
+          }
+        | undefined
+    )?.chronicleStageAudit;
+    const rawObservationsDigest = await digestStableJson({
+      kind: "chronicle.raw-observations@1",
+      version: 1,
+      observations: [observation],
+    });
+    const parsedOutputDigest = await digestStableJson({
+      domain: "chronicle.parsed-output/1",
+      kind: "chronicle.event-synthesis-output@1",
+      observationCount: 1,
+      eventCount: 1,
+      observationRefs: ["obs-1"],
+      rawObservationsDigest,
+    });
+    expect(stageAudit).toMatchObject({
+      rawObservationsDigest,
+      parsedOutputDigest,
+    });
   });
 });

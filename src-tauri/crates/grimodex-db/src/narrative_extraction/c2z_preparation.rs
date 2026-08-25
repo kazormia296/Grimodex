@@ -17,9 +17,17 @@ pub(crate) use super::consumer_identity::APPLICATION_CONSUMER_KIND;
 use super::dependency_edges::{
     canonical_source_object_identity, validate_stored_source_object_identity, RUN_CONSUMER_KIND,
 };
-use super::maintenance_runtime::{REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX};
+use super::legacy_backfill::{is_valid_completed_backfill_marker, CompletedBackfillMarker};
+use super::maintenance_lifecycle::load_completed_maintenance_run_in_tx;
+use super::maintenance_runtime::{
+    load_durable_maintenance_runs, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+};
+use super::maintenance_runtime::{
+    select_latest_relevant_run_for_readiness, validate_phase_success_outcome,
+};
 use super::restore_rebuild::{
-    DependencyGraphVerifyReport, REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION,
+    validate_graph_state_digest, DependencyGraphVerifyReport, REBUILD_CONTRACT_VERSION,
+    VERIFY_CONTRACT_VERSION,
 };
 use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
 
@@ -184,14 +192,6 @@ pub struct InvalidLegacyDependency {
 }
 
 type LegacyDependencyLoad = (BTreeMap<String, Vec<String>>, Vec<InvalidLegacyDependency>);
-type BackfillRunRow = (String, String, Option<String>);
-type VerifyRunRow = (
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
 type IncrementalCursorRow = (
     i64,
     Option<String>,
@@ -1033,29 +1033,41 @@ fn inspect_backfill_gate(
     let Some(epoch_id) = epoch_id else {
         return Ok(ReadinessGate::incomplete("current-semantic-epoch-missing"));
     };
-    let row: Option<BackfillRunRow> = conn
-        .query_row(
-            "SELECT id, status, semantic_epoch_id
-               FROM narrative_extraction_runs
-              WHERE project_id = ?1 AND run_kind = 'backfill'
-                AND work_key = 'legacy-dependency-backfill:v3'
-              ORDER BY created_at DESC, id DESC LIMIT 1",
-            params![project_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()?;
-    let Some((_, status, run_epoch_id)) = row else {
+    let runs = load_durable_maintenance_runs(conn, project_id)?;
+    let run = select_latest_relevant_run_for_readiness(&runs, Some(epoch_id), true, |run| {
+        run.run_kind == "backfill"
+    })?;
+    let Some(run) = run else {
         return Ok(ReadinessGate::incomplete("legacy-backfill-run-missing"));
     };
-    if status != "completed" {
-        return Ok(if matches!(status.as_str(), "pending" | "running") {
+    if run.status != "completed" {
+        return Ok(if matches!(run.status.as_str(), "pending" | "running") {
             ReadinessGate::blocked("legacy-backfill-active")
         } else {
             ReadinessGate::blocked("legacy-backfill-not-completed")
         });
     }
-    if run_epoch_id.as_deref() != Some(epoch_id) {
+    if run.semantic_epoch_id.as_deref() != Some(epoch_id) {
         return Ok(ReadinessGate::blocked("legacy-backfill-epoch-mismatch"));
+    }
+    if load_completed_maintenance_run_in_tx(conn, &run.run_id).is_err() {
+        return Ok(ReadinessGate::blocked("legacy-backfill-lifecycle-invalid"));
+    }
+    let marker_valid = is_valid_completed_backfill_marker(
+        conn,
+        project_id,
+        &CompletedBackfillMarker {
+            run_kind: &run.run_kind,
+            status: &run.status,
+            spec_json: run.spec_json.as_deref(),
+            semantic_epoch_id: run.semantic_epoch_id.as_deref(),
+            work_key: run.work_key.as_deref(),
+            completed_at: run.completed_at.as_deref(),
+            outcome_summary_json: run.outcome_summary_json.as_deref(),
+        },
+    )?;
+    if !marker_valid {
+        return Ok(ReadinessGate::blocked("legacy-backfill-marker-invalid"));
     }
     Ok(ReadinessGate::passed())
 }
@@ -1070,44 +1082,30 @@ fn inspect_verify_gate(
             "current-semantic-epoch-missing",
         )));
     };
-    let row: Option<VerifyRunRow> = conn
-        .query_row(
-            "SELECT id, status, semantic_epoch_id, work_key, outcome_summary_json
-               FROM narrative_extraction_runs
-              WHERE project_id = ?1 AND run_kind = 'dependency-verify'
-              ORDER BY created_at DESC, id DESC LIMIT 1",
-            params![project_id],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((run_id, status, run_epoch_id, work_key, outcome_json)) = row else {
+    let runs = load_durable_maintenance_runs(conn, project_id)?;
+    let run = select_latest_relevant_run_for_readiness(&runs, Some(epoch_id), false, |run| {
+        run.run_kind == "dependency-verify"
+    })?;
+    let Some(run) = run else {
         return Ok(VerifyReadiness::from_gate(ReadinessGate::incomplete(
             "verify-run-missing",
         )));
     };
     let mut result = VerifyReadiness::from_gate(ReadinessGate::incomplete("verify-incomplete"));
-    result.run_id = Some(run_id);
-    if status != "completed" {
+    result.run_id = Some(run.run_id.clone());
+    if run.status != "completed" {
         result.state = ReadinessState::Blocked;
         result.reasons = vec!["verify-run-not-completed".to_string()];
         return Ok(result);
     }
     result.completed = true;
-    if run_epoch_id.as_deref() != Some(epoch_id) {
+    if run.semantic_epoch_id.as_deref() != Some(epoch_id) {
         result.state = ReadinessState::Blocked;
         result.reasons = vec!["verify-epoch-mismatch".to_string()];
         return Ok(result);
     }
     let expected_work_key = format!("{VERIFY_WORK_KEY_PREFIX}{epoch_id}");
-    match work_key.as_deref() {
+    match run.work_key.as_deref() {
         None => {
             result.state = ReadinessState::Incomplete;
             result.reasons = vec!["verify-work-key-missing".to_string()];
@@ -1120,7 +1118,7 @@ fn inspect_verify_gate(
         }
         Some(_) => {}
     }
-    let Some(outcome_json) = outcome_json else {
+    let Some(outcome_json) = run.outcome_summary_json.as_deref() else {
         result.reasons = vec!["verify-outcome-missing".to_string()];
         return Ok(result);
     };
@@ -1166,6 +1164,36 @@ fn inspect_verify_gate(
     if outcome.get("reportDigest").and_then(Value::as_str) != Some(expected_digest.as_str()) {
         result.state = ReadinessState::Blocked;
         result.reasons = vec!["verify-report-digest-mismatch".to_string()];
+        return Ok(result);
+    }
+    if load_completed_maintenance_run_in_tx(conn, &run.run_id).is_err() {
+        result.state = ReadinessState::Blocked;
+        result.reasons = vec!["verify-lifecycle-invalid".to_string()];
+        return Ok(result);
+    }
+    if validate_phase_success_outcome(
+        "dependency-verify",
+        project_id,
+        run.work_key.as_deref().unwrap_or_default(),
+        Some(epoch_id),
+        &outcome,
+    )
+    .is_err()
+    {
+        result.state = ReadinessState::Blocked;
+        result.reasons = vec!["verify-outcome-invalid".to_string()];
+        return Ok(result);
+    }
+    if let Err(error) = validate_graph_state_digest(
+        conn,
+        project_id,
+        outcome
+            .get("graphStateDigest")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    ) {
+        result.state = ReadinessState::Blocked;
+        result.reasons = vec![format!("verify-graph-state-invalid: {error}")];
         return Ok(result);
     }
     result.report_clean = report.is_clean();
@@ -1222,40 +1250,26 @@ fn inspect_rebuild_gate(
     let Some(epoch_id) = epoch_id else {
         return Ok(ReadinessGate::incomplete("current-semantic-epoch-missing"));
     };
-    let row: Option<VerifyRunRow> = conn
-        .query_row(
-            "SELECT id, status, semantic_epoch_id, work_key, outcome_summary_json
-               FROM narrative_extraction_runs
-              WHERE project_id = ?1 AND run_kind = 'semantic-index-rebuild'
-              ORDER BY created_at DESC, id DESC LIMIT 1",
-            params![project_id],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((_, status, run_epoch_id, work_key, outcome_json)) = row else {
+    let runs = load_durable_maintenance_runs(conn, project_id)?;
+    let run = select_latest_relevant_run_for_readiness(&runs, Some(epoch_id), false, |run| {
+        run.run_kind == "semantic-index-rebuild"
+    })?;
+    let Some(run) = run else {
         return Ok(ReadinessGate::incomplete(
             "derived-state-rebuild-run-missing",
         ));
     };
-    if status != "completed" {
+    if run.status != "completed" {
         return Ok(ReadinessGate::blocked(
             "derived-state-rebuild-not-completed",
         ));
     }
-    if run_epoch_id.as_deref() != Some(epoch_id) {
+    if run.semantic_epoch_id.as_deref() != Some(epoch_id) {
         return Ok(ReadinessGate::blocked(
             "derived-state-rebuild-epoch-mismatch",
         ));
     }
-    match work_key.as_deref() {
+    match run.work_key.as_deref() {
         None => {
             return Ok(ReadinessGate::incomplete(
                 "derived-state-rebuild-work-key-missing",
@@ -1268,7 +1282,7 @@ fn inspect_rebuild_gate(
         }
         Some(_) => {}
     }
-    let Some(outcome_json) = outcome_json else {
+    let Some(outcome_json) = run.outcome_summary_json.as_deref() else {
         return Ok(ReadinessGate::incomplete(
             "derived-state-rebuild-summary-missing",
         ));
@@ -1312,6 +1326,11 @@ fn inspect_rebuild_gate(
         Some(_) => {}
     }
 
+    if load_completed_maintenance_run_in_tx(conn, &run.run_id).is_err() {
+        return Ok(ReadinessGate::blocked(
+            "derived-state-rebuild-lifecycle-invalid",
+        ));
+    }
     let Some(summary) = outcome.get("summary").and_then(Value::as_object) else {
         return Ok(ReadinessGate::incomplete(
             "derived-state-rebuild-summary-missing",
@@ -1336,6 +1355,19 @@ fn inspect_rebuild_gate(
     if summary_digest != expected_summary_digest {
         return Ok(ReadinessGate::blocked(
             "derived-state-rebuild-summary-digest-mismatch",
+        ));
+    }
+    if validate_phase_success_outcome(
+        "semantic-index-rebuild",
+        project_id,
+        run.work_key.as_deref().unwrap_or_default(),
+        Some(epoch_id),
+        &outcome,
+    )
+    .is_err()
+    {
+        return Ok(ReadinessGate::blocked(
+            "derived-state-rebuild-outcome-invalid",
         ));
     }
     if REQUIRED_REBUILD_SUMMARY_FIELDS

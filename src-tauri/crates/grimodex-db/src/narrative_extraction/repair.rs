@@ -73,13 +73,14 @@ use super::repository::{
     RunRequestIdentity, SystemRunWorkKeyReuse,
 };
 use super::restore_rebuild::{
-    duplicate_edge_ids_to_deactivate, rebuild_repair_dependency_edges_in_tx,
+    duplicate_edge_ids_to_deactivate, is_canonical_graph_state_digest,
+    rebuild_repair_dependency_edges_in_tx, validate_graph_state_digest,
     DependencyGraphVerifyReport, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
 use super::semantic_epoch::get_current_epoch;
 use super::task_leases::with_immediate_transaction;
 use crate::backup_restore::{create_persistent_live_safety_artifact, LiveSafetyArtifact};
-use crate::Database;
+use crate::{read_sqlite_source_revision, Database};
 
 const REPAIR_LEASE_TTL_SECONDS: i64 = 15 * 60;
 
@@ -355,6 +356,10 @@ pub struct RepairPlan {
     /// sealed into [`RepairPlan::digest`]. Two plans naming the same Edge
     /// ids but derived from different Verify results are different plans.
     verify_report_digest: String,
+    /// Fingerprint of the graph snapshot from which Verify produced the
+    /// report. It makes a Repair approval a generation-bound CAS, not only a
+    /// list of edge ids.
+    graph_state_digest: String,
     edge_ids_to_deactivate: Vec<String>,
     /// Canonical fingerprint of each target Edge row (all durable columns)
     /// at seal time, keyed by Edge id and folded into [`RepairPlan::digest`].
@@ -396,6 +401,10 @@ impl RepairPlan {
         &self.verify_report_digest
     }
 
+    pub fn graph_state_digest(&self) -> &str {
+        &self.graph_state_digest
+    }
+
     pub fn edge_ids_to_deactivate(&self) -> &[String] {
         &self.edge_ids_to_deactivate
     }
@@ -428,6 +437,7 @@ fn repair_request_payload_digest(verify_run_id: &str, plan_digest: &str) -> Stri
 fn repair_plan_digest(
     verify_run_id: &str,
     verify_report_digest: &str,
+    graph_state_digest: &str,
     semantic_epoch_id: &str,
     edge_ids_to_deactivate: &[String],
     edge_row_fingerprints: &[(String, String)],
@@ -440,6 +450,7 @@ fn repair_plan_digest(
         "planKind": "dependency-repair-v3",
         "verifyRunId": verify_run_id,
         "verifyReportDigest": verify_report_digest,
+        "graphStateDigest": graph_state_digest,
         "semanticEpochId": semantic_epoch_id,
         "edgeIdsToDeactivate": edge_ids_to_deactivate,
         "edgeRowFingerprints": fingerprints,
@@ -604,6 +615,7 @@ pub fn seal_repair_plan(
     let digest = repair_plan_digest(
         verify_run_id,
         &verify.report_digest,
+        &verify.graph_state_digest,
         semantic_epoch_id,
         &edge_ids_to_deactivate,
         &edge_row_fingerprints,
@@ -613,6 +625,7 @@ pub fn seal_repair_plan(
         verify_run_id: verify_run_id.to_string(),
         semantic_epoch_id: semantic_epoch_id.to_string(),
         verify_report_digest: verify.report_digest,
+        graph_state_digest: verify.graph_state_digest,
         edge_ids_to_deactivate,
         edge_row_fingerprints,
         digest,
@@ -622,6 +635,7 @@ pub fn seal_repair_plan(
 /// The Verify result a Repair plan may be sealed from.
 struct SealableVerifyResult {
     report_digest: String,
+    graph_state_digest: String,
     report: DependencyGraphVerifyReport,
 }
 
@@ -746,6 +760,15 @@ fn load_sealable_verify_result(
                  this build cannot read: {error}"
             )
         })?;
+    let graph_state_digest = outcome
+        .get("graphStateDigest")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    anyhow::ensure!(
+        is_canonical_graph_state_digest(graph_state_digest),
+        "NEX_REPAIR_VERIFY_GRAPH_STATE_DIGEST_MISSING: Verify Run '{verify_run_id}' recorded no canonical graph state digest"
+    );
+    validate_graph_state_digest(conn, project_id, graph_state_digest)?;
 
     // A destructive Repair plan must not seal from a Verify weaker than
     // what ordinary maintenance discovery would accept: the same canonical
@@ -781,6 +804,7 @@ fn load_sealable_verify_result(
 
     Ok(SealableVerifyResult {
         report_digest: recomputed_digest,
+        graph_state_digest: graph_state_digest.to_string(),
         report,
     })
 }
@@ -1675,7 +1699,12 @@ fn execute_repair_steps(
         })
     })?;
 
-    // 2. Automatic backup. Slow on a large workspace -- slow enough that
+    // 2. Capture the source revision before the backup. The backup uses a
+    // separate SQLite connection, so this revision is the CAS boundary for
+    // every canonical writer, not only Repair writers.
+    let source_revision_before_backup = db.with_conn(read_sqlite_source_revision)?;
+
+    // 3. Automatic backup. Slow on a large workspace -- slow enough that
     //    the lease claimed above can expire and be re-claimed by someone
     //    else before step 3 starts, which is why step 3 re-proves it.
     //
@@ -1705,10 +1734,15 @@ fn execute_repair_steps(
         .map_err(|error| anyhow::anyhow!("NEX_REPAIR_BACKUP_FAILED: {error}"))?;
     let backup_artifact_path = safety_artifact_path_string(&backup_artifact);
 
-    // 3. Re-prove authority, re-validate, repair, release, record,
+    // 4. Re-prove authority, re-validate, repair, release, record,
     //    terminalize -- atomically.
     let edges_deactivated = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            let source_revision_after_backup = read_sqlite_source_revision(conn)?;
+            anyhow::ensure!(
+                source_revision_after_backup == source_revision_before_backup,
+                "NEX_REPAIR_WORKSPACE_CHANGED_DURING_BACKUP: a canonical writer committed while the safety artifact was being created; refusing to mutate or roll back that newer state"
+            );
             assert_repair_lease_still_held_in_tx(
                 conn,
                 project_id,
@@ -2934,6 +2968,7 @@ mod tests {
             verify_run_id: "arbitrary".to_string(),
             semantic_epoch_id: epoch_id,
             verify_report_digest: "arbitrary".to_string(),
+            graph_state_digest: "arbitrary".to_string(),
             edge_ids_to_deactivate: vec![old_id],
             edge_row_fingerprints: Vec::new(),
             digest: "arbitrary".to_string(),

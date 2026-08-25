@@ -133,6 +133,13 @@ pub struct ChronicleStageTerminalReceipt {
     pub model_execution_binding: ChronicleStageModelBinding,
     pub model_binding_digest: String,
     pub response_digest: Option<String>,
+    /// Digest of the durable `chronicle.raw-observations@1` payload when this
+    /// terminal belongs to the synthesis owner; null for unrelated stages.
+    #[serde(default)]
+    pub raw_observations_digest: Option<String>,
+    /// Digest of the exact typed output payload accepted by Native.
+    #[serde(default)]
+    pub parsed_output_digest: Option<String>,
     pub parse_status: ChronicleStageParseStatus,
     pub terminal_status: ChronicleStageTerminalStatus,
     pub stage_execution_receipt_digest: String,

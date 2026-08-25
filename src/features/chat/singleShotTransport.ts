@@ -278,6 +278,8 @@ const CHRONICLE_BEGIN_PROTECTED_FIELDS = [
 const CHRONICLE_TERMINAL_ALLOWED_FIELDS = [
   ...CHRONICLE_BEGIN_PROTECTED_FIELDS,
   "responseDigest",
+  "rawObservationsDigest",
+  "parsedOutputDigest",
   "parseStatus",
   "terminalStatus",
   "stageExecutionReceiptDigest",
@@ -393,6 +395,8 @@ async function assertChronicleTerminalSeal(
       modelExecutionBinding: terminalStage.modelExecutionBinding,
       modelBindingDigest: terminalStage.modelBindingDigest,
       responseDigest: terminalStage.responseDigest,
+      rawObservationsDigest: terminalStage.rawObservationsDigest ?? null,
+      parsedOutputDigest: terminalStage.parsedOutputDigest ?? null,
       parseStatus: terminalStage.parseStatus,
       terminalStatus: terminalStage.terminalStatus,
       stageExecutionReceiptDigest: terminalStage.stageExecutionReceiptDigest,

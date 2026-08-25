@@ -4,7 +4,6 @@
 //! startup-only lifecycle recovery boundary. They do not invoke Verify/Rebuild
 //! side effects outside their durable lifecycle rows.
 
-use grimodex_db::narrative_extraction::ensure_test_schema;
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     canonical_work_key, canonical_work_key_for_epoch, classify_failure, decide_execution,
     decide_run_recovery, decide_run_recovery_for_epoch, discover_durable_maintenance_work,
@@ -13,6 +12,9 @@ use grimodex_db::narrative_extraction::maintenance_runtime::{
     AutomaticRunKind, FailureClass, MaintenanceExecutionDecision, MaintenanceExecutionMode,
     MaintenanceTrigger, RecoveryAction, RecoveryMode, StaleActiveRun, WorkKey,
     LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES,
+};
+use grimodex_db::narrative_extraction::{
+    digest_plan, durable_graph_state_digest, ensure_test_schema,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -383,10 +385,12 @@ fn insert_canonical_maintenance_run(
 ) -> rusqlite::Result<()> {
     let spec_json = match work.run_kind {
         AutomaticRunKind::Backfill => r#"{"backfillAlgorithmVersion":"3"}"#,
-        AutomaticRunKind::Verify => r#"{"verifyContractVersion":"7"}"#,
+        AutomaticRunKind::Verify => r#"{"verifyContractVersion":"8"}"#,
         AutomaticRunKind::RebuildDerived => "{}",
     };
-    insert_run_with_spec(conn, id, status, epoch_id, work, spec_json, "digest")
+    let spec_value: serde_json::Value = serde_json::from_str(spec_json).expect("valid spec JSON");
+    let spec_digest = format!("sha256:{}", digest_plan(&spec_value));
+    insert_run_with_spec(conn, id, status, epoch_id, work, spec_json, &spec_digest)
 }
 
 fn assert_interrupted_lifecycle(db: &Database, run_id: &str) {
@@ -1025,20 +1029,24 @@ fn recovery_uses_lifecycle_instants_not_rowid_after_successful_retry() {
 fn discovery_rejects_same_lifecycle_instant_instead_of_using_uuid_order() {
     let db = fixture_db();
     db.with_conn(|conn| {
-        for id in ["verify-random-id-a", "verify-random-id-b"] {
+        for (id, created_at) in [
+            ("verify-random-id-a", "2026-08-23T10:59:00.000Z"),
+            ("verify-random-id-b", "2026-08-23T11:00:00.000Z"),
+        ] {
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                      status, coverage_json, created_at, started_at, completed_at,
                      run_kind, semantic_epoch_id, work_key)
                  VALUES (?1, ?2, 'maintenance', '{}', '{}', 'digest', 'completed', '{}',
-                         '2026-08-23T11:00:00.000Z', '2026-08-23T11:00:00.000Z',
+                         ?5, '2026-08-23T11:00:00.000Z',
                          '2026-08-23T11:00:00.000Z', 'dependency-verify', ?3, ?4)",
                 params![
                     id,
                     PROJECT_ID,
                     OLD_EPOCH_ID,
-                    "dependency-verify:epoch-c2-5a-old"
+                    "dependency-verify:epoch-c2-5a-old",
+                    created_at
                 ],
             )?;
         }
@@ -1056,6 +1064,9 @@ fn discovery_rejects_same_lifecycle_instant_instead_of_using_uuid_order() {
 #[test]
 fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
     let db = fixture_db();
+    let graph_state_digest = db
+        .with_conn(|conn| durable_graph_state_digest(conn, PROJECT_ID))
+        .expect("fixture graph state digest");
     let report_value = json!({
         "totalEdges": 0,
         "edgeIdsWithMissingSource": [],
@@ -1081,9 +1092,10 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
     let mut tampered_report_value = report_value.clone();
     tampered_report_value["totalEdges"] = json!(999);
     let valid_outcome = json!({
-        "verifyContractVersion": "7",
+        "verifyContractVersion": "8",
         "semanticEpochId": OLD_EPOCH_ID,
         "reportDigest": report_digest,
+        "graphStateDigest": graph_state_digest.clone(),
         "report": report_value.clone(),
     });
     db.with_conn(|conn| {
@@ -1106,12 +1118,16 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
                  status, coverage_json, created_at, started_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('discovery-verify', ?1, 'maintenance', '{}',
-                     '{"verifyContractVersion":"7"}', 'digest', 'completed', '{}',
+                     '{"verifyContractVersion":"8"}', ?2, 'completed', '{}',
                      '2026-08-23T10:00:00.000Z', '2026-08-23T10:00:00.000Z',
-                     '2026-08-23T10:00:01.000Z', ?2,
-                     'dependency-verify', ?3, ?4)"#,
+                     '2026-08-23T10:00:01.000Z', ?3,
+                     'dependency-verify', ?4, ?5)"#,
             params![
                 PROJECT_ID,
+                format!(
+                    "sha256:{}",
+                    digest_plan(&json!({"verifyContractVersion": "8"}))
+                ),
                 valid_outcome.to_string(),
                 OLD_EPOCH_ID,
                 format!("dependency-verify:{OLD_EPOCH_ID}"),
@@ -1130,18 +1146,20 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
         (
             "reportDigest",
             json!({
-                "verifyContractVersion": "7",
+                "verifyContractVersion": "8",
                 "semanticEpochId": OLD_EPOCH_ID,
                 "reportDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "graphStateDigest": graph_state_digest.clone(),
                 "report": report_value.clone(),
             }),
         ),
         (
             "semanticEpochId",
             json!({
-                "verifyContractVersion": "7",
+                "verifyContractVersion": "8",
                 "semanticEpochId": "wrong-epoch",
                 "reportDigest": report_digest.clone(),
+                "graphStateDigest": graph_state_digest.clone(),
                 "report": report_value.clone(),
             }),
         ),
@@ -1151,15 +1169,17 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
                 "verifyContractVersion": "0",
                 "semanticEpochId": OLD_EPOCH_ID,
                 "reportDigest": report_digest.clone(),
+                "graphStateDigest": graph_state_digest.clone(),
                 "report": report_value.clone(),
             }),
         ),
         (
             "report",
             json!({
-                "verifyContractVersion": "7",
+                "verifyContractVersion": "8",
                 "semanticEpochId": OLD_EPOCH_ID,
                 "reportDigest": report_digest.clone(),
+                "graphStateDigest": graph_state_digest.clone(),
                 "report": tampered_report_value.clone(),
             }),
         ),

@@ -359,14 +359,11 @@ fn source_dependency_producer_writers(source: &str) -> Result<Vec<(String, Strin
 
 fn rust_function_name(line: &str) -> Option<&str> {
     let mut remaining = line.trim_start();
-    for visibility in [
-        "pub(crate) ",
-        "pub(super) ",
-        "pub ",
-        "const ",
-        "async ",
-        "unsafe ",
-    ] {
+    if let Some(after_pub) = remaining.strip_prefix("pub(") {
+        let close = after_pub.find(") ")?;
+        remaining = &after_pub[close + 2..];
+    }
+    for visibility in ["pub(crate) ", "pub ", "const ", "async ", "unsafe "] {
         if let Some(stripped) = remaining.strip_prefix(visibility) {
             remaining = stripped;
         }
@@ -531,6 +528,18 @@ mod tests {
         assert_eq!(
             producer_generation_set_digest(&registry).expect("first digest"),
             producer_generation_set_digest(&reordered).expect("reordered digest")
+        );
+    }
+
+    #[test]
+    fn producer_registry_accepts_restricted_pub_visibility() {
+        let source = "// NARRATIVE_DEPENDENCY_PRODUCER: example\n".to_owned()
+            + "pub(super) fn example(conn: &Connection) {\n"
+            + "    record_dependency_edge_in_tx(conn);\n"
+            + "}";
+        assert_eq!(
+            source_dependency_producer_writers(&source).expect("restricted visibility writer"),
+            vec![("example".to_string(), "example".to_string())]
         );
     }
 

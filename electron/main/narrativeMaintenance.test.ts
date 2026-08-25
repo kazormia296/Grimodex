@@ -40,6 +40,15 @@ function acceptedCycle(hasMore = false): NarrativeMaintenanceCycleResult {
   return { status: "accepted", hasMore };
 }
 
+function acceptedFailureReceiptBackend() {
+  return {
+    recordNarrativeMaintenanceDeliveryFailure: vi.fn().mockResolvedValue({
+      status: "accepted",
+      receiptId: "delivery-failure-test",
+    }),
+  };
+}
+
 function renderedWarnings(warn: ReturnType<typeof vi.fn>): string[] {
   return warn.mock.calls.map((args) => args.map(String).join(" "));
 }
@@ -708,6 +717,7 @@ describe("narrative maintenance scheduler", () => {
       );
     const { scheduler, warn } = createScheduler({
       runNarrativeMaintenanceCycle,
+      ...acceptedFailureReceiptBackend(),
     });
 
     scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
@@ -824,6 +834,7 @@ describe("narrative maintenance scheduler", () => {
     const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue("{}");
     const { scheduler, warn } = createScheduler({
       runNarrativeMaintenanceCycle,
+      ...acceptedFailureReceiptBackend(),
     });
 
     scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
@@ -847,6 +858,7 @@ describe("narrative maintenance scheduler", () => {
     const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue("{not-json");
     const { scheduler, warn } = createScheduler({
       runNarrativeMaintenanceCycle,
+      ...acceptedFailureReceiptBackend(),
     });
 
     scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
@@ -876,6 +888,7 @@ describe("narrative maintenance scheduler", () => {
       .mockRejectedValue(new Error("database is locked"));
     const { scheduler, warn } = createScheduler({
       runNarrativeMaintenanceCycle,
+      ...acceptedFailureReceiptBackend(),
     });
 
     scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
@@ -897,6 +910,40 @@ describe("narrative maintenance scheduler", () => {
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
       NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
     );
+  });
+
+  it("retains the trigger when Native has not accepted the failure receipt", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValue(new Error("database is locked"));
+    const { scheduler, warn } = createScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    for (
+      let retry = 0;
+      retry <= NARRATIVE_MAINTENANCE_MAX_RETRIES;
+      retry += 1
+    ) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 2,
+    );
+    expect(
+      warn.mock.calls.some((args) =>
+        String(args[0]).includes("Native failure receipt API is unavailable"),
+      ),
+    ).toBe(true);
+    expect(
+      warn.mock.calls.some((args) =>
+        String(args[0]).toLowerCase().includes("retry exhausted"),
+      ),
+    ).toBe(false);
   });
 
   it.each([

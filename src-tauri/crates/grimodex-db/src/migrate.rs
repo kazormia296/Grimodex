@@ -3976,6 +3976,28 @@ impl Database {
                 BEGIN
                     SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');
                 END;
+            DROP TRIGGER IF EXISTS narrative_proposal_revisions_v2_immutable_update_guard;
+            CREATE TRIGGER narrative_proposal_revisions_v2_immutable_update_guard
+                BEFORE UPDATE ON narrative_proposal_revisions
+                WHEN OLD.origin_kind = 'enveloped'
+                 AND json_extract(OLD.reconciliation_envelope_json,
+                                  '$.schemaVersion') = 2
+                 AND (
+                    OLD.id IS NOT NEW.id
+                    OR OLD.proposal_id IS NOT NEW.proposal_id
+                    OR OLD.revision_number IS NOT NEW.revision_number
+                    OR OLD.payload_json IS NOT NEW.payload_json
+                    OR OLD.plan_fragment_json IS NOT NEW.plan_fragment_json
+                    OR OLD.plan_fragment_digest IS NOT NEW.plan_fragment_digest
+                    OR OLD.origin_kind IS NOT NEW.origin_kind
+                    OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json
+                    OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest
+                    OR OLD.created_at IS NOT NEW.created_at
+                    OR OLD.created_by IS NOT NEW.created_by
+                 )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_V2_IMMUTABLE');
+                END;
             "#,
         );
         match repair {

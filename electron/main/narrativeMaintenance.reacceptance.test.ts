@@ -11,7 +11,10 @@ const INITIAL_DELAY_MS = 250;
 const BACKLOG_DELAY_MS = 10;
 const ERROR_RETRY_DELAY_MS = 1_000;
 
-function backfill(projectId: string, suffix: string): NarrativeMaintenanceRequest {
+function backfill(
+  projectId: string,
+  suffix: string,
+): NarrativeMaintenanceRequest {
   return {
     projectId,
     runKind: "backfill",
@@ -20,7 +23,10 @@ function backfill(projectId: string, suffix: string): NarrativeMaintenanceReques
   };
 }
 
-function verify(projectId: string, suffix: string): NarrativeMaintenanceRequest {
+function verify(
+  projectId: string,
+  suffix: string,
+): NarrativeMaintenanceRequest {
   return {
     projectId,
     runKind: "dependency-verify",
@@ -32,6 +38,15 @@ function verify(projectId: string, suffix: string): NarrativeMaintenanceRequest 
 
 function accepted(hasMore = false): NarrativeMaintenanceCycleResult {
   return { status: "accepted", hasMore };
+}
+
+function acceptedFailureReceiptBackend() {
+  return {
+    recordNarrativeMaintenanceDeliveryFailure: vi.fn().mockResolvedValue({
+      status: "accepted",
+      receiptId: "reacceptance-delivery-failure-test",
+    }),
+  };
 }
 
 function binding(authorityId: string, generation: number) {
@@ -176,9 +191,7 @@ describe("narrative maintenance reacceptance boundaries", () => {
 
   it("keeps replacement-authority work bound to its captured snapshot", async () => {
     let binding = { authorityId: "authority-one", generation: 1 };
-    const runNarrativeMaintenanceCycle = vi
-      .fn()
-      .mockResolvedValue(accepted());
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue(accepted());
     const scheduler = createNarrativeMaintenanceScheduler({
       getNarrativeMaintenanceWorkspaceBinding: () => binding,
       runNarrativeMaintenanceCycle,
@@ -207,6 +220,7 @@ describe("narrative maintenance reacceptance boundaries", () => {
       .mockRejectedValue(new Error("temporary A/B failure"));
     const scheduler = createNarrativeMaintenanceScheduler({
       runNarrativeMaintenanceCycle,
+      ...acceptedFailureReceiptBackend(),
     });
     const work = backfill("same-project", "same-key");
 
@@ -236,14 +250,20 @@ describe("narrative maintenance reacceptance boundaries", () => {
   });
 
   it("gives a replacement authority a fresh durable-wake retry budget for the same project", async () => {
-    const runNarrativeMaintenanceCycle = vi.fn().mockImplementation(
-      async (payload: { workspaceBinding?: { authorityId: string }; work: readonly unknown[] }) => {
-        if (payload.work.length > 0) return accepted(true);
-        throw new Error("temporary durable wake failure");
-      },
-    );
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockImplementation(
+        async (payload: {
+          workspaceBinding?: { authorityId: string };
+          work: readonly unknown[];
+        }) => {
+          if (payload.work.length > 0) return accepted(true);
+          throw new Error("temporary durable wake failure");
+        },
+      );
     const scheduler = createNarrativeMaintenanceScheduler({
       runNarrativeMaintenanceCycle,
+      ...acceptedFailureReceiptBackend(),
     });
     const work = backfill("same-project", "same-key");
 
@@ -276,19 +296,20 @@ describe("narrative maintenance reacceptance boundaries", () => {
   it("keeps replacement work retry state when an old in-flight attempt fails", async () => {
     const oldCompletion = deferred<NarrativeMaintenanceCycleResult>();
     let authorityACalls = 0;
-    const runNarrativeMaintenanceCycle = vi.fn(async (payload: {
-      workspaceBinding?: { authorityId: string };
-    }) => {
-      if (payload.workspaceBinding?.authorityId === "authority-a") {
-        authorityACalls += 1;
-        if (authorityACalls === 2) {
-          return oldCompletion.promise;
+    const runNarrativeMaintenanceCycle = vi.fn(
+      async (payload: { workspaceBinding?: { authorityId: string } }) => {
+        if (payload.workspaceBinding?.authorityId === "authority-a") {
+          authorityACalls += 1;
+          if (authorityACalls === 2) {
+            return oldCompletion.promise;
+          }
         }
-      }
-      throw new Error("replacement work failure");
-    });
+        throw new Error("replacement work failure");
+      },
+    );
     const scheduler = createNarrativeMaintenanceScheduler({
       runNarrativeMaintenanceCycle,
+      ...acceptedFailureReceiptBackend(),
     });
     const work = backfill("same-project", "in-flight-work-failure");
     scheduler.requestWithBinding(work, binding("authority-a", 1));
@@ -314,5 +335,4 @@ describe("narrative maintenance reacceptance boundaries", () => {
     );
     scheduler.dispose();
   });
-
 });

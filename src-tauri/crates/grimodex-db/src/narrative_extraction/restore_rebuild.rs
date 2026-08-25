@@ -1514,6 +1514,269 @@ impl DependencyGraphVerifyReport {
     }
 }
 
+/// Compute the canonical fingerprint of the durable graph state consumed by
+/// Verify.  A report digest only proves the serialized answer; this digest
+/// proves the row snapshot from which that answer was produced, including
+/// the rebuildable projections and durable human attention state.
+///
+/// Every collection is ordered by its stable key before it enters the
+/// canonical JSON domain.  SQLite's `rowid` and UUID creation order are
+/// deliberately not part of the domain, so the same logical workspace state
+/// has the same fingerprint on every process.
+pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow::Result<String> {
+    require_non_empty(project_id, "projectId")?;
+
+    let semantic_epochs = {
+        let mut statement = conn.prepare(
+            "SELECT id, epoch_number, reason, triggered_by_change_event_uid, created_at
+               FROM narrative_semantic_epochs
+              WHERE project_id = ?1
+              ORDER BY epoch_number ASC, id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "epochNumber": row.get::<_, i64>(1)?,
+                    "reason": row.get::<_, String>(2)?,
+                    "triggeredByChangeEventUid": row.get::<_, Option<String>>(3)?,
+                    "createdAt": row.get::<_, String>(4)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let edges = {
+        let mut statement = conn.prepare(
+            "SELECT id, consumer_kind, consumer_key, source_object_identity,
+                    read_set_json, generated_by_transaction_id, created_at, owning_run_id
+               FROM narrative_dependency_edges
+              WHERE project_id = ?1
+              ORDER BY id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "consumerKind": row.get::<_, String>(1)?,
+                    "consumerKey": row.get::<_, String>(2)?,
+                    "sourceObjectIdentity": row.get::<_, String>(3)?,
+                    "readSetJson": row.get::<_, String>(4)?,
+                    "generatedByTransactionId": row.get::<_, Option<String>>(5)?,
+                    "createdAt": row.get::<_, String>(6)?,
+                    "owningRunId": row.get::<_, Option<String>>(7)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let edge_states = {
+        let mut statement = conn.prepare(
+            "SELECT edge_id, evidence_freshness, reason_code, build_action,
+                    evaluated_at_epoch_id, evaluated_at
+               FROM narrative_dependency_edge_states
+              WHERE project_id = ?1
+              ORDER BY edge_id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "edgeId": row.get::<_, String>(0)?,
+                    "evidenceFreshness": row.get::<_, String>(1)?,
+                    "reasonCode": row.get::<_, Option<String>>(2)?,
+                    "buildAction": row.get::<_, String>(3)?,
+                    "evaluatedAtEpochId": row.get::<_, String>(4)?,
+                    "evaluatedAt": row.get::<_, String>(5)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let consumer_freshness = {
+        let mut statement = conn.prepare(
+            "SELECT consumer_kind, consumer_key, evidence_freshness, build_action,
+                    semantic_epoch_id, last_evaluated_run_id, updated_at
+               FROM narrative_consumer_freshness
+              WHERE project_id = ?1
+              ORDER BY consumer_kind ASC, consumer_key ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "consumerKind": row.get::<_, String>(0)?,
+                    "consumerKey": row.get::<_, String>(1)?,
+                    "evidenceFreshness": row.get::<_, String>(2)?,
+                    "buildAction": row.get::<_, String>(3)?,
+                    "semanticEpochId": row.get::<_, String>(4)?,
+                    "lastEvaluatedRunId": row.get::<_, Option<String>>(5)?,
+                    "updatedAt": row.get::<_, String>(6)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let application_contributions = {
+        let mut statement = conn.prepare(
+            "SELECT id, application_id, commit_id, proposal_id, revision_id,
+                    operation_id, target_object_identity, field_path, target_state,
+                    maintenance_ownership, baseline_sequence, target_state_sequence,
+                    target_state_updated_at, created_at
+               FROM narrative_application_contributions
+              WHERE project_id = ?1
+              ORDER BY id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "applicationId": row.get::<_, String>(1)?,
+                    "commitId": row.get::<_, String>(2)?,
+                    "proposalId": row.get::<_, String>(3)?,
+                    "revisionId": row.get::<_, String>(4)?,
+                    "operationId": row.get::<_, Option<String>>(5)?,
+                    "targetObjectIdentity": row.get::<_, String>(6)?,
+                    "fieldPath": row.get::<_, String>(7)?,
+                    "targetState": row.get::<_, String>(8)?,
+                    "maintenanceOwnership": row.get::<_, String>(9)?,
+                    "baselineSequence": row.get::<_, Option<i64>>(10)?,
+                    "targetStateSequence": row.get::<_, Option<i64>>(11)?,
+                    "targetStateUpdatedAt": row.get::<_, Option<String>>(12)?,
+                    "createdAt": row.get::<_, String>(13)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let finding_observations = {
+        let mut statement = conn.prepare(
+            "SELECT id, run_id, semantic_epoch_id, edge_id, finding_key, reason_code,
+                    evidence_freshness_snapshot, material_basis_digest, observed_at,
+                    finding_identity, rule_id, rule_version, observation_digest
+               FROM narrative_maintenance_finding_observations
+              WHERE project_id = ?1
+              ORDER BY id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "runId": row.get::<_, String>(1)?,
+                    "semanticEpochId": row.get::<_, String>(2)?,
+                    "edgeId": row.get::<_, Option<String>>(3)?,
+                    "findingKey": row.get::<_, String>(4)?,
+                    "reasonCode": row.get::<_, String>(5)?,
+                    "evidenceFreshnessSnapshot": row.get::<_, String>(6)?,
+                    "materialBasisDigest": row.get::<_, String>(7)?,
+                    "observedAt": row.get::<_, String>(8)?,
+                    "findingIdentity": row.get::<_, Option<String>>(9)?,
+                    "ruleId": row.get::<_, String>(10)?,
+                    "ruleVersion": row.get::<_, i64>(11)?,
+                    "observationDigest": row.get::<_, String>(12)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let finding_lifecycle = {
+        let mut statement = conn.prepare(
+            "SELECT id, finding_identity, finding_key, rule_id, rule_version,
+                    lifecycle_state, observation_digest, material_basis_digest, run_id,
+                    semantic_epoch_id, observed_at
+               FROM narrative_maintenance_finding_lifecycle
+              WHERE project_id = ?1
+              ORDER BY id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "findingIdentity": row.get::<_, String>(1)?,
+                    "findingKey": row.get::<_, String>(2)?,
+                    "ruleId": row.get::<_, String>(3)?,
+                    "ruleVersion": row.get::<_, i64>(4)?,
+                    "lifecycleState": row.get::<_, String>(5)?,
+                    "observationDigest": row.get::<_, Option<String>>(6)?,
+                    "materialBasisDigest": row.get::<_, Option<String>>(7)?,
+                    "runId": row.get::<_, String>(8)?,
+                    "semanticEpochId": row.get::<_, String>(9)?,
+                    "observedAt": row.get::<_, String>(10)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let attention = {
+        let mut statement = conn.prepare(
+            "SELECT finding_key, finding_identity, identity_resolution_status,
+                    disposition, material_basis_digest, snoozed_until, set_at,
+                    actor_id, request_id, payload_digest, reason, version
+               FROM narrative_maintenance_attention
+              WHERE project_id = ?1
+              ORDER BY finding_key ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "findingKey": row.get::<_, String>(0)?,
+                    "findingIdentity": row.get::<_, Option<String>>(1)?,
+                    "identityResolutionStatus": row.get::<_, String>(2)?,
+                    "disposition": row.get::<_, String>(3)?,
+                    "materialBasisDigest": row.get::<_, String>(4)?,
+                    "snoozedUntil": row.get::<_, Option<String>>(5)?,
+                    "setAt": row.get::<_, String>(6)?,
+                    "actorId": row.get::<_, String>(7)?,
+                    "requestId": row.get::<_, String>(8)?,
+                    "payloadDigest": row.get::<_, String>(9)?,
+                    "reason": row.get::<_, Option<String>>(10)?,
+                    "version": row.get::<_, i64>(11)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    let state = json!({
+        "domain": "grimodex:narrative-graph-state:v1",
+        "projectId": project_id,
+        "semanticEpochs": semantic_epochs,
+        "edges": edges,
+        "edgeStates": edge_states,
+        "consumerFreshness": consumer_freshness,
+        "applicationContributions": application_contributions,
+        "findingObservations": finding_observations,
+        "findingLifecycle": finding_lifecycle,
+        "attention": attention,
+    });
+    Ok(format!("sha256:{}", digest_plan(&state)))
+}
+
+pub(crate) fn validate_graph_state_digest(
+    conn: &Connection,
+    project_id: &str,
+    expected: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_graph_state_digest(expected),
+        "NEX_VERIFY_GRAPH_STATE_DIGEST_INVALID: graphStateDigest is not a canonical sha256 digest"
+    );
+    let live = durable_graph_state_digest(conn, project_id)?;
+    anyhow::ensure!(
+        live == expected,
+        "NEX_VERIFY_GRAPH_STATE_CHANGED: graph state changed after Verify observed it; run Verify again"
+    );
+    Ok(())
+}
+
+pub(crate) fn is_canonical_graph_state_digest(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 /// `dependency-verify` (Run Kind Policy): read-only diagnostic across the
 /// Durable Dependency Graph and the Rebuildable Derived State for the
 /// *whole* project -- every Consumer, not one Run's own Edges. Writes
@@ -1640,16 +1903,22 @@ pub fn run_dependency_verify_for_project_with_coordinates(
         );
     }
 
-    let report =
-        db.with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, project_id));
-    match report {
-        Ok(report) => {
+    let verification = db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            let report = verify_narrative_dependency_graph_for_project(conn, project_id)?;
+            let graph_state_digest = durable_graph_state_digest(conn, project_id)?;
+            Ok((report, graph_state_digest))
+        })
+    });
+    match verification {
+        Ok((report, graph_state_digest)) => {
             let report_value = serde_json::to_value(&report)?;
             let report_digest = format!("sha256:{}", digest_plan(&report_value));
             let outcome = json!({
                 "verifyContractVersion": VERIFY_CONTRACT_VERSION,
                 "semanticEpochId": epoch_id,
                 "reportDigest": report_digest,
+                "graphStateDigest": graph_state_digest,
                 "report": report_value,
                 "checkCoverage": production_verify_check_coverage(),
             });
@@ -1661,6 +1930,16 @@ pub fn run_dependency_verify_for_project_with_coordinates(
                         &format!("{VERIFY_RUN_KIND}:{epoch_id}"),
                         Some(&epoch_id),
                         &outcome,
+                    )?;
+                    validate_graph_state_digest(
+                        conn,
+                        project_id,
+                        outcome
+                            .get("graphStateDigest")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Verify graph state digest is missing")
+                            })?,
                     )?;
                     record_run_outcome_in_tx(conn, &run_id, &outcome)?;
                     if super::maintenance_runtime::foreground_system_work_barrier_requested() {
@@ -1690,10 +1969,13 @@ pub fn run_dependency_verify_for_project_with_coordinates(
                                 rebuild_contract_version: REBUILD_CONTRACT_VERSION.to_string(),
                                 run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
                                 report_digest: report_digest.clone(),
-                                graph_state_digest:
-                                    super::maintenance_skip_evidence::durable_graph_state_digest(
-                                        conn, project_id,
-                                    )?,
+                                graph_state_digest: outcome
+                                    .get("graphStateDigest")
+                                    .and_then(Value::as_str)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!("Verify graph state digest is missing")
+                                    })?
+                                    .to_string(),
                             },
                         )?;
                         // Only a clean confirmation resolves the work's
@@ -1714,6 +1996,7 @@ pub fn run_dependency_verify_for_project_with_coordinates(
                 run_id,
                 semantic_epoch_id: epoch_id,
                 report_digest,
+                graph_state_digest,
                 report,
             })
         }
@@ -1750,7 +2033,11 @@ pub fn run_dependency_verify_for_project_with_coordinates(
 /// checks behind it changes in a way that makes an older stored report
 /// unsafe to seal a Repair plan from.
 ///
-/// `"7"` additionally records the Rebuild contract version in completed
+/// Version 8 seals a canonical graph-state fingerprint alongside the report
+/// so both clean-run reuse and non-clean manual/Repair decisions are
+/// compare-and-swap decisions over the same live graph generation.
+///
+/// Version 7 additionally records the Rebuild contract version in completed
 /// Verify skip evidence, so a current Verify cannot seal a stale Rebuild
 /// outcome after the Rebuild contract changes.
 ///
@@ -1778,7 +2065,7 @@ pub fn run_dependency_verify_for_project_with_coordinates(
 /// the first two fields and before the third. No build carrying it was
 /// released, so no stored report can be at `"2"` -- it is skipped rather than
 /// preserved. Released workspaces therefore move `"1"` -> `"3"` -> `"4"` -> `"5"` ->
-/// `"6"` -> `"7"`;
+/// Version 6 -> 7 -> 8.
 /// `"2"` remains a branch-only value.
 ///
 /// A stored report under an older version is refused by `repair.rs`'s
@@ -1787,7 +2074,7 @@ pub fn run_dependency_verify_for_project_with_coordinates(
 /// `#[serde(default)]`) and may assert a clean bill of health over less
 /// evidence. The operational consequence is that an in-flight Verify result
 /// does not survive this upgrade: re-run Verify before sealing a Repair.
-pub(crate) const VERIFY_CONTRACT_VERSION: &str = "7";
+pub(crate) const VERIFY_CONTRACT_VERSION: &str = "8";
 
 /// `narrative_extraction_runs.run_kind` value a Verify Run is stored
 /// under. Shared with `repair.rs` so the writer and the reader that
@@ -1801,6 +2088,7 @@ pub struct VerifyRunOutcome {
     pub run_id: String,
     pub semantic_epoch_id: String,
     pub report_digest: String,
+    pub graph_state_digest: String,
     pub report: DependencyGraphVerifyReport,
 }
 

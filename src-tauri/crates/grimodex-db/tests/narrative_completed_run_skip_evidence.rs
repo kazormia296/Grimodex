@@ -11,7 +11,7 @@ use grimodex_db::narrative_extraction::maintenance_skip_evidence::{
     CompletedRunSkipReason,
 };
 use grimodex_db::narrative_extraction::{
-    digest_plan, ensure_test_schema, REBUILD_RUN_KIND_CONTRACT_VERSION,
+    digest_plan, durable_graph_state_digest, ensure_test_schema, REBUILD_RUN_KIND_CONTRACT_VERSION,
 };
 use grimodex_db::Database;
 use rusqlite::{params, Connection};
@@ -26,7 +26,7 @@ const GRAPH_DIGEST: &str =
 const RULE_DIGEST: &str = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
 const PRODUCER_DIGEST: &str =
     "sha256:3333333333333333333333333333333333333333333333333333333333333333";
-const RUN_CONTRACT_VERSION: &str = "7";
+const RUN_CONTRACT_VERSION: &str = "8";
 const REBUILD_RUN_ID: &str = "run-c2-5b-b-rebuild";
 
 fn fixture_db() -> Database {
@@ -41,13 +41,19 @@ fn fixture_db() -> Database {
         conn.execute(
             "INSERT INTO narrative_semantic_epochs
                 (id, project_id, epoch_number, reason, created_at)
-             VALUES (?1, ?2, 0, 'initial', datetime('now'))",
+             VALUES (?1, ?2, 0, 'initial', '2026-08-22T00:00:00.000Z')",
             params![EPOCH_ID, PROJECT_ID],
         )?;
         Ok(())
     })
     .expect("seed fixture");
     db
+}
+
+fn graph_state_digest() -> String {
+    let db = fixture_db();
+    db.with_conn(|conn| durable_graph_state_digest(conn, PROJECT_ID))
+        .expect("compute fixture graph state digest")
 }
 
 fn report() -> serde_json::Value {
@@ -107,6 +113,7 @@ fn evidence() -> CompletedRunSkipEvidence {
         project_id: PROJECT_ID.to_string(),
         run_kind: "dependency-verify".to_string(),
         work_key: format!("dependency-verify:{EPOCH_ID}"),
+        graph_state_digest: graph_state_digest(),
         semantic_epoch_id: EPOCH_ID.to_string(),
         graph_contract_digest: GRAPH_DIGEST.to_string(),
         rule_registry_digest: RULE_DIGEST.to_string(),
@@ -138,6 +145,7 @@ fn rebuild_evidence() -> CompletedRunSkipEvidence {
         project_id: PROJECT_ID.to_string(),
         run_kind: "semantic-index-rebuild".to_string(),
         work_key: "dependency-rebuild-derived".to_string(),
+        graph_state_digest: GRAPH_DIGEST.to_string(),
         semantic_epoch_id: EPOCH_ID.to_string(),
         graph_contract_digest: GRAPH_DIGEST.to_string(),
         rule_registry_digest: RULE_DIGEST.to_string(),
@@ -256,6 +264,7 @@ fn successful_outcome() -> serde_json::Value {
         "verifyContractVersion": RUN_CONTRACT_VERSION,
         "semanticEpochId": EPOCH_ID,
         "reportDigest": report_digest(),
+        "graphStateDigest": graph_state_digest(),
         "report": report(),
     })
 }
@@ -272,6 +281,24 @@ fn raw_outcome_summary_json(db: &Database, run_id: &str) -> String {
 }
 
 fn minimal_run_connection(path: &Path) -> Connection {
+    if !path.exists() {
+        let db = Database::new(path).expect("open migrated concurrency fixture");
+        db.migrate().expect("migrate concurrency fixture");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES (?1, 'C2-5B-B project')",
+                [PROJECT_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES (?1, ?2, 0, 'initial', '2026-08-22T00:00:00.000Z')",
+                params![EPOCH_ID, PROJECT_ID],
+            )?;
+            Ok(())
+        })
+        .expect("seed migrated concurrency fixture");
+    }
     let conn = Connection::open(path).expect("open concurrency fixture");
     conn.busy_timeout(std::time::Duration::from_millis(100))
         .expect("set busy timeout");
@@ -501,16 +528,18 @@ fn in_tx_persistence_does_not_overwrite_a_concurrent_outcome_mutation() {
     let conn = minimal_run_connection(&path);
     conn.execute(
         "INSERT INTO narrative_extraction_runs
-            (id, project_id, run_kind, status, semantic_epoch_id, work_key,
-             completed_at, outcome_summary_json, version)
-         VALUES (?1, ?2, 'dependency-verify', 'completed', ?3, ?4, ?5, ?6, 0)",
+            (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+             status, coverage_json, outcome_summary_json, created_at, completed_at,
+             version, run_kind, semantic_epoch_id, work_key)
+         VALUES (?1, ?2, 'maintenance', '{}', '{}', 'spec', 'completed', '{}',
+                 ?3, '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z',
+                 0, 'dependency-verify', ?4, ?5)",
         params![
             RUN_ID,
             PROJECT_ID,
+            successful_outcome().to_string(),
             EPOCH_ID,
             format!("dependency-verify:{EPOCH_ID}"),
-            "2026-08-22T00:00:00.000Z",
-            successful_outcome().to_string(),
         ],
     )
     .expect("insert concurrency run");
@@ -721,6 +750,7 @@ fn malformed_missing_and_tampered_report_evidence_fail_closed() {
                 "rebuildContractVersion": REBUILD_RUN_KIND_CONTRACT_VERSION,
                 "runKindContractVersion": "4",
                 "reportDigest": report_digest(),
+                "graphStateDigest": graph_state_digest(),
             })),
             CompletedRunSkipReason::RunKindContractMismatch,
         ),
@@ -736,6 +766,7 @@ fn malformed_missing_and_tampered_report_evidence_fail_closed() {
                 "rebuildContractVersion": REBUILD_RUN_KIND_CONTRACT_VERSION,
                 "runKindContractVersion": RUN_CONTRACT_VERSION,
                 "reportDigest": "sha256:tampered",
+                "graphStateDigest": graph_state_digest(),
             })),
             CompletedRunSkipReason::ReportDigestMismatch,
         ),

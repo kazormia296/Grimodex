@@ -36,8 +36,8 @@ use super::maintenance_skip_evidence::{
     CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
 };
 use super::restore_rebuild::{
-    DependencyGraphVerifyReport, RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION,
-    VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
+    is_canonical_graph_state_digest, validate_graph_state_digest, DependencyGraphVerifyReport,
+    RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
@@ -791,6 +791,18 @@ pub(crate) fn validate_phase_success_outcome(
                 report_digest == expected_digest,
                 "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Verify report digest does not match the report"
             );
+            let graph_state_digest = object
+                .get("graphStateDigest")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Verify graph state digest is missing"
+                    )
+                })?;
+            anyhow::ensure!(
+                is_canonical_graph_state_digest(graph_state_digest),
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Verify graph state digest is invalid"
+            );
         }
         "semantic-index-rebuild" => {
             anyhow::ensure!(
@@ -1000,11 +1012,15 @@ pub fn complete_foreground_system_work_run(
                             rebuild_contract_version: REBUILD_CONTRACT_VERSION.to_string(),
                             run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
                             report_digest: report_digest.to_string(),
-                            graph_state_digest:
-                                super::maintenance_skip_evidence::durable_graph_state_digest(
-                                    conn,
-                                    &project_id,
-                                )?,
+                            graph_state_digest: outcome
+                                .get("graphStateDigest")
+                                .and_then(Value::as_str)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "foreground Verify outcome has no graph state digest"
+                                    )
+                                })?
+                                .to_string(),
                         },
                     )?;
                 }
@@ -1188,21 +1204,21 @@ pub fn preflight_maintenance_cycle_request(
 }
 
 #[derive(Debug, Clone)]
-struct DurableMaintenanceRun {
-    run_id: String,
-    run_kind: String,
-    status: String,
-    spec_json: Option<String>,
-    semantic_epoch_id: Option<String>,
-    work_key: Option<String>,
-    outcome_summary_json: Option<String>,
-    terminal_reason_code: Option<String>,
-    completed_at: Option<String>,
-    created_at_raw: String,
-    started_at_raw: Option<String>,
+pub(crate) struct DurableMaintenanceRun {
+    pub(crate) run_id: String,
+    pub(crate) run_kind: String,
+    pub(crate) status: String,
+    pub(crate) spec_json: Option<String>,
+    pub(crate) semantic_epoch_id: Option<String>,
+    pub(crate) work_key: Option<String>,
+    pub(crate) outcome_summary_json: Option<String>,
+    pub(crate) terminal_reason_code: Option<String>,
+    pub(crate) completed_at: Option<String>,
+    pub(crate) created_at_raw: String,
+    pub(crate) started_at_raw: Option<String>,
 }
 
-fn load_durable_maintenance_runs(
+pub(crate) fn load_durable_maintenance_runs(
     conn: &Connection,
     project_id: &str,
 ) -> anyhow::Result<Vec<DurableMaintenanceRun>> {
@@ -1351,29 +1367,6 @@ fn is_canonical_maintenance_work(run: &DurableMaintenanceRun) -> bool {
     }
 }
 
-fn validate_relevant_run_timestamp(
-    run: &DurableMaintenanceRun,
-    field: &str,
-    value: Option<&str>,
-    required: bool,
-) -> anyhow::Result<()> {
-    let Some(value) = value else {
-        anyhow::ensure!(
-            !required,
-            "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: Run '{}' is missing {field}",
-            run.run_id
-        );
-        return Ok(());
-    };
-    if parse_maintenance_instant(value).is_err() {
-        anyhow::bail!(
-            "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: Run '{}' has an unsupported {field}",
-            run.run_id
-        );
-    }
-    Ok(())
-}
-
 const RETRYABLE_NULL_TERMINAL_REASON: &str = "NEX_MAINTENANCE_SQLITE_LOCKED";
 
 fn is_retryable_failed_backfill_without_terminal(run: &DurableMaintenanceRun) -> bool {
@@ -1389,7 +1382,7 @@ fn is_retryable_failed_backfill_without_terminal(run: &DurableMaintenanceRun) ->
 /// from an unrelated epoch from poisoning a current candidate while making
 /// malformed current active/terminal state fail closed.
 fn validate_relevant_maintenance_run_lifecycle(run: &DurableMaintenanceRun) -> anyhow::Result<()> {
-    validate_relevant_run_timestamp(run, "created_at", Some(&run.created_at_raw), true)?;
+    let created_at = parse_maintenance_instant(&run.created_at_raw)?;
 
     match run.status.as_str() {
         "pending" => {
@@ -1405,12 +1398,21 @@ fn validate_relevant_maintenance_run_lifecycle(run: &DurableMaintenanceRun) -> a
             );
         }
         "running" => {
-            validate_relevant_run_timestamp(
-                run,
-                "started_at",
-                run.started_at_raw.as_deref(),
-                true,
-            )?;
+            let started_at = run
+                .started_at_raw
+                .as_deref()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: Run '{}' is missing started_at",
+                        run.run_id
+                    )
+                })
+                .and_then(parse_maintenance_instant)?;
+            anyhow::ensure!(
+                started_at >= created_at,
+                "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: Run '{}' started_at precedes created_at",
+                run.run_id
+            );
             anyhow::ensure!(
                 run.completed_at.is_none(),
                 "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: running Run '{}' has a terminal completed_at",
@@ -1428,20 +1430,44 @@ fn validate_relevant_maintenance_run_lifecycle(run: &DurableMaintenanceRun) -> a
             // not reusable terminal evidence.
             let allows_missing_terminal = (run.run_kind == "backfill" && run.status == "completed")
                 || is_retryable_failed_backfill_without_terminal(run);
-            if !allows_missing_terminal {
-                validate_relevant_run_timestamp(
-                    run,
-                    "completed_at",
-                    run.completed_at.as_deref(),
-                    true,
-                )?;
+            let started_at = run
+                .started_at_raw
+                .as_deref()
+                .map(parse_maintenance_instant)
+                .transpose()?;
+            if let Some(started_at) = started_at {
+                anyhow::ensure!(
+                    started_at >= created_at,
+                    "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: Run '{}' started_at precedes created_at",
+                    run.run_id
+                );
             }
-            validate_relevant_run_timestamp(
-                run,
-                "started_at",
-                run.started_at_raw.as_deref(),
-                false,
-            )?;
+            let completed_at = run
+                .completed_at
+                .as_deref()
+                .map(parse_maintenance_instant)
+                .transpose()?;
+            if !allows_missing_terminal {
+                anyhow::ensure!(
+                    completed_at.is_some(),
+                    "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: Run '{}' is missing completed_at",
+                    run.run_id
+                );
+            }
+            if let Some(completed_at) = completed_at {
+                anyhow::ensure!(
+                    completed_at >= created_at,
+                    "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: Run '{}' completed_at precedes created_at",
+                    run.run_id
+                );
+                if let Some(started_at) = started_at {
+                    anyhow::ensure!(
+                        completed_at >= started_at,
+                        "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: Run '{}' completed_at precedes started_at",
+                        run.run_id
+                    );
+                }
+            }
         }
         _ => {}
     }
@@ -1453,15 +1479,50 @@ fn validate_relevant_maintenance_run_lifecycle(run: &DurableMaintenanceRun) -> a
 /// may still be terminal evidence (for example a historical Backfill marker)
 /// but must not make a unique current candidate ambiguous. If no current-epoch
 /// row exists, the available historical rows form the fallback window.
-fn select_latest_relevant_run(
+pub(crate) fn select_latest_relevant_run(
     runs: &[DurableMaintenanceRun],
     current_epoch_id: Option<&str>,
     allow_historical_fallback: bool,
     predicate: impl Fn(&DurableMaintenanceRun) -> bool,
 ) -> anyhow::Result<Option<DurableMaintenanceRun>> {
+    select_latest_relevant_run_with_canonicality(
+        runs,
+        current_epoch_id,
+        allow_historical_fallback,
+        true,
+        predicate,
+    )
+}
+
+/// Readiness uses the same lifecycle chronology as recovery, but must also
+/// inspect a run with a malformed ownership key so the gate can report a
+/// precise blocked/incomplete reason. Runtime recovery keeps the canonical
+/// filter enabled and ignores such imported rows as non-authoritative.
+pub(crate) fn select_latest_relevant_run_for_readiness(
+    runs: &[DurableMaintenanceRun],
+    current_epoch_id: Option<&str>,
+    allow_historical_fallback: bool,
+    predicate: impl Fn(&DurableMaintenanceRun) -> bool,
+) -> anyhow::Result<Option<DurableMaintenanceRun>> {
+    select_latest_relevant_run_with_canonicality(
+        runs,
+        current_epoch_id,
+        allow_historical_fallback,
+        false,
+        predicate,
+    )
+}
+
+fn select_latest_relevant_run_with_canonicality(
+    runs: &[DurableMaintenanceRun],
+    current_epoch_id: Option<&str>,
+    allow_historical_fallback: bool,
+    canonical_only: bool,
+    predicate: impl Fn(&DurableMaintenanceRun) -> bool,
+) -> anyhow::Result<Option<DurableMaintenanceRun>> {
     let candidates: Vec<&DurableMaintenanceRun> = runs
         .iter()
-        .filter(|run| is_canonical_maintenance_work(run) && predicate(run))
+        .filter(|run| (!canonical_only || is_canonical_maintenance_work(run)) && predicate(run))
         .collect();
     if candidates.is_empty() {
         return Ok(None);
@@ -1488,10 +1549,10 @@ fn select_latest_relevant_run(
     for run in &relevant {
         validate_relevant_maintenance_run_lifecycle(run)?;
     }
-    // Terminal recovery can finish an interrupted row and create its fresh
-    // replacement within one millisecond. Use the row's creation instant as
-    // causal chronology before declaring a genuine lifecycle tie; UUIDs never
-    // participate in this ordering.
+    // Select by the latest parsed lifecycle instant only. Creation time is
+    // retained as lifecycle evidence above, but must not break a tie: an
+    // equal terminal instant is ambiguous even when the rows have different
+    // creation times, and UUIDs never participate in this ordering.
     let mut temporal = Vec::with_capacity(relevant.len());
     for run in relevant {
         let created_at = parse_maintenance_instant(&run.created_at_raw)?;
@@ -1514,17 +1575,17 @@ fn select_latest_relevant_run(
             .into_iter()
             .max()
             .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_RUN_ORDER_EMPTY"))?;
-        temporal.push((lifecycle_at, created_at, run, lifecycle_timestamp_invalid));
+        temporal.push((lifecycle_at, run, lifecycle_timestamp_invalid));
     }
     let max_lifecycle = temporal
         .iter()
-        .map(|(lifecycle_at, created_at, _, _)| (*lifecycle_at, *created_at))
+        .map(|(lifecycle_at, _, _)| *lifecycle_at)
         .max()
         .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_RUN_ORDER_EMPTY"))?;
     let maximal: Vec<(&DurableMaintenanceRun, bool)> = temporal
         .into_iter()
-        .filter(|(lifecycle_at, created_at, _, _)| (*lifecycle_at, *created_at) == max_lifecycle)
-        .map(|(_, _, run, lifecycle_timestamp_invalid)| (run, lifecycle_timestamp_invalid))
+        .filter(|(lifecycle_at, _, _)| *lifecycle_at == max_lifecycle)
+        .map(|(_, run, lifecycle_timestamp_invalid)| (run, lifecycle_timestamp_invalid))
         .collect();
     let maximal_ids = maximal
         .iter()
@@ -1534,7 +1595,7 @@ fn select_latest_relevant_run(
         maximal.len() == 1,
         "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS: runs {:?} share lifecycle instant {} in the relevant discovery window",
         maximal_ids,
-        max_lifecycle.0.to_rfc3339()
+        max_lifecycle.to_rfc3339()
     );
     if let Some((run, true)) = maximal.iter().find(|(_, invalid)| *invalid) {
         if let Some(completed_at) = run.completed_at.as_deref() {
@@ -1714,6 +1775,7 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
                 return Ok(Some(verify_work(project_id, &current_epoch_id, reason)?));
             };
             let report = match validate_discovered_verify_outcome(
+                conn,
                 project_id,
                 latest.work_key.as_deref().unwrap_or_default(),
                 &current_epoch_id,
@@ -1830,6 +1892,7 @@ fn completed_rebuild_outcome_is_current(
 }
 
 fn validate_discovered_verify_outcome(
+    conn: &Connection,
     project_id: &str,
     work_key: &str,
     semantic_epoch_id: &str,
@@ -1844,6 +1907,14 @@ fn validate_discovered_verify_outcome(
         work_key,
         Some(semantic_epoch_id),
         &outcome,
+    )?;
+    validate_graph_state_digest(
+        conn,
+        project_id,
+        outcome
+            .get("graphStateDigest")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Verify outcome has no graph state digest"))?,
     )?;
     anyhow::ensure!(
         outcome.get("failure").is_none(),

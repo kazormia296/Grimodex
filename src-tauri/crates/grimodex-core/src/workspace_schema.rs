@@ -726,6 +726,16 @@ fn has_v34_c2a_stage_storage(conn: &Connection) -> anyhow::Result<bool> {
         )
         .optional()?
         .map(|sql| compact_sql(&sql));
+    let v2_immutable_update_trigger_sql = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master
+              WHERE type = 'trigger'
+                AND name = 'narrative_proposal_revisions_v2_immutable_update_guard'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|sql| compact_sql(&sql));
 
     Ok(columns_ok(&binding_table_columns, &binding_columns)
         && columns_ok(&receipt_table_columns, &receipt_columns)
@@ -803,6 +813,14 @@ fn has_v34_c2a_stage_storage(conn: &Connection) -> anyhow::Result<bool> {
                     "json_extract(new_revision.reconciliation_envelope_json,'$.schemaversion')=2",
                 )
                 && sql.contains("nex_revision_envelope_downgrade_forbidden")
+        })
+        && v2_immutable_update_trigger_sql.is_some_and(|sql| {
+            sql.contains("beforeupdateonnarrative_proposal_revisions")
+                && sql.contains("old.origin_kind='enveloped'")
+                && sql.contains("json_extract(old.reconciliation_envelope_json,'$.schemaversion')=2")
+                && sql.contains("old.payload_jsonisnotnew.payload_json")
+                && sql.contains("old.reconciliation_envelope_digestisnotnew.reconciliation_envelope_digest")
+                && sql.contains("nex_revision_v2_immutable")
         }))
 }
 
