@@ -2177,6 +2177,27 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       owningRunId: runId,
       readSetToken,
     });
+    await waitForLedger(
+      context,
+      (rows) => {
+        const maintenanceKinds = new Set([
+          "backfill",
+          "dependency-verify",
+          "semantic-index-rebuild",
+          "freshness-evaluation",
+        ]);
+        return rows.some(
+          (row) => row.runKind === "backfill" && row.status === "completed",
+        ) && !rows.some(
+          (row) =>
+            maintenanceKinds.has(row.runKind) &&
+            (row.status === "pending" || row.status === "running"),
+        )
+          ? rows
+          : null;
+      },
+      "restore fixture pre-gap maintenance settled",
+    );
     context.record("restore-fixture-evidence-seeded", {
       edgeId: edge.id,
       consumerKind: edge.consumerKind,
@@ -2219,23 +2240,27 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
  * these deletes cannot affect another journey's graph.
  */
 async function createRestoreFixtureDerivedStateGap(context, evidence) {
-  await context.harness.invokeOk(context.page, "db_execute", {
-    sql: `DELETE FROM narrative_dependency_edge_states
-           WHERE project_id = ? AND edge_id = ?`,
-    params: [context.projectId, evidence.edgeId],
-    method: "run",
-  });
-  await context.harness.invokeOk(context.page, "db_execute", {
-    sql: `DELETE FROM narrative_consumer_freshness
-           WHERE project_id = ?
-             AND consumer_kind = ?
-             AND consumer_key = ?`,
-    params: [
-      context.projectId,
-      RESTORE_FIXTURE_CONSUMER_KIND,
-      evidence.consumerKey,
+  await context.harness.invokeOk(context.page, "db_execute_batch", {
+    statements: [
+      {
+        sql: `DELETE FROM narrative_dependency_edge_states
+               WHERE project_id = ? AND edge_id = ?`,
+        params: [context.projectId, evidence.edgeId],
+        method: "run",
+      },
+      {
+        sql: `DELETE FROM narrative_consumer_freshness
+               WHERE project_id = ?
+                 AND consumer_kind = ?
+                 AND consumer_key = ?`,
+        params: [
+          context.projectId,
+          RESTORE_FIXTURE_CONSUMER_KIND,
+          evidence.consumerKey,
+        ],
+        method: "run",
+      },
     ],
-    method: "run",
   });
   const remaining = await context.query(
     `SELECT
