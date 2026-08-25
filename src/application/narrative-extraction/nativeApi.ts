@@ -13,6 +13,7 @@ import type { NarrativeScopeAuthorityBasisV2 } from "@/features/narrative-extrac
 import type {
   ChronicleStageProvenanceClosureV1,
   ChronicleStageProvenanceReceiptRefV1,
+  ChronicleStageTerminalReceiptV1,
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
 import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 
@@ -78,6 +79,13 @@ export interface FinishTaskPayload {
    * Native validates it and stores only verified terminal receipt/model rows.
    */
   readonly chronicleStageBundle?: ChronicleStageC1ExecutionBinding;
+  /**
+   * Task-local typed C1 receipts. Native verifies the finishing Task/Attempt
+   * plus exact AI-audit evidence before retaining receipt/model rows. This
+   * lets a later process resume after Observation completed but before the
+   * synthesis closure could be assembled.
+   */
+  readonly chronicleStageReceipts?: readonly ChronicleStageTerminalReceiptV1[];
   readonly historicalScopeAuthorityBasis?: NarrativeScopeAuthorityBasisV2;
 }
 
@@ -250,6 +258,8 @@ export interface GetRunReviewBundleResult {
   readonly runId: string;
   readonly projectId: string;
   readonly artifacts: readonly ReviewBundleArtifact[];
+  /** Native-validated C1 terminal receipts for process-restart hydration. */
+  readonly stageReceipts: readonly ChronicleStageTerminalReceiptV1[];
   readonly proposalSet: ReviewBundleProposalSet | null;
   readonly proposals: readonly ReviewBundleProposal[];
 }

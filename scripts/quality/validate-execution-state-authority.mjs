@@ -97,6 +97,13 @@ const C25B_FAILURE_POLICY_EXPECTATIONS = Object.freeze({
     nextAttemptPolicy: "none",
     findingRoute: "maintenance-inbox",
   }),
+  NEX_MAINTENANCE_UNCLASSIFIED: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
   NEX_MAINTENANCE_INTERRUPTED: Object.freeze({
     retryDisposition: "retryable",
     maxAttempts: 3,
@@ -135,6 +142,20 @@ const C25B_FAILURE_POLICY_EXPECTATIONS = Object.freeze({
     nextAttemptPolicy: "none",
     findingRoute: "maintenance-inbox",
   }),
+  NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
+  NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
   NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR: Object.freeze({
     retryDisposition: "manual",
     maxAttempts: 0,
@@ -147,11 +168,14 @@ const C25B_FAILURE_POLICY_EXPECTATIONS = Object.freeze({
 const C25B_FAILURE_CODE_ORDER = Object.freeze([
   "NEX_MAINTENANCE_TRANSIENT",
   "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
+  "NEX_MAINTENANCE_UNCLASSIFIED",
   "NEX_MAINTENANCE_INTERRUPTED",
   "NEX_MAINTENANCE_RETRY_EXHAUSTED",
   "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING",
   "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING",
   "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+  "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS",
+  "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID",
   "NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR",
 ]);
 

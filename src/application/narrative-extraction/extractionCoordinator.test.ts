@@ -9,6 +9,8 @@ const finishMock = vi.hoisted(() => vi.fn());
 const failMock = vi.hoisted(() => vi.fn());
 const createRunMock = vi.hoisted(() => vi.fn());
 const cancelRunMock = vi.hoisted(() => vi.fn());
+const getRunMock = vi.hoisted(() => vi.fn());
+const getRunReviewBundleMock = vi.hoisted(() => vi.fn());
 const saveProposalSetMock = vi.hoisted(() => vi.fn());
 const buildSnapshotSourceBasisMock = vi.hoisted(() => vi.fn());
 const buildProductionV2EnvelopesMock = vi.hoisted(() => vi.fn());
@@ -19,6 +21,8 @@ vi.mock("./nativeApi", () => ({
   narrativeExtractionFailTask: failMock,
   narrativeExtractionCreateRun: createRunMock,
   narrativeExtractionCancelRun: cancelRunMock,
+  narrativeExtractionGetRun: getRunMock,
+  narrativeExtractionGetRunReviewBundle: getRunReviewBundleMock,
   narrativeExtractionSaveProposalSet: saveProposalSetMock,
 }));
 
@@ -29,6 +33,7 @@ vi.mock("./runRepository", async () => {
     ...actual,
     createRun: createRunMock,
     cancelRun: cancelRunMock,
+    getRun: getRunMock,
   };
 });
 
@@ -45,6 +50,7 @@ vi.mock("./chronicleV2Production", () => ({
 import {
   CHRONICLE_EXTRACT_ARTIFACT_KINDS,
   CHRONICLE_EXTRACT_SURFACE_PATH,
+  CHRONICLE_EXTRACT_TASK_KINDS,
   runChronicleExtractionCoordinator,
 } from "./extractionCoordinator";
 import { loadInlineJsonArtifact } from "./artifactRepository";
@@ -92,6 +98,9 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
       taskIds: [],
     }));
     cancelRunMock.mockResolvedValue({ runId: "run-1", status: "cancelled" });
+    getRunReviewBundleMock.mockRejectedValue(
+      new Error("unexpected cold-process hydration"),
+    );
     buildSnapshotSourceBasisMock.mockReturnValue([]);
     claimMock.mockImplementation(async (payload: { taskKinds?: string[] }) => {
       taskSeq += 1;
@@ -490,6 +499,422 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         ],
       }),
     );
+  });
+
+  it("hydrates a completed Observation receipt after restart and continues the same Run at Synthesis", async () => {
+    const quote = "教会の尖塔が砲撃で崩れ落ちた。";
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-resume-observation",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "再開",
+          orderIndex: 0,
+          proseMirrorJson: prose(quote),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 1,
+            sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+
+    // Produce the durable prefix exactly as the original process would. The
+    // injected synthesis failure stands in for its exit after Observation;
+    // only completed Task outputs/receipt transport are carried into the
+    // fresh-process half below.
+    await expect(
+      runChronicleExtractionCoordinator(
+        {
+          projectId: "project-a",
+          folderId: "folder-1",
+          language: "ja",
+          sceneIds: ["scene-one"],
+          authority: authority(),
+          runId: "run-resume-observation",
+        },
+        {
+          useAi: true,
+          createId: (() => {
+            let n = 0;
+            return () => `first-${++n}`;
+          })(),
+          buildSnapshot: async () => ({
+            ok: true as const,
+            snapshot: built.snapshot,
+            scopeAuthorityDocuments: [],
+            flush: { status: "already-clean" as const, blockedDocuments: [] },
+          }),
+          observeWithAi: async ({ windows, stageExecution, onStageReceipt }) => {
+            if (!stageExecution) throw new Error("missing observation stage");
+            await onStageReceipt?.(
+              await buildChronicleStageTerminalReceiptV1({
+                stageExecution,
+                contextSetVersion: "chronicle-context-set/1",
+                contextSetDigest: TEST_STAGE_DIGEST,
+                componentContractDigest: TEST_STAGE_DIGEST,
+                finalRequestDigest: TEST_STAGE_DIGEST,
+                modelExecutionBinding: createStageModelExecutionBindingV1({
+                  resolutionStatus: "unresolved",
+                }),
+                responseDigest: TEST_STAGE_DIGEST,
+                parseStatus: "parsed",
+                terminalStatus: "succeeded",
+              }),
+            );
+            return [
+              {
+                localId: "resume-observation",
+                evidence: [
+                  {
+                    sourceRef: windows[0]?.sourceRef ?? "S0001",
+                    quote,
+                  },
+                ],
+                assertion: {
+                  attribution: "narrator",
+                  narrativeFrame: "story-world",
+                },
+                payload: {
+                  predicate: "砲撃で崩れ落ちた",
+                  actuality: "actual",
+                  participants: [],
+                  temporalExpressions: [],
+                  durationKind: "instant",
+                },
+              },
+            ];
+          },
+          synthesizeWithAi: async () => {
+            throw new Error("simulated process exit before synthesis output");
+          },
+        },
+      ),
+    ).rejects.toThrow("simulated process exit before synthesis output");
+
+    const prefixFinishes = finishMock.mock.calls.map(
+      ([payload]) => payload as import("./nativeApi").FinishTaskPayload,
+    );
+    const observationFinish = prefixFinishes.find(
+      (payload) => payload.taskId === "task-3",
+    );
+    expect(observationFinish?.chronicleStageReceipts).toHaveLength(1);
+    const durableReceipts = observationFinish?.chronicleStageReceipts ?? [];
+    const durableArtifacts = prefixFinishes.flatMap((payload, payloadIndex) =>
+      (payload.artifacts ?? []).map((artifact, artifactIndex) => ({
+        artifactId:
+          artifact.artifactId ?? `durable-${payloadIndex}-${artifactIndex}`,
+        runId: "run-resume-observation",
+        taskId: payload.taskId,
+        attemptId: payload.attemptId,
+        artifactKind: artifact.artifactKind,
+        payloadStorage: artifact.payloadStorage ?? "inline-json",
+        payloadJson: artifact.payloadJson ?? null,
+        payloadRef: artifact.payloadRef ?? null,
+        // The real Native writer recomputes this digest. The mock only needs
+        // to represent a hydrated artifact; Native digest corruption is
+        // covered separately below.
+        payloadDigest: TEST_STAGE_DIGEST,
+        createdAt: `2026-08-10T00:00:0${payloadIndex}.000Z`,
+      })),
+    );
+    const outputFor = (taskId: string) =>
+      prefixFinishes.find((payload) => payload.taskId === taskId)?.outputJson ??
+      null;
+
+    // Simulate a new renderer process: only Native's review bundle survives.
+    resetNarrativeArtifactIndexForTests();
+    resetNarrativeExtractionRunIndexForTests();
+    vi.clearAllMocks();
+    let resumedTaskSeq = 6;
+    claimMock.mockImplementation(async (payload: { taskKinds?: string[] }) => {
+      resumedTaskSeq += 1;
+      return {
+        claimed: true,
+        task: {
+          taskId: `task-${resumedTaskSeq}`,
+          runId: "run-resume-observation",
+          taskKind: payload.taskKinds?.[0] ?? "unknown",
+          status: "running",
+          inputJson: {},
+          attemptId: `resumed-attempt-${resumedTaskSeq}`,
+          attemptNumber: 1,
+          leaseOwner: "test",
+          leaseExpiresAt: "2099-01-01T00:00:00.000Z",
+        },
+      };
+    });
+    finishMock.mockResolvedValue({
+      taskId: "task",
+      attemptId: "attempt",
+      status: "completed",
+    });
+    failMock.mockResolvedValue({ status: "failed" });
+    saveProposalSetMock.mockResolvedValue({
+      proposalSetId: "proposal-set-resumed",
+      proposals: [
+        {
+          proposalId: "proposal-resumed",
+          proposalKey: "resumed-key",
+          revisionId: "revision-resumed",
+          status: "unreviewed",
+        },
+      ],
+    });
+    buildSnapshotSourceBasisMock.mockReturnValue([]);
+    buildProductionV2EnvelopesMock.mockResolvedValue({
+      envelopeByProposalKey: new Map(),
+      stageReceiptRefs: [],
+    });
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-resume-observation",
+        projectId: "project-a",
+        surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-1", sceneIds: ["scene-one"] },
+        specJson: { domain: "chronicle", version: 1 },
+        specDigest: `sha256:${"0".repeat(64)}`,
+        snapshotDigest: built.snapshot.digest,
+        catalogDigest: null,
+        registryDigest: null,
+        status: "running",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "2026-08-10T00:00:00.000Z",
+        startedAt: "2026-08-10T00:00:00.000Z",
+        completedAt: null,
+        version: 1,
+      },
+      tasks: [
+        [CHRONICLE_EXTRACT_TASK_KINDS.snapshot, "completed", outputFor("task-1")],
+        [CHRONICLE_EXTRACT_TASK_KINDS.windowPlan, "completed", outputFor("task-2")],
+        [CHRONICLE_EXTRACT_TASK_KINDS.observe, "completed", outputFor("task-3")],
+        [CHRONICLE_EXTRACT_TASK_KINDS.resolveEvidence, "completed", outputFor("task-4")],
+        [CHRONICLE_EXTRACT_TASK_KINDS.mergeObservations, "completed", outputFor("task-5")],
+        [CHRONICLE_EXTRACT_TASK_KINDS.cluster, "completed", outputFor("task-6")],
+        [CHRONICLE_EXTRACT_TASK_KINDS.synthesize, "queued", null],
+        [CHRONICLE_EXTRACT_TASK_KINDS.matchExisting, "queued", null],
+        [CHRONICLE_EXTRACT_TASK_KINDS.planProposals, "queued", null],
+      ].map(([taskKind, status, outputJson], index) => ({
+        taskId: `task-${index + 1}`,
+        runId: "run-resume-observation",
+        taskKind,
+        status,
+        inputJson: {},
+        outputJson,
+        priority: 9 - index,
+        attemptCount: 1,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        errorMessage: null,
+        createdAt: "2026-08-10T00:00:00.000Z",
+        startedAt: null,
+        completedAt:
+          status === "completed" ? "2026-08-10T00:00:00.000Z" : null,
+        version: 1,
+      })),
+      taskCounts: { queued: 3, running: 0, completed: 6, failed: 0, cancelled: 0 },
+    });
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-resume-observation",
+      projectId: "project-a",
+      artifacts: durableArtifacts,
+      stageReceipts: durableReceipts,
+      proposalSet: null,
+      proposals: [],
+    });
+
+    const resumed = await runChronicleExtractionCoordinator(
+      {
+        projectId: "project-a",
+        folderId: "folder-1",
+        language: "ja",
+        sceneIds: ["scene-one"],
+        authority: authority(),
+        runId: "run-resume-observation",
+        resume: true,
+        specDigest: `sha256:${"0".repeat(64)}`,
+      },
+      {
+        useAi: true,
+        buildSnapshot: async () => {
+          throw new Error("resume must not rebuild a live snapshot");
+        },
+        createId: (() => {
+          let n = 0;
+          return () => `resumed-${++n}`;
+        })(),
+        synthesizeWithAi: async ({
+          clusterRef,
+          observations,
+          createId,
+          onStageReceipt,
+          onTerminalOutput,
+          stageExecution,
+        }) => {
+          if (!stageExecution) throw new Error("missing resumed synthesis stage");
+          const hypotheses = [
+            {
+              hypothesisId: (createId ?? (() => "resumed-hypothesis"))(),
+              clusterRef,
+              observationRefs: observations.map((observation) => observation.localId),
+              titleSuggestion: "砲撃",
+              summary: "砲撃で崩れ落ちた",
+              actuality: "actual",
+              significance: "major",
+            } satisfies EventHypothesis,
+          ];
+          const eventOutput = {
+            clusterRef,
+            resolution: "single-event",
+            events: [
+              {
+                observationRefs: observations.map((observation) => observation.localId),
+                titleSuggestion: "砲撃",
+                summary: "砲撃で崩れ落ちた",
+                actuality: "actual",
+                significance: "major",
+              },
+            ],
+          } as const;
+          await onStageReceipt?.(
+            await buildChronicleStageTerminalReceiptV1({
+              stageExecution,
+              contextSetVersion: "chronicle-context-set/1",
+              contextSetDigest: TEST_STAGE_DIGEST,
+              componentContractDigest: TEST_STAGE_DIGEST,
+              finalRequestDigest: TEST_STAGE_DIGEST,
+              modelExecutionBinding: createStageModelExecutionBindingV1({
+                resolutionStatus: "unresolved",
+              }),
+              responseDigest: TEST_STAGE_DIGEST,
+              rawObservationsDigest: TEST_STAGE_DIGEST,
+              parsedOutputDigest: TEST_STAGE_DIGEST,
+              parseStatus: "parsed",
+              terminalStatus: "succeeded",
+            }),
+          );
+          await onTerminalOutput?.({
+            rootStageExecution: stageExecution,
+            terminalStageExecution: stageExecution,
+            disposition: "root-success",
+            clusterRef,
+            rawObservations: observations,
+            eventOutput,
+            hypotheses,
+            rawObservationsDigest: TEST_STAGE_DIGEST,
+            parsedOutputDigest: TEST_STAGE_DIGEST,
+          });
+          return hypotheses;
+        },
+      },
+    );
+
+    expect(resumed.runId).toBe("run-resume-observation");
+    expect(createRunMock).not.toHaveBeenCalled();
+    expect(claimMock.mock.calls.map(([payload]) => payload.taskKinds?.[0])).toEqual([
+      CHRONICLE_EXTRACT_TASK_KINDS.synthesize,
+      CHRONICLE_EXTRACT_TASK_KINDS.matchExisting,
+      CHRONICLE_EXTRACT_TASK_KINDS.planProposals,
+    ]);
+    const synthesisFinish = finishMock.mock.calls
+      .map(([payload]) => payload as import("./nativeApi").FinishTaskPayload)
+      .find((payload) => payload.taskId === "task-7");
+    expect(synthesisFinish?.chronicleStageBundle?.closure.receipts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stageExecution: expect.objectContaining({ taskId: "task-3" }),
+        }),
+        expect.objectContaining({
+          stageExecution: expect.objectContaining({ taskId: "task-7" }),
+        }),
+      ]),
+    );
+  });
+
+  it("fails Native-detected restart hydration corruption before it claims a task", async () => {
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-corrupt-hydration",
+        projectId: "project-a",
+        surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-1", sceneIds: ["scene-one"] },
+        specJson: { domain: "chronicle", version: 1 },
+        specDigest: `sha256:${"0".repeat(64)}`,
+        snapshotDigest: TEST_STAGE_DIGEST,
+        catalogDigest: null,
+        registryDigest: null,
+        status: "running",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "2026-08-10T00:00:00.000Z",
+        startedAt: null,
+        completedAt: null,
+        version: 1,
+      },
+      tasks: [
+        CHRONICLE_EXTRACT_TASK_KINDS.snapshot,
+        CHRONICLE_EXTRACT_TASK_KINDS.windowPlan,
+        CHRONICLE_EXTRACT_TASK_KINDS.observe,
+        CHRONICLE_EXTRACT_TASK_KINDS.resolveEvidence,
+        CHRONICLE_EXTRACT_TASK_KINDS.mergeObservations,
+        CHRONICLE_EXTRACT_TASK_KINDS.cluster,
+        CHRONICLE_EXTRACT_TASK_KINDS.synthesize,
+        CHRONICLE_EXTRACT_TASK_KINDS.matchExisting,
+        CHRONICLE_EXTRACT_TASK_KINDS.planProposals,
+      ].map((taskKind, index) => ({
+        taskId: `corrupt-task-${index}`,
+        runId: "run-corrupt-hydration",
+        taskKind,
+        status: index === 0 ? "completed" : "queued",
+        inputJson: {},
+        outputJson:
+          index === 0 ? { snapshotDigest: TEST_STAGE_DIGEST } : null,
+        priority: 9 - index,
+        attemptCount: 1,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        errorMessage: null,
+        createdAt: "2026-08-10T00:00:00.000Z",
+        startedAt: null,
+        completedAt: null,
+        version: 1,
+      })),
+      taskCounts: { queued: 8, running: 0, completed: 1, failed: 0, cancelled: 0 },
+    });
+    getRunReviewBundleMock.mockRejectedValue(
+      new Error(
+        "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: Native canonical payloadDigest mismatch",
+      ),
+    );
+
+    await expect(
+      runChronicleExtractionCoordinator({
+        projectId: "project-a",
+        folderId: "folder-1",
+        language: "ja",
+        sceneIds: ["scene-one"],
+        authority: authority(),
+        runId: "run-corrupt-hydration",
+        resume: true,
+        specDigest: `sha256:${"0".repeat(64)}`,
+      }),
+    ).rejects.toThrow("NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT");
+    expect(createRunMock).not.toHaveBeenCalled();
+    expect(claimMock).not.toHaveBeenCalled();
   });
 
   it("calls fail_task when a claimed task throws", async () => {

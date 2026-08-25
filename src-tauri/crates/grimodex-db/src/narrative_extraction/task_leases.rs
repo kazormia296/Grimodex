@@ -222,6 +222,7 @@ pub(crate) fn persist_task_artifacts(
     attempt_id: &str,
     output_json: &serde_json::Value,
     chronicle_stage_bundle: Option<&super::models::ChronicleStageC1ExecutionBinding>,
+    chronicle_stage_receipts: &[super::models::ChronicleStageTerminalReceipt],
     historical_scope_authority_basis: Option<
         &grimodex_core::narrative_scope_authority_basis::NarrativeScopeAuthorityBasisV2,
     >,
@@ -248,6 +249,18 @@ pub(crate) fn persist_task_artifacts(
     // including when the typed sidecar is also present.
     super::scope_authority_runtime::reject_reserved_historical_scope_authority_artifacts(
         &normalized_artifacts,
+    )?;
+    // Persist each model-stage terminal receipt at the Task boundary where it
+    // was actually produced.  The aggregate C1 closure may be supplied by a
+    // later synthesis Task, but it is process-local transport proof and is
+    // therefore not an acceptable durability boundary for Observation.
+    super::stage_provenance::persist_chronicle_stage_receipts(
+        conn,
+        project_id,
+        run_id,
+        task_id,
+        attempt_id,
+        chronicle_stage_receipts,
     )?;
     if let Some(binding) = chronicle_stage_bundle {
         super::stage_provenance::persist_chronicle_stage_bundle(

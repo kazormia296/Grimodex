@@ -757,75 +757,74 @@ pub(crate) fn persist_chronicle_stage_bundle(
 /// must be backed by an AI-audit ledger event that recorded this exact
 /// receipt's stage execution and response digest. Without this, a caller
 /// holding a lease can mint self-consistent fictional receipts.
-fn validate_receipt_lifecycle_bindings(
+fn validate_receipt_lifecycle_binding(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
-    closure: &ChronicleStageProvenanceClosure,
+    receipt: &ChronicleStageTerminalReceipt,
 ) -> anyhow::Result<()> {
-    for receipt in &closure.receipts {
-        let execution = &receipt.stage_execution;
-        let task_kind: Option<String> = conn
-            .query_row(
-                "SELECT task_kind FROM narrative_extraction_tasks WHERE id = ?1 AND run_id = ?2",
-                params![execution.task_id, run_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(task_kind) = task_kind else {
-            anyhow::bail!(
+    let execution = &receipt.stage_execution;
+    let task_kind: Option<String> = conn
+        .query_row(
+            "SELECT task_kind FROM narrative_extraction_tasks WHERE id = ?1 AND run_id = ?2",
+            params![execution.task_id, run_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(task_kind) = task_kind else {
+        anyhow::bail!(
                 "NEX_CHRONICLE_STAGE_RECEIPT_TASK_UNKNOWN: receipt taskId '{}' is not a Task of this Run",
                 execution.task_id
             );
-        };
-        // A stage may only run under a Task whose kind honestly hosts it:
-        // observation under an observe or single-task plan owner, synthesis
-        // under a synthesize or single-task plan owner, and repair only under
-        // the same Task its failed parent stage ran on (closure validation
-        // already pins repair to the parent's task/attempt, so it inherits
-        // the parent's admissible kinds).
-        let admissible_kinds: &[&str] = match &execution.stage_id {
-            ChronicleStageId::NarrativeObservationExtract => {
-                &["chronicle.observe-events@1", "chronicle.plan-proposals@1"]
-            }
-            ChronicleStageId::NarrativeEventSynthesize => {
-                &["chronicle.synthesize-event@1", "chronicle.plan-proposals@1"]
-            }
-            ChronicleStageId::NarrativeStructuredRepair => &[
-                "chronicle.observe-events@1",
-                "chronicle.synthesize-event@1",
-                "chronicle.plan-proposals@1",
-            ],
-        };
-        anyhow::ensure!(
+    };
+    // A stage may only run under a Task whose kind honestly hosts it:
+    // observation under an observe or single-task plan owner, synthesis
+    // under a synthesize or single-task plan owner, and repair only under
+    // the same Task its failed parent stage ran on (closure validation
+    // already pins repair to the parent's task/attempt, so it inherits
+    // the parent's admissible kinds).
+    let admissible_kinds: &[&str] = match &execution.stage_id {
+        ChronicleStageId::NarrativeObservationExtract => {
+            &["chronicle.observe-events@1", "chronicle.plan-proposals@1"]
+        }
+        ChronicleStageId::NarrativeEventSynthesize => {
+            &["chronicle.synthesize-event@1", "chronicle.plan-proposals@1"]
+        }
+        ChronicleStageId::NarrativeStructuredRepair => &[
+            "chronicle.observe-events@1",
+            "chronicle.synthesize-event@1",
+            "chronicle.plan-proposals@1",
+        ],
+    };
+    anyhow::ensure!(
             admissible_kinds.contains(&task_kind.as_str()),
             "NEX_CHRONICLE_STAGE_RECEIPT_TASK_KIND_MISMATCH: stage '{}' may not run under Task kind '{}'",
             stage_id_name(&execution.stage_id),
             task_kind
         );
-        let attempt: Option<(String, i64, i64, String)> = conn
-            .query_row(
-                "SELECT a.status, a.attempt_number, t.attempt_count, t.status
+    let attempt: Option<(String, i64, i64, String)> = conn
+        .query_row(
+            "SELECT a.status, a.attempt_number, t.attempt_count, t.status
                    FROM narrative_extraction_attempts a
                    JOIN narrative_extraction_tasks t ON t.id = a.task_id
                   WHERE a.id = ?1 AND a.task_id = ?2 AND t.run_id = ?3",
-                params![execution.attempt_id, execution.task_id, run_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()?;
-        let Some((attempt_status, attempt_number, current_attempt_number, task_status)) = attempt
-        else {
-            anyhow::bail!(
+            params![execution.attempt_id, execution.task_id, run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((attempt_status, attempt_number, current_attempt_number, task_status)) = attempt
+    else {
+        anyhow::bail!(
                 "NEX_CHRONICLE_STAGE_RECEIPT_ATTEMPT_UNKNOWN: receipt attemptId '{}' is not an Attempt of Task '{}'",
                 execution.attempt_id,
                 execution.task_id
             );
-        };
-        // A reclaimed lease leaves its former Attempt row behind. A closure
-        // must never revive that stale row: every receipt is pinned to the
-        // Task's current Attempt number, whether the Task is still running
-        // (the aggregate owner) or was completed by an earlier DAG stage.
-        anyhow::ensure!(
+    };
+    // A reclaimed lease leaves its former Attempt row behind. A closure
+    // must never revive that stale row: every receipt is pinned to the
+    // Task's current Attempt number, whether the Task is still running
+    // (the aggregate owner) or was completed by an earlier DAG stage.
+    anyhow::ensure!(
             attempt_number == current_attempt_number
                 && matches!(attempt_status.as_str(), "running" | "completed")
                 && matches!(task_status.as_str(), "running" | "completed"),
@@ -837,19 +836,19 @@ fn validate_receipt_lifecycle_bindings(
             attempt_status,
             task_status,
         );
-        let operation_id = format!(
-            "{}:{}:{}",
-            execution.run_id, execution.task_id, execution.attempt_id
-        );
-        if let Some(response_digest) = receipt.response_digest.as_deref() {
-            // The transport records terminal stage audits with
-            // execution_id = stageExecutionId and
-            // operation_id = "runId:taskId:attemptId"
-            // (chronicleStageAudit.ts), and stamps the terminal receipt
-            // digest into the chronicleStage metadata. CAS all of them so a
-            // receipt cannot borrow another stage's audit trail.
-            let audited: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM ai_audit_events
+    let operation_id = format!(
+        "{}:{}:{}",
+        execution.run_id, execution.task_id, execution.attempt_id
+    );
+    if let Some(response_digest) = receipt.response_digest.as_deref() {
+        // The transport records terminal stage audits with
+        // execution_id = stageExecutionId and
+        // operation_id = "runId:taskId:attemptId"
+        // (chronicleStageAudit.ts), and stamps the terminal receipt
+        // digest into the chronicleStage metadata. CAS all of them so a
+        // receipt cannot borrow another stage's audit trail.
+        let audited: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM ai_audit_events
                   WHERE project_id = ?1
                     AND execution_id = ?2
                     AND operation_id = ?3
@@ -863,31 +862,31 @@ fn validate_receipt_lifecycle_bindings(
                             '$.metadata.chronicleStage.parseStatus') = ?6
                     AND json_extract(payload,
                             '$.metadata.chronicleStage.terminalStatus') = ?7",
-                params![
-                    project_id,
-                    execution.stage_execution_id,
-                    operation_id,
-                    response_digest,
-                    receipt.stage_execution_receipt_digest,
-                    parse_status_name(&receipt.parse_status),
-                    terminal_status_name(&receipt.terminal_status),
-                ],
-                |row| row.get(0),
-            )?;
-            anyhow::ensure!(
-                audited >= 1,
-                "NEX_CHRONICLE_STAGE_RECEIPT_AUDIT_MISSING: no AI-audit ledger event records \
+            params![
+                project_id,
+                execution.stage_execution_id,
+                operation_id,
+                response_digest,
+                receipt.stage_execution_receipt_digest,
+                parse_status_name(&receipt.parse_status),
+                terminal_status_name(&receipt.terminal_status),
+            ],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            audited >= 1,
+            "NEX_CHRONICLE_STAGE_RECEIPT_AUDIT_MISSING: no AI-audit ledger event records \
                  stage execution '{}' under operation '{}' with this responseDigest and \
                  terminal receipt digest",
-                execution.stage_execution_id,
-                operation_id
-            );
-        } else {
-            // A no-response terminal is not exempt from transport evidence.
-            // `emitChronicleStageAuditSkippedReceipt` writes the same exact
-            // execution/receipt binding with a JSON null response digest.
-            let audited: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM ai_audit_events
+            execution.stage_execution_id,
+            operation_id
+        );
+    } else {
+        // A no-response terminal is not exempt from transport evidence.
+        // `emitChronicleStageAuditSkippedReceipt` writes the same exact
+        // execution/receipt binding with a JSON null response digest.
+        let audited: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM ai_audit_events
                   WHERE project_id = ?1
                     AND execution_id = ?2
                     AND operation_id = ?3
@@ -901,26 +900,201 @@ fn validate_receipt_lifecycle_bindings(
                             '$.metadata.chronicleStage.parseStatus') = ?5
                     AND json_extract(payload,
                             '$.metadata.chronicleStage.terminalStatus') = ?6",
-                params![
-                    project_id,
-                    execution.stage_execution_id,
-                    operation_id,
-                    receipt.stage_execution_receipt_digest,
-                    parse_status_name(&receipt.parse_status),
-                    terminal_status_name(&receipt.terminal_status),
-                ],
-                |row| row.get(0),
-            )?;
-            anyhow::ensure!(
+            params![
+                project_id,
+                execution.stage_execution_id,
+                operation_id,
+                receipt.stage_execution_receipt_digest,
+                parse_status_name(&receipt.parse_status),
+                terminal_status_name(&receipt.terminal_status),
+            ],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
                 audited >= 1,
                 "NEX_CHRONICLE_STAGE_RECEIPT_AUDIT_MISSING: no no-response AI-audit ledger event records \
                  stage execution '{}' under operation '{}' with this terminal receipt digest",
                 execution.stage_execution_id,
                 operation_id
             );
-        }
     }
     Ok(())
+}
+
+fn validate_receipt_lifecycle_bindings(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    closure: &ChronicleStageProvenanceClosure,
+) -> anyhow::Result<()> {
+    for receipt in &closure.receipts {
+        validate_receipt_lifecycle_binding(conn, project_id, run_id, receipt)?;
+    }
+    Ok(())
+}
+
+/// Reconstruct the durable C1 receipt roster after a renderer/process restart.
+///
+/// The persisted C1 closure itself is deliberately ephemeral, so a resumed
+/// coordinator must rebuild it from these independently sealed receipt and
+/// model-binding rows.  Do not expose a best-effort roster: every row is
+/// revalidated against its intrinsic digest, its duplicate model-binding
+/// sidecar, the current Task/Attempt lifecycle, and the exact AI-audit
+/// terminal evidence before it crosses this read boundary.
+pub(crate) fn load_verified_stage_receipts_for_hydration(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<Vec<Value>> {
+    let mut receipt_stmt = conn.prepare(
+        "SELECT task_id, attempt_id, stage_execution_id, receipt_json,
+                receipt_digest, model_binding_digest, terminal_status
+           FROM narrative_extraction_stage_receipts
+          WHERE project_id = ?1 AND run_id = ?2
+          ORDER BY stage_execution_id ASC, id ASC",
+    )?;
+    let rows = receipt_stmt
+        .query_map(params![project_id, run_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut receipts = Vec::with_capacity(rows.len());
+    let mut seen_execution_ids = HashSet::new();
+    for (
+        stored_task_id,
+        stored_attempt_id,
+        stored_execution_id,
+        receipt_json,
+        stored_receipt_digest,
+        stored_model_binding_digest,
+        stored_terminal_status,
+    ) in rows
+    {
+        let receipt: ChronicleStageTerminalReceipt = serde_json::from_str(&receipt_json).map_err(
+            |error| {
+                anyhow!(
+                    "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: durable receipt '{}' has invalid JSON: {error}",
+                    stored_execution_id
+                )
+            },
+        )?;
+        let validated = validate_receipt(project_id, run_id, &receipt).map_err(|error| {
+            anyhow!(
+                "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: durable receipt '{}' is invalid: {error}",
+                stored_execution_id
+            )
+        })?;
+        anyhow::ensure!(
+            seen_execution_ids.insert(validated.stage_execution_id.clone()),
+            "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: duplicate durable stage execution '{}'",
+            validated.stage_execution_id
+        );
+        anyhow::ensure!(
+            validated.task_id == stored_task_id
+                && validated.attempt_id == stored_attempt_id
+                && validated.stage_execution_id == stored_execution_id
+                && validated.receipt_digest == stored_receipt_digest
+                && receipt.model_binding_digest == stored_model_binding_digest
+                && terminal_status_name(&receipt.terminal_status) == stored_terminal_status,
+            "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: durable receipt row '{}' disagrees with its sealed JSON",
+            stored_execution_id
+        );
+
+        let mut binding_stmt = conn.prepare(
+            "SELECT task_id, attempt_id, binding_json, binding_digest
+               FROM narrative_extraction_stage_model_bindings
+              WHERE project_id = ?1 AND run_id = ?2 AND stage_execution_id = ?3
+              ORDER BY id ASC",
+        )?;
+        let bindings = binding_stmt
+            .query_map(params![project_id, run_id, stored_execution_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        anyhow::ensure!(
+            bindings.len() == 1,
+            "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: durable receipt '{}' requires exactly one model-binding row",
+            stored_execution_id
+        );
+        let (binding_task_id, binding_attempt_id, binding_json, binding_digest) = bindings
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                anyhow!(
+                    "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: durable receipt '{}' is missing its model-binding row",
+                    stored_execution_id
+                )
+            })?;
+        let stored_binding: Value = serde_json::from_str(&binding_json).map_err(|error| {
+            anyhow!(
+                "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: model binding for '{}' has invalid JSON: {error}",
+                stored_execution_id
+            )
+        })?;
+        let expected_binding = serde_json::to_value(&receipt.model_execution_binding)?;
+        anyhow::ensure!(
+            binding_task_id == receipt.stage_execution.task_id
+                && binding_attempt_id == receipt.stage_execution.attempt_id
+                && stored_binding == expected_binding
+                && binding_digest == receipt.model_binding_digest
+                // `modelBindingDigest` commits the binding under its typed
+                // domain wrapper, rather than hashing the raw stored binding
+                // JSON.  Reconstruct the same canonical commitment used by
+                // `validate_receipt`; otherwise every honestly persisted
+                // receipt becomes unverifiable after a process restart.
+                && canonical_json_digest(&serde_json::json!({
+                    "domain": MODEL_BINDING_DOMAIN,
+                    "binding": stored_binding,
+                }))? == receipt.model_binding_digest,
+            "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: model binding for '{}' disagrees with its sealed receipt",
+            stored_execution_id
+        );
+
+        validate_receipt_lifecycle_binding(conn, project_id, run_id, &receipt).map_err(
+            |error| {
+                anyhow!(
+                    "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: durable receipt '{}' lacks valid lifecycle/audit evidence: {error}",
+                    stored_execution_id
+                )
+            },
+        )?;
+        receipts.push(receipt);
+    }
+
+    let binding_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_extraction_stage_model_bindings
+          WHERE project_id = ?1 AND run_id = ?2",
+        params![project_id, run_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        binding_count == receipts.len() as i64,
+        "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: Run has orphan or duplicate durable model-binding rows"
+    );
+    receipts.sort_by(|left, right| {
+        compare_code_units(
+            &left.stage_execution.stage_execution_id,
+            &right.stage_execution.stage_execution_id,
+        )
+    });
+    receipts
+        .into_iter()
+        .map(|receipt| serde_json::to_value(receipt).map_err(Into::into))
+        .collect()
 }
 
 fn validate_owner_execution_digests(
@@ -965,6 +1139,86 @@ fn validate_owner_execution_digests(
             "NEX_CHRONICLE_STAGE_BUNDLE_OWNER_PATH_MISMATCH: selected synthesis terminal path is invalid: {error}"
         )
     })?;
+    Ok(())
+}
+
+/// Persist task-local C1 terminal receipts at the point their producing Task
+/// completes.  This deliberately accepts no closure: a closure aggregates
+/// multiple DAG stages and is transport-ephemeral, while this batch can be
+/// checked entirely against one durable Task/Attempt and its AI-audit rows.
+///
+/// Keeping this separate from `persist_chronicle_stage_bundle` is what makes
+/// an Observation-complete / process-crash-before-Synthesis Run resumable
+/// without trusting a renderer-local receipt collection.
+pub(crate) fn persist_chronicle_stage_receipts(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    receipts: &[ChronicleStageTerminalReceipt],
+) -> anyhow::Result<()> {
+    if receipts.is_empty() {
+        return Ok(());
+    }
+
+    let mut seen_execution_ids = HashSet::new();
+    let mut seen_receipt_digests = HashSet::new();
+    let mut validated = Vec::with_capacity(receipts.len());
+    for receipt in receipts {
+        let row = validate_receipt(project_id, run_id, receipt)?;
+        anyhow::ensure!(
+            row.task_id == task_id && row.attempt_id == attempt_id,
+            "NEX_CHRONICLE_STAGE_RECEIPT_OWNER_MISMATCH: terminal receipt '{}' must belong to the finishing Task/Attempt",
+            row.stage_execution_id
+        );
+        anyhow::ensure!(
+            seen_execution_ids.insert(row.stage_execution_id.clone()),
+            "NEX_CHRONICLE_STAGE_RECEIPT_BATCH_INVALID: duplicate stage execution ID '{}'",
+            row.stage_execution_id
+        );
+        anyhow::ensure!(
+            seen_receipt_digests.insert(row.receipt_digest.clone()),
+            "NEX_CHRONICLE_STAGE_RECEIPT_BATCH_INVALID: duplicate terminal receipt digest",
+        );
+        validate_receipt_lifecycle_binding(conn, project_id, run_id, receipt)?;
+        validated.push(row);
+    }
+
+    // A repair child cannot be independently invented at terminalization: its
+    // failed root must be in the same Task-local batch, with the same owner.
+    // The later aggregate closure will additionally require a successful
+    // observation/synthesis path before a V2 ProposalSet may consume it.
+    for receipt in &validated {
+        let Some(parent_id) = receipt.parent_stage_execution_id.as_deref() else {
+            continue;
+        };
+        let parent = validated
+            .iter()
+            .find(|candidate| candidate.stage_execution_id == parent_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "NEX_CHRONICLE_STAGE_RECEIPT_BATCH_INVALID: repair receipt '{}' is missing its Task-local parent '{}'",
+                    receipt.stage_execution_id,
+                    parent_id
+                )
+            })?;
+        anyhow::ensure!(
+            parent.task_id == receipt.task_id
+                && parent.attempt_id == receipt.attempt_id
+                && (parent.stage_id == OBSERVATION_STAGE_ID
+                    || parent.stage_id == SYNTHESIS_STAGE_ID)
+                && parent.parse_status == "invalid"
+                && parent.terminal_status == "failed",
+            "NEX_CHRONICLE_STAGE_RECEIPT_BATCH_INVALID: repair receipt '{}' has an invalid Task-local parent",
+            receipt.stage_execution_id
+        );
+    }
+
+    let created_at = grimodex_core::now_rfc3339_millis();
+    for receipt in receipts {
+        persist_receipt(conn, project_id, run_id, receipt, &created_at)?;
+    }
     Ok(())
 }
 
@@ -1710,6 +1964,66 @@ fn persist_receipt(
         canonical_json_string(&serde_json::to_value(&receipt.model_execution_binding)?)?;
     let receipt_json = canonical_json_string(&serde_json::to_value(receipt)?)?;
     let execution = &receipt.stage_execution;
+    let existing_binding: Option<(String, String, String, String, String)> = conn
+        .query_row(
+            "SELECT run_id, task_id, attempt_id, binding_json, binding_digest
+               FROM narrative_extraction_stage_model_bindings
+              WHERE project_id = ?1 AND stage_execution_id = ?2",
+            params![project_id, execution.stage_execution_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let existing_receipt: Option<(String, String, String, String, String, String)> = conn
+        .query_row(
+            "SELECT run_id, task_id, attempt_id, receipt_json, receipt_digest, model_binding_digest
+               FROM narrative_extraction_stage_receipts
+              WHERE project_id = ?1 AND stage_execution_id = ?2",
+            params![project_id, execution.stage_execution_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    match (existing_binding, existing_receipt) {
+        (None, None) => {}
+        (Some(binding), Some(stored_receipt)) => {
+            anyhow::ensure!(
+                binding.0 == run_id
+                    && binding.1 == execution.task_id
+                    && binding.2 == execution.attempt_id
+                    && binding.3 == binding_json
+                    && binding.4 == receipt.model_binding_digest
+                    && stored_receipt.0 == run_id
+                    && stored_receipt.1 == execution.task_id
+                    && stored_receipt.2 == execution.attempt_id
+                    && stored_receipt.3 == receipt_json
+                    && stored_receipt.4 == receipt.stage_execution_receipt_digest
+                    && stored_receipt.5 == receipt.model_binding_digest,
+                "NEX_CHRONICLE_STAGE_RECEIPT_DUPLICATE_MISMATCH: existing durable stage execution '{}' does not match its terminalized receipt",
+                execution.stage_execution_id
+            );
+            return Ok(());
+        }
+        _ => anyhow::bail!(
+            "NEX_CHRONICLE_STAGE_RECEIPT_DUPLICATE_MISMATCH: stage execution '{}' has incomplete durable receipt/model-binding rows",
+            execution.stage_execution_id
+        ),
+    }
     conn.execute(
         "INSERT INTO narrative_extraction_stage_model_bindings
             (id, project_id, run_id, task_id, attempt_id, stage_execution_id,

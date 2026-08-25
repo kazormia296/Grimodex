@@ -13,9 +13,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::commit::digest_plan;
+use super::consumer_identity::validate_consumer_identity;
 pub(crate) use super::consumer_identity::APPLICATION_CONSUMER_KIND;
 use super::dependency_edges::{
-    canonical_source_object_identity, validate_stored_source_object_identity, RUN_CONSUMER_KIND,
+    canonical_source_object_identity, parse_snapshot_run_id_from_source_identity,
+    run_id_belongs_to_another_project, validate_stored_source_object_identity, RUN_CONSUMER_KIND,
 };
 use super::legacy_backfill::{is_valid_completed_backfill_marker, CompletedBackfillMarker};
 use super::maintenance_lifecycle::load_completed_maintenance_run_in_tx;
@@ -275,6 +277,31 @@ pub struct UnattributedRekeyItem {
     pub reason: String,
 }
 
+/// A legacy Application whose v2 Run Edge is absent or cannot be named by
+/// the old ApplyCommit lineage.  C2-ZB must not invent a Run identity for
+/// this row: the current v3 Backfill writer owns creation of its Application
+/// Edge instead.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingV3BackfillApplication {
+    pub application_id: String,
+    pub run_id: Option<String>,
+    pub source_object_identity: String,
+    pub reason: String,
+}
+
+/// A Run-consumer Edge for which C2-ZB has no exact legacy Application
+/// provenance.  It remains a Run Edge; treating it as a legacy Application
+/// Edge would either delete a valid independent consumer or fabricate an
+/// Application identity.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetainedRunConsumerEdge {
+    pub edge_id: String,
+    pub run_id: String,
+    pub source_object_identity: String,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RekeyCollision {
@@ -308,6 +335,14 @@ pub struct ApplicationRekeyPlan {
     pub project_id: String,
     pub exact: Vec<ApplicationRekeyCandidate>,
     pub fan_out: Vec<ApplicationRekeyFanOut>,
+    /// Legacy Application dependencies which need a v3 Backfill-owned
+    /// Application Edge rather than a C2-ZB re-key.
+    pub pending_v3_backfill_applications: Vec<PendingV3BackfillApplication>,
+    /// Non-Application Run-consumer Edges retained unchanged by C2-ZB.
+    pub retained_run_edges: Vec<RetainedRunConsumerEdge>,
+    /// Retained for backwards-compatible plan deserialization. New planning
+    /// classifies known non-migration rows above instead of conflating them
+    /// with a blocking unattributed condition.
     pub unattributed: Vec<UnattributedRekeyItem>,
     pub collisions: Vec<RekeyCollision>,
     pub invalid: Vec<RekeyInvalidItem>,
@@ -317,13 +352,11 @@ pub struct ApplicationRekeyPlan {
 
 impl ApplicationRekeyPlan {
     /// Whether every candidate is deterministic and does not conflict with a
-    /// stored Application target. A fan-out is safe when every exact legacy
-    /// dependency match is enumerated; it is not collapsed into one guess.
+    /// stored Application target. Pending v3 Backfill Applications and
+    /// retained Run Edges are safe, non-mutating classifications; only
+    /// ambiguity/corruption blocks the migration.
     pub fn is_safe(&self) -> bool {
-        self.unattributed.is_empty()
-            && self.collisions.is_empty()
-            && self.invalid.is_empty()
-            && self.applications_without_run_id.is_empty()
+        self.unattributed.is_empty() && self.collisions.is_empty() && self.invalid.is_empty()
     }
 }
 
@@ -477,6 +510,7 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
 
     let (legacy_dependencies, mut invalid) = load_legacy_dependencies_for_rekey(conn, project_id)?;
     let mut applications_without_run_id = BTreeSet::new();
+    let mut pending_v3_backfill = BTreeMap::new();
     let mut expected_by_run_source: BTreeMap<(String, String), Vec<LegacyDependency>> =
         BTreeMap::new();
     let mut all_legacy_by_application: BTreeMap<String, Vec<LegacyDependency>> = BTreeMap::new();
@@ -495,6 +529,19 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
                 .push(dependency.clone());
         } else {
             applications_without_run_id.insert(dependency.application_id.clone());
+            pending_v3_backfill.insert(
+                (
+                    dependency.application_id.clone(),
+                    None,
+                    dependency.source_object_identity.clone(),
+                ),
+                PendingV3BackfillApplication {
+                    application_id: dependency.application_id.clone(),
+                    run_id: None,
+                    source_object_identity: dependency.source_object_identity.clone(),
+                    reason: "apply-commit-run-id-missing".to_string(),
+                },
+            );
         }
         all_legacy_by_application
             .entry(dependency.application_id.clone())
@@ -516,33 +563,39 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
     let run_edges = load_run_edges(conn, project_id)?;
     let mut exact = Vec::new();
     let mut fan_out = Vec::new();
-    let mut unattributed = Vec::new();
+    let mut retained_run_edges = Vec::new();
     let mut collisions = Vec::new();
     let mut existing_targets = Vec::new();
     let mut matched_legacy = BTreeSet::new();
 
     for edge in run_edges {
-        if !edge.owning_run_exists_in_project {
+        let key = (edge.run_id.clone(), edge.source_object_identity.clone());
+        let candidates = expected_by_run_source
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        let invalid_reason = if candidates.is_empty() {
+            invalid_retained_run_edge_reason(conn, project_id, &edge)?
+        } else {
+            invalid_matched_legacy_run_edge_reason(&edge)
+        };
+        if let Some(reason) = invalid_reason {
             invalid.push(RekeyInvalidItem {
                 edge_id: Some(edge.id.clone()),
                 application_id: None,
-                reason: "run-edge-owning-run-missing-or-foreign-project".to_string(),
+                reason: reason.to_string(),
             });
             continue;
         }
-        if validate_stored_source_object_identity(&edge.source_object_identity).is_err() {
-            invalid.push(RekeyInvalidItem {
-                edge_id: Some(edge.id.clone()),
-                application_id: None,
-                reason: "run-edge-source-identity-invalid".to_string(),
-            });
-            continue;
-        }
-        if edge.owning_run_id.as_deref() != Some(edge.run_id.as_str()) {
-            invalid.push(RekeyInvalidItem {
-                edge_id: Some(edge.id.clone()),
-                application_id: None,
-                reason: "run-edge-owning-run-missing-or-mismatched".to_string(),
+        if candidates.is_empty() {
+            // Run Edges are not Application-specific by consumer kind alone.
+            // In particular, their read set need not satisfy the v2
+            // single-token Application migration shape. Preserve any row for
+            // which there is no exact legacy Application provenance.
+            retained_run_edges.push(RetainedRunConsumerEdge {
+                edge_id: edge.id,
+                run_id: edge.run_id,
+                source_object_identity: edge.source_object_identity,
             });
             continue;
         }
@@ -558,22 +611,6 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
                 continue;
             }
         };
-
-        let key = (edge.run_id.clone(), edge.source_object_identity.clone());
-        let candidates = expected_by_run_source
-            .get(&key)
-            .cloned()
-            .unwrap_or_default();
-        if candidates.is_empty() {
-            unattributed.push(UnattributedRekeyItem {
-                edge_id: Some(edge.id),
-                run_id: Some(edge.run_id),
-                application_id: None,
-                source_object_identity: Some(edge.source_object_identity),
-                reason: "run-edge-has-no-legacy-application-dependency".to_string(),
-            });
-            continue;
-        }
 
         let mapping_kind = if candidates.len() == 1 {
             RekeyMappingKind::Exact
@@ -666,13 +703,19 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
                     dependency.source_object_identity.clone(),
                 ))
             {
-                unattributed.push(UnattributedRekeyItem {
-                    edge_id: None,
-                    run_id: dependency.run_id.clone(),
-                    application_id: Some(dependency.application_id.clone()),
-                    source_object_identity: Some(dependency.source_object_identity.clone()),
-                    reason: "legacy-application-dependency-has-no-run-edge".to_string(),
-                });
+                pending_v3_backfill.insert(
+                    (
+                        dependency.application_id.clone(),
+                        dependency.run_id.clone(),
+                        dependency.source_object_identity.clone(),
+                    ),
+                    PendingV3BackfillApplication {
+                        application_id: dependency.application_id.clone(),
+                        run_id: dependency.run_id.clone(),
+                        source_object_identity: dependency.source_object_identity.clone(),
+                        reason: "legacy-application-dependency-has-no-run-edge".to_string(),
+                    },
+                );
             }
         }
     }
@@ -684,7 +727,9 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
         project_id: project_id.to_string(),
         exact,
         fan_out,
-        unattributed,
+        pending_v3_backfill_applications: pending_v3_backfill.into_values().collect(),
+        retained_run_edges,
+        unattributed: Vec::new(),
         collisions,
         invalid,
         applications_without_run_id,
@@ -987,6 +1032,90 @@ fn load_run_edges(conn: &Connection, project_id: &str) -> Result<Vec<RunEdgeForR
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Validate the coordinate and Source grammar shared by every Run Consumer
+/// Edge. The migration's classification decides separately whether the
+/// historical owner has to be fully resolved.
+fn invalid_run_edge_identity_reason(edge: &RunEdgeForRekey) -> Option<&'static str> {
+    if validate_consumer_identity(RUN_CONSUMER_KIND, &edge.run_id).is_err() {
+        return Some("run-edge-consumer-key-invalid");
+    }
+    if validate_stored_source_object_identity(&edge.source_object_identity).is_err() {
+        return Some("run-edge-source-identity-invalid");
+    }
+    None
+}
+
+/// An Edge that C2-ZB will re-key has exact legacy Application provenance, so
+/// there is no compatibility fallback: its declared owner must already be the
+/// matching persisted Run in this Project.
+fn invalid_matched_legacy_run_edge_reason(edge: &RunEdgeForRekey) -> Option<&'static str> {
+    if let Some(reason) = invalid_run_edge_identity_reason(edge) {
+        return Some(reason);
+    }
+    if !edge.owning_run_exists_in_project {
+        return Some("run-edge-owning-run-missing-or-foreign-project");
+    }
+    if edge.owning_run_id.as_deref() != Some(edge.run_id.as_str()) {
+        return Some("run-edge-owning-run-missing-or-mismatched");
+    }
+    match parse_snapshot_run_id_from_source_identity(&edge.source_object_identity) {
+        Ok(Some(snapshot_run_id)) if snapshot_run_id != edge.run_id => {
+            return Some("run-edge-snapshot-run-mismatch");
+        }
+        Ok(_) => {}
+        Err(_) => return Some("run-edge-source-identity-invalid"),
+    }
+    None
+}
+
+/// An unrelated Run Consumer remains live after C2-ZB. Preserve the existing
+/// Run-Consumer compatibility contract: a blank/missing owner falls back to
+/// the exact consumer key, and a non-Snapshot declaration may predate the
+/// persisted Run row. A populated owner is never a loose hint, however: it
+/// must be canonical, equal the Run key, and not belong to another Project.
+fn invalid_retained_run_edge_reason(
+    conn: &Connection,
+    project_id: &str,
+    edge: &RunEdgeForRekey,
+) -> Result<Option<&'static str>> {
+    if let Some(reason) = invalid_run_edge_identity_reason(edge) {
+        return Ok(Some(reason));
+    }
+
+    let stored_owner = match edge.owning_run_id.as_deref() {
+        Some(owner) if owner.trim().is_empty() => None,
+        Some(owner) if owner.trim() != owner => {
+            return Ok(Some("run-edge-owning-run-invalid"));
+        }
+        Some(owner) if owner != edge.run_id => {
+            return Ok(Some("run-edge-owning-run-missing-or-mismatched"));
+        }
+        Some(owner) => Some(owner),
+        None => None,
+    };
+
+    if let Some(owner) = stored_owner {
+        if run_id_belongs_to_another_project(conn, project_id, owner)? {
+            return Ok(Some("run-edge-owning-run-missing-or-foreign-project"));
+        }
+    }
+
+    match parse_snapshot_run_id_from_source_identity(&edge.source_object_identity) {
+        Ok(Some(snapshot_run_id)) => {
+            let resolved_run_id = stored_owner.unwrap_or(edge.run_id.as_str());
+            if snapshot_run_id != resolved_run_id {
+                return Ok(Some("run-edge-snapshot-run-mismatch"));
+            }
+            if run_id_belongs_to_another_project(conn, project_id, resolved_run_id)? {
+                return Ok(Some("run-edge-snapshot-run-foreign-project"));
+            }
+        }
+        Ok(None) => {}
+        Err(_) => return Ok(Some("run-edge-source-identity-invalid")),
+    }
+    Ok(None)
 }
 
 fn single_rekey_read_set_token(read_set_json: &str) -> Result<String> {
@@ -2295,6 +2424,93 @@ mod tests {
             Ok(())
         })
         .expect("rekey dry-run");
+    }
+
+    #[test]
+    fn application_rekey_plan_separates_pending_v3_apps_from_retained_run_edges() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            // The original Application has a valid v2 lineage but no v2 Run
+            // Edge. C2-ZB must leave creation to the v3 Backfill writer.
+            seed_legacy_freshness_and_dependency(conn, "fresh");
+
+            // A NULL ApplyCommit.run_id is also a valid historical shape for
+            // v3 Backfill, not provenance C2-ZB can safely reconstruct.
+            conn.execute(
+                "INSERT INTO narrative_apply_commits
+                    (id, project_id, run_id, request_id, plan_digest, status, created_at)
+                 VALUES ('commit-c2z-null', ?1, NULL, 'request-c2z-null',
+                         'digest-c2z-null', 'committed', '2026-08-20T00:00:00.000Z')",
+                [PROJECT_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_applications
+                    (id, commit_id, proposal_id, revision_id, applied_entity_kind,
+                     applied_entity_id, created_at)
+                 VALUES ('application-c2z-null', 'commit-c2z-null', 'proposal-c2z-null',
+                         'revision-c2z-null', 'codex-entry', 'entry-c2z-null',
+                         '2026-08-20T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_projection_dependencies
+                    (application_id, source_kind, source_key, observed_revision_token,
+                     propagation)
+                 VALUES ('application-c2z-null', 'scene-body',
+                         'project:scene:scene-c2z-null', 'token-c2z-null',
+                         'freshness-only')",
+                [],
+            )?;
+
+            // A Run Edge is not necessarily an old Application Edge. Its
+            // multi-token read set intentionally does not meet C2-ZB's
+            // single-token re-key shape, but remains legitimate and retained.
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                     read_set_json, created_at, owning_run_id)
+                 VALUES ('edge-run-c2z-retained', ?1, 'narrative-extraction-run', ?2,
+                         'project:scene:scene-c2z-retained',
+                         '[\"token-retained-a\",\"token-retained-b\"]',
+                         '2026-08-20T00:00:00.000Z', ?2)",
+                params![PROJECT_ID, RUN_ID],
+            )?;
+
+            let before = conn.total_changes();
+            let plan = plan_application_rekey(conn, PROJECT_ID)?;
+
+            assert!(plan.exact.is_empty());
+            assert!(plan.fan_out.is_empty());
+            assert!(plan.unattributed.is_empty());
+            assert!(plan.collisions.is_empty());
+            assert!(plan.invalid.is_empty());
+            assert!(plan.is_safe());
+            assert_eq!(
+                plan.applications_without_run_id,
+                vec!["application-c2z-null"]
+            );
+            assert!(plan.pending_v3_backfill_applications.iter().any(|item| {
+                item.application_id == APPLICATION_ID
+                    && item.run_id.as_deref() == Some(RUN_ID)
+                    && item.reason == "legacy-application-dependency-has-no-run-edge"
+            }));
+            assert!(plan.pending_v3_backfill_applications.iter().any(|item| {
+                item.application_id == "application-c2z-null"
+                    && item.run_id.is_none()
+                    && item.reason == "apply-commit-run-id-missing"
+            }));
+            assert_eq!(
+                plan.retained_run_edges,
+                vec![RetainedRunConsumerEdge {
+                    edge_id: "edge-run-c2z-retained".to_string(),
+                    run_id: RUN_ID.to_string(),
+                    source_object_identity: "project:scene:scene-c2z-retained".to_string(),
+                }]
+            );
+            assert_eq!(conn.total_changes(), before);
+            Ok(())
+        })
+        .expect("pending and retained rekey classifications");
     }
 
     #[test]

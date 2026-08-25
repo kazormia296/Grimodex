@@ -148,12 +148,6 @@ fn preflight_plan(
     BTreeMap<String, AttentionRehome>,
 )> {
     ensure!(
-        plan.unattributed.is_empty(),
-        "NEX_C2ZB_PREFLIGHT_UNATTRIBUTED: project '{}' has unattributed legacy dependency evidence: {:?}",
-        plan.project_id,
-        plan.unattributed
-    );
-    ensure!(
         plan.invalid.is_empty(),
         "NEX_C2ZB_PREFLIGHT_INVALID: project '{}' has invalid legacy provenance: {:?}",
         plan.project_id,
@@ -165,13 +159,6 @@ fn preflight_plan(
         plan.project_id,
         plan.collisions
     );
-    ensure!(
-        plan.applications_without_run_id.is_empty(),
-        "NEX_C2ZB_PREFLIGHT_NULL_RUN: project '{}' has Applications with NULL ApplyCommit.run_id: {:?}",
-        plan.project_id,
-        plan.applications_without_run_id
-    );
-
     let mut candidates_by_old_consumer: BTreeMap<String, Vec<&ApplicationRekeyCandidate>> =
         BTreeMap::new();
     let mut exact_history = BTreeMap::new();

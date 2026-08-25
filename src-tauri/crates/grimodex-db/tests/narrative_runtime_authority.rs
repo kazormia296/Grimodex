@@ -218,6 +218,7 @@ fn disabled_runtime_still_allows_in_flight_work_to_terminalize_and_release_lease
             output_json: Some(json!({ "ok": true })),
             artifacts: vec![],
             chronicle_stage_bundle: None,
+            chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
         },
     )

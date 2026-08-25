@@ -340,12 +340,12 @@ pub fn canonical_application_freshness(
         );
     };
 
-    EvidenceFreshness::try_from(freshness.as_str()).map_err(|error| {
+    let evidence_freshness = EvidenceFreshness::try_from(freshness.as_str()).map_err(|error| {
         anyhow::anyhow!(
             "NEX_C2ZC_GENERIC_FRESHNESS_INVALID: application '{application_id}' has invalid evidence freshness: {error}"
         )
     })?;
-    BuildAction::try_from(build_action.as_str()).map_err(|error| {
+    let build_action_kind = BuildAction::try_from(build_action.as_str()).map_err(|error| {
         anyhow::anyhow!(
             "NEX_C2ZC_GENERIC_FRESHNESS_INVALID: application '{application_id}' has invalid build action: {error}"
         )
@@ -372,15 +372,15 @@ pub fn canonical_application_freshness(
         dependency_set_digest.as_deref() == Some(expected_digest.as_str()),
         "NEX_C2ZC_GENERIC_FRESHNESS_DIGEST_MISMATCH: application '{application_id}' has a dependency-set digest that does not match its current Generic Edges"
     );
-    if let Some(run_id) = run_id.as_deref() {
-        validate_current_evaluation_run_reference(
-            conn,
-            project_id,
-            &current_epoch.id,
-            application_id,
-            run_id,
-        )?;
-    }
+    validate_freshness_evaluation_reference(
+        conn,
+        project_id,
+        &current_epoch.id,
+        application_id,
+        evidence_freshness,
+        build_action_kind,
+        run_id.as_deref(),
+    )?;
 
     Ok(Some(CanonicalFreshnessRow {
         application_id: application_id.to_string(),
@@ -394,8 +394,38 @@ pub fn canonical_application_freshness(
     }))
 }
 
-/// `last_evaluated_run_id` is optional only for deliberately seeded
-/// Unknown/Manual freshness. Once present it must be the exact completed
+/// Validate the provenance of a canonical Generic Consumer Freshness row.
+/// A runless row is a narrowly scoped pre-evaluation seed only: it must be
+/// `unknown/manual`. Every evaluated state, including a `fresh/none` state,
+/// requires the exact completed current-Epoch Incremental Freshness Run.
+fn validate_freshness_evaluation_reference(
+    conn: &Connection,
+    project_id: &str,
+    current_epoch_id: &str,
+    application_id: &str,
+    evidence_freshness: EvidenceFreshness,
+    build_action: BuildAction,
+    run_id: Option<&str>,
+) -> Result<()> {
+    let Some(run_id) = run_id else {
+        anyhow::ensure!(
+            evidence_freshness == EvidenceFreshness::Unknown && build_action == BuildAction::Manual,
+            "NEX_C2ZC_GENERIC_FRESHNESS_RUN_REQUIRED: application '{application_id}' has '{}/{}' without lastEvaluatedRunId; only the deliberate unknown/manual pre-evaluation seed may omit it",
+            evidence_freshness.as_str(),
+            build_action.as_str(),
+        );
+        return Ok(());
+    };
+    validate_current_evaluation_run_reference(
+        conn,
+        project_id,
+        current_epoch_id,
+        application_id,
+        run_id,
+    )
+}
+
+/// A populated `last_evaluated_run_id` must be the exact completed
 /// current-Epoch Incremental Freshness publisher, not merely any Run in the
 /// same project. Otherwise a stale Verify/Backfill id can make old evidence
 /// look current after canonical cutover.
@@ -995,21 +1025,21 @@ fn validate_generic_rows_for_cutover(
                     "NEX_C2ZC_GENERIC_FRESHNESS_CONTRACT_INVALID: build action missing for application '{application_id}'"
                 )
             })?;
-            EvidenceFreshness::try_from(freshness.as_str())?;
-            BuildAction::try_from(build_action.as_str())?;
+            let evidence_freshness = EvidenceFreshness::try_from(freshness.as_str())?;
+            let build_action_kind = BuildAction::try_from(build_action.as_str())?;
             anyhow::ensure!(
                 epoch_id.as_deref() == Some(current_epoch),
                 "NEX_C2ZC_GENERIC_FRESHNESS_EPOCH_MISMATCH: application '{application_id}' is not at current epoch"
             );
-            if let Some(run_id) = last_evaluated_run_id.as_deref() {
-                validate_current_evaluation_run_reference(
-                    conn,
-                    &project.project_id,
-                    current_epoch,
-                    &application_id,
-                    run_id,
-                )?;
-            }
+            validate_freshness_evaluation_reference(
+                conn,
+                &project.project_id,
+                current_epoch,
+                &application_id,
+                evidence_freshness,
+                build_action_kind,
+                last_evaluated_run_id.as_deref(),
+            )?;
             anyhow::ensure!(
                 digest.as_deref().is_some_and(|value| !value.trim().is_empty()),
                 "NEX_C2ZC_GENERIC_FRESHNESS_DIGEST_MISSING: application '{application_id}' has no dependency-set digest"

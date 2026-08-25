@@ -660,6 +660,7 @@ fn finish_task_rejects_after_lease_expiry() {
             output_json: Some(json!({ "ok": true })),
             artifacts: vec![],
             chronicle_stage_bundle: None,
+            chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
         },
     )
@@ -1524,6 +1525,7 @@ fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
                 },
             ],
             chronicle_stage_bundle: None,
+            chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
         },
     )
@@ -1613,6 +1615,193 @@ fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
             .contains("narrative extraction run project mismatch"),
         "unexpected error: {mismatch}"
     );
+}
+
+#[test]
+fn get_run_review_bundle_rejects_corrupt_current_chronicle_resume_artifact() {
+    let db = test_db();
+    narrative_extraction::narrative_extraction_create_run(
+        &db,
+        CreateRunPayload {
+            run_id: Some("run-corrupt-resume-artifact".to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({ "folderId": "folder-1", "sceneIds": [] }),
+            spec_json: json!({ "domain": "chronicle", "version": 1 }),
+            spec_digest: "spec-corrupt-resume-artifact".to_string(),
+            snapshot_digest: Some("snapshot-corrupt-resume-artifact".to_string()),
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![CreateTaskSeed {
+                task_id: Some("task-corrupt-resume-artifact".to_string()),
+                task_kind: "source.snapshot@1".to_string(),
+                input_json: None,
+                priority: None,
+            }],
+        },
+    )
+    .expect("create Chronicle run");
+    let claim = claim_with_owner(
+        &db,
+        "run-corrupt-resume-artifact",
+        "corrupt-resume-worker",
+        120,
+    );
+    let attempt_id = claim["task"]["attemptId"]
+        .as_str()
+        .expect("attempt id")
+        .to_string();
+    narrative_extraction::narrative_extraction_finish_task(
+        &db,
+        FinishTaskPayload {
+            run_id: "run-corrupt-resume-artifact".to_string(),
+            project_id: "project-1".to_string(),
+            task_id: "task-corrupt-resume-artifact".to_string(),
+            attempt_id,
+            lease_owner: "corrupt-resume-worker".to_string(),
+            output_json: Some(json!({ "snapshotDigest": "snapshot-corrupt-resume-artifact" })),
+            artifacts: vec![narrative_extraction::ArtifactInput {
+                artifact_id: Some("artifact-corrupt-resume".to_string()),
+                artifact_kind: "source.snapshot@1".to_string(),
+                payload_storage: Some("inline-json".to_string()),
+                payload_json: Some(json!({ "snapshot": { "documents": [] } })),
+                payload_ref: None,
+                payload_digest: None,
+            }],
+            chronicle_stage_bundle: None,
+            chronicle_stage_receipts: vec![],
+            historical_scope_authority_basis: None,
+        },
+    )
+    .expect("finish snapshot task");
+    db.execute(
+        "UPDATE narrative_extraction_artifacts
+            SET payload_digest = ?
+          WHERE id = 'artifact-corrupt-resume'",
+        &[Value::String(format!("sha256:{}", "0".repeat(64)))],
+        "run",
+    )
+    .expect("corrupt digest");
+
+    let error = narrative_extraction::narrative_extraction_get_run_review_bundle(
+        &db,
+        RunRefPayload {
+            run_id: "run-corrupt-resume-artifact".to_string(),
+            project_id: "project-1".to_string(),
+        },
+    )
+    .expect_err("resume hydration must reject a corrupted canonical artifact digest");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn get_run_review_bundle_hydrates_only_the_verified_current_chronicle_attempt() {
+    let db = test_db();
+    let run_id = "run-current-artifact-only";
+    let task_id = "task-current-artifact-only";
+    narrative_extraction::narrative_extraction_create_run(
+        &db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({ "folderId": "folder-1", "sceneIds": [] }),
+            spec_json: json!({ "domain": "chronicle", "version": 1 }),
+            spec_digest: "spec-current-artifact-only".to_string(),
+            snapshot_digest: Some("snapshot-current-artifact-only".to_string()),
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(task_id.to_string()),
+                task_kind: "source.snapshot@1".to_string(),
+                input_json: None,
+                priority: None,
+            }],
+        },
+    )
+    .expect("create Chronicle run");
+    let claim = claim_with_owner(&db, run_id, "current-artifact-worker", 120);
+    let attempt_id = claim["task"]["attemptId"]
+        .as_str()
+        .expect("current attempt id")
+        .to_string();
+    let current_payload = json!({ "snapshot": { "documents": ["current"] } });
+    narrative_extraction::narrative_extraction_finish_task(
+        &db,
+        FinishTaskPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            task_id: task_id.to_string(),
+            attempt_id,
+            lease_owner: "current-artifact-worker".to_string(),
+            output_json: Some(json!({ "snapshotDigest": "snapshot-current-artifact-only" })),
+            artifacts: vec![narrative_extraction::ArtifactInput {
+                artifact_id: Some("artifact-current-attempt".to_string()),
+                artifact_kind: "source.snapshot@1".to_string(),
+                payload_storage: Some("inline-json".to_string()),
+                payload_json: Some(current_payload.clone()),
+                payload_ref: None,
+                payload_digest: None,
+            }],
+            chronicle_stage_bundle: None,
+            chronicle_stage_receipts: vec![],
+            historical_scope_authority_basis: None,
+        },
+    )
+    .expect("finish current Chronicle snapshot attempt");
+
+    // Model an old attempt whose imported/late-written artifact sorts after
+    // the completed current Attempt.  It is internally canonical, so merely
+    // validating the current row is insufficient if the full Run artifact
+    // roster is then returned to the last-write-wins coordinator cache.
+    let stale_payload = json!({ "snapshot": { "documents": ["stale"] } });
+    let stale_payload_json = serde_json::to_string(&stale_payload).expect("stale payload JSON");
+    let stale_payload_digest =
+        grimodex_core::canonical_json_digest(&stale_payload).expect("stale canonical digest");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_extraction_attempts
+                (id, task_id, attempt_number, status, started_at, completed_at, output_json)
+             VALUES ('attempt-stale-prior', ?1, 0, 'completed',
+                     '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:01.000Z', '{}')",
+            [task_id],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_artifacts
+                (id, run_id, task_id, attempt_id, artifact_kind, payload_storage,
+                 payload_json, payload_ref, payload_digest, created_at)
+             VALUES ('artifact-stale-prior', ?1, ?2, 'attempt-stale-prior',
+                     'source.snapshot@1', 'inline-json', ?3, NULL, ?4,
+                     '2099-01-01T00:00:00.000Z')",
+            rusqlite::params![run_id, task_id, stale_payload_json, stale_payload_digest],
+        )?;
+        Ok(())
+    })
+    .expect("seed later stale artifact from a prior attempt");
+
+    let bundle = narrative_extraction::narrative_extraction_get_run_review_bundle(
+        &db,
+        RunRefPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+        },
+    )
+    .expect("Native hydration must ignore a stale prior-attempt artifact");
+    let artifacts = bundle["artifacts"].as_array().expect("artifact roster");
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "only the verified current artifact is exposed"
+    );
+    assert_eq!(artifacts[0]["artifactId"], "artifact-current-attempt");
+    assert_eq!(artifacts[0]["payloadJson"], current_payload);
 }
 
 #[test]

@@ -6,6 +6,7 @@
 //! `Database`; Repair remains a human/manual path.
 
 use anyhow::Context;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1494,6 +1495,46 @@ pub(crate) fn select_latest_relevant_run(
     )
 }
 
+/// One immutable row of lifecycle evidence.  Identity is diagnostic only:
+/// chronology is decided solely by [`lifecycle_at`], and equal maxima are
+/// never broken by a row ID or query order.
+#[derive(Debug, Clone)]
+pub(crate) struct LifecycleEvidence<T> {
+    pub(crate) id: String,
+    pub(crate) lifecycle_at: DateTime<Utc>,
+    pub(crate) value: T,
+}
+
+/// Select the unique latest lifecycle evidence from one already-scoped
+/// window.  Every maintenance decision that needs a "latest" Run, failure,
+/// or Attempt uses this rather than relying on SQLite row order.
+pub(crate) fn select_unique_latest_lifecycle_evidence<T>(
+    evidence: Vec<LifecycleEvidence<T>>,
+) -> anyhow::Result<Option<LifecycleEvidence<T>>> {
+    let Some(max_lifecycle) = evidence
+        .iter()
+        .map(|evidence| evidence.lifecycle_at.clone())
+        .max()
+    else {
+        return Ok(None);
+    };
+    let mut maximal = evidence
+        .into_iter()
+        .filter(|evidence| evidence.lifecycle_at == max_lifecycle)
+        .collect::<Vec<_>>();
+    let maximal_ids = maximal
+        .iter()
+        .map(|evidence| evidence.id.as_str())
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        maximal.len() == 1,
+        "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS: lifecycle evidence {:?} shares maximal lifecycle instant {}",
+        maximal_ids,
+        max_lifecycle.to_rfc3339()
+    );
+    Ok(maximal.pop())
+}
+
 /// Readiness uses the same lifecycle chronology as recovery, but must also
 /// inspect a run with a malformed ownership key so the gate can report a
 /// precise blocked/incomplete reason. Runtime recovery keeps the canonical
@@ -1577,27 +1618,23 @@ fn select_latest_relevant_run_with_canonicality(
             .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_RUN_ORDER_EMPTY"))?;
         temporal.push((lifecycle_at, run, lifecycle_timestamp_invalid));
     }
-    let max_lifecycle = temporal
-        .iter()
-        .map(|(lifecycle_at, _, _)| *lifecycle_at)
-        .max()
-        .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_RUN_ORDER_EMPTY"))?;
-    let maximal: Vec<(&DurableMaintenanceRun, bool)> = temporal
-        .into_iter()
-        .filter(|(lifecycle_at, _, _)| *lifecycle_at == max_lifecycle)
-        .map(|(_, run, lifecycle_timestamp_invalid)| (run, lifecycle_timestamp_invalid))
-        .collect();
-    let maximal_ids = maximal
-        .iter()
-        .map(|(run, _)| run.run_id.as_str())
-        .collect::<Vec<_>>();
-    anyhow::ensure!(
-        maximal.len() == 1,
-        "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS: runs {:?} share lifecycle instant {} in the relevant discovery window",
-        maximal_ids,
-        max_lifecycle.to_rfc3339()
-    );
-    if let Some((run, true)) = maximal.iter().find(|(_, invalid)| *invalid) {
+    let selected = select_unique_latest_lifecycle_evidence(
+        temporal
+            .into_iter()
+            .map(
+                |(lifecycle_at, run, lifecycle_timestamp_invalid)| LifecycleEvidence {
+                    id: run.run_id.clone(),
+                    lifecycle_at,
+                    value: (run, lifecycle_timestamp_invalid),
+                },
+            )
+            .collect(),
+    )?;
+    let Some(selected) = selected else {
+        anyhow::bail!("NEX_MAINTENANCE_RUN_ORDER_EMPTY");
+    };
+    let (run, lifecycle_timestamp_invalid) = selected.value;
+    if lifecycle_timestamp_invalid {
         if let Some(completed_at) = run.completed_at.as_deref() {
             parse_maintenance_instant(completed_at)?;
         }
@@ -1606,7 +1643,7 @@ fn select_latest_relevant_run_with_canonicality(
             run.run_id
         );
     }
-    Ok(maximal.first().map(|(run, _)| (*run).clone()))
+    Ok(Some(run.clone()))
 }
 
 fn is_completed_backfill_marker(
@@ -2180,6 +2217,11 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
     // while it is still running; pre-existing active rows remain subject to
     // the caller-selected StartupRecovery/SameProcessLive mode.
     let mut project_ids = BTreeSet::new();
+    // A selector/ledger failure is durable manual work, not an Electron
+    // delivery retry. Discovery cannot safely choose a next phase for that
+    // project after the current cycle has projected the error, so suppress
+    // only the final automatic rediscovery pass for it.
+    let mut selector_halted_projects = BTreeSet::new();
     while let Some(item) = queue.pop_front() {
         project_ids.insert(item.project_id.clone());
         // Bound both actual adapter dispatch and dequeue/recovery progress.
@@ -2273,7 +2315,17 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
             }
         }
 
-        let action = recover_cycle_work(db, &effective_item, mode_for(&effective_item))?;
+        let action = match recover_cycle_work(db, &effective_item, mode_for(&effective_item)) {
+            Ok(action) => action,
+            Err(error) if item.run_kind == AutomaticRunKind::RebuildDerived => {
+                project_ledger_selector_manual_intervention(db, &recovery_work, &error)?;
+                handled_non_coalesced = true;
+                terminal_halted_work.insert(recovery_work_key);
+                selector_halted_projects.insert(recovery_work.project_id.clone());
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         match action {
             RecoveryAction::CoalescedRunning { .. } | RecoveryAction::CoalescedPending { .. } => {
                 coalesced_active = true;
@@ -2336,7 +2388,21 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                     // decision whose durable not-before is missing or
                     // unparseable is broken retry evidence, not permission
                     // to dispatch immediately: fail closed to manual.
-                    match retry_not_before(db, &recovery_work)? {
+                    let retry_evidence = match retry_not_before(db, &recovery_work) {
+                        Ok(evidence) => evidence,
+                        Err(error) => {
+                            project_ledger_selector_manual_intervention(
+                                db,
+                                &recovery_work,
+                                &error,
+                            )?;
+                            handled_non_coalesced = true;
+                            terminal_halted_work.insert(recovery_work_key);
+                            selector_halted_projects.insert(recovery_work.project_id.clone());
+                            continue;
+                        }
+                    };
+                    match retry_evidence {
                         RetryEvidence::NoFailedAttempt => {
                             // A run-level terminal code with no Attempt
                             // ledger (older writer, import): the run-level
@@ -2383,21 +2449,31 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                 // against the durable state machine and only dispatch when
                 // discovery still demands this exact canonical Rebuild (for
                 // example a newer Verify requires a fresh one).
-                let committed_current_rebuild = item.run_kind == AutomaticRunKind::RebuildDerived
-                    && item.semantic_epoch_id.as_deref().is_some_and(|epoch| {
-                        db.with_conn(|conn| {
-                            let runs = load_durable_maintenance_runs(conn, &item.project_id)?;
-                            select_latest_relevant_run(&runs, Some(epoch), false, |run| {
-                                run.run_kind == "semantic-index-rebuild"
-                                    && run.status == "completed"
-                            })
-                        })
-                        .ok()
-                        .flatten()
-                        .is_some_and(|run| {
-                            completed_rebuild_outcome_is_current(&item.project_id, epoch, &run)
-                        })
-                    });
+                let committed_current_rebuild = if item.run_kind == AutomaticRunKind::RebuildDerived
+                {
+                    match recovery_work.semantic_epoch_id.as_deref() {
+                        Some(epoch) => {
+                            match has_committed_current_rebuild(db, &recovery_work, epoch) {
+                                Ok(committed) => committed,
+                                Err(error) => {
+                                    project_ledger_selector_manual_intervention(
+                                        db,
+                                        &recovery_work,
+                                        &error,
+                                    )?;
+                                    handled_non_coalesced = true;
+                                    terminal_halted_work.insert(recovery_work_key);
+                                    selector_halted_projects
+                                        .insert(recovery_work.project_id.clone());
+                                    continue;
+                                }
+                            }
+                        }
+                        None => false,
+                    }
+                } else {
+                    false
+                };
                 if committed_current_rebuild {
                     let next = discover_durable_maintenance_work_with_coordinates(
                         db,
@@ -2507,6 +2583,9 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
     has_more |= !queue.is_empty();
     if !has_more {
         for project_id in project_ids {
+            if selector_halted_projects.contains(&project_id) {
+                continue;
+            }
             if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                 db,
                 &project_id,
@@ -2528,6 +2607,47 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
             MaintenanceCycleResult::accepted(has_more)
         },
     )
+}
+
+/// The Rebuild duplicate-suppression path is an optimization, but its ledger
+/// selector has the same fail-closed chronology contract as normal recovery.
+/// Do not turn a malformed/tied/read-failed selector into a false "absent"
+/// result and dispatch a new expensive Rebuild beside the broken evidence.
+fn has_committed_current_rebuild(
+    db: &Database,
+    work: &WorkKey,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<bool> {
+    db.with_conn(|conn| {
+        let runs = load_durable_maintenance_runs(conn, &work.project_id)?;
+        let selected = select_latest_relevant_run(&runs, Some(semantic_epoch_id), false, |run| {
+            run.run_kind == "semantic-index-rebuild" && run.status == "completed"
+        })?;
+        Ok(selected.is_some_and(|run| {
+            completed_rebuild_outcome_is_current(&work.project_id, semantic_epoch_id, &run)
+        }))
+    })
+}
+
+/// Surface a recovery selector failure through the same durable Maintenance
+/// Inbox projection used by other automatic halts. The exact ambiguity code
+/// is preserved; malformed/read errors get a stable generic code rather than
+/// being silently treated as a missing completed Rebuild.
+fn project_ledger_selector_manual_intervention(
+    db: &Database,
+    work: &WorkKey,
+    error: &anyhow::Error,
+) -> anyhow::Result<()> {
+    let code = match explicit_failure_code(&error.to_string()) {
+        Some("NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS") => "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS",
+        _ => "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID",
+    };
+    let projected = super::terminal_failure::project_manual_intervention_finding(db, work, code)?;
+    anyhow::ensure!(
+        projected.is_some(),
+        "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID: selector failure has no durable manual Finding anchor"
+    );
+    Ok(())
 }
 
 fn recover_cycle_work(
@@ -3050,6 +3170,15 @@ pub struct RunLedgerCounts {
     pub latest_failed_terminal_reason_code: Option<String>,
 }
 
+/// The current-epoch portion of one durable Run ledger row.  The epoch is
+/// applied while loading; stale active rows are kept separately as recovery
+/// provenance and cannot contaminate the current retry chain.
+#[derive(Debug, Clone)]
+struct RunLedgerLifecycleEvidence {
+    status: String,
+    terminal_reason_code: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecoveryAction {
     /// An existing running Run is the durable single-flight marker.  The
@@ -3121,120 +3250,30 @@ pub fn read_run_ledger_for_epoch(
         anyhow::ensure!(!epoch_id.trim().is_empty(), "semanticEpochId is required");
     }
     db.with_conn(|conn| {
-        let mut statement = conn.prepare(
-            "SELECT id, status, semantic_epoch_id, terminal_reason_code,
-                    created_at, started_at, completed_at
-               FROM narrative_extraction_runs
-              WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
-              ORDER BY (julianday(COALESCE(completed_at, started_at, created_at)) IS NULL) ASC,
-                       julianday(COALESCE(completed_at, started_at, created_at)) ASC,
-                       COALESCE(completed_at, started_at, created_at) ASC, id ASC",
-        )?;
-        let rows = statement.query_map(
-            params![work.project_id, work.run_kind.as_str(), work.work_key],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                ))
-            },
-        )?;
-        let mut current_rows = Vec::new();
-        let mut stale_active_runs = Vec::new();
-        for row in rows {
-            let (
-                id,
-                status,
-                row_epoch_id,
-                terminal_reason_code,
-                created_at,
-                started_at,
-                completed_at,
-            ) = row?;
-            if !matches!(
-                status.as_str(),
-                "pending" | "running" | "completed" | "failed" | "cancelled"
-            ) {
-                continue;
-            }
-            let epoch_matches = expected_semantic_epoch_id
-                .map(|expected| row_epoch_id.as_deref() == Some(expected))
-                .unwrap_or(true);
-            if !epoch_matches {
-                if matches!(status.as_str(), "pending" | "running") {
-                    stale_active_runs.push(StaleActiveRun {
-                        run_id: id,
-                        semantic_epoch_id: row_epoch_id,
-                    });
-                }
-                continue;
-            }
-            let lifecycle_raw = completed_at
-                .as_deref()
-                .or(started_at.as_deref())
-                .unwrap_or(created_at.as_str());
-            let lifecycle_at = match parse_maintenance_instant(lifecycle_raw) {
-                Ok(lifecycle_at) => lifecycle_at,
-                Err(_error)
-                    if work.run_kind == AutomaticRunKind::Backfill && status == "completed" =>
-                {
-                    let fallback_raw = started_at.as_deref().unwrap_or(created_at.as_str());
-                    parse_maintenance_instant(fallback_raw)?
-                }
-                Err(error) => {
-                    return Err(error);
-                }
-            };
-            current_rows.push((lifecycle_at, id, status, terminal_reason_code));
-        }
-
-        // Chronology is decided by lifecycle instants alone. Run IDs are
-        // identity, not time: an imported/restored ledger where a failed and
-        // a completed row share the same instant must fail closed instead of
-        // letting UUID lexicographic order decide which one "wins". The
-        // canonical lifecycle allocator issues strictly increasing instants
-        // per project, so a tie can only come from imported evidence.
-        let latest_completed_at = current_rows
+        let (current_rows, stale_active_runs) =
+            load_current_work_lifecycle_evidence(conn, work, expected_semantic_epoch_id)?;
+        let retry_chain_failures = current_retry_chain_failures(&current_rows)?;
+        let latest_failed = select_unique_latest_lifecycle_evidence(retry_chain_failures.clone())?;
+        let pending_run_ids = current_rows
             .iter()
-            .filter(|(_, _, status, _)| status == "completed")
-            .map(|(lifecycle_at, _, _, _)| *lifecycle_at)
-            .max();
-        let mut pending_run_ids = Vec::new();
-        let mut running_run_ids = Vec::new();
-        let mut failed_runs = 0_u32;
-        let mut completed_runs = 0_u32;
-        let mut latest_failed_terminal_reason_code = None;
-        for (lifecycle_at, id, status, terminal_reason_code) in &current_rows {
-            match status.as_str() {
-                "pending" => pending_run_ids.push(id.clone()),
-                "running" => running_run_ids.push(id.clone()),
-                "failed" => match latest_completed_at {
-                    Some(completed_at) if *lifecycle_at == completed_at => {
-                        anyhow::bail!(
-                            "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS: failed Run '{id}' shares its lifecycle instant with a completed Run"
-                        );
-                    }
-                    Some(completed_at) if *lifecycle_at < completed_at => {}
-                    _ => {
-                        failed_runs = failed_runs.saturating_add(1);
-                        latest_failed_terminal_reason_code = terminal_reason_code.clone();
-                    }
-                },
-                "completed" => completed_runs = completed_runs.saturating_add(1),
-                _ => {}
-            }
-        }
+            .filter(|evidence| evidence.value.status == "pending")
+            .map(|evidence| evidence.id.clone())
+            .collect::<Vec<_>>();
+        let running_run_ids = current_rows
+            .iter()
+            .filter(|evidence| evidence.value.status == "running")
+            .map(|evidence| evidence.id.clone())
+            .collect::<Vec<_>>();
+        let completed_runs = current_rows
+            .iter()
+            .filter(|evidence| evidence.value.status == "completed")
+            .count();
 
         Ok(RunLedgerCounts {
             pending_runs: u32::try_from(pending_run_ids.len())?,
             running_runs: u32::try_from(running_run_ids.len())?,
-            failed_runs,
-            completed_runs,
+            failed_runs: u32::try_from(retry_chain_failures.len())?,
+            completed_runs: u32::try_from(completed_runs)?,
             total_runs: u32::try_from(current_rows.len())?,
             stale_active_runs: u32::try_from(stale_active_runs.len())?,
             pending_run_ids,
@@ -3244,9 +3283,123 @@ pub fn read_run_ledger_for_epoch(
                 .map(|run| run.run_id.clone())
                 .collect(),
             stale_active_run_provenance: stale_active_runs,
-            latest_failed_terminal_reason_code,
+            latest_failed_terminal_reason_code: latest_failed
+                .and_then(|evidence| evidence.value.terminal_reason_code),
         })
     })
+}
+
+/// Load one work identity's current lifecycle evidence and stale active
+/// provenance.  SQL deliberately does not order rows: every consumer must
+/// pass its bounded evidence set through
+/// [`select_unique_latest_lifecycle_evidence`] before deriving a latest row.
+fn load_current_work_lifecycle_evidence(
+    conn: &Connection,
+    work: &WorkKey,
+    expected_semantic_epoch_id: Option<&str>,
+) -> anyhow::Result<(
+    Vec<LifecycleEvidence<RunLedgerLifecycleEvidence>>,
+    Vec<StaleActiveRun>,
+)> {
+    let mut statement = conn.prepare(
+        "SELECT id, status, semantic_epoch_id, terminal_reason_code,
+                created_at, started_at, completed_at
+           FROM narrative_extraction_runs
+          WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3",
+    )?;
+    let rows = statement.query_map(
+        params![work.project_id, work.run_kind.as_str(), work.work_key],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        },
+    )?;
+    let mut current_rows = Vec::new();
+    let mut stale_active_runs = Vec::new();
+    for row in rows {
+        let (id, status, row_epoch_id, terminal_reason_code, created_at, started_at, completed_at) =
+            row?;
+        if !matches!(
+            status.as_str(),
+            "pending" | "running" | "completed" | "failed" | "cancelled"
+        ) {
+            continue;
+        }
+        let epoch_matches = expected_semantic_epoch_id
+            .map(|expected| row_epoch_id.as_deref() == Some(expected))
+            .unwrap_or(true);
+        if !epoch_matches {
+            if matches!(status.as_str(), "pending" | "running") {
+                stale_active_runs.push(StaleActiveRun {
+                    run_id: id,
+                    semantic_epoch_id: row_epoch_id,
+                });
+            }
+            continue;
+        }
+        let lifecycle_raw = completed_at
+            .as_deref()
+            .or(started_at.as_deref())
+            .unwrap_or(created_at.as_str());
+        let lifecycle_at = match parse_maintenance_instant(lifecycle_raw) {
+            Ok(lifecycle_at) => lifecycle_at,
+            Err(_error) if work.run_kind == AutomaticRunKind::Backfill && status == "completed" => {
+                let fallback_raw = started_at.as_deref().unwrap_or(created_at.as_str());
+                parse_maintenance_instant(fallback_raw)?
+            }
+            Err(error) => return Err(error),
+        };
+        current_rows.push(LifecycleEvidence {
+            id,
+            lifecycle_at,
+            value: RunLedgerLifecycleEvidence {
+                status,
+                terminal_reason_code,
+            },
+        });
+    }
+    Ok((current_rows, stale_active_runs))
+}
+
+/// Return failed rows in the current retry chain: only failures after the
+/// latest completed Run in this epoch-bound work identity consume retry
+/// budget.  A failure tied with a completion has no safe before/after order,
+/// so it is rejected rather than silently reset or retried.
+fn current_retry_chain_failures(
+    current_rows: &[LifecycleEvidence<RunLedgerLifecycleEvidence>],
+) -> anyhow::Result<Vec<LifecycleEvidence<RunLedgerLifecycleEvidence>>> {
+    let latest_completed_at = select_unique_latest_lifecycle_evidence(
+        current_rows
+            .iter()
+            .filter(|evidence| evidence.value.status == "completed")
+            .cloned()
+            .collect(),
+    )?
+    .map(|evidence| evidence.lifecycle_at);
+    let mut failures = Vec::new();
+    for evidence in current_rows {
+        if evidence.value.status != "failed" {
+            continue;
+        }
+        match latest_completed_at.as_ref() {
+            Some(completed_at) if evidence.lifecycle_at == *completed_at => {
+                anyhow::bail!(
+                    "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS: failed Run '{}' shares its lifecycle instant with a completed Run",
+                    evidence.id
+                );
+            }
+            Some(completed_at) if evidence.lifecycle_at < *completed_at => {}
+            _ => failures.push(evidence.clone()),
+        }
+    }
+    Ok(failures)
 }
 
 /// Read the existing Run ledger without epoch scoping for legacy callers.
@@ -3712,6 +3865,7 @@ pub const fn retry_backoff_ms(attempt: u32) -> u64 {
 /// an Attempt row exists but violates the failure policy's
 /// "next_attempt_at iff retryable" invariant, which is broken retry
 /// evidence, not permission to dispatch immediately.
+#[derive(Debug)]
 enum RetryEvidence {
     NoFailedAttempt,
     NotBefore(Option<String>),
@@ -3719,30 +3873,50 @@ enum RetryEvidence {
 
 fn retry_not_before(db: &Database, work: &WorkKey) -> anyhow::Result<RetryEvidence> {
     db.with_conn(|conn| {
-        conn.query_row(
-            "SELECT a.next_attempt_at
+        let (current_rows, _) =
+            load_current_work_lifecycle_evidence(conn, work, work.semantic_epoch_id.as_deref())?;
+        let latest_failed =
+            select_unique_latest_lifecycle_evidence(current_retry_chain_failures(&current_rows)?)?;
+        let Some(latest_failed) = latest_failed else {
+            return Ok(RetryEvidence::NoFailedAttempt);
+        };
+
+        // Failure classification and retry not-before must come from the
+        // same unique failed Run.  Selecting an Attempt across all failed
+        // Runs could combine one Run's terminal code with another Run's
+        // backoff after a restore/import tie.
+        let mut statement = conn.prepare(
+            "SELECT a.id, a.completed_at, a.next_attempt_at
                FROM narrative_extraction_attempts a
                JOIN narrative_extraction_tasks t ON t.id = a.task_id
-               JOIN narrative_extraction_runs r ON r.id = t.run_id
-              WHERE r.project_id = ?1 AND r.run_kind = ?2 AND r.work_key = ?3
-                AND (?4 IS NULL OR r.semantic_epoch_id = ?4)
-                AND r.status = 'failed' AND a.status = 'failed'
-              ORDER BY julianday(a.completed_at) DESC, a.id ASC
-              LIMIT 1",
-            params![
-                work.project_id,
-                work.run_kind.as_str(),
-                work.work_key,
-                work.semantic_epoch_id.as_deref(),
-            ],
-            |row| row.get::<_, Option<String>>(0),
+              WHERE t.run_id = ?1 AND a.status = 'failed'",
+        )?;
+        let attempts = statement
+            .query_map(params![latest_failed.id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut lifecycle_evidence = Vec::with_capacity(attempts.len());
+        for (attempt_id, completed_at, next_attempt_at) in attempts {
+            let Some(completed_at) = completed_at else {
+                return Ok(RetryEvidence::NotBefore(None));
+            };
+            lifecycle_evidence.push(LifecycleEvidence {
+                id: attempt_id,
+                lifecycle_at: parse_maintenance_instant(&completed_at)?,
+                value: next_attempt_at,
+            });
+        }
+        Ok(
+            match select_unique_latest_lifecycle_evidence(lifecycle_evidence)? {
+                None => RetryEvidence::NoFailedAttempt,
+                Some(evidence) => RetryEvidence::NotBefore(evidence.value),
+            },
         )
-        .optional()
-        .map(|row| match row {
-            None => RetryEvidence::NoFailedAttempt,
-            Some(not_before) => RetryEvidence::NotBefore(not_before),
-        })
-        .map_err(Into::into)
     })
 }
 
@@ -4656,6 +4830,169 @@ mod tests {
         config.ci = "true".to_string();
         config.owner_token = "forged-owner".to_string();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn equal_latest_failed_runs_fail_closed_for_recovery_and_retry_evidence() {
+        let db = open_pending_recovery_db();
+        let work = recovery_work(AutomaticRunKind::RebuildDerived, "epoch-current");
+        db.with_conn(|conn| {
+            for (run_id, terminal_code) in [
+                ("failed-tie-a", "NEX_MAINTENANCE_TRANSIENT"),
+                ("failed-tie-b", "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
+            ] {
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, created_at, started_at, completed_at,
+                         terminal_reason_code, run_kind, semantic_epoch_id, work_key)
+                     VALUES (?1, 'project-1', 'maintenance', '{}', '{}', 'digest',
+                             'failed', '{}', '2026-01-03T00:00:00.000Z',
+                             '2026-01-03T00:00:01.000Z', '2026-01-03T00:00:02.000Z',
+                             ?2, 'semantic-index-rebuild', 'epoch-current', ?3)",
+                    params![run_id, terminal_code, work.work_key],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed equal-instant failed Runs");
+
+        let ledger_error = read_run_ledger_for_epoch(&db, &work, Some("epoch-current"))
+            .expect_err("equal maximal failed Runs must not be ordered by row ID");
+        assert!(
+            ledger_error
+                .to_string()
+                .contains("NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS"),
+            "unexpected ledger error: {ledger_error:#}"
+        );
+        let retry_error = retry_not_before(&db, &work)
+            .expect_err("retry evidence must use the same unique lifecycle selector");
+        assert!(
+            retry_error
+                .to_string()
+                .contains("NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS"),
+            "unexpected retry selector error: {retry_error:#}"
+        );
+    }
+
+    #[test]
+    fn rebuild_selector_errors_are_durable_manual_halts_not_new_dispatches() {
+        for (label, rows, unreadable_spec_json, expected_code) in [
+            (
+                "equal completed lifecycle instant",
+                vec![
+                    ("rebuild-tie-a", "2026-01-03T00:00:02.000Z"),
+                    ("rebuild-tie-b", "2026-01-03T00:00:02.000Z"),
+                ],
+                false,
+                "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS",
+            ),
+            (
+                "malformed completed lifecycle instant",
+                vec![("rebuild-malformed", "not-an-instant")],
+                false,
+                "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID",
+            ),
+            (
+                "SQLite read conversion failure",
+                vec![("rebuild-unreadable", "2026-01-03T00:00:02.000Z")],
+                true,
+                "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID",
+            ),
+        ] {
+            let db = Database::new(std::path::Path::new(":memory:"))
+                .expect("open selector-projection database");
+            db.migrate().expect("migrate selector-projection database");
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_semantic_epochs
+                        (id, project_id, epoch_number, reason, created_at)
+                     VALUES ('epoch-current', 'project-1', 0, 'initial',
+                             '2026-01-01T00:00:00.000Z')",
+                    [],
+                )?;
+                for (run_id, completed_at) in &rows {
+                    conn.execute(
+                        "INSERT INTO narrative_extraction_runs
+                            (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                             status, coverage_json, created_at, started_at, completed_at,
+                             run_kind, semantic_epoch_id, work_key)
+                         VALUES (?1, 'project-1', 'maintenance', '{}', '{}', 'digest',
+                                 'completed', '{}', '2026-01-03T00:00:00.000Z',
+                                 '2026-01-03T00:00:01.000Z', ?2,
+                                 'semantic-index-rebuild', 'epoch-current',
+                                 'dependency-rebuild-derived')",
+                        params![run_id, completed_at],
+                    )?;
+                }
+                if unreadable_spec_json {
+                    // SQLite's dynamic typing allows this imported/corrupt
+                    // BLOB in a TEXT column. The durable selector reads it
+                    // as String, so this exercises a real row-conversion
+                    // error rather than a synthetic error return.
+                    conn.execute(
+                        "UPDATE narrative_extraction_runs
+                            SET spec_json = X'00'
+                          WHERE id = 'rebuild-unreadable'",
+                        [],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("seed selector error evidence");
+            let request = MaintenanceCycleRequest {
+                work: vec![MaintenanceWorkRequest {
+                    project_id: "project-1".to_string(),
+                    run_kind: AutomaticRunKind::RebuildDerived,
+                    work_key: REBUILD_DERIVED_WORK_KEY.to_string(),
+                    semantic_epoch_id: Some("epoch-current".to_string()),
+                    reasons: vec!["selector-error-regression".to_string()],
+                }],
+                wake_project_ids: Vec::new(),
+                workspace_binding: None,
+            };
+
+            let result = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)
+                .unwrap_or_else(|error| panic!("{label} must project manual evidence: {error:#}"));
+            assert_eq!(
+                result,
+                MaintenanceCycleResult::accepted(false),
+                "{label} must not become a delivery retry"
+            );
+            let (rebuild_count, manual_finding_count): (i64, i64) = db
+                .with_conn(|conn| {
+                    Ok((
+                        conn.query_row(
+                            "SELECT COUNT(*) FROM narrative_extraction_runs
+                              WHERE project_id = 'project-1'
+                                AND run_kind = 'semantic-index-rebuild'",
+                            [],
+                            |row| row.get(0),
+                        )?,
+                        conn.query_row(
+                            "SELECT COUNT(*) FROM narrative_maintenance_finding_observations
+                              WHERE project_id = 'project-1'
+                                AND id LIKE ?1",
+                            params![format!("terminal-failure:v1:{expected_code}:%")],
+                            |row| row.get(0),
+                        )?,
+                    ))
+                })
+                .expect("inspect selector manual projection");
+            assert_eq!(
+                rebuild_count,
+                i64::try_from(rows.len()).expect("row count fits i64"),
+                "{label} must not dispatch a replacement Rebuild"
+            );
+            assert_eq!(
+                manual_finding_count, 1,
+                "{label} must be durable/manual-intervention-visible"
+            );
+        }
     }
 
     #[test]

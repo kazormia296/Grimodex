@@ -75,6 +75,14 @@ pub struct FinishTaskPayload {
     /// companion contract and cannot be inferred from artifact JSON.
     #[serde(default)]
     pub chronicle_stage_bundle: Option<ChronicleStageC1ExecutionBinding>,
+    /// Independently terminalized Chronicle stage receipts.  Unlike the C1
+    /// closure above this is a task-local, typed receipt batch: Native
+    /// verifies it against the finishing Task/Attempt and exact AI audit
+    /// evidence, then retains only the receipt/model-binding rows.  It makes
+    /// an Observation stage recoverable if the process exits before a later
+    /// synthesis task can aggregate the ephemeral closure.
+    #[serde(default)]
+    pub chronicle_stage_receipts: Vec<ChronicleStageTerminalReceipt>,
     /// Typed historical Scope-authority companion. Generic ArtifactInput JSON
     /// cannot mint its reserved artifact kind; Native re-derives this value
     /// from the durable Run and project tree before persistence.

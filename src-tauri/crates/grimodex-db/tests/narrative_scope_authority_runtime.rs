@@ -384,6 +384,7 @@ fn generic_finish_cannot_mint_the_reserved_scope_authority_carrier() {
                 payload_digest: None,
             }],
             chronicle_stage_bundle: None,
+            chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
         },
     )

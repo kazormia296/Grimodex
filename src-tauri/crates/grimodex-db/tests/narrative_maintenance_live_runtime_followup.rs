@@ -6,8 +6,7 @@
 
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     run_system_work_cycle, AutomaticRunKind, MaintenanceCycleRequest, MaintenanceCycleResult,
-    MaintenanceCycleStatus, RecoveryMode,
-    LEGACY_BACKFILL_WORK_KEY,
+    MaintenanceCycleStatus, RecoveryMode, LEGACY_BACKFILL_WORK_KEY,
 };
 use grimodex_db::narrative_extraction::{
     bootstrap_legacy_dependency_backfill_for_project, ensure_test_schema,
@@ -470,8 +469,8 @@ fn malformed_completed_backfill_timestamp_is_not_reused_and_cycle_is_bounded() {
             assert_eq!(run_count, 2);
             assert_eq!(valid_completed_count, 1);
         } else {
-            let error = outcome
-                .expect_err("an unparseable marker instant must fail the allocator closed");
+            let error =
+                outcome.expect_err("an unparseable marker instant must fail the allocator closed");
             assert!(error
                 .to_string()
                 .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));

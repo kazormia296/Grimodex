@@ -328,7 +328,109 @@ fn canonical_read_rejects_non_incremental_or_stale_evaluation_run_reference() {
     .expect("fail closed invalid evaluation Run reference");
 }
 
+#[test]
+fn cutover_rejects_evaluated_freshness_without_an_incremental_run() {
+    let _test_guard = serialize_liveness_test();
+    for (index, (freshness, build_action)) in [
+        ("fresh", "none"),
+        ("stale", "rebuild-required"),
+        ("source-missing", "rebuild-required"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let db = fixture_db();
+        db.with_conn(|conn| {
+            seed_cutover_ready_application_with_freshness_state(conn, freshness, build_action, None)
+        })
+        .expect("seed runless evaluated Generic state");
+        let evidence = scheduler_heartbeat(
+            &db,
+            &format!("c2zc-runless-cutover-{index}"),
+            (index + 10) as u64,
+        );
+
+        db.with_conn(|conn| {
+            let error = cut_over_workspace_freshness(conn, &evidence).expect_err(
+                "only the deliberate unknown/manual seed may omit its Incremental Freshness Run",
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_C2ZC_GENERIC_FRESHNESS_RUN_REQUIRED"),
+                "unexpected {freshness}/{build_action} cutover error: {error}"
+            );
+            let marker_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM schema_data_migrations WHERE migration_id = ?1",
+                [C2_ZC_CUTOVER_MIGRATION_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(marker_count, 0, "failed validation must not activate C2-ZC");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("reject runless evaluated freshness at cutover");
+    }
+}
+
+#[test]
+fn canonical_read_rejects_evaluated_freshness_without_an_incremental_run() {
+    let _test_guard = serialize_liveness_test();
+    for (index, (freshness, build_action)) in [
+        ("fresh", "none"),
+        ("stale", "rebuild-required"),
+        ("source-missing", "rebuild-required"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let db = fixture_db();
+        db.with_conn(seed_cutover_ready_application)
+            .expect("seed cutover fixture");
+        let evidence = scheduler_heartbeat(
+            &db,
+            &format!("c2zc-runless-read-{index}"),
+            (index + 20) as u64,
+        );
+        db.with_conn(|conn| {
+            cut_over_workspace_freshness(conn, &evidence)?;
+            conn.execute(
+                "UPDATE narrative_consumer_freshness
+                    SET evidence_freshness = ?1,
+                        build_action = ?2,
+                        last_evaluated_run_id = NULL
+                  WHERE project_id = ?3 AND consumer_kind = 'application'
+                    AND consumer_key = ?4",
+                params![freshness, build_action, PROJECT_ID, APPLICATION_ID],
+            )?;
+            let error = canonical_application_freshness(conn, PROJECT_ID, APPLICATION_ID)
+                .expect_err("evaluated canonical Freshness must retain its Incremental Run");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_C2ZC_GENERIC_FRESHNESS_RUN_REQUIRED"),
+                "unexpected {freshness}/{build_action} canonical-read error: {error}"
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("reject runless evaluated freshness on canonical read");
+    }
+}
+
 fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
+    seed_cutover_ready_application_with_freshness_state(
+        conn,
+        "fresh",
+        "none",
+        Some(BASELINE_FRESHNESS_RUN_ID),
+    )
+}
+
+fn seed_cutover_ready_application_with_freshness_state(
+    conn: &Connection,
+    evidence_freshness: &str,
+    build_action: &str,
+    last_evaluated_run_id: Option<&str>,
+) -> anyhow::Result<()> {
     let backfill_spec = json!({ "backfillAlgorithmVersion": "3" });
     let backfill_spec_json = backfill_spec.to_string();
     let backfill_outcome = json!({
@@ -389,8 +491,8 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
     conn.execute(
         "INSERT INTO narrative_projection_freshness
             (application_id, status, reason_json, version, updated_at)
-         VALUES (?1, 'fresh', NULL, 0, ?2)",
-        params![APPLICATION_ID, NOW],
+         VALUES (?1, ?2, NULL, 0, ?3)",
+        params![APPLICATION_ID, evidence_freshness, NOW],
     )?;
     conn.execute(
         "INSERT INTO narrative_projection_dependencies
@@ -403,12 +505,15 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
             (project_id, consumer_kind, consumer_key, evidence_freshness,
              build_action, semantic_epoch_id, last_evaluated_run_id,
              dependency_set_digest, updated_at)
-         VALUES (?1, 'application', ?2, 'fresh', 'none', ?3, NULL,
-                 ?4, ?5)",
+         VALUES (?1, 'application', ?2, ?3, ?4, ?5, ?6,
+                 ?7, ?8)",
         params![
             PROJECT_ID,
             APPLICATION_ID,
+            evidence_freshness,
+            build_action,
             EPOCH_ID,
+            last_evaluated_run_id,
             dependency_set_digest(&[SOURCE_IDENTITY]),
             NOW
         ],
@@ -432,8 +537,8 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
         "INSERT INTO narrative_dependency_edge_states
             (edge_id, project_id, evidence_freshness, reason_code, build_action,
              evaluated_at_epoch_id, evaluated_at)
-         VALUES ('edge-c2zc', ?1, 'fresh', NULL, 'none', ?2, ?3)",
-        params![PROJECT_ID, EPOCH_ID, NOW],
+         VALUES ('edge-c2zc', ?1, ?2, NULL, ?3, ?4, ?5)",
+        params![PROJECT_ID, evidence_freshness, build_action, EPOCH_ID, NOW],
     )?;
 
     // The sealed Verify evidence must be the live graph's own report: the
@@ -1144,6 +1249,11 @@ fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
             ),
             "normal post-cutover Apply seeds canonical Unknown/Manual Freshness before Feed evaluation"
         );
+        let canonical_seed = canonical_application_freshness(conn, PROJECT_ID, &application_id)?
+            .expect("the deliberate Unknown/Manual seed is canonical before Feed evaluation");
+        assert_eq!(canonical_seed.evidence_freshness, "unknown");
+        assert_eq!(canonical_seed.build_action, "manual");
+        assert_eq!(canonical_seed.last_evaluated_run_id, None);
         let application_ids_json: String = conn.query_row(
             "SELECT t.application_ids_json
                FROM narrative_change_transactions t

@@ -5,6 +5,7 @@ use chrono::Utc;
 use grimodex_core::narrative_ir::validate_chronicle_scene_event_proposal_payload;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use uuid::Uuid;
 
 use super::declaration_storage::{
@@ -832,6 +833,7 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                 &payload.attempt_id,
                 &output_value,
                 payload.chronicle_stage_bundle.as_ref(),
+                &payload.chronicle_stage_receipts,
                 payload.historical_scope_authority_basis.as_ref(),
                 &payload.artifacts,
             )?;
@@ -975,6 +977,35 @@ pub fn get_run_review_bundle(
     db.with_conn(|conn| {
         ensure_run_project(conn, &run_id, &project_id)?;
 
+        // A generic review bundle remains useful for historical/other
+        // surfaces, but Chronicle's coordinator treats this read as its
+        // process-restart input boundary.  For that surface, re-CAS every
+        // completed DAG artifact against the current Task/Attempt and the
+        // Native canonical payload digest before returning any raw JSON.
+        // This prevents a stale prior-attempt artifact from becoming input to
+        // a resumed synthesis task just because its shape happens to parse.
+        let verified_chronicle_artifacts =
+            validate_chronicle_resume_artifacts(conn, &project_id, &run_id)?;
+
+        // This bundle is also the cold-process hydration boundary for the
+        // Chronicle coordinator.  The C1 closure is intentionally not
+        // durable, so expose only a Native-revalidated receipt roster; any
+        // stale lifecycle, mismatched model-binding row, or missing audit
+        // terminal evidence rejects the whole read rather than allowing a
+        // resumed synthesis task to manufacture a new partial closure.
+        let stage_receipts = if stage_provenance_tables_present(conn)? {
+            super::stage_provenance::load_verified_stage_receipts_for_hydration(
+                conn,
+                &project_id,
+                &run_id,
+            )?
+        } else {
+            // Pre-C1 read-only ledgers may not have the sidecar tables. They
+            // remain reviewable, but a resume that needs an Observation
+            // terminal will reject the empty roster before claiming work.
+            Vec::new()
+        };
+
         let mut artifact_stmt = conn.prepare(
             "SELECT id, run_id, task_id, attempt_id, artifact_kind,
                     payload_storage, payload_json, payload_ref, payload_digest, created_at
@@ -985,6 +1016,35 @@ pub fn get_run_review_bundle(
         let artifacts: Vec<Value> = artifact_stmt
             .query_map(params![run_id], row_to_artifact_value)?
             .collect::<Result<_, _>>()?;
+        // A Chronicle restart must never hydrate a superseded artifact merely
+        // because it was written later than the current Attempt.  The
+        // coordinator's in-memory index is keyed by Run + kind, so returning
+        // every historical row here would make its last-write-wins behavior
+        // select stale payload JSON after this function has validated only
+        // the current Attempt.  Restrict Chronicle to the exact artifact rows
+        // that passed the Native current-Task/current-Attempt CAS above.
+        let artifacts = match verified_chronicle_artifacts {
+            Some(verified) => artifacts
+                .into_iter()
+                .filter(|artifact| {
+                    let Some(task_id) = artifact["taskId"].as_str() else {
+                        return false;
+                    };
+                    let Some(attempt_id) = artifact["attemptId"].as_str() else {
+                        return false;
+                    };
+                    let Some(artifact_kind) = artifact["artifactKind"].as_str() else {
+                        return false;
+                    };
+                    verified.contains(&(
+                        task_id.to_owned(),
+                        attempt_id.to_owned(),
+                        artifact_kind.to_owned(),
+                    ))
+                })
+                .collect(),
+            None => artifacts,
+        };
 
         let proposal_set: Option<Value> = conn
             .query_row(
@@ -1073,10 +1133,162 @@ pub fn get_run_review_bundle(
             "runId": run_id,
             "projectId": project_id,
             "artifacts": artifacts,
+            "stageReceipts": stage_receipts,
             "proposalSet": proposal_set,
             "proposals": proposals,
         }))
     })
+}
+
+fn stage_provenance_tables_present(conn: &Connection) -> anyhow::Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type = 'table'
+            AND name IN (
+              'narrative_extraction_stage_model_bindings',
+              'narrative_extraction_stage_receipts'
+            )",
+        [],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        count == 0 || count == 2,
+        "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: stage provenance tables are only partially present"
+    );
+    Ok(count == 2)
+}
+
+fn validate_chronicle_resume_artifacts(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<Option<HashSet<(String, String, String)>>> {
+    let surface_path_id: String = conn.query_row(
+        "SELECT surface_path_id FROM narrative_extraction_runs WHERE id = ?1 AND project_id = ?2",
+        params![run_id, project_id],
+        |row| row.get(0),
+    )?;
+    if surface_path_id != "chronicle.extract" {
+        return Ok(None);
+    }
+
+    const TASK_ARTIFACTS: [(&str, &str); 9] = [
+        ("source.snapshot@1", "source.snapshot@1"),
+        ("source.window-plan@1", "source.window-plan@1"),
+        ("chronicle.observe-events@1", "chronicle.raw-observations@1"),
+        ("evidence.resolve@1", "evidence.resolved@1"),
+        (
+            "chronicle.merge-local-observations@1",
+            "chronicle.merged-observations@1",
+        ),
+        (
+            "chronicle.cluster-event-observations@1",
+            "chronicle.event-clusters@1",
+        ),
+        (
+            "chronicle.synthesize-event@1",
+            "chronicle.event-hypotheses@1",
+        ),
+        (
+            "chronicle.match-existing-events@1",
+            "chronicle.existing-event-matches@1",
+        ),
+        ("chronicle.plan-proposals@1", "chronicle.proposal-plan@1"),
+    ];
+
+    let mut verified = HashSet::new();
+    let mut has_resume_topology_task = false;
+    for (task_kind, artifact_kind) in TASK_ARTIFACTS {
+        let task: Option<(String, String, i64)> = conn
+            .query_row(
+                "SELECT id, status, attempt_count
+                   FROM narrative_extraction_tasks
+                  WHERE run_id = ?1 AND task_kind = ?2",
+                params![run_id, task_kind],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((task_id, status, attempt_count)) = task else {
+            // Topology is checked by the coordinator before it can resume;
+            // keep the read bundle available to recovery UI for an incomplete
+            // historical Run.
+            continue;
+        };
+        has_resume_topology_task = true;
+        if status != "completed" {
+            continue;
+        }
+        let attempt_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM narrative_extraction_attempts
+                  WHERE task_id = ?1 AND attempt_number = ?2 AND status = 'completed'",
+                params![task_id, attempt_count],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let attempt_id = attempt_id.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: completed Task '{}' has no completed current Attempt",
+                task_kind
+            )
+        })?;
+        let mut artifact_stmt = conn.prepare(
+            "SELECT payload_storage, payload_json, payload_digest
+               FROM narrative_extraction_artifacts
+              WHERE run_id = ?1 AND task_id = ?2 AND attempt_id = ?3
+                AND artifact_kind = ?4
+              ORDER BY created_at ASC, id ASC",
+        )?;
+        let artifacts = artifact_stmt
+            .query_map(params![run_id, task_id, attempt_id, artifact_kind], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        anyhow::ensure!(
+            artifacts.len() == 1,
+            "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: completed Task '{}' requires exactly one current-attempt '{}' artifact",
+            task_kind,
+            artifact_kind
+        );
+        let (storage, payload_json, payload_digest) = artifacts
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("unreachable checked artifact row"))?;
+        anyhow::ensure!(
+            storage == "inline-json",
+            "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: Chronicle artifact '{}' must use inline-json storage",
+            artifact_kind
+        );
+        let payload_json = payload_json.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: Chronicle artifact '{}' has no inline payload",
+                artifact_kind
+            )
+        })?;
+        let payload: Value = serde_json::from_str(&payload_json).map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: Chronicle artifact '{}' has malformed payload JSON: {error}",
+                artifact_kind
+            )
+        })?;
+        let expected_digest = grimodex_core::canonical_json_digest(&payload)?;
+        anyhow::ensure!(
+            payload_digest.as_deref() == Some(expected_digest.as_str()),
+            "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: Chronicle artifact '{}' payloadDigest does not match Native canonical JSON",
+            artifact_kind
+        );
+        verified.insert((task_id, attempt_id, artifact_kind.to_owned()));
+    }
+    // Older Chronicle review records can use a pre-DAG task vocabulary. They
+    // are never resumable by the coordinator (which requires the complete
+    // current topology), but must remain readable through this generic review
+    // API. Only apply the strict artifact roster projection after recognizing
+    // at least one current resume-task kind.
+    Ok(has_resume_topology_task.then_some(verified))
 }
 
 pub fn save_proposal_set(db: &Database, payload: SaveProposalSetPayload) -> anyhow::Result<Value> {
@@ -2746,6 +2958,7 @@ mod unit_tests {
                     output_json: None,
                     artifacts: vec![],
                     chronicle_stage_bundle: None,
+                    chronicle_stage_receipts: vec![],
                     historical_scope_authority_basis: None,
                 },
             ));
@@ -3011,6 +3224,7 @@ mod unit_tests {
                 output_json: Some(json!({"ok": true})),
                 artifacts: vec![],
                 chronicle_stage_bundle: None,
+                chronicle_stage_receipts: vec![],
                 historical_scope_authority_basis: None,
             },
         )

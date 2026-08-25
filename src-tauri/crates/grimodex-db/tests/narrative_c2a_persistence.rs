@@ -140,6 +140,22 @@ fn advance_scene_source(db: &Database, project_id: &str) -> (String, String) {
 }
 
 fn create_run(db: &Database, project_id: &str, run_id: &str, task_id: &str) {
+    create_run_with_task_kind(
+        db,
+        project_id,
+        run_id,
+        task_id,
+        "chronicle.plan-proposals@1",
+    );
+}
+
+fn create_run_with_task_kind(
+    db: &Database,
+    project_id: &str,
+    run_id: &str,
+    task_id: &str,
+    task_kind: &str,
+) {
     narrative_extraction::narrative_extraction_create_run(
         db,
         CreateRunPayload {
@@ -155,7 +171,7 @@ fn create_run(db: &Database, project_id: &str, run_id: &str, task_id: &str) {
             coverage_json: None,
             tasks: vec![CreateTaskSeed {
                 task_id: Some(task_id.to_owned()),
-                task_kind: "chronicle.plan-proposals@1".to_owned(),
+                task_kind: task_kind.to_owned(),
                 input_json: None,
                 priority: None,
             }],
@@ -2124,6 +2140,7 @@ fn finish_bundle_with_artifacts_and_parsed_output_digest(
                 stage_provenance_closure_digest: binding_closure_digest.to_owned(),
                 closure: typed_closure,
             }),
+            chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
         },
     )
@@ -2264,6 +2281,207 @@ fn persists_a_valid_atomic_stage_bundle_with_receipts_bindings_output_and_artifa
     assert_eq!(
         artifact_count, 3,
         "only the generic raw artifact, hypotheses, and typed output companion are durable; the closure stays ephemeral"
+    );
+}
+
+#[test]
+fn observation_terminal_receipt_is_durable_before_a_later_synthesis_closure() {
+    let db = migrated_db();
+    let run_id = "run-observation-terminal-before-synthesis";
+    let task_id = "task-observation-terminal-before-synthesis";
+    create_run_with_task_kind(
+        &db,
+        PROJECT_A,
+        run_id,
+        task_id,
+        "chronicle.observe-events@1",
+    );
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let receipt_json = stage_receipt(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        OBSERVATION_STAGE_ID,
+        "stage:observation-terminal-before-synthesis",
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+        &json!({ "observations": [observation_payload()] }),
+    );
+    seed_stage_audit_event(&db, PROJECT_A, &receipt_json);
+    let receipt: narrative_extraction::ChronicleStageTerminalReceipt =
+        serde_json::from_value(receipt_json.clone()).expect("typed Observation receipt");
+    let raw = raw_observations(&["observation:arrival"]);
+
+    narrative_extraction::narrative_extraction_finish_task(
+        &db,
+        FinishTaskPayload {
+            run_id: run_id.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            task_id: task_id.to_owned(),
+            attempt_id,
+            lease_owner: "c2a-test-worker".to_owned(),
+            output_json: Some(json!({ "observationCount": 1 })),
+            artifacts: vec![artifact(
+                "artifact-observation-terminal-before-synthesis",
+                "chronicle.raw-observations@1",
+                raw,
+            )],
+            chronicle_stage_bundle: None,
+            chronicle_stage_receipts: vec![receipt],
+            historical_scope_authority_basis: None,
+        },
+    )
+    .expect("Observation terminalization must seal its receipt before synthesis exists");
+
+    let (receipt_count, binding_count): (i64, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM narrative_extraction_stage_receipts
+                      WHERE project_id = ?1 AND run_id = ?2),
+                    (SELECT COUNT(*) FROM narrative_extraction_stage_model_bindings
+                      WHERE project_id = ?1 AND run_id = ?2)",
+                rusqlite::params![PROJECT_A, run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read durable Observation receipt sidecars");
+    assert_eq!((receipt_count, binding_count), (1, 1));
+
+    let bundle = narrative_extraction::narrative_extraction_get_run_review_bundle(
+        &db,
+        narrative_extraction::RunRefPayload {
+            run_id: run_id.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+        },
+    )
+    .expect("restart hydration must reconstruct the pre-synthesis Observation receipt");
+    let hydrated = bundle["stageReceipts"]
+        .as_array()
+        .expect("Native stage receipt roster");
+    assert_eq!(hydrated.len(), 1);
+    assert_eq!(
+        hydrated[0]["stageExecution"]["stageExecutionId"],
+        "stage:observation-terminal-before-synthesis"
+    );
+    assert_eq!(
+        hydrated[0]["stageExecutionReceiptDigest"],
+        receipt_json["stageExecutionReceiptDigest"]
+    );
+}
+
+#[test]
+fn later_synthesis_bundle_reuses_the_previously_terminalized_observation_receipt() {
+    let db = migrated_db();
+    let run_id = "run-observation-terminal-then-synthesis";
+    let plan_task_id = "task-plan-after-observation";
+    let observation_task_id = "task-observation-before-synthesis";
+    create_run(&db, PROJECT_A, run_id, plan_task_id);
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_extraction_tasks
+                (id, run_id, task_kind, status, attempt_count, created_at)
+             VALUES (?1, ?2, 'chronicle.observe-events@1', 'queued', 0, datetime('now'))",
+            rusqlite::params![observation_task_id, run_id],
+        )?;
+        Ok(())
+    })
+    .expect("seed Observation task before plan aggregator");
+
+    let observation_claim = narrative_extraction::narrative_extraction_claim_task(
+        &db,
+        narrative_extraction::ClaimTaskPayload {
+            run_id: run_id.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            lease_owner: "c2a-test-worker".to_owned(),
+            lease_duration_secs: Some(300),
+            task_kinds: Some(vec!["chronicle.observe-events@1".to_owned()]),
+        },
+    )
+    .expect("claim Observation task");
+    let observation_attempt_id = observation_claim["task"]["attemptId"]
+        .as_str()
+        .expect("Observation attempt id")
+        .to_owned();
+    let observation_receipt = stage_receipt(
+        PROJECT_A,
+        run_id,
+        observation_task_id,
+        &observation_attempt_id,
+        OBSERVATION_STAGE_ID,
+        "stage:observation-before-synthesis",
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+        &json!({ "observations": [observation_payload()] }),
+    );
+    seed_stage_audit_event(&db, PROJECT_A, &observation_receipt);
+    let typed_observation_receipt: narrative_extraction::ChronicleStageTerminalReceipt =
+        serde_json::from_value(observation_receipt.clone())
+            .expect("typed Observation terminal receipt");
+    narrative_extraction::narrative_extraction_finish_task(
+        &db,
+        FinishTaskPayload {
+            run_id: run_id.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            task_id: observation_task_id.to_owned(),
+            attempt_id: observation_attempt_id,
+            lease_owner: "c2a-test-worker".to_owned(),
+            output_json: Some(json!({ "observationCount": 1 })),
+            artifacts: vec![artifact(
+                "artifact-observation-before-synthesis",
+                "chronicle.raw-observations@1",
+                raw_observations(&["observation:arrival"]),
+            )],
+            chronicle_stage_bundle: None,
+            chronicle_stage_receipts: vec![typed_observation_receipt],
+            historical_scope_authority_basis: None,
+        },
+    )
+    .expect("terminalize Observation before the later synthesis closure");
+
+    let plan_attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let synthesis_receipt = stage_receipt(
+        PROJECT_A,
+        run_id,
+        plan_task_id,
+        &plan_attempt_id,
+        EVENT_SYNTHESIS_STAGE_ID,
+        "stage:synthesis-after-observation",
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+        &json!({ "proposal": proposal_payload("Arrival", false) }),
+    );
+    let closure = closure_for_receipts(
+        PROJECT_A,
+        run_id,
+        plan_task_id,
+        &plan_attempt_id,
+        json!([observation_receipt, synthesis_receipt]),
+    );
+    finish_bundle(&db, run_id, plan_task_id, &plan_attempt_id, closure)
+        .expect("later closure must reuse, not reject or duplicate, the prior Observation receipt");
+
+    let (receipt_count, binding_count): (i64, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM narrative_extraction_stage_receipts
+                      WHERE project_id = ?1 AND run_id = ?2),
+                    (SELECT COUNT(*) FROM narrative_extraction_stage_model_bindings
+                      WHERE project_id = ?1 AND run_id = ?2)",
+                rusqlite::params![PROJECT_A, run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read durable receipt roster");
+    assert_eq!(
+        (receipt_count, binding_count),
+        (2, 2),
+        "the closure must retain one durable observation and one synthesis receipt"
     );
 }
 
@@ -2643,6 +2861,7 @@ fn chronicle_synthesis_requires_typed_closure_raw_output_link_atomically() {
             // The output/raw reserved pair intentionally enters the generic
             // path here to prove the typed closure bundle cannot be omitted.
             chronicle_stage_bundle: None,
+            chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
         },
     )

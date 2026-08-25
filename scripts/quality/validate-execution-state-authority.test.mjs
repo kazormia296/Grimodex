@@ -151,6 +151,14 @@ function c25bFailurePolicies() {
       policyVersion: "v1",
     },
     {
+      failureCode: "NEX_MAINTENANCE_UNCLASSIFIED",
+      retryDisposition: "manual",
+      maxAttempts: 0,
+      backoffPolicy: "none",
+      nextAttemptPolicy: "none",
+      policyVersion: "v1",
+    },
+    {
       failureCode: "NEX_MAINTENANCE_INTERRUPTED",
       retryDisposition: "retryable",
       maxAttempts: 3,
@@ -163,6 +171,8 @@ function c25bFailurePolicies() {
       "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING",
       "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING",
       "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+      "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS",
+      "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID",
       "NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR",
     ].map((failureCode) => ({
       failureCode,
@@ -186,6 +196,10 @@ function c25bFindingRoutingMatrix() {
       findingRoute: "maintenance-inbox",
     },
     {
+      failureCode: "NEX_MAINTENANCE_UNCLASSIFIED",
+      findingRoute: "maintenance-inbox",
+    },
+    {
       failureCode: "NEX_MAINTENANCE_INTERRUPTED",
       findingRoute: "none",
     },
@@ -194,6 +208,8 @@ function c25bFindingRoutingMatrix() {
       "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING",
       "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING",
       "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+      "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS",
+      "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID",
       "NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR",
     ].map((failureCode) => ({
       failureCode,

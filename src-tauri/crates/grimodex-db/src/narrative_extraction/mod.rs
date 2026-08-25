@@ -154,9 +154,10 @@ pub use c2z_preparation::{
     inspect_workspace_cutover_readiness, plan_application_rekey, ApplicationRekeyCandidate,
     ApplicationRekeyFanOut, ApplicationRekeyPlan, DependencySetMismatch, ExistingApplicationTarget,
     FreshnessParityReport, FreshnessStatusMismatch, InvalidLegacyDependency,
-    ProjectCutoverReadiness, ReadinessGate, ReadinessState, RekeyCollision, RekeyInvalidItem,
-    RekeyMappingKind, UnattributedRekeyItem, UnsupportedGenericFreshness, VerifyReadiness,
-    WorkspaceCutoverReadiness, REQUIRED_VERIFY_CHECKS,
+    PendingV3BackfillApplication, ProjectCutoverReadiness, ReadinessGate, ReadinessState,
+    RekeyCollision, RekeyInvalidItem, RekeyMappingKind, RetainedRunConsumerEdge,
+    UnattributedRekeyItem, UnsupportedGenericFreshness, VerifyReadiness, WorkspaceCutoverReadiness,
+    REQUIRED_VERIFY_CHECKS,
 };
 pub use c2zc_canonical_cutover::{
     canonical_application_freshness, cut_over_workspace_freshness,

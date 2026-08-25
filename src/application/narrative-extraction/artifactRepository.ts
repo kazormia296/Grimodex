@@ -5,6 +5,10 @@ import type {
 } from "./nativeApi";
 import { narrativeExtractionGetRunReviewBundle } from "./nativeApi";
 import type { NarrativeExtractionArtifact } from "@/features/narrative-extraction/runtime/types";
+import {
+  assertChronicleStageTerminalReceiptV1,
+  type ChronicleStageTerminalReceiptV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
 
 const inlineArtifactIndex = new Map<string, NarrativeExtractionArtifact>();
 
@@ -138,6 +142,40 @@ export async function hydrateInlineArtifactsFromNative(input: {
     // Concurrent callers still coalesce via the in-flight Map entry above.
     hydrateInFlight.delete(key);
   }
+}
+
+/**
+ * Recover only Native-verified C1 terminal receipts after a process restart.
+ * The transport closure is intentionally absent; callers rebuild it from
+ * these sealed rows when they later finish the next stage.
+ */
+export async function hydrateChronicleStageReceiptsFromNative(input: {
+  readonly runId: string;
+  readonly projectId: string;
+}): Promise<readonly ChronicleStageTerminalReceiptV1[]> {
+  const bundle = await hydrateInlineArtifactsFromNative(input);
+  const stageReceipts = (bundle as unknown as {
+    readonly stageReceipts?: unknown;
+  }).stageReceipts;
+  if (!Array.isArray(stageReceipts)) {
+    throw new Error(
+      "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: Native hydration did not return a durable stage receipt roster",
+    );
+  }
+  const seenExecutionIds = new Set<string>();
+  for (const receipt of stageReceipts) {
+    await assertChronicleStageTerminalReceiptV1(receipt);
+    if (
+      receipt.stageExecution.projectId !== input.projectId ||
+      receipt.stageExecution.runId !== input.runId ||
+      !seenExecutionIds.add(receipt.stageExecution.stageExecutionId)
+    ) {
+      throw new Error(
+        "NEX_CHRONICLE_STAGE_HYDRATION_INCONSISTENT: Native receipt roster has an invalid Run identity or duplicate stage execution",
+      );
+    }
+  }
+  return stageReceipts;
 }
 
 export async function loadInlineJsonArtifact<T extends object>(
