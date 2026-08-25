@@ -554,6 +554,7 @@
     "electron-product-journeys": {
       "label": "All Electron product journeys",
       "env": {
+        "CI": "true",
         "CARGO_PROFILE_DEV_DEBUG": "0",
         "CARGO_PROFILE_TEST_DEBUG": "0",
         "GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR": ".artifacts/product-journeys"
