@@ -199,6 +199,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
           currentRevisionId: nativeRevisionId,
           createdAt: "2026-01-01T00:00:40.000Z",
           updatedAt: "2026-01-01T00:00:50.000Z",
+          reconciliationEnvelopeSchemaVersion: 2,
           latestDecision: {
             decisionId: "dec-1",
             proposalId: nativeProposalId,
@@ -230,6 +231,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
     expect(row.revisionId).not.toMatch(/^local-rev-/);
     expect(row.proposalId).not.toMatch(/^local-proposal-/);
     expect(row.status).toBe("approved");
+    expect(row.reconciliationEnvelopeSchemaVersion).toBe(2);
     expect(row.displayTitle).toBe("Cold start event");
     expect(row.probableDuplicateChoice).toBe("create-as-new");
     expect(row.evidence[0]?.quote).toBe("quoted text");

@@ -664,8 +664,13 @@
     "hiddenRootLineageLookup": "forbid"
   },
   "activation": {
-    "state": "disabled",
-    "productionEntryPoints": [],
+    "state": "enabled",
+    "productionEntryPoints": [
+      "runChronicleExtractionCoordinator",
+      "narrative_extraction_save_proposal_set",
+      "createHumanDerivedNarrativeRevisionV2",
+      "narrative_extraction_create_human_derived_revision"
+    ],
     "scanRoots": ["src", "electron", "src-tauri"],
     "productionMarkers": [
       "NARRATIVE_IR_V2_PRODUCTION_ENABLED",
@@ -680,10 +685,10 @@
       "focused-persistence-freshness-journeys",
       "implementation-status-atomic"
     ],
-    "v2Emission": "blocked-until-c2b",
-    "humanDerivedV2Ui": "blocked-until-c2b",
-    "currentRevisionPromotion": "blocked-until-c2b",
-    "pureFixtureGeneration": "allowed-before-activation",
+    "v2Emission": "enabled",
+    "humanDerivedV2Ui": "enabled",
+    "currentRevisionPromotion": "enabled",
+    "pureFixtureGeneration": "allowed",
     "productionFallback": "existing-v1-path"
   },
   "scopeAdoption": {

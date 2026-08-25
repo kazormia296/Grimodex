@@ -13,8 +13,9 @@
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::{
     self, AppendRevisionPayload, ArtifactInput, ChronicleStageC1ExecutionBinding,
-    ChronicleStageProvenanceClosure, CreateRunPayload, CreateTaskSeed, FinishTaskPayload,
-    ProposalSeed, SaveProposalSetPayload,
+    ChronicleStageProvenanceClosure, CreateHumanDerivedRevisionRequest, CreateRunPayload,
+    CreateTaskSeed, FinishTaskPayload, NarrativeAdapterIdentity, ProposalSeed,
+    SaveProposalSetPayload,
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
@@ -211,13 +212,18 @@ fn semantic_payload() -> Value {
     })
 }
 
-fn scope() -> Value {
+fn scope(project_id: &str) -> Value {
+    let scene_ref = match project_id {
+        PROJECT_A => "scene:scene-1",
+        PROJECT_B => "scene:scene-2",
+        other => panic!("unknown fixture project {other}"),
+    };
     json!({
         "schemaVersion": 2,
         "registryVersion": "narrative-scope/2",
         "timeline": {"kind": "any"},
         "worldline": {"kind": "any"},
-        "scene": {"kind": "exact", "ref": "scene:1"},
+        "scene": {"kind": "exact", "ref": scene_ref},
         "viewpoint": {"kind": "any"},
         "knowledgeHolder": {"kind": "any"},
         "audience": {"kind": "any"},
@@ -235,7 +241,7 @@ fn source_basis(project_id: &str, revision_token: &str) -> Value {
     }])
 }
 
-fn evidence_set() -> Value {
+fn evidence_set(project_id: &str, revision_token: &str) -> Value {
     let quote_digest = raw_sha256_digest(b"Arrival.");
     assert_eq!(quote_digest, ARRIVAL_QUOTE_DIGEST);
     json!([{
@@ -243,7 +249,8 @@ fn evidence_set() -> Value {
         "documentRef": "document:1",
         "quote": "Arrival.",
         "quoteDigest": quote_digest,
-        "sourceKey": "source:scene:1"
+        "sourceKey": scene_source_key(project_id),
+        "revisionToken": revision_token
     }])
 }
 
@@ -296,13 +303,20 @@ fn final_request_digest() -> String {
     }))
 }
 
-fn dependency_set() -> Value {
+fn dependency_set(project_id: &str) -> Value {
     json!([
         {
             "dependencyId": "dependency:evidence",
-            "inputRef": "source:scene:1",
+            "inputRef": scene_source_key(project_id),
             "contextIds": ["context:event-synthesis"],
             "role": "direct-evidence",
+            "selector": {"kind": "whole-source"}
+        },
+        {
+            "dependencyId": "dependency:context-source",
+            "inputRef": "source:scene:1",
+            "contextIds": ["context:event-synthesis"],
+            "role": "opaque-model-context",
             "selector": {"kind": "whole-source"}
         },
         {
@@ -325,10 +339,11 @@ fn dependency_set() -> Value {
 fn envelope_v2(db: &Database, project_id: &str, run_id: &str, task_id: &str, title: &str) -> Value {
     let proposal = proposal_payload(title, false);
     let semantic = semantic_payload();
-    let scope_value = scope();
-    let source = source_basis(project_id, &scene_revision_token(db, project_id));
-    let evidence = evidence_set();
-    let dependencies = dependency_set();
+    let scope_value = scope(project_id);
+    let revision_token = scene_revision_token(db, project_id);
+    let source = source_basis(project_id, &revision_token);
+    let evidence = evidence_set(project_id, &revision_token);
+    let dependencies = dependency_set(project_id);
     let producer = json!({
         "kind": "reconciler-proposal",
         "id": "chronicle.reconciler",
@@ -529,11 +544,23 @@ fn save_v2_root(
 }
 
 #[test]
-fn public_v2_save_is_activation_disabled_and_rolls_back_without_breaking_v1_save() {
+fn public_v2_save_is_atomic_and_does_not_break_v1_fallback() {
     let db = migrated_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_semantic_epochs
+                (id, project_id, epoch_number, reason, created_at)
+             VALUES ('epoch-public-v2-save', ?1, 0, 'initial',
+                     '2026-08-25T00:00:00.000Z')",
+            [PROJECT_A],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed the current Semantic Epoch for the public V2 save");
     let run_id = "run-public-v2-save";
     let task_id = "task-public-v2-save";
     create_run(&db, PROJECT_A, run_id, task_id);
+    let invalid_second_envelope = envelope_v2(&db, PROJECT_A, run_id, task_id, "Arrival");
     let error = narrative_extraction::narrative_extraction_save_proposal_set(
         &db,
         SaveProposalSetPayload {
@@ -542,21 +569,31 @@ fn public_v2_save_is_activation_disabled_and_rolls_back_without_breaking_v1_save
             proposal_set_id: Some("set-public-v2-save".to_owned()),
             set_kind: "chronicle.extract.review@1".to_owned(),
             summary_json: None,
-            proposals: vec![ProposalSeed {
-                proposal_id: Some("proposal-public-v2-save".to_owned()),
-                proposal_key: "event:arrival:public-v2-save".to_owned(),
-                kind: PROPOSAL_KIND.to_owned(),
-                payload_json: proposal_payload("Arrival", false),
-                reconciliation_envelope: Some(envelope_v2(
-                    &db, PROJECT_A, run_id, task_id, "Arrival",
-                )),
-            }],
+            proposals: vec![
+                ProposalSeed {
+                    proposal_id: Some("proposal-public-v2-save".to_owned()),
+                    proposal_key: "event:arrival:public-v2-save".to_owned(),
+                    kind: PROPOSAL_KIND.to_owned(),
+                    payload_json: proposal_payload("Arrival", false),
+                    reconciliation_envelope: Some(envelope_v2(
+                        &db, PROJECT_A, run_id, task_id, "Arrival",
+                    )),
+                },
+                ProposalSeed {
+                    proposal_id: Some("proposal-public-v2-save-invalid".to_owned()),
+                    proposal_key: "event:arrival:public-v2-save-invalid".to_owned(),
+                    kind: PROPOSAL_KIND.to_owned(),
+                    payload_json: proposal_payload("Departure", false),
+                    reconciliation_envelope: Some(invalid_second_envelope),
+                },
+            ],
         },
     )
-    .expect_err("public V2 save must remain dormant");
-    assert!(error
-        .to_string()
-        .contains("NEX_NARRATIVE_V2_ACTIVATION_DISABLED"));
+    .expect_err("invalid V2 ProposalSet must roll back atomically");
+    assert!(
+        error.to_string().contains("NEX_ENVELOPE_DIGEST_MISMATCH"),
+        "unexpected error: {error:#}"
+    );
     let set_count: i64 = db
         .with_conn(|conn| {
             Ok(conn.query_row(
@@ -568,6 +605,65 @@ fn public_v2_save_is_activation_disabled_and_rolls_back_without_breaking_v1_save
         .expect("read V2 save rollback");
     assert_eq!(set_count, 0);
 
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            proposal_set_id: Some("set-public-v2-save-valid".to_owned()),
+            set_kind: "chronicle.extract.review@1".to_owned(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("proposal-public-v2-save-valid".to_owned()),
+                proposal_key: "event:arrival:public-v2-save-valid".to_owned(),
+                kind: PROPOSAL_KIND.to_owned(),
+                payload_json: proposal_payload("Arrival", false),
+                reconciliation_envelope: Some(envelope_v2(
+                    &db, PROJECT_A, run_id, task_id, "Arrival",
+                )),
+            }],
+        },
+    )
+    .expect("activated public V2 save");
+    assert_eq!(saved["proposals"][0]["originKind"], "enveloped");
+    assert_eq!(saved["proposals"][0]["reconciliationEnvelopeSchemaVersion"], 2);
+    assert_eq!(saved["proposals"][0]["status"], "unreviewed");
+    let (d1_count, freshness_count): (i64, i64) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_dependency_declaration_heads
+                      WHERE project_id = ?1
+                        AND consumer_kind = 'proposal-revision'
+                        AND consumer_key = (
+                            SELECT current_revision_id FROM narrative_proposals
+                             WHERE id = 'proposal-public-v2-save-valid'
+                        )",
+                    [PROJECT_A],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_consumer_freshness
+                      WHERE project_id = ?1
+                        AND consumer_kind = 'proposal-revision'
+                        AND consumer_key = (
+                            SELECT current_revision_id FROM narrative_proposals
+                             WHERE id = 'proposal-public-v2-save-valid'
+                        )",
+                    [PROJECT_A],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("read initial V2 child authorities");
+    assert_eq!(d1_count, 1, "initial V2 save must publish a D1 head");
+    assert_eq!(
+        freshness_count, 1,
+        "initial V2 save must publish current-Epoch Freshness"
+    );
+
     create_run(&db, PROJECT_A, "run-public-v1-save", "task-public-v1-save");
     let legacy = save_legacy_root(
         &db,
@@ -577,6 +673,123 @@ fn public_v2_save_is_activation_disabled_and_rolls_back_without_breaking_v1_save
         "proposal-public-v1-save",
     );
     assert_eq!(legacy["originKind"], "legacy-unbound");
+}
+
+#[test]
+fn public_v2_save_root_enters_the_human_c2b_scope_override_route() {
+    let db = migrated_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_semantic_epochs
+                (id, project_id, epoch_number, reason, created_at)
+             VALUES ('epoch-public-v2-c2b', ?1, 0, 'initial',
+                     '2026-08-25T00:00:00.000Z')",
+            [PROJECT_A],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed the current Semantic Epoch for the public V2 to C2B route");
+    let run_id = "run-public-v2-c2b";
+    let task_id = "task-public-v2-c2b";
+    let proposal_id = "proposal-public-v2-c2b";
+    create_run(&db, PROJECT_A, run_id, task_id);
+
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            proposal_set_id: Some("set-public-v2-c2b".to_owned()),
+            set_kind: "chronicle.extract.review@1".to_owned(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(proposal_id.to_owned()),
+                proposal_key: "event:arrival:public-v2-c2b".to_owned(),
+                kind: PROPOSAL_KIND.to_owned(),
+                payload_json: proposal_payload("Arrival", false),
+                reconciliation_envelope: Some(envelope_v2(
+                    &db, PROJECT_A, run_id, task_id, "Arrival",
+                )),
+            }],
+        },
+    )
+    .expect("public V2 root must save with parent authorities");
+    let parent_revision_id = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .expect("public V2 parent revision")
+        .to_owned();
+    let parent_digest = saved["proposals"][0]["reconciliationEnvelopeDigest"]
+        .as_str()
+        .expect("public V2 parent Envelope digest")
+        .to_owned();
+    let child = narrative_extraction::narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto(
+            &db,
+            PROJECT_A,
+            CreateHumanDerivedRevisionRequest {
+                proposal_id: proposal_id.to_owned(),
+                expected_current_revision_id: parent_revision_id.clone(),
+                parent_revision_id: parent_revision_id.clone(),
+                expected_parent_envelope_digest: parent_digest,
+                proposal_payload: proposal_payload("Arrival", true),
+                adapter: NarrativeAdapterIdentity {
+                    id: ADAPTER_ID.to_owned(),
+                    version: ADAPTER_VERSION.to_owned(),
+                },
+                surface_id: "chronicle-review".to_owned(),
+            },
+        )
+        .expect("public V2 root must enter the Human ScopeOverride writer");
+    let child_revision_id = child["revisionId"]
+        .as_str()
+        .expect("public V2 to C2B child revision")
+        .to_owned();
+    assert_ne!(child_revision_id, parent_revision_id);
+    let (child_schema_version, source_count, edge_count, d1_count, freshness_count): (
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT json_extract(reconciliation_envelope_json, '$.schemaVersion')
+                       FROM narrative_proposal_revisions WHERE id = ?1",
+                    [&child_revision_id],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_revision_source_basis WHERE revision_id = ?1",
+                    [&child_revision_id],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_dependency_edges
+                      WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1",
+                    [&child_revision_id],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_dependency_declaration_heads
+                      WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1",
+                    [&child_revision_id],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_consumer_freshness
+                      WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1",
+                    [&child_revision_id],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("read public V2 to C2B child authorities");
+    assert_eq!(child_schema_version, 2);
+    assert_eq!(source_count, 2, "ScopeOverride adds live authority SourceBasis");
+    assert_eq!(edge_count, 2, "ScopeOverride adds the live authority edge");
+    assert_eq!(d1_count, 1, "ScopeOverride publishes one D1 head");
+    assert_eq!(freshness_count, 1, "ScopeOverride publishes current-Epoch Freshness");
 }
 
 #[test]
@@ -1042,6 +1255,7 @@ fn valid_stage_closure(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn valid_stage_closure_with_raw_refs(
     project_id: &str,
     run_id: &str,
@@ -1364,6 +1578,7 @@ fn finish_bundle_with_artifacts(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_bundle_with_artifacts_and_parsed_output_digest(
     db: &Database,
     run_id: &str,
@@ -2925,15 +3140,17 @@ fn direct_sql_v2_current_rejects_every_immutable_revision_update_surface() {
 }
 
 #[test]
-fn c2a_stays_dormant_and_chronicle_v2_activation_is_disabled() {
+fn c2b_activation_enables_chronicle_v2_and_keeps_the_v1_fallback() {
     let activation = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../policies/narrative/narrative-ir-contract.json"
     ));
-    assert!(activation.contains("\"state\": \"disabled\""));
-    assert!(activation.contains("\"productionEntryPoints\": []"));
-    assert!(activation.contains("\"v2Emission\": \"blocked-until-c2b\""));
-    assert!(activation.contains("\"humanDerivedV2Ui\": \"blocked-until-c2b\""));
-    assert!(activation.contains("\"currentRevisionPromotion\": \"blocked-until-c2b\""));
+    assert!(activation.contains("\"state\": \"enabled\""));
+    assert!(activation.contains("runChronicleExtractionCoordinator"));
+    assert!(activation.contains("narrative_extraction_save_proposal_set"));
+    assert!(activation.contains("createHumanDerivedNarrativeRevisionV2"));
+    assert!(activation.contains("\"v2Emission\": \"enabled\""));
+    assert!(activation.contains("\"humanDerivedV2Ui\": \"enabled\""));
+    assert!(activation.contains("\"currentRevisionPromotion\": \"enabled\""));
     assert!(activation.contains("\"productionFallback\": \"existing-v1-path\""));
 }

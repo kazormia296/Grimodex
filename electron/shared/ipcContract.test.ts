@@ -653,6 +653,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "narrativeExtractionSaveProposalSet",
       Promise.resolve('{"proposalSetId":"ps1","proposals":[]}'),
     ) as never,
+    narrativeExtractionCreateHumanDerivedRevision: record(
+      "narrativeExtractionCreateHumanDerivedRevision",
+      Promise.resolve(
+        '{"proposalId":"p1","revisionId":"rv2","revisionNumber":2,"originKind":"enveloped","createdBy":"human","reconciliationEnvelopeDigest":"sha256:revision","currentRevisionId":"rv2","status":"unreviewed"}',
+      ),
+    ) as never,
     narrativeExtractionGetRunReviewBundle: record(
       "narrativeExtractionGetRunReviewBundle",
       Promise.resolve(
@@ -1311,6 +1317,84 @@ describe("dispatchInvoke", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("NAPI_COMMANDS 引数アダプタ", () => {
+  it("C2B Human writer は typed payload を専用N-APIへ一度だけ渡す", async () => {
+    const method = vi.fn().mockResolvedValue(
+      '{"proposalId":"p1","revisionId":"rv2","revisionNumber":2,"originKind":"enveloped","createdBy":"human","reconciliationEnvelopeDigest":"sha256:revision","currentRevisionId":"rv2","status":"unreviewed"}',
+    );
+    const { backend } = fakeBackend({
+      narrativeExtractionCreateHumanDerivedRevision: method,
+    });
+    const payload = {
+      projectId: "project-1",
+      request: {
+        proposalId: "p1",
+        expectedCurrentRevisionId: "rv1",
+        parentRevisionId: "rv1",
+        expectedParentEnvelopeDigest: "sha256:parent",
+        proposalPayload: { title: "Human title" },
+        adapter: { id: "chronicle.scene-event", version: "1" },
+        surfaceId: "chronicle-review",
+      },
+    };
+
+    const env = await dispatchInvoke(
+      "narrative_extraction_create_human_derived_revision",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        proposalId: "p1",
+        revisionId: "rv2",
+        revisionNumber: 2,
+        originKind: "enveloped",
+        createdBy: "human",
+        reconciliationEnvelopeDigest: "sha256:revision",
+        currentRevisionId: "rv2",
+        status: "unreviewed",
+      },
+    });
+    expect(method).toHaveBeenCalledExactlyOnceWith(payload);
+  });
+
+  it.each([{}, { payload: null }, { payload: 42 }])(
+    "C2B Human writer は不正payloadをN-APIへ渡さず拒否する: %j",
+    async (args) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({
+        narrativeExtractionCreateHumanDerivedRevision: method,
+      });
+
+      const env = await dispatchInvoke(
+        "narrative_extraction_create_human_derived_revision",
+        args,
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    },
+  );
+
+  it("C2B Human writer は旧native bindingでbackend unavailableを返す", async () => {
+    const { backend } = fakeBackend();
+    delete (backend as Partial<NapiBackendLike>)
+      .narrativeExtractionCreateHumanDerivedRevision;
+
+    const env = await dispatchInvoke(
+      "narrative_extraction_create_human_derived_revision",
+      { payload: { projectId: "p1", request: {} } },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionCreateHumanDerivedRevision`,
+    });
+  });
+
   it("semantic per-entity commands forward workspace/project authority before the entity id", async () => {
     const semanticIndexScene = vi.fn().mockResolvedValue("1");
     const codexIndexEntry = vi.fn().mockResolvedValue("2");
@@ -4632,6 +4716,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_apply_commit",
       "narrative_extraction_cancel_run",
       "narrative_extraction_claim_task",
+      "narrative_extraction_create_human_derived_revision",
       "narrative_extraction_create_run",
       "narrative_extraction_fail_task",
       "narrative_extraction_finish_task",

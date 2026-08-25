@@ -72,6 +72,11 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
 
 test("quick and full profiles resolve deterministic command plans", async () => {
   const registry = await readRegistry();
+  assert.equal(
+    registry.stages["electron-product-journeys"].env.CI,
+    "true",
+    "local product journeys must activate the same unpackaged CI seam as hosted CI",
+  );
   const quick = buildLocalCiPlan(registry, {
     profile: "quick",
     base: "origin/master",

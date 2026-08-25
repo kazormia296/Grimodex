@@ -1063,6 +1063,35 @@
       "canonical": null
     },
     {
+      "id": "narrative.proposal.create-human-derived-revision",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "C2B Human-derived revision materialization is review authority metadata; the later apply operation owns the domain Change Feed transaction.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_create_human_derived_revision",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_create_human_derived_revision",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority", "narrative.revision-envelope"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
       "id": "narrative.proposal.append-decision",
       "authorityRoute": "interpreter-projection",
       "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],

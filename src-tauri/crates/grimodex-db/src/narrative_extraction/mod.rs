@@ -60,6 +60,7 @@ mod phase_snapshots;
 mod phase_undo;
 mod plot_thread_operations;
 mod plot_thread_undo;
+mod project_scope_authority;
 mod publish_runtime;
 mod reconciliation_envelope;
 mod repair;
@@ -340,9 +341,9 @@ pub fn narrative_extraction_create_human_derived_revision_with_scope(
     )
 }
 
-/// Native-owned C2B materialization seam. Projection-only derives and
-/// publishes the complete child material atomically; scope override fails
-/// before any DML until its Native Registry/Oracle authority is wired.
+/// Native-owned C2B materialization seam. Projection-only and ScopeOverride
+/// derive and publish the complete child material atomically against the
+/// Native live project Scope authority.
 pub fn narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
     db: &Database,
     trusted_project_id: &str,
@@ -354,6 +355,21 @@ pub fn narrative_extraction_create_human_derived_revision_with_c2b_projection_ma
         trusted_project_id,
         request,
         derivation_kind,
+    )
+}
+
+/// Production C2B Human writer. Native classifies the edited Chronicle
+/// payload and selects projection-only versus ScopeOverride inside the same
+/// transaction; the renderer cannot provide a derivation kind.
+pub fn narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto(
+    db: &Database,
+    trusted_project_id: &str,
+    request: CreateHumanDerivedRevisionRequest,
+) -> anyhow::Result<Value> {
+    human_materialization::create_human_derived_revision_with_c2b_projection_materialization_auto(
+        db,
+        trusted_project_id,
+        request,
     )
 }
 

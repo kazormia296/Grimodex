@@ -1968,11 +1968,13 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       );
     }
     // Establish the same durable legacy boundary that a real workspace has
-    // before restore.  Calling the typed production route is important here:
+    // before restore. Calling the typed production route is important here:
     // an empty/epochless fixture makes the first post-restore open dispatch a
     // Backfill, so the journey can no longer prove the required Verify ->
-    // Rebuild -> confirmation Verify chain.  The fixture deliberately rejects
-    // a reused/no-op response and validates the persisted Run/Epoch pair.
+    // Rebuild -> confirmation Verify chain. A production startup scheduler
+    // may win the race before this explicit retry; accept that alreadyRun
+    // response when the canonical persisted Run/Epoch checks below confirm
+    // the fresh fixture boundary.
     const backfillOutcome = await context.harness.invokeOk(
       context.page,
       "retry_narrative_legacy_backfill",
@@ -1980,12 +1982,12 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
     );
     if (
       !backfillOutcome ||
-      backfillOutcome.outcome !== "ran" ||
+      !["ran", "alreadyRun"].includes(backfillOutcome.outcome) ||
       typeof backfillOutcome.runId !== "string" ||
       backfillOutcome.runId.trim() === ""
     ) {
       throw new Error(
-        `restore fixture requires a fresh typed legacy Backfill outcome: ${JSON.stringify(backfillOutcome)}`,
+        `restore fixture requires a fresh typed/production legacy Backfill outcome: ${JSON.stringify(backfillOutcome)}`,
       );
     }
     const backfillRuns = await context.query(
@@ -2059,6 +2061,7 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
     }
     context.record("restore-fixture-backfill-boundary-seeded", {
       runId: backfillRun.id,
+      outcome: backfillOutcome.outcome,
       semanticEpochId: backfillRun.semanticEpochId,
       epochNumber: Number(initialEpoch.epochNumber),
       reason: initialEpoch.reason,
@@ -2177,6 +2180,27 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       owningRunId: runId,
       readSetToken,
     });
+    await waitForLedger(
+      context,
+      (rows) => {
+        const maintenanceKinds = new Set([
+          "backfill",
+          "dependency-verify",
+          "semantic-index-rebuild",
+          "freshness-evaluation",
+        ]);
+        return rows.some(
+          (row) => row.runKind === "backfill" && row.status === "completed",
+        ) && !rows.some(
+          (row) =>
+            maintenanceKinds.has(row.runKind) &&
+            (row.status === "pending" || row.status === "running"),
+        )
+          ? rows
+          : null;
+      },
+      "restore fixture pre-gap maintenance settled",
+    );
     context.record("restore-fixture-evidence-seeded", {
       edgeId: edge.id,
       consumerKind: edge.consumerKind,
@@ -2219,23 +2243,27 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
  * these deletes cannot affect another journey's graph.
  */
 async function createRestoreFixtureDerivedStateGap(context, evidence) {
-  await context.harness.invokeOk(context.page, "db_execute", {
-    sql: `DELETE FROM narrative_dependency_edge_states
-           WHERE project_id = ? AND edge_id = ?`,
-    params: [context.projectId, evidence.edgeId],
-    method: "run",
-  });
-  await context.harness.invokeOk(context.page, "db_execute", {
-    sql: `DELETE FROM narrative_consumer_freshness
-           WHERE project_id = ?
-             AND consumer_kind = ?
-             AND consumer_key = ?`,
-    params: [
-      context.projectId,
-      RESTORE_FIXTURE_CONSUMER_KIND,
-      evidence.consumerKey,
+  await context.harness.invokeOk(context.page, "db_execute_batch", {
+    statements: [
+      {
+        sql: `DELETE FROM narrative_dependency_edge_states
+               WHERE project_id = ? AND edge_id = ?`,
+        params: [context.projectId, evidence.edgeId],
+        method: "run",
+      },
+      {
+        sql: `DELETE FROM narrative_consumer_freshness
+               WHERE project_id = ?
+                 AND consumer_kind = ?
+                 AND consumer_key = ?`,
+        params: [
+          context.projectId,
+          RESTORE_FIXTURE_CONSUMER_KIND,
+          evidence.consumerKey,
+        ],
+        method: "run",
+      },
     ],
-    method: "run",
   });
   const remaining = await context.query(
     `SELECT
@@ -2273,6 +2301,42 @@ async function prepareLegacySchemaMarker(workspace) {
   const databasePath = path.join(workspace, "grimodex.db");
   try {
     await execFile("sqlite3", [databasePath, "PRAGMA user_version = 30;"]);
+    // The setup launch itself is a real workspace open, so a current-schema
+    // workspace may already contain the canonical Backfill/Verify lifecycle
+    // before this helper rewinds the marker. Remove only those setup-owned
+    // automatic rows; otherwise the legacy-marker open correctly reuses the
+    // old completed Backfill and this journey cannot observe a new migration
+    // boundary. Keep the Semantic Epoch: the legacy backfill should bind to
+    // the existing project authority, just as it would in a real upgrade.
+    await execFile("sqlite3", [
+      databasePath,
+      `BEGIN;
+       DELETE FROM narrative_extraction_attempts
+        WHERE task_id IN (
+          SELECT id
+            FROM narrative_extraction_tasks
+           WHERE run_id IN (
+             SELECT id
+               FROM narrative_extraction_runs
+              WHERE run_kind IN ('backfill', 'dependency-verify')
+           )
+        );
+       DELETE FROM narrative_extraction_task_edges
+        WHERE run_id IN (
+          SELECT id
+            FROM narrative_extraction_runs
+           WHERE run_kind IN ('backfill', 'dependency-verify')
+        );
+       DELETE FROM narrative_extraction_tasks
+        WHERE run_id IN (
+          SELECT id
+            FROM narrative_extraction_runs
+           WHERE run_kind IN ('backfill', 'dependency-verify')
+        );
+       DELETE FROM narrative_extraction_runs
+        WHERE run_kind IN ('backfill', 'dependency-verify');
+       COMMIT;`,
+    ]);
     await execFile("sqlite3", [
       databasePath,
       "DELETE FROM schema_data_migrations WHERE migration_id = 'narrative-c2-finding-identity-v31';",

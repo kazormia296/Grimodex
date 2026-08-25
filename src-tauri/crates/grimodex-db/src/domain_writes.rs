@@ -2370,6 +2370,95 @@ fn select_tree_subtree(
         .collect()
 }
 
+fn live_scene_subtree_count(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    root_id: &str,
+) -> anyhow::Result<i64> {
+    let count = conn.query_row(
+        "WITH RECURSIVE subtree(id, node_type, ancestor_live, path) AS (
+           SELECT id,
+                  node_type,
+                  (archived_at IS NULL),
+                  char(31) || id || char(31)
+             FROM tree_nodes
+            WHERE id = ?1 AND project_id = ?2
+           UNION ALL
+           SELECT child.id,
+                  child.node_type,
+                  (subtree.ancestor_live AND child.archived_at IS NULL),
+                  subtree.path || child.id || char(31)
+             FROM tree_nodes child
+             JOIN subtree ON child.parent_id = subtree.id
+            WHERE child.project_id = ?2
+              AND instr(subtree.path, char(31) || child.id || char(31)) = 0
+         )
+         SELECT COUNT(*)
+           FROM subtree
+          WHERE node_type = 'scene' AND ancestor_live",
+        params![root_id, project_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(count)
+}
+
+fn live_scene_subtree_count_from_snapshots(root_id: &str, snapshots: &[Value]) -> i64 {
+    fn visit(
+        node_id: &str,
+        nodes: &HashMap<String, Value>,
+        children: &HashMap<String, Vec<String>>,
+        parent_live: bool,
+        visiting: &mut HashSet<String>,
+    ) -> i64 {
+        let Some(node) = nodes.get(node_id) else {
+            return 0;
+        };
+        if !visiting.insert(node_id.to_owned()) {
+            return 0;
+        }
+        let live = parent_live
+            && node
+                .get("archivedAt")
+                .is_none_or(|archived_at| archived_at.is_null());
+        let mut count = if live && node.get("nodeType").and_then(Value::as_str) == Some("scene") {
+            1
+        } else {
+            0
+        };
+        if let Some(child_ids) = children.get(node_id) {
+            for child_id in child_ids {
+                count += visit(child_id, nodes, children, live, visiting);
+            }
+        }
+        visiting.remove(node_id);
+        count
+    }
+
+    let nodes = snapshots
+        .iter()
+        .filter_map(|snapshot| {
+            snapshot
+                .get("id")
+                .and_then(Value::as_str)
+                .map(|id| (id.to_owned(), snapshot.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut children = HashMap::<String, Vec<String>>::new();
+    for snapshot in snapshots {
+        let Some(node_id) = snapshot.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(parent_id) = snapshot.get("parentId").and_then(Value::as_str) else {
+            continue;
+        };
+        children
+            .entry(parent_id.to_owned())
+            .or_default()
+            .push(node_id.to_owned());
+    }
+    visit(root_id, &nodes, &children, true, &mut HashSet::new())
+}
+
 fn tree_object_key(snapshot: &Value, node_id: &str) -> Value {
     if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene") {
         json!({ "kind": "scene", "sceneId": node_id })
@@ -2394,10 +2483,25 @@ fn tree_feed_event(
     change_kind: &str,
     mutation_kind: &str,
     changed_paths: Vec<String>,
+    live_scene_subtree_impact: Option<(i64, i64)>,
 ) -> anyhow::Result<NarrativeChangeEventInput> {
     let key_source = after.or(before).ok_or_else(|| {
         anyhow::anyhow!("tree feed event '{node_id}' has neither before nor after state")
     })?;
+    let node_type = key_source
+        .get("nodeType")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("tree feed event '{node_id}' has no nodeType"))?;
+    let mut structural_impact = json!({
+        "changedPaths": changed_paths,
+        "nodeType": node_type,
+    });
+    if let Some((before_count, after_count)) = live_scene_subtree_impact {
+        structural_impact["liveSceneSubtreeImpact"] = json!({
+            "beforeCount": before_count,
+            "afterCount": after_count,
+        });
+    }
     Ok(NarrativeChangeEventInput {
         object_key: tree_object_key(key_source, node_id),
         change_kind: change_kind.to_string(),
@@ -2408,7 +2512,7 @@ fn tree_feed_event(
         after_digest: after.map(narrative_snapshot_digest).transpose()?,
         changed_paths: changed_paths.clone(),
         text_impact: scene_text_impact(before, after)?,
-        structural_impact: Some(json!({ "changedPaths": changed_paths })),
+        structural_impact: Some(structural_impact),
     })
 }
 
@@ -2766,6 +2870,15 @@ pub fn tree_node_create_with_authority(
         } else {
             "metadata"
         };
+        let live_scene_subtree_impact =
+            if row.get("nodeType").and_then(Value::as_str) == Some("folder") {
+                Some((
+                    0,
+                    live_scene_subtree_count(&tx, &payload.project_id, &payload.id)?,
+                ))
+            } else {
+                None
+            };
         let canonical_payload = payload
             .canonical_payload
             .clone()
@@ -2808,6 +2921,7 @@ pub fn tree_node_create_with_authority(
                     change_kind,
                     "create",
                     vec!["/".to_string()],
+                    live_scene_subtree_impact,
                 )?],
             },
         )?;
@@ -3013,6 +3127,17 @@ pub fn tree_node_delete_with_authority(
                             },
                             "delete",
                             vec!["/".to_string()],
+                            (node.get("nodeType").and_then(Value::as_str) == Some("folder")).then(
+                                || {
+                                    (
+                                        live_scene_subtree_count_from_snapshots(
+                                            node_id,
+                                            &before_nodes,
+                                        ),
+                                        0,
+                                    )
+                                },
+                            ),
                         )
                     })
                     .collect::<anyhow::Result<Vec<_>>>()?,
@@ -3234,6 +3359,19 @@ pub fn tree_node_patch_with_authority(
             "patch",
         )?;
         let before = select_tree_node(&tx, &payload.project_id, &payload.node_id)?;
+        let before_live_scene_subtree_count = if before
+            .get("nodeType")
+            .and_then(Value::as_str)
+            == Some("folder")
+        {
+            Some(live_scene_subtree_count(
+                &tx,
+                &payload.project_id,
+                &payload.node_id,
+            )?)
+        } else {
+            None
+        };
         if payload.change_event.is_some() {
             let already_exists = tx
                 .query_row(
@@ -3372,6 +3510,16 @@ pub fn tree_node_patch_with_authority(
             changed_paths.push("/updatedAt".to_string());
         }
         let is_scene = row.get("nodeType").and_then(Value::as_str) == Some("scene");
+        let live_scene_subtree_impact = if row.get("nodeType").and_then(Value::as_str)
+            == Some("folder")
+        {
+            Some((
+                before_live_scene_subtree_count.unwrap_or(0),
+                live_scene_subtree_count(&tx, &payload.project_id, &payload.node_id)?,
+            ))
+        } else {
+            None
+        };
         let canonical_payload = payload
             .canonical_payload
             .clone()
@@ -3446,6 +3594,7 @@ pub fn tree_node_patch_with_authority(
                     tree_patch_change_kind(&changed_paths),
                     if is_restore { "restore" } else { "update" },
                     changed_paths,
+                    live_scene_subtree_impact,
                 )?],
                 origin: payload.origin,
                 original_transaction_id: payload.original_transaction_id.as_deref(),
@@ -4825,6 +4974,15 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
             );
             before.insert(update.id.clone(), snapshot);
         }
+        let mut before_live_scene_subtree_counts = BTreeMap::<String, i64>::new();
+        for (id, snapshot) in &before {
+            if snapshot.get("nodeType").and_then(Value::as_str) == Some("folder") {
+                before_live_scene_subtree_counts.insert(
+                    id.clone(),
+                    live_scene_subtree_count(&tx, &payload.project_id, id)?,
+                );
+            }
+        }
 
         for create in &payload.creates {
             let existing_project = tx
@@ -5031,6 +5189,21 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                     vec!["/".to_string()],
                 )
             };
+            let live_scene_subtree_impact = if after_snapshot
+                .get("nodeType")
+                .and_then(Value::as_str)
+                == Some("folder")
+            {
+                Some((
+                    before_live_scene_subtree_counts
+                        .get(id)
+                        .copied()
+                        .unwrap_or_default(),
+                    live_scene_subtree_count(&tx, &payload.project_id, id)?,
+                ))
+            } else {
+                None
+            };
             events.push(tree_feed_event(
                 id,
                 before_snapshot,
@@ -5038,6 +5211,7 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 change_kind,
                 mutation_kind,
                 changed_paths,
+                live_scene_subtree_impact,
             )?);
         }
         let maintenance_transaction_id = append_tree_feed(
@@ -5172,6 +5346,15 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
             );
             before.insert((*id).to_string(), snapshot);
         }
+        let mut before_live_scene_subtree_counts = BTreeMap::<String, i64>::new();
+        for (id, snapshot) in &before {
+            if snapshot.get("nodeType").and_then(Value::as_str) == Some("folder") {
+                before_live_scene_subtree_counts.insert(
+                    id.clone(),
+                    live_scene_subtree_count(&tx, &payload.project_id, id)?,
+                );
+            }
+        }
 
         let mut after = BTreeMap::<String, Value>::new();
         for snapshot in &journal.updated_before {
@@ -5231,30 +5414,60 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
         let mut events = Vec::new();
         for id in &affected_ids {
             match (before.get(*id), after.get(*id)) {
-                (Some(before), Some(after)) => events.push(tree_feed_event(
-                    id,
-                    Some(before),
-                    Some(after),
-                    "order",
-                    "update",
-                    vec![
-                        "/parentId".to_string(),
-                        "/sortOrder".to_string(),
-                        "/title".to_string(),
-                    ],
-                )?),
-                (Some(before), None) => events.push(tree_feed_event(
-                    id,
-                    Some(before),
-                    None,
-                    if before.get("nodeType").and_then(Value::as_str) == Some("scene") {
-                        "content"
-                    } else {
-                        "metadata"
-                    },
-                    "delete",
-                    vec!["/".to_string()],
-                )?),
+                (Some(before), Some(after)) => {
+                    let live_scene_subtree_impact =
+                        if after.get("nodeType").and_then(Value::as_str) == Some("folder") {
+                            Some((
+                                before_live_scene_subtree_counts
+                                    .get(*id)
+                                    .copied()
+                                    .unwrap_or_default(),
+                                live_scene_subtree_count(&tx, &payload.project_id, id)?,
+                            ))
+                        } else {
+                            None
+                        };
+                    events.push(tree_feed_event(
+                        id,
+                        Some(before),
+                        Some(after),
+                        "order",
+                        "update",
+                        vec![
+                            "/parentId".to_string(),
+                            "/sortOrder".to_string(),
+                            "/title".to_string(),
+                        ],
+                        live_scene_subtree_impact,
+                    )?)
+                }
+                (Some(before), None) => {
+                    let live_scene_subtree_impact =
+                        if before.get("nodeType").and_then(Value::as_str) == Some("folder") {
+                            Some((
+                                before_live_scene_subtree_counts
+                                    .get(*id)
+                                    .copied()
+                                    .unwrap_or_default(),
+                                0,
+                            ))
+                        } else {
+                            None
+                        };
+                    events.push(tree_feed_event(
+                        id,
+                        Some(before),
+                        None,
+                        if before.get("nodeType").and_then(Value::as_str) == Some("scene") {
+                            "content"
+                        } else {
+                            "metadata"
+                        },
+                        "delete",
+                        vec!["/".to_string()],
+                        live_scene_subtree_impact,
+                    )?)
+                }
                 _ => anyhow::bail!("AI tree plan undo produced an incomplete state"),
             }
         }

@@ -1466,10 +1466,15 @@
       ],
       "properties": {
         "state": {
-          "const": "disabled"
+          "enum": ["disabled", "enabled"]
         },
         "productionEntryPoints": {
-          "const": []
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "scanRoots": {
           "const": ["src", "electron", "src-tauri"]
@@ -1491,22 +1496,48 @@
           }
         },
         "v2Emission": {
-          "const": "blocked-until-c2b"
+          "enum": ["blocked-until-c2b", "enabled"]
         },
         "humanDerivedV2Ui": {
-          "const": "blocked-until-c2b"
+          "enum": ["blocked-until-c2b", "enabled"]
         },
         "currentRevisionPromotion": {
-          "const": "blocked-until-c2b"
+          "enum": ["blocked-until-c2b", "enabled"]
         },
         "pureFixtureGeneration": {
-          "const": "allowed-before-activation"
+          "enum": ["allowed-before-activation", "allowed"]
         },
         "productionFallback": {
           "const": "existing-v1-path"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "state": { "const": "disabled" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "productionEntryPoints": { "maxItems": 0 },
+              "v2Emission": { "const": "blocked-until-c2b" },
+              "humanDerivedV2Ui": { "const": "blocked-until-c2b" },
+              "currentRevisionPromotion": { "const": "blocked-until-c2b" },
+              "pureFixtureGeneration": { "const": "allowed-before-activation" }
+            }
+          },
+          "else": {
+            "properties": {
+              "productionEntryPoints": { "minItems": 1 },
+              "v2Emission": { "const": "enabled" },
+              "humanDerivedV2Ui": { "const": "enabled" },
+              "currentRevisionPromotion": { "const": "enabled" },
+              "pureFixtureGeneration": { "const": "allowed" }
+            }
+          }
+        }
+      ]
     },
     "scopeAdoption": {
       "type": "object",

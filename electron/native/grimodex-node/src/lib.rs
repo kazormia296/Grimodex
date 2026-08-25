@@ -866,6 +866,16 @@ struct ChatMsgDto {
     content: String,
 }
 
+/// C2B Human writer wire envelope. The project id is a Native authority
+/// argument to the shared writer; the nested request deliberately contains no
+/// actor, derivation, Scope, D1, or Freshness fields.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateHumanDerivedRevisionWirePayload {
+    project_id: String,
+    request: grimodex_db::narrative_extraction::CreateHumanDerivedRevisionRequest,
+}
+
 /// Renderer が request.prepared を durable append した実行との相関だけを渡す。
 /// request content / transport header / credential はこの DTO に存在しない。
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -6198,6 +6208,28 @@ impl Backend {
             payload,
             narrative_extraction::narrative_extraction_save_proposal_set,
         )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_create_human_derived_revision(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let wire: CreateHumanDerivedRevisionWirePayload =
+                from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &narrative_extraction::narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto(
+                        db,
+                        &wire.project_id,
+                        wire.request,
+                    )?,
+                )?)
+            })
+        })
         .await
     }
 

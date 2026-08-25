@@ -25,6 +25,7 @@ import type {
   EvidenceSetEntry,
   NarrativeProjectionBindingV2,
   NarrativeRevisionEnvelopeV2,
+  SourceBasisRevision,
   SourceBasis,
 } from "@/features/narrative-extraction/reconciler/types";
 import {
@@ -169,6 +170,11 @@ export interface ChronicleSceneEventAdapterInput {
   readonly significance: ChronicleEventSignificance;
   readonly existingEventMatch: ChronicleExistingMatch;
   readonly sourceBasis: SourceBasis;
+  /** Native-facing source binding for each production evidence document. */
+  readonly evidenceSourceBasisByDocumentRef?: ReadonlyMap<
+    string,
+    SourceBasisRevision
+  >;
   readonly contextManifests: readonly ContextSetEntry[];
   readonly dependencyDeclarations: readonly DependencySetEntry[];
   readonly revealBasis: ChronicleSceneEventRevealBasis;
@@ -1049,18 +1055,32 @@ async function assertAdapterInput(
 function buildEvidenceSet(
   anchors: readonly ResolvedEvidenceAnchor[],
   proposal: CreateChronicleEventProposalPayloadV1,
+  sourceBasis: SourceBasis,
+  evidenceSourceBasisByDocumentRef?: ReadonlyMap<string, SourceBasisRevision>,
 ): readonly EvidenceSetEntry[] {
   const byId = new Map(anchors.map((anchor) => [anchor.id, anchor] as const));
   return proposal.evidenceAnchorIds.map((anchorId) => {
     const anchor = byId.get(anchorId);
     if (!anchor)
       throw new TypeError(`Missing resolved Evidence Anchor '${anchorId}'`);
+    const mappedSource = evidenceSourceBasisByDocumentRef?.get(
+      anchor.documentRef,
+    );
+    if (evidenceSourceBasisByDocumentRef && !mappedSource) {
+      throw new TypeError(
+        `Missing Source Basis binding for Evidence Anchor document '${anchor.documentRef}'`,
+      );
+    }
+    const source =
+      mappedSource ??
+      sourceBasis.find((entry) => entry.sourceKey === anchor.sourceRef);
     return {
       evidenceRef: anchor.id,
       documentRef: anchor.documentRef,
       quote: anchor.quote,
       quoteDigest: anchor.quoteDigest,
-      sourceKey: anchor.sourceRef,
+      sourceKey: source?.sourceKey ?? anchor.sourceRef,
+      ...(source ? { revisionToken: source.revisionToken } : {}),
     };
   });
 }
@@ -1311,6 +1331,8 @@ export async function buildChronicleSceneEventV2(
   const evidenceSet = buildEvidenceSet(
     input.evidenceAnchors,
     input.proposalPayload,
+    input.sourceBasis,
+    input.evidenceSourceBasisByDocumentRef,
   );
   const canonicalContextSet = canonicalizeChronicleContextSet(
     input.contextManifests,

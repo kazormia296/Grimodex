@@ -261,6 +261,7 @@ const ELECTRON_MUTATING_ROUTES = [
   "narrative_extraction_fail_task",
   "narrative_extraction_save_proposal_set",
   "narrative_extraction_append_revision",
+  "narrative_extraction_create_human_derived_revision",
   "narrative_extraction_append_decision",
   "narrative_extraction_append_human_decision",
   "narrative_extraction_revise_and_decide",

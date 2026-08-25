@@ -164,6 +164,8 @@ function assertTokenString(
   }
   if (
     value.length > 512 ||
+    // Token identifiers reject C0/C1 controls and DEL at this boundary.
+    // eslint-disable-next-line no-control-regex
     /[\u0000-\u001f\u007f]/u.test(value) ||
     URL_ORIGIN_SHAPED_PATTERN.test(value) ||
     value.includes("://") ||

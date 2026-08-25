@@ -121,10 +121,10 @@ and does not create C2 tables. `ai-apply` must carry an explicit authority
 route because it is valid for both Interactive Agent Command and Interpreter
 Projection; no origin-only fallback is permitted.
 
-## NIR-0 Scope and Dependency contracts — DECLARED
+## NIR-0 Scope and Dependency contracts — C2B WIRED / Disclosure DECLARED
 
-ADR 009 and ADR 010 add two machine-readable contracts without changing the
-current Workspace Schema or C2 runtime:
+ADR 009 and ADR 010 define the machine-readable contracts used by the current
+C2B add-only slice:
 
 - `narrative-scope-relation-contract.json` — the V2 Scope axes, explicit
   `any` versus constrained-but-`unresolved`, strongest-established Relation
@@ -136,21 +136,19 @@ current Workspace Schema or C2 runtime:
   sealed Declaration Set, Head CAS, and V1／V2 priority rules;
 - matching `schemas/narrative-*-v1` JSON Schema draft 2020-12 contracts.
 
-Both contracts are `declared`: their `productionEntryPoints` are empty and
-the validator scans production roots for the reserved V2 markers. A marker
-appearing while the contract remains `declared`, or a future `shadow`／`wired`
-state without a real declared Entry Point, is a gate failure. The current
-`scope.ts`／Disclosure contract remains V1-compatible, the current Dependency
-Edge remains Source-grained, and
-`narrative_consumer_freshness.dependency_set_digest` still means the V1 Source
-identity set. No performance improvement, V2 cutover, or new Freshness
-authority is claimed by this contract-only step.
+The live project Scope authority and C2B ScopeOverride materialization are
+`wired` for the Chronicle add-only pilot. The typed route derives Scope V2,
+child D1/V1 dependencies, current-Epoch Freshness, and the final current
+pointer atomically; it has no mutable Scope head of its own. Historical
+`snapshot:<runId>` authority remains a separate sealed basis. The current
+`scope.ts`/Disclosure contract remains V1-compatible and its production
+admission is still `declared`; D2 full V2 authority cutover is not implied.
 
-## NIR-0 Shared Narrative IR contracts — DECLARED
+## NIR-0 Shared Narrative IR contracts — ACTIVATED (Chronicle add-only pilot)
 
 NIR-0 freezes the shared Narrative IR contract through [ADR
-011](../../docs/adr/011-narrative-ir-revision-semantics-contract.md) and keeps
-production on the existing V1 path:
+011](../../docs/adr/011-narrative-ir-revision-semantics-contract.md) and
+activates only the typed Chronicle `scene-event@1` / `add` route:
 
 - `narrative-ir-contract.json` — Envelope V2 and V2 monotonicity, project-scoped
   `narrative_proposal_revisions.id` identity, Native-verified Human-derived
@@ -167,18 +165,20 @@ production on the existing V1 path:
 - `validate-narrative-ir-contract.mjs` — semantic checks for identity,
   monotonicity, Human-derived boundaries, cumulative mixed-edit
   classification, golden-corpus integrity, Chronicle add-only wiring, and
-  disabled-activation production markers.
+  activation production markers.
 
 ADR 009 remains the owner of Scope capability status and the independent Scope
 Disclosure adoption track. ADR 010 remains the owner of Context Set and
-Dependency Role semantics. All NIR-0 production entry points are empty and V2
-emission/UI/current-Revision promotion remain blocked until C2B plus the
-declared D1/D2 and focused persistence/Freshness evidence.
+Dependency Role semantics. The active production entry points are the
+Chronicle extraction coordinator, atomic proposal-set save, and C2B
+Human-derived revision writer. Direct generic V2 append remains blocked; the
+existing V1 append path is an explicit compatibility fallback. V2
+emission/current-Revision promotion are limited to the `add` pilot.
 
-These are contract-only artifacts: they do not create C2 tables, perform a
-runtime/schema migration, connect Disclosure to Retrieval, or add a second
-Freshness or semantic authority. The existing `scope.ts`, Disclosure
-evaluator, Dependency Edge, and Consumer Freshness paths remain V1-compatible.
+These contracts do not create a second Freshness or semantic authority. The
+existing `scope.ts`, Disclosure evaluator, Dependency Edge, and Consumer
+Freshness paths remain V1-compatible. Disclosure admission, revise/retract/
+merge/split, D2 full cutover, and NIR1 retrieval remain deferred.
 
 ## Gate C2 — IN PROGRESS
 
@@ -361,9 +361,9 @@ declared under Consumer identity `(RUN_CONSUMER_KIND =
 "narrative-extraction-run", run_id)` — the _Run_, never the individual
 Proposal — because Lane N's Rebuild-verify diagnostic already queried Edges
 by that exact convention before any Producer declared them; and
-`source_object_identity` uses fixed prefixes (`project:scene:`,
-`snapshot:`, `project:codex-catalog:`, `projection:`, `artifact:`,
-`capture:`, `evidence:`) that `restore_rebuild.rs`'s `infer_source_kind`
+`source_object_identity` uses fixed prefixes (`project:scope-authority:`,
+`project:scene:`, `snapshot:`, `project:codex-catalog:`, `projection:`,
+`artifact:`, `capture:`, `evidence:`) that `restore_rebuild.rs`'s `infer_source_kind`
 already reads in reverse, so a new `dependency_edges::source_object_identity_for`
 builds the same strings forward from a `SourceBasisRow`'s `(sourceKind,
 sourceKey)`, cross-checked against `reconciliation_envelope.rs`'s own
@@ -379,7 +379,14 @@ a separate, still-open question left to Run/Task/Attempt lifecycle code
 "Producer-time commit path" its own doc comment referred to turned out to
 mean Proposal/Revision generation, not commit _apply_.
 
-Verified via `rustfmt --edition 2021 --check`, a brace/paren balance check,
+`project:scope-authority:<projectId>` is a computed Source added by the NIR-0
+C2B live-authority foundation. It has no durable head of its own: the resolver
+derives one typed revision from a single SQLite snapshot of live `tree_nodes`.
+The source is wired through Incremental Freshness, restore/rebuild, and the
+C2B ScopeOverride materialization transaction. Empty-folder structural events
+carry typed live-Scene subtree impact and do not false-stale the aggregate.
+
+Verified via the NIR0-CERT focused Rust and TypeScript suites,
 a Python `sqlite3` replay of the exact `narrative_dependency_edges` upsert
 SQL confirming two sibling Proposals' Edges survive independently and a
 re-declared Source upserts in place, and a new

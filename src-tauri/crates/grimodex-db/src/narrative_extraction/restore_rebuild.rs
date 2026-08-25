@@ -346,7 +346,9 @@ pub(crate) struct RebuildVerifyReport {
 /// the same as a missing Source (see its doc comment) rather than silently
 /// skipping the Edge.
 fn infer_source_kind(source_object_identity: &str) -> Option<&'static str> {
-    if source_object_identity.starts_with("project:scene:") {
+    if source_object_identity.starts_with("project:scope-authority:") {
+        Some("project-scope-authority")
+    } else if source_object_identity.starts_with("project:scene:") {
         Some("scene-body")
     } else if source_object_identity.starts_with("snapshot:") {
         Some("snapshot-document")

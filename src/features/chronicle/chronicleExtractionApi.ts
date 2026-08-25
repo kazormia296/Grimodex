@@ -1,9 +1,8 @@
+import type { ChronicleExtractionRequest } from "@/application/narrative-extraction/extractionCoordinator";
 import {
   CHRONICLE_EXTRACT_ARTIFACT_KINDS,
   CHRONICLE_EXTRACT_SURFACE_PATH,
-  runChronicleExtractionCoordinator,
-  type ChronicleExtractionRequest,
-} from "@/application/narrative-extraction/extractionCoordinator";
+} from "@/application/narrative-extraction/extractionContract";
 import {
   hydrateInlineArtifactsFromNative,
   loadInlineJsonArtifact,
@@ -15,6 +14,7 @@ import {
 import {
   appendHumanDecision,
   appendRevision,
+  createHumanDerivedRevision,
 } from "@/application/narrative-extraction/proposalRepository";
 import {
   applyChronicleCommit,
@@ -151,6 +151,7 @@ function buildReviewProposalFromPlanned(args: {
   readonly proposalId: string;
   readonly revisionId: string;
   readonly reconciliationEnvelopeDigest?: string | null;
+  readonly reconciliationEnvelopeSchemaVersion?: 1 | 2 | null;
   readonly proposalKey: string;
   readonly status: NarrativeProposalStatus;
   readonly payload: CreateChronicleEventProposalPayloadV1;
@@ -178,6 +179,8 @@ function buildReviewProposalFromPlanned(args: {
     proposalId: args.proposalId,
     revisionId: args.revisionId,
     reconciliationEnvelopeDigest: args.reconciliationEnvelopeDigest,
+    reconciliationEnvelopeSchemaVersion:
+      args.reconciliationEnvelopeSchemaVersion,
     proposalKey: args.proposalKey,
     status: args.status,
     applicability: "applicable",
@@ -199,6 +202,7 @@ type SavedReviewSeed = {
   readonly revisionId: string;
   readonly status?: NarrativeProposalStatus;
   readonly reconciliationEnvelopeDigest?: string | null;
+  readonly reconciliationEnvelopeSchemaVersion?: 1 | 2 | null;
   readonly payload?: CreateChronicleEventProposalPayloadV1;
   readonly probableDuplicateChoice?: ProbableDuplicateChoice | null;
 };
@@ -227,6 +231,8 @@ function savedSeedsFromBundle(
         proposalKey: proposal.proposalKey,
         revisionId: proposal.currentRevisionId,
         reconciliationEnvelopeDigest: proposal.reconciliationEnvelopeDigest,
+        reconciliationEnvelopeSchemaVersion:
+          proposal.reconciliationEnvelopeSchemaVersion,
         status: proposal.status,
         payload,
         probableDuplicateChoice: probableDuplicateChoiceFromDecisionJson(
@@ -246,6 +252,8 @@ function savedSeedsFromCoordinator(
     revisionId: proposal.revisionId,
     status: proposal.status,
     reconciliationEnvelopeDigest: proposal.reconciliationEnvelopeDigest,
+    reconciliationEnvelopeSchemaVersion:
+      proposal.reconciliationEnvelopeSchemaVersion,
   }));
 }
 
@@ -294,6 +302,8 @@ export function buildChronicleExtractionReviewProjection(args: {
         proposalId: seed.proposalId,
         revisionId: seed.revisionId,
         reconciliationEnvelopeDigest: seed.reconciliationEnvelopeDigest,
+        reconciliationEnvelopeSchemaVersion:
+          seed.reconciliationEnvelopeSchemaVersion,
         proposalKey: seed.proposalKey,
         status: seed.status ?? "unreviewed",
         payload,
@@ -361,6 +371,8 @@ export async function startChronicleExtraction(
     existingEvents: request.existingEvents,
   };
 
+  const { runChronicleExtractionCoordinator } =
+    await import("@/application/narrative-extraction/extractionCoordinator");
   const result = await runChronicleExtractionCoordinator(coordinatorRequest, {
     useAi: request.useAi ?? true,
   });
@@ -784,18 +796,45 @@ export async function recordChronicleProposalRevision(args: {
   readonly proposalId: string;
   readonly expectedCurrentRevisionId: string;
   readonly payload: CreateChronicleEventProposalPayloadV1;
+  readonly useHumanDerivedRevision?: boolean;
   readonly inheritReconciliationEnvelope?: {
     readonly parentRevisionId: string;
     readonly expectedEnvelopeDigest: string;
   };
 }): Promise<string> {
+  if (args.useHumanDerivedRevision) {
+    if (!args.inheritReconciliationEnvelope) {
+      throw new Error(
+        "V2 Chronicle revision requires an explicit parent Envelope inheritance",
+      );
+    }
+    const result = await createHumanDerivedRevision({
+      projectId: args.projectId,
+      request: {
+        proposalId: args.proposalId,
+        expectedCurrentRevisionId: args.expectedCurrentRevisionId,
+        parentRevisionId: args.inheritReconciliationEnvelope.parentRevisionId,
+        expectedParentEnvelopeDigest:
+          args.inheritReconciliationEnvelope.expectedEnvelopeDigest,
+        proposalPayload: args.payload as unknown as Readonly<
+          Record<string, unknown>
+        >,
+        adapter: {
+          id: "chronicle.scene-event",
+          version: "1",
+        },
+        surfaceId: "chronicle-review",
+      },
+    });
+    return result.revisionId;
+  }
   const result = await appendRevision({
     runId: args.runId,
     projectId: args.projectId,
     proposalId: args.proposalId,
     expectedCurrentRevisionId: args.expectedCurrentRevisionId,
     payloadJson: args.payload as unknown as Readonly<Record<string, unknown>>,
-    inheritReconciliationEnvelope: args.inheritReconciliationEnvelope,
+    inheritReconciliationEnvelope: undefined,
     createdBy: "chronicle-extract-dialog",
   });
   return result.revisionId;
@@ -920,12 +959,15 @@ export async function reviseChronicleProposal(args: {
     proposalId: args.proposalId,
     expectedCurrentRevisionId: current.revisionId,
     payload: nextPayload,
-    inheritReconciliationEnvelope: current.reconciliationEnvelopeDigest
-      ? {
-          parentRevisionId: current.revisionId,
-          expectedEnvelopeDigest: current.reconciliationEnvelopeDigest,
-        }
-      : undefined,
+    useHumanDerivedRevision: current.reconciliationEnvelopeSchemaVersion === 2,
+    inheritReconciliationEnvelope:
+      current.reconciliationEnvelopeSchemaVersion === 2 &&
+      current.reconciliationEnvelopeDigest
+        ? {
+            parentRevisionId: current.revisionId,
+            expectedEnvelopeDigest: current.reconciliationEnvelopeDigest,
+          }
+        : undefined,
   });
   useChronicleExtractionStore
     .getState()

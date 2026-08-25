@@ -93,7 +93,7 @@ pub(crate) use super::consumer_identity::APPLICATION_CONSUMER_KIND;
 /// carry its prefix -- so `repository.rs` and `legacy_backfill.rs` both copy
 /// it rather than rebuild it here (rebuilding it is what produced the
 /// `project:scene:project:scene:s1` double-prefix defect). This stays as the
-/// canonical forward mapping, tested against all seven kinds below, for the
+/// canonical forward mapping, tested against every current kind below, for the
 /// mutation-time changed-source locator that has to *construct* an identity
 /// from a Change Feed event's `(kind, key)` rather than receive one.
 pub(crate) fn source_identity_prefix_for(source_kind: &str) -> anyhow::Result<&'static str> {
@@ -101,6 +101,7 @@ pub(crate) fn source_identity_prefix_for(source_kind: &str) -> anyhow::Result<&'
     // and `evidence-anchor | evidence`, so both spellings must resolve here
     // too or a legitimate envelope would fail canonicalization.
     Ok(match source_kind {
+        "project-scope-authority" => "project:scope-authority:",
         "scene-body" => "project:scene:",
         "snapshot-document" => "snapshot:",
         "codex-catalog" => "project:codex-catalog:",
@@ -114,9 +115,12 @@ pub(crate) fn source_identity_prefix_for(source_kind: &str) -> anyhow::Result<&'
     })
 }
 
-/// Every identity prefix, longest first so `project:codex-catalog:` is tested
-/// before any shorter `project:`-shaped one could shadow it.
-pub(crate) const SOURCE_IDENTITY_PREFIXES: &[&str] = &[
+/// Source prefixes that were reserved by the identity grammar before the
+/// project Scope authority Source was introduced. This list is deliberately
+/// frozen: adding a Source kind must not reinterpret an opaque id that an
+/// earlier build already accepted. The migration keeps its own copy for the
+/// same reason.
+const LEGACY_SOURCE_IDENTITY_PREFIXES: &[&str] = &[
     "project:codex-catalog:",
     "project:scene:",
     "projection:",
@@ -126,24 +130,39 @@ pub(crate) const SOURCE_IDENTITY_PREFIXES: &[&str] = &[
     "evidence:",
 ];
 
-fn starts_with_any_source_prefix(value: &str) -> bool {
-    SOURCE_IDENTITY_PREFIXES
+/// Every currently registered identity prefix, longest first so
+/// `project:codex-catalog:` is tested before any shorter `project:`-shaped one
+/// could shadow it. This is a registry for current Source dispatch and
+/// maintenance diagnostics, not a retroactive validation grammar.
+pub(crate) const SOURCE_IDENTITY_PREFIXES: &[&str] = &[
+    "project:scope-authority:",
+    "project:codex-catalog:",
+    "project:scene:",
+    "projection:",
+    "snapshot:",
+    "artifact:",
+    "capture:",
+    "evidence:",
+];
+
+fn starts_with_legacy_source_prefix(value: &str) -> bool {
+    LEGACY_SOURCE_IDENTITY_PREFIXES
         .iter()
         .any(|prefix| value.starts_with(prefix))
 }
 
 /// Validates the Run id grammar required for an unambiguous
-/// `snapshot:<runId>` Source identity. Source identity prefixes are reserved:
-/// accepting one at the start of a Run id would make its Snapshot identity
-/// indistinguishable from the malformed historical double-prefix shape.
+/// `snapshot:<runId>` Source identity. Prefixes reserved by the historical
+/// identity grammar remain reserved; prefixes introduced by later Source kinds
+/// stay opaque so existing Run ids keep their meaning.
 pub(crate) fn validate_run_id(run_id: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         !run_id.trim().is_empty() && run_id.trim() == run_id,
         "NEX_RUN_ID_INVALID: runId must be non-empty and must not contain surrounding whitespace"
     );
     anyhow::ensure!(
-        !starts_with_any_source_prefix(run_id),
-        "NEX_RUN_ID_INVALID: runId '{run_id}' must not start with a reserved Source identity prefix"
+        !starts_with_legacy_source_prefix(run_id),
+        "NEX_RUN_ID_INVALID: runId '{run_id}' must not start with a historically reserved Source identity prefix"
     );
     Ok(())
 }
@@ -152,8 +171,9 @@ pub(crate) fn validate_run_id(run_id: &str) -> anyhow::Result<()> {
 ///
 /// `Ok(None)` means the identity is not a Snapshot Source. Snapshot-shaped
 /// identities fail closed when the suffix is blank, padded, or itself starts
-/// with a Source prefix. The last case is the historical double-prefix shape
-/// (`snapshot:snapshot:<runId>`) that must never be treated as a Run id.
+/// with a historically reserved Source prefix. The last case is the historical
+/// double-prefix shape (`snapshot:snapshot:<runId>`) that must never be treated
+/// as a Run id. Prefixes introduced later remain opaque Run-id content.
 pub(crate) fn parse_snapshot_run_id_from_source_identity(
     source_object_identity: &str,
 ) -> anyhow::Result<Option<&str>> {
@@ -214,9 +234,12 @@ pub(crate) fn run_id_belongs_to_another_project(
 /// fails closed rather than being silently decorated into something that
 /// resolves to a different object than the caller meant.
 ///
-/// A key carrying a *different* kind's prefix always fails closed, as does a
-/// key whose remainder is itself prefixed -- the stored shape of the
-/// double-prefix defect. Repairing those is SCHEMA 28's job, not a writer's.
+/// A key carrying a *different* kind's historically reserved prefix always
+/// fails closed, as does a key whose remainder is itself prefixed -- the stored
+/// shape of the double-prefix defect. Prefixes introduced after the historical
+/// grammar are opaque suffix content, including for a newly added Source kind.
+/// Repairing the historical double-prefix rows is SCHEMA 28's job, not a
+/// writer's.
 pub(crate) fn canonical_source_object_identity(
     source_kind: &str,
     source_key: &str,
@@ -232,10 +255,12 @@ pub(crate) fn canonical_source_object_identity(
             !rest.is_empty(),
             "NEX_SOURCE_KEY_INVALID: {source_kind} sourceKey must be {prefix}<id>"
         );
-        anyhow::ensure!(
-            !starts_with_any_source_prefix(rest),
-            "NEX_SOURCE_KEY_INVALID: {source_kind} sourceKey '{source_key}' is already prefixed twice"
-        );
+        if LEGACY_SOURCE_IDENTITY_PREFIXES.contains(&prefix) {
+            anyhow::ensure!(
+                !starts_with_legacy_source_prefix(rest),
+                "NEX_SOURCE_KEY_INVALID: {source_kind} sourceKey '{source_key}' is already prefixed twice"
+            );
+        }
         if source_kind == "snapshot-document" {
             // Keep the writer-facing Snapshot parser and the general
             // canonicalizer on one exact grammar.
@@ -245,8 +270,8 @@ pub(crate) fn canonical_source_object_identity(
     }
 
     anyhow::ensure!(
-        !starts_with_any_source_prefix(source_key),
-        "NEX_SOURCE_KEY_KIND_MISMATCH: {source_kind} sourceKey '{source_key}' carries another source kind's prefix"
+        !starts_with_legacy_source_prefix(source_key),
+        "NEX_SOURCE_KEY_KIND_MISMATCH: {source_kind} sourceKey '{source_key}' carries another historically reserved source kind's prefix"
     );
 
     match source_kind {
@@ -267,7 +292,9 @@ pub(crate) fn canonical_source_object_identity(
 pub(crate) fn validate_stored_source_object_identity(
     source_object_identity: &str,
 ) -> anyhow::Result<()> {
-    let source_kind = if source_object_identity.starts_with("project:codex-catalog:") {
+    let source_kind = if source_object_identity.starts_with("project:scope-authority:") {
+        "project-scope-authority"
+    } else if source_object_identity.starts_with("project:codex-catalog:") {
         "codex-catalog"
     } else if source_object_identity.starts_with("project:scene:") {
         "scene-body"
@@ -1135,6 +1162,10 @@ mod tests {
     #[test]
     fn an_already_qualified_key_is_returned_unchanged() {
         for (kind, key) in [
+            (
+                "project-scope-authority",
+                "project:scope-authority:project-1",
+            ),
             ("scene-body", "project:scene:scene-1"),
             ("snapshot-document", "snapshot:snap-1"),
             ("codex-catalog", "project:codex-catalog:entry-1"),
@@ -1152,9 +1183,9 @@ mod tests {
     }
 
     #[test]
-    fn run_ids_reserve_every_source_identity_prefix() {
+    fn run_ids_reserve_every_historical_source_identity_prefix() {
         validate_run_id("run-1").expect("ordinary Run id");
-        for prefix in SOURCE_IDENTITY_PREFIXES {
+        for prefix in LEGACY_SOURCE_IDENTITY_PREFIXES {
             let run_id = format!("{prefix}run-1");
             let error = validate_run_id(&run_id)
                 .expect_err("a Source-prefixed Run id would make snapshot identity ambiguous");
@@ -1163,6 +1194,48 @@ mod tests {
                 "unexpected error for {run_id}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn newly_registered_source_prefix_does_not_reinterpret_opaque_ids() {
+        let legacy_run_id = "project:scope-authority:legacy-run";
+        validate_run_id(legacy_run_id)
+            .expect("a prefix added after the legacy grammar must remain opaque in Run ids");
+
+        let snapshot_identity = format!("snapshot:{legacy_run_id}");
+        assert_eq!(
+            parse_snapshot_run_id_from_source_identity(&snapshot_identity).unwrap(),
+            Some(legacy_run_id),
+            "a historical Snapshot Source must still expose its opaque Run id"
+        );
+        validate_stored_source_object_identity(&snapshot_identity)
+            .expect("the historical Snapshot Source must remain canonical");
+
+        assert_eq!(
+            canonical_source_object_identity(
+                "projection",
+                "project:scope-authority:legacy-projection"
+            )
+            .unwrap(),
+            "projection:project:scope-authority:legacy-projection"
+        );
+        assert_eq!(
+            canonical_source_object_identity(
+                "scene-body",
+                "project:scene:project:scope-authority:legacy-scene"
+            )
+            .unwrap(),
+            "project:scene:project:scope-authority:legacy-scene"
+        );
+
+        let authority_identity = "project:scope-authority:project:scene:legacy-project";
+        assert_eq!(
+            canonical_source_object_identity("project-scope-authority", authority_identity)
+                .unwrap(),
+            authority_identity
+        );
+        validate_stored_source_object_identity(authority_identity)
+            .expect("a valid project id may itself begin with a historical Source prefix");
     }
 
     /// `resolve_source_revision` dispatches on both spellings, so a
@@ -1190,6 +1263,7 @@ mod tests {
             "projection:proj-1"
         );
         for kind in [
+            "project-scope-authority",
             "scene-body",
             "snapshot-document",
             "codex-catalog",
@@ -1235,6 +1309,8 @@ mod tests {
     fn stored_source_identity_validation_rejects_empty_and_double_prefixes() {
         validate_stored_source_object_identity("project:scene:scene-1")
             .expect("canonical stored Source identity");
+        validate_stored_source_object_identity("project:scope-authority:project-1")
+            .expect("canonical project Scope authority identity");
         for identity in [
             "project:scene:",
             "project:scene:project:scene:scene-1",

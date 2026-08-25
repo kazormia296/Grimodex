@@ -8,10 +8,17 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::dependency_edges::{
-    canonical_source_object_identity, record_dependency_edge_in_tx, validate_run_id,
-    PROPOSAL_REVISION_CONSUMER_KIND,
+    canonical_source_object_identity, find_edges_by_consumer, record_dependency_edge_in_tx,
+    validate_run_id, PROPOSAL_REVISION_CONSUMER_KIND,
+};
+use super::declaration_storage::{
+    write_dependency_declaration_set_in_tx, DependencyDeclarationSetRequest,
 };
 use super::execution_state::next_run_lifecycle_timestamp_in_tx;
+use super::human_material_basis::{project_d1_declaration_set, D1ParentAuthority, MaterialBasis};
+use super::publish_runtime::publish_complete_runless_freshness_in_tx;
+use super::restore_rebuild::evaluate_edge_from_db;
+use super::semantic_epoch::get_current_epoch;
 
 /// Generation of the current Proposal Revision dependency declaration writer.
 /// This is paired with the bundled producer registry; bump both when the
@@ -1001,7 +1008,8 @@ pub fn get_run_review_bundle(
             let mut proposal_stmt = conn.prepare(
                 "SELECT p.id, p.proposal_set_id, p.proposal_key, p.kind, p.status, p.payload_json,
                         p.current_revision_id, p.created_at, p.updated_at,
-                        r.origin_kind, r.reconciliation_envelope_digest
+                        r.origin_kind, r.reconciliation_envelope_digest,
+                        r.reconciliation_envelope_json
                    FROM narrative_proposals p
                    LEFT JOIN narrative_proposal_revisions r ON r.id = p.current_revision_id
                   WHERE p.proposal_set_id = ?1
@@ -1072,13 +1080,12 @@ pub fn get_run_review_bundle(
 }
 
 pub fn save_proposal_set(db: &Database, payload: SaveProposalSetPayload) -> anyhow::Result<Value> {
-    save_proposal_set_with_v2_mode(db, payload, false)
+    save_proposal_set_atomic(db, payload)
 }
 
-fn save_proposal_set_with_v2_mode(
+fn save_proposal_set_atomic(
     db: &Database,
     payload: SaveProposalSetPayload,
-    allow_dormant_v2: bool,
 ) -> anyhow::Result<Value> {
     let proposal_set_id = payload
         .proposal_set_id
@@ -1118,7 +1125,6 @@ fn save_proposal_set_with_v2_mode(
                     &payload.run_id,
                     &payload.project_id,
                     proposal,
-                    allow_dormant_v2,
                 )?);
             }
 
@@ -1136,7 +1142,6 @@ fn insert_proposal_seed(
     run_id: &str,
     project_id: &str,
     seed: &ProposalSeed,
-    allow_dormant_v2: bool,
 ) -> anyhow::Result<Value> {
     let proposal_id = seed
         .proposal_id
@@ -1153,10 +1158,6 @@ fn insert_proposal_seed(
     )?;
     if let Some(envelope) = seed.reconciliation_envelope.as_ref() {
         if envelope_schema_version(envelope) == Some(2) {
-            anyhow::ensure!(
-                allow_dormant_v2,
-                "NEX_NARRATIVE_V2_ACTIVATION_DISABLED: production ProposalSet ingress cannot activate Envelope V2"
-            );
             let envelope_kind = envelope
                 .pointer("/projectionBinding/proposalKind")
                 .and_then(Value::as_str)
@@ -1172,6 +1173,16 @@ fn insert_proposal_seed(
             validate_chronicle_scene_event_proposal_payload(&seed.payload_json).map_err(
                 |error| anyhow::anyhow!("NEX_ENVELOPE_PROPOSAL_PAYLOAD_INVALID: {error}"),
             )?;
+            anyhow::ensure!(
+                envelope.pointer("/assertion/assertionKind").and_then(Value::as_str)
+                    == Some("scene-event@1"),
+                "NEX_NARRATIVE_V2_PILOT_ASSERTION_KIND_FORBIDDEN: production Chronicle pilot accepts only scene-event@1"
+            );
+            anyhow::ensure!(
+                envelope.pointer("/changeIntent/changeKind").and_then(Value::as_str)
+                    == Some("add"),
+                "NEX_NARRATIVE_V2_PILOT_CHANGE_KIND_FORBIDDEN: production Chronicle pilot accepts only add"
+            );
             ensure_v2_proposal_evidence_binding(envelope, &seed.payload_json)?;
         }
         ensure_v2_proposal_payload_digest(envelope, &seed.payload_json)?;
@@ -1234,6 +1245,26 @@ fn insert_proposal_seed(
             .unwrap_or(&[]),
         &created_at,
     )?;
+    if seed
+        .reconciliation_envelope
+        .as_ref()
+        .and_then(envelope_schema_version)
+        == Some(2)
+    {
+        let validated_envelope = validated_envelope.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_C2A_V2_ENVELOPE_INVALID: V2 envelope was not validated before persistence"
+            )
+        })?;
+        materialize_initial_v2_authorities_in_tx(
+            conn,
+            project_id,
+            run_id,
+            &revision_id,
+            validated_envelope,
+            &created_at,
+        )?;
+    }
 
     Ok(json!({
         "proposalId": proposal_id,
@@ -1241,8 +1272,95 @@ fn insert_proposal_seed(
         "revisionId": revision_id,
         "originKind": origin_kind,
         "reconciliationEnvelopeDigest": envelope_digest,
+        "reconciliationEnvelopeSchemaVersion": seed
+            .reconciliation_envelope
+            .as_ref()
+            .and_then(envelope_schema_version),
         "status": "unreviewed",
     }))
+}
+
+/// Bind the first persisted V2 Revision to the same D1 and current-Epoch
+/// Freshness authorities that C2B requires from its parent.  This is kept in
+/// the ProposalSet transaction: a V2 root without these authorities would be
+/// reviewable but could never safely enter the Human writer.
+fn materialize_initial_v2_authorities_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    revision_id: &str,
+    validated_envelope: &super::reconciliation_envelope::ValidatedReconciliationEnvelope,
+    created_at: &str,
+) -> anyhow::Result<()> {
+    let semantic_epoch_id = get_current_epoch(conn, project_id)?
+        .map(|epoch| epoch.id)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_C2A_CURRENT_SEMANTIC_EPOCH_UNAVAILABLE: project has no current Semantic Epoch"
+            )
+        })?;
+    let envelope: Value = serde_json::from_str(&validated_envelope.canonical_json)
+        .context("NEX_C2A_V2_ENVELOPE_INVALID: canonical Envelope could not be decoded")?;
+    let material_basis: MaterialBasis = serde_json::from_value(
+        envelope
+            .get("effectiveMaterialBasis")
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_C2A_V2_MATERIAL_BASIS_MISSING: effectiveMaterialBasis is required"
+                )
+            })?,
+    )
+    .context("NEX_C2A_V2_MATERIAL_BASIS_INVALID: effectiveMaterialBasis is invalid")?;
+    let d1_projection = project_d1_declaration_set(
+        &material_basis,
+        &D1ParentAuthority {
+            project_id: project_id.to_owned(),
+            consumer_kind: PROPOSAL_REVISION_CONSUMER_KIND.to_owned(),
+            consumer_key: revision_id.to_owned(),
+            producer_id: super::human_material_basis::D1_PRODUCER_ID.to_owned(),
+            producer_generation: PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
+        },
+    )?;
+    write_dependency_declaration_set_in_tx(
+        conn,
+        DependencyDeclarationSetRequest {
+            project_id: d1_projection.project_id,
+            consumer_kind: d1_projection.consumer_kind,
+            consumer_key: d1_projection.consumer_key,
+            producer_id: d1_projection.producer_id,
+            producer_generation: d1_projection.producer_generation,
+            expected_head_version: 0,
+            declarations: d1_projection.declarations,
+            created_at: created_at.to_owned(),
+        },
+    )?;
+
+    let edges = find_edges_by_consumer(
+        conn,
+        project_id,
+        PROPOSAL_REVISION_CONSUMER_KIND,
+        revision_id,
+    )?;
+    let edges_and_observations = edges
+        .iter()
+        .map(|edge| {
+            Ok((
+                edge.id.clone(),
+                evaluate_edge_from_db(conn, project_id, run_id, edge)?,
+            ))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    publish_complete_runless_freshness_in_tx(
+        conn,
+        project_id,
+        PROPOSAL_REVISION_CONSUMER_KIND,
+        revision_id,
+        &edges_and_observations,
+        &semantic_epoch_id,
+        created_at,
+    )?;
+    Ok(())
 }
 
 /// Bind the typed proposal's evidence anchors/documents to the exact V2
@@ -1959,6 +2077,11 @@ fn row_to_proposal_set_value(row: &Row<'_>) -> rusqlite::Result<Value> {
 }
 
 fn row_to_proposal_value(row: &Row<'_>) -> rusqlite::Result<Value> {
+    let envelope_json = row.get::<_, Option<String>>(11)?;
+    let envelope_schema_version = envelope_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<Value>(json).ok())
+        .and_then(|envelope| envelope_schema_version(&envelope));
     Ok(json!({
         "proposalId": row.get::<_, String>("id")?,
         "proposalSetId": row.get::<_, String>("proposal_set_id")?,
@@ -1969,6 +2092,7 @@ fn row_to_proposal_value(row: &Row<'_>) -> rusqlite::Result<Value> {
         "currentRevisionId": row.get::<_, Option<String>>("current_revision_id")?,
         "originKind": row.get::<_, Option<String>>("origin_kind")?,
         "reconciliationEnvelopeDigest": row.get::<_, Option<String>>("reconciliation_envelope_digest")?,
+        "reconciliationEnvelopeSchemaVersion": envelope_schema_version,
         "createdAt": row.get::<_, String>("created_at")?,
         "updatedAt": row.get::<_, String>("updated_at")?,
     }))
@@ -2493,6 +2617,43 @@ mod unit_tests {
             })
             .expect("count persisted Runs");
         assert_eq!(persisted, 0);
+    }
+
+    #[test]
+    fn create_run_and_snapshot_resolve_keep_a_new_source_prefix_opaque() {
+        let db = test_db();
+        let run_id = "project:scope-authority:legacy-run";
+        create_run(
+            &db,
+            CreateRunPayload {
+                run_id: Some(run_id.to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: "digest-legacy".to_string(),
+                snapshot_digest: Some("sha256:legacy-snapshot".to_string()),
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![],
+            },
+        )
+        .expect("a legacy Run id beginning with the new Source prefix remains valid");
+
+        let source_key = format!("snapshot:{run_id}");
+        let resolved = db
+            .with_conn(|conn| {
+                crate::narrative_extraction::source_revision::resolve_source_revision(
+                    conn,
+                    "project-1",
+                    run_id,
+                    "snapshot-document",
+                    &source_key,
+                )
+            })
+            .expect("the historical Snapshot Source must still resolve");
+        assert_eq!(resolved.revision_token, "sha256:legacy-snapshot");
     }
 
     #[test]

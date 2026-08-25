@@ -91,6 +91,22 @@ pub enum NarrativeScopeAuthorityStoryTimeOrderV2 {
     },
 }
 
+impl NarrativeScopeAuthorityStoryTimeOrderV2 {
+    pub(crate) fn unresolved_not_provided() -> Self {
+        Self::Unresolved {
+            reason: NarrativeScopeAuthorityUnresolvedReasonV2::NotProvided,
+            raw_story_key: NarrativeScopeAuthorityNullableStoryKeyV2(None),
+        }
+    }
+
+    pub(crate) fn unresolved_ambiguous(raw_story_key: String) -> Self {
+        Self::Unresolved {
+            reason: NarrativeScopeAuthorityUnresolvedReasonV2::Ambiguous,
+            raw_story_key: NarrativeScopeAuthorityNullableStoryKeyV2(Some(raw_story_key)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum NarrativeScopeAuthorityUnresolvedReasonV2 {

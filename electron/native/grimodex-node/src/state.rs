@@ -148,20 +148,19 @@ fn process_narrative_maintenance_generation_seed() -> u64 {
 
 fn cursor_narrative_maintenance_generation() -> u64 {
     let seed = process_narrative_maintenance_generation_seed();
-    let previous = match NARRATIVE_MAINTENANCE_GENERATION_CURSOR.fetch_update(
-        Ordering::AcqRel,
-        Ordering::Acquire,
-        |current| {
-            Some(if current == 0 {
-                seed
-            } else {
-                checked_next_narrative_maintenance_generation(current)
-            })
-        },
-    ) {
-        Ok(previous) => previous,
-        Err(_) => 0,
-    };
+    let previous = NARRATIVE_MAINTENANCE_GENERATION_CURSOR
+        .fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |current| {
+                Some(if current == 0 {
+                    seed
+                } else {
+                    checked_next_narrative_maintenance_generation(current)
+                })
+            },
+        )
+        .unwrap_or_default();
     if previous == 0 {
         seed
     } else {

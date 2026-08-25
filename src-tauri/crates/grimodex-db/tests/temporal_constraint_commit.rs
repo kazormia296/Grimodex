@@ -1,7 +1,9 @@
+use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use grimodex_db::narrative_extraction::{
-    self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
-    UndoCommitPayload,
+    self, run_incremental_freshness_cycle, write_dependency_declaration_set, AppendDecisionPayload,
+    ApplyCommitPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
+    DependencyDeclaration, DependencyDeclarationSetRequest, IncrementalFreshnessCycleOutcome,
+    PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::{
     load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
@@ -370,6 +372,107 @@ fn constraint_scene_time_and_event_time_atomic_commit() {
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn scene_chronicle_journal_root_does_not_select_project_scope_authority() {
+    let db = migrated_db();
+    seed_scene(&db, "scene-scope-calendar", "Chronicle-only Scene");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_semantic_epochs
+                (id, project_id, epoch_number, reason, created_at)
+             VALUES ('epoch-scope-calendar', 'project-1', 0, 'initial',
+                     '2026-08-24T00:00:00.000Z')",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("seed canonical Epoch authority for the Feed cycle");
+    let items = [(
+        "temporal.scene.metadata.patch",
+        json!({
+            "sceneId": "scene-scope-calendar",
+            "baseVersion": 0,
+            "startTime": 5,
+            "startMinute": 480,
+            "startGranularity": "time",
+            "endTime": 5,
+            "endMinute": 540,
+            "endGranularity": "time",
+            "precision": "exact",
+        }),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-scope-calendar", "set-scope-calendar", &items);
+    write_dependency_declaration_set(
+        &db,
+        DependencyDeclarationSetRequest {
+            project_id: "project-1".to_owned(),
+            consumer_kind: "proposal-revision".to_owned(),
+            consumer_key: "scope-calendar-consumer".to_owned(),
+            producer_id: "proposal-revision-source-basis".to_owned(),
+            producer_generation: 1,
+            expected_head_version: 0,
+            declarations: vec![DependencyDeclaration {
+                source_object_identity: "project:scope-authority:project-1".to_owned(),
+                role: DependencyRole::ScopeResolution,
+                selector: DependencySelector::WholeSource,
+            }],
+            created_at: "2026-08-24T00:00:00.000Z".to_owned(),
+        },
+    )
+    .expect("seal the project Scope declaration before the Chronicle-only commit");
+
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-scope-calendar",
+            "digest-scope-calendar",
+            "set-scope-calendar",
+            "run-scope-calendar",
+            zip_ops(&pairs, &items),
+        ),
+    );
+    let journal_id = applied["journalId"].as_str().expect("journal id");
+    let transaction_id = applied["maintenanceTransactionId"]
+        .as_str()
+        .expect("maintenance transaction id");
+    db.with_conn(|conn| {
+        let entity_kind: String = conn.query_row(
+            "SELECT json_extract(after_json, '$.entities[0].entityKind')
+               FROM narrative_commit_journals WHERE id = ?1",
+            [journal_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(entity_kind, "temporal_scene_chronicle");
+        let (object_kind, change_kind, mutation_kind, changed_paths): (
+            String,
+            String,
+            String,
+            String,
+        ) = conn.query_row(
+            "SELECT json_extract(object_key_json, '$.kind'), change_kind,
+                    mutation_kind, changed_paths_json
+               FROM narrative_change_events WHERE transaction_id = ?1",
+            [transaction_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(object_kind, "scene");
+        assert_eq!(change_kind, "calendar");
+        assert_eq!(mutation_kind, "update");
+        assert_eq!(changed_paths, r#"["/"]"#);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify the real journal-to-Feed projection");
+
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db).expect("process the Chronicle-only Feed event")
+    else {
+        panic!("the Chronicle commit must leave a pending Feed range");
+    };
+    assert_eq!(summary.v2_shadow.active_head_count, 0);
+    assert_eq!(summary.v2_shadow.evaluated_declaration_count, 0);
+    assert!(summary.v2_shadow.consumers.is_empty());
 }
 
 #[test]

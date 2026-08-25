@@ -356,6 +356,15 @@ pub struct TrustedHumanDerivationScope {
     pub reveal_basis: TrustedRevealBasis,
 }
 
+/// Native-only Scope V2 material produced by the live project authority
+/// adapter.  The renderer-shaped Human request cannot carry this value.
+#[derive(Debug, Clone)]
+pub(crate) struct TrustedScopeV2Projection {
+    pub scope: Value,
+    pub digest: String,
+    pub source_key: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct TrustedScopeBoundary {
     pub reference: String,

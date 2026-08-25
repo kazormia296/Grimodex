@@ -707,6 +707,7 @@ export declare class Backend {
   narrativeExtractionFinishTask(payload: any): Promise<string>
   narrativeExtractionFailTask(payload: any): Promise<string>
   narrativeExtractionSaveProposalSet(payload: any): Promise<string>
+  narrativeExtractionCreateHumanDerivedRevision(payload: any): Promise<string>
   narrativeExtractionGetRunReviewBundle(payload: any): Promise<string>
   narrativeExtractionAppendRevision(payload: any): Promise<string>
   narrativeExtractionAppendDecision(payload: any): Promise<string>

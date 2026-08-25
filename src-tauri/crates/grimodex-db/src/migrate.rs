@@ -11285,6 +11285,44 @@ mod tests {
         assert_eq!(edge_identities(&conn), vec!["projection:projection-1"]);
     }
 
+    #[test]
+    fn migrate_dependency_edge_identity_v28_keeps_a_new_prefix_opaque_in_a_bare_projection_key() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(&conn, &[("e1", "run-1", "project:scope-authority:legacy")]);
+        conn.execute_batch(
+            "CREATE TABLE narrative_revision_source_basis (
+                revision_id TEXT NOT NULL,
+                ordinal     INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key  TEXT NOT NULL
+             );
+             CREATE TABLE narrative_proposal_revisions (id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposals (id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposal_sets (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, run_id TEXT NOT NULL);
+             INSERT INTO narrative_proposal_sets VALUES ('set-1', 'proj-1', 'run-1');
+             INSERT INTO narrative_proposals VALUES ('proposal-1', 'set-1');
+             INSERT INTO narrative_proposal_revisions VALUES ('revision-1', 'proposal-1');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('revision-1', 0, 'domain-projection', 'project:scope-authority:legacy');",
+        )
+        .expect("seed the declaring Source Basis");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        let identity = edge_identities(&conn);
+        assert_eq!(identity, vec!["projection:project:scope-authority:legacy"]);
+        assert_eq!(
+            crate::narrative_extraction::canonical_source_object_identity(
+                "domain-projection",
+                &identity[0]
+            )
+            .expect("the migration must produce an identity accepted by the current validator"),
+            identity[0]
+        );
+    }
+
     /// An Edge names its own Run through `consumer_key`, so a declaration
     /// belonging to a *different* Run says nothing about this Edge's Source
     /// -- two Runs can use the same bare key for different objects. Scoping
@@ -11788,21 +11826,30 @@ mod tests {
     }
 
     /// The migration freezes its own copy of the prefix list so SCHEMA 28
-    /// keeps meaning what it meant. This binds that copy to the live
-    /// canonicalizer at this point in time, so the two can only diverge on
-    /// purpose.
+    /// keeps meaning what it meant. Every historical prefix must remain
+    /// understood by the live canonicalizer, while later Source kinds may be
+    /// added without rewriting the old migration.
     #[test]
-    fn the_frozen_v28_prefix_table_still_matches_the_live_canonicalizer() {
+    fn the_frozen_v28_prefix_table_remains_a_subset_of_the_live_canonicalizer() {
         use crate::narrative_extraction::SOURCE_IDENTITY_PREFIXES;
 
-        let mut frozen = Database::SOURCE_IDENTITY_PREFIXES_V28.to_vec();
-        let mut live = SOURCE_IDENTITY_PREFIXES.to_vec();
-        frozen.sort_unstable();
-        live.sort_unstable();
         assert_eq!(
-            frozen, live,
-            "SCHEMA 28's frozen prefix list drifted from dependency_edges.rs"
+            Database::SOURCE_IDENTITY_PREFIXES_V28,
+            &[
+                "project:codex-catalog:",
+                "project:scene:",
+                "projection:",
+                "snapshot:",
+                "artifact:",
+                "capture:",
+                "evidence:",
+            ],
+            "SCHEMA 28's historical transition must remain frozen"
         );
+        assert!(Database::SOURCE_IDENTITY_PREFIXES_V28
+            .iter()
+            .all(|prefix| SOURCE_IDENTITY_PREFIXES.contains(prefix)));
+        assert!(SOURCE_IDENTITY_PREFIXES.contains(&"project:scope-authority:"));
 
         assert_eq!(
             Database::RUN_CONSUMER_KIND_V28,

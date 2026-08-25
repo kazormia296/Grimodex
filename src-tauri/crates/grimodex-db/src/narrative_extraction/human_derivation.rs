@@ -9,8 +9,9 @@
 use anyhow::{anyhow, Context};
 use grimodex_core::narrative_ir::{
     classify_chronicle_scene_event_changes, derive_chronicle_scene_event_scope,
-    validate_chronicle_scene_event_proposal_payload, validate_chronicle_scene_event_v2,
-    ChronicleChangeDisposition, CHRONICLE_EVENT_PROPOSAL_KIND,
+    digest_narrative_scope_v2, validate_chronicle_scene_event_proposal_payload,
+    validate_chronicle_scene_event_v2, validate_narrative_scope_v2, ChronicleChangeDisposition,
+    CHRONICLE_EVENT_PROPOSAL_KIND,
 };
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -20,9 +21,11 @@ use uuid::Uuid;
 use super::declaration_storage::{
     read_active_dependency_declaration_set_in_tx, ActiveDependencyDeclarationSetRead,
 };
+use super::human_material_basis::MaterialBasis;
 use super::models::{
     CreateHumanDerivedRevisionRequest, NarrativeAdapterIdentity, TrustedHumanDerivationScope,
-    TrustedRevealBasis, TrustedScopeBoundary, TrustedScopeInterval, TrustedUnresolvedConstraint,
+    TrustedRevealBasis, TrustedScopeBoundary, TrustedScopeInterval, TrustedScopeV2Projection,
+    TrustedUnresolvedConstraint,
 };
 use super::reconciliation_envelope::{
     ensure_v2_proposal_payload_digest, validate_reconciliation_envelope, ORIGIN_ENVELOPED,
@@ -74,10 +77,28 @@ pub(crate) fn create_human_derived_revision_with_scope(
     })
 }
 
-pub(super) fn create_human_derived_revision_in_tx(
+pub(crate) fn create_human_derived_revision_in_tx(
     conn: &Connection,
     trusted_project_id: &str,
     trusted_scope: Option<&TrustedHumanDerivationScope>,
+    request: &CreateHumanDerivedRevisionRequest,
+) -> anyhow::Result<Value> {
+    create_human_derived_revision_in_tx_with_authorities(
+        conn,
+        trusted_project_id,
+        trusted_scope,
+        None,
+        None,
+        request,
+    )
+}
+
+pub(crate) fn create_human_derived_revision_in_tx_with_authorities(
+    conn: &Connection,
+    trusted_project_id: &str,
+    trusted_scope: Option<&TrustedHumanDerivationScope>,
+    trusted_scope_v2: Option<&TrustedScopeV2Projection>,
+    trusted_material_basis: Option<&MaterialBasis>,
     request: &CreateHumanDerivedRevisionRequest,
 ) -> anyhow::Result<Value> {
     anyhow::ensure!(
@@ -238,6 +259,8 @@ pub(super) fn create_human_derived_revision_in_tx(
         &changed_paths,
         trusted_project_id,
         trusted_scope,
+        trusted_scope_v2,
+        trusted_material_basis,
     )?;
     validate_chronicle_scene_event_v2(&child_envelope)
         .map_err(|error| anyhow!("NEX_HUMAN_DERIVATION_ENVELOPE_INVALID: {error}"))?;
@@ -366,6 +389,8 @@ fn build_human_envelope(
     changed_paths: &[String],
     trusted_project_id: &str,
     trusted_scope: Option<&TrustedHumanDerivationScope>,
+    trusted_scope_v2: Option<&TrustedScopeV2Projection>,
+    trusted_material_basis: Option<&MaterialBasis>,
 ) -> anyhow::Result<Value> {
     let mut child = parent.clone();
     let assertion_digest = child
@@ -434,7 +459,10 @@ fn build_human_envelope(
         .ok_or_else(|| {
             anyhow!("NEX_HUMAN_DERIVATION_SCOPE_INVALID: disclosure.secret is invalid")
         })?;
-    let trusted_scope_for_scope = if derivation_kind == "scope-override" && secret {
+    let trusted_scope_for_scope = if derivation_kind == "scope-override"
+        && secret
+        && trusted_scope_v2.is_none()
+    {
         let trusted_scope = trusted_scope.ok_or_else(|| {
             anyhow!(
                 "NEX_HUMAN_DERIVATION_REVEAL_BASIS_UNAVAILABLE: secret scope override requires a trusted Native reveal basis"
@@ -468,7 +496,19 @@ fn build_human_envelope(
         );
     }
     let mut derivation_context = derivation_context;
-    if let Some(trusted_scope) = trusted_scope_for_scope {
+    if let Some(trusted_scope_v2) = trusted_scope_v2 {
+        anyhow::ensure!(
+            derivation_kind == "scope-override" && secret,
+            "NEX_HUMAN_DERIVATION_SCOPE_AUTHORITY_INVALID: direct Scope V2 projection requires a secret scope override"
+        );
+        derivation_context.push(json!({
+            "contextId": "context:chronicle-scope-resolver",
+            "inputRef": trusted_scope_v2.source_key.clone(),
+            "stageId": "chronicle_scene_event_scope_resolver",
+            "exposure": "deterministic-stage",
+            "selector": {"kind": "whole-source"}
+        }));
+    } else if let Some(trusted_scope) = trusted_scope_for_scope {
         derivation_context.push(json!({
             "contextId": "context:chronicle-scope-resolver",
             "inputRef": trusted_scope.source_key.clone(),
@@ -476,6 +516,20 @@ fn build_human_envelope(
             "exposure": "deterministic-stage",
             "selector": {"kind": "whole-source"}
         }));
+    } else if let Some(trusted_material_basis) = trusted_material_basis {
+        if let Some(source) = trusted_material_basis
+            .source_basis
+            .iter()
+            .find(|source| source.source_kind == "project-scope-authority")
+        {
+            derivation_context.push(json!({
+                "contextId": "context:chronicle-scope-resolver",
+                "inputRef": source.source_key.clone(),
+                "stageId": "chronicle_scene_event_scope_resolver",
+                "exposure": "deterministic-stage",
+                "selector": {"kind": "whole-source"}
+            }));
+        }
     }
     let derivation_context_value = Value::Array(derivation_context);
     let derivation_context_digest = canonical_json_digest(&json!({
@@ -505,29 +559,64 @@ fn build_human_envelope(
     object.insert("revisionBasis".to_owned(), basis);
 
     if derivation_kind == "scope-override" {
-        let scene_ref = parent_scene_ref;
-        let reveal_basis = if !secret {
-            // Returning to a non-secret event is deterministic and does not
-            // require a trusted reveal resolver or persisted authority.
-            json!({"status": "not-secret"})
-        } else {
-            let trusted_scope = trusted_scope_for_scope.ok_or_else(|| {
+        let (derived_scope, derived_scope_digest) = if let Some(trusted_scope_v2) = trusted_scope_v2
+        {
+            validate_narrative_scope_v2(&trusted_scope_v2.scope).map_err(|error| {
                 anyhow!(
-                    "NEX_HUMAN_DERIVATION_REVEAL_BASIS_UNAVAILABLE: secret scope override requires a trusted Native reveal basis"
+                    "NEX_HUMAN_DERIVATION_SCOPE_AUTHORITY_INVALID: trusted Scope V2 is invalid: {error}"
                 )
             })?;
-            trusted_reveal_basis_value(&trusted_scope.reveal_basis)
+            let digest = digest_narrative_scope_v2(&trusted_scope_v2.scope).map_err(|error| {
+                anyhow!(
+                    "NEX_HUMAN_DERIVATION_SCOPE_AUTHORITY_INVALID: trusted Scope V2 digest failed: {error}"
+                )
+            })?;
+            anyhow::ensure!(
+                digest == trusted_scope_v2.digest,
+                "NEX_HUMAN_DERIVATION_SCOPE_AUTHORITY_INVALID: trusted Scope V2 digest does not match the projection"
+            );
+            let scene = trusted_scope_v2
+                .scope
+                .pointer("/scene")
+                .and_then(Value::as_object)
+                .and_then(|scene| scene.get("ref"))
+                .and_then(Value::as_str);
+            anyhow::ensure!(
+                trusted_scope_v2.scope.pointer("/scene/kind").and_then(Value::as_str)
+                    == Some("exact")
+                    && scene == Some(parent_scene_ref),
+                "NEX_HUMAN_DERIVATION_SCOPE_AUTHORITY_INVALID: trusted Scope V2 scene does not match the parent"
+            );
+            (
+                trusted_scope_v2.scope.clone(),
+                trusted_scope_v2.digest.clone(),
+            )
+        } else {
+            let scene_ref = parent_scene_ref;
+            let reveal_basis = if !secret {
+                // Returning to a non-secret event is deterministic and does not
+                // require a trusted reveal resolver or persisted authority.
+                json!({"status": "not-secret"})
+            } else {
+                let trusted_scope = trusted_scope_for_scope.ok_or_else(|| {
+                    anyhow!(
+                        "NEX_HUMAN_DERIVATION_REVEAL_BASIS_UNAVAILABLE: secret scope override requires a trusted Native reveal basis"
+                    )
+                })?;
+                trusted_reveal_basis_value(&trusted_scope.reveal_basis)
+            };
+            let derived_scope =
+                derive_chronicle_scene_event_scope(scene_ref, proposal_payload, &reveal_basis)
+                    .map_err(|error| anyhow!("NEX_HUMAN_DERIVATION_SCOPE_INVALID: {error}"))?;
+            (derived_scope.scope, derived_scope.digest)
         };
-        let derived_scope =
-            derive_chronicle_scene_event_scope(scene_ref, proposal_payload, &reveal_basis)
-                .map_err(|error| anyhow!("NEX_HUMAN_DERIVATION_SCOPE_INVALID: {error}"))?;
         let assertion = object
             .get_mut("assertion")
             .and_then(Value::as_object_mut)
             .ok_or_else(|| {
                 anyhow!("NEX_HUMAN_DERIVATION_SCOPE_INVALID: child assertion is missing")
             })?;
-        assertion.insert("scope".to_owned(), derived_scope.scope);
+        assertion.insert("scope".to_owned(), derived_scope);
         let digests = object
             .get_mut("assertionDigests")
             .and_then(Value::as_object_mut)
@@ -536,7 +625,7 @@ fn build_human_envelope(
             })?;
         digests.insert(
             "scopeDigest".to_owned(),
-            Value::String(derived_scope.digest.clone()),
+            Value::String(derived_scope_digest.clone()),
         );
         let assertion_core_digest =
             digests.get("assertionCoreDigest").cloned().ok_or_else(|| {
@@ -546,7 +635,7 @@ fn build_human_envelope(
             "assertionDigest".to_owned(),
             Value::String(canonical_json_digest(&json!({
                 "assertionCoreDigest": assertion_core_digest,
-                "scopeDigest": derived_scope.digest
+                "scopeDigest": derived_scope_digest
             }))?),
         );
     }
@@ -557,6 +646,17 @@ fn build_human_envelope(
         binding.insert(
             "proposalPayloadDigest".to_owned(),
             Value::String(proposal_payload_digest),
+        );
+    }
+    if let Some(trusted_material_basis) = trusted_material_basis {
+        anyhow::ensure!(
+            derivation_kind == "scope-override",
+            "NEX_HUMAN_DERIVATION_MATERIAL_AUTHORITY_INVALID: trusted material basis is only valid for ScopeOverride"
+        );
+        object.insert(
+            "effectiveMaterialBasis".to_owned(),
+            serde_json::to_value(trusted_material_basis)
+                .context("NEX_HUMAN_DERIVATION_MATERIAL_AUTHORITY_INVALID: material basis serialization failed")?,
         );
     }
     Ok(child)

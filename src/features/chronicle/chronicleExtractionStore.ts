@@ -64,6 +64,7 @@ export interface ChronicleReviewProposal {
   readonly proposalId: string;
   readonly revisionId: string | null;
   readonly reconciliationEnvelopeDigest?: string | null;
+  readonly reconciliationEnvelopeSchemaVersion?: 1 | 2 | null;
   readonly proposalKey: string;
   readonly status: NarrativeProposalStatus;
   /** already-satisfied entries are completed / not applicable. */
