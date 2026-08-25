@@ -2,17 +2,18 @@
 
 ## Status
 
-**Candidate certification.** This document is the evidence ledger for the
-NIR-0 completion slice on the local candidate branch. It becomes a final
-certificate only after the final clean HEAD has a passing Full receipt and the
-remote stacked-PR merge evidence is recorded.
+**Candidate certification — local evidence complete; remote integration
+pending.** This document is the evidence ledger for the NIR-0 completion slice
+on the local candidate branch. The exact candidate/base identities and clean
+worktree proof are read from the candidate-bound receipts below. It becomes a
+final certificate only after the remote stacked-PR merge evidence is recorded.
 
 | Field | Value |
 | --- | --- |
 | Scope | C2B ScopeOverride materialization + Chronicle V2 `scene-event@1` `add` pilot |
 | Candidate branch | `codex/nir0-c2b-atomic-materialization` |
-| Candidate HEAD | to be filled after the final certification commit |
-| CI base | `origin/master` at the exact Full receipt base SHA |
+| Candidate HEAD | exact `candidate.resolvedHeadSha` in the final Quick/Full receipts |
+| CI base | exact `candidate.resolvedBaseSha` in the final Quick/Full receipts |
 | Remote status | PR #556 and PR #557 remain open; no push, rebase, or merge was performed by this slice |
 
 ## Certified boundary
@@ -77,7 +78,9 @@ Focused evidence already green on this candidate includes:
 - TypeScript and Electron TypeScript checks: passed;
 - Rust formatting, focused DB checks, and live Scope Freshness tests: passed.
 
-Final candidate-bound receipts must be appended here after the final commit:
+The final candidate-bound receipt files are the authoritative, machine-readable
+ledger. They must have the same resolved base/head, a clean worktree, and
+`status: passed`:
 
 ```text
 pnpm ci:local:quick -- --base origin/master --head HEAD
@@ -86,10 +89,14 @@ pnpm ci:local:full -- --base origin/master --head HEAD
 pnpm ci:local:verify -- full --base origin/master --head HEAD
 ```
 
-| Receipt | Base SHA | Head SHA | Result | Evidence |
+| Receipt | Base SHA | Head SHA | Worktree | Evidence |
 | --- | --- | --- | --- | --- |
-| Quick | pending | pending | pending | local receipt generated from the final candidate HEAD |
-| Full | pending | pending | pending | local receipt generated from the final candidate HEAD |
+| Quick | `candidate.resolvedBaseSha` | `candidate.resolvedHeadSha` | `candidate.worktreeClean: true` | [`.artifacts/local-ci/quick.json`](../../../.artifacts/local-ci/quick.json) |
+| Full | `candidate.resolvedBaseSha` | `candidate.resolvedHeadSha` | `candidate.worktreeClean: true` | [`.artifacts/local-ci/full.json`](../../../.artifacts/local-ci/full.json) |
+
+The final local run covers 14/14 Full stages. Windows NSIS compilation remains
+the explicitly retained release-only/manual item; it is not reclassified as a
+local Linux pass.
 
 ## Deferred work
 
