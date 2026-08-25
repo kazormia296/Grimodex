@@ -51,8 +51,7 @@ struct ApplicationApplyLineage {
 }
 
 #[derive(Debug, Clone)]
-struct ApplicationEdgeOwnerRun {
-    project_id: String,
+struct ApplicationEdgeBackfillOwnerRun {
     run_kind: String,
     status: String,
     spec_json: Option<String>,
@@ -583,23 +582,54 @@ fn validate_application_edge_owner_provenance(
     })?;
     validate_consumer_identity(RUN_CONSUMER_KIND, owner_id)?;
 
-    let owner_run: Option<ApplicationEdgeOwnerRun> = conn
+    // An ApplyCommit may legitimately be owned by an ordinary extraction Run.
+    // Resolve the common Run identity first, before consulting the
+    // maintenance-only Backfill coordinates.
+    let owner_project_id: Option<String> = conn
         .query_row(
-            "SELECT project_id, run_kind, status, spec_json, semantic_epoch_id,
+            "SELECT project_id
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            [owner_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let owner_project_id = owner_project_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_FOREIGN: Edge '{}' owner '{}' is not in project '{}'",
+            edge_id,
+            owner_id,
+            project_id
+        )
+    })?;
+    ensure!(
+        owner_project_id == project_id,
+        "NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_FOREIGN: Edge '{}' owner '{}' is not in project '{}'",
+        edge_id,
+        owner_id,
+        project_id
+    );
+
+    if apply_lineage.run_id.as_deref() == Some(owner_id) {
+        return Ok(());
+    }
+
+    let owner_run: Option<ApplicationEdgeBackfillOwnerRun> = conn
+        .query_row(
+            "SELECT run_kind, status, spec_json, semantic_epoch_id,
                     work_key, completed_at, outcome_summary_json
                FROM narrative_extraction_runs
               WHERE id = ?1",
             [owner_id],
             |row| {
-                Ok(ApplicationEdgeOwnerRun {
-                    project_id: row.get(0)?,
-                    run_kind: row.get(1)?,
-                    status: row.get(2)?,
-                    spec_json: row.get(3)?,
-                    semantic_epoch_id: row.get(4)?,
-                    work_key: row.get(5)?,
-                    completed_at: row.get(6)?,
-                    outcome_summary_json: row.get(7)?,
+                Ok(ApplicationEdgeBackfillOwnerRun {
+                    run_kind: row.get(0)?,
+                    status: row.get(1)?,
+                    spec_json: row.get(2)?,
+                    semantic_epoch_id: row.get(3)?,
+                    work_key: row.get(4)?,
+                    completed_at: row.get(5)?,
+                    outcome_summary_json: row.get(6)?,
                 })
             },
         )
@@ -612,18 +642,6 @@ fn validate_application_edge_owner_provenance(
             project_id
         )
     })?;
-    ensure!(
-        owner_run.project_id == project_id,
-        "NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_FOREIGN: Edge '{}' owner '{}' is not in project '{}'",
-        edge_id,
-        owner_id,
-        project_id
-    );
-
-    if apply_lineage.run_id.as_deref() == Some(owner_id) {
-        return Ok(());
-    }
-
     // A v3 Backfill marker is not a substitute for its terminal lifecycle
     // ownership.  Require the exact completed Run/Task/Attempt pair before
     // accepting it as an Application Edge owner, matching readiness.

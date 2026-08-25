@@ -748,6 +748,190 @@ fn matching_pre_existing_application_target_with_apply_commit_owner_is_reused() 
 }
 
 #[test]
+fn generic_create_run_shape_apply_commit_owner_is_reused_without_maintenance_coordinates() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        seed_project(
+            conn,
+            "c2zb-generic-apply-owner",
+            "c2zb-generic-apply-owner-run",
+            "c2zb-generic-apply-owner-application",
+            "c2zb-generic-apply-owner-commit",
+            "c2zb-generic-apply-owner-edge",
+            "project:scene:c2zb-generic-apply-owner-scene",
+            "c2zb-generic-apply-owner-token",
+            false,
+            true,
+        )?;
+
+        // Use the exact Run column list written by generic `create_run`.
+        // `run_kind` is not NULL: the production schema materialises its
+        // NOT NULL default `interpretation`; only the maintenance-specific
+        // Epoch/work coordinates remain NULL.
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
+                 created_at, started_at, version)
+             VALUES ('c2zb-generic-apply-owner-ordinary-run',
+                     'c2zb-generic-apply-owner', 'chronicle.extract', '{}',
+                     '{\"domain\":\"chronicle\",\"version\":1}', 'generic-spec',
+                     NULL, NULL, NULL, 'completed', '{}', ?1, ?1, 0)",
+            [SEEDED_AT],
+        )?;
+        conn.execute(
+            "UPDATE narrative_apply_commits
+                SET run_id = 'c2zb-generic-apply-owner-ordinary-run'
+              WHERE id = 'c2zb-generic-apply-owner-commit'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges
+                SET owning_run_id = 'c2zb-generic-apply-owner-ordinary-run'
+              WHERE id = 'c2zb-generic-apply-owner-edge-target'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges
+                SET consumer_key = 'c2zb-generic-apply-owner-ordinary-run',
+                    owning_run_id = 'c2zb-generic-apply-owner-ordinary-run'
+              WHERE id = 'c2zb-generic-apply-owner-edge'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE narrative_consumer_freshness
+                SET consumer_key = 'c2zb-generic-apply-owner-ordinary-run',
+                    last_evaluated_run_id = 'c2zb-generic-apply-owner-ordinary-run'
+              WHERE project_id = 'c2zb-generic-apply-owner'
+                AND consumer_kind = 'narrative-extraction-run'
+                AND consumer_key = 'c2zb-generic-apply-owner-run'",
+            [],
+        )?;
+        let maintenance_coordinates: (String, Option<String>, Option<String>) = conn.query_row(
+            "SELECT run_kind, semantic_epoch_id, work_key
+                   FROM narrative_extraction_runs
+                  WHERE id = 'c2zb-generic-apply-owner-ordinary-run'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(
+            maintenance_coordinates,
+            ("interpretation".to_string(), None, None)
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed generic Apply-owned existing target");
+
+    db.migrate()
+        .expect("generic ApplyCommit owner is safe without maintenance coordinates");
+    db.with_conn(|conn| {
+        let target: (String, Option<String>) = conn.query_row(
+            "SELECT id, owning_run_id
+               FROM narrative_dependency_edges
+              WHERE project_id = 'c2zb-generic-apply-owner'
+                AND consumer_kind = 'application'
+                AND consumer_key = 'c2zb-generic-apply-owner-application'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(target.0, "c2zb-generic-apply-owner-edge-target");
+        assert_eq!(
+            target.1.as_deref(),
+            Some("c2zb-generic-apply-owner-ordinary-run")
+        );
+
+        let old_edge_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE id = 'c2zb-generic-apply-owner-edge'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(old_edge_count, 0);
+        let marker_version: i64 = conn.query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [MARKER],
+            |row| row.get(0),
+        )?;
+        assert_eq!(marker_version, 1);
+        let schema_version: i32 =
+            conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        assert_eq!(schema_version, CURRENT_SCHEMA);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify generic Apply-owned existing target reuse");
+}
+
+#[test]
+fn matching_foreign_apply_commit_owner_rejects_before_the_equality_shortcut() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        seed_project(
+            conn,
+            "c2zb-foreign-equal-owner-local",
+            "c2zb-foreign-equal-owner-local-run",
+            "c2zb-foreign-equal-owner-local-application",
+            "c2zb-foreign-equal-owner-local-commit",
+            "c2zb-foreign-equal-owner-local-edge",
+            "project:scene:c2zb-foreign-equal-owner-local-scene",
+            "c2zb-foreign-equal-owner-local-token",
+            false,
+            true,
+        )?;
+        seed_project(
+            conn,
+            "c2zb-foreign-equal-owner-remote",
+            "c2zb-foreign-equal-owner-remote-run",
+            "c2zb-foreign-equal-owner-remote-application",
+            "c2zb-foreign-equal-owner-remote-commit",
+            "c2zb-foreign-equal-owner-remote-edge",
+            "project:scene:c2zb-foreign-equal-owner-remote-scene",
+            "c2zb-foreign-equal-owner-remote-token",
+            false,
+            false,
+        )?;
+        conn.execute(
+            "UPDATE narrative_apply_commits
+                SET run_id = 'c2zb-foreign-equal-owner-remote-run'
+              WHERE id = 'c2zb-foreign-equal-owner-local-commit'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges
+                SET owning_run_id = 'c2zb-foreign-equal-owner-remote-run'
+              WHERE id = 'c2zb-foreign-equal-owner-local-edge-target'",
+            [],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed matching foreign ApplyCommit owner");
+
+    let error = db
+        .migrate()
+        .expect_err("ApplyCommit equality must not bypass same-project ownership");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_FOREIGN"),
+        "unexpected error: {error}"
+    );
+    db.with_conn(|conn| {
+        assert_schema_31_without_marker(conn, "c2zb-foreign-equal-owner-local")?;
+        let owner: Option<String> = conn.query_row(
+            "SELECT owning_run_id FROM narrative_dependency_edges
+              WHERE id = 'c2zb-foreign-equal-owner-local-edge-target'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            owner.as_deref(),
+            Some("c2zb-foreign-equal-owner-remote-run")
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify matching foreign owner left no C2-ZB writes");
+}
+
+#[test]
 fn matching_pre_existing_application_target_with_completed_v3_backfill_owner_is_reused() {
     let db = rewound_database();
     db.with_conn(|conn| {
