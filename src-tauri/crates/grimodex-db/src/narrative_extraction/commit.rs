@@ -1477,9 +1477,6 @@ pub fn narrative_extraction_apply_commit(
                 let read_set = load_read_set_rows(&envelope)?;
                 let source_rows = source_basis.into_iter().chain(read_set).collect::<Vec<_>>();
                 let generic_freshness_canonical = is_generic_freshness_canonical(conn)?;
-                let ensure_existing = operation_op_kinds
-                    .get(index)
-                    .is_some_and(|kind| journal_op_kind_wrote_nothing(kind));
                 if generic_freshness_canonical {
                     write_application_dependencies_in_tx(
                         conn,
@@ -1489,14 +1486,18 @@ pub fn narrative_extraction_apply_commit(
                         &source_rows,
                         &now,
                     )?;
-                    if ensure_existing {
-                        initialize_application_freshness_in_tx(
-                            conn,
-                            &payload.project_id,
-                            &application_id,
-                            &now,
-                        )?;
-                    }
+                    // Post-cutover, a newly declared Application has no
+                    // legacy projection fallback.  Feed-backed mutations
+                    // will supersede this seed in the same/next cycle, but a
+                    // normal Apply must still publish a canonical
+                    // Unknown/Manual row immediately rather than leaving an
+                    // authority-shaped hole until a later Feed wake.
+                    initialize_application_freshness_in_tx(
+                        conn,
+                        &payload.project_id,
+                        &application_id,
+                        &now,
+                    )?;
                 } else {
                     conn.execute(
                         "INSERT INTO narrative_projection_freshness

@@ -2,6 +2,9 @@ use grimodex_db::import::{
     apply_commit, create_session, save_source_package, ImportApplyCommitPayload,
     ImportSessionCreatePayload, SaveImportSourcePackagePayload,
 };
+use grimodex_db::narrative_extraction::{
+    C2_ZC_CUTOVER_CONTRACT_VERSION, C2_ZC_CUTOVER_MIGRATION_ID,
+};
 use grimodex_db::Database;
 use grimodex_db::{
     load_narrative_runtime_policy_from_db, set_narrative_runtime_policy,
@@ -116,6 +119,12 @@ fn apply_creates_project_and_commits_session() {
             feed,
             ("import".to_string(), "import.session.apply".to_string(), 5)
         );
+        let epoch_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE project_id = 'imported-project'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(epoch_count, 0, "pre-marker import must not mint an Epoch");
         let feed_order = conn
             .prepare(
                 "SELECT event.event_ordinal,
@@ -162,6 +171,138 @@ fn apply_creates_project_and_commits_session() {
         Ok(())
     })
     .expect("inspect committed import");
+}
+
+#[test]
+fn post_marker_import_binds_one_initial_epoch_to_the_import_apply_event() {
+    let db = migrated_db();
+    create_ready_session(&db, "session-c2zc-birth", "imported-c2zc-project");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                C2_ZC_CUTOVER_MIGRATION_ID,
+                C2_ZC_CUTOVER_CONTRACT_VERSION,
+                "2026-08-25T00:00:00.000Z",
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("activate C2-ZC marker fixture");
+
+    let payload = apply_payload(
+        "session-c2zc-birth",
+        "request-c2zc-birth",
+        "imported-c2zc-project",
+    );
+    let first = apply_commit(&db, payload.clone()).expect("apply post-marker import");
+    let replay = apply_commit(&db, payload).expect("replay post-marker import");
+    assert_eq!(replay["idempotentReplay"], true);
+    assert_eq!(first["projectId"], replay["projectId"]);
+
+    db.with_conn(|conn| {
+        let event_uid: String = conn.query_row(
+            "SELECT event_uid FROM change_events
+              WHERE project_id = 'imported-c2zc-project'
+                AND domain = 'import'
+                AND op_type = 'import.session.apply'
+                AND entity_type = 'import_session'
+                AND entity_id = 'session-c2zc-birth'",
+            [],
+            |row| row.get(0),
+        )?;
+        let epochs = conn
+            .prepare(
+                "SELECT epoch_number, reason, triggered_by_change_event_uid
+                   FROM narrative_semantic_epochs
+                  WHERE project_id = 'imported-c2zc-project'
+                  ORDER BY epoch_number ASC",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(
+            epochs,
+            vec![(0, "initial".to_string(), Some(event_uid))],
+            "the imported project birth must be bound to its canonical Import Apply event"
+        );
+        Ok(())
+    })
+    .expect("verify post-marker import Epoch");
+}
+
+#[test]
+fn import_fails_atomically_for_an_unsupported_c2zc_marker() {
+    let db = migrated_db();
+    create_ready_session(&db, "session-c2zc-unsupported", "imported-c2zc-unsupported");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                C2_ZC_CUTOVER_MIGRATION_ID,
+                C2_ZC_CUTOVER_CONTRACT_VERSION + 1,
+                "2026-08-25T00:00:00.000Z",
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("seed unsupported C2-ZC marker fixture");
+
+    let error = apply_commit(
+        &db,
+        apply_payload(
+            "session-c2zc-unsupported",
+            "request-c2zc-unsupported",
+            "imported-c2zc-unsupported",
+        ),
+    )
+    .expect_err("unsupported marker must reject import before it commits");
+    assert!(error
+        .to_string()
+        .contains("NEX_C2ZC_IMPORT_PROJECT_BIRTH_MARKER_UNSUPPORTED"));
+
+    db.with_conn(|conn| {
+        let state: String = conn.query_row(
+            "SELECT state FROM import_sessions WHERE id = 'session-c2zc-unsupported'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(state, "source-saved");
+        for (label, sql) in [
+            (
+                "import project",
+                "SELECT COUNT(*) FROM projects WHERE id = 'imported-c2zc-unsupported'",
+            ),
+            (
+                "import receipt",
+                "SELECT COUNT(*) FROM import_commits WHERE request_id = 'request-c2zc-unsupported'",
+            ),
+            (
+                "canonical event",
+                "SELECT COUNT(*) FROM change_events WHERE project_id = 'imported-c2zc-unsupported'",
+            ),
+            (
+                "Feed transaction",
+                "SELECT COUNT(*) FROM narrative_change_transactions WHERE project_id = 'imported-c2zc-unsupported'",
+            ),
+            (
+                "birth Epoch",
+                "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE project_id = 'imported-c2zc-unsupported'",
+            ),
+        ] {
+            let count: i64 = conn.query_row(sql, [], |row| row.get(0))?;
+            assert_eq!(count, 0, "{label} must roll back");
+        }
+        Ok(())
+    })
+    .expect("verify unsupported-marker import rollback");
 }
 
 #[test]

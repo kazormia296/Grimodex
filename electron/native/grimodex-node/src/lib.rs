@@ -1720,8 +1720,10 @@ impl Backend {
             // successfully.  A failed graph evaluation, cursor reservation,
             // or publication therefore cannot attest a live scheduler or
             // activate the canonical authority.
-            let cycle_outcome =
-                narrative_extraction::run_incremental_freshness_cycle(authority.db())?;
+            let (cycle_outcome, successful_cycle) =
+                narrative_extraction::run_incremental_freshness_cycle_with_liveness_capability(
+                    authority.db(),
+                )?;
             // A workspace swap may complete while the bounded cycle is
             // evaluating its pinned old authority.  Re-resolve the active
             // authority before minting liveness so that a late old cycle can
@@ -1758,6 +1760,7 @@ impl Backend {
                 current_authority.db(),
                 &binding.authority_id,
                 binding.generation,
+                successful_cycle,
             )?;
 
             match cycle_outcome {
@@ -1923,22 +1926,51 @@ impl Backend {
         .await
     }
 
-    /// Acknowledge delivered durable wakes after main has registered the
-    /// corresponding discovery. Returns the number of rows newly acked.
+    /// Acknowledge durable wakes only after main has registered the exact
+    /// discovery binding that listed them. A stale authority gets a typed
+    /// non-ACK, never an acknowledgement against a replacement workspace.
     #[napi]
-    pub async fn ack_narrative_maintenance_wake_outbox(&self, ids: Vec<String>) -> Result<u32> {
+    pub async fn ack_narrative_maintenance_wake_outbox(
+        &self,
+        ids: Vec<String>,
+        workspace_binding: serde_json::Value,
+    ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let requested_binding: MaintenanceWorkspaceBinding =
+                from_wire("workspaceBinding", workspace_binding)?;
+            requested_binding.validate().map_err(AppError::Anyhow)?;
+            let _workspace_open_guard = state
+                .ws
+                .open_lock
+                .lock()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
             let authority = match active_database(&state.ws) {
                 Ok(authority) => authority,
                 Err(
                     AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
-                ) => return Ok(0),
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                    })
+                    .to_string())
+                }
                 Err(error) => return Err(error),
             };
+            let current_binding = narrative_maintenance_binding_for_authority(&state, &authority);
+            if current_binding != requested_binding {
+                return Ok(serde_json::json!({
+                    "status": "workspace-binding-mismatch",
+                })
+                .to_string());
+            }
             let acked = narrative_extraction::ack_maintenance_wakes(authority.db(), &ids)
                 .map_err(AppError::Anyhow)?;
-            Ok(u32::try_from(acked).unwrap_or(u32::MAX))
+            Ok(serde_json::json!({
+                "status": "accepted",
+                "acknowledged": u32::try_from(acked).unwrap_or(u32::MAX),
+            })
+            .to_string())
         })
         .await
     }
@@ -2445,29 +2477,51 @@ impl Backend {
                         invalid("NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: workKey is required")
                     })?;
             }
-            if let Some(binding) = object.get("workspaceBinding") {
-                if !binding.is_null() {
-                    let binding = binding.as_object().ok_or_else(|| {
-                        invalid(
-                            "NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: workspaceBinding is invalid",
-                        )
-                    })?;
-                    if binding
-                        .get("authorityId")
-                        .and_then(serde_json::Value::as_str)
-                        .is_none_or(|value| value.trim().is_empty())
-                        || binding
-                            .get("generation")
-                            .and_then(serde_json::Value::as_u64)
-                            .is_none_or(|value| value == 0)
-                    {
-                        return Err(invalid(
-                            "NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: workspaceBinding is invalid",
-                        ));
-                    }
+            let workspace_binding = object
+                .get("workspaceBinding")
+                .filter(|binding| !binding.is_null())
+                .ok_or_else(|| {
+                    invalid(
+                        "NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: workspaceBinding is required",
+                    )
+                })?;
+            let requested_binding: MaintenanceWorkspaceBinding =
+                serde_json::from_value(workspace_binding.clone()).map_err(|_| {
+                    invalid("NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: workspaceBinding is invalid")
+                })?;
+            requested_binding.validate().map_err(AppError::Anyhow)?;
+
+            // A receipt is an ACK boundary, not a best-effort audit line.
+            // Hold the same open barrier that protects normal maintenance
+            // execution and compare the submitted binding to the live
+            // authority immediately before both durable writes. A stale
+            // Electron scheduler receives a typed non-ACK and must retain its
+            // original work rather than attributing it to a replacement DB.
+            let _workspace_open_guard = state
+                .ws
+                .open_lock
+                .lock()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+            let authority = match active_database(&state.ws) {
+                Ok(authority) => authority,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                    })
+                    .to_string())
                 }
+                Err(error) => return Err(error),
+            };
+            let current_binding = narrative_maintenance_binding_for_authority(&state, &authority);
+            if current_binding != requested_binding {
+                return Ok(serde_json::json!({
+                    "status": "workspace-binding-mismatch",
+                })
+                .to_string());
             }
-            let workspace_path = active_workspace_path(&state.ws)?;
+            let workspace_path = authority.path().to_path_buf();
             let receipt_id = Uuid::new_v4().to_string();
             let recorded_at = grimodex_core::now_rfc3339_millis();
             let directory = workspace_path.join(".grimodex");
@@ -2495,6 +2549,16 @@ impl Backend {
                 .map_err(|error| AppError::Anyhow(anyhow::Error::from(error)))?;
             file.sync_data()
                 .map_err(|error| AppError::Anyhow(anyhow::Error::from(error)))?;
+            // The JSONL record is the durable audit receipt; the native
+            // outbox is the durable recovery trigger. Return `accepted` only
+            // after both have completed. A crash between them may duplicate a
+            // receipt on retry, but cannot make Electron drop work without a
+            // durable rediscovery path.
+            narrative_extraction::record_maintenance_delivery_failure_wake(
+                authority.db(),
+                project_id,
+            )
+            .map_err(AppError::Anyhow)?;
             Ok(serde_json::json!({
                 "status": "accepted",
                 "receiptId": record["receiptId"],
@@ -8833,6 +8897,122 @@ mod narrative_maintenance_foreground_release_tests {
                 correlation: Some("correlation-test".to_string()),
             })
             .expect("configure foreground seam");
+    }
+
+    #[tokio::test]
+    async fn delivery_failure_receipt_and_wake_ack_require_the_exact_live_binding() {
+        let (backend, root) = backend_with_workspace("delivery-failure-binding-cas");
+        let binding: Value = serde_json::from_str(
+            &backend
+                .get_narrative_maintenance_workspace_binding()
+                .expect("read workspace binding")
+                .expect("active workspace binding"),
+        )
+        .expect("binding JSON");
+        let stale_binding = serde_json::json!({
+            "authorityId": "stale-authority",
+            "generation": binding["generation"].as_u64().expect("generation"),
+        });
+        let failure_payload = |workspace_binding: Value| {
+            serde_json::json!({
+                "schemaVersion": 1,
+                "scope": "work",
+                "projectId": "project-1",
+                "runKind": "dependency-verify",
+                "workKey": "dependency-verify:epoch-1",
+                "semanticEpochId": "epoch-1",
+                "workspaceBinding": workspace_binding,
+                "retryCount": 4,
+                "error": "NEX_MAINTENANCE_TRANSIENT: injected delivery failure",
+            })
+        };
+
+        let stale: Value = serde_json::from_str(
+            &backend
+                .record_narrative_maintenance_delivery_failure(failure_payload(
+                    stale_binding.clone(),
+                ))
+                .await
+                .expect("typed stale-binding response"),
+        )
+        .expect("stale-binding JSON");
+        assert_eq!(
+            stale,
+            serde_json::json!({ "status": "workspace-binding-mismatch" })
+        );
+        let listed: Vec<Value> = serde_json::from_str(
+            &backend
+                .list_narrative_maintenance_wake_outbox()
+                .await
+                .expect("list wakes after stale receipt"),
+        )
+        .expect("wake list JSON");
+        assert!(
+            listed.is_empty(),
+            "stale receipt must write neither audit ACK nor wake"
+        );
+        assert!(
+            !root
+                .join("workspace/.grimodex/narrative-maintenance-delivery-failures.jsonl")
+                .exists(),
+            "stale receipt must not append a JSONL record"
+        );
+
+        let accepted: Value = serde_json::from_str(
+            &backend
+                .record_narrative_maintenance_delivery_failure(failure_payload(binding.clone()))
+                .await
+                .expect("accepted receipt"),
+        )
+        .expect("accepted receipt JSON");
+        assert_eq!(accepted["status"], "accepted");
+        assert!(accepted["receiptId"].as_str().is_some());
+        let listed: Vec<Value> = serde_json::from_str(
+            &backend
+                .list_narrative_maintenance_wake_outbox()
+                .await
+                .expect("list durable recovery wake"),
+        )
+        .expect("wake list JSON");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["projectId"], "project-1");
+        assert_eq!(listed[0]["operation"], "maintenance-delivery-failure");
+        assert_eq!(listed[0]["reason"], "maintenance-delivery-failure");
+        let wake_id = listed[0]["id"].as_str().expect("wake id").to_string();
+
+        let stale_ack: Value = serde_json::from_str(
+            &backend
+                .ack_narrative_maintenance_wake_outbox(vec![wake_id.clone()], stale_binding)
+                .await
+                .expect("typed stale ACK response"),
+        )
+        .expect("stale ACK JSON");
+        assert_eq!(
+            stale_ack,
+            serde_json::json!({ "status": "workspace-binding-mismatch" })
+        );
+        let still_pending: Vec<Value> = serde_json::from_str(
+            &backend
+                .list_narrative_maintenance_wake_outbox()
+                .await
+                .expect("list retained wake"),
+        )
+        .expect("wake list JSON");
+        assert_eq!(still_pending.len(), 1, "stale ACK must retain durable wake");
+
+        let ack: Value = serde_json::from_str(
+            &backend
+                .ack_narrative_maintenance_wake_outbox(vec![wake_id], binding)
+                .await
+                .expect("accepted ACK"),
+        )
+        .expect("ACK JSON");
+        assert_eq!(
+            ack,
+            serde_json::json!({ "status": "accepted", "acknowledged": 1 })
+        );
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     async fn start_foreground_run(backend: &Backend) -> (String, PinnedWorkspaceDb) {

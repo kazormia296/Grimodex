@@ -2,23 +2,23 @@
 
 ## Status
 
-**Candidate certification — local evidence complete; remote integration
-pending.** This document is the evidence ledger for the NIR-0 completion slice
-on the local candidate branch. The exact candidate/base identities and clean
-worktree proof are read from the candidate-bound receipts below. It becomes a
-final certificate only after the remote stacked-PR merge evidence is recorded.
+**Not certified — remediation and fresh evidence required.** The former
+candidate record predates the merge of #556 and #557 into `master` and contains
+placeholder receipt identities. It must not be treated as evidence for the
+current implementation or as a completed certification.
 
-| Field            | Value                                                                                  |
-| ---------------- | -------------------------------------------------------------------------------------- |
-| Scope            | C2B ScopeOverride materialization + Chronicle V2 `scene-event@1` `add` pilot           |
-| Candidate branch | `codex/nir0-c2b-atomic-materialization`                                                |
-| Candidate HEAD   | exact `candidate.resolvedHeadSha` in the final Quick/Full receipts                     |
-| CI base          | exact `candidate.resolvedBaseSha` in the final Quick/Full receipts                     |
-| Remote status    | PR #556 and PR #557 remain open; no push, rebase, or merge was performed by this slice |
+| Field | Value |
+| --- | --- |
+| Scope | C2B ScopeOverride materialization + Chronicle V2 `scene-event@1` `add` pilot |
+| Historical baseline | `f78c008088937134d3c0c080ef694891cca225b0` (`master` after #556/#557) |
+| Candidate | Not yet created for the remediation set |
+| Certification evidence | Missing: a clean, candidate-bound Quick and Full receipt with exact base/head |
+| Remote status | #556 and #557 are merged; no remediation PR or certification has been created by this document |
 
-## Certified boundary
+## Intended boundary after remediation
 
-The candidate activates only the typed Chronicle `scene-event@1` `add` route.
+The remediation candidate may activate only the typed Chronicle
+`scene-event@1` `add` route after all listed controls and fresh evidence pass.
 It includes:
 
 - live project Scope authority and Native ScopeOverride derivation;
@@ -63,24 +63,13 @@ cutover, or non-add Chronicle semantics.
 | empty Folder reorder/archive                                                                 | typed subtree impact is zero; aggregate Edge is not selected or published stale               |
 | activation marker/policy/schema mismatch                                                     | semantic validator fails closed                                                               |
 
-## Verification ledger
+## Required verification ledger
 
-Focused evidence already green on this candidate includes:
-
-- semantic boundary: 128 writer operations classified; Narrative IR contract:
-  10 golden cases;
-- Electron IPC contract suite: 407/407;
-- N-API integration suite: 131 passed, 1 intentional fixture skip, 0 failed;
-- C2A persistence: 23/23, including public V2 save → Human ScopeOverride;
-- C2B Human request compile/negative matrix: 38/38;
-- live Scope authority runtime: 11/11;
-- Chronicle production adapter: 3/3; coordinator: 4/4; review route/cold-start: 5/5;
-- TypeScript and Electron TypeScript checks: passed;
-- Rust formatting, focused DB checks, and live Scope Freshness tests: passed.
-
-The final candidate-bound receipt files are the authoritative, machine-readable
-ledger. They must have the same resolved base/head, a clean worktree, and
-`status: passed`:
+The former suite counts and placeholder receipt values are historical notes,
+not current evidence. A remediation candidate must run the focused regressions
+and the following candidate-bound commands on a clean, committed HEAD. The
+receipt files are authoritative only when their resolved base/head match that
+candidate and their status is `passed`:
 
 ```text
 pnpm ci:local:quick -- --base origin/master --head HEAD
@@ -89,14 +78,13 @@ pnpm ci:local:full -- --base origin/master --head HEAD
 pnpm ci:local:verify -- full --base origin/master --head HEAD
 ```
 
-| Receipt | Base SHA                    | Head SHA                    | Worktree                        | Evidence                                                                    |
-| ------- | --------------------------- | --------------------------- | ------------------------------- | --------------------------------------------------------------------------- |
-| Quick   | `candidate.resolvedBaseSha` | `candidate.resolvedHeadSha` | `candidate.worktreeClean: true` | [`.artifacts/local-ci/quick.json`](../../../.artifacts/local-ci/quick.json) |
-| Full    | `candidate.resolvedBaseSha` | `candidate.resolvedHeadSha` | `candidate.worktreeClean: true` | [`.artifacts/local-ci/full.json`](../../../.artifacts/local-ci/full.json)   |
+| Receipt | Required identity | Required worktree | Evidence |
+| --- | --- | --- | --- |
+| Quick | exact committed remediation base/head | clean | [`.artifacts/local-ci/quick.json`](../../../.artifacts/local-ci/quick.json) |
+| Full | same exact committed remediation base/head | clean | [`.artifacts/local-ci/full.json`](../../../.artifacts/local-ci/full.json) |
 
-The final local run covers 14/14 Full stages. Windows NSIS compilation remains
-the explicitly retained release-only/manual item; it is not reclassified as a
-local Linux pass.
+Windows NSIS compilation remains an explicitly retained release-only/manual
+item; it is not reclassified as a local Linux pass.
 
 ## Deferred work
 
@@ -110,7 +98,6 @@ local Linux pass.
 
 ## Remote integration note
 
-The local certificate cannot record merged evidence until the stacked remote
-sequence is completed: merge PR #556, retarget/rebase PR #557 onto the latest
-`master`, then obtain a new clean Full receipt at the merged head. This task
-does not perform that remote mutation.
+#556 and #557 are already merged into the historical baseline above. The next
+remediation must use a new branch/PR and attach a fresh clean Full receipt at
+its exact candidate head before this document can be promoted to a certificate.

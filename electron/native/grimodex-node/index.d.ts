@@ -82,6 +82,13 @@ export declare class Backend {
    * successful drain.
    */
   runNarrativeMaintenanceCycle(payload: any): Promise<string>
+  /** List unacknowledged durable Epoch/delivery wakes for Electron main. */
+  listNarrativeMaintenanceWakeOutbox(): Promise<string>
+  /**
+   * ACK durable wakes only against the exact binding that listed them. A
+   * stale authority returns a typed non-ACK JSON status.
+   */
+  ackNarrativeMaintenanceWakeOutbox(ids: Array<string>, workspaceBinding: any): Promise<string>
   recordNarrativeMaintenanceDeliveryFailure(payload: any): Promise<string>
   /**
    * Main-owned pre-response claim for one exact foreground product-journey

@@ -629,15 +629,24 @@ function deliveryFailureReceiptAccepted(raw: unknown): boolean {
   }
   const record = value as Record<string, unknown>;
   if (
-    record.status !== "accepted" ||
-    !isNonEmptyTrimmedString(record.receiptId) ||
-    Object.keys(record).some((key) => !["status", "receiptId"].includes(key))
+    record.status === "accepted" &&
+    isNonEmptyTrimmedString(record.receiptId) &&
+    Object.keys(record).every((key) => ["status", "receiptId"].includes(key))
   ) {
-    throw new Error(
-      "native maintenance delivery failure receipt was not accepted",
-    );
+    return true;
   }
-  return true;
+  // A receipt against a replaced/unavailable workspace is deliberately a
+  // typed non-ACK.  Keep the exact in-memory trigger so it cannot be
+  // attributed to a new authority or silently dropped while the native
+  // durable receipt/outbox pair was not written.
+  if (
+    (record.status === "workspace-binding-mismatch" ||
+      record.status === "workspace-unavailable") &&
+    Object.keys(record).every((key) => key === "status")
+  ) {
+    return false;
+  }
+  throw new Error("native maintenance delivery failure receipt was not accepted");
 }
 
 const NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE =
@@ -1245,10 +1254,10 @@ export function createNarrativeMaintenanceScheduler(
               firstRetryCount ??= retryCount;
             } else {
               // Delivery failed before Native created any Run/Attempt/Inbox
-              // evidence. Persist the durable failure receipt first; only
-              // then may this work leave the bounded retry queue. Keep a
-              // project-scoped wake parked so a later explicit event can
-              // rediscover the trigger without a hot retry loop.
+              // evidence. Persist the native receipt/outbox pair first; only
+              // then may this work leave the bounded retry queue. The native
+              // outbox is the durable recovery owner across restart, rather
+              // than this process-local parked Map.
               retryCounts.set(key, retryCount);
               const accepted = await persistDeliveryFailure({
                 schemaVersion: 1,
@@ -1263,14 +1272,8 @@ export function createNarrativeMaintenanceScheduler(
               });
               if (accepted) {
                 retryCounts.delete(key);
-                const wakeKey = scopedWakeKey(work.projectId, cycleBinding);
-                durableWakeProjects.set(wakeKey, {
-                  projectId: work.projectId,
-                  workspaceBinding: cycleBinding,
-                });
-                deferredWakeProjects.add(wakeKey);
                 warn(
-                  `[narrative-maintenance] retry exhausted for canonical key ${key}; failure receipt persisted and durable wake parked for project ${work.projectId}`,
+                  `[narrative-maintenance] retry exhausted for canonical key ${key}; native failure receipt and durable recovery wake persisted for project ${work.projectId}`,
                   error,
                 );
               } else {
@@ -1306,13 +1309,8 @@ export function createNarrativeMaintenanceScheduler(
                 });
                 if (accepted) {
                   durableWakeRetryCounts.delete(wakeKey);
-                  durableWakeProjects.set(wakeKey, {
-                    projectId,
-                    workspaceBinding: cycleBinding,
-                  });
-                  deferredWakeProjects.add(wakeKey);
                   warn(
-                    `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; failure receipt persisted and durable wake parked`,
+                    `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; native failure receipt and durable recovery wake persisted`,
                     error,
                   );
                 } else {

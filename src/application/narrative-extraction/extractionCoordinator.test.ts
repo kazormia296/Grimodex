@@ -51,6 +51,12 @@ import { loadInlineJsonArtifact } from "./artifactRepository";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
 import { clusterEventObservations } from "@/features/chronicle/extraction/eventClustering";
+import {
+  buildChronicleStageTerminalReceiptV1,
+  createStageModelExecutionBindingV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
+
+const TEST_STAGE_DIGEST = `sha256:${"a".repeat(64)}` as const;
 
 function prose(text: string): string {
   return JSON.stringify({
@@ -130,12 +136,12 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
       envelopeByProposalKey: new Map([
         ["test-proposal-key", { schemaVersion: 2 }],
       ]),
-      stageProvenanceBundle: {
-        proposalKey: "test-proposal-key",
-        envelope: { schemaVersion: 2 },
-        stageProvenanceClosure: { schemaVersion: 1 },
-        provenanceBinding: { schemaVersion: 1 },
-      },
+      stageReceiptRefs: [
+        {
+          stageExecutionId: "stage:test-synthesis",
+          stageExecutionReceiptDigest: `sha256:${"a".repeat(64)}`,
+        },
+      ],
     });
   });
 
@@ -370,13 +376,15 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
           observations,
           createId,
           onStageReceipt,
+          onTerminalOutput,
+          stageExecution,
         }) => {
-          onStageReceipt?.({} as never);
+          if (!stageExecution) throw new Error("missing synthesis stage");
           synthesizeObservationIds.push(
             observations.map((observation) => observation.localId),
           );
           const nextId = createId ?? (() => "hypothesis-test-id");
-          return [
+          const hypotheses = [
             {
               hypothesisId: nextId(),
               clusterRef,
@@ -389,6 +397,50 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
               significance: "major",
             } satisfies EventHypothesis,
           ];
+          const eventOutput = {
+            clusterRef,
+            resolution: "single-event",
+            events: [
+              {
+                observationRefs: observations.map(
+                  (observation) => observation.localId,
+                ),
+                titleSuggestion: "砲撃",
+                summary: "砲撃で崩れ落ちた",
+                actuality: "actual",
+                significance: "major",
+              },
+            ],
+          } as const;
+          await onStageReceipt?.(
+            await buildChronicleStageTerminalReceiptV1({
+              stageExecution,
+              contextSetVersion: "chronicle-context-set/1",
+              contextSetDigest: TEST_STAGE_DIGEST,
+              componentContractDigest: TEST_STAGE_DIGEST,
+              finalRequestDigest: TEST_STAGE_DIGEST,
+              modelExecutionBinding: createStageModelExecutionBindingV1({
+                resolutionStatus: "unresolved",
+              }),
+              responseDigest: TEST_STAGE_DIGEST,
+              rawObservationsDigest: TEST_STAGE_DIGEST,
+              parsedOutputDigest: TEST_STAGE_DIGEST,
+              parseStatus: "parsed",
+              terminalStatus: "succeeded",
+            }),
+          );
+          await onTerminalOutput?.({
+            rootStageExecution: stageExecution,
+            terminalStageExecution: stageExecution,
+            disposition: "root-success",
+            clusterRef,
+            rawObservations: observations,
+            eventOutput,
+            hypotheses,
+            rawObservationsDigest: TEST_STAGE_DIGEST,
+            parsedOutputDigest: TEST_STAGE_DIGEST,
+          });
+          return hypotheses;
         },
       },
     );
@@ -431,10 +483,11 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     expect(saveProposalSetMock).toHaveBeenCalledWith(
       expect.objectContaining({
         v2EnvelopeByProposalKey: expect.any(Map),
-        stageProvenanceBundle: {
-          closure: { schemaVersion: 1 },
-          binding: { schemaVersion: 1 },
-        },
+        stageReceiptRefs: [
+          expect.objectContaining({
+            stageExecutionId: "stage:test-synthesis",
+          }),
+        ],
       }),
     );
   });
@@ -504,6 +557,236 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         requeue: false,
       }),
     );
+  });
+
+  it("fails closed when an invalid/unrepaired synthesis cluster has no accepted typed terminal", async () => {
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-unrepaired-synthesis",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "失敗した統合",
+          orderIndex: 0,
+          proseMirrorJson: prose("教会の尖塔が砲撃で崩れ落ちた。"),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 1,
+            sourceUpdatedAt: "2026-08-09T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+
+    await expect(
+      runChronicleExtractionCoordinator(
+        {
+          projectId: "project-a",
+          folderId: "folder-1",
+          language: "ja",
+          sceneIds: ["scene-one"],
+          authority: authority(),
+          runId: "run-unrepaired-synthesis",
+        },
+        {
+          useAi: true,
+          buildSnapshot: async () => ({
+            ok: true as const,
+            snapshot: built.snapshot,
+            scopeAuthorityDocuments: [],
+            flush: { status: "already-clean" as const, blockedDocuments: [] },
+          }),
+          observeWithAi: async ({ windows }) => [
+            {
+              localId: "obs-unrepaired",
+              evidence: [
+                {
+                  sourceRef: windows[0]?.sourceRef ?? "S0001",
+                  quote: "教会の尖塔が砲撃で崩れ落ちた。",
+                },
+              ],
+              assertion: {
+                attribution: "narrator",
+                narrativeFrame: "story-world",
+              },
+              payload: {
+                predicate: "砲撃で崩れ落ちた",
+                actuality: "actual",
+                participants: [],
+                temporalExpressions: [],
+                durationKind: "instant",
+              },
+            },
+          ],
+          // Represents a root invalid response followed by an invalid/no repair
+          // child: it returns no accepted terminal output at all.
+          synthesizeWithAi: async () => [],
+        },
+      ),
+    ).rejects.toThrow(
+      "NEX_CHRONICLE_SYNTHESIS_TERMINAL_OUTPUT_REQUIRED",
+    );
+    expect(failMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "run-unrepaired-synthesis",
+        errorMessage: expect.stringContaining(
+          "NEX_CHRONICLE_SYNTHESIS_TERMINAL_OUTPUT_REQUIRED",
+        ),
+      }),
+    );
+  });
+
+  it("fails closed when only part of a multi-cluster synthesis batch has typed terminals", async () => {
+    const textOne = "教会の尖塔が砲撃で崩れ落ちた。";
+    const textTwo = "兵士たちは避難した。";
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-mixed-synthesis",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "混在統合",
+          orderIndex: 0,
+          proseMirrorJson: prose(`${textOne}${textTwo}`),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 1,
+            sourceUpdatedAt: "2026-08-09T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+
+    let synthesisCalls = 0;
+    await expect(
+      runChronicleExtractionCoordinator(
+        {
+          projectId: "project-a",
+          folderId: "folder-1",
+          language: "ja",
+          sceneIds: ["scene-one"],
+          authority: authority(),
+          runId: "run-mixed-synthesis",
+        },
+        {
+          useAi: true,
+          buildSnapshot: async () => ({
+            ok: true as const,
+            snapshot: built.snapshot,
+            scopeAuthorityDocuments: [],
+            flush: { status: "already-clean" as const, blockedDocuments: [] },
+          }),
+          observeWithAi: async ({ windows }) => [
+            {
+              localId: "obs-mixed-one",
+              evidence: [
+                { sourceRef: windows[0]?.sourceRef ?? "S0001", quote: textOne },
+              ],
+              assertion: {
+                attribution: "narrator",
+                narrativeFrame: "story-world",
+              },
+              payload: {
+                predicate: "砲撃で崩れ落ちた",
+                actuality: "actual",
+                participants: [],
+                temporalExpressions: [],
+                durationKind: "instant",
+              },
+            },
+            {
+              localId: "obs-mixed-two",
+              evidence: [
+                { sourceRef: windows[0]?.sourceRef ?? "S0001", quote: textTwo },
+              ],
+              assertion: {
+                attribution: "narrator",
+                narrativeFrame: "story-world",
+              },
+              payload: {
+                predicate: "兵士たちは避難した",
+                actuality: "actual",
+                participants: [],
+                temporalExpressions: [],
+                durationKind: "instant",
+              },
+            },
+          ],
+          synthesizeWithAi: async ({
+            clusterRef,
+            observations,
+            createId,
+            onTerminalOutput,
+            stageExecution,
+          }) => {
+            synthesisCalls += 1;
+            const nextId = createId ?? (() => "hypothesis-mixed");
+            const hypotheses = [
+              {
+                hypothesisId: nextId(),
+                clusterRef,
+                observationRefs: observations.map(
+                  (observation) => observation.localId,
+                ),
+                titleSuggestion: "統合",
+                summary: "統合結果",
+                actuality: "actual",
+                significance: "major",
+              } satisfies EventHypothesis,
+            ];
+            if (synthesisCalls === 1 && stageExecution) {
+              await onTerminalOutput?.({
+                rootStageExecution: stageExecution,
+                terminalStageExecution: stageExecution,
+                disposition: "root-success",
+                clusterRef,
+                rawObservations: observations,
+                eventOutput: {
+                  clusterRef,
+                  resolution: "single-event",
+                  events: [
+                    {
+                      observationRefs: observations.map(
+                        (observation) => observation.localId,
+                      ),
+                      titleSuggestion: "統合",
+                      summary: "統合結果",
+                      actuality: "actual",
+                      significance: "major",
+                    },
+                  ],
+                },
+                hypotheses,
+                rawObservationsDigest: TEST_STAGE_DIGEST,
+                parsedOutputDigest: TEST_STAGE_DIGEST,
+              });
+            }
+            return hypotheses;
+          },
+        },
+      ),
+    ).rejects.toThrow(
+      "NEX_CHRONICLE_SYNTHESIS_TERMINAL_OUTPUT_REQUIRED",
+    );
+    expect(synthesisCalls).toBe(2);
   });
 
   it("saves ProposalSet before finishing the planProposals task", async () => {

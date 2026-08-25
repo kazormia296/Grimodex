@@ -946,6 +946,43 @@ describe("narrative maintenance scheduler", () => {
     ).toBe(false);
   });
 
+  it("retains the exact trigger when Native rejects its stale failure-receipt binding", async () => {
+    const binding = { authorityId: "authority-live", generation: 9 };
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValue(new Error("database is locked"));
+    const recordNarrativeMaintenanceDeliveryFailure = vi
+      .fn()
+      .mockResolvedValue({ status: "workspace-binding-mismatch" });
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      recordNarrativeMaintenanceDeliveryFailure,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    for (let retry = 0; retry < NARRATIVE_MAINTENANCE_MAX_RETRIES; retry += 1) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
+
+    expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "project-1",
+        workspaceBinding: binding,
+      }),
+    );
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
+    );
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 2,
+    );
+  });
+
   it.each([
     ["backendがnull", null],
     ["future bindingにmethodがない", {}],

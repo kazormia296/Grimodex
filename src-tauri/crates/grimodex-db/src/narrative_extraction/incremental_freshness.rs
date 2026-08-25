@@ -9,8 +9,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-use crate::Database;
+use crate::{read_sqlite_source_revision, Database};
 use grimodex_core::narrative_dependency::{
     aggregate_dependency_build_actions, evaluate_dependency_effect, load_dependency_role_registry,
     DependencyEffectInput, DependencyEffectRegistry, DependencyRole,
@@ -118,6 +119,27 @@ pub enum IncrementalFreshnessCycleOutcome {
     Processed(IncrementalFreshnessBatchSummary),
 }
 
+/// Linear proof that one bounded Incremental Freshness cycle completed
+/// without an error. Its constructor is private: scheduler liveness can only
+/// be registered by consuming a capability returned from the real cycle,
+/// never by a public arbitrary heartbeat call.
+#[derive(Debug)]
+pub struct SuccessfulIncrementalFreshnessCycle {
+    connection_epoch: String,
+    completed_at: Instant,
+    _private: (),
+}
+
+impl SuccessfulIncrementalFreshnessCycle {
+    pub(crate) fn connection_epoch(&self) -> &str {
+        &self.connection_epoch
+    }
+
+    pub(crate) fn is_fresh_for_liveness(&self, max_age: Duration) -> bool {
+        self.completed_at.elapsed() <= max_age
+    }
+}
+
 #[derive(Debug)]
 struct ClaimedBatch {
     project_id: String,
@@ -216,6 +238,34 @@ pub fn run_incremental_freshness_cycle(
     })?;
 
     db.with_background_connection_priority(|| run_serialized_cycle(db))
+}
+
+/// Run a bounded Freshness cycle and return the one-use liveness capability
+/// only if it completed successfully. The caller may perform its own live
+/// authority/binding recheck before consuming the capability to register the
+/// C2-ZC scheduler receipt.
+pub fn run_incremental_freshness_cycle_with_liveness_capability(
+    db: &Database,
+) -> anyhow::Result<(
+    IncrementalFreshnessCycleOutcome,
+    SuccessfulIncrementalFreshnessCycle,
+)> {
+    let outcome = run_incremental_freshness_cycle(db)?;
+    let completed_at = Instant::now();
+    // The capability must belong to the same live SQLite authority that will
+    // mint the scheduler receipt.  Capturing its connection epoch here keeps
+    // a completed cycle from another Database wrapper from being reused as
+    // liveness proof for this workspace.
+    let connection_epoch =
+        db.with_conn(|conn| Ok(read_sqlite_source_revision(conn)?.connection_epoch))?;
+    Ok((
+        outcome,
+        SuccessfulIncrementalFreshnessCycle {
+            connection_epoch,
+            completed_at,
+            _private: (),
+        },
+    ))
 }
 
 /// Initialize one declared Application that produced no Source mutation.

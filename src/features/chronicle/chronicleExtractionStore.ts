@@ -177,6 +177,7 @@ interface ChronicleExtractionState {
   reviseProposalFields: (
     proposalId: string,
     revisionId: string,
+    reconciliationEnvelopeDigest: string | null,
     patch: {
       title?: string;
       note?: string | null;
@@ -275,7 +276,12 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
       });
     },
 
-    reviseProposalFields: (proposalId, revisionId, patch) => {
+    reviseProposalFields: (
+      proposalId,
+      revisionId,
+      reconciliationEnvelopeDigest,
+      patch,
+    ) => {
       const projection = get().projection;
       if (!projection) return;
       const current = projection.proposals.find(
@@ -314,6 +320,7 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
             payload: nextPayload,
             displayTitle: nextPayload.title,
             revisionId,
+            reconciliationEnvelopeDigest,
             status: "unreviewed",
           }),
         },

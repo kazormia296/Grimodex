@@ -6,6 +6,7 @@ import type { RawChronicleEventObservation } from "@/features/narrative-extracti
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
 import { CHRONICLE_EVENT_PROPOSAL_KIND } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
 import { buildNarrativeSourceView } from "@/features/narrative-extraction/source/sourceView";
+import { digestStableJson } from "@/features/narrative-extraction/source/digest";
 import type {
   CanonicalRange,
   NarrativeCorpusSnapshot,
@@ -31,7 +32,10 @@ import {
   type ExtractionWindow,
   type WindowPlan,
 } from "@/features/chronicle/extraction/windowPlanner";
-import type { SavedProposalSeed } from "./nativeApi";
+import type {
+  ChronicleStageC1ExecutionBinding,
+  SavedProposalSeed,
+} from "./nativeApi";
 import {
   narrativeExtractionClaimTask,
   narrativeExtractionFailTask,
@@ -47,14 +51,20 @@ import {
   saveChronicleProposalSet,
 } from "./proposalRepository";
 import type { ChronicleV2ProductionBatchResult } from "./chronicleV2Production";
-import type { ChronicleStageTerminalReceiptV1 } from "@/features/narrative-extraction/reconciler/stageProvenance";
+import {
+  buildChronicleStageProvenanceClosureV1,
+  type ChronicleStageTerminalReceiptV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
 import {
   buildProjectNarrativeSnapshot,
   type ProjectSnapshotAdapterServices,
 } from "./projectSnapshotAdapter";
 import { cancelRun, createRun } from "./runRepository";
 import { runObservationExtractionTask } from "./aiTasks/runObservationExtractionTask";
-import { runEventSynthesisTask } from "./aiTasks/runEventSynthesisTask";
+import {
+  runEventSynthesisTask,
+  type ChronicleSynthesisTerminalOutput,
+} from "./aiTasks/runEventSynthesisTask";
 import {
   createStageExecutionContext,
   NARRATIVE_STAGE_IDS,
@@ -134,6 +144,15 @@ export interface ExtractionCoordinatorDeps {
 interface SnapshotArtifactPayload {
   readonly snapshot: NarrativeCorpusSnapshot;
   readonly sourceViews: readonly NarrativeSourceView[];
+  /**
+   * Sealed alongside the corpus so later historical Scope validation never
+   * falls back to the live tree. The order is exactly snapshot.documents.
+   */
+  readonly scopeAuthorityDocuments: readonly {
+    readonly documentRef: string;
+    readonly sourceKey: `project:scene:${string}`;
+    readonly rawStoryKey: string | null;
+  }[];
 }
 
 interface WindowPlanArtifactPayload {
@@ -181,6 +200,68 @@ interface ProposalPlanArtifactPayload {
     readonly title: string;
     readonly existingRef: string;
   }[];
+}
+
+function compareStageExecutionIds(
+  left: ChronicleStageTerminalReceiptV1,
+  right: ChronicleStageTerminalReceiptV1,
+): number {
+  const leftId = left.stageExecution.stageExecutionId;
+  const rightId = right.stageExecution.stageExecutionId;
+  return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+}
+
+/** Build the transport-only Native C1 binding; the closure is never stored. */
+async function buildChronicleStageC1Bundle(input: {
+  readonly projectId: string;
+  readonly runId: string;
+  readonly closureAggregatorTaskId: string;
+  readonly closureAggregatorAttemptId: string;
+  readonly receipts: readonly ChronicleStageTerminalReceiptV1[];
+  /** Roots that actually produced an accepted typed terminal output. */
+  readonly acceptedTerminalOutputRootIds: readonly string[];
+}): Promise<ChronicleStageC1ExecutionBinding> {
+  const acceptedRootIds = new Set(input.acceptedTerminalOutputRootIds);
+  if (acceptedRootIds.size !== input.acceptedTerminalOutputRootIds.length) {
+    throw new Error(
+      "NEX_CHRONICLE_STAGE_BUNDLE_OWNER_AMBIGUOUS: duplicate accepted synthesis terminal roots",
+    );
+  }
+  const roots = input.receipts
+    .filter(
+      (receipt) =>
+        receipt.stageExecution.stageId === NARRATIVE_STAGE_IDS.eventSynthesis &&
+        receipt.stageExecution.parentStageExecutionId === undefined &&
+        acceptedRootIds.has(receipt.stageExecution.stageExecutionId),
+    )
+    .sort(compareStageExecutionIds);
+  const owner = roots[0];
+  if (!owner) {
+    throw new Error(
+      "NEX_CHRONICLE_STAGE_BUNDLE_OWNER_MISSING: no synthesis stage execution was recorded",
+    );
+  }
+  const closure = await buildChronicleStageProvenanceClosureV1({
+    projectId: input.projectId,
+    runId: input.runId,
+    ownerTaskId: input.closureAggregatorTaskId,
+    ownerAttemptId: input.closureAggregatorAttemptId,
+    receipts: input.receipts,
+  });
+  return {
+    projectId: input.projectId,
+    runId: input.runId,
+    taskId: input.closureAggregatorTaskId,
+    attemptId: input.closureAggregatorAttemptId,
+    stageExecutionOwnerTaskId: owner.stageExecution.taskId,
+    stageExecutionOwnerAttemptId: owner.stageExecution.attemptId,
+    stageExecutionOwnerStageExecutionId: owner.stageExecution.stageExecutionId,
+    contextSetDigest: owner.contextSetDigest,
+    componentContractDigest: owner.componentContractDigest,
+    finalRequestDigest: owner.finalRequestDigest,
+    stageProvenanceClosureDigest: closure.stageProvenanceClosureDigest,
+    closure,
+  };
 }
 
 function defaultCreateId(): string {
@@ -373,6 +454,7 @@ async function executeTask(
 ): Promise<{
   outputJson: Readonly<Record<string, unknown>>;
   artifacts: ReturnType<typeof buildInlineJsonArtifact>[];
+  chronicleStageBundle?: ChronicleStageC1ExecutionBinding;
 }> {
   switch (taskKind) {
     case CHRONICLE_EXTRACT_TASK_KINDS.snapshot: {
@@ -546,6 +628,7 @@ async function executeTask(
       }
 
       let hypotheses: readonly EventHypothesis[];
+      const terminalOutputs: ChronicleSynthesisTerminalOutput[] = [];
       if (deps.useAi) {
         const synthesize = deps.synthesizeWithAi ?? runEventSynthesisTask;
         const observationById = new Map(
@@ -578,6 +661,9 @@ async function executeTask(
             onStageReceipt: (receipt) => {
               stageReceipts.push(receipt);
             },
+            onTerminalOutput: (terminalOutput) => {
+              terminalOutputs.push(terminalOutput);
+            },
           });
           collected.push(...batch);
         }
@@ -594,6 +680,86 @@ async function executeTask(
         CHRONICLE_EXTRACT_ARTIFACT_KINDS.hypotheses,
         { hypotheses },
       );
+      if (deps.useAi && clusterPayload.clusters.length > 0) {
+        const expectedClusters = new Set(
+          clusterPayload.clusters.map((cluster) => cluster.clusterRef),
+        );
+        const terminalRoots = new Set(
+          terminalOutputs.map(
+            (terminalOutput) =>
+              terminalOutput.rootStageExecution.stageExecutionId,
+          ),
+        );
+        const terminalClusters = new Set(
+          terminalOutputs.map((terminalOutput) => terminalOutput.clusterRef),
+        );
+        if (
+          expectedClusters.size !== clusterPayload.clusters.length ||
+          terminalOutputs.length !== clusterPayload.clusters.length ||
+          terminalRoots.size !== terminalOutputs.length ||
+          terminalClusters.size !== terminalOutputs.length ||
+          [...expectedClusters].some(
+            (clusterRef) => !terminalClusters.has(clusterRef),
+          )
+        ) {
+          throw new Error(
+            "NEX_CHRONICLE_SYNTHESIS_TERMINAL_OUTPUT_REQUIRED: every dispatched synthesis cluster requires exactly one accepted typed terminal output",
+          );
+        }
+        const outputs = await Promise.all(
+          terminalOutputs.map(async (terminalOutput) => ({
+            rootStageExecutionId:
+              terminalOutput.rootStageExecution.stageExecutionId,
+            terminalStageExecutionId:
+              terminalOutput.terminalStageExecution.stageExecutionId,
+            disposition: terminalOutput.disposition,
+            clusterRef: terminalOutput.clusterRef,
+            rawObservations: {
+              kind: "chronicle.raw-observations@1",
+              version: 1,
+              observations: terminalOutput.rawObservations,
+            },
+            eventOutput: terminalOutput.eventOutput,
+            output: {
+              kind: "chronicle.event-synthesis-output@1",
+              observationCount: terminalOutput.rawObservations.length,
+              eventCount: terminalOutput.hypotheses.length,
+              observationRefs: terminalOutput.rawObservations.map(
+                (observation) => observation.localId,
+              ),
+              rawObservationsDigest: terminalOutput.rawObservationsDigest,
+              parsedOutputDigest: terminalOutput.parsedOutputDigest,
+              eventOutputDigest: await digestStableJson(
+                terminalOutput.eventOutput,
+              ),
+            },
+          })),
+        );
+        const companion = buildInlineJsonArtifact(
+          CHRONICLE_EXTRACT_ARTIFACT_KINDS.stageSynthesisOutputs,
+          {
+            kind: CHRONICLE_EXTRACT_ARTIFACT_KINDS.stageSynthesisOutputs,
+            version: 1,
+            outputs,
+          },
+        );
+        const chronicleStageBundle = await buildChronicleStageC1Bundle({
+          projectId: taskExecution.projectId,
+          runId,
+          closureAggregatorTaskId: taskExecution.taskId,
+          closureAggregatorAttemptId: taskExecution.attemptId,
+          receipts: stageReceipts,
+          acceptedTerminalOutputRootIds: terminalOutputs.map(
+            (terminalOutput) =>
+              terminalOutput.rootStageExecution.stageExecutionId,
+          ),
+        });
+        return {
+          outputJson: { hypothesisCount: hypotheses.length },
+          artifacts: [draft, companion],
+          chronicleStageBundle,
+        };
+      }
       return {
         outputJson: { hypothesisCount: hypotheses.length },
         artifacts: [draft],
@@ -810,14 +976,62 @@ export async function runChronicleExtractionCoordinator(
     snapshotResult.snapshot,
     windowPlan,
   );
+  const suppliedAuthorityDocuments = new Map(
+    snapshotResult.scopeAuthorityDocuments.map((document) => [
+      document.documentRef,
+      document,
+    ]),
+  );
+  const sealedScopeAuthorityDocuments = snapshotResult.snapshot.documents.map(
+    (document) => {
+      const supplied = suppliedAuthorityDocuments.get(document.ref);
+      if (supplied) {
+        if (supplied.sourceKey !== document.sourceKey) {
+          throw new Error(
+            `NEX_SCOPE_AUTHORITY_SNAPSHOT_MISMATCH: ${document.ref} sourceKey does not match the sealed snapshot`,
+          );
+        }
+        return {
+          documentRef: supplied.documentRef,
+          sourceKey: supplied.sourceKey,
+          rawStoryKey: supplied.rawStoryKey,
+        };
+      }
+      if (!document.sourceKey.startsWith("project:scene:")) {
+        throw new Error(
+          `NEX_SCOPE_AUTHORITY_SNAPSHOT_MISSING: ${document.ref} has no project Scene authority source`,
+        );
+      }
+      return {
+        documentRef: document.ref,
+        sourceKey: document.sourceKey as `project:scene:${string}`,
+        rawStoryKey: null,
+      };
+    },
+  );
+  if (
+    suppliedAuthorityDocuments.size > 0 &&
+    suppliedAuthorityDocuments.size !== sealedScopeAuthorityDocuments.length
+  ) {
+    throw new Error(
+      "NEX_SCOPE_AUTHORITY_SNAPSHOT_MISMATCH: authority document set does not match sealed snapshot documents",
+    );
+  }
 
   const snapshotDraft = buildInlineJsonArtifact(
     CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
     {
       snapshot: snapshotResult.snapshot,
       sourceViews,
+      scopeAuthorityDocuments: sealedScopeAuthorityDocuments,
     },
   );
+  // The artifact writer recomputes this digest before persistence, but the
+  // snapshot task output also carries it as a CAS coordinate.  Native checks
+  // this assertion against its own canonical recomputation in the same finish
+  // transaction, so a cross-window caller cannot bind a T1 task result to a
+  // different corpus payload.
+  const corpusPayloadDigest = await digestStableJson(snapshotDraft.payloadJson);
 
   const createdRun = await createRun({
     runId: request.runId,
@@ -850,7 +1064,7 @@ export async function runChronicleExtractionCoordinator(
   const runId = createdRun.runId;
   let historicalScopeAuthorityBasis: NarrativeScopeAuthorityBasisV2 | undefined;
   try {
-    if (snapshotResult.scopeAuthorityDocuments.length > 0) {
+    if (sealedScopeAuthorityDocuments.length > 0) {
       const { buildNarrativeScopeAuthorityBasisV2 } =
         await import("@/features/narrative-extraction/source/scopeAuthorityBasisV2");
       historicalScopeAuthorityBasis = await buildNarrativeScopeAuthorityBasisV2(
@@ -858,7 +1072,7 @@ export async function runChronicleExtractionCoordinator(
           projectId: request.projectId,
           runId,
           corpusDigest: snapshotResult.snapshot.digest,
-          documents: snapshotResult.scopeAuthorityDocuments,
+          documents: sealedScopeAuthorityDocuments,
         },
       );
     }
@@ -917,6 +1131,9 @@ export async function runChronicleExtractionCoordinator(
           outputJson: {
             snapshotDigest: snapshotResult.snapshot.digest,
             documentCount: snapshotResult.snapshot.documents.length,
+            corpusPayloadDigest,
+            scopeAuthorityCompositeDigest:
+              historicalScopeAuthorityBasis?.digests.compositeDigest ?? null,
           },
           artifacts: [snapshotDraft.artifactInput],
           ...(historicalScopeAuthorityBasis
@@ -942,6 +1159,7 @@ export async function runChronicleExtractionCoordinator(
 
       let artifacts = executed.artifacts;
       let outputJson = executed.outputJson;
+      const chronicleStageBundle = executed.chronicleStageBundle;
 
       // Persist ProposalSet before finishing the last task so Run cannot become
       // `completed` without a durable review ledger.
@@ -1063,14 +1281,8 @@ export async function runChronicleExtractionCoordinator(
           ...(productionV2 && productionV2.envelopeByProposalKey.size > 0
             ? { v2EnvelopeByProposalKey: productionV2.envelopeByProposalKey }
             : {}),
-          ...(productionV2?.stageProvenanceBundle
-            ? {
-                stageProvenanceBundle: {
-                  closure:
-                    productionV2.stageProvenanceBundle.stageProvenanceClosure,
-                  binding: productionV2.stageProvenanceBundle.provenanceBinding,
-                },
-              }
+          ...(productionV2?.stageReceiptRefs
+            ? { stageReceiptRefs: productionV2.stageReceiptRefs }
             : {}),
         });
         savedProposalSetId = saved.proposalSetId;
@@ -1113,6 +1325,7 @@ export async function runChronicleExtractionCoordinator(
         leaseOwner,
         outputJson,
         artifacts: artifacts.map((draft) => draft.artifactInput),
+        ...(chronicleStageBundle ? { chronicleStageBundle } : {}),
       });
     } catch (error) {
       const message =

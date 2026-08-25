@@ -322,6 +322,7 @@
         "modelBindingDigestDomain",
         "terminalReceiptDigestDomain",
         "closureDigestDomain",
+        "parsedOutputDigestDomain",
         "requestDigestExcludesModel",
         "bindingContract",
         "terminalReceiptContract",
@@ -345,6 +346,9 @@
         },
         "closureDigestDomain": {
           "const": "chronicle-stage-provenance-closure/1"
+        },
+        "parsedOutputDigestDomain": {
+          "const": "chronicle.parsed-output/1"
         },
         "requestDigestExcludesModel": { "const": true },
         "bindingContract": {
@@ -515,7 +519,8 @@
             "successfulPath",
             "ownerDigestFields",
             "ownerDigestsMatchExecution",
-            "repairLineage"
+            "repairLineage",
+            "terminalOutputContract"
           ],
           "properties": {
             "requiredStages": {
@@ -526,7 +531,7 @@
             },
             "ownerStage": { "const": "narrative_event_synthesize" },
             "successfulPath": {
-              "const": "parsed-success-root-or-parsed-successful-repair-child"
+              "const": "parsed-success-root-or-parsed-successful-repair-child-or-deterministic-empty"
             },
             "ownerDigestFields": {
               "const": [
@@ -551,6 +556,114 @@
                 },
                 "sameTaskAndAttempt": { "const": true },
                 "parentPointer": { "const": "immutable-parentStageExecutionId" }
+              },
+              "additionalProperties": false
+            },
+            "terminalOutputContract": {
+              "type": "object",
+              "required": [
+                "typedCompanion",
+                "outputKind",
+                "hypothesesArtifactKind",
+                "rawObservationsArtifact",
+                "acceptedTerminalStatusMatrix",
+                "unacceptedRootPolicy",
+                "perDispatchedCluster",
+                "v2ProposalSet"
+              ],
+              "properties": {
+                "typedCompanion": {
+                  "type": "object",
+                  "required": ["kind", "version", "outputs"],
+                  "properties": {
+                    "kind": { "const": "chronicle.stage-synthesis-outputs@1" },
+                    "version": { "const": 1 },
+                    "outputs": {
+                      "const": "exactly-one-per-accepted-synthesis-root"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "outputKind": { "const": "chronicle.event-synthesis-output@1" },
+                "hypothesesArtifactKind": {
+                  "const": "chronicle.event-hypotheses@1"
+                },
+                "rawObservationsArtifact": {
+                  "type": "object",
+                  "required": ["kind", "genericV1", "reservedByC1"],
+                  "properties": {
+                    "kind": { "const": "chronicle.raw-observations@1" },
+                    "genericV1": { "const": true },
+                    "reservedByC1": { "const": false }
+                  },
+                  "additionalProperties": false
+                },
+                "acceptedTerminalStatusMatrix": {
+                  "const": [
+                    {
+                      "rootParseStatus": "parsed",
+                      "rootTerminalStatus": "succeeded",
+                      "terminalStage": "narrative_event_synthesize",
+                      "terminalParseStatus": "parsed",
+                      "terminalStatus": "succeeded",
+                      "disposition": "root-success",
+                      "responseDigest": "required",
+                      "rawObservationsDigest": "required",
+                      "parsedOutputDigest": "required",
+                      "zeroObservationOnly": false
+                    },
+                    {
+                      "rootParseStatus": "invalid",
+                      "rootTerminalStatus": "failed",
+                      "terminalStage": "narrative_structured_repair",
+                      "terminalParseStatus": "parsed",
+                      "terminalStatus": "succeeded",
+                      "disposition": "repair-success",
+                      "responseDigest": "required",
+                      "rawObservationsDigest": "required",
+                      "parsedOutputDigest": "required",
+                      "zeroObservationOnly": false
+                    },
+                    {
+                      "rootParseStatus": "not-attempted",
+                      "rootTerminalStatus": "skipped",
+                      "terminalStage": "narrative_event_synthesize",
+                      "terminalParseStatus": "not-attempted",
+                      "terminalStatus": "skipped",
+                      "disposition": "deterministic-empty",
+                      "responseDigest": "null",
+                      "rawObservationsDigest": "required",
+                      "parsedOutputDigest": "required",
+                      "zeroObservationOnly": true
+                    }
+                  ]
+                },
+                "unacceptedRootPolicy": {
+                  "const": "fail-closed-NEX_CHRONICLE_SYNTHESIS_PROVENANCE_MISSING"
+                },
+                "perDispatchedCluster": {
+                  "const": "exactly-one-accepted-typed-terminal-output"
+                },
+                "v2ProposalSet": {
+                  "type": "object",
+                  "required": [
+                    "receiptRosterField",
+                    "requiresResponseBackedParsedTerminal",
+                    "rejectsDeterministicEmpty",
+                    "closurePersistence"
+                  ],
+                  "properties": {
+                    "receiptRosterField": {
+                      "const": "chronicleStageReceiptRefs"
+                    },
+                    "requiresResponseBackedParsedTerminal": { "const": true },
+                    "rejectsDeterministicEmpty": { "const": true },
+                    "closurePersistence": {
+                      "const": "forbidden-recursively-by-key-or-shape"
+                    }
+                  },
+                  "additionalProperties": false
+                }
               },
               "additionalProperties": false
             }
@@ -635,6 +748,14 @@
                 {
                   "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
                   "literal": "chronicle-stage-provenance-closure/1"
+                },
+                {
+                  "path": "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+                  "literal": "chronicle.parsed-output/1"
+                },
+                {
+                  "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+                  "literal": "chronicle.parsed-output/1"
                 }
               ]
             },
@@ -720,6 +841,45 @@
                     "closureDigestPayload",
                     "Stage provenance closure receipt refs mismatch",
                     "Stage provenance closure digest mismatch"
+                  ]
+                },
+                {
+                  "id": "typed-c1-terminal-output",
+                  "path": "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+                  "literals": [
+                    "CHRONICLE_PARSED_OUTPUT_DIGEST_DOMAIN",
+                    "root-success",
+                    "repair-success",
+                    "deterministic-empty",
+                    "onTerminalOutput"
+                  ]
+                },
+                {
+                  "id": "typed-c1-native-companion",
+                  "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+                  "literals": [
+                    "CHRONICLE_STAGE_SYNTHESIS_OUTPUTS_KIND",
+                    "resolve_terminal_output_receipt",
+                    "canonical_parsed_output_digest",
+                    "every accepted synthesis terminal path must have exactly one output"
+                  ]
+                },
+                {
+                  "id": "c1-cluster-completeness",
+                  "path": "src/application/narrative-extraction/extractionCoordinator.ts",
+                  "literals": [
+                    "NEX_CHRONICLE_SYNTHESIS_TERMINAL_OUTPUT_REQUIRED",
+                    "acceptedTerminalOutputRootIds",
+                    "stageSynthesisOutputs"
+                  ]
+                },
+                {
+                  "id": "receipt-only-proposal-set",
+                  "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+                  "literals": [
+                    "reject_ephemeral_chronicle_stage_provenance_in_summary",
+                    "chronicleStageReceiptRefs",
+                    "full Chronicle stage provenance closure/C1 bundle must not be persisted"
                   ]
                 }
               ]
@@ -886,11 +1046,11 @@
             "role",
             "state",
             "productionEntryPoints",
-            "errorCode"
+            "triggers"
           ],
           "properties": {
             "kind": {
-              "const": "sqlite-before-insert-trigger"
+              "const": "sqlite-trigger-suite"
             },
             "role": {
               "const": "structural-defense-only"
@@ -903,8 +1063,30 @@
                 "src-tauri/crates/grimodex-db/src/migrate.rs::repair_narrative_v2_monotonicity_trigger"
               ]
             },
-            "errorCode": {
-              "const": "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"
+            "triggers": {
+              "const": [
+                {
+                  "name": "narrative_proposal_revisions_v2_monotonicity_guard",
+                  "operation": "before-insert",
+                  "target": "narrative_proposal_revisions",
+                  "forbiddenTransition": "current-v2-to-non-v2-child",
+                  "errorCode": "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"
+                },
+                {
+                  "name": "narrative_proposals_v2_pointer_monotonicity_guard",
+                  "operation": "before-update-of-current_revision_id",
+                  "target": "narrative_proposals",
+                  "forbiddenTransition": "current-v2-to-non-v2-current-pointer",
+                  "errorCode": "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"
+                },
+                {
+                  "name": "narrative_proposal_revisions_v2_immutable_update_guard",
+                  "operation": "before-update",
+                  "target": "narrative_proposal_revisions",
+                  "forbiddenTransition": "v2-revision-mutation",
+                  "errorCode": "NEX_REVISION_V2_IMMUTABLE"
+                }
+              ]
             }
           },
           "additionalProperties": false
@@ -1409,7 +1591,7 @@
         },
         "requiredCaseIds": {
           "type": "array",
-          "minItems": 10,
+          "minItems": 11,
           "uniqueItems": true,
           "items": {
             "type": "string",
@@ -1621,7 +1803,7 @@
         },
         "requiredCaseIds": {
           "type": "array",
-          "minItems": 10,
+          "minItems": 11,
           "uniqueItems": true,
           "items": {
             "type": "string",

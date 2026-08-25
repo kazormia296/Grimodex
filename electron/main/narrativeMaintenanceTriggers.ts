@@ -25,7 +25,10 @@ interface NarrativeMaintenanceDiscoveryBackend {
   ): Promise<unknown>;
   /** Durable wake outbox written by Epoch rotations; see drainWakeOutbox. */
   listNarrativeMaintenanceWakeOutbox?(): Promise<unknown>;
-  ackNarrativeMaintenanceWakeOutbox?(ids: string[]): Promise<unknown>;
+  ackNarrativeMaintenanceWakeOutbox?(
+    ids: string[],
+    workspaceBinding: NarrativeMaintenanceWorkspaceBinding,
+  ): Promise<unknown>;
 }
 
 interface NarrativeMaintenanceDiscoveryResult {
@@ -217,6 +220,31 @@ function normalizeDiscoveryResponse(
   };
 }
 
+function wakeOutboxAckAccepted(raw: unknown): boolean {
+  const value = parseJsonWire(raw);
+  if (!isRecord(value)) {
+    throw new Error("native wake outbox acknowledgement returned invalid status");
+  }
+  if (
+    value.status === "accepted" &&
+    Number.isSafeInteger(value.acknowledged) &&
+    (value.acknowledged as number) >= 0 &&
+    Object.keys(value).every(
+      (key) => key === "status" || key === "acknowledged",
+    )
+  ) {
+    return true;
+  }
+  if (
+    (value.status === "workspace-binding-mismatch" ||
+      value.status === "workspace-unavailable") &&
+    Object.keys(value).every((key) => key === "status")
+  ) {
+    return false;
+  }
+  throw new Error("native wake outbox acknowledgement returned invalid status");
+}
+
 function wakeReasonFromEventPayload(
   payload: unknown,
 ): NarrativeMaintenanceWakeReason {
@@ -246,6 +274,11 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   let chainGeneration = 0;
   let rediscoveryAttempts = 0;
   let lastDiscoveryFingerprint: string | null = null;
+  let pendingWakeOutboxAck: {
+    ids: string[];
+    workspaceBinding: NarrativeMaintenanceWorkspaceBinding;
+    generation: number;
+  } | null = null;
 
   const clearTimer = (): void => {
     if (timer === null) return;
@@ -319,13 +352,78 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           requestRediscovery();
           return;
         }
-        // No page is enqueued until every page, work identity, and the single
-        // top-level binding has been validated. This closes the partial-queue
-        // hole if a later page is malformed or the native response is stale.
+        // A durable wake belongs to the authority that listed it.  Verify
+        // the discovery response and the live binding *before* scheduler
+        // registration: otherwise a replacement workspace response could
+        // enqueue work before its eventual non-ACK leaves the old row
+        // pending.  Registration is only meaningful after every page, work
+        // identity, and this single top-level binding agrees.
+        const pendingAck = pendingWakeOutboxAck;
+        if (pendingAck?.generation === discoveryGeneration) {
+          const getBinding = backend?.getNarrativeMaintenanceWorkspaceBinding;
+          if (
+            typeof getBinding !== "function" ||
+            !sameBinding(pendingAck.workspaceBinding, response.workspaceBinding)
+          ) {
+            warn(
+              "[narrative-maintenance] wake outbox discovery binding changed before registration",
+            );
+            return;
+          } else {
+            let currentBinding: NarrativeMaintenanceWorkspaceBinding | null;
+            try {
+              currentBinding = normalizeOptionalBinding(getBinding.call(backend));
+            } catch (error) {
+              warn(
+                "[narrative-maintenance] wake outbox binding recheck failed:",
+                error,
+              );
+              currentBinding = null;
+            }
+            if (!sameBinding(pendingAck.workspaceBinding, currentBinding)) {
+              warn(
+                "[narrative-maintenance] wake outbox binding changed before registration",
+              );
+              return;
+            }
+          }
+        }
         scheduler.requestManyWithBinding(
           response.work,
           response.workspaceBinding,
         );
+        // A durable wake cannot be ACKed merely because a timer was armed.
+        // Its native discovery response must have been fully validated and
+        // registered with the scheduler under the same live workspace
+        // binding. Keep the row pending on any stale binding, malformed
+        // response, or acknowledgement failure.
+        if (pendingAck?.generation === discoveryGeneration) {
+          const ack = backend?.ackNarrativeMaintenanceWakeOutbox;
+          try {
+            const accepted =
+              typeof ack === "function" &&
+              wakeOutboxAckAccepted(
+                await Promise.resolve(
+                  ack.call(
+                    backend,
+                    pendingAck.ids,
+                    pendingAck.workspaceBinding,
+                  ),
+                ),
+              );
+            if (!accepted) {
+              warn(
+                "[narrative-maintenance] wake outbox acknowledgement was not accepted",
+              );
+            } else if (pendingWakeOutboxAck === pendingAck) {
+              pendingWakeOutboxAck = null;
+            }
+          } catch (error) {
+            // Leaving the rows pending is safe: the next drain replays the
+            // exact durable trigger after a successful registration.
+            warn("[narrative-maintenance] wake outbox ack failed:", error);
+          }
+        }
         if (response.work.length === 0) {
           // The Rust planner has no durable next phase. End this wake chain;
           // a later ordinary open must not inherit RestoreCompleted forever.
@@ -398,9 +496,19 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     if (disposed) return;
     const list = backend?.listNarrativeMaintenanceWakeOutbox;
     const ack = backend?.ackNarrativeMaintenanceWakeOutbox;
-    if (typeof list !== "function" || typeof ack !== "function") return;
+    const getBinding = backend?.getNarrativeMaintenanceWorkspaceBinding;
+    if (
+      typeof list !== "function" ||
+      typeof ack !== "function" ||
+      typeof getBinding !== "function"
+    ) {
+      return;
+    }
     let ids: string[];
+    let workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null = null;
     try {
+      workspaceBinding = normalizeOptionalBinding(getBinding.call(backend));
+      if (workspaceBinding === null) return;
       const raw = parseJsonWire(await list.call(backend));
       if (!Array.isArray(raw)) {
         throw new Error("native wake outbox returned an invalid list");
@@ -415,7 +523,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       warn("[narrative-maintenance] wake outbox listing failed:", error);
       return;
     }
-    if (disposed || ids.length === 0) return;
+    if (disposed || ids.length === 0 || workspaceBinding === null) return;
     // The wake payload is only "this workspace has a rotated Epoch"; the
     // discovery planner reads the durable state machine, so one discovery
     // chain covers every pending row.
@@ -425,17 +533,16 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     lastWakeReason = "semantic-epoch-rotated";
     clearTimer();
     pendingRetryDelayMs = null;
+    pendingWakeOutboxAck = {
+      ids,
+      workspaceBinding,
+      generation,
+    };
     if (discoveryInFlight) {
       pendingEvent = { reason: "semantic-epoch-rotated", generation };
     } else {
       pendingEvent = null;
       armTimer("semantic-epoch-rotated", 0, generation);
-    }
-    try {
-      await ack.call(backend, ids);
-    } catch (error) {
-      // Leaving the rows pending is safe: the next drain re-delivers them.
-      warn("[narrative-maintenance] wake outbox ack failed:", error);
     }
   };
 
@@ -504,6 +611,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       clearTimer();
       pendingEvent = null;
       pendingRetryDelayMs = null;
+      pendingWakeOutboxAck = null;
     },
   };
 }

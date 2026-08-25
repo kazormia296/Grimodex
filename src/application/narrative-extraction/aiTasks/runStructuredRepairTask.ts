@@ -48,6 +48,18 @@ export interface RunStructuredRepairTaskInput {
   readonly onStageReceipt?: (
     receipt: ChronicleStageTerminalReceiptV1,
   ) => void | Promise<void>;
+  /**
+   * Parent-stage owned output projection.  A successful repair is the
+   * terminal output for its failed parent, so it must seal the same
+   * raw-observation and parsed-output coordinates as a direct success.
+   */
+  readonly terminalOutputDigests?: (
+    responseText: string,
+    parseStatus: StructuredRepairParseStatus,
+  ) => Promise<{
+    readonly rawObservationsDigest: Sha256Digest | null;
+    readonly parsedOutputDigest: Sha256Digest | null;
+  }>;
 }
 
 export type StructuredRepairParseStatus = "parsed" | "invalid";
@@ -188,6 +200,9 @@ async function recordStructuredRepairStageAudit(
 ): Promise<void> {
   if (!input.stageExecution) return;
   const digests = await buildChroniclePromptDigests(promptArtifact);
+  const outputDigests = input.terminalOutputDigests
+    ? await input.terminalOutputDigests(responseText, parseStatus)
+    : undefined;
   const terminal =
     capturedTerminalMetadata ??
     (await buildChronicleStageAuditTerminal({
@@ -196,6 +211,8 @@ async function recordStructuredRepairStageAudit(
       responseText,
       parseStatus,
       terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
+      rawObservationsDigest: outputDigests?.rawObservationsDigest ?? null,
+      parsedOutputDigest: outputDigests?.parsedOutputDigest ?? null,
       modelExecutionBinding,
       onReceipt: onStageReceipt,
     }));
@@ -316,6 +333,9 @@ export async function runStructuredRepairTask(
               input,
               responseText,
             );
+            const outputDigests = input.terminalOutputDigests
+              ? await input.terminalOutputDigests(responseText, parseStatus)
+              : undefined;
             const terminal = await buildChronicleStageAuditTerminal({
               stageExecution: input.stageExecution!,
               ...promptDigests,
@@ -323,6 +343,9 @@ export async function runStructuredRepairTask(
               responseDigest,
               parseStatus,
               terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
+              rawObservationsDigest:
+                outputDigests?.rawObservationsDigest ?? null,
+              parsedOutputDigest: outputDigests?.parsedOutputDigest ?? null,
               modelExecutionBinding:
                 stageModelBindingFromAuditMetadata(metadata) ??
                 sealedModelBinding,

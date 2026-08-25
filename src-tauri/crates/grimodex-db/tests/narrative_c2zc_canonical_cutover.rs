@@ -7,6 +7,7 @@
 //! scheduler-liveness proof are present.
 
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::narrative_extraction::maintenance_skip_evidence::{
@@ -20,10 +21,10 @@ use grimodex_db::narrative_extraction::{
     narrative_extraction_save_proposal_set, record_live_scheduler_heartbeat,
     run_incremental_freshness_cycle, verify_narrative_dependency_graph_for_project,
     AppendDecisionPayload, ApplyCommitPayload, CanonicalFreshnessAuthority, CommitApplicationRef,
-    CommitOperation, CreateRunPayload, CreateTaskSeed, PrepareCommitPayload,
-    ProposalSeed, ReadinessState, SaveProposalSetPayload,
-    SchedulerLivenessEvidence, C2_ZC_CUTOVER_MIGRATION_ID, REBUILD_DERIVED_WORK_KEY,
-    REQUIRED_VERIFY_CHECKS, VERIFY_WORK_KEY_PREFIX,
+    CommitOperation, CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed,
+    ReadinessState, SaveProposalSetPayload, SchedulerLivenessEvidence, C2_ZC_CUTOVER_MIGRATION_ID,
+    REBUILD_DERIVED_WORK_KEY, REQUIRED_VERIFY_CHECKS, VERIFY_RUN_KIND_CONTRACT_VERSION,
+    VERIFY_WORK_KEY_PREFIX,
 };
 use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
 use grimodex_db::{
@@ -39,13 +40,28 @@ const EPOCH_ID: &str = "epoch-c2zc";
 const APPLICATION_ID: &str = "application-c2zc";
 const SOURCE_IDENTITY: &str = "project:scene:scene-c2zc";
 const NOW: &str = "2026-08-24T00:00:00.000Z";
-const BACKFILL_AT: &str = "2026-08-24T00:00:00.000Z";
-const REBUILD_AT: &str = "2026-08-24T00:00:01.000Z";
-const VERIFY_AT: &str = "2026-08-24T00:00:02.000Z";
+const BACKFILL_CREATED_AT: &str = "2026-08-24T00:00:00.000Z";
+const BACKFILL_STARTED_AT: &str = "2026-08-24T00:00:00.001Z";
+const BACKFILL_AT: &str = "2026-08-24T00:00:00.002Z";
+const REBUILD_CREATED_AT: &str = "2026-08-24T00:00:00.003Z";
+const REBUILD_STARTED_AT: &str = "2026-08-24T00:00:00.004Z";
+const REBUILD_AT: &str = "2026-08-24T00:00:00.005Z";
+const VERIFY_CREATED_AT: &str = "2026-08-24T00:00:00.006Z";
+const VERIFY_STARTED_AT: &str = "2026-08-24T00:00:00.007Z";
+const VERIFY_AT: &str = "2026-08-24T00:00:00.008Z";
 const BASELINE_RUN_ID: &str = "backfill-c2zc";
 const BASELINE_VERIFY_RUN_ID: &str = "verify-c2zc";
 const BASELINE_REBUILD_RUN_ID: &str = "rebuild-c2zc";
 const BASELINE_FRESHNESS_RUN_ID: &str = "freshness-c2zc";
+
+static LIVENESS_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn serialize_liveness_test() -> std::sync::MutexGuard<'static, ()> {
+    LIVENESS_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 type ConsumerFreshnessRow = (
     String,
@@ -101,6 +117,18 @@ fn scheduler_evidence(project_ids: &[&str]) -> SchedulerLivenessEvidence {
     }
 }
 
+fn scheduler_heartbeat(
+    db: &Database,
+    authority_id: &str,
+    generation: u64,
+) -> SchedulerLivenessEvidence {
+    let (_outcome, successful_cycle) =
+        grimodex_db::narrative_extraction::run_incremental_freshness_cycle_with_liveness_capability(db)
+            .expect("run successful scheduler cycle before liveness receipt");
+    record_live_scheduler_heartbeat(db, authority_id, generation, successful_cycle)
+        .expect("mint capability-bound live scheduler receipt")
+}
+
 #[test]
 fn database_only_liveness_never_becomes_cutover_evidence() {
     let db = fixture_db();
@@ -144,7 +172,62 @@ fn cutover_refuses_incomplete_workspace_before_any_authority_marker() {
 }
 
 #[test]
+fn cutover_phase_lifecycle_uses_the_exact_shared_task_owner() {
+    let _test_guard = serialize_liveness_test();
+    let db = fixture_db();
+    db.with_conn(seed_cutover_ready_application)
+        .expect("seed cutover fixture");
+    db.with_conn(|conn| {
+        // The individual Rebuild row remains otherwise current and
+        // completed.  Only its task owner is forged: a weak `COUNT(*)` or
+        // created-at selector would accept it, while the shared lifecycle
+        // loader must reject the exact phase proof.
+        conn.execute(
+            "UPDATE narrative_extraction_tasks
+                SET task_kind = 'maintenance-dependency-verify'
+              WHERE run_id = ?1",
+            [BASELINE_REBUILD_RUN_ID],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("forge wrong phase Task kind");
+
+    let evidence = scheduler_heartbeat(&db, "c2zc-task-owner-authority", 1);
+    db.with_conn(|conn| {
+        let readiness = inspect_workspace_cutover_readiness_with_liveness(conn, Some(&evidence))?;
+        assert!(!readiness.ready);
+        assert_eq!(readiness.state, ReadinessState::Blocked);
+        assert!(
+            readiness
+                .reasons
+                .iter()
+                .any(|reason| reason == "phase-lifecycle:phase-lifecycle-ownership-invalid:rebuild"),
+            "unexpected readiness reasons: {:?}",
+            readiness.reasons
+        );
+
+        let error = cut_over_workspace_freshness(conn, &evidence)
+            .expect_err("wrong phase Task owner must block cutover");
+        assert!(
+            error
+                .to_string()
+                .contains("phase-lifecycle:phase-lifecycle-ownership-invalid:rebuild"),
+            "unexpected cutover error: {error}"
+        );
+        let marker_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM schema_data_migrations WHERE migration_id = ?1",
+            [C2_ZC_CUTOVER_MIGRATION_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(marker_count, 0, "blocked cutover must not write a marker");
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("exact shared lifecycle owner must be required");
+}
+
+#[test]
 fn canonical_read_has_no_legacy_fallback_after_generic_cutover() {
+    let _test_guard = serialize_liveness_test();
     let db = fixture_db();
 
     db.with_conn(|conn| {
@@ -154,8 +237,7 @@ fn canonical_read_has_no_legacy_fallback_after_generic_cutover() {
         Ok::<_, anyhow::Error>(())
     })
     .expect("seed cutover fixture");
-    let evidence = record_live_scheduler_heartbeat(&db, "c2zc-test-authority", 1)
-        .expect("mint live scheduler receipt");
+    let evidence = scheduler_heartbeat(&db, "c2zc-test-authority", 1);
     db.with_conn(|conn| {
         let first = cut_over_workspace_freshness(conn, &evidence)?;
         let second = cut_over_workspace_freshness(conn, &evidence)?;
@@ -187,6 +269,7 @@ fn canonical_read_has_no_legacy_fallback_after_generic_cutover() {
 
 #[test]
 fn canonical_read_fails_closed_when_generic_evidence_is_missing() {
+    let _test_guard = serialize_liveness_test();
     let db = fixture_db();
 
     db.with_conn(|conn| {
@@ -194,8 +277,7 @@ fn canonical_read_fails_closed_when_generic_evidence_is_missing() {
         Ok::<_, anyhow::Error>(())
     })
     .expect("seed cutover fixture");
-    let evidence = record_live_scheduler_heartbeat(&db, "c2zc-test-authority", 2)
-        .expect("mint live scheduler receipt");
+    let evidence = scheduler_heartbeat(&db, "c2zc-test-authority", 2);
     db.with_conn(|conn| {
         cut_over_workspace_freshness(conn, &evidence)?;
         conn.execute(
@@ -215,7 +297,51 @@ fn canonical_read_fails_closed_when_generic_evidence_is_missing() {
     .expect("fail-closed canonical read");
 }
 
+#[test]
+fn canonical_read_rejects_non_incremental_or_stale_evaluation_run_reference() {
+    let _test_guard = serialize_liveness_test();
+    let db = fixture_db();
+    db.with_conn(seed_cutover_ready_application)
+        .expect("seed cutover fixture");
+    let evidence = scheduler_heartbeat(&db, "c2zc-run-reference-authority", 3);
+    db.with_conn(|conn| {
+        cut_over_workspace_freshness(conn, &evidence)?;
+        // This Run belongs to the project, but it is a completed Verify, not
+        // the current-Epoch Incremental Freshness publisher.
+        conn.execute(
+            "UPDATE narrative_consumer_freshness
+                SET last_evaluated_run_id = ?1
+              WHERE project_id = ?2 AND consumer_kind = 'application'
+                AND consumer_key = ?3",
+            params![BASELINE_VERIFY_RUN_ID, PROJECT_ID, APPLICATION_ID],
+        )?;
+        let error = canonical_application_freshness(conn, PROJECT_ID, APPLICATION_ID)
+            .expect_err("foreign maintenance Run must not attest canonical Freshness");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH"),
+            "unexpected error: {error}"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("fail closed invalid evaluation Run reference");
+}
+
 fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
+    let backfill_spec = json!({ "backfillAlgorithmVersion": "3" });
+    let backfill_spec_json = backfill_spec.to_string();
+    let backfill_outcome = json!({
+        "maintenancePhase": "backfill-complete",
+        "backfillAlgorithmVersion": "3",
+        "semanticEpochId": EPOCH_ID,
+        "summary": {
+            "epoch_created": false,
+            "contributions_created": 0,
+            "edges_created": 1,
+            "applications_without_run_id": 0,
+        },
+    });
     conn.execute(
         "INSERT INTO narrative_apply_commits
             (id, project_id, run_id, request_id, plan_digest, status, created_at)
@@ -234,13 +360,32 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
     conn.execute(
         "INSERT INTO narrative_extraction_runs
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-             status, coverage_json, created_at, completed_at, run_kind,
+             status, coverage_json, created_at, started_at, completed_at, run_kind,
              semantic_epoch_id, work_key, outcome_summary_json)
-         VALUES (?1, ?2, 'maintenance', '{}', '{}', 'backfill-c2zc', 'completed',
-                 '{}', ?3, ?3, 'backfill', ?4, 'legacy-dependency-backfill:v3', NULL)",
-        params![BASELINE_RUN_ID, PROJECT_ID, BACKFILL_AT, EPOCH_ID],
+         VALUES (?1, ?2, 'maintenance', '{}', ?3, ?4, 'completed',
+                 '{}', ?5, ?6, ?7, 'backfill', ?8,
+                 'legacy-dependency-backfill:v3', ?9)",
+        params![
+            BASELINE_RUN_ID,
+            PROJECT_ID,
+            &backfill_spec_json,
+            format!("sha256:{}", digest_plan(&backfill_spec)),
+            BACKFILL_CREATED_AT,
+            BACKFILL_STARTED_AT,
+            BACKFILL_AT,
+            EPOCH_ID,
+            backfill_outcome.to_string(),
+        ],
     )?;
-    seed_phase_lifecycle_closure(conn, BASELINE_RUN_ID, "maintenance-backfill", BACKFILL_AT)?;
+    seed_phase_lifecycle_closure(
+        conn,
+        BASELINE_RUN_ID,
+        "maintenance-backfill",
+        &backfill_spec_json,
+        BACKFILL_CREATED_AT,
+        BACKFILL_STARTED_AT,
+        BACKFILL_AT,
+    )?;
     conn.execute(
         "INSERT INTO narrative_projection_freshness
             (application_id, status, reason_json, version, updated_at)
@@ -306,9 +451,13 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
         "covered": REQUIRED_VERIFY_CHECKS,
         "missing": [],
     });
+    let verify_spec = json!({ "verifyContractVersion": VERIFY_RUN_KIND_CONTRACT_VERSION });
+    let verify_spec_json = verify_spec.to_string();
+    let graph_state_digest = durable_graph_state_digest(conn, PROJECT_ID)?;
     let verify_outcome = json!({
-        "verifyContractVersion": "7",
+        "verifyContractVersion": VERIFY_RUN_KIND_CONTRACT_VERSION,
         "semanticEpochId": EPOCH_ID,
+        "graphStateDigest": graph_state_digest.clone(),
         "reportDigest": format!("sha256:{}", digest_plan(&report)),
         "report": report,
         "checkCoverage": check_coverage,
@@ -316,14 +465,18 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
     conn.execute(
         "INSERT INTO narrative_extraction_runs
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-             status, coverage_json, outcome_summary_json, created_at, completed_at,
-             run_kind, semantic_epoch_id, work_key)
-         VALUES (?1, ?2, 'maintenance', '{}', '{}', 'verify-c2zc', 'completed',
-                 '{}', ?3, ?4, ?4, 'dependency-verify', ?5, ?6)",
+             status, coverage_json, outcome_summary_json, created_at, started_at,
+             completed_at, run_kind, semantic_epoch_id, work_key)
+         VALUES (?1, ?2, 'maintenance', '{}', ?3, ?4, 'completed',
+                 '{}', ?5, ?6, ?7, ?8, 'dependency-verify', ?9, ?10)",
         params![
             BASELINE_VERIFY_RUN_ID,
             PROJECT_ID,
+            &verify_spec_json,
+            format!("sha256:{}", digest_plan(&verify_spec)),
             verify_outcome.to_string(),
+            VERIFY_CREATED_AT,
+            VERIFY_STARTED_AT,
             VERIFY_AT,
             EPOCH_ID,
             format!("{VERIFY_WORK_KEY_PREFIX}{EPOCH_ID}")
@@ -332,7 +485,10 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
     seed_phase_lifecycle_closure(
         conn,
         BASELINE_VERIFY_RUN_ID,
-        "maintenance-verify",
+        "maintenance-dependency-verify",
+        &verify_spec_json,
+        VERIFY_CREATED_AT,
+        VERIFY_STARTED_AT,
         VERIFY_AT,
     )?;
     let coordinates = current_maintenance_coordinates()?;
@@ -345,9 +501,9 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
         rule_registry_digest: coordinates.rule_registry_digest,
         producer_generation_set_digest: coordinates.producer_generation_set_digest,
         rebuild_contract_version: "1".to_string(),
-        run_kind_contract_version: "7".to_string(),
+        run_kind_contract_version: VERIFY_RUN_KIND_CONTRACT_VERSION.to_string(),
         report_digest: format!("sha256:{}", digest_plan(&report)),
-        graph_state_digest: durable_graph_state_digest(conn, PROJECT_ID)?,
+        graph_state_digest,
     };
     conn.execute_batch("SAVEPOINT seed_skip_evidence")?;
     persist_completed_run_skip_evidence_in_tx(conn, BASELINE_VERIFY_RUN_ID, &evidence)?;
@@ -359,6 +515,8 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
         "consumersSkippedUnresolvableScope": 0,
         "edgesSkippedUnresolvableScope": 0,
     });
+    let rebuild_spec = json!({});
+    let rebuild_spec_json = rebuild_spec.to_string();
     let rebuild_outcome = json!({
         "rebuildContractVersion": "1",
         "semanticEpochId": EPOCH_ID,
@@ -368,14 +526,18 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
     conn.execute(
         "INSERT INTO narrative_extraction_runs
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-             status, coverage_json, outcome_summary_json, created_at, completed_at,
-             run_kind, semantic_epoch_id, work_key)
-         VALUES (?1, ?2, 'maintenance', '{}', '{}', 'rebuild-c2zc', 'completed',
-                 '{}', ?3, ?4, ?4, 'semantic-index-rebuild', ?5, ?6)",
+             status, coverage_json, outcome_summary_json, created_at, started_at,
+             completed_at, run_kind, semantic_epoch_id, work_key)
+         VALUES (?1, ?2, 'maintenance', '{}', ?3, ?4, 'completed',
+                 '{}', ?5, ?6, ?7, ?8, 'semantic-index-rebuild', ?9, ?10)",
         params![
             BASELINE_REBUILD_RUN_ID,
             PROJECT_ID,
+            &rebuild_spec_json,
+            format!("sha256:{}", digest_plan(&rebuild_spec)),
             rebuild_outcome.to_string(),
+            REBUILD_CREATED_AT,
+            REBUILD_STARTED_AT,
             REBUILD_AT,
             EPOCH_ID,
             REBUILD_DERIVED_WORK_KEY
@@ -384,7 +546,10 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
     seed_phase_lifecycle_closure(
         conn,
         BASELINE_REBUILD_RUN_ID,
-        "maintenance-rebuild",
+        "maintenance-semantic-index-rebuild",
+        &rebuild_spec_json,
+        REBUILD_CREATED_AT,
+        REBUILD_STARTED_AT,
         REBUILD_AT,
     )?;
 
@@ -407,9 +572,9 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
         "INSERT INTO narrative_extraction_runs
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
              status, coverage_json, outcome_summary_json, created_at, completed_at,
-             run_kind, semantic_epoch_id, work_key, consumer_id)
+             started_at, run_kind, semantic_epoch_id, work_key, consumer_id)
          VALUES (?1, ?2, 'maintenance', '{}', '{}', 'freshness-c2zc', 'completed',
-                 '{}', ?3, ?4, ?4, 'freshness-evaluation', ?5, ?6,
+                 '{}', ?3, ?4, ?4, ?4, 'freshness-evaluation', ?5, ?6,
                  'narrative-incremental-freshness/v1')",
         params![
             BASELINE_FRESHNESS_RUN_ID,
@@ -429,19 +594,36 @@ fn seed_phase_lifecycle_closure(
     conn: &Connection,
     run_id: &str,
     task_kind: &str,
-    at: &str,
+    spec_json: &str,
+    created_at: &str,
+    started_at: &str,
+    completed_at: &str,
 ) -> anyhow::Result<()> {
     conn.execute(
         "INSERT INTO narrative_extraction_tasks
-            (id, run_id, task_kind, status, created_at, completed_at)
-         VALUES (?1, ?2, ?3, 'completed', ?4, ?4)",
-        params![format!("{run_id}-task"), run_id, task_kind, at],
+            (id, run_id, task_kind, status, input_json, attempt_count,
+             created_at, started_at, completed_at)
+         VALUES (?1, ?2, ?3, 'completed', ?4, 1, ?5, ?6, ?7)",
+        params![
+            format!("{run_id}-task"),
+            run_id,
+            task_kind,
+            spec_json,
+            created_at,
+            started_at,
+            completed_at,
+        ],
     )?;
     conn.execute(
         "INSERT INTO narrative_extraction_attempts
             (id, task_id, attempt_number, status, started_at, completed_at)
-         VALUES (?1, ?2, 1, 'completed', ?3, ?3)",
-        params![format!("{run_id}-attempt"), format!("{run_id}-task"), at],
+         VALUES (?1, ?2, 1, 'completed', ?3, ?4)",
+        params![
+            format!("{run_id}-attempt"),
+            format!("{run_id}-task"),
+            started_at,
+            completed_at,
+        ],
     )?;
     Ok(())
 }
@@ -887,11 +1069,11 @@ fn application_id_for_commit(db: &Database, commit: &Value) -> String {
 
 #[test]
 fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
+    let _test_guard = serialize_liveness_test();
     let db = fixture_db();
     db.with_conn(seed_cutover_ready_application)
         .expect("seed all C2-ZA durable prerequisites");
-    let evidence = record_live_scheduler_heartbeat(&db, "c2zc-apply-authority", 1)
-        .expect("mint live scheduler heartbeat from production seam");
+    let evidence = scheduler_heartbeat(&db, "c2zc-apply-authority", 1);
     db.with_conn(|conn| cut_over_workspace_freshness(conn, &evidence))
         .expect("activate Generic Consumer Freshness");
     enable_manual_apply(&db);
@@ -944,16 +1126,23 @@ fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
     assert_ne!(application_id, APPLICATION_ID);
 
     db.with_conn(|conn| {
-        let generic_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM narrative_consumer_freshness
+        let seeded_row: (String, String, String, Option<String>) = conn.query_row(
+            "SELECT evidence_freshness, build_action, semantic_epoch_id, last_evaluated_run_id
+               FROM narrative_consumer_freshness
               WHERE project_id = ?1 AND consumer_kind = 'application'
                 AND consumer_key = ?2",
             params![PROJECT_ID, application_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
         assert_eq!(
-            generic_count, 0,
-            "Apply declares the Edge before evaluation"
+            seeded_row,
+            (
+                "unknown".to_string(),
+                "manual".to_string(),
+                EPOCH_ID.to_string(),
+                None,
+            ),
+            "normal post-cutover Apply seeds canonical Unknown/Manual Freshness before Feed evaluation"
         );
         let application_ids_json: String = conn.query_row(
             "SELECT t.application_ids_json
@@ -1008,11 +1197,11 @@ fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
 
 #[test]
 fn second_temporal_node_ensure_initializes_generic_without_false_feed() {
+    let _test_guard = serialize_liveness_test();
     let db = fixture_db();
     db.with_conn(seed_cutover_ready_application)
         .expect("seed all C2-ZA durable prerequisites");
-    let evidence = record_live_scheduler_heartbeat(&db, "c2zc-temporal-authority", 1)
-        .expect("mint live scheduler heartbeat from production seam");
+    let evidence = scheduler_heartbeat(&db, "c2zc-temporal-authority", 1);
     db.with_conn(|conn| cut_over_workspace_freshness(conn, &evidence))
         .expect("activate Generic Consumer Freshness");
     enable_manual_apply(&db);

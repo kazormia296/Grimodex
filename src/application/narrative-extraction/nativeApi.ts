@@ -10,6 +10,11 @@ import type {
   ReconciliationEnvelopeV2,
 } from "@/features/narrative-extraction/reconciler/types";
 import type { NarrativeScopeAuthorityBasisV2 } from "@/features/narrative-extraction/source/scopeAuthorityBasisV2";
+import type {
+  ChronicleStageProvenanceClosureV1,
+  ChronicleStageProvenanceReceiptRefV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
+import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 
 export interface CreateRunTaskSeed {
   readonly taskId?: string;
@@ -68,7 +73,33 @@ export interface FinishTaskPayload {
   readonly leaseOwner: string;
   readonly outputJson?: Readonly<Record<string, unknown>>;
   readonly artifacts?: readonly ArtifactInput[];
+  /**
+   * Native-only C1 persistence proof. The closure is transport-ephemeral:
+   * Native validates it and stores only verified terminal receipt/model rows.
+   */
+  readonly chronicleStageBundle?: ChronicleStageC1ExecutionBinding;
   readonly historicalScopeAuthorityBasis?: NarrativeScopeAuthorityBasisV2;
+}
+
+/**
+ * C1 finish binding. `taskId`/`attemptId` name the closure aggregator (the
+ * task being finished); `stageExecutionOwner*` identifies the actual model
+ * stage whose prompt coordinates bind the aggregate proof. The distinction is
+ * required in the multi-window Chronicle DAG.
+ */
+export interface ChronicleStageC1ExecutionBinding {
+  readonly projectId: string;
+  readonly runId: string;
+  readonly taskId: string;
+  readonly attemptId: string;
+  readonly stageExecutionOwnerTaskId: string;
+  readonly stageExecutionOwnerAttemptId: string;
+  readonly stageExecutionOwnerStageExecutionId: string;
+  readonly contextSetDigest: Sha256Digest;
+  readonly componentContractDigest: Sha256Digest;
+  readonly finalRequestDigest: Sha256Digest;
+  readonly stageProvenanceClosureDigest: Sha256Digest;
+  readonly closure: ChronicleStageProvenanceClosureV1;
 }
 
 export interface FailTaskPayload {
@@ -124,6 +155,8 @@ export interface SaveProposalSetPayload {
   readonly summaryJson?: Readonly<Record<string, unknown>>;
   readonly proposals: readonly ProposalSeed[];
 }
+
+export type ChronicleStageReceiptRef = ChronicleStageProvenanceReceiptRefV1;
 
 export interface SavedProposalSeed {
   readonly proposalId: string;

@@ -305,6 +305,10 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 - Run only after C2-5B and every per-workspace gate below passes from durable current evidence.
 - Switching the read authority and removing the possibility of silent dual-authority divergence is an explicit later change, not part of C2-ZA.
+- The ordinary Freshness scheduler may run its bounded cycle and register
+  liveness evidence, but it must not write the C2-ZC marker or activate the
+  canonical read/write switch.  That irreversible transition remains a
+  separately accepted authority boundary.
 
 ### Per-Workspace cutover requirements
 

@@ -10,6 +10,7 @@ import {
 import type {
   ChronicleStageProvenanceBindingV1,
   ChronicleStageProvenanceClosureV1,
+  ChronicleStageProvenanceReceiptRefV1,
   ChronicleStageTerminalReceiptV1,
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
 import {
@@ -81,7 +82,8 @@ export interface ChronicleV2ProductionBatchResult {
     string,
     ChronicleV2ProductionResult["envelope"]
   >;
-  readonly stageProvenanceBundle?: ChronicleV2ProductionResult;
+  /** Durable ProposalSet binds only these verified receipt refs, never a closure. */
+  readonly stageReceiptRefs?: readonly ChronicleStageProvenanceReceiptRefV1[];
 }
 
 /** The Context Set must be identical to the Event Synthesis prompt builder. */
@@ -262,34 +264,57 @@ function synthesisReceiptsForInput(
   );
 }
 
+type AcceptedSynthesisTerminal = {
+  readonly terminal: ChronicleStageTerminalReceiptV1;
+  readonly disposition: "root-success" | "repair-success" | "deterministic-empty";
+};
+
+/**
+ * Keep production V2 selection aligned with Native's terminal-path resolver:
+ * the root owns the Revision Basis prompt coordinates, while a successful
+ * structured-repair child owns the parsed output digest.
+ */
+function resolveAcceptedSynthesisTerminal(
+  receipts: readonly ChronicleStageTerminalReceiptV1[],
+  root: ChronicleStageTerminalReceiptV1,
+): AcceptedSynthesisTerminal {
+  if (
+    root.stageExecution.stageId !== NARRATIVE_STAGE_IDS.eventSynthesis ||
+    root.stageExecution.parentStageExecutionId !== undefined
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_V2_PROVENANCE_MISSING: terminal path must begin at a synthesis root",
+    );
+  }
+  if (root.parseStatus === "parsed" && root.terminalStatus === "succeeded") {
+    return { terminal: root, disposition: "root-success" };
+  }
+  if (root.parseStatus === "not-attempted" && root.terminalStatus === "skipped") {
+    return { terminal: root, disposition: "deterministic-empty" };
+  }
+  if (root.parseStatus === "invalid" && root.terminalStatus === "failed") {
+    const repairs = receipts.filter(
+      (receipt) =>
+        receipt.stageExecution.stageId === NARRATIVE_STAGE_IDS.structuredRepair &&
+        receipt.stageExecution.parentStageExecutionId ===
+          root.stageExecution.stageExecutionId &&
+        receipt.stageExecution.taskId === root.stageExecution.taskId &&
+        receipt.stageExecution.attemptId === root.stageExecution.attemptId &&
+        receipt.parseStatus === "parsed" &&
+        receipt.terminalStatus === "succeeded",
+    );
+    if (repairs.length === 1 && repairs[0]) {
+      return { terminal: repairs[0], disposition: "repair-success" };
+    }
+  }
+  throw new Error(
+    "NEX_CHRONICLE_V2_PROVENANCE_MISSING: synthesis root has no accepted terminal output path",
+  );
+}
+
 export async function buildChronicleProductionV2Envelope(
   input: ChronicleV2ProductionInput,
 ): Promise<ChronicleV2ProductionResult> {
-  const rootSynthesis = input.stageReceipts.find(
-    (receipt) =>
-      receipt.stageExecution.stageId === NARRATIVE_STAGE_IDS.eventSynthesis &&
-      receipt.stageExecution.parentStageExecutionId === undefined,
-  );
-  if (!rootSynthesis) {
-    throw new Error(
-      "NEX_CHRONICLE_V2_PROVENANCE_MISSING: C1 synthesis receipt is required",
-    );
-  }
-
-  const closure = await buildChronicleStageProvenanceClosureV1({
-    projectId: input.projectId,
-    runId: input.runId,
-    ownerTaskId: rootSynthesis.stageExecution.taskId,
-    ownerAttemptId: rootSynthesis.stageExecution.attemptId,
-    receipts: input.stageReceipts,
-  });
-  const binding = buildChronicleStageProvenanceBindingV1({
-    projectId: input.projectId,
-    runId: input.runId,
-    taskId: rootSynthesis.stageExecution.taskId,
-    closure,
-  });
-
   const mergedObservations = observationsForHypothesis(
     input.mergedObservations,
     input.hypothesis,
@@ -306,15 +331,51 @@ export async function buildChronicleProductionV2Envelope(
     contextManifests,
     NARRATIVE_STAGE_IDS.eventSynthesis,
   );
-  const synthesisReceipt = synthesisReceiptsForInput(
+  const synthesisReceipts = synthesisReceiptsForInput(
     input.stageReceipts,
     contextSetDigest,
-  )[0];
+  );
+  if (synthesisReceipts.length > 1) {
+    throw new Error(
+      `NEX_CHRONICLE_V2_PROVENANCE_AMBIGUOUS: multiple C1 synthesis receipts match cluster '${input.hypothesis.clusterRef}'`,
+    );
+  }
+  const synthesisReceipt = synthesisReceipts[0];
   if (!synthesisReceipt) {
     throw new Error(
       `NEX_CHRONICLE_V2_PROVENANCE_MISSING: no C1 synthesis receipt matches cluster '${input.hypothesis.clusterRef}'`,
     );
   }
+  const terminal = resolveAcceptedSynthesisTerminal(
+    input.stageReceipts,
+    synthesisReceipt,
+  );
+  if (
+    terminal.disposition === "deterministic-empty" ||
+    terminal.terminal.responseDigest === null ||
+    terminal.terminal.rawObservationsDigest === null ||
+    terminal.terminal.parsedOutputDigest === null
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_V2_PROVENANCE_MISSING: a V2 proposal requires a response-backed parsed synthesis terminal",
+    );
+  }
+  // Choose the root after computing this proposal's exact Context Set. A
+  // multi-cluster Run may contain several synthesis receipts; using the first
+  // receipt would bind a valid envelope to the wrong model invocation.
+  const closure = await buildChronicleStageProvenanceClosureV1({
+    projectId: input.projectId,
+    runId: input.runId,
+    ownerTaskId: synthesisReceipt.stageExecution.taskId,
+    ownerAttemptId: synthesisReceipt.stageExecution.attemptId,
+    receipts: input.stageReceipts,
+  });
+  const binding = buildChronicleStageProvenanceBindingV1({
+    projectId: input.projectId,
+    runId: input.runId,
+    taskId: synthesisReceipt.stageExecution.taskId,
+    closure,
+  });
 
   const evidenceById = new Map(
     input.evidenceAnchors.map((anchor) => [anchor.id, anchor] as const),
@@ -408,7 +469,10 @@ export async function buildChronicleProductionV2Envelopes(
     string,
     ChronicleV2ProductionResult["envelope"]
   >();
-  let stageProvenanceBundle: ChronicleV2ProductionResult | undefined;
+  const stageReceiptRefs = new Map<
+    string,
+    ChronicleStageProvenanceReceiptRefV1
+  >();
 
   for (const [index, plannedRow] of input.plannedProposals.entries()) {
     const proposalKey = `${plannedRow.proposal.eventId}:${index}`;
@@ -433,11 +497,29 @@ export async function buildChronicleProductionV2Envelopes(
       stageReceipts: input.stageReceipts,
     });
     envelopeByProposalKey.set(proposalKey, builtV2.envelope);
-    stageProvenanceBundle ??= builtV2;
+    for (const reference of builtV2.stageProvenanceClosure.receiptRefs) {
+      stageReceiptRefs.set(reference.stageExecutionId, reference);
+    }
   }
 
   return {
     envelopeByProposalKey,
-    ...(stageProvenanceBundle ? { stageProvenanceBundle } : {}),
+    ...(stageReceiptRefs.size > 0
+      ? {
+          stageReceiptRefs: [...stageReceiptRefs.values()].sort((left, right) =>
+            left.stageExecutionId < right.stageExecutionId
+              ? -1
+              : left.stageExecutionId > right.stageExecutionId
+                ? 1
+                : left.stageExecutionReceiptDigest <
+                    right.stageExecutionReceiptDigest
+                  ? -1
+                  : left.stageExecutionReceiptDigest >
+                      right.stageExecutionReceiptDigest
+                    ? 1
+                    : 0,
+          ),
+        }
+      : {}),
   };
 }

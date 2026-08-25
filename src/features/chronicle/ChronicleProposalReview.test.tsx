@@ -180,7 +180,12 @@ describe("ChronicleProposalReview", () => {
       }) => {
         useChronicleExtractionStore
           .getState()
-          .reviseProposalFields(args.proposalId, "rev-native-2", args.patch);
+          .reviseProposalFields(
+            args.proposalId,
+            "rev-native-2",
+            "sha256:review-revision-envelope",
+            args.patch,
+          );
       },
     );
     bulkMock.mockImplementation(async () => {

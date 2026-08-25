@@ -17,9 +17,11 @@ import {
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
 import {
   createStageExecutionContext,
+  createChildStageExecutionContext,
   NARRATIVE_STAGE_IDS,
 } from "@/features/narrative-extraction/reconciler/stageExecution";
 import type { NarrativeCorpusSnapshot } from "@/features/narrative-extraction/source/types";
+import { digestStableJson } from "@/features/narrative-extraction/source/digest";
 
 const DIGEST = `sha256:${"a".repeat(64)}` as const;
 
@@ -143,6 +145,33 @@ async function receipts() {
     requestedModel: "test-model",
     resolutionStatus: "requested-only",
   });
+  const rawObservationsDigest = await digestStableJson({
+    kind: "chronicle.raw-observations@1",
+    version: 1,
+    observations: [observation],
+  });
+  const eventOutput = {
+    clusterRef: hypothesis.clusterRef,
+    resolution: "single-event",
+    events: [
+      {
+        observationRefs: [observation.localId],
+        titleSuggestion: hypothesis.titleSuggestion,
+        summary: hypothesis.summary,
+        actuality: hypothesis.actuality,
+        significance: hypothesis.significance,
+      },
+    ],
+  };
+  const parsedOutputDigest = await digestStableJson({
+    domain: "chronicle.parsed-output/1",
+    kind: "chronicle.event-synthesis-output@1",
+    observationCount: 1,
+    eventCount: 1,
+    observationRefs: [observation.localId],
+    rawObservationsDigest,
+    eventOutputDigest: await digestStableJson(eventOutput),
+  });
   return Promise.all([
     buildChronicleStageTerminalReceiptV1({
       stageExecution: observationExecution,
@@ -163,10 +192,60 @@ async function receipts() {
       finalRequestDigest: DIGEST,
       modelExecutionBinding: model,
       responseDigest: DIGEST,
+      rawObservationsDigest,
+      parsedOutputDigest,
       parseStatus: "parsed",
       terminalStatus: "succeeded",
     }),
   ]);
+}
+
+async function repairReceipts() {
+  const direct = await receipts();
+  const observationReceipt = direct.find(
+    (receipt) =>
+      receipt.stageExecution.stageId ===
+      NARRATIVE_STAGE_IDS.observationExtraction,
+  );
+  const rootSuccess = direct.find(
+    (receipt) =>
+      receipt.stageExecution.stageId === NARRATIVE_STAGE_IDS.eventSynthesis,
+  );
+  if (!observationReceipt || !rootSuccess) {
+    throw new Error("missing direct fixture receipts");
+  }
+  const failedRoot = await buildChronicleStageTerminalReceiptV1({
+    stageExecution: rootSuccess.stageExecution,
+    contextSetVersion: rootSuccess.contextSetVersion,
+    contextSetDigest: rootSuccess.contextSetDigest,
+    componentContractDigest: rootSuccess.componentContractDigest,
+    finalRequestDigest: rootSuccess.finalRequestDigest,
+    modelExecutionBinding: rootSuccess.modelExecutionBinding,
+    responseDigest: rootSuccess.responseDigest,
+    parseStatus: "invalid",
+    terminalStatus: "failed",
+  });
+  const repairStageExecution = createChildStageExecutionContext(
+    rootSuccess.stageExecution,
+    NARRATIVE_STAGE_IDS.structuredRepair,
+    "stage:synthesis-repair",
+  );
+  const repair = await buildChronicleStageTerminalReceiptV1({
+    stageExecution: repairStageExecution,
+    contextSetVersion: "chronicle.context-set/1",
+    // The child carries its own repair-prompt coordinates; the V2 Revision
+    // Basis must still select the failed root's synthesis coordinates.
+    contextSetDigest: await digestStableJson({ repair: "context" }),
+    componentContractDigest: await digestStableJson({ repair: "component" }),
+    finalRequestDigest: await digestStableJson({ repair: "request" }),
+    modelExecutionBinding: rootSuccess.modelExecutionBinding,
+    responseDigest: DIGEST,
+    rawObservationsDigest: rootSuccess.rawObservationsDigest,
+    parsedOutputDigest: rootSuccess.parsedOutputDigest,
+    parseStatus: "parsed",
+    terminalStatus: "succeeded",
+  });
+  return [observationReceipt, failedRoot, repair];
 }
 
 describe("Chronicle V2 production adapter boundary", () => {
@@ -258,7 +337,44 @@ describe("Chronicle V2 production adapter boundary", () => {
     });
 
     expect(result.envelopeByProposalKey.has("event:arrival:0")).toBe(true);
-    expect(result.stageProvenanceBundle?.proposalKey).toBe("event:arrival:0");
+    expect(result.stageReceiptRefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ stageExecutionId: "stage:synthesis" }),
+      ]),
+    );
+  });
+
+  it("uses the failed synthesis root for V2 basis while accepting its parsed repair child output", async () => {
+    const stageReceipts = await repairReceipts();
+    const result = await buildChronicleProductionV2Envelope({
+      projectId: "project:chronicle",
+      runId: "run:production",
+      proposalKey: "event:arrival:repair",
+      proposal,
+      hypothesis,
+      originalObservations: [observation],
+      mergedObservations: [observation],
+      evidenceAnchors: [anchor],
+      existingEventMatch: { status: "none" } satisfies ChronicleExistingMatch,
+      snapshot,
+      sourceBasis: buildSnapshotSourceBasis("run:production", snapshot),
+      stageReceipts,
+    });
+
+    expect(result.envelope.revisionBasis).toMatchObject({
+      taskId: "task:synthesis",
+      contextSetDigest: stageReceipts[1]?.contextSetDigest,
+    });
+    expect(result.stageProvenanceClosure.receipts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stageExecution: expect.objectContaining({
+            stageExecutionId: "stage:synthesis-repair",
+          }),
+          parsedOutputDigest: expect.any(String),
+        }),
+      ]),
+    );
   });
 
   it("fails closed when the C1 synthesis receipt is absent", async () => {

@@ -480,6 +480,76 @@ describe("narrative maintenance trigger coordinator", () => {
     coordinator.dispose();
   });
 
+  it("ACKs a durable wake only after its discovery is validated and registered", async () => {
+    const scheduler = makeScheduler();
+    const binding = { authorityId: "authority-outbox", generation: 7 };
+    const pendingDiscovery = deferred<unknown>();
+    const discoverNarrativeMaintenanceWork = vi
+      .fn()
+      .mockReturnValue(pendingDiscovery.promise);
+    const ackNarrativeMaintenanceWakeOutbox = vi
+      .fn()
+      .mockResolvedValue({ status: "accepted", acknowledged: 1 });
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        listNarrativeMaintenanceWakeOutbox: vi.fn().mockResolvedValue([
+          { id: "wake-1" },
+        ]),
+        ackNarrativeMaintenanceWakeOutbox,
+        discoverNarrativeMaintenanceWork,
+      },
+      scheduler,
+    );
+
+    await coordinator.drainWakeOutbox();
+    await vi.runOnlyPendingTimersAsync();
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledWith(
+      "semantic-epoch-rotated",
+    );
+    expect(ackNarrativeMaintenanceWakeOutbox).not.toHaveBeenCalled();
+
+    pendingDiscovery.resolve(discovery("authority-outbox", 7, [[backfill("p1")]]));
+    await vi.runAllTimersAsync();
+
+    expect(scheduler.requestManyWithBinding).toHaveBeenCalledWith(
+      [expect.objectContaining({ projectId: "p1" })],
+      binding,
+    );
+    expect(ackNarrativeMaintenanceWakeOutbox).toHaveBeenCalledWith(
+      ["wake-1"],
+      binding,
+    );
+    coordinator.dispose();
+  });
+
+  it("leaves a durable wake pending when its discovery cannot be validated", async () => {
+    const scheduler = makeScheduler();
+    const binding = { authorityId: "authority-outbox", generation: 7 };
+    const ackNarrativeMaintenanceWakeOutbox = vi.fn();
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        listNarrativeMaintenanceWakeOutbox: vi.fn().mockResolvedValue([
+          { id: "wake-1" },
+        ]),
+        ackNarrativeMaintenanceWakeOutbox,
+        discoverNarrativeMaintenanceWork: vi.fn().mockResolvedValue(
+          discovery("replacement-authority", 8, [[backfill("p1")]]),
+        ),
+      },
+      scheduler,
+      { warn: vi.fn() },
+    );
+
+    await coordinator.drainWakeOutbox();
+    await vi.runAllTimersAsync();
+
+    expect(scheduler.requestManyWithBinding).not.toHaveBeenCalled();
+    expect(ackNarrativeMaintenanceWakeOutbox).not.toHaveBeenCalled();
+    coordinator.dispose();
+  });
+
   it("bounds an unchanged non-empty planner result instead of spinning forever", async () => {
     const scheduler = makeScheduler();
     const response = discovery("authority-stale", 1, [[backfill("p1")]]);

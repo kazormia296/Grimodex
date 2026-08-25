@@ -1,10 +1,10 @@
 //! Typed historical Scope-authority artifact persistence and loading.
 //!
 //! The producer is owned by the typed task-finish path. It re-derives the
-//! submitted basis from the durable Run and the project tree while the
-//! caller's `BEGIN IMMEDIATE` transaction is open. The reader validates only
-//! the sealed historical artifact and its durable owner bindings; it never
-//! consults the mutable project tree.
+//! submitted basis from the durable Run and its sealed `source.snapshot@1`
+//! companion while the caller's `BEGIN IMMEDIATE` transaction is open. The
+//! reader validates only sealed historical artifacts and durable owner
+//! bindings; it never consults the mutable project tree.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -15,7 +15,7 @@ use grimodex_core::narrative_scope_authority_basis::{
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 
 use super::models::ArtifactInput;
 use crate::Database;
@@ -34,15 +34,6 @@ struct HistoricalRunScope {
 }
 
 #[derive(Debug)]
-struct PersistedTreeNode {
-    id: String,
-    parent_id: Option<String>,
-    node_type: String,
-    sort_order: String,
-    story_time_order: Option<String>,
-}
-
-#[derive(Debug)]
 struct StoredHistoricalArtifact {
     task_id: Option<String>,
     attempt_id: Option<String>,
@@ -50,6 +41,59 @@ struct StoredHistoricalArtifact {
     payload_json: Option<String>,
     payload_ref: Option<String>,
     payload_digest: Option<String>,
+}
+
+/// Immutable document-to-project-node evidence carried by a completed parent
+/// `source.snapshot@1` artifact.  Human ScopeOverride deliberately resolves
+/// the edited document through this sealed evidence before consulting the
+/// current tree, so a client cannot substitute the event Scene for its reveal
+/// target.
+#[derive(Debug)]
+pub(crate) struct SealedSnapshotDocumentBinding {
+    pub(crate) source_key: String,
+    pub(crate) node_id: String,
+}
+
+#[derive(Debug)]
+struct SnapshotDocumentDraft {
+    document_ref: String,
+    source_key: String,
+    parent_ref: Option<String>,
+    title: String,
+    order_index: u64,
+    canonical_text: String,
+    canonical_blocks: Value,
+    canonical_projection: Value,
+    content_digest: String,
+    document_digest: String,
+    artifact_digest: String,
+    origin: Value,
+    node_id: String,
+}
+
+#[derive(Debug)]
+struct SnapshotDocumentSeal {
+    document_ref: String,
+    source_key: String,
+    document_digest: String,
+    artifact_digest: String,
+    canonical_text: String,
+    node_id: String,
+}
+
+struct ValidatedSnapshotCorpus {
+    documents: Vec<SnapshotDocumentSeal>,
+    scope_authority_documents: Vec<NarrativeScopeAuthorityDocumentInputV2>,
+}
+
+/// Native facts derived from one normalized `source.snapshot@1` payload.
+/// Task finish uses this narrow result to CAS the coordinator's output JSON
+/// without duplicating snapshot parsing or trusting renderer-supplied digests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotAuthorityFinishValidation {
+    pub(crate) document_count: usize,
+    pub(crate) corpus_payload_digest: String,
+    pub(crate) scope_authority_composite_digest: Option<String>,
 }
 
 fn compare_utf16(left: &str, right: &str) -> Ordering {
@@ -64,6 +108,10 @@ fn validate_basis_scope_binding(
     basis: &NarrativeScopeAuthorityBasisV2,
     scope: &HistoricalRunScope,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !scope.folder_id.trim().is_empty() && scope.folder_id.trim() == scope.folder_id,
+        "NEX_SCOPE_AUTHORITY_SCOPE_MISMATCH: Run folderId is invalid"
+    );
     anyhow::ensure!(
         basis.mappings.len() == scope.scene_ids.len(),
         "NEX_SCOPE_AUTHORITY_SCOPE_MISMATCH: artifact mapping count differs from Run scope"
@@ -138,123 +186,606 @@ fn require_unique_completed_snapshot_task(
     Ok(())
 }
 
-fn derive_ordered_scene_ids(
-    nodes: &[PersistedTreeNode],
-    folder_id: &str,
-) -> anyhow::Result<Vec<String>> {
-    let nodes_by_id = nodes
-        .iter()
-        .map(|node| (node.id.as_str(), node))
-        .collect::<HashMap<_, _>>();
-    let requested_folder = nodes_by_id
-        .get(folder_id)
-        .copied()
-        .ok_or_else(|| invalid_durable_scope("requested folder is unavailable"))?;
-    anyhow::ensure!(
-        requested_folder.node_type == "folder",
-        "NEX_SCOPE_AUTHORITY_DURABLE_SCOPE_INVALID: requested node is not a folder"
-    );
-
-    // A requested subtree is valid only when its complete ancestor chain is
-    // present and folder-only. This also catches cycles above the requested
-    // folder before the DFS begins.
-    let mut ancestor_ids = HashSet::new();
-    let mut ancestor = requested_folder;
-    loop {
-        anyhow::ensure!(
-            ancestor_ids.insert(ancestor.id.as_str()),
-            "NEX_SCOPE_AUTHORITY_DURABLE_SCOPE_INVALID: cyclic ancestor chain"
-        );
-        let Some(parent_id) = ancestor.parent_id.as_deref() else {
-            break;
-        };
-        ancestor = nodes_by_id
-            .get(parent_id)
-            .copied()
-            .ok_or_else(|| invalid_durable_scope("ancestor folder is unavailable"))?;
-        anyhow::ensure!(
-            ancestor.node_type == "folder",
-            "NEX_SCOPE_AUTHORITY_DURABLE_SCOPE_INVALID: ancestor is not a folder"
-        );
-    }
-
-    let mut children_by_parent = HashMap::<&str, Vec<&PersistedTreeNode>>::new();
-    for node in nodes {
-        if let Some(parent_id) = node.parent_id.as_deref() {
-            children_by_parent.entry(parent_id).or_default().push(node);
-        }
-    }
-    for children in children_by_parent.values_mut() {
-        children.sort_by(|left, right| compare_utf16(&left.sort_order, &right.sort_order));
-    }
-
-    enum Traversal<'a> {
-        Enter(&'a str),
-        Exit(&'a str),
-        Scene(&'a str),
-    }
-    let mut ordered_scene_ids = Vec::new();
-    let mut visiting = HashSet::new();
-    let mut visited = HashSet::new();
-    let mut traversal = vec![Traversal::Enter(requested_folder.id.as_str())];
-    while let Some(frame) = traversal.pop() {
-        match frame {
-            Traversal::Scene(scene_id) => ordered_scene_ids.push(scene_id.to_owned()),
-            Traversal::Exit(folder_id) => {
-                visiting.remove(folder_id);
-                visited.insert(folder_id);
-            }
-            Traversal::Enter(folder_id) => {
-                anyhow::ensure!(
-                    !visiting.contains(folder_id),
-                    "NEX_SCOPE_AUTHORITY_DURABLE_SCOPE_INVALID: cyclic subtree"
-                );
-                if visited.contains(folder_id) {
-                    continue;
-                }
-                visiting.insert(folder_id);
-
-                let children = children_by_parent
-                    .get(folder_id)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default();
-                for pair in children.windows(2) {
-                    anyhow::ensure!(
-                        compare_utf16(&pair[0].sort_order, &pair[1].sort_order) != Ordering::Equal,
-                        "NEX_SCOPE_AUTHORITY_DURABLE_SCOPE_INVALID: duplicate sibling sort order"
-                    );
-                }
-
-                traversal.push(Traversal::Exit(folder_id));
-                for child in children.iter().rev() {
-                    if child.node_type != "folder" {
-                        anyhow::ensure!(
-                            children_by_parent
-                                .get(child.id.as_str())
-                                .is_none_or(Vec::is_empty),
-                            "NEX_SCOPE_AUTHORITY_DURABLE_SCOPE_INVALID: non-folder node owns descendants"
-                        );
-                    }
-                    match child.node_type.as_str() {
-                        "scene" => traversal.push(Traversal::Scene(child.id.as_str())),
-                        "folder" => traversal.push(Traversal::Enter(child.id.as_str())),
-                        "note" => {}
-                        _ => {
-                            return Err(invalid_durable_scope(format!(
-                                "unsupported node type '{}'",
-                                child.node_type
-                            )))
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(ordered_scene_ids)
-}
-
 fn invalid_corpus_artifact(reason: impl std::fmt::Display) -> anyhow::Error {
     anyhow::anyhow!("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {reason}")
+}
+
+const SNAPSHOT_NORMALIZER_VERSION: &str = "gdx-canonical-text/1";
+const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
+
+fn required_object<'a>(value: &'a Value, path: &str) -> anyhow::Result<&'a Map<String, Value>> {
+    value
+        .as_object()
+        .ok_or_else(|| invalid_corpus_artifact(format!("{path} must be an object")))
+}
+
+fn required_array<'a>(value: &'a Value, path: &str) -> anyhow::Result<&'a Vec<Value>> {
+    value
+        .as_array()
+        .ok_or_else(|| invalid_corpus_artifact(format!("{path} must be an array")))
+}
+
+fn required_field<'a>(
+    object: &'a Map<String, Value>,
+    field: &str,
+    path: &str,
+) -> anyhow::Result<&'a Value> {
+    object
+        .get(field)
+        .ok_or_else(|| invalid_corpus_artifact(format!("{path}.{field} is missing")))
+}
+
+fn required_string(object: &Map<String, Value>, field: &str, path: &str) -> anyhow::Result<String> {
+    required_field(object, field, path)?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| invalid_corpus_artifact(format!("{path}.{field} must be a string")))
+}
+
+fn required_safe_nonnegative_integer(
+    object: &Map<String, Value>,
+    field: &str,
+    path: &str,
+) -> anyhow::Result<u64> {
+    let value = required_field(object, field, path)?
+        .as_u64()
+        .filter(|value| *value <= MAX_SAFE_JSON_INTEGER)
+        .ok_or_else(|| {
+            invalid_corpus_artifact(format!(
+                "{path}.{field} must be a non-negative safe integer"
+            ))
+        })?;
+    Ok(value)
+}
+
+fn require_utf16_slice(text: &str, start: u64, end: u64, path: &str) -> anyhow::Result<String> {
+    let units = text.encode_utf16().collect::<Vec<_>>();
+    let start = usize::try_from(start)
+        .map_err(|_| invalid_corpus_artifact(format!("{path}.start is out of range")))?;
+    let end = usize::try_from(end)
+        .map_err(|_| invalid_corpus_artifact(format!("{path}.end is out of range")))?;
+    anyhow::ensure!(
+        start <= end && end <= units.len(),
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {path} is outside the canonical UTF-16 text"
+    );
+    let is_boundary = |offset: usize| {
+        if offset == 0 || offset == units.len() {
+            return true;
+        }
+        !(matches!(units[offset - 1], 0xD800..=0xDBFF) && matches!(units[offset], 0xDC00..=0xDFFF))
+    };
+    anyhow::ensure!(
+        is_boundary(start) && is_boundary(end),
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {path} splits a UTF-16 surrogate pair"
+    );
+    String::from_utf16(&units[start..end]).map_err(|error| {
+        invalid_corpus_artifact(format!("{path} cannot decode canonical UTF-16: {error}"))
+    })
+}
+
+fn parse_snapshot_document_draft(
+    value: &Value,
+    index: usize,
+    project_id: &str,
+) -> anyhow::Result<SnapshotDocumentDraft> {
+    let path = format!("snapshot.documents[{index}]");
+    let document = required_object(value, &path)?;
+    let document_ref = required_string(document, "ref", &path)?;
+    anyhow::ensure!(
+        document_ref == format!("D{:06}", index + 1),
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {path}.ref is not the deterministic snapshot document reference"
+    );
+    let source_key = required_string(document, "sourceKey", &path)?;
+    let parent_ref = match required_field(document, "parentRef", &path)? {
+        Value::Null => None,
+        Value::String(value) => Some(value.clone()),
+        _ => {
+            return Err(invalid_corpus_artifact(format!(
+                "{path}.parentRef must be a string or null"
+            )));
+        }
+    };
+    let title = required_string(document, "title", &path)?;
+    let order_index = required_safe_nonnegative_integer(document, "orderIndex", &path)?;
+    let canonical = required_object(
+        required_field(document, "canonical", &path)?,
+        &format!("{path}.canonical"),
+    )?;
+    anyhow::ensure!(
+        required_string(canonical, "unit", &format!("{path}.canonical"))? == "utf16",
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {path}.canonical.unit must be utf16"
+    );
+    let canonical_text = required_string(canonical, "text", &format!("{path}.canonical"))?;
+    let canonical_blocks =
+        required_field(canonical, "blocks", &format!("{path}.canonical"))?.clone();
+    let _ = required_array(&canonical_blocks, &format!("{path}.canonical.blocks"))?;
+    let canonical_projection =
+        required_field(canonical, "projection", &format!("{path}.canonical"))?.clone();
+    let _ = required_object(
+        &canonical_projection,
+        &format!("{path}.canonical.projection"),
+    )?;
+    let canonical_projection_map =
+        required_field(canonical, "projectionMap", &format!("{path}.canonical"))?.clone();
+    anyhow::ensure!(
+        canonical_projection_map == canonical_projection,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {path}.canonical.projectionMap must equal projection"
+    );
+    let _ = required_array(
+        required_field(canonical, "diagnostics", &format!("{path}.canonical"))?,
+        &format!("{path}.canonical.diagnostics"),
+    )?;
+    let content_digest = required_string(document, "contentDigest", &path)?;
+    let document_digest = required_string(document, "documentDigest", &path)?;
+    let artifact_digest = required_string(document, "artifactDigest", &path)?;
+    let origin = required_field(document, "origin", &path)?.clone();
+    let origin_object = required_object(&origin, &format!("{path}.origin"))?;
+    anyhow::ensure!(
+        required_string(origin_object, "kind", &format!("{path}.origin"))? == "project-node"
+            && required_string(origin_object, "projectId", &format!("{path}.origin"))?
+                == project_id,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {path}.origin is not a project node of the Run project"
+    );
+    let node_id = required_string(origin_object, "nodeId", &format!("{path}.origin"))?;
+    let _ = required_safe_nonnegative_integer(
+        origin_object,
+        "sourceVersion",
+        &format!("{path}.origin"),
+    )?;
+    let _ = required_string(origin_object, "sourceUpdatedAt", &format!("{path}.origin"))?;
+    anyhow::ensure!(
+        matches!(required_field(origin_object, "sourceUri", &format!("{path}.origin"))?, Value::Null | Value::String(_)),
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {path}.origin.sourceUri must be a string or null"
+    );
+    anyhow::ensure!(
+        source_key == format!("project:scene:{node_id}"),
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {path}.sourceKey does not bind origin.nodeId"
+    );
+    Ok(SnapshotDocumentDraft {
+        document_ref,
+        source_key,
+        parent_ref,
+        title,
+        order_index,
+        canonical_text,
+        canonical_blocks,
+        canonical_projection,
+        content_digest,
+        document_digest,
+        artifact_digest,
+        origin,
+        node_id,
+    })
+}
+
+fn validate_sealed_snapshot_payload(
+    payload: &Value,
+    project_id: &str,
+    run_snapshot_digest: &str,
+) -> anyhow::Result<ValidatedSnapshotCorpus> {
+    let payload_object = required_object(payload, "corpus payload")?;
+    let snapshot = required_object(
+        required_field(payload_object, "snapshot", "corpus payload")?,
+        "corpus payload.snapshot",
+    )?;
+    anyhow::ensure!(
+        required_safe_nonnegative_integer(snapshot, "schemaVersion", "corpus payload.snapshot")? == 1,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus payload.snapshot.schemaVersion must be 1"
+    );
+    anyhow::ensure!(
+        required_string(snapshot, "id", "corpus payload.snapshot")?
+            == required_string(snapshot, "snapshotId", "corpus payload.snapshot")?,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus payload.snapshot id and snapshotId differ"
+    );
+    let _ = required_string(snapshot, "createdAt", "corpus payload.snapshot")?;
+    let _ = required_string(snapshot, "language", "corpus payload.snapshot")?;
+    anyhow::ensure!(
+        required_string(snapshot, "normalizerVersion", "corpus payload.snapshot")?
+            == SNAPSHOT_NORMALIZER_VERSION,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus payload.snapshot normalizerVersion is unsupported"
+    );
+    let snapshot_origin = required_object(
+        required_field(snapshot, "origin", "corpus payload.snapshot")?,
+        "corpus payload.snapshot.origin",
+    )?;
+    anyhow::ensure!(
+        required_string(snapshot_origin, "kind", "corpus payload.snapshot.origin")?
+            == "grimodex-project"
+            && required_string(snapshot_origin, "projectId", "corpus payload.snapshot.origin")?
+                == project_id,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus payload.snapshot origin does not bind the Run project"
+    );
+    let document_values = required_array(
+        required_field(snapshot, "documents", "corpus payload.snapshot")?,
+        "corpus payload.snapshot.documents",
+    )?;
+    let drafts = document_values
+        .iter()
+        .enumerate()
+        .map(|(index, document)| parse_snapshot_document_draft(document, index, project_id))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let mut document_refs = HashSet::new();
+    let mut source_keys = HashSet::new();
+    let documents_by_ref = drafts
+        .iter()
+        .map(|document| {
+            anyhow::ensure!(
+                document_refs.insert(document.document_ref.as_str()),
+                "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: snapshot documents contain duplicate refs"
+            );
+            anyhow::ensure!(
+                source_keys.insert(document.source_key.as_str()),
+                "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: snapshot documents contain duplicate sourceKeys"
+            );
+            Ok((document.document_ref.as_str(), document.source_key.as_str()))
+        })
+        .collect::<anyhow::Result<HashMap<_, _>>>()?;
+    for pair in drafts.windows(2) {
+        anyhow::ensure!(
+            pair[0].order_index < pair[1].order_index
+                || (pair[0].order_index == pair[1].order_index
+                    && compare_utf16(&pair[0].source_key, &pair[1].source_key) != Ordering::Greater),
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: snapshot documents are not in deterministic order"
+        );
+    }
+    let mut documents = Vec::with_capacity(drafts.len());
+    for document in &drafts {
+        let parent_source_key = match document.parent_ref.as_deref() {
+            Some(parent_ref) => {
+                Some(documents_by_ref.get(parent_ref).copied().ok_or_else(|| {
+                    invalid_corpus_artifact(format!(
+                        "snapshot document '{}' has an unknown parentRef '{parent_ref}'",
+                        document.document_ref
+                    ))
+                })?)
+            }
+            None => None,
+        };
+        let expected_content_digest = grimodex_core::canonical_json_digest(&json!({
+            "normalizerVersion": SNAPSHOT_NORMALIZER_VERSION,
+            "text": &document.canonical_text,
+        }))?;
+        anyhow::ensure!(
+            document.content_digest == expected_content_digest,
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: snapshot document '{}' contentDigest does not match canonical text",
+            document.document_ref
+        );
+        let expected_document_digest = grimodex_core::canonical_json_digest(&json!({
+            "normalizerVersion": SNAPSHOT_NORMALIZER_VERSION,
+            "parentSourceKey": parent_source_key,
+            "title": &document.title,
+            "orderIndex": document.order_index,
+            "canonical": {
+                "text": &document.canonical_text,
+                "blocks": &document.canonical_blocks,
+            },
+        }))?;
+        anyhow::ensure!(
+            document.document_digest == expected_document_digest,
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: snapshot document '{}' documentDigest does not match its canonical closure",
+            document.document_ref
+        );
+        let expected_artifact_digest = grimodex_core::canonical_json_digest(&json!({
+            "schemaVersion": 1,
+            "normalizerVersion": SNAPSHOT_NORMALIZER_VERSION,
+            "sourceKey": &document.source_key,
+            "parentSourceKey": parent_source_key,
+            "semanticDigest": &document.document_digest,
+            "contentDigest": &document.content_digest,
+            "projection": &document.canonical_projection,
+            "origin": &document.origin,
+        }))?;
+        anyhow::ensure!(
+            document.artifact_digest == expected_artifact_digest,
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: snapshot document '{}' artifactDigest does not match its sealed identity",
+            document.document_ref
+        );
+        documents.push(SnapshotDocumentSeal {
+            document_ref: document.document_ref.clone(),
+            source_key: document.source_key.clone(),
+            document_digest: document.document_digest.clone(),
+            artifact_digest: document.artifact_digest.clone(),
+            canonical_text: document.canonical_text.clone(),
+            node_id: document.node_id.clone(),
+        });
+    }
+
+    let omissions = required_array(
+        required_field(snapshot, "omissions", "corpus payload.snapshot")?,
+        "corpus payload.snapshot.omissions",
+    )?;
+    let mut previous_omission: Option<(String, String)> = None;
+    for (index, omission) in omissions.iter().enumerate() {
+        let path = format!("corpus payload.snapshot.omissions[{index}]");
+        let omission = required_object(omission, &path)?;
+        let current = (
+            required_string(omission, "sourceKey", &path)?,
+            required_string(omission, "reason", &path)?,
+        );
+        if let Some(previous) = previous_omission.as_ref() {
+            anyhow::ensure!(
+                compare_utf16(&previous.0, &current.0) != Ordering::Greater
+                    && !(previous.0 == current.0
+                        && compare_utf16(&previous.1, &current.1) == Ordering::Greater),
+                "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: snapshot omissions are not in deterministic order"
+            );
+        }
+        previous_omission = Some(current);
+    }
+    let snapshot_digest = required_string(snapshot, "digest", "corpus payload.snapshot")?;
+    let expected_snapshot_digest = grimodex_core::canonical_json_digest(&json!({
+        "schemaVersion": 1,
+        "language": required_string(snapshot, "language", "corpus payload.snapshot")?,
+        "normalizerVersion": SNAPSHOT_NORMALIZER_VERSION,
+        "documentDigests": documents
+            .iter()
+            .map(|document| Value::String(document.document_digest.clone()))
+            .collect::<Vec<_>>(),
+        "omissions": omissions,
+    }))?;
+    anyhow::ensure!(
+        snapshot_digest == expected_snapshot_digest && snapshot_digest == run_snapshot_digest,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus snapshot digest does not match its sealed document closure and Run snapshotDigest"
+    );
+    let expected_snapshot_artifact_digest = grimodex_core::canonical_json_digest(&json!({
+        "schemaVersion": 1,
+        "normalizerVersion": SNAPSHOT_NORMALIZER_VERSION,
+        "semanticDigest": snapshot_digest,
+        "originProjectId": project_id,
+        "documents": documents.iter().map(|document| json!({
+            "sourceKey": &document.source_key,
+            "artifactDigest": &document.artifact_digest,
+        })).collect::<Vec<_>>(),
+        "omissions": omissions,
+    }))?;
+    anyhow::ensure!(
+        required_string(snapshot, "artifactDigest", "corpus payload.snapshot")?
+            == expected_snapshot_artifact_digest,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus snapshot artifactDigest does not match its sealed document artifacts"
+    );
+
+    let source_views = required_array(
+        required_field(payload_object, "sourceViews", "corpus payload")?,
+        "corpus payload.sourceViews",
+    )?;
+    let documents_by_ref = documents
+        .iter()
+        .map(|document| (document.document_ref.as_str(), document))
+        .collect::<HashMap<_, _>>();
+    let mut source_view_refs = HashSet::<String>::new();
+    for (index, source_view) in source_views.iter().enumerate() {
+        let path = format!("corpus payload.sourceViews[{index}]");
+        let source_view = required_object(source_view, &path)?;
+        let source_view_ref = required_string(source_view, "ref", &path)?;
+        anyhow::ensure!(
+            !source_view_ref.is_empty() && source_view_refs.insert(source_view_ref.clone()),
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: sourceViews contains an empty or duplicate ref"
+        );
+        let document_ref = required_string(source_view, "documentRef", &path)?;
+        let document = documents_by_ref
+            .get(document_ref.as_str())
+            .copied()
+            .ok_or_else(|| {
+                invalid_corpus_artifact(format!(
+                    "{path}.documentRef is not a sealed snapshot document"
+                ))
+            })?;
+        let range = required_object(
+            required_field(source_view, "documentRange", &path)?,
+            &format!("{path}.documentRange"),
+        )?;
+        let start =
+            required_safe_nonnegative_integer(range, "start", &format!("{path}.documentRange"))?;
+        let end =
+            required_safe_nonnegative_integer(range, "end", &format!("{path}.documentRange"))?;
+        let text = required_string(source_view, "text", &path)?;
+        anyhow::ensure!(
+            text == require_utf16_slice(&document.canonical_text, start, end, &format!("{path}.documentRange"))?,
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {path}.text does not match the sealed document range"
+        );
+        let expected_digest = grimodex_core::canonical_json_digest(&json!({
+            "schemaVersion": 1,
+            "ref": source_view_ref,
+            "documentRef": document_ref,
+            "documentArtifactDigest": document.artifact_digest,
+            "documentRange": {"start": start, "end": end},
+            "text": text,
+        }))?;
+        anyhow::ensure!(
+            required_string(source_view, "digest", &path)? == expected_digest,
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {path}.digest does not match its sealed source view"
+        );
+    }
+
+    let scope_authority_values = required_array(
+        required_field(payload_object, "scopeAuthorityDocuments", "corpus payload")?,
+        "corpus payload.scopeAuthorityDocuments",
+    )?;
+    anyhow::ensure!(
+        scope_authority_values.len() == documents.len(),
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: scopeAuthorityDocuments must cover every sealed snapshot document"
+    );
+    let scope_authority_documents = scope_authority_values
+        .iter()
+        .zip(documents.iter())
+        .enumerate()
+        .map(|(index, (value, document))| {
+            let path = format!("corpus payload.scopeAuthorityDocuments[{index}]");
+            let value = required_object(value, &path)?;
+            let document_ref = required_string(value, "documentRef", &path)?;
+            let source_key = required_string(value, "sourceKey", &path)?;
+            anyhow::ensure!(
+                document_ref == document.document_ref && source_key == document.source_key,
+                "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: {path} does not match the sealed snapshot document order/ref/sourceKey"
+            );
+            let raw_story_key = match required_field(value, "rawStoryKey", &path)? {
+                Value::Null => None,
+                Value::String(value) => Some(value.clone()),
+                _ => {
+                    return Err(invalid_corpus_artifact(format!(
+                        "{path}.rawStoryKey must be a string or null"
+                    )));
+                }
+            };
+            Ok(NarrativeScopeAuthorityDocumentInputV2 {
+                document_ref,
+                source_key,
+                raw_story_key,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(ValidatedSnapshotCorpus {
+        documents,
+        scope_authority_documents,
+    })
+}
+
+/// Verify a normalized snapshot artifact and, when supplied, its typed
+/// historical Scope-authority sidecar.  This is intentionally usable by the
+/// task-finish wire CAS before artifacts are inserted: it validates the full
+/// document/internal-artifact seal and returns only Native recomputations.
+pub(crate) fn validate_snapshot_authority_finish(
+    payload: &Value,
+    project_id: &str,
+    run_id: &str,
+    run_snapshot_digest: &str,
+    historical_scope_authority_basis: Option<&NarrativeScopeAuthorityBasisV2>,
+) -> anyhow::Result<SnapshotAuthorityFinishValidation> {
+    let corpus_payload_digest = grimodex_core::canonical_json_digest(payload)?;
+    let corpus = validate_sealed_snapshot_payload(payload, project_id, run_snapshot_digest)?;
+    let scope_authority_composite_digest = historical_scope_authority_basis
+        .map(|basis| {
+            basis.validate()?;
+            let expected = build_narrative_scope_authority_basis_v2(
+                project_id,
+                run_id,
+                run_snapshot_digest,
+                &corpus.scope_authority_documents,
+            )?;
+            anyhow::ensure!(
+                basis == &expected,
+                "NEX_SCOPE_AUTHORITY_BINDING_MISMATCH: submitted basis differs from the sealed source.snapshot@1 authority companion"
+            );
+            Ok(basis.digests.composite_digest.clone())
+        })
+        .transpose()?;
+    Ok(SnapshotAuthorityFinishValidation {
+        document_count: corpus.documents.len(),
+        corpus_payload_digest,
+        scope_authority_composite_digest,
+    })
+}
+
+/// Resolve one document reference through the parent Run's completed sealed
+/// corpus.  This is intentionally narrower than historical-basis loading:
+/// C2B may use it before a `source.snapshot@2` authority artifact exists, but
+/// it still requires the exact completed snapshot Task/Attempt and verifies
+/// the artifact's canonical payload digest and Run snapshot binding.
+pub(crate) fn load_sealed_snapshot_document_binding_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    document_ref: &str,
+) -> anyhow::Result<SealedSnapshotDocumentBinding> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "NEX_SCOPE_AUTHORITY_TRANSACTION_REQUIRED: sealed snapshot lookup requires a caller-owned transaction"
+    );
+    anyhow::ensure!(
+        !document_ref.trim().is_empty() && document_ref.trim() == document_ref,
+        "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_INVALID: edited revealDocumentRef must be trimmed and non-empty"
+    );
+    let (durable_project_id, snapshot_digest): (String, Option<String>) = conn.query_row(
+        "SELECT project_id, snapshot_digest
+           FROM narrative_extraction_runs
+          WHERE id = ?1",
+        params![run_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    anyhow::ensure!(
+        durable_project_id == project_id,
+        "NEX_SCOPE_AUTHORITY_OWNER_MISMATCH: parent Run project differs from ScopeOverride project"
+    );
+    let snapshot_digest = snapshot_digest.ok_or_else(|| {
+        anyhow::anyhow!("NEX_SCOPE_AUTHORITY_CORPUS_MISSING: parent Run has no snapshotDigest")
+    })?;
+
+    let mut statement = conn.prepare(
+        "SELECT task_id, attempt_id, payload_storage, payload_json, payload_ref, payload_digest
+           FROM narrative_extraction_artifacts
+          WHERE run_id = ?1 AND artifact_kind = ?2
+          ORDER BY id",
+    )?;
+    let artifacts = statement
+        .query_map(
+            params![run_id, HISTORICAL_SCOPE_AUTHORITY_CORPUS_ARTIFACT_KIND],
+            |row| {
+                Ok(StoredHistoricalArtifact {
+                    task_id: row.get(0)?,
+                    attempt_id: row.get(1)?,
+                    payload_storage: row.get(2)?,
+                    payload_json: row.get(3)?,
+                    payload_ref: row.get(4)?,
+                    payload_digest: row.get(5)?,
+                })
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    anyhow::ensure!(
+        artifacts.len() == 1,
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_REQUIRED: parent Run must own exactly one source.snapshot@1 corpus artifact"
+    );
+    let artifact = &artifacts[0];
+    let task_id = artifact.task_id.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus task owner is missing")
+    })?;
+    let attempt_id = artifact.attempt_id.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus attempt owner is missing"
+        )
+    })?;
+    require_unique_completed_snapshot_task(conn, run_id, task_id, attempt_id)?;
+    anyhow::ensure!(
+        artifact.payload_storage == "inline-json" && artifact.payload_ref.is_none(),
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus artifact must be inline-json without payloadRef"
+    );
+    let payload_json = artifact
+        .payload_json
+        .as_deref()
+        .ok_or_else(|| invalid_corpus_artifact("parent corpus payloadJson is missing"))?;
+    let payload: Value = serde_json::from_str(payload_json)
+        .map_err(|error| invalid_corpus_artifact(format!("parent corpus payload JSON: {error}")))?;
+    let payload_digest = grimodex_core::canonical_json_digest(&payload)?;
+    anyhow::ensure!(
+        artifact.payload_digest.as_deref() == Some(payload_digest.as_str()),
+        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: parent corpus payloadDigest differs from Native canonical payload"
+    );
+    let corpus = validate_sealed_snapshot_payload(&payload, project_id, &snapshot_digest)?;
+    let matches = corpus
+        .documents
+        .iter()
+        .filter(|document| document.document_ref == document_ref)
+        .collect::<Vec<_>>();
+    let document = match matches.as_slice() {
+        [] => {
+            return Err(anyhow::anyhow!(
+                "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_MISSING: parent corpus has no document '{}'",
+                document_ref
+            ));
+        }
+        [document] => *document,
+        _ => {
+            return Err(anyhow::anyhow!(
+                "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_AMBIGUOUS: parent corpus has multiple documents '{}'",
+                document_ref
+            ));
+        }
+    };
+    Ok(SealedSnapshotDocumentBinding {
+        source_key: document.source_key.clone(),
+        node_id: document.node_id.clone(),
+    })
 }
 
 /// The sealed historical basis must stay durably linked to the snapshot
@@ -269,7 +800,7 @@ fn validate_snapshot_corpus_closure(
     finish_artifacts: &[ArtifactInput],
     basis: &NarrativeScopeAuthorityBasisV2,
     run_snapshot_digest: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ValidatedSnapshotCorpus> {
     let mut corpora = finish_artifacts.iter().filter(|artifact| {
         artifact.artifact_kind == HISTORICAL_SCOPE_AUTHORITY_CORPUS_ARTIFACT_KIND
     });
@@ -301,40 +832,27 @@ fn validate_snapshot_corpus_closure(
         claimed == canonical_digest,
         "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus payload digest differs from the Native canonical recomputation"
     );
-    let snapshot = payload
-        .get("snapshot")
-        .and_then(Value::as_object)
-        .ok_or_else(|| invalid_corpus_artifact("corpus payload has no snapshot"))?;
-    let snapshot_digest = snapshot
-        .get("digest")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_corpus_artifact("corpus snapshot digest is missing"))?;
-    anyhow::ensure!(
-        snapshot_digest == run_snapshot_digest,
-        "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus snapshot digest differs from Run snapshotDigest"
-    );
+    let corpus = validate_sealed_snapshot_payload(payload, &basis.project_id, run_snapshot_digest)?;
     anyhow::ensure!(
         basis.digests.corpus_digest == run_snapshot_digest,
         "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: basis corpusDigest differs from Run snapshotDigest"
     );
-    let documents = snapshot
-        .get("documents")
-        .and_then(Value::as_array)
-        .ok_or_else(|| invalid_corpus_artifact("corpus snapshot documents are missing"))?;
     anyhow::ensure!(
-        documents.len() == basis.mappings.len(),
+        corpus.scope_authority_documents.len() == basis.mappings.len(),
         "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus document closure differs from the basis mappings"
     );
-    for (document, mapping) in documents.iter().zip(basis.mappings.iter()) {
-        let document_ref = document.get("ref").and_then(Value::as_str);
-        let source_key = document.get("sourceKey").and_then(Value::as_str);
+    for (document, mapping) in corpus
+        .scope_authority_documents
+        .iter()
+        .zip(basis.mappings.iter())
+    {
         anyhow::ensure!(
-            document_ref == Some(mapping.document_ref.as_str())
-                && source_key == Some(mapping.source_key.as_str()),
-            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus document order/ref/sourceKey differs from the basis mappings"
+            document.document_ref == mapping.document_ref
+                && document.source_key == mapping.source_key,
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: sealed scopeAuthorityDocuments differ from the basis mappings"
         );
     }
-    Ok(())
+    Ok(corpus)
 }
 
 pub(crate) fn reject_reserved_historical_scope_authority_artifacts(
@@ -350,6 +868,11 @@ pub(crate) fn reject_reserved_historical_scope_authority_artifacts(
 }
 
 /// Re-derive and seal the historical basis under the caller-owned transaction.
+///
+/// The Scope/Story source is the completed `source.snapshot@1` companion, not
+/// the mutable project tree at task finish.  Re-reading the tree here could
+/// combine a T1 corpus with T2 story authority and seal a basis that never
+/// existed at either instant.
 ///
 /// The returned `ArtifactInput` is deliberately inserted by
 /// `repository::insert_artifacts_for_attempt`, preserving the artifact table's
@@ -397,54 +920,19 @@ pub(crate) fn persist_historical_scope_authority_basis_in_tx(
 
     require_unique_completed_snapshot_task(conn, run_id, task_id, attempt_id)?;
 
-    let mut statement = conn.prepare(
-        "SELECT id, parent_id, node_type, sort_order, story_time_order
-           FROM tree_nodes
-          WHERE project_id = ?1 AND archived_at IS NULL",
+    let corpus =
+        validate_snapshot_corpus_closure(finish_artifacts, submitted_basis, &snapshot_digest)?;
+    let expected_basis = build_narrative_scope_authority_basis_v2(
+        project_id,
+        run_id,
+        &snapshot_digest,
+        &corpus.scope_authority_documents,
     )?;
-    let nodes = statement
-        .query_map(params![project_id], |row| {
-            Ok(PersistedTreeNode {
-                id: row.get(0)?,
-                parent_id: row.get(1)?,
-                node_type: row.get(2)?,
-                sort_order: row.get(3)?,
-                story_time_order: row.get(4)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    let ordered_scene_ids = derive_ordered_scene_ids(&nodes, &scope.folder_id)?;
-    anyhow::ensure!(
-        ordered_scene_ids == scope.scene_ids,
-        "NEX_SCOPE_AUTHORITY_DURABLE_SCOPE_MISMATCH: Run sceneIds differ from the current persisted DFS scope"
-    );
-
-    let nodes_by_id = nodes
-        .iter()
-        .map(|node| (node.id.as_str(), node))
-        .collect::<HashMap<_, _>>();
-    let documents = ordered_scene_ids
-        .iter()
-        .enumerate()
-        .map(|(index, scene_id)| {
-            let node = nodes_by_id.get(scene_id.as_str()).copied().ok_or_else(|| {
-                invalid_durable_scope(format!("derived Scene '{scene_id}' is unavailable"))
-            })?;
-            Ok(NarrativeScopeAuthorityDocumentInputV2 {
-                document_ref: format!("D{:06}", index + 1),
-                source_key: format!("project:scene:{scene_id}"),
-                raw_story_key: node.story_time_order.clone(),
-            })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let expected_basis =
-        build_narrative_scope_authority_basis_v2(project_id, run_id, &snapshot_digest, &documents)?;
     validate_basis_scope_binding(&expected_basis, &scope)?;
     anyhow::ensure!(
         submitted_basis == &expected_basis,
         "NEX_SCOPE_AUTHORITY_BINDING_MISMATCH: submitted basis differs from Native re-derivation"
     );
-    validate_snapshot_corpus_closure(finish_artifacts, &expected_basis, &snapshot_digest)?;
 
     let existing_count: i64 = conn.query_row(
         "SELECT COUNT(*)
@@ -632,11 +1120,21 @@ pub(crate) fn load_historical_scope_authority_basis_in_tx(
         payload_ref: corpus.payload_ref.clone(),
         payload_digest: corpus.payload_digest.clone(),
     };
-    validate_snapshot_corpus_closure(
+    let corpus = validate_snapshot_corpus_closure(
         std::slice::from_ref(&corpus_input),
         &basis,
         &snapshot_digest,
     )?;
+    let expected_basis = build_narrative_scope_authority_basis_v2(
+        project_id,
+        run_id,
+        &snapshot_digest,
+        &corpus.scope_authority_documents,
+    )?;
+    anyhow::ensure!(
+        basis == expected_basis,
+        "NEX_SCOPE_AUTHORITY_BINDING_MISMATCH: sealed basis differs from the source.snapshot@1 authority companion"
+    );
 
     Ok(Some(basis))
 }

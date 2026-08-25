@@ -17,6 +17,7 @@ const REQUIRED_CASE_IDS = Object.freeze([
   "mixed-note-reveal-document-uses-scope-override",
   "unsupported-path-refused",
   "canonical-scope-digest-parity",
+  "scope-override-cross-scene-reveal-basis",
 ]);
 
 const REQUIRED_CASE_FAMILIES = Object.freeze([
@@ -36,6 +37,7 @@ const REQUIRED_CASE_KINDS = new Map([
   ["mixed-note-reveal-document-uses-scope-override", "human-derivation"],
   ["unsupported-path-refused", "human-derivation"],
   ["canonical-scope-digest-parity", "cross-runtime-parity"],
+  ["scope-override-cross-scene-reveal-basis", "cross-runtime-parity"],
 ]);
 
 const REQUIRED_ASSERTION_MODALITIES = Object.freeze([
@@ -60,6 +62,104 @@ const REQUIRED_V2_DOWNGRADE_TRANSITIONS = Object.freeze([
   "v2-to-no-envelope",
   "v2-to-legacy-unbound",
   "v2-to-legacy-inherit-reconciliation-envelope",
+]);
+
+const REQUIRED_V2_MONOTONICITY_TRIGGER_SUITE = Object.freeze([
+  Object.freeze({
+    name: "narrative_proposal_revisions_v2_monotonicity_guard",
+    operation: "before-insert",
+    target: "narrative_proposal_revisions",
+    forbiddenTransition: "current-v2-to-non-v2-child",
+    errorCode: "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
+  }),
+  Object.freeze({
+    name: "narrative_proposals_v2_pointer_monotonicity_guard",
+    operation: "before-update-of-current_revision_id",
+    target: "narrative_proposals",
+    forbiddenTransition: "current-v2-to-non-v2-current-pointer",
+    errorCode: "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
+  }),
+  Object.freeze({
+    name: "narrative_proposal_revisions_v2_immutable_update_guard",
+    operation: "before-update",
+    target: "narrative_proposal_revisions",
+    forbiddenTransition: "v2-revision-mutation",
+    errorCode: "NEX_REVISION_V2_IMMUTABLE",
+  }),
+]);
+
+const REQUIRED_STAGE_PROVENANCE_DIGEST_DOMAIN_PINS = Object.freeze([
+  Object.freeze({
+    path: "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+    literal: "chronicle-stage-model-binding/1",
+  }),
+  Object.freeze({
+    path: "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+    literal: "chronicle-stage-terminal-receipt/1",
+  }),
+  Object.freeze({
+    path: "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+    literal: "chronicle-stage-provenance-closure/1",
+  }),
+  Object.freeze({
+    path: "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+    literal: "chronicle-stage-model-binding/1",
+  }),
+  Object.freeze({
+    path: "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+    literal: "chronicle-stage-terminal-receipt/1",
+  }),
+  Object.freeze({
+    path: "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+    literal: "chronicle-stage-provenance-closure/1",
+  }),
+  Object.freeze({
+    path: "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+    literal: "chronicle.parsed-output/1",
+  }),
+  Object.freeze({
+    path: "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+    literal: "chronicle.parsed-output/1",
+  }),
+]);
+
+const REQUIRED_C1_TERMINAL_OUTPUT_STATUS_MATRIX = Object.freeze([
+  Object.freeze({
+    rootParseStatus: "parsed",
+    rootTerminalStatus: "succeeded",
+    terminalStage: "narrative_event_synthesize",
+    terminalParseStatus: "parsed",
+    terminalStatus: "succeeded",
+    disposition: "root-success",
+    responseDigest: "required",
+    rawObservationsDigest: "required",
+    parsedOutputDigest: "required",
+    zeroObservationOnly: false,
+  }),
+  Object.freeze({
+    rootParseStatus: "invalid",
+    rootTerminalStatus: "failed",
+    terminalStage: "narrative_structured_repair",
+    terminalParseStatus: "parsed",
+    terminalStatus: "succeeded",
+    disposition: "repair-success",
+    responseDigest: "required",
+    rawObservationsDigest: "required",
+    parsedOutputDigest: "required",
+    zeroObservationOnly: false,
+  }),
+  Object.freeze({
+    rootParseStatus: "not-attempted",
+    rootTerminalStatus: "skipped",
+    terminalStage: "narrative_event_synthesize",
+    terminalParseStatus: "not-attempted",
+    terminalStatus: "skipped",
+    disposition: "deterministic-empty",
+    responseDigest: "null",
+    rawObservationsDigest: "required",
+    parsedOutputDigest: "required",
+    zeroObservationOnly: true,
+  }),
 ]);
 
 const REQUIRED_STAGE_PROVENANCE_IMPLEMENTATION_PINS = Object.freeze([
@@ -131,6 +231,45 @@ const REQUIRED_STAGE_PROVENANCE_IMPLEMENTATION_PINS = Object.freeze([
       "closureDigestPayload",
       "Stage provenance closure receipt refs mismatch",
       "Stage provenance closure digest mismatch",
+    ],
+  }),
+  Object.freeze({
+    id: "typed-c1-terminal-output",
+    path: "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+    literals: [
+      "CHRONICLE_PARSED_OUTPUT_DIGEST_DOMAIN",
+      "root-success",
+      "repair-success",
+      "deterministic-empty",
+      "onTerminalOutput",
+    ],
+  }),
+  Object.freeze({
+    id: "typed-c1-native-companion",
+    path: "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+    literals: [
+      "CHRONICLE_STAGE_SYNTHESIS_OUTPUTS_KIND",
+      "resolve_terminal_output_receipt",
+      "canonical_parsed_output_digest",
+      "every accepted synthesis terminal path must have exactly one output",
+    ],
+  }),
+  Object.freeze({
+    id: "c1-cluster-completeness",
+    path: "src/application/narrative-extraction/extractionCoordinator.ts",
+    literals: [
+      "NEX_CHRONICLE_SYNTHESIS_TERMINAL_OUTPUT_REQUIRED",
+      "acceptedTerminalOutputRootIds",
+      "stageSynthesisOutputs",
+    ],
+  }),
+  Object.freeze({
+    id: "receipt-only-proposal-set",
+    path: "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+    literals: [
+      "reject_ephemeral_chronicle_stage_provenance_in_summary",
+      "chronicleStageReceiptRefs",
+      "full Chronicle stage provenance closure/C1 bundle must not be persisted",
     ],
   }),
 ]);
@@ -1010,8 +1149,10 @@ export function validateNarrativeIrContract(
         "chronicle-stage-terminal-receipt/1" &&
       stageProvenance?.closureDigestDomain ===
         "chronicle-stage-provenance-closure/1" &&
+      stageProvenance?.parsedOutputDigestDomain ===
+        "chronicle.parsed-output/1" &&
       stageProvenance?.requestDigestExcludesModel === true,
-    "Stage provenance must ratify audit v2, binding/receipt/closure domains, and request-only digest identity",
+    "Stage provenance must ratify audit v2, binding/receipt/closure/parsed-output domains, and request-only digest identity",
   );
   pushIf(
     errors,
@@ -1125,7 +1266,7 @@ export function validateNarrativeIrContract(
       stageProvenance?.c1Completeness?.ownerStage ===
         "narrative_event_synthesize" &&
       stageProvenance?.c1Completeness?.successfulPath ===
-        "parsed-success-root-or-parsed-successful-repair-child" &&
+        "parsed-success-root-or-parsed-successful-repair-child-or-deterministic-empty" &&
       JSON.stringify(stageProvenance?.c1Completeness?.ownerDigestFields) ===
         JSON.stringify([
           "contextSetDigest",
@@ -1140,8 +1281,42 @@ export function validateNarrativeIrContract(
       stageProvenance?.c1Completeness?.repairLineage?.sameTaskAndAttempt ===
         true &&
       stageProvenance?.c1Completeness?.repairLineage?.parentPointer ===
-        "immutable-parentStageExecutionId",
-    "Stage provenance C1 completeness, owner digest matching, or repair lineage is incomplete",
+        "immutable-parentStageExecutionId" &&
+      stageProvenance?.c1Completeness?.terminalOutputContract?.typedCompanion
+        ?.kind === "chronicle.stage-synthesis-outputs@1" &&
+      stageProvenance?.c1Completeness?.terminalOutputContract?.typedCompanion
+        ?.version === 1 &&
+      stageProvenance?.c1Completeness?.terminalOutputContract?.typedCompanion
+        ?.outputs === "exactly-one-per-accepted-synthesis-root" &&
+      stageProvenance?.c1Completeness?.terminalOutputContract?.outputKind ===
+        "chronicle.event-synthesis-output@1" &&
+      stageProvenance?.c1Completeness?.terminalOutputContract
+        ?.hypothesesArtifactKind === "chronicle.event-hypotheses@1" &&
+      stageProvenance?.c1Completeness?.terminalOutputContract
+        ?.rawObservationsArtifact?.kind === "chronicle.raw-observations@1" &&
+      stageProvenance?.c1Completeness?.terminalOutputContract
+        ?.rawObservationsArtifact?.genericV1 === true &&
+      stageProvenance?.c1Completeness?.terminalOutputContract
+        ?.rawObservationsArtifact?.reservedByC1 === false &&
+      JSON.stringify(
+        stageProvenance?.c1Completeness?.terminalOutputContract
+          ?.acceptedTerminalStatusMatrix,
+      ) === JSON.stringify(REQUIRED_C1_TERMINAL_OUTPUT_STATUS_MATRIX) &&
+      stageProvenance?.c1Completeness?.terminalOutputContract
+        ?.unacceptedRootPolicy ===
+        "fail-closed-NEX_CHRONICLE_SYNTHESIS_PROVENANCE_MISSING" &&
+      stageProvenance?.c1Completeness?.terminalOutputContract
+        ?.perDispatchedCluster ===
+        "exactly-one-accepted-typed-terminal-output" &&
+      stageProvenance?.c1Completeness?.terminalOutputContract?.v2ProposalSet
+        ?.receiptRosterField === "chronicleStageReceiptRefs" &&
+      stageProvenance?.c1Completeness?.terminalOutputContract?.v2ProposalSet
+        ?.requiresResponseBackedParsedTerminal === true &&
+      stageProvenance?.c1Completeness?.terminalOutputContract?.v2ProposalSet
+        ?.rejectsDeterministicEmpty === true &&
+      stageProvenance?.c1Completeness?.terminalOutputContract?.v2ProposalSet
+        ?.closurePersistence === "forbidden-recursively-by-key-or-shape",
+    "Stage provenance C1 completeness / C1 terminal-output status matrix, owner digest matching, repair lineage, generic raw-observation boundary, or receipt-only ProposalSet rule is incomplete",
   );
   pushIf(
     errors,
@@ -1169,38 +1344,12 @@ export function validateNarrativeIrContract(
     sourceLiteralPins?.auditVersion?.literal ===
       "export const CHRONICLE_STAGE_AUDIT_VERSION = 2 as const;" &&
     Array.isArray(sourceLiteralPins?.digestDomains) &&
-    sourceLiteralPins.digestDomains.length === 6 &&
-    sourceLiteralPins.digestDomains.every(
-      (pin) =>
-        [
-          "src/features/narrative-extraction/reconciler/stageProvenance.ts",
-          "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
-        ].includes(pin?.path) &&
-        typeof pin?.literal === "string" &&
-        [
-          "chronicle-stage-model-binding/1",
-          "chronicle-stage-terminal-receipt/1",
-          "chronicle-stage-provenance-closure/1",
-        ].includes(pin.literal),
-    ) &&
-    // The TS reconciler and the Rust typed writer each independently
-    // declare the digest domains; every domain must be pinned on BOTH
-    // sides, or an edit to one side's constant would pass the policy gate
-    // while breaking cross-boundary digest verification at runtime.
-    [
-      "src/features/narrative-extraction/reconciler/stageProvenance.ts",
-      "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
-    ].every((pinPath) =>
-      [
-        "chronicle-stage-model-binding/1",
-        "chronicle-stage-terminal-receipt/1",
-        "chronicle-stage-provenance-closure/1",
-      ].every((domain) =>
-        sourceLiteralPins.digestDomains.some(
-          (pin) => pin?.path === pinPath && pin?.literal === domain,
-        ),
-      ),
-    );
+    // The reconciler and Native writer each declare the three shared receipt
+    // domains; parsed output is deliberately declared by the synthesis task
+    // and Native companion instead. Pin the exact eight source/domain pairs
+    // so neither boundary can silently drift or overclaim a declaration.
+    JSON.stringify(sourceLiteralPins.digestDomains) ===
+      JSON.stringify(REQUIRED_STAGE_PROVENANCE_DIGEST_DOMAIN_PINS);
   const implementationPinsValid =
     JSON.stringify(sourceLiteralPins?.implementationPins) ===
     JSON.stringify(REQUIRED_STAGE_PROVENANCE_IMPLEMENTATION_PINS);
@@ -1220,12 +1369,12 @@ export function validateNarrativeIrContract(
         path.join(repoRoot, sourceLiteralPins.auditVersion.path),
         "utf8",
       ).includes(sourceLiteralPins.auditVersion.literal),
-    "Stage provenance source literal pins must cover audit v2 and all three digest domains on both the TS reconciler and the Rust typed writer",
+    "Stage provenance source literal pins must cover audit v2, all shared receipt domains, and parsed-output on its TS and Native owners",
   );
   pushIf(
     errors,
     implementationPinsValid,
-    "Stage provenance implementation pins must cover status, seal, emitter, C1, repair, reachability, and closure semantics",
+    "Stage provenance implementation pins must cover status, seal, emitter, typed C1 output, cluster completeness, receipt-only persistence, repair, reachability, and closure semantics",
   );
   pushIf(
     errors,
@@ -1380,31 +1529,35 @@ export function validateNarrativeIrContract(
     "src-tauri/crates/grimodex-db/src/migrate.rs::repair_narrative_v2_monotonicity_trigger";
   const [monotonicityTriggerModule, monotonicityTriggerSymbol] =
     monotonicityEntryPoint.split("::");
-  let monotonicityTriggerInSource = false;
+  let monotonicityTriggerSuiteInSource = false;
   try {
     const migrateSource = readFileSync(
       path.join(repoRoot, monotonicityTriggerModule),
       "utf8",
     );
-    monotonicityTriggerInSource =
+    monotonicityTriggerSuiteInSource =
       migrateSource.includes(`fn ${monotonicityTriggerSymbol}(`) &&
       migrateSource.includes(`Self::${monotonicityTriggerSymbol}(`) &&
-      migrateSource.includes("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN");
+      REQUIRED_V2_MONOTONICITY_TRIGGER_SUITE.every(
+        ({ name, errorCode }) =>
+          migrateSource.includes(`CREATE TRIGGER ${name}`) &&
+          migrateSource.includes(errorCode),
+      );
   } catch {
-    monotonicityTriggerInSource = false;
+    monotonicityTriggerSuiteInSource = false;
   }
   pushIf(
     errors,
-    monotonicity?.structuralDefense?.kind === "sqlite-before-insert-trigger" &&
+    monotonicity?.structuralDefense?.kind === "sqlite-trigger-suite" &&
       monotonicity?.structuralDefense?.role === "structural-defense-only" &&
       monotonicity?.structuralDefense?.state === "implemented-wired" &&
       JSON.stringify(monotonicity?.structuralDefense?.productionEntryPoints) ===
         JSON.stringify([monotonicityEntryPoint]) &&
-      monotonicity?.structuralDefense?.errorCode ===
-        "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN" &&
+      JSON.stringify(monotonicity?.structuralDefense?.triggers) ===
+        JSON.stringify(REQUIRED_V2_MONOTONICITY_TRIGGER_SUITE) &&
       monotonicity?.contractFreezeOnly === false &&
-      monotonicityTriggerInSource,
-    "V2 downgrade trigger structural defense must be declared implemented-wired with its exact migrate.rs production entry point, and that trigger install/repair path must exist in source with NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
+      monotonicityTriggerSuiteInSource,
+    "V2 monotonicity trigger suite must declare every insert, current-pointer update, and immutable-V2 update guard with its exact transition and error code, and the migrate.rs repair path must install the same suite",
   );
 
   const chroniclePilot = contract.chroniclePilot;

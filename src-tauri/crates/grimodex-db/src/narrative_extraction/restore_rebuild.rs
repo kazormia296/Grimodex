@@ -205,14 +205,63 @@ pub(crate) fn record_maintenance_wake_in_tx(
     project_id: &str,
     operation: &str,
 ) -> anyhow::Result<()> {
+    record_maintenance_wake_with_reason_in_tx(conn, project_id, operation, "semantic-epoch-rotated")
+}
+
+fn record_maintenance_wake_with_reason_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    operation: &str,
+    reason: &str,
+) -> anyhow::Result<()> {
+    require_non_empty(project_id, "projectId")?;
+    require_non_empty(operation, "operation")?;
+    require_non_empty(reason, "reason")?;
     conn.execute(
         "INSERT INTO narrative_maintenance_wake_outbox
             (id, project_id, operation, reason, created_at)
-         VALUES (?1, ?2, ?3, 'semantic-epoch-rotated',
+         VALUES (?1, ?2, ?3, ?4,
                  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-        params![uuid::Uuid::new_v4().to_string(), project_id, operation],
+        params![
+            uuid::Uuid::new_v4().to_string(),
+            project_id,
+            operation,
+            reason
+        ],
     )?;
     Ok(())
+}
+
+/// Persist a native-owned wake after Electron has exhausted its bounded
+/// delivery retries. The durable outbox, rather than a process-local parked
+/// Map, is the recovery owner across a crash/restart. It intentionally does
+/// not emit an observer event: immediately re-discovering the same failed
+/// delivery would recreate an unbounded retry loop; the next ordinary open,
+/// accepted cycle, or explicit drain replays the durable row.
+pub fn record_maintenance_delivery_failure_wake(
+    db: &Database,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    require_non_empty(project_id, "projectId")?;
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            let project_exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                project_exists,
+                "NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING: project '{project_id}' does not exist"
+            );
+            record_maintenance_wake_with_reason_in_tx(
+                conn,
+                project_id,
+                "maintenance-delivery-failure",
+                "maintenance-delivery-failure",
+            )
+        })
+    })
 }
 
 /// Pending (unacknowledged) maintenance wakes, oldest first.

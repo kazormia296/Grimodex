@@ -169,16 +169,24 @@ describe("chronicleExtractionStore", () => {
       .setProjection(projection([proposal({ status: "approved" })]));
     useChronicleExtractionStore
       .getState()
-      .reviseProposalFields("proposal-1", "rev-native-2", {
-        title: "撤退命令",
-        secret: false,
-      });
+      .reviseProposalFields(
+        "proposal-1",
+        "rev-native-2",
+        `sha256:${"b".repeat(64)}`,
+        {
+          title: "撤退命令",
+          secret: false,
+        },
+      );
     const updated =
       useChronicleExtractionStore.getState().projection?.proposals[0];
     expect(updated?.status).toBe("unreviewed");
     expect(updated?.displayTitle).toBe("撤退命令");
     expect(updated?.payload?.disclosure.secret).toBe(false);
     expect(updated?.revisionId).toBe("rev-native-2");
+    expect(updated?.reconciliationEnvelopeDigest).toBe(
+      `sha256:${"b".repeat(64)}`,
+    );
   });
 
   it("bulkApproveSafe only approves safe unreviewed proposals", () => {

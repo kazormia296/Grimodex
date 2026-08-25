@@ -7,12 +7,12 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use super::declaration_storage::{
+    write_dependency_declaration_set_in_tx, DependencyDeclarationSetRequest,
+};
 use super::dependency_edges::{
     canonical_source_object_identity, find_edges_by_consumer, record_dependency_edge_in_tx,
     validate_run_id, PROPOSAL_REVISION_CONSUMER_KIND,
-};
-use super::declaration_storage::{
-    write_dependency_declaration_set_in_tx, DependencyDeclarationSetRequest,
 };
 use super::execution_state::next_run_lifecycle_timestamp_in_tx;
 use super::human_material_basis::{project_d1_declaration_set, D1ParentAuthority, MaterialBasis};
@@ -1091,17 +1091,19 @@ fn save_proposal_set_atomic(
         .proposal_set_id
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let summary_json = serde_json::to_string(
-        payload
-            .summary_json
-            .as_ref()
-            .unwrap_or(&default_object_json()),
-    )?;
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
+            let summary_value = super::stage_provenance::prepare_chronicle_v2_proposal_set_summary(
+                conn,
+                &payload.project_id,
+                &payload.run_id,
+                payload.summary_json.as_ref(),
+                &payload.proposals,
+            )?;
+            let summary_json = serde_json::to_string(&summary_value)?;
 
             conn.execute(
                 "INSERT INTO narrative_proposal_sets
@@ -1301,17 +1303,15 @@ fn materialize_initial_v2_authorities_in_tx(
         })?;
     let envelope: Value = serde_json::from_str(&validated_envelope.canonical_json)
         .context("NEX_C2A_V2_ENVELOPE_INVALID: canonical Envelope could not be decoded")?;
-    let material_basis: MaterialBasis = serde_json::from_value(
-        envelope
-            .get("effectiveMaterialBasis")
-            .cloned()
-            .ok_or_else(|| {
+    let material_basis: MaterialBasis =
+        serde_json::from_value(envelope.get("effectiveMaterialBasis").cloned().ok_or_else(
+            || {
                 anyhow::anyhow!(
                     "NEX_C2A_V2_MATERIAL_BASIS_MISSING: effectiveMaterialBasis is required"
                 )
-            })?,
-    )
-    .context("NEX_C2A_V2_MATERIAL_BASIS_INVALID: effectiveMaterialBasis is invalid")?;
+            },
+        )?)
+        .context("NEX_C2A_V2_MATERIAL_BASIS_INVALID: effectiveMaterialBasis is invalid")?;
     let d1_projection = project_d1_declaration_set(
         &material_basis,
         &D1ParentAuthority {

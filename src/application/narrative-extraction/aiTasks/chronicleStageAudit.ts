@@ -276,6 +276,14 @@ export interface BuildChronicleStageAuditNoResponseInput extends ChronicleStageA
   readonly stageExecution: NarrativeStageExecutionContext;
   /** Terminal path closed without receiving a provider response. */
   readonly terminalStatus: "failed" | "cancelled" | "skipped";
+  /**
+   * A deterministic no-op may still seal its known input/output projection.
+   * These remain null for ordinary preflight/cancellation paths.  The Native
+   * C1 companion independently proves that a skipped synthesis terminal is
+   * actually the zero-observation path before accepting either digest.
+   */
+  readonly rawObservationsDigest?: Sha256Digest | null;
+  readonly parsedOutputDigest?: Sha256Digest | null;
   /** Exact binding sealed by the route callback, or unresolved when omitted. */
   readonly modelExecutionBinding?: StageModelExecutionBindingV1;
   /** Optional non-authoritative observation seam for shadow/C1 harnesses. */
@@ -346,6 +354,8 @@ export async function buildChronicleStageAuditNoResponseTerminal(
     modelExecutionBinding,
     modelBindingDigest,
     responseDigest: null,
+    rawObservationsDigest: input.rawObservationsDigest ?? null,
+    parsedOutputDigest: input.parsedOutputDigest ?? null,
     parseStatus: "not-attempted",
     terminalStatus: input.terminalStatus,
   });
@@ -358,6 +368,8 @@ export async function buildChronicleStageAuditNoResponseTerminal(
     modelBindingDigest,
     {
       responseDigest: null,
+      rawObservationsDigest: input.rawObservationsDigest ?? null,
+      parsedOutputDigest: input.parsedOutputDigest ?? null,
       parseStatus: "not-attempted",
       terminalStatus: input.terminalStatus,
       stageExecutionReceiptDigest: receipt.stageExecutionReceiptDigest,
@@ -387,6 +399,8 @@ export async function emitChronicleStageAuditSkippedReceipt(
     componentContractDigest: input.componentContractDigest,
     finalRequestDigest: input.finalRequestDigest,
     terminalStatus: "skipped",
+    rawObservationsDigest: input.rawObservationsDigest,
+    parsedOutputDigest: input.parsedOutputDigest,
     modelExecutionBinding: input.modelExecutionBinding,
     onReceipt: (receipt) => {
       capturedReceipt = receipt;

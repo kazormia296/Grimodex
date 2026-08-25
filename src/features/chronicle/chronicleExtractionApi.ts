@@ -787,9 +787,18 @@ export async function recordChronicleProposalDecision(args: {
 }
 
 /**
- * Append a Native revision and return the server-issued revision id.
+ * Append a Native revision and return the server-issued revision receipt.
  * Fail-closed: never invents client revision ids.
  */
+export interface ChronicleProposalRevisionReceipt {
+  readonly revisionId: string;
+  /**
+   * Every V2 child receives a newly sealed envelope. Keeping this together
+   * with its revision id is required for the next parent-envelope CAS.
+   */
+  readonly reconciliationEnvelopeDigest: string | null;
+}
+
 export async function recordChronicleProposalRevision(args: {
   readonly runId: string;
   readonly projectId: string;
@@ -801,7 +810,7 @@ export async function recordChronicleProposalRevision(args: {
     readonly parentRevisionId: string;
     readonly expectedEnvelopeDigest: string;
   };
-}): Promise<string> {
+}): Promise<ChronicleProposalRevisionReceipt> {
   if (args.useHumanDerivedRevision) {
     if (!args.inheritReconciliationEnvelope) {
       throw new Error(
@@ -826,7 +835,15 @@ export async function recordChronicleProposalRevision(args: {
         surfaceId: "chronicle-review",
       },
     });
-    return result.revisionId;
+    if (!result.reconciliationEnvelopeDigest) {
+      throw new Error(
+        "Human C2B revision response missing reconciliationEnvelopeDigest",
+      );
+    }
+    return {
+      revisionId: result.revisionId,
+      reconciliationEnvelopeDigest: result.reconciliationEnvelopeDigest,
+    };
   }
   const result = await appendRevision({
     runId: args.runId,
@@ -837,7 +854,10 @@ export async function recordChronicleProposalRevision(args: {
     inheritReconciliationEnvelope: undefined,
     createdBy: "chronicle-extract-dialog",
   });
-  return result.revisionId;
+  return {
+    revisionId: result.revisionId,
+    reconciliationEnvelopeDigest: null,
+  };
 }
 
 /**
@@ -953,7 +973,7 @@ export async function reviseChronicleProposal(args: {
         current.payload.disclosure.revealDocumentRef,
     },
   };
-  const revisionId = await recordChronicleProposalRevision({
+  const revision = await recordChronicleProposalRevision({
     runId: projection.runId,
     projectId: projection.projectId,
     proposalId: args.proposalId,
@@ -971,7 +991,12 @@ export async function reviseChronicleProposal(args: {
   });
   useChronicleExtractionStore
     .getState()
-    .reviseProposalFields(args.proposalId, revisionId, args.patch);
+    .reviseProposalFields(
+      args.proposalId,
+      revision.revisionId,
+      revision.reconciliationEnvelopeDigest,
+      args.patch,
+    );
 }
 
 /**

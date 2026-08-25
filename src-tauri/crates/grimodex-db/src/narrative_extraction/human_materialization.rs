@@ -41,6 +41,7 @@ use super::repository::{
     record_revision_dependency_edges_in_tx, PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
 };
 use super::restore_rebuild::evaluate_edge_from_db;
+use super::scope_authority_runtime::load_sealed_snapshot_document_binding_in_tx;
 use super::task_leases::with_immediate_transaction;
 use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
@@ -342,23 +343,38 @@ fn resolve_live_scope_override_authority(
         "NEX_C2B_SCOPE_AUTHORITY_INVALID: live authority Source identity is invalid"
     );
 
+    // The edited reveal document is a snapshot document reference, not a
+    // current Scene reference.  Resolve it through the immutable parent Run
+    // first, then require that its sealed project node still has exactly one
+    // active mapping in the live authority.  Using `context.scene_ref` here
+    // would silently turn an edited disclosure target into the event Scene.
+    let reveal_document = load_sealed_snapshot_document_binding_in_tx(
+        conn,
+        trusted_project_id,
+        &parent.owning_run_id,
+        &context.edited_document_ref,
+    )
+    .map_err(|error| anyhow!("NEX_C2B_SCOPE_AUTHORITY_REVEAL_BASIS_UNAVAILABLE: {error}"))?;
+    let reveal_scene_ref = format!("scene:{}", reveal_document.node_id);
+
     let matching_mappings = authority
         .mappings
         .iter()
-        .filter(|mapping| mapping.scene_ref == context.scene_ref)
+        .filter(|mapping| mapping.scene_ref == reveal_scene_ref)
         .collect::<Vec<_>>();
     let mapping = match matching_mappings.as_slice() {
         [] => {
             return Err(anyhow!(
-                "NEX_C2B_SCOPE_AUTHORITY_SCENE_MISSING: live authority has no mapping for '{}'",
-                context.scene_ref
+                "NEX_C2B_SCOPE_AUTHORITY_REVEAL_TARGET_MISSING: live authority has no active mapping for reveal document '{}' sealed as '{}'",
+                context.edited_document_ref,
+                reveal_document.source_key
             ));
         }
         [mapping] => *mapping,
         _ => {
             return Err(anyhow!(
-                "NEX_C2B_SCOPE_AUTHORITY_SCENE_AMBIGUOUS: live authority has multiple mappings for '{}'",
-                context.scene_ref
+                "NEX_C2B_SCOPE_AUTHORITY_REVEAL_TARGET_AMBIGUOUS: live authority has multiple mappings for reveal document '{}'",
+                context.edited_document_ref
             ));
         }
     };
@@ -372,6 +388,7 @@ fn resolve_live_scope_override_authority(
     let scope_projection = if context.secret_scope {
         Some(build_live_scope_v2_projection(
             &authority,
+            &context.scene_ref,
             mapping,
             &authority_source_key,
         )?)
@@ -383,7 +400,8 @@ fn resolve_live_scope_override_authority(
 
 fn build_live_scope_v2_projection(
     authority: &grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
-    mapping: &NarrativeProjectScopeAuthorityMappingV1,
+    event_scene_ref: &str,
+    reveal_mapping: &NarrativeProjectScopeAuthorityMappingV1,
     authority_source_key: &str,
 ) -> anyhow::Result<TrustedScopeV2Projection> {
     let reader_count = authority
@@ -397,9 +415,9 @@ fn build_live_scope_v2_projection(
         "NEX_C2B_SCOPE_AUTHORITY_AUDIENCE_INVALID: live authority must reserve exactly one reader audience"
     );
 
-    let story_time = match &mapping.story_time_order {
+    let story_time = match &reveal_mapping.story_time_order {
         NarrativeScopeAuthorityStoryTimeOrderV2::Resolved { .. } => {
-            exact_scope_interval(&mapping.story_time_ref)
+            exact_scope_interval(&reveal_mapping.story_time_ref)
         }
         NarrativeScopeAuthorityStoryTimeOrderV2::Unresolved { reason, .. } => json!({
             "kind": "unresolved",
@@ -411,13 +429,13 @@ fn build_live_scope_v2_projection(
         "registryVersion": "narrative-scope/2",
         "timeline": {"kind": "any"},
         "worldline": {"kind": "any"},
-        "scene": {"kind": "exact", "ref": mapping.scene_ref},
+        "scene": {"kind": "exact", "ref": event_scene_ref},
         "viewpoint": {"kind": "any"},
         "knowledgeHolder": {"kind": "any"},
         "audience": {"kind": "exact", "ref": "reader"},
         "narrativeLayer": {"kind": "any"},
         "storyTime": story_time,
-        "readingOrder": exact_scope_interval(&mapping.reading_order_ref),
+        "readingOrder": exact_scope_interval(&reveal_mapping.reading_order_ref),
     });
     validate_narrative_scope_v2(&scope).map_err(|error| {
         anyhow!("NEX_C2B_SCOPE_AUTHORITY_INVALID: live Scope V2 is invalid: {error}")

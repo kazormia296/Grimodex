@@ -25,6 +25,7 @@ use crate::narrative_extraction::change_feed::{
     require_replay_lineage_in_project, scene_text_impact, AppendNarrativeChangeTransactionInput,
     NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
 };
+use crate::narrative_extraction::mint_c2zc_project_birth_epoch_in_tx;
 
 fn json_pointer_segment(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
@@ -1587,6 +1588,11 @@ pub fn project_create(db: &Database, payload: ProjectCreatePayload) -> anyhow::R
                 events: project_create_feed_events(&builtin_types)?,
             },
         )?;
+        // A post-C2-ZC Project must be born with the Epoch that all later
+        // Application writes consume.  Keep this after the canonical event
+        // append so the epoch has an immutable creation-event lineage, and
+        // before the idempotency receipt so the entire bootstrap is atomic.
+        mint_c2zc_project_birth_epoch_in_tx(&tx, &payload.project_id, &payload.event_uid)?;
         let mut response = project;
         response
             .as_object_mut()
@@ -5744,6 +5750,12 @@ mod tests {
             assert_eq!(project_count, 1);
             assert_eq!(canonical_count, 1);
             assert_eq!(transaction_count, 1);
+            let epoch_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE project_id = 'project-create'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(epoch_count, 0, "pre-cutover creation must not mint an Epoch");
 
             let mut statement = conn.prepare(
                 "SELECT type.slug, type.label, event.event_ordinal,
@@ -5799,6 +5811,102 @@ mod tests {
             Ok(())
         })
         .expect("verify project history");
+    }
+
+    #[test]
+    fn project_create_mints_one_event_bound_initial_epoch_after_c2zc_marker() {
+        let db = fixture();
+        db.with_conn(|conn| Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z"))
+            .expect("activate marker fixture");
+
+        let payload = project_create_payload("project-c2zc-birth", "project-c2zc-birth-request");
+        let response = project_create(&db, payload.clone()).expect("create post-marker project");
+        assert_eq!(response["id"], "project-c2zc-birth");
+
+        let mut replay_payload = payload;
+        replay_payload.session_id = "project-c2zc-birth-replay-session".to_string();
+        replay_payload.event_uid = "project-c2zc-birth-replay-event".to_string();
+        let replay = project_create(&db, replay_payload).expect("idempotent project replay");
+        assert_eq!(replay, response);
+
+        db.with_conn(|conn| {
+            let epochs = conn
+                .prepare(
+                    "SELECT epoch_number, reason, triggered_by_change_event_uid
+                       FROM narrative_semantic_epochs
+                      WHERE project_id = ?1
+                      ORDER BY epoch_number ASC",
+                )?
+                .query_map(["project-c2zc-birth"], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                epochs,
+                vec![(
+                    0,
+                    "initial".to_string(),
+                    Some("project-c2zc-birth-request-event".to_string()),
+                )]
+            );
+            Ok(())
+        })
+        .expect("verify birth epoch");
+    }
+
+    #[test]
+    fn project_create_fails_atomically_for_an_unsupported_c2zc_marker() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    Database::C2_ZC_CUTOVER_MIGRATION_ID,
+                    Database::C2_ZC_CUTOVER_CONTRACT_VERSION + 1,
+                    "2026-08-25T00:00:00.000Z",
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("seed unsupported marker fixture");
+
+        let error = project_create(
+            &db,
+            project_create_payload(
+                "project-c2zc-unsupported",
+                "project-c2zc-unsupported-request",
+            ),
+        )
+        .expect_err("reject unsupported marker before project commit");
+        assert!(error
+            .to_string()
+            .contains("NEX_C2ZC_PROJECT_BIRTH_MARKER_UNSUPPORTED"));
+
+        db.with_conn(|conn| {
+            let project_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM projects WHERE id = 'project-c2zc-unsupported'",
+                [],
+                |row| row.get(0),
+            )?;
+            let event_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM change_events WHERE project_id = 'project-c2zc-unsupported'",
+                [],
+                |row| row.get(0),
+            )?;
+            let epoch_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE project_id = 'project-c2zc-unsupported'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!((project_count, event_count, epoch_count), (0, 0, 0));
+            Ok(())
+        })
+        .expect("verify failed creation rolled back");
     }
 
     #[test]

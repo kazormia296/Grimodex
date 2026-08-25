@@ -3,6 +3,7 @@ import type {
   CreateHumanDerivedRevisionPayload,
   CreateHumanDerivedRevisionResult,
   AppendRevisionPayload,
+  ChronicleStageReceiptRef,
   ProposalSeed,
   ReviseAndDecidePayload,
   SaveProposalSetPayload,
@@ -211,10 +212,11 @@ export interface SaveChronicleProposalSetInput {
     string,
     ReconciliationEnvelopeV2<unknown>
   >;
-  readonly stageProvenanceBundle?: Readonly<{
-    readonly closure: unknown;
-    readonly binding: unknown;
-  }>;
+  /**
+   * Only receipt references may cross the ProposalSet boundary. The full C1
+   * closure is FinishTask-only and must remain transport-ephemeral.
+   */
+  readonly stageReceiptRefs?: readonly ChronicleStageReceiptRef[];
   readonly proposals: readonly {
     readonly proposalKey: string;
     readonly payload: CreateChronicleEventProposalPayloadV1;
@@ -283,8 +285,8 @@ export async function saveChronicleProposalSet(
     summaryJson: {
       ...(input.summaryJson ?? {}),
       proposalCount: proposals.length,
-      ...(input.stageProvenanceBundle
-        ? { stageProvenanceBundle: input.stageProvenanceBundle }
+      ...(input.stageReceiptRefs
+        ? { chronicleStageReceiptRefs: input.stageReceiptRefs }
         : {}),
     },
     proposals,

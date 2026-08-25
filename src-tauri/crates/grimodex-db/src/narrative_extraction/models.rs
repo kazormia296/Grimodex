@@ -85,10 +85,16 @@ pub struct FinishTaskPayload {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChronicleStageC1ExecutionBinding {
+    /// The Task/Attempt currently being finished. It owns aggregation of the
+    /// ephemeral closure and is deliberately distinct from the selected model
+    /// Stage execution below in the multi-window production DAG.
     pub project_id: String,
     pub run_id: String,
     pub task_id: String,
     pub attempt_id: String,
+    pub stage_execution_owner_task_id: String,
+    pub stage_execution_owner_attempt_id: String,
+    pub stage_execution_owner_stage_execution_id: String,
     pub context_set_digest: String,
     pub component_contract_digest: String,
     pub final_request_digest: String,
