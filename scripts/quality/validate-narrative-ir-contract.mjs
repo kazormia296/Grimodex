@@ -1246,6 +1246,8 @@ export function validateNarrativeIrContract(
       "stageProvenanceClosureDigest-forbidden" &&
       stageProvenance?.persistence?.owner ===
         "C2A atomic task output/artifact persistence" &&
+      stageProvenance?.persistence?.appliesTo ===
+        "application-closure-sidecar" &&
       stageProvenance?.persistence?.status === "deferred" &&
       stageProvenance?.persistence?.lifecycle === "ephemeral" &&
       stageProvenance?.persistence?.authority === "none" &&
@@ -1257,6 +1259,63 @@ export function validateNarrativeIrContract(
       stageProvenance?.persistence?.membership ===
         "caller-supplied-receipt-set",
     "Stage provenance must remain an ephemeral non-authoritative sidecar with C2A persistence deferred",
+  );
+  // Terminal stage receipts ARE durably persisted (schema-34 receipt/model-
+  // binding tables written by the typed C2A finish). The policy must declare
+  // that implemented layer separately from the ephemeral closure sidecar,
+  // and both directions must hold: the declared writer entry point and its
+  // tables must exist in Rust source, and the durable tables must exist in
+  // the migration schema — a declaration the runtime does not honor (in
+  // either direction) fails the contract.
+  const receiptEntryPoint =
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs::persist_receipt";
+  const receiptTables = [
+    "narrative_extraction_stage_model_bindings",
+    "narrative_extraction_stage_receipts",
+  ];
+  const [receiptWriterModule, receiptWriterSymbol] =
+    receiptEntryPoint.split("::");
+  let receiptWriterInSource = false;
+  let receiptTablesInSchema = false;
+  try {
+    const writerSource = readFileSync(
+      path.join(repoRoot, receiptWriterModule),
+      "utf8",
+    );
+    receiptWriterInSource =
+      writerSource.includes(`fn ${receiptWriterSymbol}(`) &&
+      receiptTables.every((table) =>
+        writerSource.includes(`INSERT INTO ${table}`),
+      );
+    const migrateSource = readFileSync(
+      path.join(repoRoot, "src-tauri/crates/grimodex-db/src/migrate.rs"),
+      "utf8",
+    );
+    receiptTablesInSchema = receiptTables.every((table) =>
+      migrateSource.includes(`CREATE TABLE IF NOT EXISTS ${table}`),
+    );
+  } catch {
+    receiptWriterInSource = false;
+    receiptTablesInSchema = false;
+  }
+  const terminalReceiptPersistence = stageProvenance?.terminalReceiptPersistence;
+  pushIf(
+    errors,
+    terminalReceiptPersistence?.owner === "native-typed-c2a-finish" &&
+      terminalReceiptPersistence?.appliesTo ===
+        "stage-terminal-receipts-and-model-bindings" &&
+      terminalReceiptPersistence?.status === "implemented-durable" &&
+      terminalReceiptPersistence?.lifecycle === "durable" &&
+      terminalReceiptPersistence?.authority === "audit-only" &&
+      terminalReceiptPersistence?.authoritative === false &&
+      terminalReceiptPersistence?.storage === "sqlite-workspace-db" &&
+      JSON.stringify(terminalReceiptPersistence?.tables) ===
+        JSON.stringify(receiptTables) &&
+      JSON.stringify(terminalReceiptPersistence?.productionEntryPoints) ===
+        JSON.stringify([receiptEntryPoint]) &&
+      receiptWriterInSource &&
+      receiptTablesInSchema,
+    "Terminal stage receipt persistence must be declared implemented-durable audit-only with its exact persist_receipt entry point, and that writer plus its receipt/model-binding tables must exist in Rust source and the migration schema",
   );
   pushIf(
     errors,

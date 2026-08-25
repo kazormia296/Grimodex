@@ -830,6 +830,57 @@ describe("NIR-0 Narrative IR contract", () => {
     );
   });
 
+  it("declares durable terminal receipt persistence separately from the ephemeral closure sidecar", () => {
+    const contract = readJson("policies/narrative/narrative-ir-contract.json");
+
+    assert.equal(
+      contract.stageProvenance.persistence.appliesTo,
+      "application-closure-sidecar",
+    );
+    assert.deepEqual(contract.stageProvenance.terminalReceiptPersistence, {
+      owner: "native-typed-c2a-finish",
+      appliesTo: "stage-terminal-receipts-and-model-bindings",
+      status: "implemented-durable",
+      lifecycle: "durable",
+      authority: "audit-only",
+      authoritative: false,
+      storage: "sqlite-workspace-db",
+      tables: [
+        "narrative_extraction_stage_model_bindings",
+        "narrative_extraction_stage_receipts",
+      ],
+      productionEntryPoints: [
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs::persist_receipt",
+      ],
+    });
+
+    // Bidirectional status check: the receipt writer and its schema tables
+    // exist in Rust source, so a policy that hides the durable layer (or
+    // points at the wrong writer) must fail.
+    const hiddenDurable = structuredClone(contract);
+    delete hiddenDurable.stageProvenance.terminalReceiptPersistence;
+    const hiddenErrors = validate(hiddenDurable);
+    assert.ok(
+      hiddenErrors.some((error) =>
+        /implemented-durable.*persist_receipt/i.test(error),
+      ),
+      `expected missing durable receipt declaration error: ${JSON.stringify(hiddenErrors)}`,
+    );
+
+    const wrongWriter = structuredClone(contract);
+    wrongWriter.stageProvenance.terminalReceiptPersistence.productionEntryPoints =
+      [
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs::persist_stage_bundle_if_present",
+      ];
+    const wrongWriterErrors = validate(wrongWriter);
+    assert.ok(
+      wrongWriterErrors.some((error) =>
+        /implemented-durable.*persist_receipt/i.test(error),
+      ),
+      `expected wrong receipt writer error: ${JSON.stringify(wrongWriterErrors)}`,
+    );
+  });
+
   it("keeps Chronicle pilot product wiring add-only and states the Project deletion boundary", () => {
     const contract = readJson("policies/narrative/narrative-ir-contract.json");
 

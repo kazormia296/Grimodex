@@ -5848,6 +5848,7 @@ impl Database {
                 failure_code: None,
                 reason_code,
                 evidence_freshness: freshness,
+                evidence_detail_digest: None,
             },
         )
     }
@@ -5867,6 +5868,7 @@ impl Database {
                 failure_code: None,
                 reason_code,
                 evidence_freshness: freshness,
+                evidence_detail_digest: None,
             },
         )
     }
@@ -8326,6 +8328,7 @@ mod tests {
                 failure_code: None,
                 reason_code: "source-missing",
                 evidence_freshness: "source-missing",
+                evidence_detail_digest: None,
             },
         )
         .expect("compute current material basis");

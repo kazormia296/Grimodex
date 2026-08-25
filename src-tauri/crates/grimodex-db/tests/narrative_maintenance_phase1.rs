@@ -612,6 +612,103 @@ fn graph_defect_stops_after_verify_without_automatic_repair() {
 }
 
 #[test]
+fn graph_repair_finding_recurs_for_the_same_report_and_changes_for_a_new_report() {
+    let db = fixture_db();
+    seed_completed_backfill(&db);
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key,
+                 source_object_identity, read_set_json, created_at)
+             VALUES ('missing-source-edge-a', ?1, 'narrative-extraction-run',
+                     'defect-consumer-a', 'project:scene:does-not-exist-a', '[]',
+                     '2026-08-23T00:00:00.000Z')",
+            [PROJECT_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed first graph defect");
+
+    let lifecycle_rows = |db: &Database| -> (i64, String) {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(DISTINCT material_basis_digest),
+                        (SELECT lifecycle_state
+                           FROM narrative_maintenance_finding_lifecycle
+                          WHERE project_id = ?1
+                          ORDER BY observed_at DESC, rowid DESC LIMIT 1)
+                   FROM narrative_maintenance_finding_lifecycle
+                  WHERE project_id = ?1",
+                [PROJECT_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read repair finding lifecycle")
+    };
+
+    run_system_work_cycle(
+        &db,
+        &coordinate_bound_verify_request(),
+        RecoveryMode::SameProcessLive,
+    )
+    .expect("first defect cycle");
+    // The first cycle may legitimately observe two distinct reports (the
+    // pre-Rebuild Verify and the post-Rebuild confirmation see different
+    // derived state); the baseline for the replay comparison is whatever
+    // evidence set the settled cycle produced.
+    let (bases_after_first, _) = lifecycle_rows(&db);
+    assert!(
+        bases_after_first >= 1,
+        "defect cycle must project a Finding"
+    );
+
+    // A second Verify over the byte-identical graph reproduces the same
+    // report: the Finding must replay as the SAME evidence (recurring), not
+    // as a new defect.
+    run_system_work_cycle(
+        &db,
+        &coordinate_bound_verify_request(),
+        RecoveryMode::SameProcessLive,
+    )
+    .expect("identical-report cycle");
+    let (bases_after_replay, state_after_replay) = lifecycle_rows(&db);
+    assert_eq!(
+        bases_after_replay, bases_after_first,
+        "an identical report must not mint new evidence"
+    );
+    assert_eq!(state_after_replay, "recurring");
+
+    // Mutating the graph produces a semantically different report; the
+    // Finding's evidence must be distinguishable (`changed`), because the
+    // report digest and graph-state digest are bound into its digests.
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key,
+                 source_object_identity, read_set_json, created_at)
+             VALUES ('missing-source-edge-b', ?1, 'narrative-extraction-run',
+                     'defect-consumer-b', 'project:scene:does-not-exist-b', '[]',
+                     '2026-08-23T00:00:01.000Z')",
+            [PROJECT_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed second graph defect");
+    run_system_work_cycle(
+        &db,
+        &coordinate_bound_verify_request(),
+        RecoveryMode::SameProcessLive,
+    )
+    .expect("different-report cycle");
+    let (bases_after_change, state_after_change) = lifecycle_rows(&db);
+    assert!(
+        bases_after_change > bases_after_replay,
+        "a different report must carry a different evidence basis"
+    );
+    assert_eq!(state_after_change, "changed");
+}
+
+#[test]
 fn repair_is_not_an_automatic_dispatch_kind() {
     let repair: Result<MaintenanceCycleRequest, _> = serde_json::from_value(json!({
         "work": [{

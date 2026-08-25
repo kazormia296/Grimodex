@@ -634,6 +634,7 @@ mod tests {
                 failure_code: None,
                 reason_code: reason_code.as_str(),
                 evidence_freshness: freshness.as_str(),
+                evidence_detail_digest: None,
             },
         )
         .expect("material basis")

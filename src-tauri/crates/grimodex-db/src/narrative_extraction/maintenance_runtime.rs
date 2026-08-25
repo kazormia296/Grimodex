@@ -4586,4 +4586,92 @@ mod tests {
         config.owner_token = "forged-owner".to_string();
         assert!(config.validate().is_err());
     }
+
+    #[test]
+    fn ledger_missing_verdict_projects_an_inbox_finding_onto_a_completed_run_anchor() {
+        // FAILURE_LEDGER_MISSING is selected exactly when NO failed Run
+        // exists, so the failed-Run anchor is structurally impossible for it.
+        // The projection must anchor on the latest non-failed Run instead —
+        // otherwise the halt verdict never reaches the Maintenance Inbox.
+        let db = open_pending_recovery_db();
+        let work = recovery_work(AutomaticRunKind::Verify, "epoch-current");
+        db.with_conn(|conn| {
+            insert_pending_recovery_run(
+                conn,
+                "run-ledger-gap",
+                AutomaticRunKind::Verify,
+                "epoch-current",
+                &work.work_key,
+            )?;
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET status = 'completed',
+                        started_at = '2026-01-03T00:00:01.000Z',
+                        completed_at = '2026-01-03T00:00:02.000Z'
+                  WHERE id = 'run-ledger-gap'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed completed run without any failed ledger row");
+
+        let decision = decide_run_recovery_for_epoch(
+            &db,
+            &work,
+            Some("epoch-current"),
+            RecoveryMode::SameProcessLive,
+            Some("database is locked"),
+        )
+        .expect("ledger-gap decision");
+        assert!(matches!(
+            decision.action,
+            RecoveryAction::ManualIntervention { ref code }
+                if code == "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING"
+        ));
+
+        let projected =
+            crate::narrative_extraction::terminal_failure::project_manual_intervention_finding(
+                &db,
+                &work,
+                "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING",
+            )
+            .expect("ledger-gap projection");
+        assert!(
+            projected.is_some(),
+            "ledger-gap verdict must project a durable Finding"
+        );
+        let anchored: (i64, String) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*), MAX(run_id)
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read projected observation");
+        assert_eq!(anchored, (1, "run-ledger-gap".to_string()));
+
+        // Replaying the identical verdict is idempotent.
+        crate::narrative_extraction::terminal_failure::project_manual_intervention_finding(
+            &db,
+            &work,
+            "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING",
+        )
+        .expect("idempotent ledger-gap replay");
+        let replay_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count replayed observations");
+        assert_eq!(replay_count, 1);
+    }
 }

@@ -39,7 +39,7 @@
     },
     {
       "ruleId": "narrative.maintenance-contract-failure",
-      "version": 1,
+      "version": 2,
       "identityScope": "maintenance-work",
       "observationStorageClass": "durable-derived-history",
       "writerAuthority": "maintenance-run-finalization-transaction",
@@ -47,13 +47,15 @@
         "stableSubject",
         "failureCode",
         "reasonCode",
-        "evidenceFreshness"
+        "evidenceFreshness",
+        "evidenceDetailDigest"
       ],
       "materialBasisFields": [
         "stableSubject",
         "failureCode",
         "reasonCode",
-        "evidenceFreshness"
+        "evidenceFreshness",
+        "evidenceDetailDigest"
       ]
     }
   ],

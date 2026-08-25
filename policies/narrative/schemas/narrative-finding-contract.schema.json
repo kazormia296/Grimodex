@@ -108,42 +108,46 @@
               "writerAuthority": { "const": "maintenance-run-finalization-transaction" },
               "observationFields": {
                 "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
+                "minItems": 5,
+                "maxItems": 5,
                 "uniqueItems": true,
                 "items": {
                   "enum": [
                     "stableSubject",
                     "failureCode",
                     "reasonCode",
-                    "evidenceFreshness"
+                    "evidenceFreshness",
+                    "evidenceDetailDigest"
                   ]
                 },
                 "allOf": [
                   { "contains": { "const": "stableSubject" } },
                   { "contains": { "const": "failureCode" } },
                   { "contains": { "const": "reasonCode" } },
-                  { "contains": { "const": "evidenceFreshness" } }
+                  { "contains": { "const": "evidenceFreshness" } },
+                  { "contains": { "const": "evidenceDetailDigest" } }
                 ]
               },
               "materialBasisFields": {
                 "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
+                "minItems": 5,
+                "maxItems": 5,
                 "uniqueItems": true,
                 "items": {
                   "enum": [
                     "stableSubject",
                     "failureCode",
                     "reasonCode",
-                    "evidenceFreshness"
+                    "evidenceFreshness",
+                    "evidenceDetailDigest"
                   ]
                 },
                 "allOf": [
                   { "contains": { "const": "stableSubject" } },
                   { "contains": { "const": "failureCode" } },
                   { "contains": { "const": "reasonCode" } },
-                  { "contains": { "const": "evidenceFreshness" } }
+                  { "contains": { "const": "evidenceFreshness" } },
+                  { "contains": { "const": "evidenceDetailDigest" } }
                 ]
               }
             },

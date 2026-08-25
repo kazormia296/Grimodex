@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 pub const BUNDLED_FINDING_RULE_ID: &str = "narrative.consumer-freshness";
 pub const BUNDLED_FINDING_RULE_VERSION: u32 = 1;
 pub const MAINTENANCE_FAILURE_FINDING_RULE_ID: &str = "narrative.maintenance-contract-failure";
-pub const MAINTENANCE_FAILURE_FINDING_RULE_VERSION: u32 = 1;
+pub const MAINTENANCE_FAILURE_FINDING_RULE_VERSION: u32 = 2;
 
 const EDGE_IDENTITY_SCOPE: &str = "edge";
 const MAINTENANCE_WORK_IDENTITY_SCOPE: &str = "maintenance-work";
@@ -23,6 +23,7 @@ const MAINTENANCE_WORK_REQUIRED_FIELDS: &[&str] = &[
     "failureCode",
     "reasonCode",
     "evidenceFreshness",
+    "evidenceDetailDigest",
 ];
 const EDGE_REQUIRED_MATERIAL_BASIS_FIELDS: &[&str] =
     &["stableSubject", "edgeId", "reasonCode", "evidenceFreshness"];
@@ -31,6 +32,7 @@ const MAINTENANCE_WORK_REQUIRED_MATERIAL_BASIS_FIELDS: &[&str] = &[
     "failureCode",
     "reasonCode",
     "evidenceFreshness",
+    "evidenceDetailDigest",
 ];
 
 const BUNDLED_FINDING_CONTRACT: &str = include_str!(concat!(
@@ -274,6 +276,10 @@ pub struct ObservationDigestInput<'a> {
     pub failure_code: Option<&'a str>,
     pub reason_code: &'a str,
     pub evidence_freshness: &'a str,
+    /// Rule-declared detail evidence (for example the sealed Verify
+    /// reportDigest + graph-state coordinate for graph-repair Findings).
+    /// Rules that do not declare `evidenceDetailDigest` ignore it.
+    pub evidence_detail_digest: Option<&'a str>,
 }
 
 /// The durable result fields that make an Attention disposition stale. Run
@@ -286,6 +292,8 @@ pub struct MaterialBasisInput<'a> {
     pub failure_code: Option<&'a str>,
     pub reason_code: &'a str,
     pub evidence_freshness: &'a str,
+    /// See [`ObservationDigestInput::evidence_detail_digest`].
+    pub evidence_detail_digest: Option<&'a str>,
 }
 
 fn resolve_bundled_rule(rule_id: &str, version: u32) -> anyhow::Result<FindingRule> {
@@ -345,6 +353,7 @@ pub fn observation_digest(
         "failureCode" => Some(serde_json::json!(input.failure_code)),
         "reasonCode" => Some(serde_json::json!(input.reason_code)),
         "evidenceFreshness" => Some(serde_json::json!(input.evidence_freshness)),
+        "evidenceDetailDigest" => Some(serde_json::json!(input.evidence_detail_digest)),
         _ => None,
     })?;
     let canonical = serde_json::to_vec(&(
@@ -374,6 +383,7 @@ pub fn material_basis_digest(
             "failureCode" => Some(serde_json::json!(input.failure_code)),
             "reasonCode" => Some(serde_json::json!(input.reason_code)),
             "evidenceFreshness" => Some(serde_json::json!(input.evidence_freshness)),
+            "evidenceDetailDigest" => Some(serde_json::json!(input.evidence_detail_digest)),
             _ => None,
         })?;
     let canonical = serde_json::to_vec(&(
@@ -506,6 +516,7 @@ mod tests {
             failure_code: None,
             reason_code: "source-missing",
             evidence_freshness: "source-missing",
+            evidence_detail_digest: None,
         };
         let first = observation_digest(
             BUNDLED_FINDING_RULE_ID,
@@ -534,6 +545,7 @@ mod tests {
             failure_code: None,
             reason_code: "source-missing",
             evidence_freshness: "source-missing",
+            evidence_detail_digest: None,
         };
         // Run id, Semantic Epoch, and wall-clock time are deliberately not
         // arguments to this digest. Two evaluations with only that context
@@ -568,6 +580,7 @@ mod tests {
             BUNDLED_FINDING_RULE_VERSION,
             &MaterialBasisInput {
                 evidence_freshness: "stale",
+                evidence_detail_digest: None,
                 ..first_input.clone()
             },
         )
@@ -583,6 +596,7 @@ mod tests {
                 failure_code: None,
                 reason_code: "source-missing",
                 evidence_freshness: "source-missing",
+                evidence_detail_digest: None,
             },
         )
         .expect("observation digest");

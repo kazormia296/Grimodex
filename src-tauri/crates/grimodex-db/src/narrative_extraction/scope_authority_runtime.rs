@@ -616,9 +616,10 @@ pub(crate) fn load_historical_scope_authority_basis_in_tx(
         "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: corpus companion belongs to a different \
          Task/Attempt than the sealed basis"
     );
-    let corpus_payload_json = corpus.payload_json.as_deref().ok_or_else(|| {
-        invalid_corpus_artifact("corpus payloadJson is missing at readback")
-    })?;
+    let corpus_payload_json = corpus
+        .payload_json
+        .as_deref()
+        .ok_or_else(|| invalid_corpus_artifact("corpus payloadJson is missing at readback"))?;
     let corpus_payload: serde_json::Value =
         serde_json::from_str(corpus_payload_json).map_err(|error| {
             invalid_corpus_artifact(format!("corpus payload JSON at readback: {error}"))

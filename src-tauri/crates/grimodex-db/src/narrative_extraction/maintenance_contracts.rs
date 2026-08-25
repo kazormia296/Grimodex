@@ -51,6 +51,14 @@ const EXPECTED_PRODUCER_WRITERS: &[(&str, &str, &str, &str, &str, Option<i64>)] 
         APPLICATION_CONSUMER_KIND,
         None,
     ),
+    (
+        "post-cutover-application-dependency",
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs",
+        "write_application_dependencies_in_tx",
+        super::c2zc_canonical_cutover::C2ZC_APPLICATION_DEPENDENCY_GENERATION,
+        APPLICATION_CONSUMER_KIND,
+        None,
+    ),
 ];
 
 const REPOSITORY_SOURCE: &str = include_str!(concat!(
@@ -60,6 +68,10 @@ const REPOSITORY_SOURCE: &str = include_str!(concat!(
 const LEGACY_BACKFILL_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/src/narrative_extraction/legacy_backfill.rs"
+));
+const C2ZC_CANONICAL_CUTOVER_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/narrative_extraction/c2zc_canonical_cutover.rs"
 ));
 
 const PRODUCER_MARKER_PREFIX: &str = "// NARRATIVE_DEPENDENCY_PRODUCER: ";
@@ -204,6 +216,9 @@ fn parse_dependency_producer_registry(registry_json: &str) -> Result<DependencyP
             "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs" => {
                 LEGACY_BACKFILL_SOURCE
             }
+            "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs" => {
+                C2ZC_CANONICAL_CUTOVER_SOURCE
+            }
             _ => "",
         };
         ensure!(
@@ -239,6 +254,10 @@ fn validate_dependency_producer_traceability(entries: &[DependencyProducerEntry]
         (
             "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
             LEGACY_BACKFILL_SOURCE,
+        ),
+        (
+            "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs",
+            C2ZC_CANONICAL_CUTOVER_SOURCE,
         ),
     ];
     let mut discovered = Vec::new();

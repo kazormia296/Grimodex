@@ -221,6 +221,44 @@ pub fn cut_over_workspace_freshness(
             }
         );
         validate_generic_rows_for_cutover(conn, &readiness.durable)?;
+        // The irreversible cutover must not accept a clean Verify weaker
+        // than an ordinary maintenance wake would: the same skip-evidence
+        // evaluation (current contract coordinates, sealed graph-state
+        // digest, live report CAS) runs inside this transaction against
+        // each project's Verify evidence.
+        for project in &readiness.durable.projects {
+            let Some(current_epoch) = project.current_epoch_id.as_deref() else {
+                anyhow::bail!(
+                    "NEX_C2ZC_CURRENT_EPOCH_MISSING: project '{}' has no current Semantic Epoch",
+                    project.project_id
+                );
+            };
+            let coordinates = super::maintenance_contracts::current_maintenance_coordinates()?;
+            let expectation = super::maintenance_skip_evidence::CompletedRunSkipExpectation {
+                project_id: project.project_id.clone(),
+                run_kind: "dependency-verify".to_string(),
+                work_key: format!("dependency-verify:{current_epoch}"),
+                semantic_epoch_id: current_epoch.to_string(),
+                graph_contract_digest: coordinates.graph_contract_digest,
+                rule_registry_digest: coordinates.rule_registry_digest,
+                producer_generation_set_digest: coordinates.producer_generation_set_digest,
+                rebuild_contract_version: super::restore_rebuild::REBUILD_CONTRACT_VERSION
+                    .to_string(),
+                run_kind_contract_version: super::restore_rebuild::VERIFY_CONTRACT_VERSION
+                    .to_string(),
+                report_digest: None,
+            };
+            let decision =
+                super::maintenance_skip_evidence::evaluate_completed_run_skip(conn, &expectation)?;
+            let super::maintenance_skip_evidence::CompletedRunSkipDecision::Skip { .. } = decision
+            else {
+                anyhow::bail!(
+                    "NEX_C2ZC_CUTOVER_VERIFY_EVIDENCE_STALE: project '{}' Verify evidence does \
+                     not satisfy the current maintenance skip contract: {decision:?}",
+                    project.project_id
+                );
+            };
+        }
         let applied_at = canonical_now();
         Database::record_c2zc_cutover_marker(conn, &applied_at)?;
         Ok(CanonicalCutoverReceipt {
@@ -408,12 +446,18 @@ pub(crate) fn is_generic_freshness_canonical(conn: &Connection) -> Result<bool> 
     }
 }
 
+/// Producer generation for the post-cutover Application Edge writer. Folded
+/// into `producer_generation_set_digest`: changing this writer's algorithm
+/// must rotate the coordinate that invalidates clean-Verify reuse.
+pub(crate) const C2ZC_APPLICATION_DEPENDENCY_GENERATION: &str = "c2zc-application-dependency/v1";
+
 /// Producer-time Application declaration used once C2-ZC is active.  It
 /// records only the typed Generic dependency Edges.  The incremental runtime
 /// remains the sole writer of Edge State and Consumer Freshness; a new
 /// Application therefore stays fail-closed until its Change Feed range is
 /// evaluated by that live authority.  The caller's Apply transaction owns the
 /// surrounding atomicity.
+// NARRATIVE_DEPENDENCY_PRODUCER: post-cutover-application-dependency
 pub(crate) fn write_application_dependencies_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -618,6 +662,13 @@ fn project_gate_reasons(
     );
     append_gate_reasons(
         &mut reasons,
+        "phase-lifecycle",
+        project.phase_lifecycle.passed,
+        &project.phase_lifecycle.reasons,
+        scheduler_liveness_passed,
+    );
+    append_gate_reasons(
+        &mut reasons,
         "incremental-runtime",
         project.incremental_runtime.passed,
         &project.incremental_runtime.reasons,
@@ -670,6 +721,7 @@ fn durable_requirements_passed(
                 && project.derived_state_rebuild.passed
                 && project.parity.passed
                 && project.no_active_backfill_or_repair.passed
+                && project.phase_lifecycle.passed
                 && (project.incremental_runtime.passed
                     || (scheduler_liveness_passed
                         && project.incremental_runtime.reasons.len() == 1
@@ -786,6 +838,55 @@ fn validate_generic_rows_for_cutover(
             anyhow::ensure!(
                 digest.as_deref() == Some(expected_digest.as_str()),
                 "NEX_C2ZC_GENERIC_FRESHNESS_DIGEST_MISMATCH: application '{application_id}' has a dependency-set digest that does not match its current Generic Edges"
+            );
+
+            // The dependency-set digest proves which Edges exist, not that
+            // they were evaluated. Every declared Generic Edge must carry a
+            // current-Epoch Edge State, and the stored Consumer roll-up must
+            // equal the same worst-state reduction the publish runtime
+            // performs — a `fresh/none` row over stale or unevaluated Edges
+            // must not survive an irreversible cutover.
+            let (declared_edges, unevaluated_edges): (i64, i64) = conn.query_row(
+                "SELECT COUNT(*),
+                        COALESCE(SUM(CASE WHEN s.edge_id IS NULL THEN 1 ELSE 0 END), 0)
+                   FROM narrative_dependency_edges e
+                   LEFT JOIN narrative_dependency_edge_states s
+                     ON s.edge_id = e.id AND s.evaluated_at_epoch_id = ?4
+                  WHERE e.project_id = ?1 AND e.consumer_kind = ?2 AND e.consumer_key = ?3",
+                params![
+                    project.project_id,
+                    APPLICATION_CONSUMER_KIND,
+                    application_id,
+                    current_epoch
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            anyhow::ensure!(
+                declared_edges > 0,
+                "NEX_C2ZC_GENERIC_EDGE_STATE_MISSING: application '{application_id}' declares no Generic Edges to ground its Freshness"
+            );
+            anyhow::ensure!(
+                unevaluated_edges == 0,
+                "NEX_C2ZC_GENERIC_EDGE_STATE_MISSING: application '{application_id}' has {unevaluated_edges} Generic Edge(s) without a current-Epoch Edge State"
+            );
+            let worst = super::publish_runtime::worst_edge_state_for_consumer(
+                conn,
+                &project.project_id,
+                APPLICATION_CONSUMER_KIND,
+                &application_id,
+                current_epoch,
+            )?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_C2ZC_GENERIC_EDGE_STATE_MISSING: application '{application_id}' has no Edge State roll-up"
+                )
+            })?;
+            anyhow::ensure!(
+                worst.freshness.as_str() == freshness
+                    && worst.build_action.as_str() == build_action,
+                "NEX_C2ZC_GENERIC_FRESHNESS_AGGREGATION_MISMATCH: application '{application_id}' stores '{freshness}/{build_action}' but its Edge States re-aggregate to '{}/{}'",
+                worst.freshness.as_str(),
+                worst.build_action.as_str()
             );
         }
     }

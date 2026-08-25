@@ -447,9 +447,7 @@ pub fn evaluate_completed_run_skip(
         // evidence was sealed — including one that produces no defect the
         // report shape can see — refuses reuse with the precise reason.
         // Empty (pre-field) evidence never matches.
-        if evidence.graph_state_digest
-            != durable_graph_state_digest(conn, &expected.project_id)?
-        {
+        if evidence.graph_state_digest != durable_graph_state_digest(conn, &expected.project_id)? {
             return Ok(CompletedRunSkipDecision::Rerun {
                 reason: CompletedRunSkipReason::GraphStateMismatch,
             });

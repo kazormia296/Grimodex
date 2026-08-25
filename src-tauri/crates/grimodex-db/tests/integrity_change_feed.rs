@@ -125,11 +125,9 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
     assert_eq!(pending.len(), 1, "one wake per rotation: {pending:?}");
     assert_eq!(pending[0].project_id, "repair-p1");
     assert_eq!(pending[0].operation, "semantic-epoch-reset");
-    let acked = grimodex_db::narrative_extraction::ack_maintenance_wakes(
-        &db,
-        &[pending[0].id.clone()],
-    )
-    .expect("ack maintenance wake");
+    let acked =
+        grimodex_db::narrative_extraction::ack_maintenance_wakes(&db, &[pending[0].id.clone()])
+            .expect("ack maintenance wake");
     assert_eq!(acked, 1);
     assert!(
         grimodex_db::narrative_extraction::list_pending_maintenance_wakes(&db)

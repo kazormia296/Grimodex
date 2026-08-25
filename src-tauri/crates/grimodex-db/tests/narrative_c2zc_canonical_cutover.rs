@@ -9,17 +9,21 @@
 use std::path::Path;
 
 use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
+use grimodex_db::narrative_extraction::maintenance_skip_evidence::{
+    durable_graph_state_digest, persist_completed_run_skip_evidence_in_tx, CompletedRunSkipEvidence,
+};
 use grimodex_db::narrative_extraction::{
-    canonical_application_freshness, cut_over_workspace_freshness, digest_plan, ensure_test_schema,
-    inspect_workspace_cutover_readiness_with_liveness, narrative_extraction_append_human_decision,
-    narrative_extraction_apply_commit, narrative_extraction_create_run,
-    narrative_extraction_prepare_commit, narrative_extraction_save_proposal_set,
-    record_live_scheduler_heartbeat, run_incremental_freshness_cycle, AppendDecisionPayload,
-    ApplyCommitPayload, CanonicalFreshnessAuthority, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, CreateTaskSeed, DependencyGraphVerifyReport, PrepareCommitPayload,
-    ProposalSeed, ReadinessState, SaveProposalSetPayload, SchedulerLivenessEvidence,
-    C2_ZC_CUTOVER_MIGRATION_ID, REBUILD_DERIVED_WORK_KEY, REQUIRED_VERIFY_CHECKS,
-    VERIFY_WORK_KEY_PREFIX,
+    canonical_application_freshness, current_maintenance_coordinates, cut_over_workspace_freshness,
+    digest_plan, ensure_test_schema, inspect_workspace_cutover_readiness_with_liveness,
+    narrative_extraction_append_human_decision, narrative_extraction_apply_commit,
+    narrative_extraction_create_run, narrative_extraction_prepare_commit,
+    narrative_extraction_save_proposal_set, record_live_scheduler_heartbeat,
+    run_incremental_freshness_cycle, verify_narrative_dependency_graph_for_project,
+    AppendDecisionPayload, ApplyCommitPayload, CanonicalFreshnessAuthority, CommitApplicationRef,
+    CommitOperation, CreateRunPayload, CreateTaskSeed, PrepareCommitPayload,
+    ProposalSeed, ReadinessState, SaveProposalSetPayload,
+    SchedulerLivenessEvidence, C2_ZC_CUTOVER_MIGRATION_ID, REBUILD_DERIVED_WORK_KEY,
+    REQUIRED_VERIFY_CHECKS, VERIFY_WORK_KEY_PREFIX,
 };
 use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
 use grimodex_db::{
@@ -35,6 +39,9 @@ const EPOCH_ID: &str = "epoch-c2zc";
 const APPLICATION_ID: &str = "application-c2zc";
 const SOURCE_IDENTITY: &str = "project:scene:scene-c2zc";
 const NOW: &str = "2026-08-24T00:00:00.000Z";
+const BACKFILL_AT: &str = "2026-08-24T00:00:00.000Z";
+const REBUILD_AT: &str = "2026-08-24T00:00:01.000Z";
+const VERIFY_AT: &str = "2026-08-24T00:00:02.000Z";
 const BASELINE_RUN_ID: &str = "backfill-c2zc";
 const BASELINE_VERIFY_RUN_ID: &str = "verify-c2zc";
 const BASELINE_REBUILD_RUN_ID: &str = "rebuild-c2zc";
@@ -231,8 +238,9 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
              semantic_epoch_id, work_key, outcome_summary_json)
          VALUES (?1, ?2, 'maintenance', '{}', '{}', 'backfill-c2zc', 'completed',
                  '{}', ?3, ?3, 'backfill', ?4, 'legacy-dependency-backfill:v3', NULL)",
-        params![BASELINE_RUN_ID, PROJECT_ID, NOW, EPOCH_ID],
+        params![BASELINE_RUN_ID, PROJECT_ID, BACKFILL_AT, EPOCH_ID],
     )?;
+    seed_phase_lifecycle_closure(conn, BASELINE_RUN_ID, "maintenance-backfill", BACKFILL_AT)?;
     conn.execute(
         "INSERT INTO narrative_projection_freshness
             (application_id, status, reason_json, version, updated_at)
@@ -275,7 +283,23 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
         ],
     )?;
 
-    let report = serde_json::to_value(DependencyGraphVerifyReport::default())?;
+    conn.execute(
+        "INSERT INTO narrative_dependency_edge_states
+            (edge_id, project_id, evidence_freshness, reason_code, build_action,
+             evaluated_at_epoch_id, evaluated_at)
+         VALUES ('edge-c2zc', ?1, 'fresh', NULL, 'none', ?2, ?3)",
+        params![PROJECT_ID, EPOCH_ID, NOW],
+    )?;
+
+    // The sealed Verify evidence must be the live graph's own report: the
+    // cutover now runs the same skip-evidence CAS an ordinary maintenance
+    // wake uses, so fabricated default-report JSON no longer passes.
+    let live_report = verify_narrative_dependency_graph_for_project(conn, PROJECT_ID)?;
+    anyhow::ensure!(
+        live_report.is_clean(),
+        "fixture graph must verify clean: {live_report:?}"
+    );
+    let report = serde_json::to_value(&live_report)?;
     let check_coverage = json!({
         "complete": true,
         "required": REQUIRED_VERIFY_CHECKS,
@@ -300,11 +324,34 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
             BASELINE_VERIFY_RUN_ID,
             PROJECT_ID,
             verify_outcome.to_string(),
-            NOW,
+            VERIFY_AT,
             EPOCH_ID,
             format!("{VERIFY_WORK_KEY_PREFIX}{EPOCH_ID}")
         ],
     )?;
+    seed_phase_lifecycle_closure(
+        conn,
+        BASELINE_VERIFY_RUN_ID,
+        "maintenance-verify",
+        VERIFY_AT,
+    )?;
+    let coordinates = current_maintenance_coordinates()?;
+    let evidence = CompletedRunSkipEvidence {
+        project_id: PROJECT_ID.to_string(),
+        run_kind: "dependency-verify".to_string(),
+        work_key: format!("{VERIFY_WORK_KEY_PREFIX}{EPOCH_ID}"),
+        semantic_epoch_id: EPOCH_ID.to_string(),
+        graph_contract_digest: coordinates.graph_contract_digest,
+        rule_registry_digest: coordinates.rule_registry_digest,
+        producer_generation_set_digest: coordinates.producer_generation_set_digest,
+        rebuild_contract_version: "1".to_string(),
+        run_kind_contract_version: "7".to_string(),
+        report_digest: format!("sha256:{}", digest_plan(&report)),
+        graph_state_digest: durable_graph_state_digest(conn, PROJECT_ID)?,
+    };
+    conn.execute_batch("SAVEPOINT seed_skip_evidence")?;
+    persist_completed_run_skip_evidence_in_tx(conn, BASELINE_VERIFY_RUN_ID, &evidence)?;
+    conn.execute_batch("RELEASE seed_skip_evidence")?;
 
     let summary = json!({
         "consumersEvaluated": 1,
@@ -329,10 +376,16 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
             BASELINE_REBUILD_RUN_ID,
             PROJECT_ID,
             rebuild_outcome.to_string(),
-            NOW,
+            REBUILD_AT,
             EPOCH_ID,
             REBUILD_DERIVED_WORK_KEY
         ],
+    )?;
+    seed_phase_lifecycle_closure(
+        conn,
+        BASELINE_REBUILD_RUN_ID,
+        "maintenance-rebuild",
+        REBUILD_AT,
     )?;
 
     let incremental_outcome = json!({
@@ -366,6 +419,29 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
             EPOCH_ID,
             format!("incremental-freshness:{EPOCH_ID}:0:0:baseline")
         ],
+    )?;
+    Ok(())
+}
+
+/// The maintenance lifecycle contract behind each phase Run: exactly one
+/// completed Task and Attempt, terminalized with the Run.
+fn seed_phase_lifecycle_closure(
+    conn: &Connection,
+    run_id: &str,
+    task_kind: &str,
+    at: &str,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO narrative_extraction_tasks
+            (id, run_id, task_kind, status, created_at, completed_at)
+         VALUES (?1, ?2, ?3, 'completed', ?4, ?4)",
+        params![format!("{run_id}-task"), run_id, task_kind, at],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_extraction_attempts
+            (id, task_id, attempt_number, status, started_at, completed_at)
+         VALUES (?1, ?2, 1, 'completed', ?3, ?3)",
+        params![format!("{run_id}-attempt"), format!("{run_id}-task"), at],
     )?;
     Ok(())
 }

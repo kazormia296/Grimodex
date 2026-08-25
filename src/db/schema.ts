@@ -3443,6 +3443,24 @@ export const narrativeMaintenanceRepairLeases = sqliteTable(
   (table) => [primaryKey({ columns: [table.projectId] })],
 );
 
+// SCHEMA_VERSION 35 (C2-5B scheduler durability). Native-owned durable wake
+// requests minted inside the same transaction as an epoch rotation, drained
+// and acked by the Electron scheduler so a crash between commit and enqueue
+// can no longer drop the wake. Renderer visibility is audit/export only.
+export const narrativeMaintenanceWakeOutbox = sqliteTable(
+  "narrative_maintenance_wake_outbox",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    operation: text("operation").notNull(),
+    reason: text("reason").notNull(),
+    createdAt: text("created_at").notNull(),
+    ackedAt: text("acked_at"),
+  },
+);
+
 export const narrativeChangeSets = sqliteTable(
   "narrative_change_sets",
   {

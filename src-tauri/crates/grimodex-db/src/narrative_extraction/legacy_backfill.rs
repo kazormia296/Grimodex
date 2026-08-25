@@ -251,6 +251,7 @@ pub(crate) fn is_valid_completed_backfill_marker(
 }
 
 /// Outcome of [`bootstrap_legacy_dependency_backfill_for_project`].
+#[derive(Debug)]
 pub enum LegacyBackfillBootstrapOutcome {
     /// A Backfill Run for this project already existed
     /// (`pending`/`running`/`completed`); this call did nothing further.
@@ -2151,14 +2152,18 @@ mod tests {
 
     #[test]
     fn bootstrap_requires_a_supported_completed_at_for_marker_reuse() {
-        for completed_at in [None, Some("not-a-supported-instant")] {
+        // A marker whose completed_at is NULL is not reusable evidence, so
+        // bootstrap runs again. A marker carrying an unparseable instant is
+        // corrupted ordering evidence: the lifecycle allocator fails closed
+        // (NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID) instead of silently
+        // ordering new work past it.
+        let seeded_first_run = |completed_at: Option<&str>| {
             let db = test_db();
             db.with_conn(|conn| {
                 seed_project(conn, "project-1");
                 Ok(())
             })
             .expect("seed project");
-
             let first_run_id =
                 match bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
                     .expect("initial bootstrap")
@@ -2177,17 +2182,26 @@ mod tests {
                 Ok(())
             })
             .expect("corrupt completed timestamp");
+            (db, first_run_id)
+        };
 
-            let second = bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
-                .expect("timestamp-invalid marker must be rerunnable");
-            let second_run_id = match second {
-                LegacyBackfillBootstrapOutcome::Ran { run_id, .. } => run_id,
-                LegacyBackfillBootstrapOutcome::AlreadyRun { .. } => {
-                    panic!("timestamp-invalid marker must not be reused")
-                }
-            };
-            assert_ne!(second_run_id, first_run_id);
-        }
+        let (db, first_run_id) = seeded_first_run(None);
+        let second = bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+            .expect("marker without completed_at must be rerunnable");
+        let second_run_id = match second {
+            LegacyBackfillBootstrapOutcome::Ran { run_id, .. } => run_id,
+            LegacyBackfillBootstrapOutcome::AlreadyRun { .. } => {
+                panic!("marker without completed_at must not be reused")
+            }
+        };
+        assert_ne!(second_run_id, first_run_id);
+
+        let (db, _) = seeded_first_run(Some("not-a-supported-instant"));
+        let error = bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+            .expect_err("an unparseable marker instant must fail the allocator closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));
     }
 
     #[test]

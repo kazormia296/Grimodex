@@ -362,6 +362,7 @@
     "envelopeChange": "stageProvenanceClosureDigest-forbidden",
     "persistence": {
       "owner": "C2A atomic task output/artifact persistence",
+      "appliesTo": "application-closure-sidecar",
       "status": "deferred",
       "lifecycle": "ephemeral",
       "authority": "none",
@@ -370,6 +371,22 @@
       "retention": "not-retained",
       "scope": "request-scoped",
       "membership": "caller-supplied-receipt-set"
+    },
+    "terminalReceiptPersistence": {
+      "owner": "native-typed-c2a-finish",
+      "appliesTo": "stage-terminal-receipts-and-model-bindings",
+      "status": "implemented-durable",
+      "lifecycle": "durable",
+      "authority": "audit-only",
+      "authoritative": false,
+      "storage": "sqlite-workspace-db",
+      "tables": [
+        "narrative_extraction_stage_model_bindings",
+        "narrative_extraction_stage_receipts"
+      ],
+      "productionEntryPoints": [
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs::persist_receipt"
+      ]
     },
     "forbidden": [
       "credentials",

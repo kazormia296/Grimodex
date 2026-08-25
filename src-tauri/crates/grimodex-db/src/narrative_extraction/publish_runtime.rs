@@ -459,7 +459,7 @@ pub(crate) fn publish_complete_runless_freshness_in_tx(
 /// nothing.
 ///
 /// Returns `None` only when the Consumer declares no Edges at all.
-fn worst_edge_state_for_consumer(
+pub(crate) fn worst_edge_state_for_consumer(
     conn: &Connection,
     project_id: &str,
     consumer_kind: &str,
@@ -579,6 +579,7 @@ fn edge_material_basis_digest(
                 .map(FindingReasonCode::as_str)
                 .unwrap_or(""),
             evidence_freshness: observation.freshness.as_str(),
+            evidence_detail_digest: None,
         },
     )
 }
@@ -604,6 +605,7 @@ fn edge_observation_digest(edge_id: &str, observation: &EdgeObservation) -> anyh
                 .map(FindingReasonCode::as_str)
                 .unwrap_or(""),
             evidence_freshness: observation.freshness.as_str(),
+            evidence_detail_digest: None,
         },
     )
 }

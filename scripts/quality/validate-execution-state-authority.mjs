@@ -54,7 +54,10 @@ const REQUIRED_ATTENTION_APPLICATION_CONDITIONS = Object.freeze([
 
 const CANONICAL_TERMINAL_FINDING_RULE = Object.freeze({
   ruleId: "narrative.maintenance-contract-failure",
-  version: 1,
+  // Version 2 folds evidenceDetailDigest into the Observation/Material Basis
+  // digests so two graph-repair Findings over different Verify reports are
+  // distinguishable (Changed) instead of replaying as the same evidence.
+  version: 2,
   identityScope: "maintenance-work",
   observationStorageClass: "durable-derived-history",
   writerAuthority: "maintenance-run-finalization-transaction",
@@ -63,12 +66,14 @@ const CANONICAL_TERMINAL_FINDING_RULE = Object.freeze({
     "failureCode",
     "reasonCode",
     "evidenceFreshness",
+    "evidenceDetailDigest",
   ]),
   materialBasisFields: Object.freeze([
     "stableSubject",
     "failureCode",
     "reasonCode",
     "evidenceFreshness",
+    "evidenceDetailDigest",
   ]),
 });
 

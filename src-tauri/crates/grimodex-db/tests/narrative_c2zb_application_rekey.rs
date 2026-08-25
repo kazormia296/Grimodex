@@ -266,6 +266,7 @@ fn canonical_finding_values(edge_id: &str) -> anyhow::Result<(String, String, St
             failure_code: None,
             reason_code: FINDING_REASON_CODE,
             evidence_freshness: FINDING_EVIDENCE_FRESHNESS,
+            evidence_detail_digest: None,
         },
     )?;
     let material_basis_digest = material_basis_digest(
@@ -277,6 +278,7 @@ fn canonical_finding_values(edge_id: &str) -> anyhow::Result<(String, String, St
             failure_code: None,
             reason_code: FINDING_REASON_CODE,
             evidence_freshness: FINDING_EVIDENCE_FRESHNESS,
+            evidence_detail_digest: None,
         },
     )?;
     Ok((finding_identity, observation_digest, material_basis_digest))

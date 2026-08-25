@@ -23,6 +23,16 @@
       "generation": "legacy-dependency-backfill:v3",
       "consumerKind": "application",
       "declaration": "legacy projection dependency rows"
+    },
+    {
+      "id": "post-cutover-application-dependency",
+      "writer": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs",
+        "symbol": "write_application_dependencies_in_tx"
+      },
+      "generation": "c2zc-application-dependency/v1",
+      "consumerKind": "application",
+      "declaration": "post-cutover Apply-path Application Generic Edge rows"
     }
   ]
 }

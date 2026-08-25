@@ -5,13 +5,13 @@
 //! again.
 
 use grimodex_db::narrative_extraction::maintenance_runtime::{
-    discover_durable_maintenance_work, run_system_work_cycle, AutomaticRunKind,
-    MaintenanceCycleRequest, MaintenanceCycleResult, MaintenanceCycleStatus, RecoveryMode,
+    run_system_work_cycle, AutomaticRunKind, MaintenanceCycleRequest, MaintenanceCycleResult,
+    MaintenanceCycleStatus, RecoveryMode,
     LEGACY_BACKFILL_WORK_KEY,
 };
 use grimodex_db::narrative_extraction::{
     bootstrap_legacy_dependency_backfill_for_project, ensure_test_schema,
-    run_dependency_verify_for_project, LegacyBackfillBootstrapOutcome,
+    run_dependency_verify_for_project,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -408,6 +408,12 @@ fn malformed_completed_backfill_is_reexecuted_without_a_rediscovery_loop() {
 
 #[test]
 fn malformed_completed_backfill_timestamp_is_not_reused_and_cycle_is_bounded() {
+    // A completed marker with NULL completed_at is not reusable evidence, so
+    // one bounded rerun replaces it. A marker carrying an unparseable
+    // instant is corrupted ordering evidence: the lifecycle allocator fails
+    // the cycle closed (NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID) instead of
+    // silently ordering new work past the broken row — either way the cycle
+    // terminates instead of rediscovering forever.
     for completed_at in [None, Some("not-a-supported-instant")] {
         let db = Arc::new(fixture_db());
         db.with_conn(|conn| {
@@ -437,73 +443,95 @@ fn malformed_completed_backfill_timestamp_is_not_reused_and_cycle_is_bounded() {
             );
             let _ = result_tx.send(result);
         });
-        let result = result_rx
+        let outcome = result_rx
             .recv_timeout(Duration::from_secs(2))
-            .expect("timestamp-invalid Backfill must not rediscover forever")
-            .expect("timestamp-invalid Backfill must be rerunnable");
-        assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
-        assert!(!result.has_more);
+            .expect("timestamp-invalid Backfill must not rediscover forever");
 
-        let (run_count, valid_completed_count): (i64, i64) = db
-            .with_conn(|conn| {
-                Ok(conn.query_row(
-                    "SELECT COUNT(*),
-                            SUM(CASE WHEN status = 'completed'
-                                          AND outcome_summary_json LIKE '%backfill-complete%'
-                                          AND completed_at IS NOT NULL
-                                          AND (?3 IS NULL OR completed_at != ?3)
-                                     THEN 1 ELSE 0 END)
-                       FROM narrative_extraction_runs
-                      WHERE project_id = ?1 AND run_kind = 'backfill'
-                        AND work_key = ?2",
-                    params![PROJECT_ID, LEGACY_BACKFILL_WORK_KEY, completed_at],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )?)
-            })
-            .expect("read timestamp-invalid Backfill ledger");
-        assert_eq!(run_count, 2);
-        assert_eq!(valid_completed_count, 1);
+        if completed_at.is_none() {
+            let result = outcome.expect("marker without completed_at must be rerunnable");
+            assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+            assert!(!result.has_more);
+            let (run_count, valid_completed_count): (i64, i64) = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT COUNT(*),
+                                SUM(CASE WHEN status = 'completed'
+                                              AND outcome_summary_json LIKE '%backfill-complete%'
+                                              AND completed_at IS NOT NULL
+                                         THEN 1 ELSE 0 END)
+                           FROM narrative_extraction_runs
+                          WHERE project_id = ?1 AND run_kind = 'backfill'
+                            AND work_key = ?2",
+                        params![PROJECT_ID, LEGACY_BACKFILL_WORK_KEY],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?)
+                })
+                .expect("read timestamp-invalid Backfill ledger");
+            assert_eq!(run_count, 2);
+            assert_eq!(valid_completed_count, 1);
+        } else {
+            let error = outcome
+                .expect_err("an unparseable marker instant must fail the allocator closed");
+            assert!(error
+                .to_string()
+                .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));
+            let run_count: i64 = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_extraction_runs
+                          WHERE project_id = ?1 AND run_kind = 'backfill'
+                            AND work_key = ?2",
+                        params![PROJECT_ID, LEGACY_BACKFILL_WORK_KEY],
+                        |row| row.get(0),
+                    )?)
+                })
+                .expect("read timestamp-invalid Backfill ledger");
+            assert_eq!(
+                run_count, 1,
+                "no new Run may be minted past corrupted ordering evidence"
+            );
+        }
     }
 }
 
 #[test]
 fn malformed_completed_at_does_not_hide_a_future_backfill_lifecycle() {
+    // The seeded Run carries valid FUTURE created/started instants and a
+    // corrupted completed_at. The allocator cannot prove which of the row's
+    // instants are trustworthy, so instead of guessing (and possibly hiding
+    // the future authority behind the broken field) it fails closed on the
+    // corrupted instant everywhere new lifecycle work would be minted.
     let db = Arc::new(fixture_db());
     seed_future_malformed_backfill(&db);
 
-    let result = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::SameProcessLive)
-        .expect("future malformed Backfill must complete one bounded cycle");
-    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
-    assert!(!result.has_more);
-
-    let fresh_lifecycle: (String, String, String) = db
+    let error = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::SameProcessLive)
+        .expect_err("corrupted durable ordering evidence must fail the cycle closed");
+    assert!(error
+        .to_string()
+        .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));
+    let run_count: i64 = db
         .with_conn(|conn| {
             Ok(conn.query_row(
-                "SELECT created_at, started_at, completed_at
-                   FROM narrative_extraction_runs
-                  WHERE project_id = ?1 AND run_kind = 'backfill'
-                    AND id != 'future-malformed-completed-at'
-                  ORDER BY created_at DESC LIMIT 1",
+                "SELECT COUNT(*) FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'backfill'",
                 [PROJECT_ID],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| row.get(0),
             )?)
         })
-        .expect("read fresh Backfill lifecycle");
-    assert!(fresh_lifecycle.0.as_str() > "2099-01-01T00:00:00.000Z");
-    assert!(fresh_lifecycle.1.as_str() > "2099-01-01T00:00:00.000Z");
+        .expect("read Backfill ledger");
+    assert_eq!(
+        run_count, 1,
+        "no fresh Backfill may be minted past corrupted ordering evidence"
+    );
 
     let discovery_db = fixture_db();
     seed_future_malformed_backfill(&discovery_db);
-    assert!(matches!(
+    let bootstrap_error =
         bootstrap_legacy_dependency_backfill_for_project(&discovery_db, PROJECT_ID)
-            .expect("rerun malformed future Backfill"),
-        LegacyBackfillBootstrapOutcome::Ran { .. }
-    ));
-    let next = discover_durable_maintenance_work(&discovery_db, PROJECT_ID, "durable-wake")
-        .expect("discover after future Backfill")
-        .expect("future Backfill must hand off to Verify");
-    assert_eq!(next.run_kind, AutomaticRunKind::Verify);
-    assert_eq!(next.semantic_epoch_id.as_deref(), Some(EPOCH_ID));
+            .expect_err("bootstrap past corrupted ordering evidence must fail closed");
+    assert!(bootstrap_error
+        .to_string()
+        .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));
 }
 
 #[test]

@@ -239,7 +239,7 @@ function baseFindingContract(overrides = {}) {
 function terminalFindingRule(overrides = {}) {
   return {
     ruleId: "narrative.maintenance-contract-failure",
-    version: 1,
+    version: 2,
     identityScope: "maintenance-work",
     observationStorageClass: "durable-derived-history",
     writerAuthority: "maintenance-run-finalization-transaction",
@@ -248,12 +248,14 @@ function terminalFindingRule(overrides = {}) {
       "failureCode",
       "reasonCode",
       "evidenceFreshness",
+      "evidenceDetailDigest",
     ],
     materialBasisFields: [
       "stableSubject",
       "failureCode",
       "reasonCode",
       "evidenceFreshness",
+      "evidenceDetailDigest",
     ],
     ...overrides,
   };
@@ -487,7 +489,7 @@ describe("validate-execution-state-authority", () => {
   it("rejects a renamed or wrong-version terminal rule", () => {
     for (const rule of [
       terminalFindingRule({ ruleId: "narrative.maintenance-contract-failure-renamed" }),
-      terminalFindingRule({ version: 2 }),
+      terminalFindingRule({ version: 3 }),
     ]) {
       const root = writeFixtureRoot({
         findingContract: baseFindingContract({
@@ -511,7 +513,7 @@ describe("validate-execution-state-authority", () => {
       rules: [
         ...baseFindingContract().rules,
         terminalFindingRule(),
-        terminalFindingRule({ version: 2 }),
+        terminalFindingRule({ version: 3 }),
       ],
     });
     const root = writeFixtureRoot({ findingContract });

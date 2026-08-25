@@ -139,6 +139,7 @@ pub struct ProjectCutoverReadiness {
     pub derived_state_rebuild: ReadinessGate,
     pub parity: ReadinessGate,
     pub no_active_backfill_or_repair: ReadinessGate,
+    pub phase_lifecycle: ReadinessGate,
     pub incremental_runtime: ReadinessGate,
 }
 
@@ -729,6 +730,8 @@ pub fn inspect_project_cutover_readiness(
     let parity_report = inspect_legacy_generic_freshness_parity(conn, project_id)?;
     let parity = gate_from_state(parity_report.state, "legacy-generic-parity");
     let no_active_backfill_or_repair = inspect_active_gate(conn, project_id)?;
+    let phase_lifecycle =
+        inspect_phase_lifecycle_gate(conn, project_id, current_epoch_id.as_deref())?;
     let incremental_runtime =
         inspect_incremental_runtime_gate(conn, project_id, current_epoch_id.as_deref())?;
 
@@ -742,6 +745,7 @@ pub fn inspect_project_cutover_readiness(
         derived_state_rebuild.state,
         parity.state,
         no_active_backfill_or_repair.state,
+        phase_lifecycle.state,
         incremental_runtime.state,
     ]);
     Ok(ProjectCutoverReadiness {
@@ -754,6 +758,7 @@ pub fn inspect_project_cutover_readiness(
         derived_state_rebuild,
         parity,
         no_active_backfill_or_repair,
+        phase_lifecycle,
         incremental_runtime,
     })
 }
@@ -1358,11 +1363,154 @@ fn inspect_rebuild_gate(
     }
 }
 
+/// The maintenance lifecycle contract behind each phase Run: exactly one
+/// Task and exactly one Attempt, all terminalized together. A completed Run
+/// row alone proves neither that the phase actually executed under the
+/// lifecycle owner nor when it did; this gate proves both the closure and
+/// the Backfill -> Rebuild -> confirmation-Verify causal order from parsed
+/// lifecycle instants, failing closed on unparseable or tied evidence.
+fn inspect_phase_lifecycle_gate(
+    conn: &Connection,
+    project_id: &str,
+    epoch_id: Option<&str>,
+) -> Result<ReadinessGate> {
+    let Some(epoch_id) = epoch_id else {
+        return Ok(ReadinessGate::incomplete("current-semantic-epoch-missing"));
+    };
+
+    struct PhaseRun {
+        run_id: String,
+        created_at: String,
+        completed_at: Option<String>,
+    }
+
+    let latest_phase = |run_kind: &str, work_key: Option<&str>| -> Result<Option<PhaseRun>> {
+        let (sql, params_vec): (String, Vec<&str>) = match work_key {
+            Some(work_key) => (
+                "SELECT id, status, semantic_epoch_id, created_at, completed_at
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
+                  ORDER BY created_at DESC, id DESC LIMIT 1"
+                    .to_string(),
+                vec![project_id, run_kind, work_key],
+            ),
+            None => (
+                "SELECT id, status, semantic_epoch_id, created_at, completed_at
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = ?2
+                  ORDER BY created_at DESC, id DESC LIMIT 1"
+                    .to_string(),
+                vec![project_id, run_kind],
+            ),
+        };
+        type PhaseRunRow = (String, String, Option<String>, String, Option<String>);
+        let row: Option<PhaseRunRow> = conn
+            .query_row(&sql, rusqlite::params_from_iter(params_vec), |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .optional()?;
+        Ok(
+            row.and_then(|(run_id, status, run_epoch, created_at, completed_at)| {
+                (status == "completed" && run_epoch.as_deref() == Some(epoch_id)).then_some(
+                    PhaseRun {
+                        run_id,
+                        created_at,
+                        completed_at,
+                    },
+                )
+            }),
+        )
+    };
+
+    let backfill = latest_phase("backfill", Some("legacy-dependency-backfill:v3"))?;
+    let verify = latest_phase("dependency-verify", None)?;
+    let rebuild = latest_phase("semantic-index-rebuild", None)?;
+    let (Some(backfill), Some(verify), Some(rebuild)) = (backfill, verify, rebuild) else {
+        // The per-phase gates report the precise missing/blocked reason.
+        return Ok(ReadinessGate::incomplete(
+            "phase-lifecycle-evidence-missing",
+        ));
+    };
+
+    for (phase, run) in [
+        ("backfill", &backfill),
+        ("verify", &verify),
+        ("rebuild", &rebuild),
+    ] {
+        let (task_total, task_closed): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN status = 'completed'
+                                       AND completed_at IS NOT NULL THEN 1 ELSE 0 END), 0)
+               FROM narrative_extraction_tasks WHERE run_id = ?1",
+            params![run.run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let (attempt_total, attempt_closed): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN a.status = 'completed'
+                                       AND a.completed_at IS NOT NULL THEN 1 ELSE 0 END), 0)
+               FROM narrative_extraction_attempts a
+               JOIN narrative_extraction_tasks t ON t.id = a.task_id
+              WHERE t.run_id = ?1",
+            params![run.run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if task_total != 1 || task_closed != 1 || attempt_total != 1 || attempt_closed != 1 {
+            return Ok(ReadinessGate::blocked(format!(
+                "phase-lifecycle-closure-invalid:{phase}"
+            )));
+        }
+    }
+
+    let parse_instant = |value: Option<&str>| -> Option<chrono::DateTime<chrono::Utc>> {
+        value.and_then(|value| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|parsed| parsed.with_timezone(&chrono::Utc))
+        })
+    };
+    let backfill_completed = parse_instant(backfill.completed_at.as_deref());
+    let rebuild_created = parse_instant(Some(rebuild.created_at.as_str()));
+    let rebuild_completed = parse_instant(rebuild.completed_at.as_deref());
+    let verify_created = parse_instant(Some(verify.created_at.as_str()));
+    let (
+        Some(backfill_completed),
+        Some(rebuild_created),
+        Some(rebuild_completed),
+        Some(verify_created),
+    ) = (
+        backfill_completed,
+        rebuild_created,
+        rebuild_completed,
+        verify_created,
+    )
+    else {
+        return Ok(ReadinessGate::blocked("phase-lifecycle-instant-invalid"));
+    };
+    // The clean Verify the readiness gate accepted must be the confirmation
+    // Verify that strictly followed the Rebuild, and the Rebuild must not
+    // predate the Backfill boundary. Equal instants cannot prove order.
+    if !(backfill_completed <= rebuild_created && rebuild_completed < verify_created) {
+        return Ok(ReadinessGate::blocked("phase-causality-unproven"));
+    }
+    Ok(ReadinessGate::passed())
+}
+
 fn inspect_active_gate(conn: &Connection, project_id: &str) -> Result<ReadinessGate> {
+    // Every automatic maintenance kind blocks an irreversible cutover while
+    // active: a running Verify or Rebuild changes the very evidence the
+    // other gates are reading.
     let active_runs: i64 = conn.query_row(
         "SELECT COUNT(*) FROM narrative_extraction_runs
           WHERE project_id = ?1 AND status IN ('pending', 'running')
-            AND run_kind IN ('backfill', 'dependency-repair')",
+            AND run_kind IN ('backfill', 'dependency-repair',
+                             'dependency-verify', 'semantic-index-rebuild')",
         params![project_id],
         |row| row.get(0),
     )?;

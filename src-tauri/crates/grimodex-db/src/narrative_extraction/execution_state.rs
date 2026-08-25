@@ -255,12 +255,11 @@ pub(crate) fn next_run_lifecycle_timestamp_in_tx(
     let mut latest = None;
     for row in rows {
         let (created_at, started_at, completed_at) = row?;
-        // Imported lifecycle columns are independent ordering evidence. A
-        // malformed terminal marker must not hide a valid future
-        // created_at/started_at authority, so retain every component that
-        // parses and ignore only the malformed component. Discovery and
-        // recovery still validate the relevant row's lifecycle shape before
-        // treating it as reusable evidence.
+        // This allocator issues the project-wide "next lifecycle instant".
+        // A non-NULL component that cannot be parsed is broken chronology
+        // evidence: issuing a new instant that cannot be proven to follow
+        // it would silently corrupt the ledger's ordering authority, so the
+        // transaction fails closed instead of skipping the value.
         for value in [
             Some(created_at.as_str()),
             started_at.as_deref(),
@@ -269,9 +268,13 @@ pub(crate) fn next_run_lifecycle_timestamp_in_tx(
         .into_iter()
         .flatten()
         {
-            let Ok(parsed) = parse_run_lifecycle_instant(value) else {
-                continue;
-            };
+            let parsed = parse_run_lifecycle_instant(value).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: project '{project_id}' carries an \
+                     unparseable Run lifecycle instant '{value}'; the lifecycle allocator cannot \
+                     prove ordering past it: {error}"
+                )
+            })?;
             latest = Some(latest.map_or(parsed, |current: DateTime<Utc>| current.max(parsed)));
         }
     }

@@ -7,7 +7,7 @@
 
 use anyhow::anyhow;
 use grimodex_core::{canonical_json_digest, canonical_json_string};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{cmp::Ordering, collections::HashSet};
@@ -379,43 +379,112 @@ fn validate_receipt_lifecycle_bindings(
 ) -> anyhow::Result<()> {
     for receipt in &closure.receipts {
         let execution = &receipt.stage_execution;
-        let task_in_run: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE id = ?1 AND run_id = ?2",
-            params![execution.task_id, run_id],
-            |row| row.get(0),
-        )?;
+        let task_kind: Option<String> = conn
+            .query_row(
+                "SELECT task_kind FROM narrative_extraction_tasks WHERE id = ?1 AND run_id = ?2",
+                params![execution.task_id, run_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(task_kind) = task_kind else {
+            anyhow::bail!(
+                "NEX_CHRONICLE_STAGE_RECEIPT_TASK_UNKNOWN: receipt taskId '{}' is not a Task of this Run",
+                execution.task_id
+            );
+        };
+        // A stage may only run under a Task whose kind honestly hosts it:
+        // observation under an observe or single-task plan owner, synthesis
+        // under a synthesize or single-task plan owner, and repair only under
+        // the same Task its failed parent stage ran on (closure validation
+        // already pins repair to the parent's task/attempt, so it inherits
+        // the parent's admissible kinds).
+        let admissible_kinds: &[&str] = match &execution.stage_id {
+            ChronicleStageId::NarrativeObservationExtract => {
+                &["chronicle.observe-events@1", "chronicle.plan-proposals@1"]
+            }
+            ChronicleStageId::NarrativeEventSynthesize => {
+                &["chronicle.synthesize-event@1", "chronicle.plan-proposals@1"]
+            }
+            ChronicleStageId::NarrativeStructuredRepair => &[
+                "chronicle.observe-events@1",
+                "chronicle.synthesize-event@1",
+                "chronicle.plan-proposals@1",
+            ],
+        };
         anyhow::ensure!(
-            task_in_run == 1,
-            "NEX_CHRONICLE_STAGE_RECEIPT_TASK_UNKNOWN: receipt taskId '{}' is not a Task of this Run",
-            execution.task_id
+            admissible_kinds.contains(&task_kind.as_str()),
+            "NEX_CHRONICLE_STAGE_RECEIPT_TASK_KIND_MISMATCH: stage '{}' may not run under Task kind '{}'",
+            stage_id_name(&execution.stage_id),
+            task_kind
         );
-        let attempt_of_task: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM narrative_extraction_attempts WHERE id = ?1 AND task_id = ?2",
-            params![execution.attempt_id, execution.task_id],
-            |row| row.get(0),
-        )?;
+        let attempt_status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM narrative_extraction_attempts WHERE id = ?1 AND task_id = ?2",
+                params![execution.attempt_id, execution.task_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(attempt_status) = attempt_status else {
+            anyhow::bail!(
+                "NEX_CHRONICLE_STAGE_RECEIPT_ATTEMPT_UNKNOWN: receipt attemptId '{}' is not an Attempt of Task '{}'",
+                execution.attempt_id,
+                execution.task_id
+            );
+        };
+        // A succeeded stage receipt sitting on an Attempt the ledger already
+        // terminalized as failed/cancelled is a contradiction: the durable
+        // lifecycle says the Attempt never delivered a successful stage.
+        // (A running/completed Attempt is fine — the finish owner's Attempt
+        // is still open while its bundle persists.)
         anyhow::ensure!(
-            attempt_of_task == 1,
-            "NEX_CHRONICLE_STAGE_RECEIPT_ATTEMPT_UNKNOWN: receipt attemptId '{}' is not an Attempt of Task '{}'",
+            !(matches!(
+                receipt.terminal_status,
+                ChronicleStageTerminalStatus::Succeeded
+            ) && matches!(attempt_status.as_str(), "failed" | "cancelled")),
+            "NEX_CHRONICLE_STAGE_RECEIPT_ATTEMPT_CONTRADICTION: succeeded receipt for stage \
+             execution '{}' contradicts Attempt '{}' terminal status '{}'",
+            execution.stage_execution_id,
             execution.attempt_id,
-            execution.task_id
+            attempt_status
         );
         if let Some(response_digest) = receipt.response_digest.as_deref() {
+            // The transport records terminal stage audits with
+            // execution_id = stageExecutionId and
+            // operation_id = "runId:taskId:attemptId"
+            // (chronicleStageAudit.ts), and stamps the terminal receipt
+            // digest into the chronicleStage metadata. CAS all of them so a
+            // receipt cannot borrow another stage's audit trail.
+            let operation_id = format!(
+                "{}:{}:{}",
+                execution.run_id, execution.task_id, execution.attempt_id
+            );
             let audited: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM ai_audit_events
                   WHERE project_id = ?1
+                    AND execution_id = ?2
+                    AND operation_id = ?3
                     AND json_extract(payload,
                             '$.metadata.chronicleStage.stageExecution.stageExecutionId') = ?2
                     AND json_extract(payload,
-                            '$.metadata.chronicleStage.responseDigest') = ?3",
-                params![project_id, execution.stage_execution_id, response_digest],
+                            '$.metadata.chronicleStage.responseDigest') = ?4
+                    AND json_extract(payload,
+                            '$.metadata.chronicleStage.stageExecutionReceiptDigest') = ?5",
+                params![
+                    project_id,
+                    execution.stage_execution_id,
+                    operation_id,
+                    response_digest,
+                    receipt.stage_execution_receipt_digest
+                ],
                 |row| row.get(0),
             )?;
             anyhow::ensure!(
                 audited >= 1,
                 "NEX_CHRONICLE_STAGE_RECEIPT_AUDIT_MISSING: no AI-audit ledger event records \
-                 stage execution '{}' with this responseDigest",
-                execution.stage_execution_id
+                 stage execution '{}' under operation '{}' with this responseDigest and \
+                 terminal receipt digest",
+                execution.stage_execution_id,
+                operation_id
             );
         }
     }
@@ -438,9 +507,11 @@ fn validate_owner_execution_digests(
             ) && execution.parent_stage_execution_id.is_none()
                 && execution.project_id == binding.project_id
                 && execution.run_id == binding.run_id
-                && synthesis_owner_pairs.iter().any(|(owner_task, owner_attempt)| {
-                    execution.task_id == *owner_task && execution.attempt_id == *owner_attempt
-                })
+                && synthesis_owner_pairs
+                    .iter()
+                    .any(|(owner_task, owner_attempt)| {
+                        execution.task_id == *owner_task && execution.attempt_id == *owner_attempt
+                    })
         })
         .collect::<Vec<_>>();
     anyhow::ensure!(

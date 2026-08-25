@@ -1120,14 +1120,27 @@ fn seed_stage_task_attempt(
     .expect("seed stage lifecycle rows");
 }
 
-/// Seed one AI-audit ledger event binding a receipt's stage execution and
-/// response digest, mirroring the transport's terminal metadata shape.
-fn seed_stage_audit_event(
-    db: &Database,
-    project_id: &str,
-    stage_execution_id: &str,
-    response_digest: &str,
-) {
+/// Seed one AI-audit ledger event binding a receipt's stage execution,
+/// response digest, and terminal receipt digest, mirroring the transport's
+/// identity semantics: `execution_id` = stageExecutionId, `operation_id` =
+/// "runId:taskId:attemptId" (chronicleStageAudit.ts).
+fn seed_stage_audit_event(db: &Database, project_id: &str, receipt: &Value) {
+    let execution = &receipt["stageExecution"];
+    let stage_execution_id = execution["stageExecutionId"]
+        .as_str()
+        .expect("stage execution id");
+    let operation_id = format!(
+        "{}:{}:{}",
+        execution["runId"].as_str().expect("receipt runId"),
+        execution["taskId"].as_str().expect("receipt taskId"),
+        execution["attemptId"].as_str().expect("receipt attemptId"),
+    );
+    let response_digest = receipt["responseDigest"]
+        .as_str()
+        .expect("receipt responseDigest");
+    let receipt_digest = receipt["stageExecutionReceiptDigest"]
+        .as_str()
+        .expect("receipt digest");
     db.with_conn(|conn| {
         let scope_id = format!("project:{project_id}");
         let sequence: i64 = conn.query_row(
@@ -1139,6 +1152,7 @@ fn seed_stage_audit_event(
             "metadata": {"chronicleStage": {
                 "stageExecution": {"stageExecutionId": stage_execution_id},
                 "responseDigest": response_digest,
+                "stageExecutionReceiptDigest": receipt_digest,
             }}
         })
         .to_string();
@@ -1147,14 +1161,15 @@ fn seed_stage_audit_event(
                 (scope_id, project_id, sequence, event_id, execution_id, operation_id,
                  path_id, event_type, timestamp, recorded_at, payload, payload_sha256,
                  prev_hash, hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'op-test', 'path-test', 'completion', 0, 0,
-                     ?6, 'sha256:test', 'sha256:test', 'sha256:test')",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'path-test', 'completion', 0, 0,
+                     ?7, 'sha256:test', 'sha256:test', 'sha256:test')",
             rusqlite::params![
                 scope_id,
                 project_id,
                 sequence,
                 format!("audit-{stage_execution_id}-{sequence}"),
-                format!("exec-{stage_execution_id}"),
+                stage_execution_id,
+                operation_id,
                 payload,
             ],
         )?;
@@ -1173,17 +1188,16 @@ fn seed_closure_evidence(db: &Database, run_id: &str, owner_task_id: &str, closu
         let attempt_id = execution["attemptId"].as_str().expect("receipt attemptId");
         let stage_id = execution["stageId"].as_str().expect("receipt stageId");
         if task_id != owner_task_id && stage_id == OBSERVATION_STAGE_ID {
-            seed_stage_task_attempt(db, run_id, task_id, attempt_id, "chronicle.observe-events@1");
-        }
-        if let Some(response_digest) = receipt["responseDigest"].as_str() {
-            seed_stage_audit_event(
+            seed_stage_task_attempt(
                 db,
-                PROJECT_A,
-                execution["stageExecutionId"]
-                    .as_str()
-                    .expect("stage execution id"),
-                response_digest,
+                run_id,
+                task_id,
+                attempt_id,
+                "chronicle.observe-events@1",
             );
+        }
+        if receipt["responseDigest"].is_string() {
+            seed_stage_audit_event(db, PROJECT_A, receipt);
         }
     }
 }

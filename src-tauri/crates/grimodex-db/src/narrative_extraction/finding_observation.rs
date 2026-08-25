@@ -234,6 +234,10 @@ pub(crate) struct TerminalFailureObservationWrite<'a> {
     pub material_basis_digest: &'a str,
     pub observed_at: &'a str,
     pub run_binding: TerminalFailureRunBinding,
+    /// Rule-declared detail evidence folded into the digests (for example
+    /// the graph-repair report digest + graph-state coordinate). None for
+    /// codes with no per-report evidence.
+    pub evidence_detail_digest: Option<&'a str>,
 }
 
 /// How the projected failure code binds to the anchored Run row. The
@@ -252,6 +256,11 @@ pub(crate) enum TerminalFailureRunBinding {
     /// no terminal code at all; the report itself is the evidence and stays
     /// reachable through the anchored Run's outcome.
     CompletedReport,
+    /// A recovery verdict whose defining evidence is that NO failed Run
+    /// exists for the work identity even though a durable failure message
+    /// does (`NEX_MAINTENANCE_FAILURE_LEDGER_MISSING`). Anchored on the
+    /// latest Run of any non-failed status for the identity.
+    SyntheticLedgerGap,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -277,6 +286,8 @@ pub(crate) struct TerminalFailureLifecycleWrite<'a> {
     pub observation_digest: &'a str,
     pub material_basis_digest: &'a str,
     pub observed_at: &'a str,
+    /// See [`TerminalFailureObservationWrite::evidence_detail_digest`].
+    pub evidence_detail_digest: Option<&'a str>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -409,6 +420,7 @@ pub(crate) fn record_finding_observation_in_tx(
         failure_code: None,
         reason_code: reason_code.as_str(),
         evidence_freshness: evidence_freshness_snapshot.as_str(),
+        evidence_detail_digest: None,
     };
     let observation_digest = observation_digest(
         BUNDLED_FINDING_RULE_ID,
@@ -516,6 +528,7 @@ pub(crate) fn record_finding_observation_with_identity_in_tx(
             failure_code: None,
             reason_code: write.reason_code.as_str(),
             evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+            evidence_detail_digest: None,
         },
     )?;
     anyhow::ensure!(
@@ -531,6 +544,7 @@ pub(crate) fn record_finding_observation_with_identity_in_tx(
             failure_code: None,
             reason_code: write.reason_code.as_str(),
             evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+            evidence_detail_digest: None,
         },
     )?;
     anyhow::ensure!(
@@ -632,6 +646,7 @@ pub(crate) fn record_terminal_failure_observation_in_tx(
             failure_code: Some(write.failure_code),
             reason_code: write.reason_code.as_str(),
             evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+            evidence_detail_digest: write.evidence_detail_digest,
         },
     )?;
     anyhow::ensure!(
@@ -647,6 +662,7 @@ pub(crate) fn record_terminal_failure_observation_in_tx(
             failure_code: Some(write.failure_code),
             reason_code: write.reason_code.as_str(),
             evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+            evidence_detail_digest: write.evidence_detail_digest,
         },
     )?;
     anyhow::ensure!(
@@ -687,7 +703,6 @@ pub(crate) fn record_terminal_failure_observation_in_tx(
                     write.failure_code,
                     "NEX_MAINTENANCE_RETRY_EXHAUSTED"
                         | "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING"
-                        | "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING"
                         | "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID"
                 ),
                 "NEX_FINDING_FAILURE_CODE_MISMATCH: '{}' is not a recovery-synthesized code",
@@ -696,6 +711,22 @@ pub(crate) fn record_terminal_failure_observation_in_tx(
             anyhow::ensure!(
                 run_status == "failed" && !terminal_reason_code.is_empty(),
                 "NEX_FINDING_RUN_STATUS_INVALID: synthetic recovery evidence requires a terminalized failed Run"
+            );
+        }
+        TerminalFailureRunBinding::SyntheticLedgerGap => {
+            // The failure-ledger-missing verdict exists precisely because
+            // there is no failed Run to anchor on: the durable failure
+            // message and the run ledger contradict each other. Any Run of
+            // the work identity is an acceptable anchor — the Finding's
+            // evidence is the contradiction itself, not a terminal code.
+            anyhow::ensure!(
+                write.failure_code == "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING",
+                "NEX_FINDING_FAILURE_CODE_MISMATCH: '{}' is not a ledger-gap code",
+                write.failure_code
+            );
+            anyhow::ensure!(
+                run_status != "failed",
+                "NEX_FINDING_RUN_STATUS_INVALID: a failed Run contradicts the failure-ledger-missing verdict"
             );
         }
         TerminalFailureRunBinding::CompletedReport => {
@@ -803,6 +834,7 @@ pub(crate) fn record_terminal_failure_lifecycle_in_tx(
             failure_code: Some(write.failure_code),
             reason_code: write.reason_code.as_str(),
             evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+            evidence_detail_digest: write.evidence_detail_digest,
         },
     )?;
     let expected_material_basis_digest = material_basis_digest(
@@ -814,6 +846,7 @@ pub(crate) fn record_terminal_failure_lifecycle_in_tx(
             failure_code: Some(write.failure_code),
             reason_code: write.reason_code.as_str(),
             evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+            evidence_detail_digest: write.evidence_detail_digest,
         },
     )?;
     anyhow::ensure!(
@@ -959,6 +992,7 @@ pub(crate) fn validate_terminal_failure_replay_in_tx(
             failure_code: Some(write.failure_code),
             reason_code: write.reason_code.as_str(),
             evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+            evidence_detail_digest: write.evidence_detail_digest,
         },
     )?;
     anyhow::ensure!(
@@ -1072,6 +1106,7 @@ pub(crate) fn resolve_terminal_failure_lifecycle_in_tx(
             failure_code: Some(&failure_code),
             reason_code: reason_code.as_str(),
             evidence_freshness: freshness.as_str(),
+            evidence_detail_digest: None,
         },
     )?;
     anyhow::ensure!(
@@ -1087,6 +1122,7 @@ pub(crate) fn resolve_terminal_failure_lifecycle_in_tx(
             failure_code: Some(&failure_code),
             reason_code: reason_code.as_str(),
             evidence_freshness: freshness.as_str(),
+            evidence_detail_digest: None,
         },
     )?;
     anyhow::ensure!(
@@ -1267,6 +1303,7 @@ pub(crate) fn record_finding_lifecycle_in_tx(
                 failure_code: None,
                 reason_code: reason_code.as_str(),
                 evidence_freshness: freshness.as_str(),
+                evidence_detail_digest: None,
             },
         )?;
         anyhow::ensure!(
@@ -1287,6 +1324,7 @@ pub(crate) fn record_finding_lifecycle_in_tx(
                 failure_code: None,
                 reason_code: reason_code.as_str(),
                 evidence_freshness: freshness.as_str(),
+                evidence_detail_digest: None,
             },
         )?;
         anyhow::ensure!(
@@ -1358,6 +1396,7 @@ pub(crate) fn record_finding_lifecycle_in_tx(
                 failure_code: None,
                 reason_code: reason_code.as_str(),
                 evidence_freshness: freshness.as_str(),
+                evidence_detail_digest: None,
             },
         )?;
         anyhow::ensure!(
@@ -1842,6 +1881,7 @@ mod tests {
                 failure_code: None,
                 reason_code: reason_code.as_str(),
                 evidence_freshness: freshness.as_str(),
+                evidence_detail_digest: None,
             },
         )
         .expect("material basis")
@@ -2114,6 +2154,7 @@ mod tests {
                     failure_code: None,
                     reason_code: FindingReasonCode::SourceMissing.as_str(),
                     evidence_freshness: EvidenceFreshness::SourceMissing.as_str(),
+                    evidence_detail_digest: None,
                 },
             )
             .expect("observation digest");
@@ -2188,6 +2229,7 @@ mod tests {
                     failure_code: None,
                     reason_code: FindingReasonCode::SourceMissing.as_str(),
                     evidence_freshness: EvidenceFreshness::SourceMissing.as_str(),
+                    evidence_detail_digest: None,
                 },
             )?;
             let material_basis_digest = test_material_basis(

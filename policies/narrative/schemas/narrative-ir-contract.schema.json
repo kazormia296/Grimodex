@@ -332,6 +332,7 @@
         "taskCoordinateReachability",
         "envelopeChange",
         "persistence",
+        "terminalReceiptPersistence",
         "forbidden"
       ],
       "properties": {
@@ -757,6 +758,7 @@
           "type": "object",
           "required": [
             "owner",
+            "appliesTo",
             "status",
             "lifecycle",
             "authority",
@@ -768,6 +770,7 @@
           ],
           "properties": {
             "owner": { "const": "C2A atomic task output/artifact persistence" },
+            "appliesTo": { "const": "application-closure-sidecar" },
             "status": { "const": "deferred" },
             "lifecycle": { "const": "ephemeral" },
             "authority": { "const": "none" },
@@ -776,6 +779,43 @@
             "retention": { "const": "not-retained" },
             "scope": { "const": "request-scoped" },
             "membership": { "const": "caller-supplied-receipt-set" }
+          },
+          "additionalProperties": false
+        },
+        "terminalReceiptPersistence": {
+          "type": "object",
+          "required": [
+            "owner",
+            "appliesTo",
+            "status",
+            "lifecycle",
+            "authority",
+            "authoritative",
+            "storage",
+            "tables",
+            "productionEntryPoints"
+          ],
+          "properties": {
+            "owner": { "const": "native-typed-c2a-finish" },
+            "appliesTo": {
+              "const": "stage-terminal-receipts-and-model-bindings"
+            },
+            "status": { "const": "implemented-durable" },
+            "lifecycle": { "const": "durable" },
+            "authority": { "const": "audit-only" },
+            "authoritative": { "const": false },
+            "storage": { "const": "sqlite-workspace-db" },
+            "tables": {
+              "const": [
+                "narrative_extraction_stage_model_bindings",
+                "narrative_extraction_stage_receipts"
+              ]
+            },
+            "productionEntryPoints": {
+              "const": [
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs::persist_receipt"
+              ]
+            }
           },
           "additionalProperties": false
         },

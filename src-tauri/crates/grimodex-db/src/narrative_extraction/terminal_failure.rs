@@ -262,6 +262,7 @@ fn terminal_evidence(
     stable_subject: &str,
     failure_code: &str,
     reason_code: FindingReasonCode,
+    evidence_detail_digest: Option<&str>,
 ) -> anyhow::Result<(String, String)> {
     let input = ObservationDigestInput {
         stable_subject,
@@ -269,6 +270,7 @@ fn terminal_evidence(
         failure_code: Some(failure_code),
         reason_code: reason_code.as_str(),
         evidence_freshness: TERMINAL_FAILURE_EVIDENCE.as_str(),
+        evidence_detail_digest,
     };
     let observation = observation_digest(
         MAINTENANCE_FAILURE_FINDING_RULE_ID,
@@ -284,6 +286,7 @@ fn terminal_evidence(
             failure_code: Some(failure_code),
             reason_code: reason_code.as_str(),
             evidence_freshness: TERMINAL_FAILURE_EVIDENCE.as_str(),
+            evidence_detail_digest,
         },
     )?;
     Ok((observation, material_basis))
@@ -368,6 +371,7 @@ pub(crate) fn project_terminal_failure_for_run_in_tx(
         &context,
         &classification.code,
         TerminalFailureRunBinding::TerminalCode,
+        None,
         observed_at,
     )
 }
@@ -376,6 +380,7 @@ pub(crate) fn project_terminal_failure_for_run_in_tx(
 /// transition for one terminal failure evidence tuple, deduplicating exact
 /// replays. `failure_code` is the exact immutable evidence; the retry class
 /// never overwrites it.
+#[allow(clippy::too_many_arguments)]
 fn record_failure_projection_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -383,6 +388,7 @@ fn record_failure_projection_in_tx(
     context: &MaintenanceRunContext,
     failure_code: &str,
     run_binding: TerminalFailureRunBinding,
+    evidence_detail_digest: Option<&str>,
     observed_at: &str,
 ) -> anyhow::Result<TerminalFailureProjectionOutcome> {
     let failure_code = failure_code.to_string();
@@ -394,8 +400,12 @@ fn record_failure_projection_in_tx(
         &stable_subject,
     )?;
     let finding_key = context.finding_key();
-    let (observation_digest, material_basis_digest) =
-        terminal_evidence(&stable_subject, &failure_code, reason_code)?;
+    let (observation_digest, material_basis_digest) = terminal_evidence(
+        &stable_subject,
+        &failure_code,
+        reason_code,
+        evidence_detail_digest,
+    )?;
     let observation = record_terminal_failure_observation_in_tx(
         conn,
         TerminalFailureObservationWrite {
@@ -414,6 +424,7 @@ fn record_failure_projection_in_tx(
             material_basis_digest: &material_basis_digest,
             observed_at,
             run_binding,
+            evidence_detail_digest,
         },
     )?;
 
@@ -433,6 +444,7 @@ fn record_failure_projection_in_tx(
         observation_digest: &observation_digest,
         material_basis_digest: &material_basis_digest,
         observed_at,
+        evidence_detail_digest,
     };
     if !observation.inserted {
         let replay_state = validate_terminal_failure_replay_in_tx(conn, lifecycle_write)?;
@@ -548,21 +560,38 @@ pub(crate) fn project_manual_intervention_finding(
         return Ok(None);
     }
     let observed_at = grimodex_core::now_rfc3339_millis();
+    // FAILURE_LEDGER_MISSING is selected exactly when NO failed Run exists
+    // for the identity: a failed-Run anchor is structurally impossible for
+    // it, so it anchors on the latest non-failed Run instead. The other
+    // synthetic codes keep the failed-Run anchor.
+    let ledger_gap = code == "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING";
+    let run_binding = if ledger_gap {
+        TerminalFailureRunBinding::SyntheticLedgerGap
+    } else {
+        TerminalFailureRunBinding::SyntheticRecovery
+    };
+    let status_predicate = if ledger_gap {
+        "AND status <> 'failed'"
+    } else {
+        "AND status = 'failed'"
+    };
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            // Anchor on the latest failed Run for the work identity; the
+            // Anchor on the latest matching Run for the work identity; the
             // Finding identity itself is run-independent.
             let anchor: Option<(String, Option<String>, String)> = conn
                 .query_row(
-                    "SELECT id, semantic_epoch_id,
-                            COALESCE(completed_at, started_at, created_at)
-                       FROM narrative_extraction_runs
-                      WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
-                        AND status = 'failed'
-                        AND (?4 IS NULL OR semantic_epoch_id = ?4)
-                      ORDER BY julianday(COALESCE(completed_at, started_at, created_at)) DESC,
-                               id ASC
-                      LIMIT 1",
+                    &format!(
+                        "SELECT id, semantic_epoch_id,
+                                COALESCE(completed_at, started_at, created_at)
+                           FROM narrative_extraction_runs
+                          WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
+                            {status_predicate}
+                            AND (?4 IS NULL OR semantic_epoch_id = ?4)
+                          ORDER BY julianday(COALESCE(completed_at, started_at, created_at)) DESC,
+                                   id ASC
+                          LIMIT 1"
+                    ),
                     params![
                         work.project_id,
                         work.run_kind.as_str(),
@@ -601,7 +630,8 @@ pub(crate) fn project_manual_intervention_finding(
                 &run_id,
                 &context,
                 code,
-                TerminalFailureRunBinding::SyntheticRecovery,
+                run_binding,
+                None,
                 &observed_at,
             )
             .map(Some)
@@ -635,6 +665,21 @@ pub(crate) fn project_graph_repair_required_in_tx(
         terminal_order_time: observed_at.to_string(),
     };
     validate_canonical_work_key(&context)?;
+    // Bind the exact defect evidence into the Finding digests: two reports
+    // over different defects (or the same report over a mutated graph) must
+    // be distinguishable (`Changed`), while the identical report replays
+    // idempotently. The graph-state digest is the same data coordinate the
+    // clean-Verify skip evidence seals.
+    let graph_state_digest =
+        super::maintenance_skip_evidence::durable_graph_state_digest(conn, project_id)?;
+    let evidence_detail = format!(
+        "sha256:{}",
+        super::digest_plan(&serde_json::json!({
+            "domain": "grimodex:narrative:graph-repair-evidence:v1",
+            "reportDigest": report_digest,
+            "graphStateDigest": graph_state_digest,
+        }))
+    );
     record_failure_projection_in_tx(
         conn,
         project_id,
@@ -642,6 +687,7 @@ pub(crate) fn project_graph_repair_required_in_tx(
         &context,
         SEMANTIC_GRAPH_REQUIRES_REPAIR_CODE,
         TerminalFailureRunBinding::CompletedReport,
+        Some(&evidence_detail),
         observed_at,
     )
 }

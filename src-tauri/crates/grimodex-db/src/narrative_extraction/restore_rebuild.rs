@@ -37,7 +37,7 @@ use super::execution_state::transition_run_status_in_tx;
 use super::execution_state::NarrativeRunStatus;
 use super::finding_identity::{
     stable_finding_identity, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
-    MAINTENANCE_FAILURE_FINDING_RULE_ID, MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
+    MAINTENANCE_FAILURE_FINDING_RULE_ID,
 };
 use super::maintenance_contracts::{
     current_maintenance_coordinates, MaintenanceContractCoordinates,
@@ -1563,6 +1563,43 @@ pub fn run_dependency_verify_for_project(
 /// coordinate set. The ordinary API keeps the compiled current coordinates;
 /// the main-only CI seam passes the effective set computed for the same live
 /// authority and never a JavaScript-provided digest.
+/// The Verify check catalogue this executor actually runs, versus the
+/// policy's 13 `REQUIRED_VERIFY_CHECKS`. Stored typed and honest into every
+/// production Verify outcome: `complete` is false until every required
+/// check has an implemented owner, so the C2-ZC readiness gate reports
+/// `verify-check-coverage-incomplete` from real evidence instead of being
+/// satisfiable only by self-declared fixture JSON.
+pub const PRODUCTION_VERIFY_COVERED_CHECKS: [&str; 7] = [
+    "producer-and-generation-consistency",
+    "active-edge-duplicates",
+    "cross-project-edge",
+    "consumer-and-source-key-format",
+    "edge-state-belongs-to-current-epoch",
+    "finding-observation-belongs-to-current-epoch",
+    "consumer-freshness-dependency-set-digest",
+];
+
+/// The required checks with no implemented owner yet. Kept in one place with
+/// the covered list so their union is provably the policy's required set.
+pub const PRODUCTION_VERIFY_MISSING_CHECKS: [&str; 6] = [
+    "application-revision-artifact-references",
+    "dependency-set-digest",
+    "contribution-to-application-commit-correspondence",
+    "legacy-mirror-migration-parity",
+    "cursor-and-feed-head-consistency",
+    "semantic-index-generation-correspondence",
+];
+
+fn production_verify_check_coverage() -> Value {
+    let complete = PRODUCTION_VERIFY_MISSING_CHECKS.is_empty();
+    json!({
+        "complete": complete,
+        "required": super::c2z_preparation::REQUIRED_VERIFY_CHECKS,
+        "covered": PRODUCTION_VERIFY_COVERED_CHECKS,
+        "missing": PRODUCTION_VERIFY_MISSING_CHECKS,
+    })
+}
+
 pub fn run_dependency_verify_for_project_with_coordinates(
     db: &Database,
     project_id: &str,
@@ -1614,6 +1651,7 @@ pub fn run_dependency_verify_for_project_with_coordinates(
                 "semanticEpochId": epoch_id,
                 "reportDigest": report_digest,
                 "report": report_value,
+                "checkCoverage": production_verify_check_coverage(),
             });
             db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
@@ -2426,11 +2464,15 @@ fn finding_observation_ids_outside_epoch(
     project_id: &str,
     current_epoch_id: &str,
 ) -> anyhow::Result<Vec<String>> {
+    // Durable terminal-failure history is audit history, not rebuildable
+    // edge state; it must stay exempt across rule version bumps, or every
+    // Verify after an upgrade would dirty on pre-upgrade rows. Exempt by
+    // rule id, not by the exact current version.
     let mut statement = conn.prepare(
         "SELECT id
            FROM narrative_maintenance_finding_observations
           WHERE project_id = ?1 AND semantic_epoch_id != ?2
-            AND NOT (rule_id = ?3 AND rule_version = ?4)
+            AND rule_id != ?3
           ORDER BY id ASC",
     )?;
     let rows = statement
@@ -2439,7 +2481,6 @@ fn finding_observation_ids_outside_epoch(
                 project_id,
                 current_epoch_id,
                 MAINTENANCE_FAILURE_FINDING_RULE_ID,
-                i64::from(MAINTENANCE_FAILURE_FINDING_RULE_VERSION),
             ],
             |row| row.get::<_, String>(0),
         )?
