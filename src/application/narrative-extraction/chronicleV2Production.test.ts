@@ -213,6 +213,25 @@ describe("Chronicle V2 production adapter boundary", () => {
     expect(result.envelope.projectionBinding.proposalKind).toBe(
       "chronicle.create-event@1",
     );
+    expect(result.envelope.effectiveMaterialBasis.evidenceSet).toEqual([
+      expect.objectContaining({
+        evidenceRef: "anchor:arrival",
+        sourceKey: "project:scene:scene-arrival",
+        revisionToken: "v1@2026-08-25T00:00:00.000Z",
+      }),
+    ]);
+    expect(result.envelope.effectiveMaterialBasis.dependencySet).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          inputRef: "project:scene:scene-arrival",
+          role: "direct-evidence",
+        }),
+        expect.objectContaining({
+          inputRef: "snapshot:run:production",
+          role: "opaque-model-context",
+        }),
+      ]),
+    );
     expect(result.stageProvenanceClosure.receipts).toHaveLength(2);
     expect(result.provenanceBinding.taskId).toBe("task:synthesis");
   });

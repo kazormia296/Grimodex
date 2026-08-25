@@ -132,6 +132,7 @@ export interface SavedProposalSeed {
   readonly status: NarrativeProposalStatus;
   readonly originKind?: "enveloped" | "legacy-unbound";
   readonly reconciliationEnvelopeDigest?: string | null;
+  readonly reconciliationEnvelopeSchemaVersion?: 1 | 2 | null;
 }
 
 export interface SaveProposalSetResult {
@@ -200,6 +201,7 @@ export interface ReviewBundleProposal {
   readonly updatedAt: string;
   readonly originKind?: "enveloped" | "legacy-unbound";
   readonly reconciliationEnvelopeDigest?: string | null;
+  readonly reconciliationEnvelopeSchemaVersion?: 1 | 2 | null;
   readonly latestDecision: ReviewBundleLatestDecision | null;
   /** Present when Native already applied this proposal (partial Apply / cold-start). */
   readonly application?: ReviewBundleProposalApplication | null;

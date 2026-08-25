@@ -25,6 +25,7 @@ import type {
   ContextSetEntry,
   DependencySetEntry,
   SourceBasis,
+  SourceBasisRevision,
 } from "@/features/narrative-extraction/reconciler/types";
 import type { NarrativeCorpusSnapshot } from "@/features/narrative-extraction/source/types";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
@@ -127,6 +128,8 @@ function buildDependencyDeclarations(
   proposal: CreateChronicleEventProposalPayloadV1,
   observations: readonly RawChronicleEventObservation[],
   anchors: readonly ResolvedEvidenceAnchor[],
+  sourceBasis: SourceBasis,
+  evidenceSourceBasisByDocumentRef: ReadonlyMap<string, SourceBasisRevision>,
   contextManifests: readonly ContextSetEntry[],
   componentContractDigest: string,
 ): readonly DependencySetEntry[] {
@@ -140,11 +143,14 @@ function buildDependencyDeclarations(
   const evidenceDependencies: DependencySetEntry[] = [];
   const sourceRefs = new Set<string>();
   for (const anchor of anchors) {
-    if (!anchorIds.has(anchor.id) || sourceRefs.has(anchor.sourceRef)) continue;
-    sourceRefs.add(anchor.sourceRef);
+    const sourceKey =
+      evidenceSourceBasisByDocumentRef.get(anchor.documentRef)?.sourceKey ??
+      anchor.sourceRef;
+    if (!anchorIds.has(anchor.id) || sourceRefs.has(sourceKey)) continue;
+    sourceRefs.add(sourceKey);
     evidenceDependencies.push({
       dependencyId: `dependency:evidence:${anchor.id}`,
-      inputRef: anchor.sourceRef,
+      inputRef: sourceKey,
       contextIds,
       role: "direct-evidence",
       selector: { kind: "whole-source" },
@@ -159,8 +165,18 @@ function buildDependencyDeclarations(
       role: "opaque-model-context" as const,
       selector: context.selector,
     }));
+  const sourceBasisDependencies = sourceBasis
+    .filter((source) => !sourceRefs.has(source.sourceKey))
+    .map((source) => ({
+      dependencyId: `dependency:source-basis:${source.sourceKey}`,
+      inputRef: source.sourceKey,
+      contextIds,
+      role: "opaque-model-context" as const,
+      selector: { kind: "whole-source" as const },
+    }));
   return [
     ...evidenceDependencies,
+    ...sourceBasisDependencies,
     ...contextDependencies,
     {
       dependencyId: "dependency:component-contract",
@@ -198,13 +214,40 @@ function sceneRefForDocument(
   snapshot: NarrativeCorpusSnapshot,
   documentRef: string,
 ): string {
+  const sourceKey = projectSourceKeyForDocument(snapshot, documentRef);
+  return `scene:${sourceKey.slice("project:scene:".length)}`;
+}
+
+function projectSourceKeyForDocument(
+  snapshot: NarrativeCorpusSnapshot,
+  documentRef: string,
+): string {
   const document = snapshot.documents.find((item) => item.ref === documentRef);
   if (!document || document.origin.kind !== "project-node") {
     throw new Error(
       `NEX_CHRONICLE_V2_SCENE_PROVENANCE_MISSING: document '${documentRef}' has no project Scene origin`,
     );
   }
-  return `scene:${document.origin.nodeId}`;
+  return `project:scene:${document.origin.nodeId}`;
+}
+
+function evidenceSourceBasisByDocumentRef(
+  snapshot: NarrativeCorpusSnapshot,
+  sourceBasis: SourceBasis,
+  anchors: readonly ResolvedEvidenceAnchor[],
+): ReadonlyMap<string, SourceBasisRevision> {
+  const result = new Map<string, SourceBasisRevision>();
+  for (const anchor of anchors) {
+    const sourceKey = projectSourceKeyForDocument(snapshot, anchor.documentRef);
+    const source = sourceBasis.find((entry) => entry.sourceKey === sourceKey);
+    if (!source) {
+      throw new Error(
+        `NEX_CHRONICLE_V2_SOURCE_BASIS_MISSING: source '${sourceKey}' is required for document '${anchor.documentRef}'`,
+      );
+    }
+    result.set(anchor.documentRef, source);
+  }
+  return result;
 }
 
 function synthesisReceiptsForInput(
@@ -304,6 +347,12 @@ export async function buildChronicleProductionV2Envelope(
     finalRequestDigest: synthesisReceipt.finalRequestDigest,
   } as const;
 
+  const evidenceSourceBasis = evidenceSourceBasisByDocumentRef(
+    input.snapshot,
+    input.sourceBasis,
+    proposalAnchors,
+  );
+
   const result = await buildChronicleSceneEventV2({
     execution,
     stageProvenanceClosure: closure,
@@ -326,12 +375,15 @@ export async function buildChronicleProductionV2Envelope(
     significance: input.proposal.significance,
     existingEventMatch: input.existingEventMatch,
     sourceBasis: input.sourceBasis,
+    evidenceSourceBasisByDocumentRef: evidenceSourceBasis,
     contextManifests,
     dependencyDeclarations: buildDependencyDeclarations(
       input.hypothesis.clusterRef,
       input.proposal,
       mergedObservations,
       proposalAnchors,
+      input.sourceBasis,
+      evidenceSourceBasis,
       contextManifests,
       synthesisReceipt.componentContractDigest,
     ),
