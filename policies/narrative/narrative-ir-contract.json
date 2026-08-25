@@ -255,6 +255,18 @@
         {
           "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
           "literal": "chronicle-stage-provenance-closure/1"
+        },
+        {
+          "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+          "literal": "chronicle-stage-model-binding/1"
+        },
+        {
+          "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+          "literal": "chronicle-stage-terminal-receipt/1"
+        },
+        {
+          "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+          "literal": "chronicle-stage-provenance-closure/1"
         }
       ],
       "implementationPins": [

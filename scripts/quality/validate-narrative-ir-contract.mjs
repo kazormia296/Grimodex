@@ -1162,17 +1162,37 @@ export function validateNarrativeIrContract(
     sourceLiteralPins?.auditVersion?.literal ===
       "export const CHRONICLE_STAGE_AUDIT_VERSION = 2 as const;" &&
     Array.isArray(sourceLiteralPins?.digestDomains) &&
-    sourceLiteralPins.digestDomains.length === 3 &&
+    sourceLiteralPins.digestDomains.length === 6 &&
     sourceLiteralPins.digestDomains.every(
       (pin) =>
-        pin?.path ===
-          "src/features/narrative-extraction/reconciler/stageProvenance.ts" &&
+        [
+          "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+          "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+        ].includes(pin?.path) &&
         typeof pin?.literal === "string" &&
         [
           "chronicle-stage-model-binding/1",
           "chronicle-stage-terminal-receipt/1",
           "chronicle-stage-provenance-closure/1",
         ].includes(pin.literal),
+    ) &&
+    // The TS reconciler and the Rust typed writer each independently
+    // declare the digest domains; every domain must be pinned on BOTH
+    // sides, or an edit to one side's constant would pass the policy gate
+    // while breaking cross-boundary digest verification at runtime.
+    [
+      "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+    ].every((pinPath) =>
+      [
+        "chronicle-stage-model-binding/1",
+        "chronicle-stage-terminal-receipt/1",
+        "chronicle-stage-provenance-closure/1",
+      ].every((domain) =>
+        sourceLiteralPins.digestDomains.some(
+          (pin) => pin?.path === pinPath && pin?.literal === domain,
+        ),
+      ),
     );
   const implementationPinsValid =
     JSON.stringify(sourceLiteralPins?.implementationPins) ===
@@ -1193,7 +1213,7 @@ export function validateNarrativeIrContract(
         path.join(repoRoot, sourceLiteralPins.auditVersion.path),
         "utf8",
       ).includes(sourceLiteralPins.auditVersion.literal),
-    "Stage provenance source literal pins must cover audit v2 and all three digest domains",
+    "Stage provenance source literal pins must cover audit v2 and all three digest domains on both the TS reconciler and the Rust typed writer",
   );
   pushIf(
     errors,

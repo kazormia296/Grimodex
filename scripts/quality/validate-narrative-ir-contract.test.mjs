@@ -167,6 +167,19 @@ describe("NIR-0 Narrative IR contract", () => {
         /source literal pins/i,
       ],
       [
+        "rust digest-domain pin coverage",
+        (value) => {
+          // Dropping every Rust-side pin must fail even though all three
+          // domains stay pinned on the TS side: both boundaries declare the
+          // domains independently.
+          value.stageProvenance.sourceLiteralPins.digestDomains =
+            value.stageProvenance.sourceLiteralPins.digestDomains.filter(
+              (pin) => !pin.path.endsWith(".rs"),
+            );
+        },
+        /source literal pins/i,
+      ],
+      [
         "implementation pin membership",
         (value) => {
           value.stageProvenance.sourceLiteralPins.implementationPins.pop();
