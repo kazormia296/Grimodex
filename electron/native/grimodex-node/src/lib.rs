@@ -10225,7 +10225,7 @@ mod narrative_maintenance_foreground_release_tests {
     }
 
     #[tokio::test]
-    async fn napi_restart_uses_startup_recovery_before_release_and_creates_new_run() {
+    async fn napi_restart_honors_startup_recovery_backoff_before_creating_new_run() {
         let (backend, root) = backend_with_workspace("rediscovery");
         let (run_id, authority) = start_foreground_run(&backend).await;
         drop(authority);
@@ -10276,11 +10276,73 @@ mod narrative_maintenance_foreground_release_tests {
         )
         .expect("recovery cycle JSON");
         assert_eq!(cycle["status"], "accepted");
+        assert_eq!(cycle["hasMore"], true);
         assert_eq!(run_status(&restarted_authority, &run_id), "failed");
         assert_eq!(
             run_terminal_reason(&restarted_authority, &run_id).as_deref(),
             Some("NEX_MAINTENANCE_INTERRUPTED")
         );
+
+        let (failed_at, retry_at, rows_before_retry): (String, String, i64) = restarted_authority
+            .db()
+            .with_conn(|conn| {
+                let (failed_at, retry_at) = conn.query_row(
+                    "SELECT r.completed_at, a.next_attempt_at
+                           FROM narrative_extraction_runs r
+                           JOIN narrative_extraction_tasks t ON t.run_id = r.id
+                           JOIN narrative_extraction_attempts a ON a.task_id = t.id
+                          WHERE r.id = ?1 AND a.status = 'failed'
+                       ORDER BY a.attempt_number DESC
+                          LIMIT 1",
+                    [&run_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?;
+                let rows_before_retry = conn.query_row(
+                    "SELECT COUNT(*)
+                           FROM narrative_extraction_runs
+                          WHERE project_id = 'project-1'
+                            AND run_kind = 'dependency-verify'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok::<_, anyhow::Error>((failed_at, retry_at, rows_before_retry))
+            })
+            .expect("read interrupted retry boundary");
+        assert_eq!(
+            rows_before_retry, 1,
+            "startup recovery must not bypass the durable retry boundary"
+        );
+        assert!(
+            retry_at > failed_at,
+            "interruption retry must have a later not-before instant"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(
+            grimodex_db::narrative_extraction::maintenance_runtime::retry_backoff_ms(1)
+                .saturating_add(100),
+        ))
+        .await;
+
+        let retry_binding =
+            narrative_maintenance_binding_for_authority(&backend.state, &restarted_authority);
+        let retry_cycle: Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "work": [{
+                        "projectId": "project-1",
+                        "runKind": "dependency-verify",
+                        "workKey": "dependency-verify:epoch-1",
+                        "semanticEpochId": "epoch-1",
+                        "reasons": ["workspace-opened"]
+                    }],
+                    "wakeProjectIds": [],
+                    "workspaceBinding": retry_binding,
+                }))
+                .await
+                .expect("post-backoff recovery cycle"),
+        )
+        .expect("post-backoff cycle JSON");
+        assert_eq!(retry_cycle["status"], "accepted");
 
         let config = backend
             .state
