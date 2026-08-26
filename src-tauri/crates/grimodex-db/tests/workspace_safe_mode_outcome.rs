@@ -1,5 +1,9 @@
 //! Gate A2: structured Safe Mode open outcome + restore-only session.
 
+#[cfg(feature = "test-failpoints")]
+#[path = "support/release_schema_fixture.rs"]
+mod release_schema_fixture;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -25,9 +29,27 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 fn seed_newer_schema(db_path: &Path) {
+    {
+        let db = Database::new(db_path).expect("open current schema");
+        db.migrate().expect("migrate current schema");
+    }
     let conn = rusqlite::Connection::open(db_path).expect("open");
     conn.pragma_update(None, "journal_mode", "WAL")
         .expect("wal");
+    let marker_table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                  WHERE type = 'table' AND name = 'schema_data_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .expect("inspect schema marker table");
+    assert!(
+        marker_table_exists,
+        "future-schema fixture must derive from a valid current workspace"
+    );
     conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
         .expect("version");
 }
@@ -270,6 +292,102 @@ fn safe_mode_restore_by_opaque_id_then_reopen_ready() {
         Ok(())
     })
     .expect("authority published");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[cfg(feature = "test-failpoints")]
+#[test]
+fn previous_release_safe_mode_restores_markerless_backup_by_opaque_id() {
+    use grimodex_core::LAST_PUBLIC_RELEASE_SCHEMA_VERSION;
+    use grimodex_db::migration_supervisor::{self, Failpoint, WorkspaceOpenDbOutcome};
+    use grimodex_db::recovery::session_from_db_outcome;
+
+    assert_eq!(
+        LAST_PUBLIC_RELEASE_SCHEMA_VERSION, 2,
+        "regression must exercise the exact last public release schema"
+    );
+    let root = temp_dir("restore-previous-release");
+    let ws = root.join("workspace");
+    let db_path = release_schema_fixture::seed_previous_release_workspace(&ws);
+    fs::create_dir_all(ws.join("backups")).expect("create backups directory");
+
+    let backup = ws.join("backups/grimodex-auto.db");
+    {
+        let live =
+            rusqlite::Connection::open(&db_path).expect("open previous-release live database");
+        let backup_path = backup.to_str().expect("utf8 automatic backup path");
+        live.execute("VACUUM INTO ?1", [backup_path])
+            .expect("capture previous-release automatic backup");
+    }
+    {
+        let conn = rusqlite::Connection::open(&backup).expect("inspect previous-release backup");
+        let schema_version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read previous-release schema version");
+        let marker_table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_master
+                      WHERE type = 'table' AND name = 'schema_data_migrations'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect previous-release marker table");
+        assert_eq!(schema_version, LAST_PUBLIC_RELEASE_SCHEMA_VERSION);
+        assert!(
+            !marker_table_exists,
+            "previous public release must predate schema_data_migrations"
+        );
+    }
+
+    let outcome = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+        &ws,
+        Some(Failpoint::AfterSnapshot),
+    )
+    .expect("migration failure must enter structured Safe Mode");
+    assert!(
+        matches!(outcome, WorkspaceOpenDbOutcome::SafeMode { .. }),
+        "got {outcome:?}"
+    );
+    release_schema_fixture::assert_previous_release_fixture_shape(&db_path);
+
+    let ws_state = workspace_state();
+    let session = session_from_db_outcome(&ws, &outcome)
+        .expect("build Safe Mode session")
+        .expect("Safe Mode session");
+    ws_state.safe_mode.enter(session).expect("enter Safe Mode");
+
+    let candidates = list_safe_mode_candidates(&ws_state).expect("list opaque candidates");
+    let backup_candidate = candidates
+        .iter()
+        .find(|candidate| candidate.kind == RecoveryCandidateKind::AutomaticBackup)
+        .expect("previous-release automatic backup candidate");
+    assert!(backup_candidate.id.starts_with("rc_"));
+    restore_safe_mode_candidate(&ws_state, &backup_candidate.id)
+        .expect("restore known pre-cutover backup");
+
+    let gs_path = GlobalSettingsPath {
+        path: root.join("global-settings.json"),
+        write_lock: Mutex::new(()),
+    };
+    let mut hook = || {};
+    let mut deps = OpenDeps {
+        gs_path: &gs_path,
+        on_swapped: &mut hook,
+    };
+    let reopened = open_workspace_sync(&ws_state, &mut deps, &ws.to_string_lossy())
+        .expect("reopen restored previous-release backup");
+    assert!(
+        matches!(
+            reopened,
+            WorkspaceOpenOutcome::Ready { .. } | WorkspaceOpenOutcome::Migrated { .. }
+        ),
+        "got {reopened:?}"
+    );
+    assert!(!ws_state.safe_mode.is_active());
+    release_schema_fixture::assert_release_fixture_rows(&db_path);
 
     let _ = fs::remove_dir_all(&root);
 }

@@ -1158,6 +1158,36 @@ fn read_live_c2zc_marker_for_restore(
             .map_err(|error| {
                 anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}")
             })?;
+    let marker_table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                  WHERE type = 'table' AND name = 'schema_data_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}"))?;
+    if !marker_table_exists {
+        let schema_version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|error| {
+                anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}")
+            })?;
+        if (0..Database::SCHEMA_DATA_MIGRATIONS_INTRODUCED_SCHEMA_VERSION).contains(&schema_version)
+        {
+            // SCHEMA 0-22 predate both the marker table and the C2-ZC
+            // activation authority, so absence is proof of pre-cutover rather
+            // than an indeterminate read. At SCHEMA 23+ the table is a schema
+            // invariant; a missing table remains fail-closed, including for a
+            // future/foreign schema.
+            return Ok(None);
+        }
+        return Err(anyhow::anyhow!(
+            "NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: schema_data_migrations is unavailable for live schema version {schema_version}"
+        )
+        .into());
+    }
     Database::read_c2zc_cutover_marker(&conn).map_err(|error| {
         anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into()
     })
@@ -1726,6 +1756,73 @@ mod tests {
             .filter(|name| name.contains(".restore-") || name.contains(".rollback-"))
             .collect();
         assert!(leftovers.is_empty(), "restore leftovers: {leftovers:?}");
+    }
+
+    fn unpublished_workspace_state() -> WorkspaceState {
+        WorkspaceState {
+            inner: std::sync::Mutex::new(None),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: AtomicBool::new(false),
+            open_lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn seed_markerless_live_schema(path: &Path, schema_version: i32) {
+        let conn = rusqlite::Connection::open(path).expect("open markerless live database");
+        conn.pragma_update(None, "user_version", schema_version)
+            .expect("stamp markerless live schema version");
+    }
+
+    #[test]
+    fn safe_mode_marker_read_accepts_known_pre_table_schema_versions() {
+        for schema_version in [
+            0,
+            Database::SCHEMA_DATA_MIGRATIONS_INTRODUCED_SCHEMA_VERSION - 1,
+        ] {
+            let dir = std::env::temp_dir().join(format!(
+                "grimodex-c2zc-pre-table-live-{schema_version}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir).expect("create pre-table workspace");
+            let db_path = dir.join("grimodex.db");
+            seed_markerless_live_schema(&db_path, schema_version);
+
+            let marker =
+                read_live_c2zc_marker_for_restore(&unpublished_workspace_state(), &db_path)
+                    .expect("known pre-table schema must be provably pre-cutover");
+            assert_eq!(marker, None);
+
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn safe_mode_marker_read_rejects_missing_table_outside_known_pre_table_range() {
+        for schema_version in [
+            -1,
+            Database::SCHEMA_DATA_MIGRATIONS_INTRODUCED_SCHEMA_VERSION,
+            grimodex_core::SCHEMA_VERSION,
+            grimodex_core::SCHEMA_VERSION + 1,
+        ] {
+            let dir = std::env::temp_dir().join(format!(
+                "grimodex-c2zc-missing-table-live-{schema_version}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir).expect("create missing-table workspace");
+            let db_path = dir.join("grimodex.db");
+            seed_markerless_live_schema(&db_path, schema_version);
+
+            let error = read_live_c2zc_marker_for_restore(&unpublished_workspace_state(), &db_path)
+                .expect_err("missing marker table outside SCHEMA 0-22 must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED"),
+                "unexpected error for schema {schema_version}: {error}"
+            );
+
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
