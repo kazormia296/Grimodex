@@ -144,6 +144,8 @@
             "browser",
             "--runs",
             "1",
+            "--max-workers",
+            "4",
             "--output",
             ".artifacts/browser-ci/browser.json"
           ]

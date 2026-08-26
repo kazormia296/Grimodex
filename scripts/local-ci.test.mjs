@@ -97,6 +97,22 @@ test("quick and full profiles resolve deterministic command plans", async () => 
     registry.profiles.full,
   );
   assert.deepEqual(
+    full.stages.find((stage) => stage.id === "browser").commands[0].args,
+    [
+      "benchmark:browser-ci",
+      "--",
+      "--suite",
+      "browser",
+      "--runs",
+      "1",
+      "--max-workers",
+      "4",
+      "--output",
+      ".artifacts/browser-ci/browser.json",
+    ],
+    "local Full must cap browser pages without changing hosted runner auto sizing",
+  );
+  assert.deepEqual(
     full.releaseOnlyJobs.map((job) => job.id),
     ["electron-windows-installer-contract"],
   );

@@ -3,13 +3,14 @@
 ## 結論
 
 - Browser と Storybook は独立した CI job とし、並行実行する。
-- Vitest の worker 数は固定せず、4 vCPU runner 上の自動値を維持する。
+- GitHub Actions では Vitest の worker 数を固定せず、4 vCPU runner 上の自動値を維持する。
+- ローカル Full CI の Browser stage は `--max-workers 4` に固定する。12 available CPUs のローカルhostでautoが11 pageを起動するとbootstrapが60秒以内に接続できなかった一方、4 workersでは55 files / 253 testsが完走したためである。
 - `browser.fileParallelism` は既定の有効状態を維持する。
 - Browser の 2 shard 化は採用しない。
 - retry は 0 のままとし、失敗を再実行で隠さない。
 - 各 CI job は wall time、CPU、process-tree peak RSS、test/file 数、失敗名を JSON artifact として14日保持する。
 
-直接 worker 数を固定する前に、個別suite、job分割、file parallelism、worker数、shardingを順に計測した。採用構成は「2 job分割 + Vitest自動worker」であり、「Playwright並列化を未計測のまま導入」したものではない。
+直接 worker 数を固定する前に、個別suite、job分割、file parallelism、worker数、shardingを順に計測した。hosted CIの採用構成は「2 job分割 + Vitest自動worker」であり、「Playwright並列化を未計測のまま導入」したものではない。ローカル Full CIの4 worker capは、異なるCPU規模でhosted向けauto policyをそのまま使わないmachine-specific guardであり、GitHub workflowは変更しない。
 
 ## 計測条件
 
@@ -105,4 +106,8 @@ pnpm benchmark:browser-ci -- --suite browser --runs 3 --output .artifacts/browse
 pnpm benchmark:browser-ci -- --suite storybook --runs 3 --output .artifacts/browser-ci/storybook.json
 ```
 
-詳細なPSS比較が必要な一時測定だけ `--collect-pss` を付ける。通常CIではworker数を固定せず、runner仕様、test files、flaky率のいずれかが変わった時点で再計測する。
+詳細なPSS比較が必要な一時測定だけ `--collect-pss` を付ける。GitHub Actionsではworker数を固定せず、runner仕様、test files、flaky率のいずれかが変わった時点で再計測する。ローカル Full CIはregistryから次の固定capを使い、開発者が直接benchmarkを実行する場合の既定autoは変更しない。
+
+```bash
+pnpm benchmark:browser-ci -- --suite browser --runs 1 --max-workers 4 --output .artifacts/browser-ci/browser.json
+```
