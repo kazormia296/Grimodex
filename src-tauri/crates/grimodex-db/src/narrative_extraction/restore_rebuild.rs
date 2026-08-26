@@ -1570,6 +1570,13 @@ impl DependencyGraphVerifyReport {
 /// proves the row snapshot from which that answer was produced, including
 /// the rebuildable projections and durable human attention state.
 ///
+/// Terminal maintenance-failure Observations/lifecycle and Attention exactly
+/// linked to those Observations are deliberately outside this coordinate.
+/// They are durable audit/Inbox output written after Verify seals its report,
+/// not graph input consumed by Verify. Including them would make a completed
+/// Verify invalidate itself. Ordinary consumer Finding and Attention rows,
+/// including unlinked terminal-looking rows, remain fail-closed inputs.
+///
 /// Every collection is ordered by its stable key before it enters the
 /// canonical JSON domain.  SQLite's `rowid` and UUID creation order are
 /// deliberately not part of the domain, so the same logical workspace state
@@ -1705,26 +1712,30 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
                     finding_identity, rule_id, rule_version, observation_digest
                FROM narrative_maintenance_finding_observations
               WHERE project_id = ?1
+                AND rule_id <> ?2
               ORDER BY id ASC",
         )?;
         let rows = statement
-            .query_map(params![project_id], |row| {
-                Ok(json!({
-                    "id": row.get::<_, String>(0)?,
-                    "runId": row.get::<_, String>(1)?,
-                    "semanticEpochId": row.get::<_, String>(2)?,
-                    "edgeId": row.get::<_, Option<String>>(3)?,
-                    "findingKey": row.get::<_, String>(4)?,
-                    "reasonCode": row.get::<_, String>(5)?,
-                    "evidenceFreshnessSnapshot": row.get::<_, String>(6)?,
-                    "materialBasisDigest": row.get::<_, String>(7)?,
-                    "observedAt": row.get::<_, String>(8)?,
-                    "findingIdentity": row.get::<_, Option<String>>(9)?,
-                    "ruleId": row.get::<_, String>(10)?,
-                    "ruleVersion": row.get::<_, i64>(11)?,
-                    "observationDigest": row.get::<_, String>(12)?,
-                }))
-            })?
+            .query_map(
+                params![project_id, MAINTENANCE_FAILURE_FINDING_RULE_ID],
+                |row| {
+                    Ok(json!({
+                        "id": row.get::<_, String>(0)?,
+                        "runId": row.get::<_, String>(1)?,
+                        "semanticEpochId": row.get::<_, String>(2)?,
+                        "edgeId": row.get::<_, Option<String>>(3)?,
+                        "findingKey": row.get::<_, String>(4)?,
+                        "reasonCode": row.get::<_, String>(5)?,
+                        "evidenceFreshnessSnapshot": row.get::<_, String>(6)?,
+                        "materialBasisDigest": row.get::<_, String>(7)?,
+                        "observedAt": row.get::<_, String>(8)?,
+                        "findingIdentity": row.get::<_, Option<String>>(9)?,
+                        "ruleId": row.get::<_, String>(10)?,
+                        "ruleVersion": row.get::<_, i64>(11)?,
+                        "observationDigest": row.get::<_, String>(12)?,
+                    }))
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
@@ -1733,26 +1744,30 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
             "SELECT id, finding_identity, finding_key, rule_id, rule_version,
                     lifecycle_state, observation_digest, material_basis_digest, run_id,
                     semantic_epoch_id, observed_at
-               FROM narrative_maintenance_finding_lifecycle
-              WHERE project_id = ?1
-              ORDER BY id ASC",
+               FROM narrative_maintenance_finding_lifecycle AS lifecycle
+              WHERE lifecycle.project_id = ?1
+                AND lifecycle.rule_id <> ?2
+              ORDER BY lifecycle.id ASC",
         )?;
         let rows = statement
-            .query_map(params![project_id], |row| {
-                Ok(json!({
-                    "id": row.get::<_, String>(0)?,
-                    "findingIdentity": row.get::<_, String>(1)?,
-                    "findingKey": row.get::<_, String>(2)?,
-                    "ruleId": row.get::<_, String>(3)?,
-                    "ruleVersion": row.get::<_, i64>(4)?,
-                    "lifecycleState": row.get::<_, String>(5)?,
-                    "observationDigest": row.get::<_, Option<String>>(6)?,
-                    "materialBasisDigest": row.get::<_, Option<String>>(7)?,
-                    "runId": row.get::<_, String>(8)?,
-                    "semanticEpochId": row.get::<_, String>(9)?,
-                    "observedAt": row.get::<_, String>(10)?,
-                }))
-            })?
+            .query_map(
+                params![project_id, MAINTENANCE_FAILURE_FINDING_RULE_ID],
+                |row| {
+                    Ok(json!({
+                        "id": row.get::<_, String>(0)?,
+                        "findingIdentity": row.get::<_, String>(1)?,
+                        "findingKey": row.get::<_, String>(2)?,
+                        "ruleId": row.get::<_, String>(3)?,
+                        "ruleVersion": row.get::<_, i64>(4)?,
+                        "lifecycleState": row.get::<_, String>(5)?,
+                        "observationDigest": row.get::<_, Option<String>>(6)?,
+                        "materialBasisDigest": row.get::<_, Option<String>>(7)?,
+                        "runId": row.get::<_, String>(8)?,
+                        "semanticEpochId": row.get::<_, String>(9)?,
+                        "observedAt": row.get::<_, String>(10)?,
+                    }))
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
@@ -1761,27 +1776,39 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
             "SELECT finding_key, finding_identity, identity_resolution_status,
                     disposition, material_basis_digest, snoozed_until, set_at,
                     actor_id, request_id, payload_digest, reason, version
-               FROM narrative_maintenance_attention
-              WHERE project_id = ?1
-              ORDER BY finding_key ASC",
+               FROM narrative_maintenance_attention AS attention
+              WHERE attention.project_id = ?1
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM narrative_maintenance_finding_observations AS observation
+                     WHERE observation.project_id = attention.project_id
+                       AND observation.finding_key = attention.finding_key
+                       AND observation.finding_identity = attention.finding_identity
+                       AND observation.material_basis_digest = attention.material_basis_digest
+                       AND observation.rule_id = ?2
+                )
+              ORDER BY attention.finding_key ASC",
         )?;
         let rows = statement
-            .query_map(params![project_id], |row| {
-                Ok(json!({
-                    "findingKey": row.get::<_, String>(0)?,
-                    "findingIdentity": row.get::<_, Option<String>>(1)?,
-                    "identityResolutionStatus": row.get::<_, String>(2)?,
-                    "disposition": row.get::<_, String>(3)?,
-                    "materialBasisDigest": row.get::<_, String>(4)?,
-                    "snoozedUntil": row.get::<_, Option<String>>(5)?,
-                    "setAt": row.get::<_, String>(6)?,
-                    "actorId": row.get::<_, String>(7)?,
-                    "requestId": row.get::<_, String>(8)?,
-                    "payloadDigest": row.get::<_, String>(9)?,
-                    "reason": row.get::<_, Option<String>>(10)?,
-                    "version": row.get::<_, i64>(11)?,
-                }))
-            })?
+            .query_map(
+                params![project_id, MAINTENANCE_FAILURE_FINDING_RULE_ID],
+                |row| {
+                    Ok(json!({
+                        "findingKey": row.get::<_, String>(0)?,
+                        "findingIdentity": row.get::<_, Option<String>>(1)?,
+                        "identityResolutionStatus": row.get::<_, String>(2)?,
+                        "disposition": row.get::<_, String>(3)?,
+                        "materialBasisDigest": row.get::<_, String>(4)?,
+                        "snoozedUntil": row.get::<_, Option<String>>(5)?,
+                        "setAt": row.get::<_, String>(6)?,
+                        "actorId": row.get::<_, String>(7)?,
+                        "requestId": row.get::<_, String>(8)?,
+                        "payloadDigest": row.get::<_, String>(9)?,
+                        "reason": row.get::<_, Option<String>>(10)?,
+                        "version": row.get::<_, i64>(11)?,
+                    }))
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
@@ -2418,7 +2445,9 @@ fn resolve_edge_consumer_scope<'a>(
 /// Scoped to Edges because Edges are what defines a Consumer here --
 /// `list_distinct_consumers` reads the same table, and a Freshness row
 /// without one is itself the stale leftover `dependency-rebuild-derived`
-/// clears.
+/// clears. Attention exactly linked to a terminal maintenance-failure
+/// Observation is durable Inbox output rather than a graph Consumer, so it is
+/// excluded by the same boundary as [`durable_graph_state_digest`].
 fn orphaned_attention_finding_keys(
     conn: &Connection,
     project_id: &str,
@@ -2434,7 +2463,15 @@ fn orphaned_attention_finding_keys(
     if !attention_exists {
         return Ok(Vec::new());
     }
-    let mut statement = conn.prepare(
+    let observation_exists: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'narrative_maintenance_finding_observations'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let query = if observation_exists {
         "SELECT a.finding_key
            FROM narrative_maintenance_attention a
           WHERE a.project_id = ?1
@@ -2443,11 +2480,40 @@ fn orphaned_attention_finding_keys(
                  WHERE e.project_id = a.project_id
                    AND e.consumer_kind || ':' || e.consumer_key = a.finding_key
             )
-          ORDER BY a.finding_key ASC",
-    )?;
-    let rows = statement
-        .query_map(params![project_id], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM narrative_maintenance_finding_observations o
+                 WHERE o.project_id = a.project_id
+                   AND o.finding_key = a.finding_key
+                   AND o.finding_identity = a.finding_identity
+                   AND o.material_basis_digest = a.material_basis_digest
+                   AND o.rule_id = ?2
+            )
+          ORDER BY a.finding_key ASC"
+    } else {
+        "SELECT a.finding_key
+           FROM narrative_maintenance_attention a
+          WHERE a.project_id = ?1
+            AND NOT EXISTS (
+                SELECT 1 FROM narrative_dependency_edges e
+                 WHERE e.project_id = a.project_id
+                   AND e.consumer_kind || ':' || e.consumer_key = a.finding_key
+            )
+          ORDER BY a.finding_key ASC"
+    };
+    let mut statement = conn.prepare(query)?;
+    let rows = if observation_exists {
+        statement
+            .query_map(
+                params![project_id, MAINTENANCE_FAILURE_FINDING_RULE_ID],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        statement
+            .query_map(params![project_id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
     Ok(rows)
 }
 
@@ -2516,12 +2582,22 @@ fn orphaned_attention_rehome_ambiguities(
                  WHERE e0.project_id = a.project_id
                    AND e0.consumer_kind || ':' || e0.consumer_key = a.finding_key
             )
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM narrative_maintenance_finding_observations terminal_observation
+                 WHERE terminal_observation.project_id = a.project_id
+                   AND terminal_observation.finding_key = a.finding_key
+                   AND terminal_observation.finding_identity = a.finding_identity
+                   AND terminal_observation.material_basis_digest = a.material_basis_digest
+                   AND terminal_observation.rule_id = ?2
+            )
           ORDER BY a.finding_key ASC",
     )?;
     let orphan_rows = orphan_statement
-        .query_map(params![project_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
+        .query_map(
+            params![project_id, MAINTENANCE_FAILURE_FINDING_RULE_ID],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut unresolved = Vec::new();
     for (finding_key, material_digest) in orphan_rows {
@@ -5635,6 +5711,134 @@ mod tests {
             report.finding_observation_ids_outside_current_epoch,
             vec![edge_id.to_string()],
             "Verify must report rebuildable edge history but ignore durable terminal history"
+        );
+    }
+
+    #[test]
+    fn graph_state_excludes_only_exact_terminal_failure_output_rows() {
+        let db = test_db();
+        let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
+        let baseline = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest baseline graph state");
+
+        let terminal_key =
+            "narrative-maintenance-failure:dependency-verify:dependency-verify:epoch-1";
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_observations
+                    (id, project_id, run_id, semantic_epoch_id, edge_id,
+                     finding_key, reason_code, evidence_freshness_snapshot,
+                     material_basis_digest, observed_at, finding_identity,
+                     rule_id, rule_version, observation_digest)
+                 VALUES ('terminal-failure:v1:NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR:run-terminal',
+                         'project-1', 'run-terminal', ?1, NULL, ?2,
+                         'component-incompatible', 'unknown', 'sha256:terminal-basis',
+                         '2026-08-15T00:00:00.000Z', 'terminal-identity', ?3, 1,
+                         'sha256:terminal-observation')",
+                params![epoch_id, terminal_key, MAINTENANCE_FAILURE_FINDING_RULE_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_lifecycle
+                    (id, project_id, finding_identity, finding_key, rule_id, rule_version,
+                     lifecycle_state, observation_digest, material_basis_digest, run_id,
+                     semantic_epoch_id, observed_at)
+                 VALUES ('terminal-lifecycle', 'project-1', 'terminal-identity', ?1, ?2, 1,
+                         'new', 'sha256:terminal-observation', 'sha256:terminal-basis',
+                         'run-terminal', ?3, '2026-08-15T00:00:00.000Z')",
+                params![terminal_key, MAINTENANCE_FAILURE_FINDING_RULE_ID, epoch_id],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_lifecycle
+                    (id, project_id, finding_identity, finding_key, rule_id, rule_version,
+                     lifecycle_state, observation_digest, material_basis_digest, run_id,
+                     semantic_epoch_id, observed_at)
+                 VALUES ('terminal-lifecycle-resolved', 'project-1', 'terminal-identity',
+                         ?1, ?2, 1, 'resolved', 'sha256:terminal-observation',
+                         'sha256:terminal-basis', 'run-terminal', ?3,
+                         '2026-08-15T00:00:01.000Z')",
+                params![terminal_key, MAINTENANCE_FAILURE_FINDING_RULE_ID, epoch_id],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_maintenance_attention
+                    (project_id, finding_key, finding_identity, identity_resolution_status,
+                     disposition, material_basis_digest, snoozed_until, set_at, actor_id,
+                     request_id, payload_digest, reason, version)
+                 VALUES ('project-1', ?1, 'terminal-identity', 'resolved', 'snoozed',
+                         'sha256:terminal-basis', '2026-09-01T00:00:00.000Z',
+                         '2026-08-15T00:00:00.000Z', 'author-1', 'terminal-attention',
+                         'sha256:terminal-attention', 'review later', 1)",
+                [terminal_key],
+            )?;
+            Ok(())
+        })
+        .expect("seed exact terminal output rows");
+
+        let after_terminal_output = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest graph state after terminal output");
+        assert_eq!(
+            after_terminal_output, baseline,
+            "Verify must not invalidate itself on its terminal audit/Inbox output"
+        );
+        let terminal_report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify exact terminal Attention");
+        assert!(terminal_report.orphaned_attention_finding_keys.is_empty());
+        assert!(terminal_report
+            .orphaned_attention_rehome_ambiguities
+            .is_empty());
+
+        let unlinked_key = "terminal-failure:v1:NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR:forged";
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_maintenance_attention
+                    (project_id, finding_key, finding_identity, identity_resolution_status,
+                     disposition, material_basis_digest, snoozed_until, set_at, actor_id,
+                     request_id, payload_digest, reason, version)
+                 VALUES ('project-1', ?1, 'unlinked-identity', 'resolved', 'snoozed',
+                         'sha256:unlinked-basis', '2026-09-01T00:00:00.000Z',
+                         '2026-08-15T00:00:01.000Z', 'author-1', 'unlinked-attention',
+                         'sha256:unlinked-attention', 'forged terminal-looking row', 1)",
+                [unlinked_key],
+            )?;
+            Ok(())
+        })
+        .expect("seed unlinked terminal-looking Attention");
+        let after_unlinked_attention = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest graph state after unlinked Attention");
+        assert_ne!(after_unlinked_attention, after_terminal_output);
+        let unlinked_report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify unlinked terminal-looking Attention");
+        assert!(unlinked_report
+            .orphaned_attention_finding_keys
+            .contains(&unlinked_key.to_string()));
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_observations
+                    (id, project_id, run_id, semantic_epoch_id, edge_id,
+                     finding_key, reason_code, evidence_freshness_snapshot,
+                     material_basis_digest, observed_at, finding_identity,
+                     rule_id, rule_version, observation_digest)
+                 VALUES ('ordinary-observation', 'project-1', 'run-ordinary', ?1, NULL,
+                         'proposal-revision:ordinary', 'source-missing', 'source-missing',
+                         'sha256:ordinary-basis', '2026-08-15T00:00:02.000Z', NULL,
+                         'narrative.consumer-freshness', 1,
+                         'sha256:ordinary-observation')",
+                [epoch_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed ordinary consumer Finding");
+        let after_ordinary_finding = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest graph state after ordinary Finding");
+        assert_ne!(
+            after_ordinary_finding, after_unlinked_attention,
+            "ordinary consumer Finding rows remain part of the graph-state CAS"
         );
     }
 

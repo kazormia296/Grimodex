@@ -588,25 +588,66 @@ fn graph_defect_stops_after_verify_without_automatic_repair() {
     )
     .expect("graph defect must remain terminal evidence");
     assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
-    let (verify_count, rebuild_count, repair_count): (i64, i64, i64) = db
-        .with_conn(|conn| {
+    assert!(
+        !result.has_more,
+        "terminal graph evidence must not schedule itself again"
+    );
+    let ledger_counts = |db: &Database| -> (i64, i64, i64, i64, i64) {
+        db.with_conn(|conn| {
             Ok(conn.query_row(
                 "SELECT
-                    SUM(CASE WHEN run_kind = 'dependency-verify' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN run_kind = 'semantic-index-rebuild' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN run_kind = 'repair' THEN 1 ELSE 0 END)
-                   FROM narrative_extraction_runs WHERE project_id = ?1",
+                    (SELECT COUNT(*) FROM narrative_extraction_runs
+                      WHERE project_id = ?1 AND run_kind = 'dependency-verify'),
+                    (SELECT COUNT(*) FROM narrative_extraction_runs
+                      WHERE project_id = ?1 AND run_kind = 'semantic-index-rebuild'),
+                    (SELECT COUNT(*) FROM narrative_extraction_runs
+                      WHERE project_id = ?1 AND run_kind = 'repair'),
+                    (SELECT COUNT(*) FROM narrative_maintenance_finding_observations
+                      WHERE project_id = ?1),
+                    (SELECT COUNT(*) FROM narrative_maintenance_finding_lifecycle
+                      WHERE project_id = ?1)",
                 [PROJECT_ID],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )?)
         })
-        .expect("read graph defect phase ledger");
+        .expect("read graph defect phase ledger")
+    };
+    let (verify_count, rebuild_count, repair_count, _, _) = ledger_counts(&db);
     assert!(verify_count >= 2, "confirmation Verify must execute");
     assert_eq!(rebuild_count, 1, "derived projections are rebuilt once");
     assert_eq!(repair_count, 0, "Repair must never be auto-dispatched");
     assert!(
         discover_durable_maintenance_work(&db, PROJECT_ID, "restore-completed")
             .expect("rediscover graph defect")
+            .is_none()
+    );
+
+    let settled_ledger = ledger_counts(&db);
+    let wake_only_request: MaintenanceCycleRequest = serde_json::from_value(json!({
+        "work": [],
+        "wakeProjectIds": [PROJECT_ID]
+    }))
+    .expect("wake-only request");
+    let wake_result = run_system_work_cycle(&db, &wake_only_request, RecoveryMode::SameProcessLive)
+        .expect("settled graph defect wake must be a no-op");
+    assert_eq!(wake_result.status, MaintenanceCycleStatus::Accepted);
+    assert!(!wake_result.has_more);
+    assert_eq!(
+        ledger_counts(&db),
+        settled_ledger,
+        "repeated durable discovery must not append Verify or terminal Finding rows"
+    );
+    assert!(
+        discover_durable_maintenance_work(&db, PROJECT_ID, "restore-completed")
+            .expect("rediscover settled graph defect again")
             .is_none()
     );
 }
