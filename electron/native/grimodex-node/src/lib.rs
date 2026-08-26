@@ -63,10 +63,10 @@ use grimodex_db::lint_terms::{
 use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
     self, AttentionDisposition, GetNarrativeBackfillStatusPayload, LegacyBackfillBootstrapOutcome,
-    LegacyBackfillFaultOutcome, ListResumableRunsPayload, MaintenanceCycleRequest,
-    MaintenanceCycleStatus, MaintenanceWorkspaceBinding, NarrativeMaintenanceAttentionClearPayload,
-    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceCiConfig,
-    NarrativeMaintenanceCiFault, NarrativeMaintenanceCiTrigger,
+    LegacyBackfillFaultOutcome, ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload,
+    MaintenanceCycleRequest, MaintenanceCycleStatus, MaintenanceWorkspaceBinding,
+    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
+    NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiFault, NarrativeMaintenanceCiTrigger,
     NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
     RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
     RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
@@ -6199,6 +6199,25 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 Ok(serde_json::to_string(
                     &narrative_extraction::narrative_extraction_list_resumable_runs(db, dto)?,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_list_chronicle_task_resume_candidates(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: ListChronicleTaskResumeCandidatesPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &narrative_extraction::narrative_extraction_list_chronicle_task_resume_candidates(
+                        db, dto,
+                    )?,
                 )?)
             })
         })

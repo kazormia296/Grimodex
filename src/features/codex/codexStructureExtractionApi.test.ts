@@ -1,4 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+
+beforeEach(() => {
+  setCurrentWorkspaceIdentity({ path: "/w", openRevision: 1 });
+});
+
+afterEach(() => {
+  setCurrentWorkspaceIdentity(null);
+});
 
 const createRunMock = vi.hoisted(() => vi.fn());
 const getRunMock = vi.hoisted(() => vi.fn());
@@ -68,7 +77,10 @@ vi.mock("./extraction/entityCandidatePrepass", () => ({
   runEntityCandidatePrepass: runPrepassMock,
 }));
 
-import { resetNarrativeArtifactIndexForTests } from "@/application/narrative-extraction/artifactRepository";
+import {
+  loadInlineJsonArtifact,
+  resetNarrativeArtifactIndexForTests,
+} from "@/application/narrative-extraction/artifactRepository";
 import {
   bindExistingCodexEntityProposal,
   CODEX_ENTITY_BIND_PROPOSAL_KIND,
@@ -210,6 +222,7 @@ describe("buildRelationCoMentionQuote", () => {
 
 describe("startCodexStructureExtraction product safety", () => {
   beforeEach(() => {
+    resetNarrativeArtifactIndexForTests();
     resetCodexStructureExtractionStoreForTests();
     createRunMock.mockReset();
     getRunMock.mockReset();
@@ -522,6 +535,70 @@ describe("startCodexStructureExtraction product safety", () => {
       }),
     ).rejects.toThrow("without a snapshot revision digest");
     expect(createRunMock).not.toHaveBeenCalled();
+  });
+
+  it("does not publish the review artifact cache when Native FinishTask rolls back", async () => {
+    finishTaskMock.mockRejectedValueOnce(new Error("FinishTask rolled back"));
+    failTaskMock.mockResolvedValue({
+      taskId: "t1",
+      attemptId: "attempt-1",
+      status: "failed",
+    });
+
+    await expect(
+      startCodexStructureExtraction({
+        projectId: "p1",
+        folderId: "f1",
+        sceneIds: ["s1"],
+        authority: {
+          projectId: "p1",
+          currentProjectId: () => "p1",
+          workspacePath: "/w",
+          workspaceOpenRevision: 1,
+        },
+        workspacePath: "/w",
+        openRevision: 1,
+        useAi: false,
+        typeCatalog: [
+          {
+            ref: "T0001",
+            sourceKey: "character",
+            slug: "character",
+            label: "character",
+            coarseClassHints: ["person"],
+            expectedVersion: 1,
+          },
+        ],
+        heuristicSeeds: [
+          {
+            surface: "ライカ",
+            typeRef: "T0001",
+            evidence: [
+              {
+                anchorId: "a1",
+                quote: "ライカ",
+                documentRef: "D000001",
+                method: "exact",
+              },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow("FinishTask rolled back");
+
+    await expect(
+      loadInlineJsonArtifact(
+        "native-run-1",
+        CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+        {
+          scope: {
+            projectId: "p1",
+            workspacePath: "/w",
+            workspaceOpenRevision: 1,
+          },
+        },
+      ),
+    ).resolves.toBeNull();
   });
 
   it("derives relation proposals from vocabulary co-mentions in shared quotes", async () => {

@@ -147,18 +147,24 @@ describe("NIR-0 Narrative IR contract", () => {
       [
         "C1 deterministic-empty status",
         (value) => {
-          value.stageProvenance.c1Completeness.terminalOutputContract.acceptedTerminalStatusMatrix[2].zeroObservationOnly =
-            false;
+          value.stageProvenance.c1Completeness.terminalOutputContract.acceptedTerminalStatusMatrix[2].zeroObservationOnly = false;
         },
         /C1 terminal-output status matrix/i,
       ],
       [
         "C1 raw observations generic boundary",
         (value) => {
-          value.stageProvenance.c1Completeness.terminalOutputContract.rawObservationsArtifact.reservedByC1 =
-            true;
+          value.stageProvenance.c1Completeness.terminalOutputContract.rawObservationsArtifact.reservedByC1 = true;
         },
         /generic raw-observation boundary/i,
+      ],
+      [
+        "C1 hypothesis semantic binding",
+        (value) => {
+          value.stageProvenance.c1Completeness.terminalOutputContract.hypothesisSemanticBinding =
+            "observation-refs-only";
+        },
+        /hypothesis semantic binding/i,
       ],
       [
         "repair lineage",
@@ -901,7 +907,8 @@ describe("NIR-0 Narrative IR contract", () => {
     missingUpdateGuard.monotonicity.structuralDefense.triggers =
       missingUpdateGuard.monotonicity.structuralDefense.triggers.filter(
         (trigger) =>
-          trigger.name !== "narrative_proposal_revisions_v2_immutable_update_guard",
+          trigger.name !==
+          "narrative_proposal_revisions_v2_immutable_update_guard",
       );
     const missingUpdateErrors = validate(missingUpdateGuard);
     assert.ok(

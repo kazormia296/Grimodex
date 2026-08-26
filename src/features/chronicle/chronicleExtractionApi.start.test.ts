@@ -15,6 +15,7 @@ vi.mock("@/application/narrative-extraction/artifactRepository", () => ({
 
 vi.mock("@/application/narrative-extraction/runRepository", () => ({
   getRun: getRunMock,
+  listChronicleTaskResumeCandidates: vi.fn(),
   listResumableRuns: vi.fn(),
 }));
 

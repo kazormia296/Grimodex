@@ -27,10 +27,13 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { listEvents } from "./api";
 import {
+  discoverChronicleTaskResumeCandidates,
   startChronicleExtraction,
+  resumeChronicleExtraction,
   applyChronicleExtractionReview,
   restoreChronicleExtractionReview,
 } from "./extractEventsApi";
+import type { ChronicleTaskResumeCandidate } from "@/application/narrative-extraction/nativeApi";
 import { ChronicleExtractionProgress } from "./ChronicleExtractionProgress";
 import { ChronicleProposalReview } from "./ChronicleProposalReview";
 import { useChronicleExtractionStore } from "./chronicleExtractionStore";
@@ -83,6 +86,7 @@ export function ChronicleExtractDialog({
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
   const runProjection = useChronicleExtractionStore((s) => s.projection);
+  const recovery = useChronicleExtractionStore((s) => s.recovery);
   const clearProjection = useChronicleExtractionStore((s) => s.clearProjection);
   const clearIfScopeMismatch = useChronicleExtractionStore(
     (s) => s.clearIfScopeMismatch,
@@ -181,6 +185,14 @@ export function ChronicleExtractDialog({
           // Soft-fail: empty review until the user runs analyze.
         });
       }
+      void discoverChronicleTaskResumeCandidates({
+        projectId: scope.projectId,
+        workspacePath: scope.workspacePath,
+        openRevision: scope.openRevision,
+      }).catch(() => {
+        // The API retains an explicit blocked recovery state. Never reinterpret
+        // a failed durable-ledger read as permission to create a fresh Run.
+      });
       return;
     }
 
@@ -203,13 +215,25 @@ export function ChronicleExtractDialog({
   ]);
 
   const handleSelectFolder = (id: string) => {
-    if (analyzing || importing) return;
+    if (analyzing || importing || recovery.status === "resuming") return;
     setFolderId(id);
     clearProjection();
   };
 
   const handleAnalyze = async () => {
-    if (!folderId || analyzing || importing || !scope || !currentScopeKey) {
+    const unresolvedRecovery =
+      recovery.status === "discovering" ||
+      recovery.status === "resuming" ||
+      recovery.status === "blocked" ||
+      recovery.candidates.length > 0;
+    if (
+      !folderId ||
+      analyzing ||
+      importing ||
+      unresolvedRecovery ||
+      !scope ||
+      !currentScopeKey
+    ) {
       return;
     }
     const generation = generationRef.current + 1;
@@ -273,6 +297,51 @@ export function ChronicleExtractDialog({
     } finally {
       if (generationRef.current === session.generation) {
         setAnalyzing(false);
+      }
+    }
+  };
+
+  const handleResume = async (candidate: ChronicleTaskResumeCandidate) => {
+    if (
+      analyzing ||
+      importing ||
+      recovery.status !== "ready" ||
+      candidate.availability !== "ready" ||
+      !scope ||
+      !currentScopeKey
+    ) {
+      return;
+    }
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    const session: ChronicleExtractionSession = {
+      scope,
+      scopeKey: currentScopeKey,
+      projectId: scope.projectId,
+      generation,
+      authority: captureMutationAuthority(scope.projectId, getCurrentProjectId),
+    };
+    if (!isSessionCurrent(session)) return;
+
+    clearProjection();
+    try {
+      await resumeChronicleExtraction({
+        candidate,
+        authority: session.authority,
+        workspacePath: session.scope.workspacePath,
+        openRevision: session.scope.openRevision,
+      });
+      if (!isSessionCurrent(session)) {
+        clearProjection();
+      }
+    } catch {
+      if (isSessionCurrent(session)) {
+        toast.error(
+          t(
+            "chronicle.extract.resumeFailed",
+            "中断した抽出を再開できませんでした",
+          ),
+        );
       }
     }
   };
@@ -354,6 +423,12 @@ export function ChronicleExtractDialog({
         (proposal.match.status !== "probable-duplicate" ||
           proposal.probableDuplicateChoice === "create-as-new"),
     );
+  const recoveryUnresolved =
+    recovery.status === "discovering" ||
+    recovery.status === "resuming" ||
+    recovery.status === "blocked" ||
+    recovery.candidates.length > 0;
+  const resuming = recovery.status === "resuming";
 
   return (
     <Dialog open={open} onOpenChange={handleDialogOpenChange}>
@@ -378,11 +453,86 @@ export function ChronicleExtractDialog({
             )}
           </p>
 
+          {(recovery.status === "discovering" ||
+            recovery.status === "blocked" ||
+            recovery.candidates.length > 0) && (
+            <div
+              className="flex flex-col gap-2 rounded border border-border bg-muted/30 p-2"
+              data-testid="chronicle-extraction-recovery"
+            >
+              <p className="text-xs font-medium">
+                {recovery.status === "discovering"
+                  ? t(
+                      "chronicle.extract.recoveryDiscovering",
+                      "中断した抽出を確認しています…",
+                    )
+                  : recovery.status === "blocked" &&
+                      recovery.candidates.length === 0
+                    ? t(
+                        "chronicle.extract.recoveryBlocked",
+                        "中断した抽出の状態を確認できません。新しい解析は開始されません。",
+                      )
+                    : t(
+                        "chronicle.extract.recoveryFound",
+                        "前回中断した抽出があります",
+                      )}
+              </p>
+              {recovery.candidates.map((candidate) => (
+                <div
+                  key={candidate.runId}
+                  className="flex items-center justify-between gap-2 rounded bg-background px-2 py-1.5"
+                >
+                  <span
+                    className="min-w-0 text-xs text-muted-foreground"
+                    title={`${candidate.runId} · ${candidate.createdAt}`}
+                  >
+                    <span className="block truncate">
+                      {candidate.scopeJson.folderId} ·{" "}
+                      {candidate.nextTask.taskKind}
+                    </span>
+                    <span className="block truncate font-mono text-[10px]">
+                      {candidate.runId} · {candidate.createdAt}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleResume(candidate)}
+                    aria-label={`${
+                      candidate.availability === "ready"
+                        ? t("chronicle.extract.resume", "再開")
+                        : candidate.availability === "lease-held"
+                          ? t("chronicle.extract.resumeLeaseHeld", "処理中")
+                          : t("chronicle.extract.resumeBlocked", "再開不可")
+                    } ${candidate.runId}`}
+                    disabled={
+                      recovery.status !== "ready" ||
+                      candidate.availability !== "ready" ||
+                      analyzing ||
+                      importing
+                    }
+                    className="shrink-0 rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {candidate.availability === "ready"
+                      ? t("chronicle.extract.resume", "再開")
+                      : candidate.availability === "lease-held"
+                        ? t("chronicle.extract.resumeLeaseHeld", "処理中")
+                        : t("chronicle.extract.resumeBlocked", "再開不可")}
+                  </button>
+                </div>
+              ))}
+              {recovery.status === "blocked" && recovery.errorCode && (
+                <code className="break-all text-[10px] text-destructive">
+                  {recovery.errorCode}
+                </code>
+              )}
+            </div>
+          )}
+
           <div className="flex items-center gap-2">
             <select
               value={folderId}
               onChange={(e) => handleSelectFolder(e.target.value)}
-              disabled={analyzing || importing}
+              disabled={analyzing || importing || recoveryUnresolved}
               className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-sm focus:outline-none"
             >
               <option value="">
@@ -397,7 +547,13 @@ export function ChronicleExtractDialog({
             <button
               type="button"
               onClick={handleAnalyze}
-              disabled={!folderId || analyzing || importing || !scope}
+              disabled={
+                !folderId ||
+                analyzing ||
+                importing ||
+                recoveryUnresolved ||
+                !scope
+              }
               className="inline-flex shrink-0 items-center gap-1 rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {analyzing ? (
@@ -409,9 +565,9 @@ export function ChronicleExtractDialog({
             </button>
           </div>
 
-          {(analyzing || scopedRunProjection) && (
+          {(analyzing || resuming || scopedRunProjection) && (
             <ChronicleExtractionProgress
-              analyzing={analyzing}
+              analyzing={analyzing || resuming}
               coverage={scopedRunProjection?.coverage ?? null}
               taskCounts={scopedRunProjection?.taskCounts ?? null}
               proposalCount={

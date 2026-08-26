@@ -80,6 +80,7 @@
         "trash_bin_list",
         "narrative_extraction_get_run",
         "narrative_extraction_list_resumable_runs",
+        "narrative_extraction_list_chronicle_task_resume_candidates",
         "narrative_extraction_get_run_review_bundle",
         "narrative_extraction_get_commit_status"
       ]

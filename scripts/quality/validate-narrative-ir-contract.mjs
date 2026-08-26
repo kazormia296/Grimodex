@@ -251,6 +251,7 @@ const REQUIRED_STAGE_PROVENANCE_IMPLEMENTATION_PINS = Object.freeze([
       "CHRONICLE_STAGE_SYNTHESIS_OUTPUTS_KIND",
       "resolve_terminal_output_receipt",
       "canonical_parsed_output_digest",
+      "hypotheses are not semantically equal to parsed terminal events",
       "every accepted synthesis terminal path must have exactly one output",
     ],
   }),
@@ -1293,6 +1294,9 @@ export function validateNarrativeIrContract(
       stageProvenance?.c1Completeness?.terminalOutputContract
         ?.hypothesesArtifactKind === "chronicle.event-hypotheses@1" &&
       stageProvenance?.c1Completeness?.terminalOutputContract
+        ?.hypothesisSemanticBinding ===
+        "normalized-event-output-all-semantic-fields-except-generated-hypothesis-id" &&
+      stageProvenance?.c1Completeness?.terminalOutputContract
         ?.rawObservationsArtifact?.kind === "chronicle.raw-observations@1" &&
       stageProvenance?.c1Completeness?.terminalOutputContract
         ?.rawObservationsArtifact?.genericV1 === true &&
@@ -1316,7 +1320,7 @@ export function validateNarrativeIrContract(
         ?.rejectsDeterministicEmpty === true &&
       stageProvenance?.c1Completeness?.terminalOutputContract?.v2ProposalSet
         ?.closurePersistence === "forbidden-recursively-by-key-or-shape",
-    "Stage provenance C1 completeness / C1 terminal-output status matrix, owner digest matching, repair lineage, generic raw-observation boundary, or receipt-only ProposalSet rule is incomplete",
+    "Stage provenance C1 completeness / C1 terminal-output status matrix, owner digest matching, repair lineage, hypothesis semantic binding, generic raw-observation boundary, or receipt-only ProposalSet rule is incomplete",
   );
   pushIf(
     errors,
@@ -1474,7 +1478,8 @@ export function validateNarrativeIrContract(
     receiptWriterInSource = false;
     receiptTablesInSchema = false;
   }
-  const terminalReceiptPersistence = stageProvenance?.terminalReceiptPersistence;
+  const terminalReceiptPersistence =
+    stageProvenance?.terminalReceiptPersistence;
   pushIf(
     errors,
     terminalReceiptPersistence?.owner === "native-typed-c2a-finish" &&
@@ -2003,7 +2008,9 @@ export function validateNarrativeIrContractFromRepo(repoRoot) {
             );
           }
         } else {
-          const foundMarkers = new Set(findings.map((finding) => finding.marker));
+          const foundMarkers = new Set(
+            findings.map((finding) => finding.marker),
+          );
           for (const marker of activation.productionMarkers ?? []) {
             if (!foundMarkers.has(marker)) {
               errors.push(

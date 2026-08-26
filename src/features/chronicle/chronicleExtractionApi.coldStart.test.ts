@@ -1,4 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+
+beforeEach(() => {
+  setCurrentWorkspaceIdentity({ path: "/ws/cold", openRevision: 3 });
+});
+
+afterEach(() => {
+  setCurrentWorkspaceIdentity(null);
+});
 
 const getRunReviewBundleMock = vi.hoisted(() => vi.fn());
 const getRunMock = vi.hoisted(() => vi.fn());
@@ -21,6 +30,7 @@ vi.mock(
 
 vi.mock("@/application/narrative-extraction/runRepository", () => ({
   getRun: (...args: unknown[]) => getRunMock(...args),
+  listChronicleTaskResumeCandidates: vi.fn(),
   listResumableRuns: listResumableRunsMock,
 }));
 
@@ -379,6 +389,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
   });
 
   it("fails closed when Native proposal set is missing", async () => {
+    setCurrentWorkspaceIdentity({ path: "/ws", openRevision: 1 });
     getRunMock.mockResolvedValue({
       run: {
         runId: "run-cold-empty",

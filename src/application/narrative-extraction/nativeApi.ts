@@ -16,6 +16,7 @@ import type {
   ChronicleStageTerminalReceiptV1,
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
 import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
+import type { ExistingChronicleEventCatalogRecord } from "@/features/chronicle/extraction/existingEventMatcher";
 
 export interface CreateRunTaskSeed {
   readonly taskId?: string;
@@ -519,6 +520,48 @@ export interface ResumableRunSummary {
   readonly completedAt: string | null;
 }
 
+export interface ListChronicleTaskResumeCandidatesPayload {
+  readonly projectId: string;
+  readonly limit?: number;
+}
+
+export type ChronicleTaskResumeAvailability =
+  | "ready"
+  | "lease-held"
+  | "blocked";
+
+export interface ChronicleTaskResumeCandidate {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly status: "pending" | "running";
+  readonly scopeJson: {
+    readonly folderId: string;
+    readonly sceneIds: readonly string[];
+  };
+  readonly specJson: Readonly<Record<string, unknown>>;
+  readonly runSpecDigest: string;
+  readonly snapshotDigest: string;
+  readonly catalogDigest: string;
+  readonly executionMode: "ai" | "deterministic-fallback";
+  readonly coordinatorContractDigest: string;
+  readonly completedTaskKinds: readonly string[];
+  readonly nextTask: {
+    readonly taskId: string;
+    readonly taskKind: string;
+    readonly status: "queued" | "running";
+    readonly leaseExpiresAt: string | null;
+  };
+  readonly availability: ChronicleTaskResumeAvailability;
+  readonly blockedCode: string | null;
+  readonly language: string | null;
+  readonly existingEventsCatalog: {
+    readonly kind: "chronicle.existing-events-catalog@1";
+    readonly events: readonly ExistingChronicleEventCatalogRecord[];
+  } | null;
+  readonly createdAt: string;
+  readonly startedAt: string | null;
+}
+
 export async function narrativeExtractionCreateRun(
   payload: CreateRunPayload,
 ): Promise<CreateRunResult> {
@@ -700,6 +743,15 @@ export async function narrativeExtractionListResumableRuns(
 ): Promise<readonly ResumableRunSummary[]> {
   return invoke<readonly ResumableRunSummary[]>(
     "narrative_extraction_list_resumable_runs",
+    { payload },
+  );
+}
+
+export async function narrativeExtractionListChronicleTaskResumeCandidates(
+  payload: ListChronicleTaskResumeCandidatesPayload,
+): Promise<readonly ChronicleTaskResumeCandidate[]> {
+  return invoke<readonly ChronicleTaskResumeCandidate[]>(
+    "narrative_extraction_list_chronicle_task_resume_candidates",
     { payload },
   );
 }

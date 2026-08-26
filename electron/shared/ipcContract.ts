@@ -759,12 +759,17 @@ export interface NapiBackendLike {
   narrativeExtractionCreateRun(payload: unknown): Promise<string>;
   narrativeExtractionGetRun(payload: unknown): Promise<string>;
   narrativeExtractionListResumableRuns(payload: unknown): Promise<string>;
+  narrativeExtractionListChronicleTaskResumeCandidates?(
+    payload: unknown,
+  ): Promise<string>;
   narrativeExtractionCancelRun(payload: unknown): Promise<string>;
   narrativeExtractionClaimTask(payload: unknown): Promise<string>;
   narrativeExtractionFinishTask(payload: unknown): Promise<string>;
   narrativeExtractionFailTask(payload: unknown): Promise<string>;
   narrativeExtractionSaveProposalSet(payload: unknown): Promise<string>;
-  narrativeExtractionCreateHumanDerivedRevision(payload: unknown): Promise<string>;
+  narrativeExtractionCreateHumanDerivedRevision(
+    payload: unknown,
+  ): Promise<string>;
   narrativeExtractionGetRunReviewBundle(payload: unknown): Promise<string>;
   narrativeExtractionAppendRevision(payload: unknown): Promise<string>;
   narrativeExtractionAppendDecision(payload: unknown): Promise<string>;
@@ -998,6 +1003,37 @@ function requireRecord(
     );
   }
   return value as CommandArgs;
+}
+
+function requireChronicleTaskResumeCandidatesPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_extraction_list_chronicle_task_resume_candidates";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId", "limit"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const projectId = requireNonEmptyString(payload, "projectId", command);
+  if (projectId.trim().length === 0 || projectId.trim() !== projectId) {
+    throw new Error(
+      `invalid args \`projectId\` for command \`${command}\`: expected a non-empty exact string`,
+    );
+  }
+  if (!Object.hasOwn(payload, "limit") || payload.limit === undefined) {
+    return { projectId };
+  }
+  const limit = requireSafeInteger(payload, "limit", command);
+  if (limit < 1 || limit > 100) {
+    throw new Error(
+      `invalid args \`limit\` for command \`${command}\`: expected an integer from 1 through 100`,
+    );
+  }
+  return { projectId, limit };
 }
 
 function requireTrashBinRestorePayload(args: CommandArgs): CommandArgs {
@@ -7619,6 +7655,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
             "narrative_extraction_list_resumable_runs",
           ),
         ),
+      ),
+  },
+  narrative_extraction_list_chronicle_task_resume_candidates: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionListChronicleTaskResumeCandidates,
+          "narrativeExtractionListChronicleTaskResumeCandidates",
+        )(requireChronicleTaskResumeCandidatesPayload(a)),
       ),
   },
   narrative_extraction_cancel_run: {

@@ -1511,11 +1511,7 @@ pub(crate) struct LifecycleEvidence<T> {
 pub(crate) fn select_unique_latest_lifecycle_evidence<T>(
     evidence: Vec<LifecycleEvidence<T>>,
 ) -> anyhow::Result<Option<LifecycleEvidence<T>>> {
-    let Some(max_lifecycle) = evidence
-        .iter()
-        .map(|evidence| evidence.lifecycle_at.clone())
-        .max()
-    else {
+    let Some(max_lifecycle) = evidence.iter().map(|evidence| evidence.lifecycle_at).max() else {
         return Ok(None);
     };
     let mut maximal = evidence

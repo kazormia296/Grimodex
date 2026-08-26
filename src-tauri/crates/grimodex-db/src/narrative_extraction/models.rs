@@ -538,6 +538,17 @@ pub struct ListResumableRunsPayload {
     pub limit: Option<i64>,
 }
 
+/// Project-scoped discovery input for interrupted current Chronicle DAGs.
+/// This is deliberately separate from [`ListResumableRunsPayload`], whose
+/// contract is Review restoration for Runs that already own a ProposalSet.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListChronicleTaskResumeCandidatesPayload {
+    pub project_id: String,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitApplicationRef {

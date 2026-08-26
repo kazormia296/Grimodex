@@ -407,6 +407,19 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     const finishPayloads = finishMock.mock.calls.map(
       ([payload]) => payload as Record<string, unknown>,
     );
+    expect(finishPayloads[0]?.artifacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          artifactKind: CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+          payloadJson: expect.objectContaining({
+            existingEventsCatalog: {
+              kind: "chronicle.existing-events-catalog@1",
+              events: [],
+            },
+          }),
+        }),
+      ]),
+    );
     expect(finishPayloads[0]?.historicalScopeAuthorityBasis).toBeDefined();
     expect(
       finishPayloads
@@ -594,7 +607,13 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
 
     const observationPayload = await loadInlineJsonArtifact<{
       observations: readonly RawChronicleEventObservation[];
-    }>("run-ai-observe", CHRONICLE_EXTRACT_ARTIFACT_KINDS.observations);
+    }>("run-ai-observe", CHRONICLE_EXTRACT_ARTIFACT_KINDS.observations, {
+      scope: {
+        projectId: "project-a",
+        workspacePath: null,
+        workspaceOpenRevision: null,
+      },
+    });
     expect(observationPayload?.observations).toHaveLength(2);
     const localIds =
       observationPayload?.observations.map((item) => item.localId) ?? [];
@@ -1412,6 +1431,133 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     expect(claimMock).not.toHaveBeenCalled();
   });
 
+  it("does not cache a Snapshot draft when FinishTask rolls back, and same-process resume rejects the missing durable artifact", async () => {
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-finish-rollback",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "Rollback",
+          orderIndex: 0,
+          proseMirrorJson: prose("教会の尖塔が崩れ落ちた。"),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 1,
+            sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+
+    finishMock.mockRejectedValueOnce(new Error("FinishTask rolled back"));
+    await expect(
+      runChronicleExtractionCoordinator(
+        {
+          projectId: "project-a",
+          folderId: "folder-1",
+          language: "ja",
+          sceneIds: ["scene-one"],
+          authority: authority(),
+          runId: "run-finish-rollback",
+        },
+        {
+          useAi: false,
+          buildSnapshot: async () => ({
+            ok: true as const,
+            snapshot: built.snapshot,
+            scopeAuthorityDocuments: [
+              {
+                documentRef: "D000001",
+                sourceKey: "project:scene:one" as const,
+                rawStoryKey: null,
+              },
+            ],
+            flush: { status: "already-clean" as const, blockedDocuments: [] },
+          }),
+        },
+      ),
+    ).rejects.toThrow("FinishTask rolled back");
+
+    await expect(
+      loadInlineJsonArtifact(
+        "run-finish-rollback",
+        CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+        {
+          scope: {
+            projectId: "project-a",
+            workspacePath: null,
+            workspaceOpenRevision: null,
+          },
+        },
+      ),
+    ).resolves.toBeNull();
+
+    const resumeSpec = await sealedResumeSpec("deterministic-fallback");
+    getRunMock.mockResolvedValue({
+      ...resumableProjection("run-finish-rollback", resumeSpec),
+      tasks: TEST_CHRONICLE_TASK_CHAIN.map((taskKind, index) => ({
+        taskId: `rollback-task-${index + 1}`,
+        runId: "run-finish-rollback",
+        taskKind,
+        status: index === 0 ? ("completed" as const) : ("queued" as const),
+        inputJson: {},
+        outputJson: index === 0 ? { snapshotDigest: TEST_STAGE_DIGEST } : null,
+        priority: TEST_CHRONICLE_TASK_CHAIN.length - index,
+        attemptCount: index === 0 ? 1 : 0,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        errorMessage: null,
+        createdAt: "2026-08-10T00:00:00.000Z",
+        startedAt: index === 0 ? "2026-08-10T00:00:00.000Z" : null,
+        completedAt: index === 0 ? "2026-08-10T00:00:01.000Z" : null,
+        version: 1,
+      })),
+      taskCounts: {
+        queued: 8,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-finish-rollback",
+      projectId: "project-a",
+      artifacts: [],
+      stageReceipts: [],
+      proposalSet: null,
+      proposals: [],
+    });
+
+    await expect(
+      runChronicleExtractionCoordinator(
+        {
+          projectId: "project-a",
+          folderId: "folder-1",
+          language: "ja",
+          sceneIds: ["scene-one"],
+          authority: authority(),
+          runId: "run-finish-rollback",
+          resume: true,
+          specDigest: TEST_COORDINATOR_CONTRACT_DIGEST,
+          existingEvents: [],
+        },
+        { useAi: false },
+      ),
+    ).rejects.toThrow("NEX_CHRONICLE_RESUME_SNAPSHOT_MISSING");
+  });
+
   it("rejects an AI/fallback, catalog, or canonical-spec change before it claims a resumed Run", async () => {
     const catalogDrift: ExistingChronicleEventCatalogRecord = {
       ...CATALOG_EVENT,
@@ -1479,6 +1625,90 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
       ).rejects.toThrow("NEX_CHRONICLE_RESUME_SPEC_MISMATCH");
       expect(claimMock).not.toHaveBeenCalled();
     }
+  });
+
+  it("rejects a source.snapshot catalog that no longer matches the sealed Run catalog", async () => {
+    const runId = "run-corrupt-snapshot-catalog";
+    const resumeSpec = await sealedResumeSpec("deterministic-fallback", []);
+    getRunMock.mockResolvedValue({
+      ...resumableProjection(runId, resumeSpec),
+      tasks: TEST_CHRONICLE_TASK_CHAIN.map((taskKind, index) => ({
+        taskId: `catalog-task-${index + 1}`,
+        runId,
+        taskKind,
+        status: index === 0 ? ("completed" as const) : ("queued" as const),
+        inputJson: {},
+        outputJson: index === 0 ? { snapshotDigest: TEST_STAGE_DIGEST } : null,
+        priority: TEST_CHRONICLE_TASK_CHAIN.length - index,
+        attemptCount: index === 0 ? 1 : 0,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        errorMessage: null,
+        createdAt: "2026-08-10T00:00:00.000Z",
+        startedAt: index === 0 ? "2026-08-10T00:00:00.000Z" : null,
+        completedAt: index === 0 ? "2026-08-10T00:00:01.000Z" : null,
+        version: 1,
+      })),
+      taskCounts: {
+        queued: 8,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+    getRunReviewBundleMock.mockResolvedValue({
+      runId,
+      projectId: "project-a",
+      artifacts: [
+        {
+          artifactId: "artifact-corrupt-snapshot-catalog",
+          runId,
+          taskId: "catalog-task-1",
+          attemptId: "catalog-attempt-1",
+          artifactKind: CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+          payloadStorage: "inline-json",
+          payloadJson: {
+            snapshot: {
+              digest: TEST_STAGE_DIGEST,
+              documents: [],
+            },
+            sourceViews: [],
+            scopeAuthorityDocuments: [],
+            existingEventsCatalog: {
+              kind: "chronicle.existing-events-catalog@1",
+              events: [CATALOG_EVENT],
+            },
+          },
+          payloadRef: null,
+          payloadDigest: TEST_STAGE_DIGEST,
+          createdAt: "2026-08-10T00:00:01.000Z",
+        },
+      ],
+      stageReceipts: [],
+      proposalSet: null,
+      proposals: [],
+    });
+
+    await expect(
+      runChronicleExtractionCoordinator(
+        {
+          projectId: "project-a",
+          folderId: "folder-1",
+          language: "ja",
+          sceneIds: ["scene-one"],
+          authority: authority(),
+          runId,
+          resume: true,
+          specDigest: TEST_COORDINATOR_CONTRACT_DIGEST,
+          existingEvents: [],
+        },
+        { useAi: false },
+      ),
+    ).rejects.toThrow("NEX_CHRONICLE_RESUME_CATALOG_MISMATCH");
+    expect(createRunMock).not.toHaveBeenCalled();
+    expect(claimMock).not.toHaveBeenCalled();
   });
 
   it("captures mutation authority before the first asynchronous Run-spec digest", async () => {

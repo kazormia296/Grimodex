@@ -1,11 +1,14 @@
 //! SQL persistence for narrative extraction runs, tasks, and proposals.
 
 use anyhow::Context;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use grimodex_core::{
     canonical_json_digest,
     narrative_ir::{
         validate_chronicle_scene_event_proposal_payload, CHRONICLE_EVENT_PROPOSAL_KIND,
+    },
+    narrative_scope_authority_basis::{
+        build_narrative_scope_authority_basis_v2, NarrativeScopeAuthorityDocumentInputV2,
     },
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -20,7 +23,7 @@ use super::dependency_edges::{
     canonical_source_object_identity, find_edges_by_consumer, record_dependency_edge_in_tx,
     validate_run_id, PROPOSAL_REVISION_CONSUMER_KIND,
 };
-use super::execution_state::next_run_lifecycle_timestamp_in_tx;
+use super::execution_state::{next_run_lifecycle_timestamp_in_tx, parse_run_lifecycle_instant};
 use super::human_material_basis::{project_d1_declaration_set, D1ParentAuthority, MaterialBasis};
 use super::publish_runtime::publish_complete_runless_freshness_in_tx;
 use super::restore_rebuild::evaluate_edge_from_db;
@@ -39,8 +42,8 @@ use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
     ChroniclePlanProposalSetFinish, ChronicleStageId, CreateRunPayload, CreateTaskSeed,
-    FailTaskPayload, FinishTaskPayload, ListResumableRunsPayload, ProposalSeed,
-    ReviseAndDecidePayload, SaveProposalSetPayload,
+    FailTaskPayload, FinishTaskPayload, ListChronicleTaskResumeCandidatesPayload,
+    ListResumableRunsPayload, ProposalSeed, ReviseAndDecidePayload, SaveProposalSetPayload,
 };
 use super::reconciliation_envelope::{
     ensure_v2_proposal_payload_digest, envelope_schema_version, validate_envelope_source_tokens,
@@ -56,6 +59,7 @@ use crate::Database;
 
 const CHRONICLE_EXTRACT_SURFACE_PATH: &str = "chronicle.extract";
 const CHRONICLE_RUN_SPEC_KIND: &str = "chronicle.extract.run-spec@2";
+const CHRONICLE_EXISTING_EVENTS_CATALOG_KIND: &str = "chronicle.existing-events-catalog@1";
 const CHRONICLE_EXTRACT_TASK_CHAIN: [&str; 9] = [
     "source.snapshot@1",
     "source.window-plan@1",
@@ -513,7 +517,7 @@ fn validate_current_chronicle_ai_task_finish_input(
         payload.chronicle_stage_receipts.iter().any(|receipt| {
             receipt.stage_execution.task_id == payload.task_id
                 && receipt.stage_execution.attempt_id == payload.attempt_id
-                && &receipt.stage_execution.stage_id == &stage_id
+                && receipt.stage_execution.stage_id == stage_id
         })
     };
     match task_kind.as_str() {
@@ -1212,6 +1216,1000 @@ pub fn list_resumable_runs(
         })?;
         let summaries: Vec<Value> = rows.collect::<Result<_, _>>()?;
         Ok(json!(summaries))
+    })
+}
+
+#[derive(Debug)]
+struct ChronicleTaskResumeRunRow {
+    run_id: String,
+    project_id: String,
+    run_kind: String,
+    status: String,
+    scope_json_text: String,
+    spec_json_text: String,
+    spec_digest: String,
+    snapshot_digest: Option<String>,
+    catalog_digest: Option<String>,
+    created_at: String,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+}
+
+#[derive(Debug)]
+struct ChronicleTaskResumeTaskRow {
+    task_id: String,
+    task_kind: String,
+    status: String,
+    attempt_count: i64,
+    lease_owner: Option<String>,
+    lease_expires_at: Option<String>,
+    heartbeat_at: Option<String>,
+    created_at: String,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+}
+
+#[derive(Debug)]
+struct ChronicleTaskResumeCandidateRow {
+    run_id: String,
+    lifecycle_at: DateTime<Utc>,
+    value: Value,
+}
+
+#[derive(Debug)]
+struct ChronicleResumeSnapshotInputs {
+    language: String,
+    existing_events_catalog: Option<Value>,
+    document_count: usize,
+    corpus_payload_digest: String,
+    scope_authority_composite_digest: Option<String>,
+}
+
+fn chronicle_resume_lifecycle_instant(
+    run_id: &str,
+    field: &str,
+    value: &str,
+) -> anyhow::Result<DateTime<Utc>> {
+    parse_run_lifecycle_instant(value).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_LIFECYCLE_INVALID: Run '{run_id}' {field} is invalid: {error}"
+        )
+    })
+}
+
+fn chronicle_resume_task_lifecycle_instant(
+    run_id: &str,
+    task_id: &str,
+    field: &str,
+    value: &str,
+) -> anyhow::Result<DateTime<Utc>> {
+    parse_run_lifecycle_instant(value).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_LIFECYCLE_INVALID: Run '{run_id}' Task '{task_id}' {field} is invalid: {error}"
+        )
+    })
+}
+
+fn validate_chronicle_resume_scope(scope_json: &Value, run_id: &str) -> anyhow::Result<()> {
+    let scope = scope_json.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_SCOPE_INVALID: Run '{run_id}' scopeJson must be an object"
+        )
+    })?;
+    anyhow::ensure!(
+        scope.len() == 2 && scope.contains_key("folderId") && scope.contains_key("sceneIds"),
+        "NEX_CHRONICLE_RESUME_SCOPE_INVALID: Run '{run_id}' scopeJson must contain only folderId and sceneIds"
+    );
+    let folder_id = scope
+        .get("folderId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SCOPE_INVALID: Run '{run_id}' folderId is missing"
+            )
+        })?;
+    anyhow::ensure!(
+        !folder_id.is_empty() && folder_id.trim() == folder_id,
+        "NEX_CHRONICLE_RESUME_SCOPE_INVALID: Run '{run_id}' folderId must be non-empty and unpadded"
+    );
+    let scene_ids = scope
+        .get("sceneIds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SCOPE_INVALID: Run '{run_id}' sceneIds must be an array"
+            )
+        })?;
+    let mut unique = HashSet::with_capacity(scene_ids.len());
+    for scene_id in scene_ids {
+        let scene_id = scene_id.as_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SCOPE_INVALID: Run '{run_id}' sceneIds must contain strings"
+            )
+        })?;
+        anyhow::ensure!(
+            !scene_id.is_empty() && scene_id.trim() == scene_id && unique.insert(scene_id),
+            "NEX_CHRONICLE_RESUME_SCOPE_INVALID: Run '{run_id}' sceneIds must be non-empty, unpadded, and unique"
+        );
+    }
+    Ok(())
+}
+
+fn load_chronicle_resume_tasks(
+    conn: &Connection,
+    run_id: &str,
+) -> anyhow::Result<Vec<ChronicleTaskResumeTaskRow>> {
+    let mut statement = conn.prepare(
+        "SELECT id, task_kind, status, attempt_count, lease_owner,
+                lease_expires_at, heartbeat_at, created_at, started_at, completed_at
+           FROM narrative_extraction_tasks
+          WHERE run_id = ?1",
+    )?;
+    let tasks = statement
+        .query_map(params![run_id], |row| {
+            Ok(ChronicleTaskResumeTaskRow {
+                task_id: row.get(0)?,
+                task_kind: row.get(1)?,
+                status: row.get(2)?,
+                attempt_count: row.get(3)?,
+                lease_owner: row.get(4)?,
+                lease_expires_at: row.get(5)?,
+                heartbeat_at: row.get(6)?,
+                created_at: row.get(7)?,
+                started_at: row.get(8)?,
+                completed_at: row.get(9)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(anyhow::Error::from)?;
+    Ok(tasks)
+}
+
+fn validate_chronicle_resume_task_lifecycle(
+    conn: &Connection,
+    run_id: &str,
+    task: &ChronicleTaskResumeTaskRow,
+) -> anyhow::Result<()> {
+    let _ = chronicle_resume_task_lifecycle_instant(
+        run_id,
+        &task.task_id,
+        "createdAt",
+        &task.created_at,
+    )?;
+    if let Some(started_at) = task.started_at.as_deref() {
+        let _ = chronicle_resume_task_lifecycle_instant(
+            run_id,
+            &task.task_id,
+            "startedAt",
+            started_at,
+        )?;
+    }
+    if let Some(completed_at) = task.completed_at.as_deref() {
+        let _ = chronicle_resume_task_lifecycle_instant(
+            run_id,
+            &task.task_id,
+            "completedAt",
+            completed_at,
+        )?;
+    }
+
+    match task.status.as_str() {
+        "completed" => {
+            anyhow::ensure!(
+                task.attempt_count > 0
+                    && task.completed_at.is_some()
+                    && task.lease_owner.is_none()
+                    && task.lease_expires_at.is_none()
+                    && task.heartbeat_at.is_none(),
+                "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: completed Task '{}' has invalid lifecycle or lease coordinates",
+                task.task_kind
+            );
+            let mut attempts = conn.prepare(
+                "SELECT status, started_at, completed_at
+                   FROM narrative_extraction_attempts
+                  WHERE task_id = ?1 AND attempt_number = ?2",
+            )?;
+            let attempts = attempts
+                .query_map(params![task.task_id, task.attempt_count], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            anyhow::ensure!(
+                attempts.len() == 1,
+                "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: completed Task '{}' must have exactly one current Attempt",
+                task.task_kind
+            );
+            let (attempt_status, attempt_started_at, attempt_completed_at) =
+                attempts.into_iter().next().ok_or_else(|| {
+                    anyhow::anyhow!("unreachable checked completed Chronicle Attempt")
+                })?;
+            anyhow::ensure!(
+                attempt_status == "completed" && attempt_completed_at.is_some(),
+                "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: completed Task '{}' current Attempt is not completed",
+                task.task_kind
+            );
+            parse_run_lifecycle_instant(&attempt_started_at).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_LIFECYCLE_INVALID: completed Task '{}' current Attempt has invalid startedAt: {error}",
+                    task.task_kind
+                )
+            })?;
+            parse_run_lifecycle_instant(
+                attempt_completed_at
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("unreachable completed Attempt instant"))?,
+            )
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_LIFECYCLE_INVALID: completed Task '{}' current Attempt has invalid completedAt: {error}",
+                    task.task_kind
+                )
+            })?;
+        }
+        "queued" => {
+            anyhow::ensure!(
+                task.completed_at.is_none()
+                    && task.lease_owner.is_none()
+                    && task.lease_expires_at.is_none()
+                    && task.heartbeat_at.is_none(),
+                "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: queued Task '{}' retains terminal or lease coordinates",
+                task.task_kind
+            );
+        }
+        "running" => {
+            let owner = task.lease_owner.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_LEASE_INVALID: running Task '{}' has no lease owner",
+                    task.task_kind
+                )
+            })?;
+            anyhow::ensure!(
+                !owner.trim().is_empty() && task.completed_at.is_none() && task.attempt_count > 0,
+                "NEX_CHRONICLE_RESUME_LEASE_INVALID: running Task '{}' has invalid lease lifecycle",
+                task.task_kind
+            );
+            let lease_expires_at = task.lease_expires_at.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_LEASE_INVALID: running Task '{}' has no lease expiry",
+                    task.task_kind
+                )
+            })?;
+            parse_run_lifecycle_instant(lease_expires_at).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_LEASE_INVALID: running Task '{}' has invalid lease expiry: {error}",
+                    task.task_kind
+                )
+            })?;
+            let heartbeat_at = task.heartbeat_at.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_LEASE_INVALID: running Task '{}' has no heartbeat",
+                    task.task_kind
+                )
+            })?;
+            parse_run_lifecycle_instant(heartbeat_at).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_LEASE_INVALID: running Task '{}' has invalid heartbeat: {error}",
+                    task.task_kind
+                )
+            })?;
+
+            let mut attempts = conn.prepare(
+                "SELECT status, started_at, completed_at
+                   FROM narrative_extraction_attempts
+                  WHERE task_id = ?1 AND attempt_number = ?2",
+            )?;
+            let attempts = attempts
+                .query_map(params![task.task_id, task.attempt_count], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            anyhow::ensure!(
+                attempts.len() == 1,
+                "NEX_CHRONICLE_RESUME_LEASE_INVALID: running Task '{}' must have exactly one current Attempt",
+                task.task_kind
+            );
+            let (attempt_status, attempt_started_at, attempt_completed_at) = attempts
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("unreachable checked current Chronicle Attempt"))?;
+            anyhow::ensure!(
+                attempt_status == "running" && attempt_completed_at.is_none(),
+                "NEX_CHRONICLE_RESUME_LEASE_INVALID: running Task '{}' current Attempt is not running",
+                task.task_kind
+            );
+            parse_run_lifecycle_instant(&attempt_started_at).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_LEASE_INVALID: running Task '{}' current Attempt has invalid startedAt: {error}",
+                    task.task_kind
+                )
+            })?;
+        }
+        _ => anyhow::bail!(
+            "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: Task '{}' has unsupported status '{}'",
+            task.task_kind,
+            task.status
+        ),
+    }
+    Ok(())
+}
+
+fn load_verified_chronicle_snapshot_payload(
+    conn: &Connection,
+    run_id: &str,
+) -> anyhow::Result<Value> {
+    let mut statement = conn.prepare(
+        "SELECT artifact.payload_json
+           FROM narrative_extraction_tasks task
+           JOIN narrative_extraction_attempts attempt
+             ON attempt.task_id = task.id
+            AND attempt.attempt_number = task.attempt_count
+            AND attempt.status = 'completed'
+           JOIN narrative_extraction_artifacts artifact
+             ON artifact.run_id = task.run_id
+            AND artifact.task_id = task.id
+            AND artifact.attempt_id = attempt.id
+            AND artifact.artifact_kind = 'source.snapshot@1'
+          WHERE task.run_id = ?1
+            AND task.task_kind = 'source.snapshot@1'
+            AND task.status = 'completed'",
+    )?;
+    let payloads = statement
+        .query_map(params![run_id], |row| row.get::<_, Option<String>>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        payloads.len() == 1,
+        "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: completed source.snapshot@1 requires exactly one current payload"
+    );
+    let payload = payloads.into_iter().next().flatten().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: source.snapshot@1 has no inline payload"
+        )
+    })?;
+    serde_json::from_str(&payload).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: source.snapshot@1 payload is malformed: {error}"
+        )
+    })
+}
+
+fn validate_chronicle_resume_snapshot_inputs(
+    payload: &Value,
+    project_id: &str,
+    run_id: &str,
+    snapshot_digest: &str,
+    catalog_digest: &str,
+    scope_json: &Value,
+) -> anyhow::Result<ChronicleResumeSnapshotInputs> {
+    let snapshot_validation = super::scope_authority_runtime::validate_snapshot_authority_finish(
+        payload,
+        project_id,
+        run_id,
+        snapshot_digest,
+        None,
+    )?;
+    let payload = payload.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' source.snapshot@1 payload must be an object"
+        )
+    })?;
+    let snapshot = payload
+        .get("snapshot")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot is missing"
+            )
+        })?;
+    anyhow::ensure!(
+        snapshot.get("digest").and_then(Value::as_str) == Some(snapshot_digest),
+        "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot digest differs from the Run"
+    );
+    let language = snapshot
+        .get("language")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot language is missing"
+            )
+        })?;
+    anyhow::ensure!(
+        !language.is_empty() && language.trim() == language,
+        "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot language is empty or padded"
+    );
+    let origin = snapshot
+        .get("origin")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot origin is missing"
+            )
+        })?;
+    anyhow::ensure!(
+        origin.get("kind").and_then(Value::as_str) == Some("grimodex-project")
+            && origin.get("projectId").and_then(Value::as_str) == Some(project_id),
+        "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot origin belongs to another project"
+    );
+    let documents = snapshot
+        .get("documents")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot documents are missing"
+            )
+        })?;
+    let source_views = payload
+        .get("sourceViews")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' sourceViews are missing"
+            )
+        })?;
+    let _ = source_views;
+    let authority_documents = payload
+        .get("scopeAuthorityDocuments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' scopeAuthorityDocuments are missing"
+            )
+        })?;
+    anyhow::ensure!(
+        documents.len() == authority_documents.len(),
+        "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' scope authority roster does not cover every document"
+    );
+    let scope_scene_ids = scope_json
+        .get("sceneIds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("unreachable validated Chronicle scope"))?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        documents.len() == scope_scene_ids.len(),
+        "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot document roster differs from ordered scopeJson.sceneIds"
+    );
+    let mut document_refs = HashSet::with_capacity(documents.len());
+    let mut scope_authority_inputs = Vec::with_capacity(documents.len());
+    for (index, ((document, authority), scope_scene_id)) in documents
+        .iter()
+        .zip(authority_documents.iter())
+        .zip(scope_scene_ids.iter())
+        .enumerate()
+    {
+        let document = document.as_object().ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' document {index} is invalid"
+            )
+        })?;
+        let authority = authority.as_object().ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' authority document {index} is invalid"
+            )
+        })?;
+        let document_ref = document.get("ref").and_then(Value::as_str).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' document {index} has no ref"
+            )
+        })?;
+        let source_key = document
+            .get("sourceKey")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' document {index} has no sourceKey"
+                )
+            })?;
+        let document_origin = document
+            .get("origin")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' document {index} has no origin"
+                )
+            })?;
+        let node_id = document_origin
+            .get("nodeId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' document {index} has no nodeId"
+                )
+            })?;
+        let raw_story_key = match authority.get("rawStoryKey") {
+            Some(Value::Null) => None,
+            Some(Value::String(value)) => Some(value.clone()),
+            _ => {
+                anyhow::bail!(
+                    "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' authority document {index} has an invalid rawStoryKey"
+                );
+            }
+        };
+        anyhow::ensure!(
+            document_refs.insert(document_ref)
+                && source_key == format!("project:scene:{node_id}")
+                && document_origin.get("kind").and_then(Value::as_str) == Some("project-node")
+                && document_origin.get("projectId").and_then(Value::as_str) == Some(project_id)
+                && node_id == *scope_scene_id
+                && authority.get("documentRef").and_then(Value::as_str) == Some(document_ref)
+                && authority.get("sourceKey").and_then(Value::as_str) == Some(source_key),
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' document {index} authority differs from its sealed project Scene"
+        );
+        scope_authority_inputs.push(NarrativeScopeAuthorityDocumentInputV2 {
+            document_ref: document_ref.to_string(),
+            source_key: source_key.to_string(),
+            raw_story_key,
+        });
+    }
+    let scope_authority_composite_digest = if scope_authority_inputs.is_empty() {
+        None
+    } else {
+        Some(
+            build_narrative_scope_authority_basis_v2(
+                project_id,
+                run_id,
+                snapshot_digest,
+                &scope_authority_inputs,
+            )?
+            .digests
+            .composite_digest,
+        )
+    };
+
+    let Some(catalog) = payload.get("existingEventsCatalog") else {
+        return Ok(ChronicleResumeSnapshotInputs {
+            language: language.to_string(),
+            existing_events_catalog: None,
+            document_count: snapshot_validation.document_count,
+            corpus_payload_digest: snapshot_validation.corpus_payload_digest,
+            scope_authority_composite_digest,
+        });
+    };
+    if catalog.is_null() {
+        return Ok(ChronicleResumeSnapshotInputs {
+            language: language.to_string(),
+            existing_events_catalog: None,
+            document_count: snapshot_validation.document_count,
+            corpus_payload_digest: snapshot_validation.corpus_payload_digest,
+            scope_authority_composite_digest,
+        });
+    }
+    let catalog_object = catalog.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_CATALOG_INVALID: Run '{run_id}' existingEventsCatalog must be an object"
+        )
+    })?;
+    anyhow::ensure!(
+        catalog_object.len() == 2
+            && catalog_object.get("kind").and_then(Value::as_str)
+                == Some(CHRONICLE_EXISTING_EVENTS_CATALOG_KIND)
+            && catalog_object.get("events").is_some_and(Value::is_array),
+        "NEX_CHRONICLE_RESUME_CATALOG_INVALID: Run '{run_id}' existingEventsCatalog has an unsupported shape"
+    );
+    anyhow::ensure!(
+        canonical_json_digest(catalog)? == catalog_digest,
+        "NEX_CHRONICLE_RESUME_CATALOG_MISMATCH: Run '{run_id}' existingEventsCatalog differs from its sealed digest"
+    );
+    Ok(ChronicleResumeSnapshotInputs {
+        language: language.to_string(),
+        existing_events_catalog: Some(catalog.clone()),
+        document_count: snapshot_validation.document_count,
+        corpus_payload_digest: snapshot_validation.corpus_payload_digest,
+        scope_authority_composite_digest,
+    })
+}
+
+fn validate_chronicle_resume_snapshot_output(
+    output_json: &Value,
+    run_id: &str,
+    snapshot_digest: &str,
+    snapshot_inputs: &ChronicleResumeSnapshotInputs,
+) -> anyhow::Result<()> {
+    let output = output_json.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot Task output must be an object"
+        )
+    })?;
+    anyhow::ensure!(
+        output.get("snapshotDigest").and_then(Value::as_str) == Some(snapshot_digest),
+        "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot Task output differs from the Run digest"
+    );
+    anyhow::ensure!(
+        output.get("documentCount").and_then(Value::as_u64)
+            == u64::try_from(snapshot_inputs.document_count).ok(),
+        "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot Task documentCount differs from the sealed corpus"
+    );
+    anyhow::ensure!(
+        output.get("corpusPayloadDigest").and_then(Value::as_str)
+            == Some(snapshot_inputs.corpus_payload_digest.as_str()),
+        "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot Task corpusPayloadDigest differs from Native canonical JSON"
+    );
+    let output_composite_digest = output.get("scopeAuthorityCompositeDigest");
+    match snapshot_inputs.scope_authority_composite_digest.as_deref() {
+        Some(expected) => anyhow::ensure!(
+            output_composite_digest.and_then(Value::as_str) == Some(expected),
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' snapshot Task scopeAuthorityCompositeDigest differs from its reconstructed basis"
+        ),
+        None => anyhow::ensure!(
+            output_composite_digest.is_some_and(Value::is_null),
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{run_id}' empty snapshot Task must seal a null scopeAuthorityCompositeDigest"
+        ),
+    }
+    Ok(())
+}
+
+fn build_chronicle_task_resume_candidate(
+    conn: &Connection,
+    row: ChronicleTaskResumeRunRow,
+    now: DateTime<Utc>,
+) -> anyhow::Result<Option<ChronicleTaskResumeCandidateRow>> {
+    let spec_json: Value = serde_json::from_str(&row.spec_json_text).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RUN_SPEC_INVALID: Run '{}' specJson is malformed: {error}",
+            row.run_id
+        )
+    })?;
+    if !validate_current_chronicle_run_spec(
+        CHRONICLE_EXTRACT_SURFACE_PATH,
+        &spec_json,
+        &row.spec_digest,
+        row.catalog_digest.as_deref(),
+    )? {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        row.run_kind == "interpretation",
+        "NEX_CHRONICLE_RESUME_RUN_INVALID: current Chronicle Run '{}' is not interpretation-owned",
+        row.run_id
+    );
+    let snapshot_digest = row.snapshot_digest.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_MISSING: current Chronicle Run '{}' has no snapshotDigest",
+            row.run_id
+        )
+    })?;
+    anyhow::ensure!(
+        is_sha256_digest(snapshot_digest),
+        "NEX_CHRONICLE_RESUME_SNAPSHOT_MISSING: current Chronicle Run '{}' snapshotDigest is invalid",
+        row.run_id
+    );
+    let catalog_digest = row.catalog_digest.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RUN_SPEC_CATALOG_MISMATCH: current Chronicle Run '{}' has no catalogDigest",
+            row.run_id
+        )
+    })?;
+    let scope_json: Value = serde_json::from_str(&row.scope_json_text).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_SCOPE_INVALID: Run '{}' scopeJson is malformed: {error}",
+            row.run_id
+        )
+    })?;
+    validate_chronicle_resume_scope(&scope_json, &row.run_id)?;
+
+    let created_at = chronicle_resume_lifecycle_instant(&row.run_id, "createdAt", &row.created_at)?;
+    let started_at = row
+        .started_at
+        .as_deref()
+        .map(|value| chronicle_resume_lifecycle_instant(&row.run_id, "startedAt", value))
+        .transpose()?;
+    anyhow::ensure!(
+        row.completed_at.is_none(),
+        "NEX_CHRONICLE_RESUME_LIFECYCLE_INVALID: non-terminal Run '{}' has completedAt",
+        row.run_id
+    );
+    match row.status.as_str() {
+        "pending" => anyhow::ensure!(
+            started_at.is_none(),
+            "NEX_CHRONICLE_RESUME_LIFECYCLE_INVALID: pending Run '{}' has startedAt",
+            row.run_id
+        ),
+        "running" => {
+            let started_at = started_at.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_LIFECYCLE_INVALID: running Run '{}' has no startedAt",
+                    row.run_id
+                )
+            })?;
+            anyhow::ensure!(
+                started_at >= created_at,
+                "NEX_CHRONICLE_RESUME_LIFECYCLE_INVALID: running Run '{}' startedAt precedes createdAt",
+                row.run_id
+            );
+        }
+        _ => anyhow::bail!(
+            "NEX_CHRONICLE_RESUME_RUN_INVALID: Run '{}' has unsupported candidate status '{}'",
+            row.run_id,
+            row.status
+        ),
+    }
+
+    let proposal_set_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_proposal_sets WHERE run_id = ?1",
+        params![row.run_id],
+        |result| result.get(0),
+    )?;
+    anyhow::ensure!(
+        proposal_set_count == 0,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: incomplete current Chronicle Run '{}' already owns a ProposalSet",
+        row.run_id
+    );
+
+    let tasks = load_chronicle_resume_tasks(conn, &row.run_id)?;
+    let mut tasks_by_kind = HashMap::with_capacity(tasks.len());
+    for task in tasks {
+        validate_chronicle_resume_task_lifecycle(conn, &row.run_id, &task)?;
+        let task_kind = task.task_kind.clone();
+        anyhow::ensure!(
+            CHRONICLE_EXTRACT_TASK_CHAIN.contains(&task_kind.as_str())
+                && tasks_by_kind.insert(task_kind.clone(), task).is_none(),
+            "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: Run '{}' has an unknown or duplicate Task kind '{}'",
+            row.run_id,
+            task_kind
+        );
+    }
+    anyhow::ensure!(
+        tasks_by_kind.len() == CHRONICLE_EXTRACT_TASK_CHAIN.len()
+            && CHRONICLE_EXTRACT_TASK_CHAIN
+                .iter()
+                .all(|task_kind| tasks_by_kind.contains_key(*task_kind)),
+        "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: Run '{}' does not contain the exact Chronicle DAG",
+        row.run_id
+    );
+
+    let mut completed_task_kinds = Vec::new();
+    let mut next_task_kind: Option<&str> = None;
+    for task_kind in CHRONICLE_EXTRACT_TASK_CHAIN {
+        let task = tasks_by_kind
+            .get(task_kind)
+            .ok_or_else(|| anyhow::anyhow!("unreachable checked Chronicle Task topology"))?;
+        match task.status.as_str() {
+            "completed" if next_task_kind.is_none() => {
+                completed_task_kinds.push(task_kind.to_string());
+            }
+            "completed" => anyhow::bail!(
+                "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: Run '{}' has completed Task '{}' after an incomplete predecessor",
+                row.run_id,
+                task_kind
+            ),
+            "queued" if next_task_kind.is_none() => next_task_kind = Some(task_kind),
+            "queued" => {}
+            "running" if next_task_kind.is_none() => next_task_kind = Some(task_kind),
+            "running" => anyhow::bail!(
+                "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: Run '{}' has a running Task after an incomplete predecessor",
+                row.run_id
+            ),
+            _ => anyhow::bail!(
+                "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: Run '{}' Task '{}' has unsupported status '{}'",
+                row.run_id,
+                task_kind,
+                task.status
+            ),
+        }
+    }
+    let next_task_kind = next_task_kind.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: non-terminal Run '{}' has no incomplete Task",
+            row.run_id
+        )
+    })?;
+    let next_task = tasks_by_kind
+        .get(next_task_kind)
+        .ok_or_else(|| anyhow::anyhow!("unreachable checked next Chronicle Task"))?;
+    if row.status == "pending" {
+        anyhow::ensure!(
+            completed_task_kinds.is_empty() && next_task.status == "queued",
+            "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: pending Run '{}' already started its DAG",
+            row.run_id
+        );
+    }
+
+    let _ = validate_chronicle_resume_artifacts(conn, &row.project_id, &row.run_id)?;
+
+    let snapshot_complete = completed_task_kinds
+        .first()
+        .is_some_and(|task_kind| task_kind == "source.snapshot@1");
+    let (language, existing_events_catalog, durable_blocked_code) = if snapshot_complete {
+        let snapshot_task = tasks_by_kind
+            .get("source.snapshot@1")
+            .ok_or_else(|| anyhow::anyhow!("unreachable checked snapshot Task"))?;
+        let (task_output_json, attempt_output_json): (String, String) = conn.query_row(
+            "SELECT task.output_json, attempt.output_json
+               FROM narrative_extraction_tasks task
+               JOIN narrative_extraction_attempts attempt
+                 ON attempt.task_id = task.id
+                AND attempt.attempt_number = task.attempt_count
+              WHERE task.id = ?1",
+            params![snapshot_task.task_id],
+            |result| Ok((result.get(0)?, result.get(1)?)),
+        )?;
+        let task_output_json: Value = serde_json::from_str(&task_output_json).map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{}' snapshot Task output is malformed: {error}",
+                row.run_id
+            )
+        })?;
+        let attempt_output_json: Value =
+            serde_json::from_str(&attempt_output_json).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{}' snapshot Attempt output is malformed: {error}",
+                    row.run_id
+                )
+            })?;
+        anyhow::ensure!(
+            task_output_json == attempt_output_json,
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Run '{}' snapshot Task and current Attempt outputs differ",
+            row.run_id
+        );
+        let snapshot_payload = load_verified_chronicle_snapshot_payload(conn, &row.run_id)?;
+        let snapshot_inputs = validate_chronicle_resume_snapshot_inputs(
+            &snapshot_payload,
+            &row.project_id,
+            &row.run_id,
+            snapshot_digest,
+            catalog_digest,
+            &scope_json,
+        )?;
+        validate_chronicle_resume_snapshot_output(
+            &task_output_json,
+            &row.run_id,
+            snapshot_digest,
+            &snapshot_inputs,
+        )?;
+        let blocked_code = snapshot_inputs
+            .existing_events_catalog
+            .is_none()
+            .then_some("NEX_CHRONICLE_RESUME_CATALOG_MISSING");
+        (
+            Some(snapshot_inputs.language),
+            snapshot_inputs.existing_events_catalog,
+            blocked_code,
+        )
+    } else {
+        (None, None, Some("NEX_CHRONICLE_RESUME_SNAPSHOT_INCOMPLETE"))
+    };
+
+    let lease_held = if next_task.status == "running" {
+        let lease_expires_at = next_task
+            .lease_expires_at
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("unreachable validated Chronicle lease"))?;
+        let lease_expires_at = parse_run_lifecycle_instant(lease_expires_at).map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_LEASE_INVALID: Run '{}' next Task lease is invalid: {error}",
+                row.run_id
+            )
+        })?;
+        lease_expires_at >= now
+    } else {
+        false
+    };
+    let (availability, blocked_code) = if let Some(blocked_code) = durable_blocked_code {
+        ("blocked", Some(blocked_code))
+    } else if lease_held {
+        ("lease-held", None)
+    } else {
+        ("ready", None)
+    };
+    let execution_mode = spec_json
+        .get("executionMode")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("unreachable validated Chronicle executionMode"))?;
+    let coordinator_contract_digest = spec_json
+        .get("coordinatorContractDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("unreachable validated Chronicle contract digest"))?;
+    let lifecycle_at = started_at.unwrap_or(created_at);
+    let value = json!({
+        "runId": row.run_id,
+        "projectId": row.project_id,
+        "status": row.status,
+        "scopeJson": scope_json,
+        "specJson": spec_json,
+        "runSpecDigest": row.spec_digest,
+        "snapshotDigest": snapshot_digest,
+        "catalogDigest": catalog_digest,
+        "executionMode": execution_mode,
+        "coordinatorContractDigest": coordinator_contract_digest,
+        "completedTaskKinds": completed_task_kinds,
+        "nextTask": {
+            "taskId": next_task.task_id,
+            "taskKind": next_task.task_kind,
+            "status": next_task.status,
+            "leaseExpiresAt": next_task.lease_expires_at,
+        },
+        "availability": availability,
+        "blockedCode": blocked_code,
+        "language": language,
+        "existingEventsCatalog": existing_events_catalog,
+        "createdAt": row.created_at,
+        "startedAt": row.started_at,
+    });
+    Ok(Some(ChronicleTaskResumeCandidateRow {
+        run_id: value["runId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("unreachable candidate Run id"))?
+            .to_string(),
+        lifecycle_at,
+        value,
+    }))
+}
+
+/// List interrupted current Chronicle DAGs independently of Review restore.
+/// Every current-contract row in the requested project is validated before
+/// ordering or limiting, so a newer corrupt ledger cannot disappear behind a
+/// SQL LIMIT and cause the product to create duplicate work.
+pub fn list_chronicle_task_resume_candidates(
+    db: &Database,
+    payload: ListChronicleTaskResumeCandidatesPayload,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !payload.project_id.is_empty() && payload.project_id.trim() == payload.project_id,
+        "NEX_CHRONICLE_RESUME_CANDIDATE_REQUEST_INVALID: projectId must be non-empty and unpadded"
+    );
+    if let Some(limit) = payload.limit {
+        anyhow::ensure!(
+            (1..=100).contains(&limit),
+            "NEX_CHRONICLE_RESUME_CANDIDATE_REQUEST_INVALID: limit must be between 1 and 100"
+        );
+    }
+    let limit = payload.limit.unwrap_or(20) as usize;
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT id, project_id, run_kind, status, scope_json, spec_json, spec_digest,
+                    snapshot_digest, catalog_digest, created_at, started_at, completed_at
+               FROM narrative_extraction_runs
+              WHERE project_id = ?1
+                AND surface_path_id = ?2
+                AND status IN ('pending', 'running')",
+        )?;
+        let rows = statement
+            .query_map(
+                params![payload.project_id, CHRONICLE_EXTRACT_SURFACE_PATH],
+                |row| {
+                    Ok(ChronicleTaskResumeRunRow {
+                        run_id: row.get(0)?,
+                        project_id: row.get(1)?,
+                        run_kind: row.get(2)?,
+                        status: row.get(3)?,
+                        scope_json_text: row.get(4)?,
+                        spec_json_text: row.get(5)?,
+                        spec_digest: row.get(6)?,
+                        snapshot_digest: row.get(7)?,
+                        catalog_digest: row.get(8)?,
+                        created_at: row.get(9)?,
+                        started_at: row.get(10)?,
+                        completed_at: row.get(11)?,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let now = Utc::now();
+        let mut candidates = Vec::new();
+        for row in rows {
+            if let Some(candidate) = build_chronicle_task_resume_candidate(conn, row, now)? {
+                candidates.push(candidate);
+            }
+        }
+        candidates.sort_by(|left, right| {
+            right
+                .lifecycle_at
+                .cmp(&left.lifecycle_at)
+                .then_with(|| left.run_id.cmp(&right.run_id))
+        });
+        candidates.truncate(limit);
+        Ok(json!(candidates
+            .into_iter()
+            .map(|candidate| candidate.value)
+            .collect::<Vec<_>>()))
     })
 }
 
@@ -4252,6 +5250,357 @@ mod unit_tests {
             .expect("create current Chronicle Run");
     }
 
+    fn current_chronicle_candidate_payload(
+        run_id: &str,
+        project_id: &str,
+        catalog: &Value,
+    ) -> CreateRunPayload {
+        let catalog_digest = canonical_json_digest(catalog).expect("canonical test catalog");
+        let mut payload = current_chronicle_create_payload(run_id);
+        payload.project_id = project_id.to_string();
+        payload.snapshot_digest = Some(
+            test_candidate_snapshot_payload_for_scenes(project_id, &["scene-1"], None)["snapshot"]
+                ["digest"]
+                .as_str()
+                .expect("sealed candidate snapshot digest")
+                .to_string(),
+        );
+        payload.catalog_digest = Some(catalog_digest.clone());
+        payload.spec_json["existingEventsCatalogDigest"] = json!(catalog_digest);
+        payload.spec_digest =
+            canonical_json_digest(&payload.spec_json).expect("canonical candidate Run spec");
+        payload
+    }
+
+    fn test_existing_events_catalog(title: &str) -> Value {
+        json!({
+            "kind": "chronicle.existing-events-catalog@1",
+            "events": [{
+                "ref": "event:existing",
+                "sourceKey": "event:existing",
+                "title": title,
+                "note": null,
+                "version": 1,
+                "linkedDocumentSourceKeys": [],
+                "participantEntityRefs": [],
+                "startTime": null,
+                "endTime": null,
+                "digest": test_sha256('d'),
+                "applicationProvenanceKeys": [],
+            }],
+        })
+    }
+
+    fn test_candidate_snapshot_payload_for_scenes(
+        project_id: &str,
+        scene_ids: &[&str],
+        catalog: Option<&Value>,
+    ) -> Value {
+        let documents = scene_ids
+            .iter()
+            .enumerate()
+            .map(|(index, scene_id)| {
+                let document_ref = format!("D{:06}", index + 1);
+                let source_key = format!("project:scene:{scene_id}");
+                let title = format!("Scene {index}");
+                let projection = json!({
+                    "schemaVersion": 1,
+                    "unit": "utf16",
+                    "canonicalLength": 0,
+                    "segments": [],
+                });
+                let origin = json!({
+                    "kind": "project-node",
+                    "projectId": project_id,
+                    "nodeId": scene_id,
+                    "sourceVersion": 0,
+                    "sourceUpdatedAt": "2026-08-26T00:00:00.000Z",
+                    "sourceUri": null,
+                });
+                let content_digest = canonical_json_digest(&json!({
+                    "normalizerVersion": "gdx-canonical-text/1",
+                    "text": "",
+                }))
+                .expect("seal candidate document content");
+                let document_digest = canonical_json_digest(&json!({
+                    "normalizerVersion": "gdx-canonical-text/1",
+                    "parentSourceKey": null,
+                    "title": title,
+                    "orderIndex": index,
+                    "canonical": {"text": "", "blocks": []},
+                }))
+                .expect("seal candidate document");
+                let artifact_digest = canonical_json_digest(&json!({
+                    "schemaVersion": 1,
+                    "normalizerVersion": "gdx-canonical-text/1",
+                    "sourceKey": source_key,
+                    "parentSourceKey": null,
+                    "semanticDigest": document_digest,
+                    "contentDigest": content_digest,
+                    "projection": projection,
+                    "origin": origin,
+                }))
+                .expect("seal candidate document artifact");
+                json!({
+                    "ref": document_ref,
+                    "sourceKey": source_key,
+                    "parentRef": null,
+                    "title": title,
+                    "orderIndex": index,
+                    "canonical": {
+                        "unit": "utf16",
+                        "text": "",
+                        "blocks": [],
+                        "projection": projection,
+                        "projectionMap": projection,
+                        "diagnostics": [],
+                    },
+                    "contentDigest": content_digest,
+                    "documentDigest": document_digest,
+                    "artifactDigest": artifact_digest,
+                    "origin": origin,
+                })
+            })
+            .collect::<Vec<_>>();
+        let omissions = json!([]);
+        let snapshot_digest = canonical_json_digest(&json!({
+            "schemaVersion": 1,
+            "language": "ja",
+            "normalizerVersion": "gdx-canonical-text/1",
+            "documentDigests": documents
+                .iter()
+                .map(|document| document["documentDigest"].clone())
+                .collect::<Vec<_>>(),
+            "omissions": omissions,
+        }))
+        .expect("seal candidate snapshot");
+        let snapshot_artifact_digest = canonical_json_digest(&json!({
+            "schemaVersion": 1,
+            "normalizerVersion": "gdx-canonical-text/1",
+            "semanticDigest": snapshot_digest,
+            "originProjectId": project_id,
+            "documents": documents
+                .iter()
+                .map(|document| json!({
+                    "sourceKey": document["sourceKey"].clone(),
+                    "artifactDigest": document["artifactDigest"].clone(),
+                }))
+                .collect::<Vec<_>>(),
+            "omissions": omissions,
+        }))
+        .expect("seal candidate snapshot artifact");
+        let source_views = documents.first().map_or_else(Vec::new, |document| {
+            let source_view_digest = canonical_json_digest(&json!({
+                "schemaVersion": 1,
+                "ref": "SV000001",
+                "documentRef": document["ref"].clone(),
+                "documentArtifactDigest": document["artifactDigest"].clone(),
+                "documentRange": {"start": 0, "end": 0},
+                "text": "",
+            }))
+            .expect("seal candidate source view");
+            vec![json!({
+                "ref": "SV000001",
+                "documentRef": document["ref"].clone(),
+                "documentRange": {"start": 0, "end": 0},
+                "text": "",
+                "digest": source_view_digest,
+            })]
+        });
+        let authority_documents = documents
+            .iter()
+            .map(|document| {
+                json!({
+                    "documentRef": document["ref"].clone(),
+                    "sourceKey": document["sourceKey"].clone(),
+                    "rawStoryKey": null,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut payload = json!({
+            "snapshot": {
+                "schemaVersion": 1,
+                "id": "snapshot-task-resume-candidate",
+                "snapshotId": "snapshot-task-resume-candidate",
+                "createdAt": "2026-08-26T00:00:00.000Z",
+                "language": "ja",
+                "normalizerVersion": "gdx-canonical-text/1",
+                "digest": snapshot_digest,
+                "artifactDigest": snapshot_artifact_digest,
+                "origin": {
+                    "kind": "grimodex-project",
+                    "projectId": project_id,
+                },
+                "documents": documents,
+                "omissions": omissions,
+            },
+            "sourceViews": source_views,
+            "scopeAuthorityDocuments": authority_documents,
+        });
+        if let Some(catalog) = catalog {
+            payload["existingEventsCatalog"] = catalog.clone();
+        }
+        payload
+    }
+
+    fn test_candidate_snapshot_payload(snapshot_digest: &str, catalog: Option<&Value>) -> Value {
+        let payload =
+            test_candidate_snapshot_payload_for_scenes("project-1", &["scene-1"], catalog);
+        assert_eq!(
+            payload["snapshot"]["digest"], snapshot_digest,
+            "test Run must bind the canonical candidate snapshot digest"
+        );
+        payload
+    }
+
+    fn test_candidate_snapshot_output(
+        run_id: &str,
+        project_id: &str,
+        snapshot_payload: &Value,
+    ) -> Value {
+        let snapshot_digest = snapshot_payload["snapshot"]["digest"]
+            .as_str()
+            .expect("snapshot digest");
+        let authority_inputs = snapshot_payload["scopeAuthorityDocuments"]
+            .as_array()
+            .expect("scope authority documents")
+            .iter()
+            .map(|document| NarrativeScopeAuthorityDocumentInputV2 {
+                document_ref: document["documentRef"]
+                    .as_str()
+                    .expect("authority document ref")
+                    .to_string(),
+                source_key: document["sourceKey"]
+                    .as_str()
+                    .expect("authority source key")
+                    .to_string(),
+                raw_story_key: document["rawStoryKey"].as_str().map(str::to_string),
+            })
+            .collect::<Vec<_>>();
+        let composite_digest = if authority_inputs.is_empty() {
+            None
+        } else {
+            Some(
+                build_narrative_scope_authority_basis_v2(
+                    project_id,
+                    run_id,
+                    snapshot_digest,
+                    &authority_inputs,
+                )
+                .expect("build candidate Scope authority basis")
+                .digests
+                .composite_digest,
+            )
+        };
+        json!({
+            "snapshotDigest": snapshot_digest,
+            "documentCount": snapshot_payload["snapshot"]["documents"]
+                .as_array()
+                .expect("snapshot documents")
+                .len(),
+            "corpusPayloadDigest": canonical_json_digest(snapshot_payload)
+                .expect("candidate corpus payload digest"),
+            "scopeAuthorityCompositeDigest": composite_digest,
+        })
+    }
+
+    fn complete_candidate_task_with_artifact(
+        db: &Database,
+        run_id: &str,
+        task_kind: &str,
+        artifact_kind: &str,
+        artifact_payload: Value,
+        output_json: Value,
+    ) {
+        db.with_conn(|conn| {
+            let task_id: String = conn.query_row(
+                "SELECT id FROM narrative_extraction_tasks
+                  WHERE run_id = ?1 AND task_kind = ?2",
+                params![run_id, task_kind],
+                |row| row.get(0),
+            )?;
+            let attempt_id = format!("{task_id}-candidate-attempt");
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET status = 'completed', output_json = ?2, attempt_count = 1,
+                        lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+                        started_at = '2026-08-26T00:00:00.000Z',
+                        completed_at = '2026-08-26T00:00:01.000Z'
+                  WHERE id = ?1",
+                params![task_id, serde_json::to_string(&output_json)?],
+            )?;
+            insert_attempt(
+                conn,
+                &attempt_id,
+                &task_id,
+                1,
+                "completed",
+                "2026-08-26T00:00:00.000Z",
+            )?;
+            conn.execute(
+                "UPDATE narrative_extraction_attempts
+                    SET completed_at = '2026-08-26T00:00:01.000Z', output_json = ?2
+                  WHERE id = ?1",
+                params![attempt_id, serde_json::to_string(&output_json)?],
+            )?;
+            insert_artifacts_for_attempt(
+                conn,
+                run_id,
+                &task_id,
+                &attempt_id,
+                &[ArtifactInput {
+                    artifact_id: Some(format!("{task_id}-{artifact_kind}")),
+                    artifact_kind: artifact_kind.to_string(),
+                    payload_storage: Some("inline-json".to_string()),
+                    payload_json: Some(artifact_payload.clone()),
+                    payload_ref: None,
+                    payload_digest: Some(canonical_json_digest(&artifact_payload)?),
+                }],
+            )?;
+            Ok(())
+        })
+        .expect("complete candidate prefix Task");
+    }
+
+    fn list_task_resume_candidates(db: &Database, project_id: &str) -> anyhow::Result<Value> {
+        list_chronicle_task_resume_candidates(
+            db,
+            super::super::models::ListChronicleTaskResumeCandidatesPayload {
+                project_id: project_id.to_string(),
+                limit: Some(20),
+            },
+        )
+    }
+
+    fn seed_ready_observation_candidate(db: &Database, run_id: &str, catalog: &Value) -> String {
+        let payload = current_chronicle_candidate_payload(run_id, "project-1", catalog);
+        let snapshot_digest = payload
+            .snapshot_digest
+            .clone()
+            .expect("candidate snapshot digest");
+        create_run(db, payload).expect("create task-resume candidate Run");
+        let snapshot_payload = test_candidate_snapshot_payload(&snapshot_digest, Some(catalog));
+        let snapshot_output =
+            test_candidate_snapshot_output(run_id, "project-1", &snapshot_payload);
+        complete_candidate_task_with_artifact(
+            db,
+            run_id,
+            "source.snapshot@1",
+            "source.snapshot@1",
+            snapshot_payload,
+            snapshot_output,
+        );
+        complete_candidate_task_with_artifact(
+            db,
+            run_id,
+            "source.window-plan@1",
+            "source.window-plan@1",
+            json!({ "windows": [] }),
+            json!({ "windowCount": 0 }),
+        );
+        snapshot_digest
+    }
+
     fn mark_current_plan_predecessors_completed(db: &Database, run_id: &str) {
         db.with_conn(|conn| {
             let changed = conn.execute(
@@ -4490,6 +5839,527 @@ mod unit_tests {
         assert_eq!(loaded["run"]["status"], "running");
         assert_eq!(loaded["tasks"].as_array().map(|v| v.len()), Some(1));
         assert_eq!(loaded["taskCounts"]["queued"], 1);
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_list_verified_completed_prefix_only() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Existing event");
+        let snapshot_digest =
+            seed_ready_observation_candidate(&db, "resume-ready-observation", &catalog);
+
+        let listed = list_task_resume_candidates(&db, "project-1")
+            .expect("list verified task-resume candidate");
+        let candidates = listed.as_array().expect("candidate array");
+        assert_eq!(candidates.len(), 1);
+        let candidate = &candidates[0];
+        assert_eq!(candidate["runId"], "resume-ready-observation");
+        assert_eq!(candidate["projectId"], "project-1");
+        assert_eq!(candidate["status"], "running");
+        assert!(candidate["runSpecDigest"].as_str().is_some());
+        assert_eq!(candidate["snapshotDigest"], snapshot_digest);
+        assert_eq!(candidate["executionMode"], "deterministic-fallback");
+        assert_eq!(candidate["language"], "ja");
+        assert_eq!(candidate["existingEventsCatalog"], catalog);
+        assert_eq!(
+            candidate["completedTaskKinds"],
+            json!(["source.snapshot@1", "source.window-plan@1"])
+        );
+        assert_eq!(
+            candidate["nextTask"]["taskKind"],
+            "chronicle.observe-events@1"
+        );
+        assert_eq!(candidate["nextTask"]["status"], "queued");
+        assert!(candidate["nextTask"]["leaseExpiresAt"].is_null());
+        assert_eq!(candidate["availability"], "ready");
+        assert!(candidate["blockedCode"].is_null());
+
+        let reviews = list_resumable_runs(
+            &db,
+            ListResumableRunsPayload {
+                project_id: "project-1".to_string(),
+                surface_path_id: Some(CHRONICLE_EXTRACT_SURFACE_PATH.to_string()),
+                limit: Some(20),
+            },
+        )
+        .expect("Review list remains readable");
+        assert!(
+            reviews.as_array().expect("review array").is_empty(),
+            "a task-resume candidate without ProposalSet is not Review-resumable"
+        );
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_exclude_review_foreign_and_legacy_runs() {
+        let db = full_migrated_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-2', 'Other Project')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed foreign project");
+        let catalog = test_existing_events_catalog("Existing event");
+
+        let mut foreign =
+            current_chronicle_candidate_payload("resume-foreign", "project-2", &catalog);
+        foreign.scope_json = json!({ "folderId": "folder-2", "sceneIds": ["scene-2"] });
+        create_run(&db, foreign).expect("create foreign current Run");
+
+        create_run_with_task(&db, "resume-legacy", "resume-legacy-task");
+
+        let review = current_chronicle_candidate_payload("resume-review", "project-1", &catalog);
+        create_run(&db, review).expect("create completed Review Run");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET status = 'completed', completed_at = '2026-08-26T00:02:00.000Z'
+                  WHERE id = 'resume-review'",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, status, summary_json,
+                     created_at, updated_at, version)
+                 VALUES ('resume-review-set', 'resume-review', 'project-1',
+                         'chronicle.extract.review@1', 'draft', '{}',
+                         '2026-08-26T00:02:00.000Z', '2026-08-26T00:02:00.000Z', 0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("terminalize Review Run");
+
+        let listed = list_task_resume_candidates(&db, "project-1")
+            .expect("foreign, legacy, and Review rows are not task candidates");
+        assert!(listed.as_array().expect("candidate array").is_empty());
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_classify_held_and_expired_next_lease() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Existing event");
+        seed_ready_observation_candidate(&db, "resume-lease", &catalog);
+        let claimed = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "resume-lease".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "pre-crash-worker".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: Some(vec!["chronicle.observe-events@1".to_string()]),
+            },
+        )
+        .expect("claim Observation before simulated crash");
+        assert_eq!(claimed["claimed"], true);
+
+        let held = list_task_resume_candidates(&db, "project-1").expect("list held lease");
+        let held = &held.as_array().expect("candidate array")[0];
+        assert_eq!(held["availability"], "lease-held");
+        assert_eq!(held["nextTask"]["status"], "running");
+        assert!(held["nextTask"]["leaseExpiresAt"].is_string());
+        assert!(held["blockedCode"].is_null());
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET lease_expires_at = '2000-01-01T00:00:00.000Z'
+                  WHERE run_id = 'resume-lease'
+                    AND task_kind = 'chronicle.observe-events@1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("expire abandoned lease");
+        let ready = list_task_resume_candidates(&db, "project-1").expect("list expired lease");
+        assert_eq!(
+            ready.as_array().expect("candidate array")[0]["availability"],
+            "ready"
+        );
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET lease_expires_at = 'not-an-instant'
+                  WHERE run_id = 'resume-lease'
+                    AND task_kind = 'chronicle.observe-events@1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("corrupt abandoned lease");
+        let error = list_task_resume_candidates(&db, "project-1")
+            .expect_err("malformed lease evidence fails discovery closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_LEASE_INVALID"));
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_return_explicit_blocked_durable_inputs() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Existing event");
+        create_run(
+            &db,
+            current_chronicle_candidate_payload("resume-pre-snapshot", "project-1", &catalog),
+        )
+        .expect("create pre-snapshot Run");
+
+        let missing_catalog =
+            current_chronicle_candidate_payload("resume-missing-catalog", "project-1", &catalog);
+        let snapshot_digest = missing_catalog
+            .snapshot_digest
+            .clone()
+            .expect("snapshot digest");
+        create_run(&db, missing_catalog).expect("create missing-catalog Run");
+        let snapshot_payload = test_candidate_snapshot_payload(&snapshot_digest, None);
+        let snapshot_output = test_candidate_snapshot_output(
+            "resume-missing-catalog",
+            "project-1",
+            &snapshot_payload,
+        );
+        complete_candidate_task_with_artifact(
+            &db,
+            "resume-missing-catalog",
+            "source.snapshot@1",
+            "source.snapshot@1",
+            snapshot_payload,
+            snapshot_output,
+        );
+
+        let listed = list_task_resume_candidates(&db, "project-1")
+            .expect("blocked durable-input candidates remain discoverable");
+        let candidates = listed.as_array().expect("candidate array");
+        let pre_snapshot = candidates
+            .iter()
+            .find(|candidate| candidate["runId"] == "resume-pre-snapshot")
+            .expect("pre-snapshot candidate");
+        assert_eq!(pre_snapshot["availability"], "blocked");
+        assert_eq!(
+            pre_snapshot["blockedCode"],
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_INCOMPLETE"
+        );
+        assert!(pre_snapshot["language"].is_null());
+        assert!(pre_snapshot["existingEventsCatalog"].is_null());
+
+        let missing_catalog = candidates
+            .iter()
+            .find(|candidate| candidate["runId"] == "resume-missing-catalog")
+            .expect("missing-catalog candidate");
+        assert_eq!(missing_catalog["availability"], "blocked");
+        assert_eq!(
+            missing_catalog["blockedCode"],
+            "NEX_CHRONICLE_RESUME_CATALOG_MISSING"
+        );
+        assert_eq!(missing_catalog["language"], "ja");
+        assert!(missing_catalog["existingEventsCatalog"].is_null());
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_fail_closed_on_topology_corruption() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Existing event");
+        create_run(
+            &db,
+            current_chronicle_candidate_payload("resume-bad-topology", "project-1", &catalog),
+        )
+        .expect("create topology-corruption Run");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = 'source.snapshot@1'
+                  WHERE run_id = 'resume-bad-topology'
+                    AND task_kind = 'chronicle.plan-proposals@1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("duplicate task kind");
+
+        let error = list_task_resume_candidates(&db, "project-1")
+            .expect_err("duplicate current topology fails discovery closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID"));
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_fail_closed_on_malformed_current_spec() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Existing event");
+        create_run(
+            &db,
+            current_chronicle_candidate_payload("resume-bad-spec", "project-1", &catalog),
+        )
+        .expect("create spec-corruption Run");
+        db.with_conn(|conn| {
+            let malformed_spec = json!({
+                "kind": CHRONICLE_RUN_SPEC_KIND,
+                "version": 2,
+            });
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET spec_json = ?2, spec_digest = ?3
+                  WHERE id = ?1",
+                params![
+                    "resume-bad-spec",
+                    serde_json::to_string(&malformed_spec)?,
+                    canonical_json_digest(&malformed_spec)?,
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("replace current spec with a separately canonical partial shape");
+
+        let error = list_task_resume_candidates(&db, "project-1")
+            .expect_err("partial current spec fails discovery closed");
+        assert!(error.to_string().contains("NEX_CHRONICLE_RUN_SPEC_INVALID"));
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_fail_closed_on_artifact_corruption() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Existing event");
+        seed_ready_observation_candidate(&db, "resume-bad-artifact", &catalog);
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_extraction_artifacts
+                  WHERE run_id = 'resume-bad-artifact'
+                    AND artifact_kind = 'source.window-plan@1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("remove completed-prefix artifact");
+
+        let error = list_task_resume_candidates(&db, "project-1")
+            .expect_err("missing completed-prefix artifact fails discovery closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT"));
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_fail_closed_on_catalog_drift() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Sealed title");
+        let snapshot_digest =
+            seed_ready_observation_candidate(&db, "resume-catalog-drift", &catalog);
+        let drifted_catalog = test_existing_events_catalog("Drifted title");
+        let drifted_payload =
+            test_candidate_snapshot_payload(&snapshot_digest, Some(&drifted_catalog));
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_artifacts
+                    SET payload_json = ?2, payload_digest = ?3
+                  WHERE run_id = ?1 AND artifact_kind = 'source.snapshot@1'",
+                params![
+                    "resume-catalog-drift",
+                    serde_json::to_string(&drifted_payload)?,
+                    canonical_json_digest(&drifted_payload)?,
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("replace catalog with separately canonical payload");
+
+        let error = list_task_resume_candidates(&db, "project-1")
+            .expect_err("catalog body drift fails discovery closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_CATALOG_MISMATCH"));
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_fail_closed_on_tampered_snapshot_internals() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Existing event");
+        seed_ready_observation_candidate(&db, "resume-source-view-drift", &catalog);
+        db.with_conn(|conn| {
+            let payload_json: String = conn.query_row(
+                "SELECT payload_json
+                   FROM narrative_extraction_artifacts
+                  WHERE run_id = 'resume-source-view-drift'
+                    AND artifact_kind = 'source.snapshot@1'",
+                [],
+                |row| row.get(0),
+            )?;
+            let mut payload: Value = serde_json::from_str(&payload_json)?;
+            payload["sourceViews"][0]["text"] = json!("tampered");
+            conn.execute(
+                "UPDATE narrative_extraction_artifacts
+                    SET payload_json = ?2, payload_digest = ?3
+                  WHERE run_id = ?1 AND artifact_kind = 'source.snapshot@1'",
+                params![
+                    "resume-source-view-drift",
+                    serde_json::to_string(&payload)?,
+                    canonical_json_digest(&payload)?,
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("rewrite snapshot with a recomputed outer payload digest");
+
+        let error = list_task_resume_candidates(&db, "project-1")
+            .expect_err("tampered internal source-view seal fails discovery closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID"));
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_revalidate_snapshot_task_output_cas() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Existing event");
+        seed_ready_observation_candidate(&db, "resume-snapshot-output-drift", &catalog);
+        db.with_conn(|conn| {
+            let (task_id, attempt_id, output_json): (String, String, String) = conn.query_row(
+                "SELECT task.id, attempt.id, task.output_json
+                   FROM narrative_extraction_tasks task
+                   JOIN narrative_extraction_attempts attempt
+                     ON attempt.task_id = task.id
+                    AND attempt.attempt_number = task.attempt_count
+                  WHERE task.run_id = 'resume-snapshot-output-drift'
+                    AND task.task_kind = 'source.snapshot@1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            let mut output: Value = serde_json::from_str(&output_json)?;
+            output["documentCount"] = json!(999);
+            let output = serde_json::to_string(&output)?;
+            conn.execute(
+                "UPDATE narrative_extraction_tasks SET output_json = ?2 WHERE id = ?1",
+                params![task_id, &output],
+            )?;
+            conn.execute(
+                "UPDATE narrative_extraction_attempts SET output_json = ?2 WHERE id = ?1",
+                params![attempt_id, &output],
+            )?;
+            Ok(())
+        })
+        .expect("rewrite both durable snapshot outputs with the same false CAS value");
+
+        let error = list_task_resume_candidates(&db, "project-1")
+            .expect_err("snapshot output CAS is revalidated during discovery");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH"));
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_require_exact_ordered_scope_scene_roster() {
+        for (run_id, scope_scene_ids, snapshot_scene_ids) in [
+            (
+                "resume-snapshot-missing-scene",
+                vec!["scene-1", "scene-2"],
+                vec!["scene-1"],
+            ),
+            (
+                "resume-snapshot-reordered-scenes",
+                vec!["scene-2", "scene-1"],
+                vec!["scene-1", "scene-2"],
+            ),
+        ] {
+            let db = full_migrated_db();
+            let catalog = test_existing_events_catalog("Existing event");
+            let snapshot_payload = test_candidate_snapshot_payload_for_scenes(
+                "project-1",
+                &snapshot_scene_ids,
+                Some(&catalog),
+            );
+            let snapshot_digest = snapshot_payload["snapshot"]["digest"]
+                .as_str()
+                .expect("snapshot digest")
+                .to_string();
+            let mut run = current_chronicle_candidate_payload(run_id, "project-1", &catalog);
+            run.scope_json = json!({
+                "folderId": "folder-1",
+                "sceneIds": scope_scene_ids,
+            });
+            run.snapshot_digest = Some(snapshot_digest.clone());
+            create_run(&db, run).expect("create scope/snapshot mismatch Run");
+            let snapshot_output =
+                test_candidate_snapshot_output(run_id, "project-1", &snapshot_payload);
+            complete_candidate_task_with_artifact(
+                &db,
+                run_id,
+                "source.snapshot@1",
+                "source.snapshot@1",
+                snapshot_payload,
+                snapshot_output,
+            );
+
+            let error = list_task_resume_candidates(&db, "project-1")
+                .expect_err("scope/snapshot scene roster mismatch fails discovery closed");
+            assert!(error
+                .to_string()
+                .contains("NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH"));
+        }
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_validate_every_row_before_limit() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Existing event");
+        seed_ready_observation_candidate(&db, "resume-valid-before-limit", &catalog);
+        create_run(
+            &db,
+            current_chronicle_candidate_payload(
+                "resume-corrupt-before-limit",
+                "project-1",
+                &catalog,
+            ),
+        )
+        .expect("create corrupt row before limit");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = 'source.snapshot@1'
+                  WHERE run_id = 'resume-corrupt-before-limit'
+                    AND task_kind = 'chronicle.plan-proposals@1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("corrupt a candidate beyond the requested result size");
+
+        let error = list_chronicle_task_resume_candidates(
+            &db,
+            super::super::models::ListChronicleTaskResumeCandidatesPayload {
+                project_id: "project-1".to_string(),
+                limit: Some(1),
+            },
+        )
+        .expect_err("limit must not hide a corrupt current-contract row");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID"));
+    }
+
+    #[test]
+    fn chronicle_task_resume_candidates_reject_noncanonical_request_coordinates() {
+        let db = full_migrated_db();
+        for payload in [
+            super::super::models::ListChronicleTaskResumeCandidatesPayload {
+                project_id: " project-1".to_string(),
+                limit: Some(20),
+            },
+            super::super::models::ListChronicleTaskResumeCandidatesPayload {
+                project_id: "project-1".to_string(),
+                limit: Some(0),
+            },
+            super::super::models::ListChronicleTaskResumeCandidatesPayload {
+                project_id: "project-1".to_string(),
+                limit: Some(101),
+            },
+        ] {
+            let error = list_chronicle_task_resume_candidates(&db, payload)
+                .expect_err("noncanonical discovery request must be rejected");
+            assert!(error
+                .to_string()
+                .contains("NEX_CHRONICLE_RESUME_CANDIDATE_REQUEST_INVALID"));
+        }
     }
 
     #[test]

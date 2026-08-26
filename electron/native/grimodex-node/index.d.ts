@@ -70,6 +70,20 @@ export declare class Backend {
    */
   discoverNarrativeMaintenanceWork(reason: string): Promise<string>
   /**
+   * Electron main-only durable wake outbox reader. An Epoch rotation
+   * commits its wake identity in the same transaction as the rotation;
+   * this lists the wakes main has not yet acknowledged so a lost
+   * observer event can never strand a rotated Epoch without maintenance
+   * discovery. Returns a JSON array; an unavailable workspace is `[]`.
+   */
+  listNarrativeMaintenanceWakeOutbox(): Promise<string>
+  /**
+   * Acknowledge durable wakes only after main has registered the exact
+   * discovery binding that listed them. A stale authority gets a typed
+   * non-ACK, never an acknowledgement against a replacement workspace.
+   */
+  ackNarrativeMaintenanceWakeOutbox(ids: Array<string>, workspaceBinding: any): Promise<string>
+  /**
    * Electron main-only serialized system-work cycle.
    *
    * The request is validated in shared Rust, then executed against one
@@ -82,13 +96,11 @@ export declare class Backend {
    * successful drain.
    */
   runNarrativeMaintenanceCycle(payload: any): Promise<string>
-  /** List unacknowledged durable Epoch/delivery wakes for Electron main. */
-  listNarrativeMaintenanceWakeOutbox(): Promise<string>
   /**
-   * ACK durable wakes only against the exact binding that listed them. A
-   * stale authority returns a typed non-ACK JSON status.
+   * Persist a scheduler delivery failure before Electron drops its
+   * process-local identity. The receipt is append-only and workspace-scoped
+   * so a later process can surface the exact failed trigger during startup.
    */
-  ackNarrativeMaintenanceWakeOutbox(ids: Array<string>, workspaceBinding: any): Promise<string>
   recordNarrativeMaintenanceDeliveryFailure(payload: any): Promise<string>
   /**
    * Main-owned pre-response claim for one exact foreground product-journey
@@ -709,6 +721,7 @@ export declare class Backend {
   narrativeExtractionCreateRun(payload: any): Promise<string>
   narrativeExtractionGetRun(payload: any): Promise<string>
   narrativeExtractionListResumableRuns(payload: any): Promise<string>
+  narrativeExtractionListChronicleTaskResumeCandidates(payload: any): Promise<string>
   narrativeExtractionCancelRun(payload: any): Promise<string>
   narrativeExtractionClaimTask(payload: any): Promise<string>
   narrativeExtractionFinishTask(payload: any): Promise<string>

@@ -281,14 +281,14 @@ pub use models::{
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateHumanDerivedRevisionRequest,
     CreateRunPayload, CreateTaskSeed, EntityBindingSeed, FailTaskPayload, FinishTaskPayload,
     GetCommitStatusPayload, GetNarrativeBackfillStatusPayload, HumanFieldLockPayload,
-    ListResumableRunsPayload, NarrativeAdapterIdentity, NarrativeMaintenanceAttentionClearPayload,
-    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
-    PrepareCommitPayload, ProposalSeed, RebuildNarrativeDerivedStatePayload,
-    ReconciliationEnvelopeInheritance, RepairNarrativeDependencyDeclarationsPayload,
-    RetryNarrativeLegacyBackfillPayload, ReviseAndDecidePayload, RunRefPayload,
-    SaveProposalSetPayload, TrustedHumanDerivationScope, TrustedRevealBasis, TrustedScopeBoundary,
-    TrustedScopeInterval, TrustedUnresolvedConstraint, UndoCommitPayload,
-    VerifyNarrativeDependencyGraphPayload,
+    ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, NarrativeAdapterIdentity,
+    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
+    NarrativeMaintenanceInboxListPayload, PrepareCommitPayload, ProposalSeed,
+    RebuildNarrativeDerivedStatePayload, ReconciliationEnvelopeInheritance,
+    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, TrustedHumanDerivationScope,
+    TrustedRevealBasis, TrustedScopeBoundary, TrustedScopeInterval, TrustedUnresolvedConstraint,
+    UndoCommitPayload, VerifyNarrativeDependencyGraphPayload,
 };
 pub use repository::ensure_test_schema;
 pub use scope_authority_runtime::{
@@ -391,6 +391,13 @@ pub fn narrative_extraction_list_resumable_runs(
     payload: ListResumableRunsPayload,
 ) -> anyhow::Result<Value> {
     repository::list_resumable_runs(db, payload)
+}
+
+pub fn narrative_extraction_list_chronicle_task_resume_candidates(
+    db: &Database,
+    payload: ListChronicleTaskResumeCandidatesPayload,
+) -> anyhow::Result<Value> {
+    repository::list_chronicle_task_resume_candidates(db, payload)
 }
 
 pub fn narrative_extraction_cancel_run(

@@ -41,6 +41,7 @@ import {
   hydrateInlineArtifactsFromNative,
   loadInlineJsonArtifact,
   rememberInlineJsonArtifact,
+  type NarrativeArtifactCacheScope,
 } from "@/application/narrative-extraction/artifactRepository";
 import {
   compilePhaseAndDetailOpsAfterEntities,
@@ -1345,6 +1346,18 @@ function buildPhaseDetailReviewProposals(input: {
 
 let lastRunId: string | null = null;
 
+function artifactCacheScope(input: {
+  readonly projectId: string;
+  readonly workspacePath?: string | null;
+  readonly openRevision?: number | null;
+}): NarrativeArtifactCacheScope {
+  return {
+    projectId: input.projectId,
+    workspacePath: input.workspacePath ?? null,
+    workspaceOpenRevision: input.openRevision ?? null,
+  };
+}
+
 /** Stable Apply requestIds keyed by run + proposal set + pending approved ops. */
 const applyRequestIdByPlanFingerprint = new Map<string, string>();
 
@@ -2199,6 +2212,35 @@ export async function startCodexStructureExtraction(
         });
       }
 
+      const evidenceByProposalId: Record<
+        string,
+        readonly CodexReviewEvidenceQuote[]
+      > = {};
+      const relationLabelsByProposalId: Record<
+        string,
+        { subjectLabel: string; objectLabel: string }
+      > = {};
+      for (const proposal of finalProposals) {
+        evidenceByProposalId[proposal.proposalId] = proposal.evidence;
+      }
+      for (const proposal of finalRelations) {
+        evidenceByProposalId[proposal.proposalId] = proposal.evidence;
+        relationLabelsByProposalId[proposal.proposalId] = {
+          subjectLabel: proposal.subjectLabel,
+          objectLabel: proposal.objectLabel,
+        };
+      }
+      const reviewDraft = buildInlineJsonArtifact(
+        CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+        {
+          proposalSetId: saved.proposalSetId,
+          evidenceByProposalId,
+          relationLabelsByProposalId,
+          baseDetailProposals: finalBaseDetailProposals,
+          phaseProposals: finalPhaseProposals,
+        } as unknown as Record<string, unknown>,
+      );
+
       await narrativeExtractionFinishTask({
         runId,
         projectId: request.projectId,
@@ -2212,43 +2254,14 @@ export async function startCodexStructureExtraction(
           baseDetailProposalCount: finalBaseDetailProposals.length,
           phaseProposalCount: finalPhaseProposals.length,
         },
-        artifacts: (() => {
-          const evidenceByProposalId: Record<
-            string,
-            readonly CodexReviewEvidenceQuote[]
-          > = {};
-          const relationLabelsByProposalId: Record<
-            string,
-            { subjectLabel: string; objectLabel: string }
-          > = {};
-          for (const proposal of finalProposals) {
-            evidenceByProposalId[proposal.proposalId] = proposal.evidence;
-          }
-          for (const proposal of finalRelations) {
-            evidenceByProposalId[proposal.proposalId] = proposal.evidence;
-            relationLabelsByProposalId[proposal.proposalId] = {
-              subjectLabel: proposal.subjectLabel,
-              objectLabel: proposal.objectLabel,
-            };
-          }
-          const reviewDraft = buildInlineJsonArtifact(
-            CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
-            {
-              proposalSetId: saved.proposalSetId,
-              evidenceByProposalId,
-              relationLabelsByProposalId,
-              baseDetailProposals: finalBaseDetailProposals,
-              phaseProposals: finalPhaseProposals,
-            } as unknown as Record<string, unknown>,
-          );
-          rememberInlineJsonArtifact({
-            runId,
-            taskId: claimedTask.taskId,
-            attemptId: claimedTask.attemptId,
-            draft: reviewDraft,
-          });
-          return [reviewDraft.artifactInput];
-        })(),
+        artifacts: [reviewDraft.artifactInput],
+      });
+      rememberInlineJsonArtifact({
+        runId,
+        taskId: claimedTask.taskId,
+        attemptId: claimedTask.attemptId,
+        scope: artifactCacheScope(request),
+        draft: reviewDraft,
       });
 
       const nativeRun = await getRun(runId, request.projectId);
@@ -3057,7 +3070,7 @@ export async function getCodexStructureExtractionReview(
   try {
     bundle = await hydrateInlineArtifactsFromNative({
       runId,
-      projectId: scope.projectId,
+      scope: artifactCacheScope(scope),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -3077,7 +3090,10 @@ export async function getCodexStructureExtractionReview(
     await loadInlineJsonArtifact<CodexStructureReviewArtifactPayload>(
       runId,
       CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
-      { projectId: scope.projectId },
+      {
+        scope: artifactCacheScope(scope),
+        requireNativeConfirmation: true,
+      },
     );
   if (!artifactPayload) {
     throw new Error(

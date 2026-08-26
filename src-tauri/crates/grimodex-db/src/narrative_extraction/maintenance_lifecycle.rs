@@ -1438,7 +1438,7 @@ mod tests {
         conn: &Connection,
         handle: &MaintenanceRunHandle,
     ) -> anyhow::Result<()> {
-        let state: (
+        type FailurePolicyLifecycleState = (
             String,
             String,
             String,
@@ -1446,7 +1446,8 @@ mod tests {
             Option<String>,
             Option<String>,
             Option<String>,
-        ) = conn.query_row(
+        );
+        let state: FailurePolicyLifecycleState = conn.query_row(
             "SELECT r.status, t.status, a.status,
                     a.failure_code, a.retry_disposition,
                     a.policy_version, a.next_attempt_at

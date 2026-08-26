@@ -2261,18 +2261,16 @@ mod tests {
         let epoch_id = seed_epoch(&db, "project-1");
         // Verify observes a clean graph...
         let verify_run_id = seed_verify_run(&db, "project-1");
-        // ...and only afterwards does the duplicate appear. The plan this
-        // Verify can justify is empty; deactivating an Edge it never
-        // examined would be a repair with no verify-first precondition.
+        // ...and only afterwards does the duplicate appear. The whole-graph
+        // snapshot CAS must reject the stale Verify before a plan can be
+        // derived from Edges it never examined.
         seed_duplicate_edges(&db);
 
         let error = db
             .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect_err("a target outside the Verify result must not be sealed into a plan");
         assert!(
-            error
-                .to_string()
-                .contains("NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY"),
+            error.to_string().contains("NEX_VERIFY_GRAPH_STATE_CHANGED"),
             "unexpected error: {error}"
         );
     }
@@ -2535,8 +2533,8 @@ mod tests {
     /// The real writer cannot produce this state — the mutation and the
     /// Run's completion commit together — so recovery does not try to
     /// reconstruct a success from it. It resumes, the in-transaction
-    /// re-validation finds the duplicates already gone, and it fails
-    /// closed. The graph is what matters here: no second deletion.
+    /// whole-graph snapshot CAS finds the Verify snapshot stale, and it
+    /// fails closed. The graph is what matters here: no second deletion.
     #[test]
     fn a_request_forced_back_to_running_never_repairs_twice() {
         let (workspace_path, db) = test_workspace("case");
@@ -2582,9 +2580,7 @@ mod tests {
         )
         .expect_err("a plan whose targets are gone cannot be applied again");
         assert!(
-            error
-                .to_string()
-                .contains("NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY"),
+            error.to_string().contains("NEX_VERIFY_GRAPH_STATE_CHANGED"),
             "unexpected error: {error}"
         );
         assert_eq!(
@@ -3040,8 +3036,8 @@ mod tests {
 
         // The Repair lease excludes other Repairs, not ordinary Producer
         // writes. A third row in the same duplicate group after sealing
-        // means the plan no longer describes the graph it will be applied
-        // to -- the TOCTOU window the in-transaction re-validation closes.
+        // changes the whole-graph snapshot -- the TOCTOU window the
+        // in-transaction re-validation closes.
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO narrative_dependency_edges
@@ -3068,9 +3064,7 @@ mod tests {
         )
         .expect_err("a plan sealed against a since-changed graph must not be applied");
         assert!(
-            error
-                .to_string()
-                .contains("NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY"),
+            error.to_string().contains("NEX_VERIFY_GRAPH_STATE_CHANGED"),
             "unexpected error: {error}"
         );
         assert_eq!(edge_count(&db), before, "no Edge may have been deleted");
@@ -3209,9 +3203,7 @@ mod tests {
         )
         .expect_err("Run A must not be credited with Run B's work");
         assert!(
-            error
-                .to_string()
-                .contains("NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY"),
+            error.to_string().contains("NEX_VERIFY_GRAPH_STATE_CHANGED"),
             "unexpected error: {error}"
         );
         assert_eq!(
@@ -3258,12 +3250,10 @@ mod tests {
             "test-actor",
         )
         .expect_err("a torn application must not be resumed");
-        // The in-transaction re-validation catches it: the plan no longer
-        // describes the graph, so nothing is applied and the Run is failed.
+        // The in-transaction whole-graph snapshot CAS catches it, so
+        // nothing is applied and the Run is failed.
         assert!(
-            error
-                .to_string()
-                .contains("NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY"),
+            error.to_string().contains("NEX_VERIFY_GRAPH_STATE_CHANGED"),
             "unexpected error: {error}"
         );
         assert_eq!(run_status(&db, &crashed_run_id), "failed");
@@ -3433,9 +3423,7 @@ mod tests {
         )
         .expect_err("an unresumable plan cannot succeed");
         assert!(
-            error
-                .to_string()
-                .contains("NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY"),
+            error.to_string().contains("NEX_VERIFY_GRAPH_STATE_CHANGED"),
             "unexpected error: {error}"
         );
         assert_eq!(
@@ -4368,7 +4356,7 @@ mod tests {
     fn an_in_place_edge_update_between_sealing_and_execution_is_rejected() {
         // Same-id ABA: the duplicate id set is unchanged, but a target row's
         // content was replaced after the human saw the preview. The sealed
-        // row fingerprints must refuse the byte-different incarnation.
+        // whole-graph snapshot must refuse the byte-different incarnation.
         let (workspace_path, db) = test_workspace("case");
         let epoch_id = seed_epoch(&db, "project-1");
         let (old_id, _new_id) = seed_duplicate_edges(&db);
@@ -4402,7 +4390,7 @@ mod tests {
         )
         .expect_err("an in-place row replacement must invalidate the sealed plan");
         assert!(
-            error.to_string().contains("NEX_REPAIR_PLAN_STALE"),
+            error.to_string().contains("NEX_VERIFY_GRAPH_STATE_CHANGED"),
             "unexpected error: {error}"
         );
         assert_eq!(edge_count(&db), before, "no Edge may have been deleted");

@@ -8,7 +8,7 @@
 use anyhow::anyhow;
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Deserialize;
+use serde::{de, Deserialize, Deserializer};
 use serde_json::Value;
 use std::{
     cmp::Ordering,
@@ -79,10 +79,47 @@ struct ChronicleHypothesesArtifactShape {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChronicleHypothesisShape {
+    hypothesis_id: String,
     cluster_ref: String,
     observation_refs: Vec<String>,
+    title_suggestion: String,
+    summary: String,
+    actuality: String,
+    significance: String,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    semantic_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChronicleEventOutputShape {
+    cluster_ref: String,
+    resolution: String,
+    events: Vec<ChronicleEventOutputRowShape>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChronicleEventOutputRowShape {
+    observation_refs: Vec<String>,
+    title_suggestion: String,
+    summary: String,
+    actuality: String,
+    significance: String,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    semantic_type: Option<String>,
+}
+
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::String(value) => Ok(Some(value)),
+        _ => Err(de::Error::custom("expected a string")),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -315,12 +352,23 @@ pub(crate) fn validate_chronicle_synthesis_companion(
         "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: hypothesisCount does not match hypotheses artifact"
     );
     let mut hypotheses_by_cluster: HashMap<&str, Vec<&ChronicleHypothesisShape>> = HashMap::new();
+    let mut hypothesis_ids = HashSet::new();
     for hypothesis in &hypotheses.hypotheses {
         anyhow::ensure!(
-            !hypothesis.cluster_ref.trim().is_empty()
+            !hypothesis.hypothesis_id.trim().is_empty()
+                && hypothesis_ids.insert(hypothesis.hypothesis_id.as_str())
+                && !hypothesis.cluster_ref.trim().is_empty()
                 && !hypothesis.observation_refs.is_empty()
-                && hypothesis.observation_refs.iter().all(|reference| !reference.trim().is_empty()),
-            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID: hypothesis clusterRef/observationRefs are malformed"
+                && hypothesis
+                    .observation_refs
+                    .iter()
+                    .all(|reference| !reference.trim().is_empty())
+                && is_trimmed_nonempty(&hypothesis.title_suggestion)
+                && is_trimmed_nonempty(&hypothesis.summary)
+                && is_hypothesis_actuality(&hypothesis.actuality)
+                && is_hypothesis_significance(&hypothesis.significance)
+                && hypothesis.semantic_type.as_deref().is_none_or(is_trimmed_nonempty),
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID: hypothesis identity or semantic fields are malformed"
         );
         hypotheses_by_cluster
             .entry(hypothesis.cluster_ref.as_str())
@@ -454,47 +502,48 @@ fn validate_terminal_output_shape(
         output.event_output_digest == event_output_digest,
         "NEX_CHRONICLE_SYNTHESIS_OUTPUT_DIGEST_MISMATCH: eventOutputDigest differs from Native recomputation"
     );
-    let event_output = terminal_output.event_output.as_object().ok_or_else(|| {
-        anyhow!("NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: eventOutput must be an object")
-    })?;
-    anyhow::ensure!(
-        event_output.get("clusterRef").and_then(Value::as_str)
-            == Some(terminal_output.cluster_ref.as_str()),
-        "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: eventOutput clusterRef does not match terminal output"
-    );
-    let event_rows = event_output
-        .get("events")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            anyhow!("NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: eventOutput events must be an array")
+    let event_output: ChronicleEventOutputShape =
+        serde_json::from_value(terminal_output.event_output.clone()).map_err(|error| {
+            anyhow!("NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: eventOutput shape: {error}")
         })?;
     anyhow::ensure!(
-        event_rows.len() as u64 == output.event_count,
+        event_output.cluster_ref == terminal_output.cluster_ref,
+        "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: eventOutput clusterRef does not match terminal output"
+    );
+    anyhow::ensure!(
+        event_output.events.len() as u64 == output.event_count,
         "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: eventOutput event count mismatch"
     );
-    let output_event_refs = event_rows
-        .iter()
-        .map(|event| {
-            event
-                .get("observationRefs")
-                .and_then(Value::as_array)
-                .ok_or_else(|| anyhow!(
-                    "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: eventOutput event observationRefs are required"
-                ))?
-                .iter()
-                .map(|reference| {
-                    let reference = reference.as_str().ok_or_else(|| anyhow!(
-                        "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: eventOutput observationRef must be a string"
-                    ))?;
-                    anyhow::ensure!(
-                        observation_ids.iter().any(|known| known == reference),
-                        "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: eventOutput observationRef is not in raw observations"
-                    );
-                    Ok(reference.to_owned())
+    let accepted_resolution = matches!(
+        event_output.resolution.as_str(),
+        "single-event" | "multiple-events" | "reference-to-event" | "unresolved"
+    );
+    anyhow::ensure!(
+        if disposition == TerminalOutputDisposition::DeterministicEmpty {
+            event_output.resolution == "no-events"
+        } else {
+            accepted_resolution
+        },
+        "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: eventOutput resolution is invalid for the terminal disposition"
+    );
+    for event in &event_output.events {
+        anyhow::ensure!(
+            !event.observation_refs.is_empty()
+                && event.observation_refs.iter().all(|reference| {
+                    !reference.trim().is_empty()
+                        && observation_ids.iter().any(|known| known == reference)
                 })
-                .collect::<anyhow::Result<Vec<_>>>()
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+                && is_trimmed_nonempty(&event.title_suggestion)
+                && is_trimmed_nonempty(&event.summary)
+                && is_hypothesis_actuality(&event.actuality)
+                && is_hypothesis_significance(&event.significance)
+                && event
+                    .semantic_type
+                    .as_deref()
+                    .is_none_or(|semantic_type| semantic_type.trim() == semantic_type),
+            "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: eventOutput event semantic fields are malformed"
+        );
+    }
     let hypothesis_rows = hypotheses_by_cluster
         .get(terminal_output.cluster_ref.as_str())
         .cloned()
@@ -506,9 +555,18 @@ fn validate_terminal_output_shape(
     anyhow::ensure!(
         hypothesis_rows
             .iter()
-            .zip(output_event_refs.iter())
-            .all(|(hypothesis, event_refs)| hypothesis.observation_refs == *event_refs),
-        "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: hypotheses are not causally equal to parsed terminal events"
+            .zip(event_output.events.iter())
+            .all(|(hypothesis, event)| hypothesis.observation_refs == event.observation_refs
+                && hypothesis.title_suggestion == event.title_suggestion
+                && hypothesis.summary == event.summary
+                && hypothesis.actuality == event.actuality
+                && hypothesis.significance == event.significance
+                && hypothesis.semantic_type.as_deref()
+                    == event
+                        .semantic_type
+                        .as_deref()
+                        .filter(|semantic_type| !semantic_type.is_empty())),
+        "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID: hypotheses are not semantically equal to parsed terminal events"
     );
     anyhow::ensure!(
         output.parsed_output_digest
@@ -532,12 +590,24 @@ fn validate_terminal_output_shape(
             output.observation_count == 0
                 && output.event_count == 0
                 && output.observation_refs.is_empty()
-                && event_rows.is_empty()
+                && event_output.events.is_empty()
                 && hypothesis_rows.is_empty(),
             "NEX_CHRONICLE_SYNTHESIS_NOOP_INVALID: skipped synthesis terminal is only valid for the deterministic zero-observation output"
         );
     }
     Ok(())
+}
+
+fn is_trimmed_nonempty(value: &str) -> bool {
+    !value.is_empty() && value.trim() == value
+}
+
+fn is_hypothesis_actuality(value: &str) -> bool {
+    matches!(value, "actual" | "attempted" | "prevented")
+}
+
+fn is_hypothesis_significance(value: &str) -> bool {
+    matches!(value, "major" | "scene-level" | "minor" | "incidental")
 }
 
 fn validate_raw_observations(raw: &ChronicleRawObservationsShape) -> anyhow::Result<Vec<String>> {

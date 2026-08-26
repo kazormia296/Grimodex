@@ -1456,7 +1456,14 @@ fn event_output_for_refs(observation_refs: &[String]) -> Value {
         "events": if observation_refs.is_empty() {
             Vec::<Value>::new()
         } else {
-            vec![json!({"observationRefs": observation_refs})]
+            vec![json!({
+                "observationRefs": observation_refs,
+                "titleSuggestion": "Arrival",
+                "summary": "A traveler arrives.",
+                "actuality": "actual",
+                "significance": "major",
+                "semanticType": "story.event.arrival"
+            })]
         }
     })
 }
@@ -2007,6 +2014,43 @@ fn finish_bundle_with_artifacts_and_parsed_output_digest(
     output_closure_digest: Option<&str>,
     parsed_output_digest_override: Option<&str>,
 ) -> anyhow::Result<Value> {
+    finish_bundle_with_companion_mutation(
+        db,
+        run_id,
+        task_id,
+        attempt_id,
+        closure,
+        observation_count,
+        observation_refs,
+        artifacts,
+        output_closure_digest,
+        parsed_output_digest_override,
+        None,
+    )
+}
+
+enum SynthesisCompanionMutation {
+    HypothesisField(&'static str, Value),
+    EventOutputField(&'static str, Value),
+    EventRowField(&'static str, Value),
+    DuplicateHypothesisId,
+    EmptySemanticTypeNormalization,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_bundle_with_companion_mutation(
+    db: &Database,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    closure: Value,
+    observation_count: u64,
+    observation_refs: Value,
+    artifacts: Vec<ArtifactInput>,
+    output_closure_digest: Option<&str>,
+    parsed_output_digest_override: Option<&str>,
+    companion_mutation: Option<SynthesisCompanionMutation>,
+) -> anyhow::Result<Value> {
     let closure_digest = closure["stageProvenanceClosureDigest"]
         .as_str()
         .expect("closure digest")
@@ -2020,15 +2064,90 @@ fn finish_bundle_with_artifacts_and_parsed_output_digest(
         .find(|artifact| artifact.artifact_kind == "chronicle.raw-observations@1")
         .and_then(|artifact| artifact.payload_json.clone())
         .unwrap_or(Value::Null);
-    let event_output = if observation_count == 0 {
+    let mut event_output = if observation_count == 0 {
         json!({"clusterRef": "cluster:arrival", "resolution": "no-events", "events": []})
     } else {
         json!({
             "clusterRef": "cluster:arrival",
             "resolution": "single-event",
-            "events": [{"observationRefs": observation_refs}]
+            "events": [{
+                "observationRefs": observation_refs,
+                "titleSuggestion": "Arrival",
+                "summary": "A traveler arrives.",
+                "actuality": "actual",
+                "significance": "major",
+                "semanticType": "story.event.arrival"
+            }]
         })
     };
+    let hypothesis_count = event_output["events"].as_array().expect("event rows").len();
+    let mut hypotheses = if hypothesis_count == 0 {
+        Vec::<Value>::new()
+    } else {
+        vec![json!({
+            "hypothesisId": "hypothesis:arrival",
+            "clusterRef": "cluster:arrival",
+            "observationRefs": observation_refs,
+            "titleSuggestion": "Arrival",
+            "summary": "A traveler arrives.",
+            "actuality": "actual",
+            "significance": "major",
+            "semanticType": "story.event.arrival"
+        })]
+    };
+    match companion_mutation {
+        Some(SynthesisCompanionMutation::HypothesisField(field, value)) => {
+            hypotheses
+                .first_mut()
+                .and_then(Value::as_object_mut)
+                .expect("hypothesis-field mutation requires one hypothesis")
+                .insert(field.to_owned(), value);
+        }
+        Some(SynthesisCompanionMutation::EventOutputField(field, value)) => {
+            event_output
+                .as_object_mut()
+                .expect("event output object")
+                .insert(field.to_owned(), value);
+        }
+        Some(SynthesisCompanionMutation::EventRowField(field, value)) => {
+            event_output["events"]
+                .as_array_mut()
+                .and_then(|events| events.first_mut())
+                .and_then(Value::as_object_mut)
+                .expect("event-row mutation requires one event")
+                .insert(field.to_owned(), value);
+        }
+        Some(SynthesisCompanionMutation::DuplicateHypothesisId) => {
+            let event = event_output["events"]
+                .as_array()
+                .and_then(|events| events.first())
+                .expect("duplicate-id mutation requires one event")
+                .clone();
+            event_output["events"]
+                .as_array_mut()
+                .expect("event rows")
+                .push(event);
+            let hypothesis = hypotheses
+                .first()
+                .expect("duplicate-id mutation requires one hypothesis")
+                .clone();
+            hypotheses.push(hypothesis);
+        }
+        Some(SynthesisCompanionMutation::EmptySemanticTypeNormalization) => {
+            event_output["events"]
+                .as_array_mut()
+                .and_then(|events| events.first_mut())
+                .and_then(Value::as_object_mut)
+                .expect("empty-semantic-type mutation requires one event")
+                .insert("semanticType".to_owned(), json!(""));
+            hypotheses
+                .first_mut()
+                .and_then(Value::as_object_mut)
+                .expect("empty-semantic-type mutation requires one hypothesis")
+                .remove("semanticType");
+        }
+        None => {}
+    }
     let raw_observations_digest = digest(&raw_observations);
     let parsed_output_digest = parsed_output_digest_override.map_or_else(
         || {
@@ -2062,15 +2181,7 @@ fn finish_bundle_with_artifacts_and_parsed_output_digest(
             })
         })
         .collect::<Vec<_>>();
-    let hypothesis_count = event_output["events"].as_array().expect("event rows").len();
-    let hypotheses = if hypothesis_count == 0 {
-        Vec::<Value>::new()
-    } else {
-        vec![json!({
-            "clusterRef": "cluster:arrival",
-            "observationRefs": observation_refs
-        })]
-    };
+    let hypothesis_count = hypotheses.len();
     let mut all_artifacts = artifacts;
     all_artifacts.push(artifact(
         &format!("{task_id}-hypotheses"),
@@ -2145,6 +2256,35 @@ fn finish_bundle_with_artifacts_and_parsed_output_digest(
             chronicle_plan_proposal_set: None,
         },
     )
+}
+
+fn assert_stage_finish_rolled_back(
+    db: &Database,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    case: &str,
+) {
+    let (task_status, attempt_status, artifact_count, receipt_count): (String, String, i64, i64) =
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT t.status, a.status,
+                        (SELECT COUNT(*) FROM narrative_extraction_artifacts
+                          WHERE run_id = ?1 AND task_id = ?2),
+                        (SELECT COUNT(*) FROM narrative_extraction_stage_receipts
+                          WHERE run_id = ?1 AND task_id = ?2)
+                   FROM narrative_extraction_tasks t
+                   JOIN narrative_extraction_attempts a ON a.id = ?3
+                  WHERE t.id = ?2 AND t.run_id = ?1",
+                rusqlite::params![run_id, task_id, attempt_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?)
+        })
+        .unwrap_or_else(|error| panic!("read {case} rollback: {error:#}"));
+    assert_eq!(task_status, "running", "{case}");
+    assert_eq!(attempt_status, "running", "{case}");
+    assert_eq!(artifact_count, 0, "{case}");
+    assert_eq!(receipt_count, 0, "{case}");
 }
 
 #[test]
@@ -3078,6 +3218,323 @@ fn chronicle_synthesis_requires_native_parsed_output_digest() {
     assert_eq!(attempt_status, "running");
     assert_eq!(artifact_count, 0);
     assert_eq!(receipt_count, 0);
+}
+
+#[test]
+fn chronicle_synthesis_rejects_hypothesis_semantics_not_bound_to_terminal_output() {
+    for (case, field, altered_value) in [
+        ("title", "titleSuggestion", json!("Altered title")),
+        ("summary", "summary", json!("Altered summary")),
+        ("actuality", "actuality", json!("prevented")),
+        ("significance", "significance", json!("minor")),
+        (
+            "semantic-type",
+            "semanticType",
+            json!("story.event.departure"),
+        ),
+    ] {
+        let db = migrated_db();
+        let run_id = format!("run-stage-semantic-binding-{case}");
+        let task_id = format!("task-stage-semantic-binding-{case}");
+        create_run(&db, PROJECT_A, &run_id, &task_id);
+        let attempt_id = claim_task(&db, PROJECT_A, &run_id);
+        let closure = valid_stage_closure(
+            PROJECT_A,
+            &run_id,
+            &task_id,
+            &attempt_id,
+            &context_set_digest(),
+            &component_contract_digest(),
+            &final_request_digest(),
+        );
+        let error = finish_bundle_with_companion_mutation(
+            &db,
+            &run_id,
+            &task_id,
+            &attempt_id,
+            closure,
+            1,
+            json!(["observation:arrival"]),
+            vec![artifact(
+                &format!("{task_id}-raw-observations"),
+                "chronicle.raw-observations@1",
+                raw_observations(&["observation:arrival"]),
+            )],
+            None,
+            None,
+            Some(SynthesisCompanionMutation::HypothesisField(
+                field,
+                altered_value,
+            )),
+        )
+        .expect_err("hypothesis semantics must be equal to the sealed terminal output");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID"),
+            "{case}: unexpected semantic-binding error: {error:#}"
+        );
+        assert_stage_finish_rolled_back(&db, &run_id, &task_id, &attempt_id, case);
+    }
+}
+
+#[test]
+fn chronicle_synthesis_accepts_generated_id_independence_and_empty_semantic_type_normalization() {
+    for (case, mutation) in [
+        (
+            "generated-id",
+            SynthesisCompanionMutation::HypothesisField(
+                "hypothesisId",
+                json!("hypothesis:independent-generated-id"),
+            ),
+        ),
+        (
+            "empty-semantic-type",
+            SynthesisCompanionMutation::EmptySemanticTypeNormalization,
+        ),
+    ] {
+        let db = migrated_db();
+        let run_id = format!("run-stage-normalized-binding-{case}");
+        let task_id = format!("task-stage-normalized-binding-{case}");
+        create_run(&db, PROJECT_A, &run_id, &task_id);
+        let attempt_id = claim_task(&db, PROJECT_A, &run_id);
+        let mut closure = valid_stage_closure(
+            PROJECT_A,
+            &run_id,
+            &task_id,
+            &attempt_id,
+            &context_set_digest(),
+            &component_contract_digest(),
+            &final_request_digest(),
+        );
+        if case == "empty-semantic-type" {
+            let raw = raw_observations(&["observation:arrival"]);
+            let mut event_output = event_output_for_refs(&raw_observation_refs(&raw));
+            event_output["events"][0]["semanticType"] = json!("");
+            let mut receipts = closure["receipts"]
+                .as_array()
+                .expect("closure receipts")
+                .clone();
+            let synthesis = receipts
+                .iter_mut()
+                .find(|receipt| receipt["stageExecution"]["stageId"] == EVENT_SYNTHESIS_STAGE_ID)
+                .expect("synthesis receipt");
+            bind_terminal_output(synthesis, &raw, &event_output);
+            closure = closure_for_receipts(
+                PROJECT_A,
+                &run_id,
+                &task_id,
+                &attempt_id,
+                Value::Array(receipts),
+            );
+        }
+        finish_bundle_with_companion_mutation(
+            &db,
+            &run_id,
+            &task_id,
+            &attempt_id,
+            closure,
+            1,
+            json!(["observation:arrival"]),
+            vec![artifact(
+                &format!("{task_id}-raw-observations"),
+                "chronicle.raw-observations@1",
+                raw_observations(&["observation:arrival"]),
+            )],
+            None,
+            None,
+            Some(mutation),
+        )
+        .unwrap_or_else(|error| panic!("{case} must match TS normalization: {error:#}"));
+    }
+}
+
+#[test]
+fn chronicle_synthesis_rejects_noncanonical_hypothesis_and_event_shapes_atomically() {
+    for (case, mutation, expected_code) in [
+        (
+            "blank-hypothesis-id",
+            SynthesisCompanionMutation::HypothesisField("hypothesisId", json!(" ")),
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID",
+        ),
+        (
+            "duplicate-hypothesis-id",
+            SynthesisCompanionMutation::DuplicateHypothesisId,
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID",
+        ),
+        (
+            "hypothesis-semantic-type-null",
+            SynthesisCompanionMutation::HypothesisField("semanticType", Value::Null),
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID",
+        ),
+        (
+            "hypothesis-unknown-field",
+            SynthesisCompanionMutation::HypothesisField("unknownSemanticField", json!(true)),
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID",
+        ),
+        (
+            "event-semantic-type-null",
+            SynthesisCompanionMutation::EventRowField("semanticType", Value::Null),
+            "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID",
+        ),
+        (
+            "event-row-unknown-field",
+            SynthesisCompanionMutation::EventRowField("unknownSemanticField", json!(true)),
+            "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID",
+        ),
+        (
+            "event-output-unknown-field",
+            SynthesisCompanionMutation::EventOutputField("unknownSemanticField", json!(true)),
+            "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID",
+        ),
+    ] {
+        let db = migrated_db();
+        let run_id = format!("run-stage-noncanonical-binding-{case}");
+        let task_id = format!("task-stage-noncanonical-binding-{case}");
+        create_run(&db, PROJECT_A, &run_id, &task_id);
+        let attempt_id = claim_task(&db, PROJECT_A, &run_id);
+        let closure = valid_stage_closure(
+            PROJECT_A,
+            &run_id,
+            &task_id,
+            &attempt_id,
+            &context_set_digest(),
+            &component_contract_digest(),
+            &final_request_digest(),
+        );
+        let error = finish_bundle_with_companion_mutation(
+            &db,
+            &run_id,
+            &task_id,
+            &attempt_id,
+            closure,
+            1,
+            json!(["observation:arrival"]),
+            vec![artifact(
+                &format!("{task_id}-raw-observations"),
+                "chronicle.raw-observations@1",
+                raw_observations(&["observation:arrival"]),
+            )],
+            None,
+            None,
+            Some(mutation),
+        )
+        .expect_err("noncanonical companion shape must fail before DML");
+        assert!(
+            error.to_string().contains(expected_code),
+            "{case}: unexpected error: {error:#}"
+        );
+        assert_stage_finish_rolled_back(&db, &run_id, &task_id, &attempt_id, case);
+    }
+}
+
+#[test]
+fn chronicle_synthesis_reserves_no_events_for_deterministic_empty() {
+    for case in ["root-success", "repair-success"] {
+        let db = migrated_db();
+        let run_id = format!("run-stage-no-events-{case}");
+        let task_id = format!("task-stage-no-events-{case}");
+        create_run(&db, PROJECT_A, &run_id, &task_id);
+        let attempt_id = claim_task(&db, PROJECT_A, &run_id);
+        let context_digest = context_set_digest();
+        let component_digest = component_contract_digest();
+        let request_digest = final_request_digest();
+        let closure = if case == "root-success" {
+            valid_stage_closure(
+                PROJECT_A,
+                &run_id,
+                &task_id,
+                &attempt_id,
+                &context_digest,
+                &component_digest,
+                &request_digest,
+            )
+        } else {
+            let observation = stage_receipt(
+                PROJECT_A,
+                &run_id,
+                "task:observation",
+                "attempt:observation",
+                OBSERVATION_STAGE_ID,
+                "stage:observation-no-events-repair",
+                &context_digest,
+                &component_digest,
+                &request_digest,
+                &json!({"observations": [observation_payload()]}),
+            );
+            let failed_root = stage_receipt_with_state(
+                PROJECT_A,
+                &run_id,
+                &task_id,
+                &attempt_id,
+                EVENT_SYNTHESIS_STAGE_ID,
+                "stage:synthesis-no-events-root",
+                None,
+                &context_digest,
+                &component_digest,
+                &request_digest,
+                "invalid",
+                "failed",
+                Some(&json!({"invalid": "model response"})),
+            );
+            let mut repair = stage_receipt_with_state(
+                PROJECT_A,
+                &run_id,
+                &task_id,
+                &attempt_id,
+                "narrative_structured_repair",
+                "stage:synthesis-no-events-repair",
+                Some("stage:synthesis-no-events-root"),
+                &digest(&json!({"repair": "context"})),
+                &digest(&json!({"repair": "component"})),
+                &digest(&json!({"repair": "request"})),
+                "parsed",
+                "succeeded",
+                Some(&json!({"clusterRef": "cluster:arrival"})),
+            );
+            let raw = raw_observations(&["observation:arrival"]);
+            bind_terminal_output(
+                &mut repair,
+                &raw,
+                &event_output_for_refs(&raw_observation_refs(&raw)),
+            );
+            closure_for_receipts(
+                PROJECT_A,
+                &run_id,
+                &task_id,
+                &attempt_id,
+                json!([observation, repair, failed_root]),
+            )
+        };
+        let error = finish_bundle_with_companion_mutation(
+            &db,
+            &run_id,
+            &task_id,
+            &attempt_id,
+            closure,
+            1,
+            json!(["observation:arrival"]),
+            vec![artifact(
+                &format!("{task_id}-raw-observations"),
+                "chronicle.raw-observations@1",
+                raw_observations(&["observation:arrival"]),
+            )],
+            None,
+            None,
+            Some(SynthesisCompanionMutation::EventOutputField(
+                "resolution",
+                json!("no-events"),
+            )),
+        )
+        .expect_err("no-events must be exclusive to deterministic-empty");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID"),
+            "{case}: unexpected no-events error: {error:#}"
+        );
+        assert_stage_finish_rolled_back(&db, &run_id, &task_id, &attempt_id, case);
+    }
 }
 
 #[test]

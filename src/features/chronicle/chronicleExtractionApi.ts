@@ -1,5 +1,6 @@
 import type {
   ChronicleExtractionRequest,
+  ChronicleExtractionResult,
   ChronicleSavedProposalSeed,
 } from "@/application/narrative-extraction/extractionCoordinator";
 import {
@@ -9,9 +10,11 @@ import {
 import {
   hydrateInlineArtifactsFromNative,
   loadInlineJsonArtifact,
+  type NarrativeArtifactCacheScope,
 } from "@/application/narrative-extraction/artifactRepository";
 import {
   getRun,
+  listChronicleTaskResumeCandidates,
   listResumableRuns,
 } from "@/application/narrative-extraction/runRepository";
 import {
@@ -24,9 +27,14 @@ import {
   prepareChronicleCommit,
 } from "@/application/narrative-extraction/commitCoordinator";
 import type {
+  ChronicleTaskResumeCandidate,
   GetRunReviewBundleResult,
   ReviewBundleProposal,
 } from "@/application/narrative-extraction/nativeApi";
+import {
+  isCurrentMutationAuthority,
+  type MutationAuthority,
+} from "@/features/concurrency/mutationAuthority";
 import { compileCreateChronicleEventOperation } from "./extraction/compiler";
 import type { NarrativeCorpusSnapshot } from "@/features/narrative-extraction/source/types";
 import type { ResolvedEvidenceAnchor } from "@/features/narrative-extraction/evidence/types";
@@ -43,6 +51,7 @@ import {
   isSafeForBulkApprove,
   useChronicleExtractionStore,
   type ChronicleExtractionCoverage,
+  type ChronicleExtractionRecoveryScope,
   type ChronicleExtractionReviewProjection,
   type ChronicleReviewEvidenceQuote,
   type ChronicleReviewProposal,
@@ -52,6 +61,13 @@ import {
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
 
 export type { StartChronicleExtractionRequest };
+
+export interface ResumeChronicleExtractionRequest {
+  readonly candidate: ChronicleTaskResumeCandidate;
+  readonly authority: MutationAuthority;
+  readonly workspacePath: string;
+  readonly openRevision: number;
+}
 
 interface PlannedProposalArtifactRow {
   readonly proposal: CreateChronicleEventProposalPayloadV1;
@@ -79,6 +95,19 @@ interface SnapshotArtifactPayload {
 }
 
 const proposalSetIdByRunId = new Map<string, string>();
+const resumeInFlight = new Map<string, Promise<{ runId: string }>>();
+
+function artifactCacheScope(input: {
+  readonly projectId: string;
+  readonly workspacePath?: string | null;
+  readonly openRevision?: number | null;
+}): NarrativeArtifactCacheScope {
+  return {
+    projectId: input.projectId,
+    workspacePath: input.workspacePath ?? null,
+    workspaceOpenRevision: input.openRevision ?? null,
+  };
+}
 
 function rememberProposalSetId(runId: string, proposalSetId: string): void {
   proposalSetIdByRunId.set(runId, proposalSetId);
@@ -86,6 +115,7 @@ function rememberProposalSetId(runId: string, proposalSetId: string): void {
 
 export function resetChronicleExtractionApiCachesForTests(): void {
   proposalSetIdByRunId.clear();
+  resumeInFlight.clear();
 }
 
 function resolveProposalSetId(
@@ -430,43 +460,27 @@ export function buildChronicleExtractionReviewProjection(args: {
   };
 }
 
-/**
- * Launch Chronicle Narrative Extraction Run and project results into the
- * review store. Product default uses Stage AI (`useAi: true`); tests may
- * pass `useAi: false` for the deterministic fake extractor.
- */
-export async function startChronicleExtraction(
-  request: StartChronicleExtractionRequest,
+async function projectChronicleCoordinatorResult(
+  result: ChronicleExtractionResult,
+  scope: {
+    readonly projectId: string;
+    readonly workspacePath: string;
+    readonly openRevision: number;
+  },
 ): Promise<{ runId: string }> {
-  const capturedRequest = captureStartChronicleExtractionRequest(request);
-  const coordinatorRequest: ChronicleExtractionRequest = {
-    projectId: capturedRequest.projectId,
-    folderId: capturedRequest.folderId,
-    language: capturedRequest.language ?? "ja",
-    sceneIds: capturedRequest.sceneIds,
-    authority: capturedRequest.authority,
-    existingEvents: capturedRequest.existingEvents,
-  };
-
-  const { runChronicleExtractionCoordinator } =
-    await import("@/application/narrative-extraction/extractionCoordinator");
-  const result = await runChronicleExtractionCoordinator(coordinatorRequest, {
-    useAi: capturedRequest.useAi ?? true,
-  });
-
   rememberProposalSetId(result.runId, result.savedProposalSetId);
 
   const proposalArtifact =
     await loadInlineJsonArtifact<ProposalPlanArtifactPayload>(
       result.runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
-      { projectId: capturedRequest.projectId },
+      { scope: artifactCacheScope(scope) },
     );
   const evidenceArtifact =
     await loadInlineJsonArtifact<ResolvedEvidenceArtifactPayload>(
       result.runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence,
-      { projectId: capturedRequest.projectId },
+      { scope: artifactCacheScope(scope) },
     );
 
   let coverage: ChronicleExtractionCoverage = {
@@ -480,7 +494,7 @@ export async function startChronicleExtraction(
   let status: ChronicleExtractionReviewProjection["status"] = "completed";
 
   try {
-    const runProjection = await getRun(result.runId, capturedRequest.projectId);
+    const runProjection = await getRun(result.runId, scope.projectId);
     status = runProjection.run.status;
     coverage = {
       mode:
@@ -527,9 +541,9 @@ export async function startChronicleExtraction(
 
   const projection = buildChronicleExtractionReviewProjection({
     runId: result.runId,
-    projectId: capturedRequest.projectId,
-    workspacePath: capturedRequest.workspacePath,
-    openRevision: capturedRequest.openRevision,
+    projectId: scope.projectId,
+    workspacePath: scope.workspacePath,
+    openRevision: scope.openRevision,
     proposalSetId: result.savedProposalSetId,
     status,
     coverage,
@@ -544,6 +558,300 @@ export async function startChronicleExtraction(
 
   useChronicleExtractionStore.getState().setProjection(projection);
   return { runId: result.runId };
+}
+
+/**
+ * Launch Chronicle Narrative Extraction Run and project results into the
+ * review store. Product default uses Stage AI (`useAi: true`); tests may
+ * pass `useAi: false` for the deterministic fake extractor.
+ */
+export async function startChronicleExtraction(
+  request: StartChronicleExtractionRequest,
+): Promise<{ runId: string }> {
+  const capturedRequest = captureStartChronicleExtractionRequest(request);
+  const coordinatorRequest: ChronicleExtractionRequest = {
+    projectId: capturedRequest.projectId,
+    folderId: capturedRequest.folderId,
+    language: capturedRequest.language ?? "ja",
+    sceneIds: capturedRequest.sceneIds,
+    authority: capturedRequest.authority,
+    existingEvents: capturedRequest.existingEvents,
+  };
+
+  const { runChronicleExtractionCoordinator } =
+    await import("@/application/narrative-extraction/extractionCoordinator");
+  const result = await runChronicleExtractionCoordinator(coordinatorRequest, {
+    useAi: capturedRequest.useAi ?? true,
+  });
+  return projectChronicleCoordinatorResult(result, capturedRequest);
+}
+
+function errorCodeFrom(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.match(/\bNEX_[A-Z0-9_]+\b/u)?.[0] ?? fallback;
+}
+
+function recoveryScopeMatches(
+  left: ChronicleExtractionRecoveryScope | null,
+  right: ChronicleExtractionRecoveryScope,
+): boolean {
+  return (
+    left?.projectId === right.projectId &&
+    left.workspacePath === right.workspacePath &&
+    left.openRevision === right.openRevision
+  );
+}
+
+function cloneResumeCandidate(
+  candidate: ChronicleTaskResumeCandidate,
+): ChronicleTaskResumeCandidate {
+  return JSON.parse(JSON.stringify(candidate)) as ChronicleTaskResumeCandidate;
+}
+
+/**
+ * Discover durable Task-resume work independently from Review restoration.
+ * Errors are retained in the store and propagated: treating an unreadable
+ * ledger as "no candidates" would let Analyze create a duplicate Run.
+ */
+export async function discoverChronicleTaskResumeCandidates(
+  scope: ChronicleExtractionRecoveryScope,
+): Promise<readonly ChronicleTaskResumeCandidate[]> {
+  const capturedScope = { ...scope };
+  const store = useChronicleExtractionStore.getState();
+  store.beginRecoveryDiscovery(capturedScope);
+  try {
+    const listed = await listChronicleTaskResumeCandidates({
+      projectId: capturedScope.projectId,
+      limit: 20,
+    });
+    const candidates = listed.map(cloneResumeCandidate);
+    if (
+      candidates.some(
+        (candidate) => candidate.projectId !== capturedScope.projectId,
+      )
+    ) {
+      throw new Error(
+        "NEX_CHRONICLE_RESUME_CANDIDATE_FOREIGN: Native returned a candidate for another project",
+      );
+    }
+    const current = useChronicleExtractionStore.getState().recovery;
+    if (recoveryScopeMatches(current.scope, capturedScope)) {
+      useChronicleExtractionStore
+        .getState()
+        .setRecoveryCandidates(capturedScope, candidates);
+    }
+    return candidates;
+  } catch (error) {
+    const current = useChronicleExtractionStore.getState().recovery;
+    if (recoveryScopeMatches(current.scope, capturedScope)) {
+      useChronicleExtractionStore
+        .getState()
+        .blockRecovery(
+          capturedScope,
+          errorCodeFrom(error, "NEX_CHRONICLE_RESUME_DISCOVERY_FAILED"),
+        );
+    }
+    throw error;
+  }
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === "string")
+  );
+}
+
+function captureCandidateCatalog(
+  candidate: ChronicleTaskResumeCandidate,
+): readonly ExistingChronicleEventCatalogRecord[] {
+  const catalog = candidate.existingEventsCatalog;
+  if (
+    catalog?.kind !== "chronicle.existing-events-catalog@1" ||
+    !Array.isArray(catalog.events)
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_RESUME_CATALOG_MISSING: resume candidate has no sealed existing-event catalog",
+    );
+  }
+  return catalog.events.map((unknownEvent, index) => {
+    if (typeof unknownEvent !== "object" || unknownEvent === null) {
+      throw new Error(
+        `NEX_CHRONICLE_RESUME_CATALOG_MALFORMED: catalog event ${index} is not an object`,
+      );
+    }
+    const event = unknownEvent as Readonly<Record<string, unknown>>;
+    if (
+      typeof event.ref !== "string" ||
+      typeof event.sourceKey !== "string" ||
+      typeof event.title !== "string" ||
+      (event.note !== null && typeof event.note !== "string") ||
+      typeof event.version !== "number" ||
+      !Number.isSafeInteger(event.version) ||
+      !isStringArray(event.linkedDocumentSourceKeys) ||
+      !isStringArray(event.participantEntityRefs) ||
+      (event.startTime !== null && typeof event.startTime !== "number") ||
+      (event.endTime !== null && typeof event.endTime !== "number") ||
+      typeof event.digest !== "string" ||
+      (event.applicationProvenanceKeys !== undefined &&
+        !isStringArray(event.applicationProvenanceKeys))
+    ) {
+      throw new Error(
+        `NEX_CHRONICLE_RESUME_CATALOG_MALFORMED: catalog event ${index} has an unsupported shape`,
+      );
+    }
+    return {
+      ref: event.ref,
+      sourceKey: event.sourceKey,
+      title: event.title,
+      note: event.note,
+      version: event.version,
+      linkedDocumentSourceKeys: [...event.linkedDocumentSourceKeys],
+      participantEntityRefs: [...event.participantEntityRefs],
+      startTime: event.startTime,
+      endTime: event.endTime,
+      digest: event.digest,
+      ...(event.applicationProvenanceKeys === undefined
+        ? {}
+        : {
+            applicationProvenanceKeys: [...event.applicationProvenanceKeys],
+          }),
+    } satisfies ExistingChronicleEventCatalogRecord;
+  });
+}
+
+function captureResumeRequest(request: ResumeChronicleExtractionRequest): {
+  readonly candidate: ChronicleTaskResumeCandidate;
+  readonly authority: MutationAuthority;
+  readonly workspacePath: string;
+  readonly openRevision: number;
+  readonly existingEvents: readonly ExistingChronicleEventCatalogRecord[];
+} {
+  const candidate = cloneResumeCandidate(request.candidate);
+  const authority: MutationAuthority = {
+    projectId: request.authority.projectId,
+    currentProjectId: request.authority.currentProjectId,
+    workspacePath: request.authority.workspacePath,
+    workspaceOpenRevision: request.authority.workspaceOpenRevision,
+  };
+  if (
+    candidate.availability !== "ready" ||
+    (candidate.status !== "pending" && candidate.status !== "running")
+  ) {
+    throw new Error(
+      candidate.blockedCode ??
+        (candidate.availability === "lease-held"
+          ? "NEX_CHRONICLE_RESUME_LEASE_HELD"
+          : "NEX_CHRONICLE_RESUME_CANDIDATE_BLOCKED"),
+    );
+  }
+  if (
+    typeof candidate.scopeJson.folderId !== "string" ||
+    !candidate.scopeJson.folderId ||
+    !isStringArray(candidate.scopeJson.sceneIds) ||
+    typeof candidate.language !== "string" ||
+    !candidate.language ||
+    (candidate.executionMode !== "ai" &&
+      candidate.executionMode !== "deterministic-fallback") ||
+    candidate.specJson.executionMode !== candidate.executionMode ||
+    candidate.specJson.coordinatorContractDigest !==
+      candidate.coordinatorContractDigest ||
+    !/^sha256:[0-9a-f]{64}$/u.test(candidate.coordinatorContractDigest)
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_RESUME_CANDIDATE_INVALID: candidate scope/spec is incomplete",
+    );
+  }
+  if (
+    candidate.projectId !== authority.projectId ||
+    authority.workspacePath !== request.workspacePath ||
+    authority.workspaceOpenRevision !== request.openRevision ||
+    !isCurrentMutationAuthority(authority)
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_RESUME_AUTHORITY_STALE: workspace or project authority changed before resume",
+    );
+  }
+  return {
+    candidate,
+    authority,
+    workspacePath: request.workspacePath,
+    openRevision: request.openRevision,
+    existingEvents: captureCandidateCatalog(candidate),
+  };
+}
+
+/** Continue one exact durable Chronicle Run. Never creates or falls back. */
+export async function resumeChronicleExtraction(
+  request: ResumeChronicleExtractionRequest,
+): Promise<{ runId: string }> {
+  const captured = captureResumeRequest(request);
+  const scope: ChronicleExtractionRecoveryScope = {
+    projectId: captured.candidate.projectId,
+    workspacePath: captured.workspacePath,
+    openRevision: captured.openRevision,
+  };
+  const inFlightKey = [
+    captured.workspacePath,
+    String(captured.openRevision),
+    captured.candidate.projectId,
+    captured.candidate.runId,
+  ].join("\u0000");
+  const existing = resumeInFlight.get(inFlightKey);
+  if (existing) return existing;
+
+  useChronicleExtractionStore
+    .getState()
+    .beginCandidateResume(captured.candidate.runId);
+  const pending = (async () => {
+    try {
+      const { runChronicleExtractionCoordinator } =
+        await import("@/application/narrative-extraction/extractionCoordinator");
+      const coordinatorRequest: ChronicleExtractionRequest = {
+        projectId: captured.candidate.projectId,
+        folderId: captured.candidate.scopeJson.folderId,
+        language: captured.candidate.language!,
+        sceneIds: [...captured.candidate.scopeJson.sceneIds],
+        authority: captured.authority,
+        runId: captured.candidate.runId,
+        resume: true,
+        specDigest: captured.candidate.coordinatorContractDigest,
+        existingEvents: captured.existingEvents,
+      };
+      const result = await runChronicleExtractionCoordinator(
+        coordinatorRequest,
+        { useAi: captured.candidate.executionMode === "ai" },
+      );
+      if (
+        result.runId !== captured.candidate.runId ||
+        !isCurrentMutationAuthority(captured.authority)
+      ) {
+        throw new Error(
+          "NEX_CHRONICLE_RESUME_AUTHORITY_STALE: resumed Run completed outside its captured workspace authority",
+        );
+      }
+      const projected = await projectChronicleCoordinatorResult(result, scope);
+      useChronicleExtractionStore
+        .getState()
+        .completeCandidateResume(captured.candidate.runId);
+      return projected;
+    } catch (error) {
+      useChronicleExtractionStore
+        .getState()
+        .blockRecovery(
+          scope,
+          errorCodeFrom(error, "NEX_CHRONICLE_RESUME_FAILED"),
+        );
+      throw error;
+    }
+  })();
+  resumeInFlight.set(inFlightKey, pending);
+  try {
+    return await pending;
+  } finally {
+    if (resumeInFlight.get(inFlightKey) === pending) {
+      resumeInFlight.delete(inFlightKey);
+    }
+  }
 }
 
 function coverageFromRunJson(
@@ -634,7 +942,7 @@ export async function getChronicleExtractionReview(
   try {
     bundle = await hydrateInlineArtifactsFromNative({
       runId,
-      projectId: scope.projectId,
+      scope: artifactCacheScope(scope),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -655,19 +963,28 @@ export async function getChronicleExtractionReview(
     await loadInlineJsonArtifact<ProposalPlanArtifactPayload>(
       runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
-      { projectId: scope.projectId },
+      {
+        scope: artifactCacheScope(scope),
+        requireNativeConfirmation: true,
+      },
     );
   const evidenceArtifact =
     await loadInlineJsonArtifact<ResolvedEvidenceArtifactPayload>(
       runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence,
-      { projectId: scope.projectId },
+      {
+        scope: artifactCacheScope(scope),
+        requireNativeConfirmation: true,
+      },
     );
   const snapshotArtifact =
     await loadInlineJsonArtifact<SnapshotArtifactPayload>(
       runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
-      { projectId: scope.projectId },
+      {
+        scope: artifactCacheScope(scope),
+        requireNativeConfirmation: true,
+      },
     );
 
   const planned = plannedRowsFromArtifact(proposalArtifact);
@@ -774,7 +1091,14 @@ export async function applyChronicleExtractionCommit(input: {
     await loadInlineJsonArtifact<SnapshotArtifactPayload>(
       projection.runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
-      { projectId: input.projectId },
+      {
+        scope: artifactCacheScope({
+          projectId: input.projectId,
+          workspacePath: projection.workspacePath,
+          openRevision: projection.openRevision,
+        }),
+        requireNativeConfirmation: true,
+      },
     );
   if (!snapshotArtifact?.snapshot) {
     throw new Error("Missing snapshot artifact for chronicle commit");

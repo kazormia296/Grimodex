@@ -298,6 +298,38 @@ fn canonical_read_fails_closed_when_generic_evidence_is_missing() {
 }
 
 #[test]
+fn cutover_and_canonical_read_accept_completed_current_epoch_rebuild_publisher() {
+    let _test_guard = serialize_liveness_test();
+    let db = fixture_db();
+    // The durable fixture seals Backfill -> Rebuild -> confirmation Verify
+    // at increasing lifecycle instants. `scheduler_heartbeat` then executes
+    // the real idle Incremental Freshness cycle before the public cutover.
+    db.with_conn(|conn| {
+        seed_cutover_ready_application_with_freshness_state(
+            conn,
+            "fresh",
+            "none",
+            Some(BASELINE_REBUILD_RUN_ID),
+        )
+    })
+    .expect("seed cutover fixture");
+    let evidence = scheduler_heartbeat(&db, "c2zc-rebuild-publisher-authority", 3);
+
+    db.with_conn(|conn| {
+        cut_over_workspace_freshness(conn, &evidence)
+            .expect("a production Rebuild is a canonical Freshness publisher");
+        let canonical = canonical_application_freshness(conn, PROJECT_ID, APPLICATION_ID)?
+            .expect("Rebuild-published Generic Freshness is canonical");
+        assert_eq!(
+            canonical.last_evaluated_run_id.as_deref(),
+            Some(BASELINE_REBUILD_RUN_ID)
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("accept strict completed Rebuild publisher");
+}
+
+#[test]
 fn canonical_read_rejects_non_incremental_or_stale_evaluation_run_reference() {
     let _test_guard = serialize_liveness_test();
     let db = fixture_db();
@@ -307,7 +339,7 @@ fn canonical_read_rejects_non_incremental_or_stale_evaluation_run_reference() {
     db.with_conn(|conn| {
         cut_over_workspace_freshness(conn, &evidence)?;
         // This Run belongs to the project, but it is a completed Verify, not
-        // the current-Epoch Incremental Freshness publisher.
+        // a completed current-Epoch Freshness publisher.
         conn.execute(
             "UPDATE narrative_consumer_freshness
                 SET last_evaluated_run_id = ?1
@@ -329,7 +361,151 @@ fn canonical_read_rejects_non_incremental_or_stale_evaluation_run_reference() {
 }
 
 #[test]
-fn cutover_rejects_evaluated_freshness_without_an_incremental_run() {
+fn canonical_read_rejects_rebuild_publisher_without_exact_maintenance_closure() {
+    let _test_guard = serialize_liveness_test();
+    for (index, mutation) in [
+        "wrong-project",
+        "wrong-epoch",
+        "wrong-work-key",
+        "missing-task",
+        "missing-attempt",
+        "wrong-task-kind",
+        "wrong-attempt-status",
+        "malformed-lifecycle-timestamp",
+        "mismatched-terminal-instant",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let db = fixture_db();
+        db.with_conn(seed_cutover_ready_application)
+            .expect("seed cutover fixture");
+        let evidence = scheduler_heartbeat(
+            &db,
+            &format!("c2zc-rebuild-publisher-negative-{index}"),
+            (index + 30) as u64,
+        );
+
+        db.with_conn(|conn| {
+            cut_over_workspace_freshness(conn, &evidence)?;
+            conn.execute(
+                "UPDATE narrative_consumer_freshness
+                    SET last_evaluated_run_id = ?1
+                  WHERE project_id = ?2 AND consumer_kind = 'application'
+                    AND consumer_key = ?3",
+                params![BASELINE_REBUILD_RUN_ID, PROJECT_ID, APPLICATION_ID],
+            )?;
+
+            match mutation {
+                "wrong-project" => {
+                    conn.execute(
+                        "INSERT INTO projects (id, title) VALUES ('project-c2zc-other', 'Other')",
+                        [],
+                    )?;
+                    conn.execute(
+                        "UPDATE narrative_extraction_runs
+                            SET project_id = 'project-c2zc-other'
+                          WHERE id = ?1",
+                        [BASELINE_REBUILD_RUN_ID],
+                    )?;
+                }
+                "wrong-epoch" => {
+                    conn.execute(
+                        "UPDATE narrative_semantic_epochs
+                            SET epoch_number = 1
+                          WHERE id = ?1",
+                        [EPOCH_ID],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO narrative_semantic_epochs
+                            (id, project_id, epoch_number, reason, created_at)
+                         VALUES ('epoch-c2zc-stale', ?1, 0, 'initial', ?2)",
+                        params![PROJECT_ID, NOW],
+                    )?;
+                    conn.execute(
+                        "UPDATE narrative_extraction_runs
+                            SET semantic_epoch_id = 'epoch-c2zc-stale'
+                          WHERE id = ?1",
+                        [BASELINE_REBUILD_RUN_ID],
+                    )?;
+                }
+                "wrong-work-key" => {
+                    conn.execute(
+                        "UPDATE narrative_extraction_runs
+                            SET work_key = 'dependency-rebuild-forged'
+                          WHERE id = ?1",
+                        [BASELINE_REBUILD_RUN_ID],
+                    )?;
+                }
+                "missing-task" => {
+                    conn.execute(
+                        "DELETE FROM narrative_extraction_attempts
+                          WHERE task_id = ?1",
+                        [format!("{BASELINE_REBUILD_RUN_ID}-task")],
+                    )?;
+                    conn.execute(
+                        "DELETE FROM narrative_extraction_tasks WHERE run_id = ?1",
+                        [BASELINE_REBUILD_RUN_ID],
+                    )?;
+                }
+                "missing-attempt" => {
+                    conn.execute(
+                        "DELETE FROM narrative_extraction_attempts
+                          WHERE task_id = ?1",
+                        [format!("{BASELINE_REBUILD_RUN_ID}-task")],
+                    )?;
+                }
+                "wrong-task-kind" => {
+                    conn.execute(
+                        "UPDATE narrative_extraction_tasks
+                            SET task_kind = 'maintenance-dependency-verify'
+                          WHERE run_id = ?1",
+                        [BASELINE_REBUILD_RUN_ID],
+                    )?;
+                }
+                "wrong-attempt-status" => {
+                    conn.execute(
+                        "UPDATE narrative_extraction_attempts
+                            SET status = 'failed'
+                          WHERE task_id = ?1",
+                        [format!("{BASELINE_REBUILD_RUN_ID}-task")],
+                    )?;
+                }
+                "malformed-lifecycle-timestamp" => {
+                    conn.execute(
+                        "UPDATE narrative_extraction_runs
+                            SET created_at = 'not-an-instant'
+                          WHERE id = ?1",
+                        [BASELINE_REBUILD_RUN_ID],
+                    )?;
+                }
+                "mismatched-terminal-instant" => {
+                    conn.execute(
+                        "UPDATE narrative_extraction_attempts
+                            SET completed_at = '2026-08-24T00:00:00.006Z'
+                          WHERE task_id = ?1",
+                        [format!("{BASELINE_REBUILD_RUN_ID}-task")],
+                    )?;
+                }
+                other => panic!("unknown mutation {other}"),
+            }
+
+            let error = canonical_application_freshness(conn, PROJECT_ID, APPLICATION_ID)
+                .expect_err("forged Rebuild closure must not attest canonical Freshness");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH"),
+                "unexpected error for {mutation}: {error}"
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap_or_else(|error| panic!("reject forged Rebuild publisher {mutation}: {error}"));
+    }
+}
+
+#[test]
+fn cutover_rejects_evaluated_freshness_without_a_publisher_run() {
     let _test_guard = serialize_liveness_test();
     for (index, (freshness, build_action)) in [
         ("fresh", "none"),
@@ -352,7 +528,7 @@ fn cutover_rejects_evaluated_freshness_without_an_incremental_run() {
 
         db.with_conn(|conn| {
             let error = cut_over_workspace_freshness(conn, &evidence).expect_err(
-                "only the deliberate unknown/manual seed may omit its Incremental Freshness Run",
+                "only the deliberate unknown/manual seed may omit its Freshness publisher Run",
             );
             assert!(
                 error
@@ -373,7 +549,7 @@ fn cutover_rejects_evaluated_freshness_without_an_incremental_run() {
 }
 
 #[test]
-fn canonical_read_rejects_evaluated_freshness_without_an_incremental_run() {
+fn canonical_read_rejects_evaluated_freshness_without_a_publisher_run() {
     let _test_guard = serialize_liveness_test();
     for (index, (freshness, build_action)) in [
         ("fresh", "none"),

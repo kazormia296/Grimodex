@@ -1423,11 +1423,13 @@ mod tests {
         let error = restore_safe_mode_candidate(&state, &candidate_id)
             .expect_err("sidecar / safety failure must abort restore");
 
+        // C2-ZC authority compatibility is checked before candidate install.
+        // A WAL path that is not a file makes that authoritative marker read
+        // indeterminate, so restore must stop before sidecar removal/replace.
         assert!(
-            error.to_string().contains("sidecar")
-                || error.to_string().contains("RESTORE_LIVE_SAFETY")
-                || error.to_string().contains("FORENSIC")
-                || error.to_string().contains("安全コピー"),
+            error
+                .to_string()
+                .contains("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED"),
             "unexpected error: {error}"
         );
         fs::remove_dir(ws.join("grimodex.db-wal")).expect("remove sidecar dir");

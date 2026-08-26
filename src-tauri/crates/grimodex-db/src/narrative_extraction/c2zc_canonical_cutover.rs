@@ -30,7 +30,10 @@ use super::dependency_edges::{
 };
 use super::evaluator::{BuildAction, EvidenceFreshness};
 use super::incremental_freshness::SuccessfulIncrementalFreshnessCycle;
-use super::maintenance_runtime::NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION;
+use super::maintenance_lifecycle::load_completed_maintenance_run_in_tx;
+use super::maintenance_runtime::{
+    NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION, REBUILD_DERIVED_WORK_KEY,
+};
 use super::reconciliation_envelope::SourceBasisRow;
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::task_leases::with_immediate_transaction;
@@ -397,7 +400,7 @@ pub fn canonical_application_freshness(
 /// Validate the provenance of a canonical Generic Consumer Freshness row.
 /// A runless row is a narrowly scoped pre-evaluation seed only: it must be
 /// `unknown/manual`. Every evaluated state, including a `fresh/none` state,
-/// requires the exact completed current-Epoch Incremental Freshness Run.
+/// requires an exact completed current-Epoch Freshness publisher Run.
 fn validate_freshness_evaluation_reference(
     conn: &Connection,
     project_id: &str,
@@ -426,9 +429,11 @@ fn validate_freshness_evaluation_reference(
 }
 
 /// A populated `last_evaluated_run_id` must be the exact completed
-/// current-Epoch Incremental Freshness publisher, not merely any Run in the
-/// same project. Otherwise a stale Verify/Backfill id can make old evidence
-/// look current after canonical cutover.
+/// current-Epoch Freshness publisher. Incremental evaluation publishes from
+/// its cursor-owned Freshness Run; a full Rebuild publishes from the strict
+/// shared maintenance lifecycle owned by `dependency-rebuild-derived`.
+/// Otherwise a stale Verify/Backfill id or an incomplete Rebuild ledger can
+/// make old evidence look current after canonical cutover.
 fn validate_current_evaluation_run_reference(
     conn: &Connection,
     project_id: &str,
@@ -437,7 +442,14 @@ fn validate_current_evaluation_run_reference(
     run_id: &str,
 ) -> Result<()> {
     require_non_blank(run_id, "lastEvaluatedRunId")?;
-    let row: Option<(String, String, Option<String>, String, Option<String>)> = conn
+    type EvaluationPublisherRow = (
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+    );
+    let row: Option<EvaluationPublisherRow> = conn
         .query_row(
             "SELECT project_id, run_kind, semantic_epoch_id, status, consumer_id
                FROM narrative_extraction_runs
@@ -456,18 +468,40 @@ fn validate_current_evaluation_run_reference(
         .optional()?;
     let Some((run_project_id, run_kind, run_epoch_id, status, consumer_id)) = row else {
         anyhow::bail!(
-            "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISSING: application '{application_id}' references missing evaluation Run '{run_id}'"
+            "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISSING: application '{application_id}' references missing Freshness publisher Run '{run_id}'"
         );
     };
-    anyhow::ensure!(
-        run_project_id == project_id
-            && run_kind == "freshness-evaluation"
-            && run_epoch_id.as_deref() == Some(current_epoch_id)
-            && status == "completed"
-            && consumer_id.as_deref() == Some(INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID),
-        "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Run '{run_id}' that is not the completed current-Epoch Incremental Freshness publisher"
-    );
-    Ok(())
+    match run_kind.as_deref() {
+        Some("freshness-evaluation") => {
+            anyhow::ensure!(
+                run_project_id == project_id
+                    && run_epoch_id.as_deref() == Some(current_epoch_id)
+                    && status == "completed"
+                    && consumer_id.as_deref()
+                        == Some(INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID),
+                "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Run '{run_id}' that is not the completed current-Epoch Freshness publisher"
+            );
+            Ok(())
+        }
+        Some("semantic-index-rebuild") => {
+            let handle = load_completed_maintenance_run_in_tx(conn, run_id).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Rebuild Run '{run_id}' without the exact completed maintenance lifecycle: {error}"
+                )
+            })?;
+            anyhow::ensure!(
+                handle.project_id == project_id
+                    && handle.run_kind == "semantic-index-rebuild"
+                    && handle.semantic_epoch_id == current_epoch_id
+                    && handle.work_key == REBUILD_DERIVED_WORK_KEY,
+                "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Run '{run_id}' that is not the completed current-Epoch Freshness publisher"
+            );
+            Ok(())
+        }
+        _ => anyhow::bail!(
+            "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Run '{run_id}' that is not the completed current-Epoch Freshness publisher"
+        ),
+    }
 }
 
 /// Mint and register the only scheduler-liveness receipt accepted by the

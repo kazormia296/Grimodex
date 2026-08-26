@@ -234,6 +234,7 @@
         },
         "outputKind": "chronicle.event-synthesis-output@1",
         "hypothesesArtifactKind": "chronicle.event-hypotheses@1",
+        "hypothesisSemanticBinding": "normalized-event-output-all-semantic-fields-except-generated-hypothesis-id",
         "rawObservationsArtifact": {
           "kind": "chronicle.raw-observations@1",
           "genericV1": true,
@@ -439,6 +440,7 @@
             "CHRONICLE_STAGE_SYNTHESIS_OUTPUTS_KIND",
             "resolve_terminal_output_receipt",
             "canonical_parsed_output_digest",
+            "hypotheses are not semantically equal to parsed terminal events",
             "every accepted synthesis terminal path must have exactly one output"
           ]
         },

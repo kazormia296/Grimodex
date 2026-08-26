@@ -9,8 +9,28 @@ import {
   assertChronicleStageTerminalReceiptV1,
   type ChronicleStageTerminalReceiptV1,
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
-const inlineArtifactIndex = new Map<string, NarrativeExtractionArtifact>();
+export interface NarrativeArtifactCacheScope {
+  readonly projectId: string;
+  readonly workspacePath: string | null;
+  readonly workspaceOpenRevision: number | null;
+}
+
+interface ScopedInlineArtifact {
+  readonly scopeKey: string;
+  readonly artifact: NarrativeExtractionArtifact;
+}
+
+/**
+ * Process-local acceleration for artifacts which Native has already committed.
+ * Workspace identity is part of the namespace: Run ids are database-local and
+ * therefore cannot identify an artifact across restore, clone, or reopen.
+ */
+const inlineArtifactIndex = new Map<string, ScopedInlineArtifact>();
+
+/** Runs whose exact scoped namespace was cleared and reloaded from Native. */
+const nativeConfirmedRuns = new Set<string>();
 
 /** In-flight Native hydrate only (mutable proposal/decision/application must re-fetch). */
 const hydrateInFlight = new Map<
@@ -37,16 +57,67 @@ function cloneArtifact(
   };
 }
 
-function artifactIndexKey(runId: string, artifactKind: string): string {
-  return `${runId}:${artifactKind}`;
+function artifactScopeKey(scope: NarrativeArtifactCacheScope): string {
+  const workspaceCoordinatesArePaired =
+    (scope.workspacePath === null) === (scope.workspaceOpenRevision === null);
+  if (
+    !scope.projectId ||
+    !workspaceCoordinatesArePaired ||
+    (scope.workspacePath !== null && !scope.workspacePath) ||
+    (scope.workspaceOpenRevision !== null &&
+      (!Number.isSafeInteger(scope.workspaceOpenRevision) ||
+        scope.workspaceOpenRevision < 0))
+  ) {
+    throw new Error(
+      "NEX_ARTIFACT_CACHE_SCOPE_INVALID: project and workspace authority must be exact",
+    );
+  }
+  const currentWorkspace = getCurrentWorkspaceIdentity();
+  if (
+    currentWorkspace === null
+      ? scope.workspacePath !== null
+      : currentWorkspace.path !== scope.workspacePath ||
+        currentWorkspace.openRevision !== scope.workspaceOpenRevision
+  ) {
+    throw new Error(
+      "NEX_ARTIFACT_CACHE_AUTHORITY_STALE: active workspace changed before artifact access",
+    );
+  }
+  return JSON.stringify([
+    scope.projectId,
+    scope.workspacePath,
+    scope.workspaceOpenRevision,
+  ]);
 }
 
-function hydrateKey(runId: string, projectId: string): string {
-  return `${runId}:${projectId}`;
+function runScopeKey(scopeKey: string, runId: string): string {
+  return `${scopeKey}\u0000${runId}`;
+}
+
+function artifactIndexKey(
+  scopeKey: string,
+  runId: string,
+  artifactKind: string,
+): string {
+  return `${runScopeKey(scopeKey, runId)}\u0000${artifactKind}`;
+}
+
+function clearRunNamespace(scopeKey: string, runId: string): void {
+  for (const [key, scoped] of inlineArtifactIndex) {
+    if (scoped.scopeKey === scopeKey && scoped.artifact.runId === runId) {
+      inlineArtifactIndex.delete(key);
+    }
+  }
+  nativeConfirmedRuns.delete(runScopeKey(scopeKey, runId));
+}
+
+function hydrateKey(scopeKey: string, runId: string): string {
+  return runScopeKey(scopeKey, runId);
 }
 
 export function resetNarrativeArtifactIndexForTests(): void {
   inlineArtifactIndex.clear();
+  nativeConfirmedRuns.clear();
   hydrateInFlight.clear();
 }
 
@@ -82,8 +153,11 @@ export function rememberInlineJsonArtifact(input: {
   readonly runId: string;
   readonly taskId: string;
   readonly attemptId: string;
+  /** Authority captured before the Native FinishTask transaction began. */
+  readonly scope: NarrativeArtifactCacheScope;
   readonly draft: InlineJsonArtifactDraft;
 }): NarrativeExtractionArtifact {
+  const scopeKey = artifactScopeKey(input.scope);
   const stored: NarrativeExtractionArtifact = {
     artifactId: input.draft.artifactId,
     runId: input.runId,
@@ -97,13 +171,16 @@ export function rememberInlineJsonArtifact(input: {
     createdAt: new Date().toISOString(),
   };
   inlineArtifactIndex.set(
-    artifactIndexKey(input.runId, input.draft.artifactKind),
-    stored,
+    artifactIndexKey(scopeKey, input.runId, input.draft.artifactKind),
+    { scopeKey, artifact: stored },
   );
   return cloneArtifact(stored);
 }
 
-function rememberBundleArtifact(artifact: ReviewBundleArtifact): void {
+function rememberBundleArtifact(
+  scopeKey: string,
+  artifact: ReviewBundleArtifact,
+): void {
   if (artifact.payloadStorage !== "inline-json" || !artifact.payloadJson) {
     return;
   }
@@ -121,8 +198,8 @@ function rememberBundleArtifact(artifact: ReviewBundleArtifact): void {
   };
   // Ascending createdAt from Native → last write wins per kind.
   inlineArtifactIndex.set(
-    artifactIndexKey(artifact.runId, artifact.artifactKind),
-    stored,
+    artifactIndexKey(scopeKey, artifact.runId, artifact.artifactKind),
+    { scopeKey, artifact: stored },
   );
 }
 
@@ -132,9 +209,10 @@ function rememberBundleArtifact(artifact: ReviewBundleArtifact): void {
  */
 export async function hydrateInlineArtifactsFromNative(input: {
   readonly runId: string;
-  readonly projectId: string;
+  readonly scope: NarrativeArtifactCacheScope;
 }): Promise<GetRunReviewBundleResult> {
-  const key = hydrateKey(input.runId, input.projectId);
+  const scopeKey = artifactScopeKey(input.scope);
+  const key = hydrateKey(scopeKey, input.runId);
   const existing = hydrateInFlight.get(key);
   if (existing) {
     const reused = await existing;
@@ -146,16 +224,32 @@ export async function hydrateInlineArtifactsFromNative(input: {
     return cloneJson(reused);
   }
 
+  // A failed or mismatched Native read must leave no previously cached rows
+  // which a restart path could mistake for durable evidence.
+  clearRunNamespace(scopeKey, input.runId);
   const pending = narrativeExtractionGetRunReviewBundle({
     runId: input.runId,
-    projectId: input.projectId,
+    projectId: input.scope.projectId,
   }).then((bundle) => {
+    // Revalidate after the IPC await. A workspace handoff during Native I/O
+    // must not publish old-database bytes into the new renderer authority.
+    artifactScopeKey(input.scope);
     // The promise is shared only as an internal coalescing mechanism. Never
     // leak its Native-owned object graph to either caller.
     const sealedBundle = cloneJson(bundle);
-    for (const artifact of sealedBundle.artifacts) {
-      rememberBundleArtifact(artifact);
+    if (
+      sealedBundle.runId !== input.runId ||
+      sealedBundle.projectId !== input.scope.projectId ||
+      sealedBundle.artifacts.some((artifact) => artifact.runId !== input.runId)
+    ) {
+      throw new Error(
+        "NEX_ARTIFACT_CACHE_NATIVE_IDENTITY_MISMATCH: Native bundle does not match the requested Run scope",
+      );
     }
+    for (const artifact of sealedBundle.artifacts) {
+      rememberBundleArtifact(scopeKey, artifact);
+    }
+    nativeConfirmedRuns.add(runScopeKey(scopeKey, input.runId));
     return sealedBundle;
   });
 
@@ -176,7 +270,7 @@ export async function hydrateInlineArtifactsFromNative(input: {
  */
 export async function hydrateChronicleStageReceiptsFromNative(input: {
   readonly runId: string;
-  readonly projectId: string;
+  readonly scope: NarrativeArtifactCacheScope;
   /** Reuse the exact already-hydrated review bundle when the caller also
    * needs terminal ProposalSet state. This avoids validating receipts from
    * one read and resuming from a later mutable read. */
@@ -199,7 +293,7 @@ export async function hydrateChronicleStageReceiptsFromNative(input: {
   for (const receipt of clonedReceipts) {
     await assertChronicleStageTerminalReceiptV1(receipt);
     if (
-      receipt.stageExecution.projectId !== input.projectId ||
+      receipt.stageExecution.projectId !== input.scope.projectId ||
       receipt.stageExecution.runId !== input.runId ||
       !seenExecutionIds.add(receipt.stageExecution.stageExecutionId)
     ) {
@@ -214,31 +308,40 @@ export async function hydrateChronicleStageReceiptsFromNative(input: {
 export async function loadInlineJsonArtifact<T extends object>(
   runId: string,
   artifactKind: string,
-  options?: { readonly projectId?: string },
+  options: {
+    readonly scope: NarrativeArtifactCacheScope;
+    /** Resume/restore consumers require at least one current Native read. */
+    readonly requireNativeConfirmation?: boolean;
+  },
 ): Promise<T | null> {
-  const key = artifactIndexKey(runId, artifactKind);
-  const cached = inlineArtifactIndex.get(key);
-  if (cached?.payloadJson) {
-    return cloneJson(cached.payloadJson) as T;
+  const scopeKey = artifactScopeKey(options.scope);
+  const confirmedKey = runScopeKey(scopeKey, runId);
+  if (
+    options.requireNativeConfirmation &&
+    !nativeConfirmedRuns.has(confirmedKey)
+  ) {
+    await hydrateInlineArtifactsFromNative({
+      runId,
+      scope: options.scope,
+    });
   }
 
-  if (!options?.projectId) {
-    return null;
-  }
-
-  await hydrateInlineArtifactsFromNative({
-    runId,
-    projectId: options.projectId,
-  });
-  const hydrated = inlineArtifactIndex.get(key);
-  if (!hydrated?.payloadJson) return null;
-  return cloneJson(hydrated.payloadJson) as T;
+  const cached = inlineArtifactIndex.get(
+    artifactIndexKey(scopeKey, runId, artifactKind),
+  )?.artifact;
+  if (!cached?.payloadJson) return null;
+  return cloneJson(cached.payloadJson) as T;
 }
 
 export function listInlineJsonArtifacts(
   runId: string,
+  scope: NarrativeArtifactCacheScope,
 ): readonly NarrativeExtractionArtifact[] {
+  const scopeKey = artifactScopeKey(scope);
   return [...inlineArtifactIndex.values()]
-    .filter((artifact) => artifact.runId === runId)
-    .map(cloneArtifact);
+    .filter(
+      (scoped) =>
+        scoped.scopeKey === scopeKey && scoped.artifact.runId === runId,
+    )
+    .map((scoped) => cloneArtifact(scoped.artifact));
 }

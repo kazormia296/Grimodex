@@ -259,6 +259,7 @@ export const USE_NARRATIVE_EXTRACTION_RUN = true;
 export type { ChronicleReviewProposal } from "./chronicleExtractionStore";
 export type { StartChronicleExtractionRequest } from "./chronicleExtractionStore";
 export type { ChronicleExtractionReviewProjection } from "./chronicleExtractionStore";
+export type { ResumeChronicleExtractionRequest } from "./chronicleExtractionApi";
 
 export async function startChronicleExtraction(
   ...args: Parameters<
@@ -269,6 +270,28 @@ export async function startChronicleExtraction(
 > {
   const mod = await import("./chronicleExtractionApi");
   return mod.startChronicleExtraction(...args);
+}
+
+export async function discoverChronicleTaskResumeCandidates(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").discoverChronicleTaskResumeCandidates
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").discoverChronicleTaskResumeCandidates
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.discoverChronicleTaskResumeCandidates(...args);
+}
+
+export async function resumeChronicleExtraction(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").resumeChronicleExtraction
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").resumeChronicleExtraction
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.resumeChronicleExtraction(...args);
 }
 
 export async function getChronicleExtractionReview(

@@ -15,7 +15,9 @@ vi.mock("./api", () => apiMocks);
 
 const extractionMocks = vi.hoisted(() => ({
   USE_NARRATIVE_EXTRACTION_RUN: true,
+  discoverChronicleTaskResumeCandidates: vi.fn().mockResolvedValue([]),
   startChronicleExtraction: vi.fn(),
+  resumeChronicleExtraction: vi.fn(),
   applyChronicleExtractionReview: vi.fn(),
   restoreChronicleExtractionReview: vi.fn().mockResolvedValue(null),
 }));
@@ -52,6 +54,7 @@ import { useProjectStore } from "@/features/project/projectStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { _resetMutationAuthorityForTests } from "@/features/concurrency/mutationAuthority";
+import type { ChronicleTaskResumeCandidate } from "@/application/narrative-extraction/nativeApi";
 
 const SCOPE_A: ChronicleScope = {
   workspacePath: "/workspace-a",
@@ -63,6 +66,64 @@ const SCOPE_B: ChronicleScope = {
   openRevision: 2,
   projectId: "project-b",
 };
+
+const CHRONICLE_TASK_CHAIN = [
+  "source.snapshot@1",
+  "source.window-plan@1",
+  "chronicle.observe-events@1",
+  "evidence.resolve@1",
+  "chronicle.merge-local-observations@1",
+  "chronicle.cluster-event-observations@1",
+  "chronicle.synthesize-event@1",
+  "chronicle.match-existing-events@1",
+  "chronicle.plan-proposals@1",
+] as const;
+
+function recoveryCandidate(
+  runId: string,
+  availability: ChronicleTaskResumeCandidate["availability"] = "ready",
+): ChronicleTaskResumeCandidate {
+  const catalogDigest = `sha256:${"a".repeat(64)}`;
+  const coordinatorContractDigest = `sha256:${"b".repeat(64)}`;
+  return {
+    runId,
+    projectId: SCOPE_A.projectId,
+    status: "running",
+    scopeJson: { folderId: "folder-a", sceneIds: ["scene-a"] },
+    specJson: {
+      kind: "chronicle.extract.run-spec@2",
+      domain: "chronicle",
+      version: 2,
+      taskChain: [...CHRONICLE_TASK_CHAIN],
+      executionMode: "deterministic-fallback",
+      existingEventsCatalogDigest: catalogDigest,
+      coordinatorContractDigest,
+    },
+    runSpecDigest: `sha256:${"c".repeat(64)}`,
+    snapshotDigest: `sha256:${"d".repeat(64)}`,
+    catalogDigest,
+    executionMode: "deterministic-fallback",
+    coordinatorContractDigest,
+    completedTaskKinds: [...CHRONICLE_TASK_CHAIN.slice(0, 6)],
+    nextTask: {
+      taskId: `task:${runId}`,
+      taskKind: "chronicle.synthesize-event@1",
+      status: availability === "lease-held" ? "running" : "queued",
+      leaseExpiresAt:
+        availability === "lease-held" ? "2099-01-01T00:00:00.000Z" : null,
+    },
+    availability,
+    blockedCode:
+      availability === "blocked" ? "NEX_CHRONICLE_RESUME_BLOCKED" : null,
+    language: "ja",
+    existingEventsCatalog: {
+      kind: "chronicle.existing-events-catalog@1",
+      events: [],
+    },
+    createdAt: "2026-08-10T00:00:00.000Z",
+    startedAt: "2026-08-10T00:00:01.000Z",
+  };
+}
 
 function node(
   id: string,
@@ -216,6 +277,9 @@ describe("ChronicleExtractDialog run-path cutover", () => {
       seedProjection();
       return { runId: "run-1" };
     });
+    extractionMocks.discoverChronicleTaskResumeCandidates.mockReset();
+    extractionMocks.discoverChronicleTaskResumeCandidates.mockResolvedValue([]);
+    extractionMocks.resumeChronicleExtraction.mockReset();
     extractionMocks.applyChronicleExtractionReview.mockResolvedValue(1);
     extractionMocks.restoreChronicleExtractionReview.mockResolvedValue(null);
   });
@@ -367,5 +431,107 @@ describe("ChronicleExtractDialog run-path cutover", () => {
 
     expect(await screen.findByText("抽出候補")).toBeTruthy();
     expect(extractionMocks.restoreChronicleExtractionReview).toHaveBeenCalled();
+  });
+
+  it("cold-start候補を複数明示し、選んだexact Runだけを再開してfresh開始しない", async () => {
+    const first = recoveryCandidate("run-recovery-first");
+    const second = recoveryCandidate("run-recovery-second");
+    useChronicleExtractionStore
+      .getState()
+      .setRecoveryCandidates(SCOPE_A, [first, second]);
+    extractionMocks.resumeChronicleExtraction.mockImplementation(
+      async ({ candidate }: { candidate: ChronicleTaskResumeCandidate }) => {
+        seedProjection();
+        useChronicleExtractionStore
+          .getState()
+          .completeCandidateResume(candidate.runId);
+        return { runId: candidate.runId };
+      },
+    );
+
+    render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("前回中断した抽出があります")).toBeTruthy();
+    expect(
+      screen.getByTitle("run-recovery-first · 2026-08-10T00:00:00.000Z")
+        .textContent,
+    ).toContain("run-recovery-first · 2026-08-10T00:00:00.000Z");
+    expect(
+      screen.getByTitle("run-recovery-second · 2026-08-10T00:00:00.000Z")
+        .textContent,
+    ).toContain("run-recovery-second · 2026-08-10T00:00:00.000Z");
+    const resumeButtons = screen.getAllByRole("button", {
+      name: /^再開 run-recovery-/u,
+    });
+    expect(resumeButtons).toHaveLength(2);
+    fireEvent.click(resumeButtons[1]!);
+
+    await waitFor(() =>
+      expect(extractionMocks.resumeChronicleExtraction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          candidate: expect.objectContaining({
+            runId: "run-recovery-second",
+          }),
+          workspacePath: SCOPE_A.workspacePath,
+          openRevision: SCOPE_A.openRevision,
+        }),
+      ),
+    );
+    expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+    expect(await screen.findByText("抽出候補")).toBeTruthy();
+  });
+
+  it("lease-held候補を表示したまま再開もfresh解析も許可しない", async () => {
+    const held = recoveryCandidate("run-lease-held", "lease-held");
+    useChronicleExtractionStore
+      .getState()
+      .setRecoveryCandidates(SCOPE_A, [held]);
+
+    render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const heldButton = await screen.findByRole("button", {
+      name: "処理中 run-lease-held",
+    });
+    expect(heldButton).toBeDisabled();
+    expect(screen.getByRole("button", { name: "解析" })).toBeDisabled();
+    expect(extractionMocks.resumeChronicleExtraction).not.toHaveBeenCalled();
+    expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+  });
+
+  it("candidate discovery failureをblocked表示し、fresh解析へfallbackしない", async () => {
+    useChronicleExtractionStore
+      .getState()
+      .blockRecovery(SCOPE_A, "NEX_CHRONICLE_RESUME_DISCOVERY_FAILED");
+
+    render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByText(
+        "中断した抽出の状態を確認できません。新しい解析は開始されません。",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "解析" })).toBeDisabled();
+    expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
   });
 });

@@ -633,6 +633,10 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '[{"runId":"r1","projectId":"p1","surfacePathId":"chronicle.extract","status":"completed","snapshotDigest":null,"createdAt":"2026-01-01T00:00:00.000Z","startedAt":null,"completedAt":null}]',
       ),
     ) as never,
+    narrativeExtractionListChronicleTaskResumeCandidates: record(
+      "narrativeExtractionListChronicleTaskResumeCandidates",
+      Promise.resolve("[]"),
+    ) as never,
     narrativeExtractionCancelRun: record(
       "narrativeExtractionCancelRun",
       Promise.resolve('{"runId":"r1","status":"cancelled"}'),
@@ -961,6 +965,66 @@ describe("dispatchInvoke", () => {
     expect(calls).toEqual([
       { method: "narrativeExtractionFinishTask", args: [payload] },
     ]);
+  });
+
+  it("Chronicle task resume candidate discovery forwards only the strict project query", async () => {
+    const { backend, calls } = fakeBackend();
+
+    const result = await dispatchInvoke(
+      "narrative_extraction_list_chronicle_task_resume_candidates",
+      { payload: { projectId: "project-resume", limit: 5 } },
+      { backend, shell: noShell },
+    );
+
+    expect(result).toEqual({ ok: true, value: [] });
+    expect(calls).toEqual([
+      {
+        method: "narrativeExtractionListChronicleTaskResumeCandidates",
+        args: [{ projectId: "project-resume", limit: 5 }],
+      },
+    ]);
+  });
+
+  it("Chronicle task resume candidate discovery rejects malformed scope and backend skew", async () => {
+    const { backend, calls } = fakeBackend();
+    for (const payload of [
+      null,
+      [],
+      "payload",
+      {},
+      { projectId: "" },
+      { projectId: "   " },
+      { projectId: " project-resume" },
+      { projectId: "project-resume " },
+      { projectId: "project-resume", limit: 0 },
+      { projectId: "project-resume", limit: 101 },
+      { projectId: "project-resume", limit: 1.5 },
+      { projectId: "project-resume", unknown: true },
+    ]) {
+      const result = await dispatchInvoke(
+        "narrative_extraction_list_chronicle_task_resume_candidates",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+
+    const missingMethod = await dispatchInvoke(
+      "narrative_extraction_list_chronicle_task_resume_candidates",
+      { payload: { projectId: "project-resume" } },
+      {
+        backend: {
+          ...backend,
+          narrativeExtractionListChronicleTaskResumeCandidates: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionListChronicleTaskResumeCandidates`,
+    });
   });
 
   it("未知コマンドは IPC_UNIMPLEMENTED: マーカー付き envelope", async () => {
@@ -1318,9 +1382,11 @@ describe("dispatchInvoke", () => {
 
 describe("NAPI_COMMANDS 引数アダプタ", () => {
   it("C2B Human writer は typed payload を専用N-APIへ一度だけ渡す", async () => {
-    const method = vi.fn().mockResolvedValue(
-      '{"proposalId":"p1","revisionId":"rv2","revisionNumber":2,"originKind":"enveloped","createdBy":"human","reconciliationEnvelopeDigest":"sha256:revision","currentRevisionId":"rv2","status":"unreviewed"}',
-    );
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"proposalId":"p1","revisionId":"rv2","revisionNumber":2,"originKind":"enveloped","createdBy":"human","reconciliationEnvelopeDigest":"sha256:revision","currentRevisionId":"rv2","status":"unreviewed"}',
+      );
     const { backend } = fakeBackend({
       narrativeExtractionCreateHumanDerivedRevision: method,
     });
@@ -4723,6 +4789,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_get_commit_status",
       "narrative_extraction_get_run",
       "narrative_extraction_get_run_review_bundle",
+      "narrative_extraction_list_chronicle_task_resume_candidates",
       "narrative_extraction_list_resumable_runs",
       "narrative_extraction_prepare_commit",
       "narrative_extraction_redo_commit",

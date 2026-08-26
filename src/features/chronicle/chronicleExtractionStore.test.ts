@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
+import type { ChronicleTaskResumeCandidate } from "@/application/narrative-extraction/nativeApi";
 import {
   buildProposalSafetyFlags,
   isSafeForBulkApprove,
@@ -90,6 +91,65 @@ function projection(
   };
 }
 
+const RECOVERY_SCOPE = {
+  projectId: "project-a",
+  workspacePath: "/workspace-a",
+  openRevision: 1,
+} as const;
+
+const CHRONICLE_TASK_CHAIN = [
+  "source.snapshot@1",
+  "source.window-plan@1",
+  "chronicle.observe-events@1",
+  "evidence.resolve@1",
+  "chronicle.merge-local-observations@1",
+  "chronicle.cluster-event-observations@1",
+  "chronicle.synthesize-event@1",
+  "chronicle.match-existing-events@1",
+  "chronicle.plan-proposals@1",
+] as const;
+
+function recoveryCandidate(runId: string): ChronicleTaskResumeCandidate {
+  const catalogDigest = `sha256:${"a".repeat(64)}`;
+  const coordinatorContractDigest = `sha256:${"b".repeat(64)}`;
+  return {
+    runId,
+    projectId: RECOVERY_SCOPE.projectId,
+    status: "running",
+    scopeJson: { folderId: "folder-a", sceneIds: ["scene-a"] },
+    specJson: {
+      kind: "chronicle.extract.run-spec@2",
+      domain: "chronicle",
+      version: 2,
+      taskChain: [...CHRONICLE_TASK_CHAIN],
+      executionMode: "deterministic-fallback",
+      existingEventsCatalogDigest: catalogDigest,
+      coordinatorContractDigest,
+    },
+    runSpecDigest: `sha256:${"c".repeat(64)}`,
+    snapshotDigest: `sha256:${"d".repeat(64)}`,
+    catalogDigest,
+    executionMode: "deterministic-fallback",
+    coordinatorContractDigest,
+    completedTaskKinds: [...CHRONICLE_TASK_CHAIN.slice(0, 6)],
+    nextTask: {
+      taskId: `task:${runId}`,
+      taskKind: "chronicle.synthesize-event@1",
+      status: "queued",
+      leaseExpiresAt: null,
+    },
+    availability: "ready",
+    blockedCode: null,
+    language: "ja",
+    existingEventsCatalog: {
+      kind: "chronicle.existing-events-catalog@1",
+      events: [],
+    },
+    createdAt: "2026-08-10T00:00:00.000Z",
+    startedAt: "2026-08-10T00:00:01.000Z",
+  };
+}
+
 describe("isSafeForBulkApprove", () => {
   it("requires fresh + exact evidence + settled actuality + no duplicate + lossless + no deps + low risk", () => {
     const safe = buildProposalSafetyFlags({
@@ -161,6 +221,75 @@ describe("chronicleExtractionStore", () => {
     expect(useChronicleExtractionStore.getState().projection?.runId).toBe(
       "run-1",
     );
+  });
+
+  it("clears Task recovery independently when workspace scope mismatches", () => {
+    useChronicleExtractionStore
+      .getState()
+      .setRecoveryCandidates(RECOVERY_SCOPE, [recoveryCandidate("run-a")]);
+
+    useChronicleExtractionStore.getState().clearIfScopeMismatch({
+      ...RECOVERY_SCOPE,
+      openRevision: 2,
+    });
+
+    expect(useChronicleExtractionStore.getState().recovery).toEqual({
+      status: "idle",
+      scope: null,
+      candidates: [],
+      resumingRunId: null,
+      errorCode: null,
+    });
+  });
+
+  it("keeps a discovery error blocked for the matching scope", () => {
+    const store = useChronicleExtractionStore.getState();
+    store.beginRecoveryDiscovery(RECOVERY_SCOPE);
+    store.blockRecovery(
+      RECOVERY_SCOPE,
+      "NEX_CHRONICLE_RESUME_DISCOVERY_FAILED",
+    );
+    store.clearIfScopeMismatch(RECOVERY_SCOPE);
+
+    expect(useChronicleExtractionStore.getState().recovery).toMatchObject({
+      status: "blocked",
+      scope: RECOVERY_SCOPE,
+      candidates: [],
+      errorCode: "NEX_CHRONICLE_RESUME_DISCOVERY_FAILED",
+    });
+  });
+
+  it("removes only the terminal candidate and preserves the other Run", () => {
+    const first = recoveryCandidate("run-a");
+    const second = recoveryCandidate("run-b");
+    const store = useChronicleExtractionStore.getState();
+    store.setRecoveryCandidates(RECOVERY_SCOPE, [first, second]);
+    store.beginCandidateResume(first.runId);
+    store.completeCandidateResume(first.runId);
+
+    expect(useChronicleExtractionStore.getState().recovery).toMatchObject({
+      status: "ready",
+      scope: RECOVERY_SCOPE,
+      candidates: [second],
+      resumingRunId: null,
+      errorCode: null,
+    });
+  });
+
+  it("test reset clears Task recovery state", () => {
+    useChronicleExtractionStore
+      .getState()
+      .setRecoveryCandidates(RECOVERY_SCOPE, [recoveryCandidate("run-a")]);
+
+    resetChronicleExtractionStoreForTests();
+
+    expect(useChronicleExtractionStore.getState().recovery).toEqual({
+      status: "idle",
+      scope: null,
+      candidates: [],
+      resumingRunId: null,
+      errorCode: null,
+    });
   });
 
   it("reviseProposalFields applies Native revision id and requires re-approval", () => {

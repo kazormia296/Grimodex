@@ -10,6 +10,7 @@ import type {
   NarrativeExtractionTaskCounts,
   NarrativeProposalStatus,
 } from "@/features/narrative-extraction/runtime/types";
+import type { ChronicleTaskResumeCandidate } from "@/application/narrative-extraction/nativeApi";
 
 export interface StartChronicleExtractionRequest {
   readonly projectId: string;
@@ -91,6 +92,28 @@ export interface ChronicleExtractionReviewProjection {
   readonly proposals: readonly ChronicleReviewProposal[];
 }
 
+export interface ChronicleExtractionRecoveryScope {
+  readonly projectId: string;
+  readonly workspacePath: string;
+  readonly openRevision: number;
+}
+
+export interface ChronicleExtractionRecoveryState {
+  readonly status: "idle" | "discovering" | "ready" | "resuming" | "blocked";
+  readonly scope: ChronicleExtractionRecoveryScope | null;
+  readonly candidates: readonly ChronicleTaskResumeCandidate[];
+  readonly resumingRunId: string | null;
+  readonly errorCode: string | null;
+}
+
+const EMPTY_RECOVERY_STATE: ChronicleExtractionRecoveryState = {
+  status: "idle",
+  scope: null,
+  candidates: [],
+  resumingRunId: null,
+  errorCode: null,
+};
+
 export function isSafeForBulkApprove(
   flags: ChronicleProposalSafetyFlags,
 ): boolean {
@@ -149,6 +172,8 @@ const EMPTY_TASK_COUNTS: NarrativeExtractionTaskCounts = {
 interface ChronicleExtractionState {
   /** Active review projection for the current dialog scope (DB mirror). */
   projection: ChronicleExtractionReviewProjection | null;
+  /** Durable Task recovery is independent from an older review projection. */
+  recovery: ChronicleExtractionRecoveryState;
   selectedProposalId: string | null;
   setProjection: (projection: ChronicleExtractionReviewProjection) => void;
   clearProjection: () => void;
@@ -161,6 +186,18 @@ interface ChronicleExtractionState {
     workspacePath: string;
     openRevision: number;
   }) => void;
+  beginRecoveryDiscovery: (scope: ChronicleExtractionRecoveryScope) => void;
+  setRecoveryCandidates: (
+    scope: ChronicleExtractionRecoveryScope,
+    candidates: readonly ChronicleTaskResumeCandidate[],
+  ) => void;
+  blockRecovery: (
+    scope: ChronicleExtractionRecoveryScope,
+    errorCode: string,
+  ) => void;
+  beginCandidateResume: (runId: string) => void;
+  completeCandidateResume: (runId: string) => void;
+  clearRecovery: () => void;
   selectProposal: (proposalId: string | null) => void;
   updateProposalStatus: (
     proposalId: string,
@@ -201,6 +238,7 @@ function replaceProposal(
 export const useChronicleExtractionStore = create<ChronicleExtractionState>(
   (set, get) => ({
     projection: null,
+    recovery: EMPTY_RECOVERY_STATE,
     selectedProposalId: null,
 
     setProjection: (projection) => {
@@ -219,14 +257,107 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
 
     clearIfScopeMismatch: (scope) => {
       const projection = get().projection;
-      if (!projection) return;
-      const mismatch =
-        projection.projectId !== scope.projectId ||
-        projection.workspacePath !== scope.workspacePath ||
-        projection.openRevision !== scope.openRevision;
-      if (mismatch) {
-        set({ projection: null, selectedProposalId: null });
+      const recoveryScope = get().recovery.scope;
+      const projectionMismatch =
+        projection !== null &&
+        (projection.projectId !== scope.projectId ||
+          projection.workspacePath !== scope.workspacePath ||
+          projection.openRevision !== scope.openRevision);
+      const recoveryMismatch =
+        recoveryScope !== null &&
+        (recoveryScope.projectId !== scope.projectId ||
+          recoveryScope.workspacePath !== scope.workspacePath ||
+          recoveryScope.openRevision !== scope.openRevision);
+      if (projectionMismatch || recoveryMismatch) {
+        set({
+          ...(projectionMismatch
+            ? { projection: null, selectedProposalId: null }
+            : {}),
+          ...(recoveryMismatch ? { recovery: EMPTY_RECOVERY_STATE } : {}),
+        });
       }
+    },
+
+    beginRecoveryDiscovery: (scope) => {
+      set({
+        recovery: {
+          status: "discovering",
+          scope: { ...scope },
+          candidates: [],
+          resumingRunId: null,
+          errorCode: null,
+        },
+      });
+    },
+
+    setRecoveryCandidates: (scope, candidates) => {
+      set({
+        recovery: {
+          status: "ready",
+          scope: { ...scope },
+          candidates: [...candidates],
+          resumingRunId: null,
+          errorCode: null,
+        },
+      });
+    },
+
+    blockRecovery: (scope, errorCode) => {
+      const current = get().recovery;
+      const sameScope =
+        current.scope?.projectId === scope.projectId &&
+        current.scope.workspacePath === scope.workspacePath &&
+        current.scope.openRevision === scope.openRevision;
+      set({
+        recovery: {
+          status: "blocked",
+          scope: { ...scope },
+          candidates: sameScope ? current.candidates : [],
+          resumingRunId: null,
+          errorCode,
+        },
+      });
+    },
+
+    beginCandidateResume: (runId) => {
+      const recovery = get().recovery;
+      if (
+        recovery.status !== "ready" ||
+        !recovery.candidates.some((candidate) => candidate.runId === runId)
+      ) {
+        return;
+      }
+      set({
+        recovery: {
+          ...recovery,
+          status: "resuming",
+          resumingRunId: runId,
+          errorCode: null,
+        },
+      });
+    },
+
+    completeCandidateResume: (runId) => {
+      const recovery = get().recovery;
+      const candidates = recovery.candidates.filter(
+        (candidate) => candidate.runId !== runId,
+      );
+      set({
+        recovery:
+          candidates.length > 0
+            ? {
+                ...recovery,
+                status: "ready",
+                candidates,
+                resumingRunId: null,
+                errorCode: null,
+              }
+            : EMPTY_RECOVERY_STATE,
+      });
+    },
+
+    clearRecovery: () => {
+      set({ recovery: EMPTY_RECOVERY_STATE });
     },
 
     selectProposal: (proposalId) => {
@@ -367,6 +498,7 @@ export function emptyTaskCounts(): NarrativeExtractionTaskCounts {
 export function resetChronicleExtractionStoreForTests(): void {
   useChronicleExtractionStore.setState({
     projection: null,
+    recovery: EMPTY_RECOVERY_STATE,
     selectedProposalId: null,
   });
 }
