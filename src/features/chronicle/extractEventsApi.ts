@@ -252,6 +252,7 @@ export async function importExtractedEvents(
 }
 
 import {
+  selectChronicleProposalsForAtomicApply,
   useChronicleExtractionStore,
   type ChronicleReviewProposal,
 } from "./chronicleExtractionStore";
@@ -418,8 +419,6 @@ export async function applyChronicleExtractionReview(args: {
   readonly projectId: string;
   readonly proposals: readonly ChronicleReviewProposal[];
 }): Promise<number> {
-  const { selectChronicleProposalsForAtomicApply } =
-    await import("./chronicleExtractionStore");
   const approved = selectChronicleProposalsForAtomicApply(args.proposals);
   if (approved.length === 0) return 0;
 
