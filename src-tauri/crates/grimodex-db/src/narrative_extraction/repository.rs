@@ -6817,7 +6817,31 @@ mod unit_tests {
         db: &Database,
         run_id: &str,
     ) -> (String, String, String) {
-        create_current_chronicle_run(db, run_id);
+        let catalog = json!({
+            "kind": CHRONICLE_EXISTING_EVENTS_CATALOG_KIND,
+            "events": [],
+        });
+        let create_payload = current_chronicle_candidate_payload(run_id, "project-1", &catalog);
+        let snapshot_digest = create_payload
+            .snapshot_digest
+            .clone()
+            .expect("catalog-guard fixture Snapshot digest");
+        create_run(db, create_payload).expect("create current Chronicle catalog-guard Run");
+        // The catalog-guard tests used to mark every predecessor Task complete
+        // without its Attempt/artifact ledger. A production plan Proposal can
+        // only exist after this exact Snapshot authority has terminalized, and
+        // current Decisions deliberately verify it before status DML.
+        let snapshot_payload = test_candidate_snapshot_payload(&snapshot_digest, Some(&catalog));
+        let snapshot_output =
+            test_candidate_snapshot_output(run_id, "project-1", &snapshot_payload);
+        complete_candidate_task_with_artifact(
+            db,
+            run_id,
+            "source.snapshot@1",
+            "source.snapshot@1",
+            snapshot_payload,
+            snapshot_output,
+        );
         let (task_id, attempt_id) = claim_current_plan(db, run_id);
         let proposal = valid_chronicle_proposal("event:catalog-guard", "Catalog guard proposal");
         finish_task(
