@@ -31,7 +31,8 @@ use super::reconciliation_envelope::{
     ensure_v2_proposal_payload_digest, validate_reconciliation_envelope, ORIGIN_ENVELOPED,
 };
 use super::repository::{
-    ensure_proposal_not_applied, ensure_v2_proposal_evidence_binding, insert_source_basis_rows,
+    ensure_current_chronicle_proposal_set_unconsumed, ensure_proposal_not_applied,
+    ensure_v2_proposal_evidence_binding, insert_source_basis_rows,
 };
 use super::task_leases::with_immediate_transaction;
 use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
@@ -106,6 +107,7 @@ pub(crate) fn create_human_derived_revision_in_tx_with_authorities(
         "NEX_HUMAN_DERIVATION_TRANSACTION_REQUIRED: Human derivation requires a caller-owned transaction"
     );
     ensure_proposal_not_applied(conn, &request.proposal_id)?;
+    ensure_current_chronicle_proposal_set_unconsumed(conn, &request.proposal_id)?;
 
     let proposal_project: Option<String> = conn
         .query_row(

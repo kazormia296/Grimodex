@@ -728,6 +728,7 @@ export declare class Backend {
   narrativeExtractionCreateRun(payload: any, workspaceBinding: any): Promise<string>
   narrativeExtractionGetRun(payload: any): Promise<string>
   narrativeExtractionListResumableRuns(payload: any): Promise<string>
+  narrativeExtractionIsRunResumableForReview(payload: any): Promise<string>
   narrativeExtractionListChronicleTaskResumeCandidates(payload: any): Promise<string>
   narrativeExtractionCancelRun(payload: any, workspaceBinding: any): Promise<string>
   narrativeExtractionClaimTask(payload: any, workspaceBinding: any): Promise<string>

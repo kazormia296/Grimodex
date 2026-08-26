@@ -553,6 +553,28 @@ pub struct ListResumableRunsPayload {
     pub limit: Option<i64>,
 }
 
+/// Exact, limit-free authority query for one durable Review Run.
+///
+/// Unlike [`ListResumableRunsPayload`], all three coordinates are required so
+/// callers cannot mistake absence from a bounded discovery page for terminal
+/// Review state.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IsRunResumableForReviewPayload {
+    pub run_id: String,
+    pub project_id: String,
+    pub surface_path_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IsRunResumableForReviewResult {
+    pub run_id: String,
+    pub project_id: String,
+    pub surface_path_id: String,
+    pub resumable: bool,
+}
+
 /// Project-scoped discovery input for interrupted current Chronicle DAGs.
 /// This is deliberately separate from [`ListResumableRunsPayload`], whose
 /// contract is Review restoration for Runs that already own a ProposalSet.

@@ -20,6 +20,7 @@ const extractionMocks = vi.hoisted(() => ({
   startChronicleExtraction: vi.fn(),
   resumeChronicleExtraction: vi.fn(),
   applyChronicleExtractionReview: vi.fn(),
+  abandonChroniclePartialReview: vi.fn(),
   restoreChronicleExtractionReview: vi.fn().mockResolvedValue(null),
 }));
 vi.mock("./extractEventsApi", () => extractionMocks);
@@ -209,6 +210,7 @@ function seedProjection(
     }),
     probableDuplicateChoice: null,
     ...overrides,
+    application: overrides.application ?? null,
   };
   useChronicleExtractionStore.getState().setProjection({
     runId: "run-1",
@@ -286,6 +288,7 @@ describe("ChronicleExtractDialog run-path cutover", () => {
     });
     extractionMocks.resumeChronicleExtraction.mockReset();
     extractionMocks.applyChronicleExtractionReview.mockResolvedValue(1);
+    extractionMocks.abandonChroniclePartialReview.mockReset();
     extractionMocks.restoreChronicleExtractionReview.mockResolvedValue(null);
   });
 
@@ -315,6 +318,306 @@ describe("ChronicleExtractDialog run-path cutover", () => {
     );
     expect(toastMocks.success).toHaveBeenCalled();
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("未判断Proposalが残る間は部分Applyを開始しない", async () => {
+    seedProjection();
+    const current = useChronicleExtractionStore.getState().projection;
+    if (!current) throw new Error("expected seeded projection");
+    const approved = current.proposals[0];
+    if (!approved) throw new Error("expected seeded proposal");
+    useChronicleExtractionStore.getState().setProjection({
+      ...current,
+      proposals: [
+        approved,
+        {
+          ...approved,
+          proposalId: "proposal-2",
+          revisionId: "rev-2",
+          proposalKey: "key-2",
+          status: "unreviewed",
+          displayTitle: "未判断候補",
+          payload: approved.payload
+            ? {
+                ...approved.payload,
+                eventId: "event-2",
+                title: "未判断候補",
+              }
+            : null,
+        },
+      ],
+    });
+
+    render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const importButton = screen.getByRole("button", { name: "取り込む" });
+    expect(importButton).toBeDisabled();
+    fireEvent.click(importButton);
+    expect(
+      extractionMocks.applyChronicleExtractionReview,
+    ).not.toHaveBeenCalled();
+
+    act(() => {
+      useChronicleExtractionStore
+        .getState()
+        .updateProposalStatus("proposal-2", "rejected");
+    });
+    expect(importButton).toBeEnabled();
+    fireEvent.click(importButton);
+    await waitFor(() =>
+      expect(
+        extractionMocks.applyChronicleExtractionReview,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-a",
+          proposals: expect.arrayContaining([
+            expect.objectContaining({
+              proposalId: "proposal-1",
+              status: "approved",
+            }),
+            expect.objectContaining({
+              proposalId: "proposal-2",
+              status: "rejected",
+            }),
+          ]),
+        }),
+      ),
+    );
+  });
+
+  it("部分Apply済みのcold restoreは再適用を禁止し再解析を案内する", () => {
+    seedProjection();
+    const current = useChronicleExtractionStore.getState().projection;
+    if (!current) throw new Error("expected seeded projection");
+    const first = current.proposals[0];
+    if (!first?.revisionId) throw new Error("expected seeded revision");
+    useChronicleExtractionStore.getState().setProjection({
+      ...current,
+      proposals: [
+        {
+          ...first,
+          application: {
+            commitId: "commit-partial",
+            revisionId: first.revisionId,
+            appliedEntityKind: "chronicle-event",
+            appliedEntityId: "event-1",
+            createdAt: "2026-08-26T00:00:00.000Z",
+            applicationKind: "normal",
+            compensatesApplicationId: null,
+          },
+        },
+        {
+          ...first,
+          proposalId: "proposal-2",
+          revisionId: "rev-2",
+          proposalKey: "key-2",
+          status: "unreviewed",
+          displayTitle: "未適用候補",
+          payload: first.payload
+            ? {
+                ...first.payload,
+                eventId: "event-2",
+                title: "未適用候補",
+              }
+            : null,
+          application: null,
+        },
+      ],
+    });
+
+    render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("chronicle-partial-apply-blocked"),
+    ).toHaveTextContent("一部取り込み済み");
+    expect(screen.getByText("取り込み済み（再適用しません）")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "取り込む" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "未適用の提案を破棄" }),
+    ).toBeEnabled();
+  });
+
+  it("historical partialをdurableに破棄した後だけ新しい解析を許可する", async () => {
+    let releaseAbandon!: () => void;
+    const abandonGate = new Promise<void>((resolve) => {
+      releaseAbandon = resolve;
+    });
+    seedProjection();
+    const current = useChronicleExtractionStore.getState().projection;
+    if (!current) throw new Error("expected seeded projection");
+    const applied = current.proposals[0];
+    if (!applied?.revisionId) throw new Error("expected seeded revision");
+    useChronicleExtractionStore.getState().setProjection({
+      ...current,
+      proposals: [
+        {
+          ...applied,
+          application: {
+            commitId: "commit-partial",
+            revisionId: applied.revisionId,
+            appliedEntityKind: "chronicle-event",
+            appliedEntityId: "event-1",
+            createdAt: "2026-08-26T00:00:00.000Z",
+            applicationKind: "normal",
+            compensatesApplicationId: null,
+          },
+        },
+        {
+          ...applied,
+          proposalId: "proposal-2",
+          revisionId: "rev-2",
+          proposalKey: "key-2",
+          status: "unreviewed",
+          displayTitle: "未適用候補",
+          payload: applied.payload
+            ? {
+                ...applied.payload,
+                eventId: "event-2",
+                title: "未適用候補",
+              }
+            : null,
+          application: null,
+        },
+      ],
+    });
+    extractionMocks.abandonChroniclePartialReview.mockImplementationOnce(
+      async ({ runId, projectId }) => {
+        expect({ runId, projectId }).toEqual({
+          runId: "run-1",
+          projectId: "project-a",
+        });
+        await abandonGate;
+        useChronicleExtractionStore.getState().clearProjection();
+        return { runId, terminalizedProposalCount: 1 };
+      },
+    );
+
+    render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "未適用の提案を破棄" }));
+    await waitFor(() =>
+      expect(
+        extractionMocks.abandonChroniclePartialReview,
+      ).toHaveBeenCalledTimes(1),
+    );
+    expect(screen.getByRole("button", { name: "キャンセル" })).toBeDisabled();
+    expect(screen.getByRole("combobox")).toBeDisabled();
+    expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+
+    releaseAbandon();
+    await waitFor(() =>
+      expect(useChronicleExtractionStore.getState().projection).toBeNull(),
+    );
+    expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("chronicle-partial-apply-blocked")).toBeNull();
+    expect(screen.getByRole("combobox")).toBeEnabled();
+
+    fireEvent.change(screen.getByRole("combobox"), {
+      target: { value: "folder-a" },
+    });
+    const analyzeButton = screen.getByRole("button", { name: "解析" });
+    expect(analyzeButton).toBeEnabled();
+    fireEvent.click(analyzeButton);
+    await waitFor(() =>
+      expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(1),
+    );
+  });
+
+  it("Proposal判断の永続化中はApplyを開始しない", () => {
+    seedProjection();
+    render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const importButton = screen.getByRole("button", { name: "取り込む" });
+    expect(importButton).toBeEnabled();
+
+    act(() => {
+      expect(
+        useChronicleExtractionStore.getState().tryBeginReviewMutation(),
+      ).toBe(true);
+    });
+    expect(importButton).toBeDisabled();
+    fireEvent.click(importButton);
+    expect(
+      extractionMocks.applyChronicleExtractionReview,
+    ).not.toHaveBeenCalled();
+
+    act(() => {
+      useChronicleExtractionStore.getState().endReviewMutation();
+    });
+    expect(importButton).toBeEnabled();
+  });
+
+  it("Apply中は新しいProposal判断・編集を開始しない", async () => {
+    let resolveApply!: (count: number) => void;
+    extractionMocks.applyChronicleExtractionReview.mockReturnValueOnce(
+      new Promise<number>((resolve) => {
+        resolveApply = resolve;
+      }),
+    );
+    seedProjection();
+    render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "取り込む" }));
+    await waitFor(() =>
+      expect(
+        extractionMocks.applyChronicleExtractionReview,
+      ).toHaveBeenCalledTimes(1),
+    );
+
+    expect(useChronicleExtractionStore.getState().applyMutationInFlight).toBe(
+      true,
+    );
+    expect(
+      useChronicleExtractionStore.getState().tryBeginReviewMutation(),
+    ).toBe(false);
+    expect(screen.getByRole("button", { name: "拒否" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保留" })).toBeDisabled();
+    expect(screen.getByDisplayValue("抽出候補")).toBeDisabled();
+    expect(useChronicleExtractionStore.getState().reviewMutationCount).toBe(0);
+
+    await act(async () => {
+      resolveApply(1);
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(useChronicleExtractionStore.getState().applyMutationInFlight).toBe(
+        false,
+      ),
+    );
   });
 
   it("候補表示後にProject authorityが変わるとimport直前に拒否する", async () => {

@@ -10,7 +10,10 @@ import type {
   NarrativeExtractionTaskCounts,
   NarrativeProposalStatus,
 } from "@/features/narrative-extraction/runtime/types";
-import type { ChronicleTaskResumeCandidate } from "@/application/narrative-extraction/nativeApi";
+import type {
+  ChronicleTaskResumeCandidate,
+  ReviewBundleProposalApplication,
+} from "@/application/narrative-extraction/nativeApi";
 
 export interface StartChronicleExtractionRequest {
   readonly projectId: string;
@@ -76,7 +79,118 @@ export interface ChronicleReviewProposal {
   readonly evidence: readonly ChronicleReviewEvidenceQuote[];
   readonly safety: ChronicleProposalSafetyFlags;
   readonly probableDuplicateChoice: ProbableDuplicateChoice | null;
+  /** Native application proof. Non-null proposals are immutable/read-only. */
+  readonly application: ReviewBundleProposalApplication | null;
   readonly blockedReason?: string;
+}
+
+export type ChronicleApplyPreflightErrorCode =
+  | "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE"
+  | "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH";
+
+export interface ChronicleApplyReadiness {
+  readonly ready: boolean;
+  readonly approvedCount: number;
+  readonly errorCode: ChronicleApplyPreflightErrorCode | null;
+}
+
+/**
+ * Current Chronicle @2 uses one atomic review decision boundary: every
+ * Native/applicable, unapplied proposal must be approved or rejected before
+ * any approved proposal may be committed. held/deferred remain unresolved.
+ */
+export function getChronicleApplyReadiness(
+  proposals: readonly ChronicleReviewProposal[],
+): ChronicleApplyReadiness {
+  const durable = proposals.filter(
+    (proposal) => proposal.applicability === "applicable",
+  );
+  const unapplied = durable.filter((proposal) => proposal.application === null);
+  const hasInvalidApplication = durable.some(
+    (proposal) =>
+      proposal.application !== null &&
+      proposal.application.revisionId !== proposal.revisionId,
+  );
+  const hasPriorApplication = durable.some(
+    (proposal) => proposal.application !== null,
+  );
+  if (hasInvalidApplication || (hasPriorApplication && unapplied.length > 0)) {
+    return {
+      ready: false,
+      approvedCount: 0,
+      errorCode: "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH",
+    };
+  }
+  if (
+    unapplied.some(
+      (proposal) =>
+        proposal.status !== "approved" && proposal.status !== "rejected",
+    )
+  ) {
+    return {
+      ready: false,
+      approvedCount: 0,
+      errorCode: "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE",
+    };
+  }
+
+  const approved = unapplied.filter(
+    (proposal) => proposal.status === "approved",
+  );
+  const rejected = unapplied.filter(
+    (proposal) => proposal.status === "rejected",
+  );
+  const hasIncompleteDuplicateDecision =
+    approved.some(
+      (proposal) =>
+        proposal.match.status === "probable-duplicate" &&
+        proposal.probableDuplicateChoice !== "create-as-new",
+    ) ||
+    rejected.some(
+      (proposal) =>
+        proposal.match.status === "probable-duplicate" &&
+        proposal.probableDuplicateChoice !== "skip-as-same",
+    );
+  if (hasIncompleteDuplicateDecision) {
+    return {
+      ready: false,
+      approvedCount: approved.length,
+      errorCode: "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE",
+    };
+  }
+  const hasInvalidApproved = approved.some(
+    (proposal) => proposal.payload === null || proposal.revisionId === null,
+  );
+  if (hasInvalidApproved) {
+    return {
+      ready: false,
+      approvedCount: approved.length,
+      errorCode: "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH",
+    };
+  }
+
+  return {
+    ready: true,
+    approvedCount: approved.length,
+    errorCode: null,
+  };
+}
+
+export function selectChronicleProposalsForAtomicApply(
+  proposals: readonly ChronicleReviewProposal[],
+): readonly ChronicleReviewProposal[] {
+  const readiness = getChronicleApplyReadiness(proposals);
+  if (!readiness.ready) {
+    throw new Error(
+      `${readiness.errorCode}: Chronicle review is not a complete atomic apply set`,
+    );
+  }
+  return proposals.filter(
+    (proposal) =>
+      proposal.applicability === "applicable" &&
+      proposal.application === null &&
+      proposal.status === "approved",
+  );
 }
 
 export interface ChronicleExtractionReviewProjection {
@@ -175,6 +289,10 @@ interface ChronicleExtractionState {
   /** Durable Task recovery is independent from an older review projection. */
   recovery: ChronicleExtractionRecoveryState;
   selectedProposalId: string | null;
+  /** Decision/revision writes in flight; Apply must not race these writes. */
+  reviewMutationCount: number;
+  /** Atomic Apply owns the review boundary until its Native journey settles. */
+  applyMutationInFlight: boolean;
   setProjection: (projection: ChronicleExtractionReviewProjection) => void;
   clearProjection: () => void;
   /**
@@ -199,6 +317,10 @@ interface ChronicleExtractionState {
   completeCandidateResume: (runId: string) => void;
   clearRecovery: () => void;
   selectProposal: (proposalId: string | null) => void;
+  tryBeginReviewMutation: () => boolean;
+  endReviewMutation: () => void;
+  tryBeginApplyMutation: () => boolean;
+  endApplyMutation: () => void;
   updateProposalStatus: (
     proposalId: string,
     status: NarrativeProposalStatus,
@@ -240,6 +362,8 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
     projection: null,
     recovery: EMPTY_RECOVERY_STATE,
     selectedProposalId: null,
+    reviewMutationCount: 0,
+    applyMutationInFlight: false,
 
     setProjection: (projection) => {
       const selected =
@@ -364,13 +488,44 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
       set({ selectedProposalId: proposalId });
     },
 
+    tryBeginReviewMutation: () => {
+      if (get().applyMutationInFlight) return false;
+      set((state) => ({ reviewMutationCount: state.reviewMutationCount + 1 }));
+      return true;
+    },
+
+    endReviewMutation: () => {
+      set((state) => ({
+        reviewMutationCount: Math.max(0, state.reviewMutationCount - 1),
+      }));
+    },
+
+    tryBeginApplyMutation: () => {
+      const state = get();
+      if (state.applyMutationInFlight || state.reviewMutationCount > 0) {
+        return false;
+      }
+      set({ applyMutationInFlight: true });
+      return true;
+    },
+
+    endApplyMutation: () => {
+      set({ applyMutationInFlight: false });
+    },
+
     updateProposalStatus: (proposalId, status) => {
       const projection = get().projection;
       if (!projection) return;
       const current = projection.proposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current || current.applicability === "already-satisfied") return;
+      if (
+        !current ||
+        current.applicability === "already-satisfied" ||
+        current.application !== null
+      ) {
+        return;
+      }
       set({
         projection: {
           ...projection,
@@ -388,7 +543,13 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
       const current = projection.proposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current || current.match.status !== "probable-duplicate") return;
+      if (
+        !current ||
+        current.application !== null ||
+        current.match.status !== "probable-duplicate"
+      ) {
+        return;
+      }
       const status: NarrativeProposalStatus =
         choice === "hold"
           ? "held"
@@ -418,7 +579,11 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
       const current = projection.proposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current?.payload || current.applicability === "already-satisfied") {
+      if (
+        !current?.payload ||
+        current.applicability === "already-satisfied" ||
+        current.application !== null
+      ) {
         return;
       }
       const nextPayload: CreateChronicleEventProposalPayloadV1 = {
@@ -476,6 +641,7 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
       const proposals = projection.proposals.map((proposal) => {
         if (
           proposal.applicability !== "applicable" ||
+          proposal.application !== null ||
           proposal.status !== "unreviewed" ||
           !isSafeForBulkApprove(proposal.safety)
         ) {
@@ -500,5 +666,7 @@ export function resetChronicleExtractionStoreForTests(): void {
     projection: null,
     recovery: EMPTY_RECOVERY_STATE,
     selectedProposalId: null,
+    reviewMutationCount: 0,
+    applyMutationInFlight: false,
   });
 }

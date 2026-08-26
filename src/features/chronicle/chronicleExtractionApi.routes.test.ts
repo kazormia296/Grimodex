@@ -166,6 +166,7 @@ describe("Chronicle review revision route", () => {
             riskLow: true,
           },
           probableDuplicateChoice: null,
+          application: null,
         },
       ],
     } satisfies ChronicleExtractionReviewProjection);

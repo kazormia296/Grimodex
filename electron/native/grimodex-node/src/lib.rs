@@ -62,11 +62,12 @@ use grimodex_db::lint_terms::{
 };
 use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
-    self, AttentionDisposition, GetNarrativeBackfillStatusPayload, LegacyBackfillBootstrapOutcome,
-    LegacyBackfillFaultOutcome, ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload,
-    MaintenanceCycleRequest, MaintenanceCycleStatus, MaintenanceWorkspaceBinding,
-    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
-    NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiFault, NarrativeMaintenanceCiTrigger,
+    self, AttentionDisposition, GetNarrativeBackfillStatusPayload, IsRunResumableForReviewPayload,
+    LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
+    ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, MaintenanceCycleRequest,
+    MaintenanceCycleStatus, MaintenanceWorkspaceBinding, NarrativeMaintenanceAttentionClearPayload,
+    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceCiConfig,
+    NarrativeMaintenanceCiFault, NarrativeMaintenanceCiTrigger,
     NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
     RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
     RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
@@ -6546,6 +6547,25 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 Ok(serde_json::to_string(
                     &narrative_extraction::narrative_extraction_list_resumable_runs(db, dto)?,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_is_run_resumable_for_review(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: IsRunResumableForReviewPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &narrative_extraction::narrative_extraction_is_run_resumable_for_review(
+                        db, dto,
+                    )?,
                 )?)
             })
         })

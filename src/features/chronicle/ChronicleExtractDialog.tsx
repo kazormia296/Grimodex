@@ -33,12 +33,14 @@ import {
   startChronicleExtraction,
   resumeChronicleExtraction,
   applyChronicleExtractionReview,
+  abandonChroniclePartialReview,
   restoreChronicleExtractionReview,
 } from "./extractEventsApi";
 import type { ChronicleTaskResumeCandidate } from "@/application/narrative-extraction/nativeApi";
 import { ChronicleExtractionProgress } from "./ChronicleExtractionProgress";
 import { ChronicleProposalReview } from "./ChronicleProposalReview";
 import { useChronicleExtractionStore } from "./chronicleExtractionStore";
+import { getChronicleApplyReadiness } from "./chronicleExtractionStore";
 import {
   chronicleScopeKey,
   type ChronicleScope,
@@ -89,6 +91,18 @@ export function ChronicleExtractDialog({
   const nodes = useTreeStore((s) => s.nodes);
   const runProjection = useChronicleExtractionStore((s) => s.projection);
   const recovery = useChronicleExtractionStore((s) => s.recovery);
+  const reviewMutationInFlight = useChronicleExtractionStore(
+    (s) => s.reviewMutationCount > 0,
+  );
+  const applyMutationInFlight = useChronicleExtractionStore(
+    (s) => s.applyMutationInFlight,
+  );
+  const tryBeginApplyMutation = useChronicleExtractionStore(
+    (s) => s.tryBeginApplyMutation,
+  );
+  const endApplyMutation = useChronicleExtractionStore(
+    (s) => s.endApplyMutation,
+  );
   const clearProjection = useChronicleExtractionStore((s) => s.clearProjection);
   const clearIfScopeMismatch = useChronicleExtractionStore(
     (s) => s.clearIfScopeMismatch,
@@ -103,6 +117,9 @@ export function ChronicleExtractDialog({
   const [analyzing, setAnalyzing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [discardingRunId, setDiscardingRunId] = useState<string | null>(null);
+  const [abandoningPartialRunId, setAbandoningPartialRunId] = useState<
+    string | null
+  >(null);
   const currentScopeKey = scope ? chronicleScopeKey(scope) : null;
   const generationRef = useRef(0);
   const dialogScopeKeyRef = useRef<ChronicleScopeKey | null>(null);
@@ -149,6 +166,7 @@ export function ChronicleExtractDialog({
       setAnalyzing(false);
       setImporting(false);
       setDiscardingRunId(null);
+      setAbandoningPartialRunId(null);
       return;
     }
 
@@ -159,6 +177,7 @@ export function ChronicleExtractDialog({
       setAnalyzing(false);
       setImporting(false);
       setDiscardingRunId(null);
+      setAbandoningPartialRunId(null);
       onOpenChange(false);
       return;
     }
@@ -176,6 +195,7 @@ export function ChronicleExtractDialog({
       setAnalyzing(false);
       setImporting(false);
       setDiscardingRunId(null);
+      setAbandoningPartialRunId(null);
       const current = useChronicleExtractionStore.getState().projection;
       const matched =
         current &&
@@ -209,6 +229,7 @@ export function ChronicleExtractDialog({
       setAnalyzing(false);
       setImporting(false);
       setDiscardingRunId(null);
+      setAbandoningPartialRunId(null);
       onOpenChange(false);
     }
   }, [
@@ -225,6 +246,9 @@ export function ChronicleExtractDialog({
     if (
       analyzing ||
       importing ||
+      applyMutationInFlight ||
+      reviewMutationInFlight ||
+      abandoningPartialRunId !== null ||
       discardingRunId !== null ||
       recovery.status === "resuming"
     ) {
@@ -245,6 +269,9 @@ export function ChronicleExtractDialog({
       !folderId ||
       analyzing ||
       importing ||
+      applyMutationInFlight ||
+      reviewMutationInFlight ||
+      abandoningPartialRunId !== null ||
       unresolvedRecovery ||
       !scope ||
       !currentScopeKey
@@ -411,14 +438,18 @@ export function ChronicleExtractDialog({
   };
 
   const handleImport = async () => {
-    if (importing || !scopedRunProjection || !scope) return;
+    if (
+      importing ||
+      reviewMutationInFlight ||
+      useChronicleExtractionStore.getState().reviewMutationCount > 0 ||
+      !scopedRunProjection ||
+      !scope
+    ) {
+      return;
+    }
 
-    const approvedCount = scopedRunProjection.proposals.filter(
-      (proposal) =>
-        proposal.applicability === "applicable" &&
-        proposal.status === "approved",
-    ).length;
-    if (approvedCount === 0) return;
+    const readiness = getChronicleApplyReadiness(scopedRunProjection.proposals);
+    if (!readiness.ready) return;
 
     const generation = generationRef.current;
     const authority = captureMutationAuthority(
@@ -437,6 +468,7 @@ export function ChronicleExtractDialog({
       onOpenChange(false);
       return;
     }
+    if (!tryBeginApplyMutation()) return;
 
     setImporting(true);
     try {
@@ -467,26 +499,105 @@ export function ChronicleExtractDialog({
         toast.error(t("chronicle.extract.failed", "抽出に失敗しました"));
       }
     } finally {
+      endApplyMutation();
       if (generationRef.current === session.generation) {
         setImporting(false);
       }
     }
   };
 
+  const handleAbandonPartialReview = async () => {
+    const projection = scopedRunProjection;
+    if (
+      !projection ||
+      !scope ||
+      importing ||
+      analyzing ||
+      applyMutationInFlight ||
+      reviewMutationInFlight ||
+      abandoningPartialRunId !== null ||
+      discardingRunId !== null
+    ) {
+      return;
+    }
+    const readiness = getChronicleApplyReadiness(projection.proposals);
+    if (
+      readiness.errorCode !== "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH" ||
+      !projection.proposals.some((proposal) => proposal.application !== null)
+    ) {
+      return;
+    }
+
+    const generation = generationRef.current;
+    const authority = captureMutationAuthority(
+      scope.projectId,
+      getCurrentProjectId,
+    );
+    const session: ChronicleExtractionSession = {
+      scope,
+      scopeKey: currentScopeKey ?? chronicleScopeKey(scope),
+      projectId: scope.projectId,
+      generation,
+      authority,
+    };
+    if (!isSessionCurrent(session)) return;
+
+    setAbandoningPartialRunId(projection.runId);
+    try {
+      const outcome = await runAuthoritativeMutation(session.authority, () =>
+        abandonChroniclePartialReview({
+          runId: projection.runId,
+          projectId: projection.projectId,
+        }),
+      );
+      if (outcome.status === "stale" || !isSessionCurrent(session)) {
+        onOpenChange(false);
+        return;
+      }
+      setFolderId("");
+      toast.success(
+        t(
+          "chronicle.extract.partialReviewAbandoned",
+          "未適用の提案を破棄しました。新しく解析できます。",
+        ),
+      );
+    } catch {
+      if (isSessionCurrent(session)) {
+        toast.error(
+          t(
+            "chronicle.extract.partialReviewAbandonFailed",
+            "未適用の提案を破棄できませんでした。状態を確認して再試行してください。",
+          ),
+        );
+      }
+    } finally {
+      if (generationRef.current === session.generation) {
+        setAbandoningPartialRunId(null);
+      }
+    }
+  };
+
   const handleDialogOpenChange = (nextOpen: boolean) => {
-    if (!nextOpen && (importing || discardingRunId !== null)) return;
+    if (
+      !nextOpen &&
+      (importing ||
+        applyMutationInFlight ||
+        abandoningPartialRunId !== null ||
+        discardingRunId !== null)
+    ) {
+      return;
+    }
     onOpenChange(nextOpen);
   };
 
-  const approvedReady =
-    !!scopedRunProjection &&
-    scopedRunProjection.proposals.some(
-      (proposal) =>
-        proposal.applicability === "applicable" &&
-        proposal.status === "approved" &&
-        (proposal.match.status !== "probable-duplicate" ||
-          proposal.probableDuplicateChoice === "create-as-new"),
-    );
+  const applyReadiness = scopedRunProjection
+    ? getChronicleApplyReadiness(scopedRunProjection.proposals)
+    : null;
+  const approvedReady = applyReadiness?.ready ?? false;
+  const hasPriorApplication =
+    scopedRunProjection?.proposals.some(
+      (proposal) => proposal.application !== null,
+    ) ?? false;
   const recoveryUnresolved =
     recovery.status === "discovering" ||
     recovery.status === "resuming" ||
@@ -631,7 +742,14 @@ export function ChronicleExtractDialog({
             <select
               value={folderId}
               onChange={(e) => handleSelectFolder(e.target.value)}
-              disabled={analyzing || importing || recoveryUnresolved}
+              disabled={
+                analyzing ||
+                importing ||
+                applyMutationInFlight ||
+                reviewMutationInFlight ||
+                abandoningPartialRunId !== null ||
+                recoveryUnresolved
+              }
               className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-sm focus:outline-none"
             >
               <option value="">
@@ -650,6 +768,9 @@ export function ChronicleExtractDialog({
                 !folderId ||
                 analyzing ||
                 importing ||
+                applyMutationInFlight ||
+                reviewMutationInFlight ||
+                abandoningPartialRunId !== null ||
                 recoveryUnresolved ||
                 !scope
               }
@@ -678,13 +799,55 @@ export function ChronicleExtractDialog({
           )}
 
           {scopedRunProjection && <ChronicleProposalReview boundToStore />}
+          {hasPriorApplication &&
+            applyReadiness?.errorCode ===
+              "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH" && (
+              <div
+                className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-800 dark:text-amber-300"
+                data-testid="chronicle-partial-apply-blocked"
+              >
+                <p>
+                  {t(
+                    "chronicle.extract.partialApplyBlocked",
+                    "このレビューは一部取り込み済みです。取り込み済みEventは保持し、未適用の提案を破棄してから再解析してください。",
+                  )}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void handleAbandonPartialReview()}
+                  disabled={
+                    abandoningPartialRunId !== null ||
+                    importing ||
+                    applyMutationInFlight ||
+                    reviewMutationInFlight ||
+                    discardingRunId !== null
+                  }
+                  className="mt-1 inline-flex items-center gap-1 rounded border border-amber-600/50 px-2 py-1 text-[11px] font-medium hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {abandoningPartialRunId !== null && (
+                    <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+                  )}
+                  {abandoningPartialRunId !== null
+                    ? t("chronicle.extract.abandoningPartialReview", "破棄中")
+                    : t(
+                        "chronicle.extract.abandonPartialReview",
+                        "未適用の提案を破棄",
+                      )}
+                </button>
+              </div>
+            )}
         </div>
 
         <DialogFooter>
           <button
             type="button"
             onClick={() => handleDialogOpenChange(false)}
-            disabled={importing || discardingRunId !== null}
+            disabled={
+              importing ||
+              applyMutationInFlight ||
+              abandoningPartialRunId !== null ||
+              discardingRunId !== null
+            }
             className="rounded px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent"
           >
             {t("common.cancel", "キャンセル")}
@@ -692,13 +855,22 @@ export function ChronicleExtractDialog({
           <button
             type="button"
             onClick={handleImport}
-            disabled={importing || discardingRunId !== null || !approvedReady}
+            disabled={
+              importing ||
+              applyMutationInFlight ||
+              reviewMutationInFlight ||
+              abandoningPartialRunId !== null ||
+              discardingRunId !== null ||
+              !approvedReady
+            }
             className="inline-flex items-center gap-1 rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {importing && (
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
             )}
-            {t("chronicle.extract.import", "取り込む")}
+            {applyReadiness?.ready && applyReadiness.approvedCount === 0
+              ? t("chronicle.extract.completeReview", "完了")
+              : t("chronicle.extract.import", "取り込む")}
           </button>
         </DialogFooter>
       </DialogContent>

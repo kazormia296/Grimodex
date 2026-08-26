@@ -61,6 +61,7 @@ function proposal(
     }),
     probableDuplicateChoice: null,
     ...overrides,
+    application: overrides.application ?? null,
   };
 }
 
@@ -379,6 +380,58 @@ describe("chronicleExtractionStore", () => {
     expect(
       useChronicleExtractionStore.getState().projection?.proposals[0]?.status,
     ).toBe("approved");
+  });
+
+  it("keeps Native-applied proposals immutable in the review store", () => {
+    const applied = proposal({
+      status: "approved",
+      application: {
+        commitId: "commit-1",
+        revisionId: "rev-1",
+        appliedEntityKind: "chronicle-event",
+        appliedEntityId: "event-1",
+        createdAt: "2026-08-26T00:00:00.000Z",
+        applicationKind: "normal",
+        compensatesApplicationId: null,
+      },
+    });
+    useChronicleExtractionStore.getState().setProjection(projection([applied]));
+
+    const store = useChronicleExtractionStore.getState();
+    store.updateProposalStatus("proposal-1", "rejected");
+    store.reviseProposalFields(
+      "proposal-1",
+      "rev-2",
+      `sha256:${"c".repeat(64)}`,
+      { title: "must not change" },
+    );
+
+    expect(
+      useChronicleExtractionStore.getState().projection?.proposals[0],
+    ).toEqual(applied);
+  });
+
+  it("serializes review writes and atomic Apply in both directions", () => {
+    const store = useChronicleExtractionStore.getState();
+
+    expect(store.tryBeginApplyMutation()).toBe(true);
+    expect(
+      useChronicleExtractionStore.getState().tryBeginReviewMutation(),
+    ).toBe(false);
+    useChronicleExtractionStore.getState().endApplyMutation();
+
+    expect(
+      useChronicleExtractionStore.getState().tryBeginReviewMutation(),
+    ).toBe(true);
+    expect(useChronicleExtractionStore.getState().tryBeginApplyMutation()).toBe(
+      false,
+    );
+    useChronicleExtractionStore.getState().endReviewMutation();
+
+    expect(useChronicleExtractionStore.getState().tryBeginApplyMutation()).toBe(
+      true,
+    );
+    useChronicleExtractionStore.getState().endApplyMutation();
   });
 
   it("probable-duplicate choices map to skip / create / hold", () => {

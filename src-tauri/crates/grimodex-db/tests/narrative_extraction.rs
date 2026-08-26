@@ -10,6 +10,7 @@ use grimodex_db::{
     SetNarrativeRuntimePolicyInput,
 };
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 fn rfc3339_millis(dt: chrono::DateTime<Utc>) -> String {
     dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
@@ -167,12 +168,40 @@ fn migrated_db() -> Database {
 }
 
 fn test_envelope(run_id: &str, task_id: &str) -> Value {
+    test_envelope_with_anchors(run_id, task_id, &["anchor:one".to_string()], false)
+}
+
+fn test_envelope_with_anchors(
+    run_id: &str,
+    task_id: &str,
+    anchor_ids: &[String],
+    reverse_evidence_rows: bool,
+) -> Value {
     let source_key = format!("snapshot:{run_id}");
     let read_set = json!([{
         "inputRef": source_key,
         "kind": "snapshot-document",
         "revisionToken": "revision-1"
     }]);
+    let evidence_indexes: Vec<usize> = if reverse_evidence_rows {
+        (0..anchor_ids.len()).rev().collect()
+    } else {
+        (0..anchor_ids.len()).collect()
+    };
+    let evidence_set = evidence_indexes
+        .into_iter()
+        .map(|index| {
+            let quote = format!("sealed evidence {index}");
+            json!({
+                "evidenceRef": anchor_ids[index],
+                "documentRef": "D000001",
+                "sourceKey": source_key,
+                "revisionToken": "revision-1",
+                "quote": quote,
+                "quoteDigest": format!("sha256:{}", hex::encode(Sha256::digest(quote.as_bytes()))),
+            })
+        })
+        .collect::<Vec<_>>();
     json!({
         "schemaVersion": 1,
         "runId": run_id,
@@ -186,7 +215,7 @@ fn test_envelope(run_id: &str, task_id: &str) -> Value {
             "sourceKey": source_key,
             "revisionToken": "revision-1"
         }],
-        "evidenceSet": [],
+        "evidenceSet": evidence_set,
         "readSet": read_set,
         "readSetDigest": format!("sha256:{}", narrative_extraction::digest_plan(&read_set)),
         "changeKind": "add"
@@ -219,7 +248,7 @@ fn event_create_payload(event_id: &str, title: &str, scene_id: &str, version: i6
         "evidenceSceneLinks": [{
             "sceneId": scene_id,
             "expectedSceneVersion": version,
-            "evidenceAnchorIds": []
+            "evidenceAnchorIds": ["anchor:one"]
         }],
         "detail": null,
         "primaryCodexId": null,
@@ -228,16 +257,143 @@ fn event_create_payload(event_id: &str, title: &str, scene_id: &str, version: i6
         "startTime": null,
         "endTime": null,
         "startGranularity": "none",
-        "endGranularity": "none"
+        "endGranularity": "none",
+        "semanticType": "event"
     })
 }
 
-fn seed_approved_proposals(
+fn seed_proposals(
     db: &Database,
     run_id: &str,
     proposal_set_id: &str,
     payloads: &[Value],
 ) -> Vec<(String, String)> {
+    seed_proposal_rows(
+        db,
+        run_id,
+        proposal_set_id,
+        payloads,
+        "chronicle.event.create@1",
+    )
+}
+
+fn current_chronicle_plan_proposal(operation_payload: &Value) -> Value {
+    let evidence_anchor_ids = operation_payload
+        .pointer("/evidenceSceneLinks/0/evidenceAnchorIds")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let mut proposal = json!({
+        "eventId": operation_payload["eventId"],
+        "title": operation_payload["title"],
+        "note": operation_payload["note"],
+        "actuality": "actual",
+        "significance": "scene-level",
+        "evidenceAnchorIds": evidence_anchor_ids,
+        "evidenceDocumentRefs": ["D000001"],
+        "disclosure": {
+            "secret": operation_payload["secret"],
+            "revealDocumentRef": "D000001",
+        },
+        "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": [],
+        },
+    });
+    if let Some(semantic_type) = operation_payload.get("semanticType") {
+        proposal["semanticType"] = semantic_type.clone();
+    }
+    proposal
+}
+
+fn current_chronicle_envelope(run_id: &str, task_id: &str, operation_payload: &Value) -> Value {
+    let anchor_ids = operation_payload
+        .pointer("/evidenceSceneLinks/0/evidenceAnchorIds")
+        .and_then(Value::as_array)
+        .expect("current Chronicle operation evidence anchors")
+        .iter()
+        .map(|anchor| {
+            anchor
+                .as_str()
+                .expect("current Chronicle operation evidence anchor string")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    let mut envelope = test_envelope_with_anchors(run_id, task_id, &anchor_ids, true);
+    let snapshot_digest = current_chronicle_snapshot_payload(run_id)["snapshot"]["digest"]
+        .as_str()
+        .expect("current Snapshot digest")
+        .to_string();
+    envelope["sourceBasis"][0]["revisionToken"] = json!(snapshot_digest);
+    envelope["readSet"][0]["revisionToken"] = json!(snapshot_digest);
+    for evidence in envelope["evidenceSet"]
+        .as_array_mut()
+        .expect("current Envelope evidenceSet")
+    {
+        evidence["revisionToken"] = json!(snapshot_digest);
+    }
+    envelope["readSetDigest"] = json!(grimodex_core::canonical_json_digest(&envelope["readSet"])
+        .expect("current Envelope read-set digest"));
+    envelope
+}
+
+fn seed_current_chronicle_proposals(
+    db: &Database,
+    run_id: &str,
+    proposal_set_id: &str,
+    operation_payloads: &[Value],
+) -> Vec<(String, String)> {
+    let plan_proposals = operation_payloads
+        .iter()
+        .map(current_chronicle_plan_proposal)
+        .collect::<Vec<_>>();
+    let envelopes = operation_payloads
+        .iter()
+        .map(|operation| {
+            let anchor_ids = operation
+                .pointer("/evidenceSceneLinks/0/evidenceAnchorIds")
+                .and_then(Value::as_array)
+                .expect("current Chronicle operation evidence anchors")
+                .iter()
+                .map(|anchor| {
+                    anchor
+                        .as_str()
+                        .expect("current Chronicle operation evidence anchor string")
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+            test_envelope_with_anchors(run_id, &format!("{run_id}-task"), &anchor_ids, true)
+        })
+        .collect::<Vec<_>>();
+    seed_proposal_rows_with_envelopes(
+        db,
+        run_id,
+        proposal_set_id,
+        &plan_proposals,
+        "chronicle.create-event@1",
+        Some(&envelopes),
+    )
+}
+
+fn seed_proposal_rows(
+    db: &Database,
+    run_id: &str,
+    proposal_set_id: &str,
+    payloads: &[Value],
+    proposal_kind: &str,
+) -> Vec<(String, String)> {
+    seed_proposal_rows_with_envelopes(db, run_id, proposal_set_id, payloads, proposal_kind, None)
+}
+
+fn seed_proposal_rows_with_envelopes(
+    db: &Database,
+    run_id: &str,
+    proposal_set_id: &str,
+    payloads: &[Value],
+    proposal_kind: &str,
+    envelopes: Option<&[Value]>,
+) -> Vec<(String, String)> {
+    assert!(envelopes.is_none_or(|rows| rows.len() == payloads.len()));
     narrative_extraction::narrative_extraction_create_run(
         db,
         CreateRunPayload {
@@ -266,10 +422,19 @@ fn seed_approved_proposals(
         .enumerate()
         .map(|(index, payload)| ProposalSeed {
             proposal_id: Some(format!("{run_id}-prop-{index}")),
-            proposal_key: format!("{run_id}-key-{index}"),
-            kind: "chronicle.event.create@1".to_string(),
+            proposal_key: format!(
+                "{}:{index}",
+                payload["eventId"]
+                    .as_str()
+                    .expect("Chronicle test Proposal requires eventId")
+            ),
+            kind: proposal_kind.to_string(),
             payload_json: payload.clone(),
-            reconciliation_envelope: Some(test_envelope(run_id, &format!("{run_id}-task"))),
+            reconciliation_envelope: Some(
+                envelopes
+                    .map(|rows| rows[index].clone())
+                    .unwrap_or_else(|| test_envelope(run_id, &format!("{run_id}-task"))),
+            ),
         })
         .collect();
 
@@ -286,10 +451,91 @@ fn seed_approved_proposals(
     )
     .expect("save proposal set");
 
-    let mut pairs = Vec::new();
-    for proposal in saved["proposals"].as_array().expect("proposals") {
-        let proposal_id = proposal["proposalId"].as_str().unwrap().to_string();
-        let revision_id = proposal["revisionId"].as_str().unwrap().to_string();
+    saved["proposals"]
+        .as_array()
+        .expect("proposals")
+        .iter()
+        .map(|proposal| {
+            (
+                proposal["proposalId"].as_str().unwrap().to_string(),
+                proposal["revisionId"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn decide_current_chronicle_proposal(
+    db: &Database,
+    run_id: &str,
+    proposal: &mut (String, String),
+    operation_payload: &Value,
+    decision: &str,
+) {
+    if decision == "approved" {
+        append_current_chronicle_revision(db, run_id, proposal, operation_payload);
+    }
+    decide_proposal(db, run_id, proposal, decision);
+}
+
+fn append_current_chronicle_revision(
+    db: &Database,
+    run_id: &str,
+    proposal: &mut (String, String),
+    operation_payload: &Value,
+) {
+    let revised = narrative_extraction::narrative_extraction_append_revision(
+        db,
+        AppendRevisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal.0.clone(),
+            payload_json: current_chronicle_plan_proposal(operation_payload),
+            reconciliation_envelope: Some(current_chronicle_envelope(
+                run_id,
+                &format!("{run_id}-task"),
+                operation_payload,
+            )),
+            inherit_reconciliation_envelope: None,
+            expected_current_revision_id: proposal.1.clone(),
+            created_by: Some("test".to_string()),
+        },
+    )
+    .expect("append compiled current Chronicle revision");
+    proposal.1 = revised["revisionId"]
+        .as_str()
+        .expect("compiled current Chronicle revision id")
+        .to_string();
+}
+
+fn append_decision(
+    db: &Database,
+    run_id: &str,
+    proposal: &(String, String),
+    decision: &str,
+    decision_json: Option<Value>,
+) -> anyhow::Result<Value> {
+    narrative_extraction::narrative_extraction_append_human_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal.0.clone(),
+            revision_id: proposal.1.clone(),
+            decision: decision.to_string(),
+            decision_json,
+            created_by: Some("test".to_string()),
+        },
+    )
+}
+
+fn seed_approved_proposals(
+    db: &Database,
+    run_id: &str,
+    proposal_set_id: &str,
+    payloads: &[Value],
+) -> Vec<(String, String)> {
+    let pairs = seed_proposals(db, run_id, proposal_set_id, payloads);
+    for (proposal_id, revision_id) in &pairs {
         narrative_extraction::narrative_extraction_append_human_decision(
             db,
             AppendDecisionPayload {
@@ -303,9 +549,24 @@ fn seed_approved_proposals(
             },
         )
         .expect("approve");
-        pairs.push((proposal_id, revision_id));
     }
     pairs
+}
+
+fn decide_proposal(db: &Database, run_id: &str, proposal: &(String, String), decision: &str) {
+    narrative_extraction::narrative_extraction_append_human_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal.0.clone(),
+            revision_id: proposal.1.clone(),
+            decision: decision.to_string(),
+            decision_json: None,
+            created_by: Some("test".to_string()),
+        },
+    )
+    .unwrap_or_else(|error| panic!("{decision} Proposal {}: {error:#}", proposal.0));
 }
 
 fn enable_manual_apply(db: &Database) {
@@ -385,11 +646,145 @@ fn build_prepare(
 }
 
 fn seal_run_as_current_chronicle(db: &Database, run_id: &str) {
+    seal_run_as_current_chronicle_with_matches(db, run_id, &[]);
+}
+
+fn current_chronicle_proposal_set_id(run_id: &str) -> String {
+    format!("chronicle-plan-proposals:{run_id}:{run_id}-task")
+}
+
+fn current_chronicle_snapshot_payload(run_id: &str) -> Value {
+    let projection = json!({
+        "schemaVersion": 1,
+        "unit": "utf16",
+        "canonicalLength": 0,
+        "segments": [],
+    });
+    let origin = json!({
+        "kind": "project-node",
+        "projectId": "project-1",
+        "nodeId": "scene-1",
+        "sourceVersion": 0,
+        "sourceUpdatedAt": "2026-08-26T00:00:00.000Z",
+        "sourceUri": null,
+    });
+    let content_digest = grimodex_core::canonical_json_digest(&json!({
+        "normalizerVersion": "gdx-canonical-text/1",
+        "text": "",
+    }))
+    .expect("seal current Snapshot content");
+    let document_digest = grimodex_core::canonical_json_digest(&json!({
+        "normalizerVersion": "gdx-canonical-text/1",
+        "parentSourceKey": null,
+        "title": "Scene 1",
+        "orderIndex": 0,
+        "canonical": { "text": "", "blocks": [] },
+    }))
+    .expect("seal current Snapshot document");
+    let artifact_digest = grimodex_core::canonical_json_digest(&json!({
+        "schemaVersion": 1,
+        "normalizerVersion": "gdx-canonical-text/1",
+        "sourceKey": "project:scene:scene-1",
+        "parentSourceKey": null,
+        "semanticDigest": document_digest,
+        "contentDigest": content_digest,
+        "projection": projection,
+        "origin": origin,
+    }))
+    .expect("seal current Snapshot document artifact");
+    let document = json!({
+        "ref": "D000001",
+        "sourceKey": "project:scene:scene-1",
+        "parentRef": null,
+        "title": "Scene 1",
+        "orderIndex": 0,
+        "canonical": {
+            "unit": "utf16",
+            "text": "",
+            "blocks": [],
+            "projection": projection,
+            "projectionMap": projection,
+            "diagnostics": [],
+        },
+        "contentDigest": content_digest,
+        "documentDigest": document_digest,
+        "artifactDigest": artifact_digest,
+        "origin": origin,
+    });
+    let omissions = json!([]);
+    let snapshot_digest = grimodex_core::canonical_json_digest(&json!({
+        "schemaVersion": 1,
+        "language": "ja",
+        "normalizerVersion": "gdx-canonical-text/1",
+        "documentDigests": [document["documentDigest"].clone()],
+        "omissions": omissions,
+    }))
+    .expect("seal current Snapshot");
+    let snapshot_artifact_digest = grimodex_core::canonical_json_digest(&json!({
+        "schemaVersion": 1,
+        "normalizerVersion": "gdx-canonical-text/1",
+        "semanticDigest": snapshot_digest,
+        "originProjectId": "project-1",
+        "documents": [{
+            "sourceKey": document["sourceKey"].clone(),
+            "artifactDigest": document["artifactDigest"].clone(),
+        }],
+        "omissions": omissions,
+    }))
+    .expect("seal current Snapshot artifact");
+    let source_view_digest = grimodex_core::canonical_json_digest(&json!({
+        "schemaVersion": 1,
+        "ref": "SV000001",
+        "documentRef": "D000001",
+        "documentArtifactDigest": document["artifactDigest"].clone(),
+        "documentRange": { "start": 0, "end": 0 },
+        "text": "",
+    }))
+    .expect("seal current Source View");
+    json!({
+        "snapshot": {
+            "schemaVersion": 1,
+            "id": format!("snapshot:{run_id}"),
+            "snapshotId": format!("snapshot:{run_id}"),
+            "createdAt": "2026-08-26T00:00:00.000Z",
+            "language": "ja",
+            "normalizerVersion": "gdx-canonical-text/1",
+            "digest": snapshot_digest,
+            "artifactDigest": snapshot_artifact_digest,
+            "origin": { "kind": "grimodex-project", "projectId": "project-1" },
+            "documents": [document],
+            "omissions": omissions,
+        },
+        "sourceViews": [{
+            "ref": "SV000001",
+            "documentRef": "D000001",
+            "documentRange": { "start": 0, "end": 0 },
+            "text": "",
+            "digest": source_view_digest,
+        }],
+        "scopeAuthorityDocuments": [{
+            "documentRef": "D000001",
+            "sourceKey": "project:scene:scene-1",
+            "rawStoryKey": null,
+        }],
+        "existingEventsCatalog": {
+            "kind": "chronicle.existing-events-catalog@1",
+            "events": [],
+        },
+    })
+}
+
+fn seal_run_as_current_chronicle_with_matches(db: &Database, run_id: &str, matches: &[Value]) {
     let catalog = json!({
         "kind": "chronicle.existing-events-catalog@1",
         "events": [],
     });
     let catalog_digest = format!("sha256:{}", narrative_extraction::digest_plan(&catalog));
+    let snapshot_payload = current_chronicle_snapshot_payload(run_id);
+    let snapshot_digest = snapshot_payload["snapshot"]["digest"]
+        .as_str()
+        .expect("current Snapshot digest")
+        .to_string();
     let spec = json!({
         "kind": "chronicle.extract.run-spec@2",
         "domain": "chronicle",
@@ -411,15 +806,257 @@ fn seal_run_as_current_chronicle(db: &Database, run_id: &str) {
     });
     let spec_digest = format!("sha256:{}", narrative_extraction::digest_plan(&spec));
     db.with_conn(|conn| {
+        let (proposal_set_id, task_id): (String, String) = conn.query_row(
+            "SELECT proposal_set.id, task.id
+               FROM narrative_proposal_sets proposal_set
+               JOIN narrative_extraction_tasks task ON task.run_id = proposal_set.run_id
+              WHERE proposal_set.run_id = ?1
+              ORDER BY task.id ASC
+              LIMIT 1",
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        anyhow::ensure!(
+            proposal_set_id == current_chronicle_proposal_set_id(run_id),
+            "test current Chronicle ProposalSet does not use its deterministic Run/Task id"
+        );
+        let mut statement = conn.prepare(
+            "SELECT revision.payload_json
+               FROM narrative_proposals proposal
+               JOIN narrative_proposal_revisions revision
+                 ON revision.proposal_id = proposal.id
+                AND revision.revision_number = 1
+              WHERE proposal.proposal_set_id = ?1
+              ORDER BY proposal.id ASC",
+        )?;
+        let proposals = statement
+            .query_map([proposal_set_id.as_str()], |row| {
+                let payload: String = row.get(0)?;
+                serde_json::from_str::<Value>(&payload).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        payload.len(),
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        anyhow::ensure!(
+            matches.is_empty() || matches.len() == proposals.len(),
+            "test match roster differs from ProposalSet"
+        );
+        let planned = proposals
+            .iter()
+            .enumerate()
+            .map(|(index, proposal)| {
+                json!({
+                    "proposal": proposal,
+                    "match": matches.get(index).cloned().unwrap_or_else(|| json!({ "status": "none" })),
+                    "hypothesisId": format!("hypothesis:{index}"),
+                })
+            })
+            .collect::<Vec<_>>();
+        let artifact = json!({
+            "proposalSetId": proposal_set_id,
+            "proposals": proposals,
+            "planned": planned,
+        });
+        let artifact_digest = grimodex_core::canonical_json_digest(&artifact)?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_artifacts
+                (id, run_id, task_id, attempt_id, artifact_kind,
+                 payload_storage, payload_json, payload_ref, payload_digest, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'chronicle.proposal-plan@1',
+                     'inline-json', ?5, NULL, ?6, '2026-08-26T00:00:00.000Z')",
+            rusqlite::params![
+                format!("artifact-plan-{run_id}"),
+                run_id,
+                task_id,
+                format!("attempt-plan-{run_id}"),
+                artifact.to_string(),
+                artifact_digest,
+            ],
+        )?;
+        let (set_kind, summary_json): (String, String) = conn.query_row(
+            "SELECT set_kind, summary_json
+               FROM narrative_proposal_sets
+              WHERE id = ?1 AND run_id = ?2 AND project_id = 'project-1'",
+            rusqlite::params![proposal_set_id, run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let mut summary: Value = serde_json::from_str(&summary_json)?;
+        let mut manifest_statement = conn.prepare(
+            "SELECT proposal.proposal_key, proposal.kind, revision.payload_json,
+                    revision.reconciliation_envelope_json,
+                    revision.reconciliation_envelope_digest
+               FROM narrative_proposals proposal
+               JOIN narrative_proposal_revisions revision
+                 ON revision.proposal_id = proposal.id
+                AND revision.revision_number = 1
+              WHERE proposal.proposal_set_id = ?1
+              ORDER BY proposal.proposal_key ASC",
+        )?;
+        let manifest_proposals = manifest_statement
+            .query_map([proposal_set_id.as_str()], |row| {
+                let payload_json: String = row.get(2)?;
+                let envelope_json: Option<String> = row.get(3)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    payload_json,
+                    envelope_json,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(
+                |(proposal_key, kind, payload_json, envelope_json, envelope_digest)| {
+                    Ok::<_, anyhow::Error>(json!({
+                        "proposalKey": proposal_key,
+                        "kind": kind,
+                        "payloadJson": serde_json::from_str::<Value>(&payload_json)?,
+                        "reconciliationEnvelope": envelope_json
+                            .as_deref()
+                            .map(serde_json::from_str::<Value>)
+                            .transpose()?,
+                        "reconciliationEnvelopeDigest": envelope_digest,
+                    }))
+                },
+            )
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let attempt_id = format!("attempt-plan-{run_id}");
+        let manifest = json!({
+            "kind": "chronicle.plan-proposal-set-manifest@1",
+            "version": 1,
+            "projectId": "project-1",
+            "runId": run_id,
+            "taskId": task_id,
+            "attemptId": attempt_id,
+            "proposalSetId": proposal_set_id,
+            "setKind": set_kind,
+            "summaryJson": summary,
+            "proposalPlanArtifactDigest": artifact_digest,
+            "proposals": manifest_proposals,
+        });
+        let manifest_digest = grimodex_core::canonical_json_digest(&manifest)?;
+        summary
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("test ProposalSet summary is not an object"))?
+            .insert(
+                "chroniclePlanTaskBinding".to_string(),
+                json!({
+                    "kind": "chronicle.plan-proposal-set-binding@1",
+                    "version": 1,
+                    "taskId": task_id,
+                    "attemptId": attempt_id,
+                    "proposalSetId": proposal_set_id,
+                    "proposalManifestDigest": manifest_digest,
+                }),
+            );
+        conn.execute(
+            "UPDATE narrative_proposal_sets
+                SET summary_json = ?1, version = version + 1
+              WHERE id = ?2 AND run_id = ?3 AND project_id = 'project-1'",
+            rusqlite::params![summary.to_string(), proposal_set_id, run_id],
+        )?;
+        let plan_output = json!({
+            "proposalSetId": proposal_set_id,
+            "proposalCount": manifest["proposals"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or_default(),
+        });
+        conn.execute(
+            "UPDATE narrative_extraction_tasks
+                SET task_kind = 'chronicle.plan-proposals@1', status = 'completed',
+                    output_json = ?1, attempt_count = 1,
+                    started_at = '2026-08-25T23:59:59.000Z',
+                    completed_at = '2026-08-26T00:00:00.000Z'
+              WHERE id = ?2 AND run_id = ?3",
+            rusqlite::params![
+                plan_output.to_string(),
+                task_id,
+                run_id,
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_attempts
+                (id, task_id, attempt_number, status, started_at, completed_at, output_json)
+             VALUES (?1, ?2, 1, 'completed', '2026-08-25T23:59:59.000Z',
+                     '2026-08-26T00:00:00.000Z', ?3)",
+            rusqlite::params![attempt_id, task_id, plan_output.to_string()],
+        )?;
+        let snapshot_task_id = format!("{run_id}-snapshot-task");
+        let snapshot_attempt_id = format!("{run_id}-snapshot-attempt");
+        let scope_authority = grimodex_core::narrative_scope_authority_basis::build_narrative_scope_authority_basis_v2(
+            "project-1",
+            run_id,
+            &snapshot_digest,
+            &[grimodex_core::narrative_scope_authority_basis::NarrativeScopeAuthorityDocumentInputV2 {
+                document_ref: "D000001".to_string(),
+                source_key: "project:scene:scene-1".to_string(),
+                raw_story_key: None,
+            }],
+        )?;
+        let snapshot_output = json!({
+            "snapshotDigest": snapshot_digest,
+            "documentCount": 1,
+            "corpusPayloadDigest": grimodex_core::canonical_json_digest(&snapshot_payload)?,
+            "scopeAuthorityCompositeDigest": scope_authority.digests.composite_digest,
+        });
+        conn.execute(
+            "INSERT INTO narrative_extraction_tasks
+                (id, run_id, task_kind, status, input_json, output_json,
+                 priority, attempt_count, created_at, started_at, completed_at, version)
+             VALUES (?1, ?2, 'source.snapshot@1', 'completed', '{}', ?3,
+                     100, 1, '2026-08-26T00:00:00.000Z',
+                     '2026-08-26T00:00:00.000Z', '2026-08-26T00:00:01.000Z', 0)",
+            rusqlite::params![snapshot_task_id, run_id, snapshot_output.to_string()],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_attempts
+                (id, task_id, attempt_number, status, started_at, completed_at, output_json)
+             VALUES (?1, ?2, 1, 'completed', '2026-08-26T00:00:00.000Z',
+                     '2026-08-26T00:00:01.000Z', ?3)",
+            rusqlite::params![
+                snapshot_attempt_id,
+                snapshot_task_id,
+                snapshot_output.to_string(),
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_artifacts
+                (id, run_id, task_id, attempt_id, artifact_kind,
+                 payload_storage, payload_json, payload_ref, payload_digest, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'source.snapshot@1',
+                     'inline-json', ?5, NULL, ?6, '2026-08-26T00:00:01.000Z')",
+            rusqlite::params![
+                format!("{run_id}-snapshot-artifact"),
+                run_id,
+                snapshot_task_id,
+                snapshot_attempt_id,
+                snapshot_payload.to_string(),
+                grimodex_core::canonical_json_digest(&snapshot_payload)?,
+            ],
+        )?;
         conn.execute(
             "UPDATE narrative_extraction_runs
-                SET spec_json = ?1, spec_digest = ?2, catalog_digest = ?3
-              WHERE id = ?4 AND project_id = 'project-1'",
-            rusqlite::params![spec.to_string(), spec_digest, catalog_digest, run_id],
+                SET spec_json = ?1, spec_digest = ?2, catalog_digest = ?3,
+                    snapshot_digest = ?4, scope_json = ?5
+              WHERE id = ?6 AND project_id = 'project-1'",
+            rusqlite::params![
+                spec.to_string(),
+                spec_digest,
+                catalog_digest,
+                snapshot_digest,
+                json!({ "folderId": "folder-1", "sceneIds": ["scene-1"] }).to_string(),
+                run_id,
+            ],
         )?;
         Ok(())
     })
-    .expect("seal current Chronicle Run spec and empty Event catalog");
+    .expect("seal current Chronicle Run spec, plan artifact, and empty Event catalog");
 }
 
 fn apply_current_chronicle_event(
@@ -430,19 +1067,21 @@ fn apply_current_chronicle_event(
 ) -> Value {
     insert_scene(db, "scene-1", 0);
     let payload = event_create_payload(event_id, title, "scene-1", 0);
-    let pairs = seed_approved_proposals(
+    let proposal_set_id = current_chronicle_proposal_set_id(run_id);
+    let mut pairs = seed_current_chronicle_proposals(
         db,
         run_id,
-        &format!("{run_id}-set"),
+        &proposal_set_id,
         std::slice::from_ref(&payload),
     );
     seal_run_as_current_chronicle(db, run_id);
+    decide_current_chronicle_proposal(db, run_id, &mut pairs[0], &payload, "approved");
     prepare_and_apply(
         db,
         build_prepare(
             &format!("{run_id}-apply"),
             &format!("{run_id}-plan"),
-            &format!("{run_id}-set"),
+            &proposal_set_id,
             run_id,
             vec![(pairs[0].0.clone(), pairs[0].1.clone(), payload)],
         ),
@@ -1100,6 +1739,1099 @@ fn apply_commit_creates_three_events_atomically() {
     .expect("status");
     assert_eq!(status["found"], true);
     assert_eq!(status["status"], "applied");
+}
+
+#[test]
+fn current_chronicle_prepare_rejects_partial_review_before_commit_dml() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let run_id = "run-current-partial-review";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let payloads = [
+        event_create_payload("event-reviewed", "Reviewed", "scene-1", 0),
+        event_create_payload("event-unreviewed", "Unreviewed", "scene-1", 0),
+    ];
+    let mut pairs = seed_current_chronicle_proposals(&db, run_id, &set_id, &payloads);
+    seal_run_as_current_chronicle(&db, run_id);
+    decide_current_chronicle_proposal(&db, run_id, &mut pairs[0], &payloads[0], "approved");
+    enable_manual_apply(&db);
+
+    let error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-current-partial-review",
+            "ignored-caller-plan-digest",
+            &set_id,
+            run_id,
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone())],
+        ),
+    )
+    .expect_err("an unreviewed Proposal must block an all-or-nothing current Chronicle Apply");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE"),
+        "unexpected error: {error:#}"
+    );
+
+    let (event_count, commit_count, application_count): (i64, i64, i64) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+                conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
+                    row.get(0)
+                })?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_applications",
+                    [],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("read rejected partial-apply state");
+    assert_eq!((event_count, commit_count, application_count), (0, 0, 0));
+}
+
+#[test]
+fn current_chronicle_prepare_requires_exact_duplicate_free_approved_roster() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let run_id = "run-current-exact-roster";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let payloads = [
+        event_create_payload("event-roster-a", "Roster A", "scene-1", 0),
+        event_create_payload("event-roster-b", "Roster B", "scene-1", 0),
+    ];
+    let mut pairs = seed_current_chronicle_proposals(&db, run_id, &set_id, &payloads);
+    seal_run_as_current_chronicle(&db, run_id);
+    for (proposal, payload) in pairs.iter_mut().zip(payloads.iter()) {
+        decide_current_chronicle_proposal(&db, run_id, proposal, payload, "approved");
+    }
+    enable_manual_apply(&db);
+
+    let omitted = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-current-roster-omitted",
+            "ignored",
+            &set_id,
+            run_id,
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone())],
+        ),
+    )
+    .expect_err("omitting an approved Proposal must fail exact coverage");
+    assert!(
+        omitted
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH"),
+        "unexpected omitted-roster error: {omitted:#}"
+    );
+
+    let duplicate = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-current-roster-duplicate",
+            "ignored",
+            &set_id,
+            run_id,
+            vec![
+                (pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone()),
+                (pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone()),
+            ],
+        ),
+    )
+    .expect_err("duplicating one approved Proposal must fail exact coverage");
+    assert!(
+        duplicate
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH"),
+        "unexpected duplicate-roster error: {duplicate:#}"
+    );
+
+    let commit_count: i64 = db
+        .with_conn(|conn| {
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })
+        .expect("count rejected Prepare rows");
+    assert_eq!(commit_count, 0);
+}
+
+#[test]
+fn current_chronicle_prepare_rejects_every_nonterminal_review_status() {
+    for status in ["unreviewed", "held", "deferred"] {
+        let db = migrated_db();
+        insert_scene(&db, "scene-1", 0);
+        let payloads = [
+            event_create_payload(
+                &format!("event-{status}-approved"),
+                "Approved",
+                "scene-1",
+                0,
+            ),
+            event_create_payload(&format!("event-{status}-pending"), "Pending", "scene-1", 0),
+        ];
+        let run_id = format!("run-current-review-{status}");
+        let set_id = current_chronicle_proposal_set_id(&run_id);
+        let mut pairs = seed_current_chronicle_proposals(&db, &run_id, &set_id, &payloads);
+        seal_run_as_current_chronicle(&db, &run_id);
+        decide_current_chronicle_proposal(&db, &run_id, &mut pairs[0], &payloads[0], "approved");
+        if status != "unreviewed" {
+            decide_proposal(&db, &run_id, &pairs[1], status);
+        }
+        enable_manual_apply(&db);
+
+        let error = narrative_extraction::narrative_extraction_prepare_commit(
+            &db,
+            build_prepare(
+                &format!("req-current-review-{status}"),
+                "ignored",
+                &set_id,
+                &run_id,
+                vec![(pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone())],
+            ),
+        )
+        .expect_err("nonterminal review state must block current Chronicle Apply");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE"),
+            "unexpected {status} error: {error:#}"
+        );
+    }
+}
+
+#[test]
+fn current_chronicle_probable_duplicates_require_typed_current_decisions() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let payloads = [
+        event_create_payload("event-probable-create", "Create", "scene-1", 0),
+        event_create_payload("event-probable-skip", "Skip", "scene-1", 0),
+    ];
+    let run_id = "run-current-probable-decisions";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let mut pairs = seed_current_chronicle_proposals(&db, run_id, &set_id, &payloads);
+    let probable_match = json!({
+        "status": "probable-duplicate",
+        "candidates": ["event-existing"],
+        "reasons": ["title-only"],
+    });
+    seal_run_as_current_chronicle_with_matches(
+        &db,
+        run_id,
+        &[probable_match.clone(), probable_match],
+    );
+    enable_manual_apply(&db);
+
+    let bare_rejection = append_decision(&db, run_id, &pairs[1], "rejected", None)
+        .expect_err("bare rejection must fail before Decision/status DML");
+    assert!(
+        bare_rejection
+            .to_string()
+            .contains("probableDuplicateChoice='skip-as-same'"),
+        "unexpected bare rejection error: {bare_rejection:#}"
+    );
+    let (status_after_bare_reject, decision_count): (String, i64) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT status FROM narrative_proposals WHERE id = ?1",
+                    [&pairs[1].0],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_decisions WHERE proposal_id = ?1",
+                    [&pairs[1].0],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("read rejected bare probable Decision state");
+    assert_eq!(status_after_bare_reject, "unreviewed");
+    assert_eq!(decision_count, 0);
+    let resumable = narrative_extraction::narrative_extraction_list_resumable_runs(
+        &db,
+        ListResumableRunsPayload {
+            project_id: "project-1".to_string(),
+            surface_path_id: Some("chronicle.extract".to_string()),
+            limit: Some(20),
+        },
+    )
+    .expect("discover probable Proposal after rejected bare Decision");
+    assert!(resumable
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|candidate| candidate["runId"] == run_id));
+
+    append_decision(
+        &db,
+        run_id,
+        &pairs[1],
+        "rejected",
+        Some(json!({ "probableDuplicateChoice": "skip-as-same" })),
+    )
+    .expect("record skip-as-same rejection");
+
+    append_current_chronicle_revision(&db, run_id, &mut pairs[0], &payloads[0]);
+    let bare_approval = append_decision(&db, run_id, &pairs[0], "approved", None)
+        .expect_err("bare approval must fail before Decision/status DML");
+    assert!(
+        bare_approval
+            .to_string()
+            .contains("probableDuplicateChoice='create-as-new'"),
+        "unexpected bare approval error: {bare_approval:#}"
+    );
+    append_decision(
+        &db,
+        run_id,
+        &pairs[0],
+        "approved",
+        Some(json!({ "probableDuplicateChoice": "create-as-new" })),
+    )
+    .expect("record create-as-new approval");
+
+    let final_prepare = build_prepare(
+        "req-probable-final",
+        "ignored",
+        &set_id,
+        run_id,
+        vec![(pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone())],
+    );
+    let prepared =
+        narrative_extraction::narrative_extraction_prepare_commit(&db, final_prepare.clone())
+            .expect("typed probable-duplicate choices satisfy Native review");
+    let applied = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
+            request_id: final_prepare.request_id,
+            session_id: final_prepare.session_id,
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect("apply create-as-new and exclude skip-as-same");
+    assert_eq!(applied["created"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn current_chronicle_plan_attempt_authority_is_exact_before_decision_dml() {
+    for corruption in ["orphan", "duplicate-current-number"] {
+        let db = migrated_db();
+        insert_scene(&db, "scene-1", 0);
+        let run_id = format!("run-current-plan-attempt-{corruption}");
+        let set_id = current_chronicle_proposal_set_id(&run_id);
+        let payload = event_create_payload(
+            &format!("event-plan-attempt-{corruption}"),
+            "Plan attempt",
+            "scene-1",
+            0,
+        );
+        let pairs =
+            seed_current_chronicle_proposals(&db, &run_id, &set_id, std::slice::from_ref(&payload));
+        seal_run_as_current_chronicle(&db, &run_id);
+        db.with_conn(|conn| {
+            let task_id = format!("{run_id}-task");
+            match corruption {
+                "orphan" => {
+                    conn.execute(
+                        "DELETE FROM narrative_extraction_attempts WHERE id = ?1",
+                        [format!("attempt-plan-{run_id}")],
+                    )?;
+                }
+                "duplicate-current-number" => {
+                    let output_json: String = conn.query_row(
+                        "SELECT output_json FROM narrative_extraction_tasks WHERE id = ?1",
+                        [&task_id],
+                        |row| row.get(0),
+                    )?;
+                    conn.execute(
+                        "INSERT INTO narrative_extraction_attempts
+                            (id, task_id, attempt_number, status, started_at,
+                             completed_at, output_json)
+                         VALUES (?1, ?2, 1, 'failed',
+                                 '2026-08-26T00:00:00.000Z',
+                                 '2026-08-26T00:00:01.000Z', ?3)",
+                        rusqlite::params![
+                            format!("attempt-plan-duplicate-{run_id}"),
+                            task_id,
+                            output_json,
+                        ],
+                    )?;
+                }
+                _ => unreachable!(),
+            }
+            Ok(())
+        })
+        .expect("corrupt exact plan Attempt authority");
+
+        let error = append_decision(&db, &run_id, &pairs[0], "rejected", None)
+            .expect_err("orphan/stale current plan Attempt must reject before Decision DML");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT"),
+            "unexpected {corruption} plan authority error: {error:#}"
+        );
+        let (status, decision_count): (String, i64) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT status FROM narrative_proposals WHERE id = ?1",
+                        [&pairs[0].0],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_proposal_decisions WHERE proposal_id = ?1",
+                        [&pairs[0].0],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("read rejected plan Attempt Decision state");
+        assert_eq!(status, "unreviewed");
+        assert_eq!(decision_count, 0);
+    }
+}
+
+#[test]
+fn current_chronicle_plan_match_rehash_cannot_bypass_manifest_binding() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let run_id = "run-current-plan-match-tamper";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let payloads = [
+        event_create_payload("event-plan-tamper-a", "Apply", "scene-1", 0),
+        event_create_payload("event-plan-tamper-b", "Reject", "scene-1", 0),
+    ];
+    let mut pairs = seed_current_chronicle_proposals(&db, run_id, &set_id, &payloads);
+    seal_run_as_current_chronicle(&db, run_id);
+    decide_current_chronicle_proposal(&db, run_id, &mut pairs[0], &payloads[0], "approved");
+    decide_proposal(&db, run_id, &pairs[1], "rejected");
+    db.with_conn(|conn| {
+        let artifact_json: String = conn.query_row(
+            "SELECT payload_json
+               FROM narrative_extraction_artifacts
+              WHERE run_id = ?1 AND artifact_kind = 'chronicle.proposal-plan@1'",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        let mut artifact: Value = serde_json::from_str(&artifact_json)?;
+        artifact["planned"][0]["match"] = json!({
+            "status": "probable-duplicate",
+            "candidates": ["event-forged"],
+            "reasons": ["rehash-tamper"],
+        });
+        conn.execute(
+            "UPDATE narrative_extraction_artifacts
+                SET payload_json = ?1, payload_digest = ?2
+              WHERE run_id = ?3 AND artifact_kind = 'chronicle.proposal-plan@1'",
+            rusqlite::params![
+                artifact.to_string(),
+                grimodex_core::canonical_json_digest(&artifact)?,
+                run_id,
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("rewrite and rehash sealed plan match metadata");
+    enable_manual_apply(&db);
+
+    let error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-plan-match-tamper",
+            "ignored",
+            &set_id,
+            run_id,
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone())],
+        ),
+    )
+    .expect_err("rehashing a rewritten match must not bypass the ProposalSet manifest");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT"),
+        "unexpected plan match tamper error: {error:#}"
+    );
+    let commit_count: i64 = db
+        .with_conn(|conn| {
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })
+        .expect("count plan-tamper commits");
+    assert_eq!(commit_count, 0);
+}
+
+#[test]
+fn current_chronicle_native_compiler_rejects_renderer_field_tampering() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let run_id = "run-current-compiler-tamper";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let payload = event_create_payload("event-compiler-sealed", "Sealed", "scene-1", 0);
+    let mut pairs =
+        seed_current_chronicle_proposals(&db, run_id, &set_id, std::slice::from_ref(&payload));
+    seal_run_as_current_chronicle(&db, run_id);
+    decide_current_chronicle_proposal(&db, run_id, &mut pairs[0], &payload, "approved");
+    enable_manual_apply(&db);
+
+    let mut event_id = payload.clone();
+    event_id["eventId"] = json!("event-renderer-forged");
+    let mut title = payload.clone();
+    title["title"] = json!("Renderer forged title");
+    let mut reveal = payload.clone();
+    reveal["revealSceneId"] = json!("scene-forged");
+    let mut evidence_version = payload.clone();
+    evidence_version["evidenceSceneLinks"][0]["expectedSceneVersion"] = json!(99);
+    let mut anchors = payload.clone();
+    anchors["evidenceSceneLinks"][0]["evidenceAnchorIds"] = json!(["anchor:forged"]);
+    let mut fixed_detail = payload.clone();
+    fixed_detail["detail"] = json!("renderer-forged-detail");
+    let mut semantic_type = payload.clone();
+    semantic_type["semanticType"] = json!("state");
+
+    for (case, tampered, expected_code) in [
+        ("event-id", event_id, "NEX_PROPOSAL_PAYLOAD_MISMATCH"),
+        ("title", title, "NEX_PROPOSAL_PAYLOAD_MISMATCH"),
+        ("reveal-scene", reveal, "NEX_PROPOSAL_PAYLOAD_MISMATCH"),
+        (
+            "evidence-version",
+            evidence_version,
+            "NEX_SCENE_VERSION_MISMATCH",
+        ),
+        ("evidence-anchors", anchors, "NEX_PROPOSAL_PAYLOAD_MISMATCH"),
+        (
+            "fixed-detail",
+            fixed_detail,
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH",
+        ),
+        (
+            "semantic-type",
+            semantic_type,
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH",
+        ),
+    ] {
+        let error = narrative_extraction::narrative_extraction_prepare_commit(
+            &db,
+            build_prepare(
+                &format!("req-current-compiler-tamper-{case}"),
+                "ignored",
+                &set_id,
+                run_id,
+                vec![(pairs[0].0.clone(), pairs[0].1.clone(), tampered)],
+            ),
+        )
+        .expect_err("renderer-compiled fields must be derived from Native authority");
+        assert!(
+            error.to_string().contains(expected_code),
+            "unexpected {case} compiler error: {error:#}"
+        );
+    }
+
+    let commit_count: i64 = db
+        .with_conn(|conn| {
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })
+        .expect("count compiler-tamper commits");
+    assert_eq!(commit_count, 0);
+}
+
+#[test]
+fn current_chronicle_snapshot_origin_rehash_is_rejected_by_terminal_output_cas() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let run_id = "run-current-snapshot-origin-tamper";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let operation = event_create_payload("event-snapshot-sealed", "Sealed", "scene-1", 0);
+    let mut pairs =
+        seed_current_chronicle_proposals(&db, run_id, &set_id, std::slice::from_ref(&operation));
+    seal_run_as_current_chronicle(&db, run_id);
+    decide_current_chronicle_proposal(&db, run_id, &mut pairs[0], &operation, "approved");
+    db.with_conn(|conn| {
+        let artifact_json: String = conn.query_row(
+            "SELECT payload_json
+               FROM narrative_extraction_artifacts
+              WHERE run_id = ?1 AND artifact_kind = 'source.snapshot@1'",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        let mut artifact: Value = serde_json::from_str(&artifact_json)?;
+        artifact["snapshot"]["documents"][0]["origin"]["sourceVersion"] = json!(7);
+
+        let document = artifact["snapshot"]["documents"][0].clone();
+        let document_artifact_digest = grimodex_core::canonical_json_digest(&json!({
+            "schemaVersion": 1,
+            "normalizerVersion": "gdx-canonical-text/1",
+            "sourceKey": document["sourceKey"],
+            "parentSourceKey": null,
+            "semanticDigest": document["documentDigest"],
+            "contentDigest": document["contentDigest"],
+            "projection": document["canonical"]["projection"],
+            "origin": document["origin"],
+        }))?;
+        artifact["snapshot"]["documents"][0]["artifactDigest"] = json!(document_artifact_digest);
+        let snapshot_digest = artifact["snapshot"]["digest"].clone();
+        let omissions = artifact["snapshot"]["omissions"].clone();
+        artifact["snapshot"]["artifactDigest"] =
+            json!(grimodex_core::canonical_json_digest(&json!({
+                "schemaVersion": 1,
+                "normalizerVersion": "gdx-canonical-text/1",
+                "semanticDigest": snapshot_digest,
+                "originProjectId": "project-1",
+                "documents": [{
+                    "sourceKey": artifact["snapshot"]["documents"][0]["sourceKey"],
+                    "artifactDigest": document_artifact_digest,
+                }],
+                "omissions": omissions,
+            }))?);
+        artifact["sourceViews"][0]["digest"] =
+            json!(grimodex_core::canonical_json_digest(&json!({
+                "schemaVersion": 1,
+                "ref": artifact["sourceViews"][0]["ref"],
+                "documentRef": artifact["sourceViews"][0]["documentRef"],
+                "documentArtifactDigest": document_artifact_digest,
+                "documentRange": artifact["sourceViews"][0]["documentRange"],
+                "text": artifact["sourceViews"][0]["text"],
+            }))?);
+        conn.execute(
+            "UPDATE narrative_extraction_artifacts
+                SET payload_json = ?1, payload_digest = ?2
+              WHERE run_id = ?3 AND artifact_kind = 'source.snapshot@1'",
+            rusqlite::params![
+                artifact.to_string(),
+                grimodex_core::canonical_json_digest(&artifact)?,
+                run_id,
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("rewrite every inner Snapshot origin seal and outer artifact digest");
+    enable_manual_apply(&db);
+
+    let error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-snapshot-origin-tamper",
+            "ignored",
+            &set_id,
+            run_id,
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), operation)],
+        ),
+    )
+    .expect_err("terminal Snapshot output must seal the full corpus payload bytes");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH")
+            && error.to_string().contains("corpusPayloadDigest"),
+        "unexpected Snapshot origin tamper error: {error:#}"
+    );
+    let commit_count: i64 = db
+        .with_conn(|conn| {
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })
+        .expect("count Snapshot-origin tamper commits");
+    assert_eq!(commit_count, 0);
+}
+
+#[test]
+fn current_chronicle_apply_invalidates_on_ambiguous_snapshot_owner() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let run_id = "run-current-snapshot-owner-apply";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let operation = event_create_payload("event-snapshot-owner", "Owner", "scene-1", 0);
+    let mut pairs =
+        seed_current_chronicle_proposals(&db, run_id, &set_id, std::slice::from_ref(&operation));
+    seal_run_as_current_chronicle(&db, run_id);
+    decide_current_chronicle_proposal(&db, run_id, &mut pairs[0], &operation, "approved");
+    enable_manual_apply(&db);
+    let prepare = build_prepare(
+        "req-snapshot-owner-apply",
+        "ignored",
+        &set_id,
+        run_id,
+        vec![(pairs[0].0.clone(), pairs[0].1.clone(), operation)],
+    );
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(&db, prepare.clone())
+        .expect("prepare before Snapshot owner corruption");
+    db.with_conn(|conn| {
+        let output_json: String = conn.query_row(
+            "SELECT output_json
+               FROM narrative_extraction_tasks
+              WHERE run_id = ?1 AND task_kind = 'source.snapshot@1'",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_tasks
+                (id, run_id, task_kind, status, input_json, output_json,
+                 priority, attempt_count, created_at, started_at, completed_at, version)
+             VALUES (?1, ?2, 'source.snapshot@1', 'completed', '{}', ?3,
+                     100, 1, '2026-08-26T00:00:02.000Z',
+                     '2026-08-26T00:00:02.000Z', '2026-08-26T00:00:03.000Z', 0)",
+            rusqlite::params![
+                format!("{run_id}-snapshot-task-duplicate"),
+                run_id,
+                output_json
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_attempts
+                (id, task_id, attempt_number, status, started_at, completed_at, output_json)
+             VALUES (?1, ?2, 1, 'completed', '2026-08-26T00:00:02.000Z',
+                     '2026-08-26T00:00:03.000Z', ?3)",
+            rusqlite::params![
+                format!("{run_id}-snapshot-attempt-duplicate"),
+                format!("{run_id}-snapshot-task-duplicate"),
+                output_json,
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("insert a second completed Snapshot owner after Prepare");
+
+    let error = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
+            request_id: prepare.request_id,
+            session_id: prepare.session_id,
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect_err("ambiguous Snapshot authority must invalidate the prepared Apply");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID"),
+        "unexpected Snapshot topology error: {error:#}"
+    );
+    let (event_count, application_count, commit_status): (i64, i64, String) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_applications",
+                    [],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+                    [&prepared["preparedCommitId"].as_str().unwrap()],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("read invalidated Snapshot-owner Apply state");
+    assert_eq!((event_count, application_count), (0, 0));
+    assert_eq!(commit_status, "invalidated");
+}
+
+#[test]
+fn current_chronicle_prepare_rejects_duplicate_snapshot_attempt_number() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let run_id = "run-current-snapshot-attempt-duplicate";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let operation = event_create_payload("event-snapshot-attempt", "Attempt", "scene-1", 0);
+    let mut pairs =
+        seed_current_chronicle_proposals(&db, run_id, &set_id, std::slice::from_ref(&operation));
+    seal_run_as_current_chronicle(&db, run_id);
+    decide_current_chronicle_proposal(&db, run_id, &mut pairs[0], &operation, "approved");
+    db.with_conn(|conn| {
+        let task_id = format!("{run_id}-snapshot-task");
+        let output_json: String = conn.query_row(
+            "SELECT output_json FROM narrative_extraction_tasks WHERE id = ?1",
+            [&task_id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_attempts
+                (id, task_id, attempt_number, status, started_at, completed_at, output_json)
+             VALUES (?1, ?2, 1, 'failed', '2026-08-26T00:00:02.000Z',
+                     '2026-08-26T00:00:03.000Z', ?3)",
+            rusqlite::params![
+                format!("{run_id}-snapshot-attempt-stale"),
+                task_id,
+                output_json,
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("insert a stale duplicate Snapshot Attempt number");
+    enable_manual_apply(&db);
+
+    let error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-snapshot-attempt-duplicate",
+            "ignored",
+            &set_id,
+            run_id,
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), operation)],
+        ),
+    )
+    .expect_err("duplicate current Snapshot Attempt number must reject Prepare");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID"),
+        "unexpected Snapshot Attempt ambiguity error: {error:#}"
+    );
+    let commit_count: i64 = db
+        .with_conn(|conn| {
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })
+        .expect("count Snapshot-attempt ambiguity commits");
+    assert_eq!(commit_count, 0);
+}
+
+#[test]
+fn current_chronicle_applies_approved_and_rejected_set_once_and_seals_mutations() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let mut payloads = [
+        event_create_payload("event-atomic-reviewed", "Approved", "scene-1", 0),
+        event_create_payload("event-atomic-rejected", "Rejected", "scene-1", 0),
+    ];
+    // The reviewed Proposal owns anchor order. Its Envelope intentionally
+    // stores these two anchors in reverse row order, and both anchors resolve
+    // to the same document. Native compilation must still reproduce this
+    // exact renderer operation rather than inheriting Envelope row order.
+    payloads[0]["evidenceSceneLinks"][0]["evidenceAnchorIds"] = json!(["anchor:two", "anchor:one"]);
+    let run_id = "run-current-approved-rejected";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let mut pairs = seed_current_chronicle_proposals(&db, run_id, &set_id, &payloads);
+    seal_run_as_current_chronicle(&db, run_id);
+    decide_current_chronicle_proposal(&db, run_id, &mut pairs[0], &payloads[0], "approved");
+    decide_proposal(&db, run_id, &pairs[1], "rejected");
+    enable_manual_apply(&db);
+    let prepare = build_prepare(
+        "req-current-approved-rejected",
+        "ignored",
+        &set_id,
+        run_id,
+        vec![(pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone())],
+    );
+
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(&db, prepare.clone())
+        .expect("prepare exact approved roster");
+    let prepared_commit_id = prepared["preparedCommitId"].as_str().unwrap().to_string();
+    let apply_payload = ApplyCommitPayload {
+        project_id: "project-1".to_string(),
+        prepared_commit_id: prepared_commit_id.clone(),
+        request_id: prepare.request_id.clone(),
+        session_id: prepare.session_id.clone(),
+        expected_version: prepared["version"].as_i64(),
+    };
+    let first = narrative_extraction::narrative_extraction_apply_commit(&db, apply_payload.clone())
+        .expect("apply exact approved roster");
+    assert_eq!(first["status"], "applied");
+
+    let replay_prepare =
+        narrative_extraction::narrative_extraction_prepare_commit(&db, prepare.clone())
+            .expect("same request Prepare must replay after its own catalog mutation");
+    assert_eq!(replay_prepare["preparedCommitId"], prepared_commit_id);
+    assert_eq!(replay_prepare["idempotentReplay"], true);
+    let replay_apply = narrative_extraction::narrative_extraction_apply_commit(&db, apply_payload)
+        .expect("same prepared Apply must replay after its own catalog mutation");
+    assert_eq!(replay_apply["commitId"], first["commitId"]);
+    assert_eq!(replay_apply["idempotentReplay"], true);
+
+    let reopen_error = narrative_extraction::narrative_extraction_append_human_decision(
+        &db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: pairs[1].0.clone(),
+            revision_id: pairs[1].1.clone(),
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("test".to_string()),
+        },
+    )
+    .expect_err("an applied current set must not reopen a rejected Proposal");
+    assert!(
+        reopen_error
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_SET_CONSUMED"),
+        "unexpected reopen error: {reopen_error:#}"
+    );
+    narrative_extraction::narrative_extraction_append_human_decision(
+        &db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: pairs[1].0.clone(),
+            revision_id: pairs[1].1.clone(),
+            decision: "rejected".to_string(),
+            decision_json: Some(json!({ "reason": "partial-set-cleanup" })),
+            created_by: Some("test".to_string()),
+        },
+    )
+    .expect("reject-only cleanup remains available for historical partial sets");
+    let revision_error = narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: pairs[1].0.clone(),
+            payload_json: payloads[1].clone(),
+            reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
+            expected_current_revision_id: pairs[1].1.clone(),
+            created_by: Some("test".to_string()),
+        },
+    )
+    .expect_err("an applied current set must not accept a new Revision");
+    assert!(revision_error
+        .to_string()
+        .contains("NEX_CHRONICLE_APPLY_SET_CONSUMED"));
+
+    let (event_count, application_count): (i64, i64) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_applications",
+                    [],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("read atomic Apply state");
+    assert_eq!((event_count, application_count), (1, 1));
+}
+
+#[test]
+fn current_chronicle_apply_revalidates_exact_roster_after_prepare() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let payloads = [
+        event_create_payload("event-apply-cas-a", "Approved", "scene-1", 0),
+        event_create_payload("event-apply-cas-b", "Rejected", "scene-1", 0),
+    ];
+    let run_id = "run-current-apply-coverage-cas";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let mut pairs = seed_current_chronicle_proposals(&db, run_id, &set_id, &payloads);
+    seal_run_as_current_chronicle(&db, run_id);
+    decide_current_chronicle_proposal(&db, run_id, &mut pairs[0], &payloads[0], "approved");
+    decide_proposal(&db, run_id, &pairs[1], "rejected");
+    enable_manual_apply(&db);
+    let prepare = build_prepare(
+        "req-current-apply-coverage-cas",
+        "ignored",
+        &set_id,
+        run_id,
+        vec![(pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone())],
+    );
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(&db, prepare.clone())
+        .expect("prepare before Decision drift");
+    decide_current_chronicle_proposal(&db, run_id, &mut pairs[1], &payloads[1], "approved");
+
+    let error = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
+            request_id: prepare.request_id,
+            session_id: prepare.session_id,
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect_err("Apply must re-CAS the exact approved roster");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH"),
+        "unexpected Apply coverage error: {error:#}"
+    );
+    let (event_count, application_count, commit_status): (i64, i64, String) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_applications",
+                    [],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+                    [&prepared["preparedCommitId"].as_str().unwrap()],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("read rejected Apply state");
+    assert_eq!((event_count, application_count), (0, 0));
+    assert_eq!(commit_status, "invalidated");
+}
+
+#[test]
+fn legacy_chronicle_prepare_keeps_subset_apply_compatibility() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let payloads = [
+        event_create_payload("event-legacy-approved", "Approved", "scene-1", 0),
+        event_create_payload("event-legacy-unreviewed", "Unreviewed", "scene-1", 0),
+    ];
+    let pairs = seed_proposals(
+        &db,
+        "run-legacy-partial-review",
+        "set-legacy-partial-review",
+        &payloads,
+    );
+    decide_proposal(&db, "run-legacy-partial-review", &pairs[0], "approved");
+    enable_manual_apply(&db);
+
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-legacy-partial-review",
+            "ignored",
+            "set-legacy-partial-review",
+            "run-legacy-partial-review",
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone())],
+        ),
+    )
+    .expect("legacy non-v2 Chronicle keeps subset-Apply compatibility");
+    assert_eq!(prepared["status"], "prepared");
+}
+
+#[test]
+fn legacy_chronicle_does_not_gain_current_compiler_kind_mapping() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let payload = event_create_payload("event-legacy-kind", "Legacy kind", "scene-1", 0);
+    let run_id = "run-legacy-current-kind";
+    let set_id = "set-legacy-current-kind";
+    let pairs =
+        seed_current_chronicle_proposals(&db, run_id, set_id, std::slice::from_ref(&payload));
+    decide_proposal(&db, run_id, &pairs[0], "approved");
+    enable_manual_apply(&db);
+
+    let error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-legacy-current-kind",
+            "ignored",
+            set_id,
+            run_id,
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), payload)],
+        ),
+    )
+    .expect_err("current compiler kind mapping must not expand legacy acceptance");
+    assert!(
+        error.to_string().contains("NEX_PROPOSAL_KIND_MISMATCH"),
+        "unexpected legacy kind error: {error:#}"
+    );
+    let commit_count: i64 = db
+        .with_conn(|conn| {
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })
+        .expect("count rejected legacy compiler mapping commits");
+    assert_eq!(commit_count, 0);
+}
+
+#[test]
+fn historical_partial_set_can_reject_remaining_proposals_and_leave_resume_discovery() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let payloads = [
+        event_create_payload("event-historical-applied", "Applied", "scene-1", 0),
+        event_create_payload("event-historical-pending", "Pending", "scene-1", 0),
+    ];
+    let run_id = "run-historical-partial-cleanup";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let pairs = seed_current_chronicle_proposals(&db, run_id, &set_id, &payloads);
+    decide_proposal(&db, run_id, &pairs[0], "approved");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_apply_commits
+                (id, project_id, run_id, proposal_set_id, request_id, plan_digest,
+                 status, created_at, completed_at, version)
+             VALUES ('commit-historical-partial', 'project-1', ?1, ?2,
+                     'request-historical-partial', 'plan-historical-partial',
+                     'applied', '2026-08-26T00:00:00.000Z',
+                     '2026-08-26T00:00:01.000Z', 1)",
+            rusqlite::params![run_id, set_id],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposal_applications
+                (id, commit_id, proposal_id, revision_id, applied_entity_kind,
+                 applied_entity_id, created_at)
+             VALUES ('application-historical-partial', 'commit-historical-partial',
+                     ?1, ?2, 'event', 'event-historical-applied',
+                     '2026-08-26T00:00:01.000Z')",
+            rusqlite::params![pairs[0].0, pairs[0].1],
+        )?;
+        Ok(())
+    })
+    .expect("seed pre-atomic partial Application ledger");
+    // Model a workspace written by the pre-atomic current Chronicle build:
+    // A owns an Application while B remains unreviewed.
+    seal_run_as_current_chronicle(&db, run_id);
+
+    let before = narrative_extraction::narrative_extraction_list_resumable_runs(
+        &db,
+        ListResumableRunsPayload {
+            project_id: "project-1".to_string(),
+            surface_path_id: Some("chronicle.extract".to_string()),
+            limit: Some(20),
+        },
+    )
+    .expect("discover historical partial review");
+    assert!(before
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["runId"] == run_id));
+
+    decide_proposal(&db, run_id, &pairs[1], "rejected");
+    let after = narrative_extraction::narrative_extraction_list_resumable_runs(
+        &db,
+        ListResumableRunsPayload {
+            project_id: "project-1".to_string(),
+            surface_path_id: Some("chronicle.extract".to_string()),
+            limit: Some(20),
+        },
+    )
+    .expect("rediscover after reject-only cleanup");
+    assert!(
+        after
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["runId"] != run_id),
+        "an applied Proposal plus rejected remainder must not remain resumable"
+    );
 }
 
 #[test]

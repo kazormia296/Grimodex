@@ -226,6 +226,15 @@ describe("getChronicleExtractionReview cold-start restore", () => {
             createdAt: "2026-01-01T00:00:50.000Z",
             createdBy: "reviewer",
           },
+          application: {
+            commitId: "commit-cold-1",
+            revisionId: nativeRevisionId,
+            appliedEntityKind: "chronicle-event",
+            appliedEntityId: "event-cold-1",
+            createdAt: "2026-01-01T00:00:55.000Z",
+            applicationKind: "normal",
+            compensatesApplicationId: null,
+          },
         },
       ],
     });
@@ -248,6 +257,12 @@ describe("getChronicleExtractionReview cold-start restore", () => {
     expect(row.revisionId).not.toMatch(/^local-rev-/);
     expect(row.proposalId).not.toMatch(/^local-proposal-/);
     expect(row.status).toBe("approved");
+    expect(row.application).toMatchObject({
+      commitId: "commit-cold-1",
+      revisionId: nativeRevisionId,
+      appliedEntityId: "event-cold-1",
+      applicationKind: "normal",
+    });
     expect(row.reconciliationEnvelopeSchemaVersion).toBe(2);
     expect(row.displayTitle).toBe("Current human revision");
     expect(row.probableDuplicateChoice).toBe("create-as-new");

@@ -281,15 +281,15 @@ pub use models::{
     ChronicleStageTerminalReceipt, ClaimTaskPayload, CommitApplicationRef, CommitOperation,
     CreateHumanDerivedRevisionRequest, CreateRunPayload, CreateTaskSeed, EntityBindingSeed,
     FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload, GetNarrativeBackfillStatusPayload,
-    HumanFieldLockPayload, ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload,
-    NarrativeAdapterIdentity, NarrativeMaintenanceAttentionClearPayload,
-    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
-    PrepareCommitPayload, ProposalSeed, RebuildNarrativeDerivedStatePayload,
-    ReconciliationEnvelopeInheritance, RepairNarrativeDependencyDeclarationsPayload,
-    RetryNarrativeLegacyBackfillPayload, ReviseAndDecidePayload, RunRefPayload,
-    SaveProposalSetPayload, TrustedHumanDerivationScope, TrustedRevealBasis, TrustedScopeBoundary,
-    TrustedScopeInterval, TrustedUnresolvedConstraint, UndoCommitPayload,
-    VerifyNarrativeDependencyGraphPayload,
+    HumanFieldLockPayload, IsRunResumableForReviewPayload, IsRunResumableForReviewResult,
+    ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, NarrativeAdapterIdentity,
+    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
+    NarrativeMaintenanceInboxListPayload, PrepareCommitPayload, ProposalSeed,
+    RebuildNarrativeDerivedStatePayload, ReconciliationEnvelopeInheritance,
+    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, TrustedHumanDerivationScope,
+    TrustedRevealBasis, TrustedScopeBoundary, TrustedScopeInterval, TrustedUnresolvedConstraint,
+    UndoCommitPayload, VerifyNarrativeDependencyGraphPayload,
 };
 pub use repository::ensure_test_schema;
 pub use scope_authority_runtime::{
@@ -392,6 +392,13 @@ pub fn narrative_extraction_list_resumable_runs(
     payload: ListResumableRunsPayload,
 ) -> anyhow::Result<Value> {
     repository::list_resumable_runs(db, payload)
+}
+
+pub fn narrative_extraction_is_run_resumable_for_review(
+    db: &Database,
+    payload: IsRunResumableForReviewPayload,
+) -> anyhow::Result<IsRunResumableForReviewResult> {
+    repository::is_run_resumable_for_review(db, payload)
 }
 
 pub fn narrative_extraction_list_chronicle_task_resume_candidates(

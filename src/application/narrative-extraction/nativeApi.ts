@@ -531,6 +531,19 @@ export interface ListResumableRunsPayload {
   readonly limit?: number;
 }
 
+export interface IsRunResumableForReviewPayload {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly surfacePathId: string;
+}
+
+export interface IsRunResumableForReviewResult {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly surfacePathId: string;
+  readonly resumable: boolean;
+}
+
 export interface ResumableRunSummary {
   readonly runId: string;
   readonly projectId: string;
@@ -829,6 +842,15 @@ export async function narrativeExtractionListResumableRuns(
 ): Promise<readonly ResumableRunSummary[]> {
   return invoke<readonly ResumableRunSummary[]>(
     "narrative_extraction_list_resumable_runs",
+    { payload },
+  );
+}
+
+export async function narrativeExtractionIsRunResumableForReview(
+  payload: IsRunResumableForReviewPayload,
+): Promise<IsRunResumableForReviewResult> {
+  return invoke<IsRunResumableForReviewResult>(
+    "narrative_extraction_is_run_resumable_for_review",
     { payload },
   );
 }

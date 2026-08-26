@@ -765,6 +765,9 @@ export interface NapiBackendLike {
   ): Promise<string>;
   narrativeExtractionGetRun(payload: unknown): Promise<string>;
   narrativeExtractionListResumableRuns(payload: unknown): Promise<string>;
+  narrativeExtractionIsRunResumableForReview?(
+    payload: unknown,
+  ): Promise<string>;
   narrativeExtractionListChronicleTaskResumeCandidates?(
     payload: unknown,
   ): Promise<string>;
@@ -1055,6 +1058,33 @@ function requireChronicleTaskResumeCandidatesPayload(
     );
   }
   return { projectId, limit };
+}
+
+function requireReviewResumabilityPayload(args: CommandArgs): CommandArgs {
+  const command = "narrative_extraction_is_run_resumable_for_review";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["runId", "projectId", "surfacePathId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const exactString = (key: "runId" | "projectId" | "surfacePathId") => {
+    const value = requireNonEmptyString(payload, key, command);
+    if (value.trim().length === 0 || value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a non-empty exact string`,
+      );
+    }
+    return value;
+  };
+  return {
+    runId: exactString("runId"),
+    projectId: exactString("projectId"),
+    surfacePathId: exactString("surfacePathId"),
+  };
 }
 
 function requireNarrativeExtractionWorkspaceBinding(
@@ -7771,6 +7801,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
             "narrative_extraction_list_resumable_runs",
           ),
         ),
+      ),
+  },
+  narrative_extraction_is_run_resumable_for_review: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionIsRunResumableForReview,
+          "narrativeExtractionIsRunResumableForReview",
+        )(requireReviewResumabilityPayload(a)),
       ),
   },
   narrative_extraction_list_chronicle_task_resume_candidates: {

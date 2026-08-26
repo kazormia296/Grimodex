@@ -88,6 +88,7 @@ function proposal(
     }),
     probableDuplicateChoice: null,
     ...overrides,
+    application: overrides.application ?? null,
   };
 }
 
@@ -242,6 +243,33 @@ describe("ChronicleProposalReview", () => {
       ).toBe("approved");
     });
     expect(bulkMock).toHaveBeenCalled();
+  });
+
+  it("publishes decision persistence as a shared Apply interlock", async () => {
+    let resolveDecision!: () => void;
+    decideMock.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveDecision = resolve;
+      }),
+    );
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal()]));
+    render(<ChronicleProposalReview />);
+
+    fireEvent.click(screen.getByRole("button", { name: "承認" }));
+    await waitFor(() =>
+      expect(useChronicleExtractionStore.getState().reviewMutationCount).toBe(
+        1,
+      ),
+    );
+    expect(screen.getByRole("button", { name: "拒否" })).toBeDisabled();
+
+    await act(async () => {
+      resolveDecision();
+      await Promise.resolve();
+    });
+    expect(useChronicleExtractionStore.getState().reviewMutationCount).toBe(0);
   });
 
   it("shows already-satisfied as completed / not applicable", () => {

@@ -43,6 +43,7 @@ use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
     ChronicleBlockedDiscardExpectation, ChroniclePlanProposalSetFinish, ChronicleStageId,
     CreateRunPayload, CreateTaskSeed, FailTaskPayload, FinishTaskPayload,
+    IsRunResumableForReviewPayload, IsRunResumableForReviewResult,
     ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, ProposalSeed,
     ReviseAndDecidePayload, SaveProposalSetPayload,
 };
@@ -64,6 +65,38 @@ const RUN_CANCELLED_ATTEMPT_FAILURE_CODE: &str = "NEX_RUN_CANCELLED";
 const RUN_CANCELLED_ATTEMPT_POLICY_VERSION: &str = "v1";
 const CHRONICLE_RUN_SPEC_KIND: &str = "chronicle.extract.run-spec@2";
 const CHRONICLE_EXISTING_EVENTS_CATALOG_KIND: &str = "chronicle.existing-events-catalog@1";
+/// Canonical Review-resumability predicate shared by bounded discovery and
+/// the exact, limit-free authority query. Keep the Run alias fixed as `r` so
+/// both call sites consume the same SQL rather than parallel vocabularies.
+const REVIEW_RESUMABLE_RUN_PREDICATE_SQL: &str = r#"
+    r.status IN ('pending', 'running', 'completed')
+    AND EXISTS (
+        SELECT 1
+          FROM narrative_proposal_sets ps
+          JOIN narrative_proposals p ON p.proposal_set_id = ps.id
+         WHERE ps.run_id = r.id
+           AND ps.project_id = r.project_id
+           AND (
+                p.status IN ('unreviewed', 'approved', 'held')
+                OR (
+                    p.status = 'deferred'
+                    AND NOT EXISTS (
+                      SELECT 1
+                        FROM narrative_proposal_decisions d
+                       WHERE d.proposal_id = p.id
+                         AND d.revision_id = p.current_revision_id
+                         AND json_extract(d.decision_json, '$.reason')
+                             = 'already-satisfied'
+                    )
+                )
+           )
+           AND NOT EXISTS (
+             SELECT 1
+               FROM narrative_proposal_applications a
+              WHERE a.proposal_id = p.id
+           )
+    )
+"#;
 const CHRONICLE_EXTRACT_TASK_CHAIN: [&str; 9] = [
     "source.snapshot@1",
     "source.window-plan@1",
@@ -109,6 +142,43 @@ pub(crate) fn ensure_proposal_not_applied(
         applied == 0,
         "NEX_PROPOSAL_ALREADY_APPLIED: proposal '{proposal_id}'"
     );
+    Ok(())
+}
+
+/// Reject mutations that could reopen a current Chronicle v2 ProposalSet
+/// after its atomic Apply. A rejected Decision is the sole exception and is
+/// handled by `append_decision_on_conn`: it lets workspaces produced by older
+/// partial-Apply builds terminalize their unapplied remainder instead of
+/// leaving a permanently resumable review.
+pub(crate) fn ensure_current_chronicle_proposal_set_unconsumed(
+    conn: &Connection,
+    proposal_id: &str,
+) -> anyhow::Result<()> {
+    let set_context: Option<(String, String, i64)> = conn
+        .query_row(
+            "SELECT proposal_set.run_id, proposal_set.project_id,
+                    (SELECT COUNT(*)
+                       FROM narrative_proposal_applications application
+                       JOIN narrative_proposals sibling
+                         ON sibling.id = application.proposal_id
+                      WHERE sibling.proposal_set_id = proposal.proposal_set_id)
+               FROM narrative_proposals proposal
+               JOIN narrative_proposal_sets proposal_set
+                 ON proposal_set.id = proposal.proposal_set_id
+              WHERE proposal.id = ?1",
+            params![proposal_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    if let Some((run_id, project_id, set_application_count)) = set_context {
+        if set_application_count > 0
+            && current_chronicle_run_spec_for_run(conn, &project_id, &run_id)?
+        {
+            anyhow::bail!(
+                "NEX_CHRONICLE_APPLY_SET_CONSUMED: current Chronicle ProposalSet already owns {set_application_count} Application row(s)"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -326,7 +396,7 @@ fn validate_chronicle_run_value(run: &Value) -> anyhow::Result<bool> {
     validate_current_chronicle_run_spec(surface_path_id, spec_json, spec_digest, catalog_digest)
 }
 
-fn current_chronicle_run_spec_for_run(
+pub(crate) fn current_chronicle_run_spec_for_run(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
@@ -1167,44 +1237,19 @@ pub fn list_resumable_runs(
 ) -> anyhow::Result<Value> {
     let limit = payload.limit.unwrap_or(20).clamp(1, 100);
     db.with_conn(|conn| {
-        let mut stmt = conn.prepare(
+        let sql = format!(
             "SELECT r.id, r.project_id, r.surface_path_id, r.status, r.snapshot_digest,
                     r.created_at, r.started_at, r.completed_at
                FROM narrative_extraction_runs r
               WHERE r.project_id = ?1
                 AND (?2 IS NULL OR r.surface_path_id = ?2)
-                AND r.status IN ('pending', 'running', 'completed')
-                AND EXISTS (
-                    SELECT 1
-                      FROM narrative_proposal_sets ps
-                      JOIN narrative_proposals p ON p.proposal_set_id = ps.id
-                     WHERE ps.run_id = r.id
-                       AND ps.project_id = r.project_id
-                       AND (
-                            p.status IN ('unreviewed', 'approved', 'held')
-                            OR (
-                                p.status = 'deferred'
-                                AND NOT EXISTS (
-                                  SELECT 1
-                                    FROM narrative_proposal_decisions d
-                                   WHERE d.proposal_id = p.id
-                                     AND d.revision_id = p.current_revision_id
-                                     AND json_extract(d.decision_json, '$.reason')
-                                         = 'already-satisfied'
-                                )
-                            )
-                       )
-                       AND NOT EXISTS (
-                         SELECT 1
-                           FROM narrative_proposal_applications a
-                          WHERE a.proposal_id = p.id
-                       )
-                  )
+                AND {REVIEW_RESUMABLE_RUN_PREDICATE_SQL}
               ORDER BY julianday(COALESCE(r.completed_at, r.started_at, r.created_at)) DESC,
                        COALESCE(r.completed_at, r.started_at, r.created_at) DESC,
                        r.id DESC
-              LIMIT ?3",
-        )?;
+              LIMIT ?3"
+        );
+        let mut stmt = conn.prepare(&sql)?;
         let surface = payload.surface_path_id.as_deref();
         let rows = stmt.query_map(params![payload.project_id, surface, limit], |row| {
             Ok(json!({
@@ -1220,6 +1265,63 @@ pub fn list_resumable_runs(
         })?;
         let summaries: Vec<Value> = rows.collect::<Result<_, _>>()?;
         Ok(json!(summaries))
+    })
+}
+
+/// Proves exact Review resumability for one already-discovered Run without a
+/// bounded-list lookup. Unknown or cross-scope Run coordinates are contract
+/// errors; `resumable: false` only describes the matching durable Run.
+pub fn is_run_resumable_for_review(
+    db: &Database,
+    payload: IsRunResumableForReviewPayload,
+) -> anyhow::Result<IsRunResumableForReviewResult> {
+    for (field, value) in [
+        ("runId", payload.run_id.as_str()),
+        ("projectId", payload.project_id.as_str()),
+        ("surfacePathId", payload.surface_path_id.as_str()),
+    ] {
+        anyhow::ensure!(
+            !value.trim().is_empty() && value.trim() == value,
+            "NEX_REVIEW_RESUME_QUERY_INVALID: {field} must be non-empty and unpadded"
+        );
+    }
+
+    db.with_conn(|conn| {
+        let owner = conn
+            .query_row(
+                "SELECT project_id, surface_path_id
+                   FROM narrative_extraction_runs
+                  WHERE id = ?1",
+                [&payload.run_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((owner_project_id, owner_surface_path_id)) = owner else {
+            anyhow::bail!(
+                "NEX_REVIEW_RESUME_RUN_NOT_FOUND: exact narrative extraction Run does not exist"
+            );
+        };
+        anyhow::ensure!(
+            owner_project_id == payload.project_id
+                && owner_surface_path_id == payload.surface_path_id,
+            "NEX_REVIEW_RESUME_RUN_SCOPE_MISMATCH: exact Run scope mismatch"
+        );
+
+        let sql = format!(
+            "SELECT CASE WHEN {REVIEW_RESUMABLE_RUN_PREDICATE_SQL}
+                         THEN 1 ELSE 0 END
+               FROM narrative_extraction_runs r
+              WHERE r.id = ?1"
+        );
+        let resumable = conn.query_row(&sql, [&payload.run_id], |row| {
+            row.get::<_, i64>(0).map(|value| value == 1)
+        })?;
+        Ok(IsRunResumableForReviewResult {
+            run_id: payload.run_id,
+            project_id: payload.project_id,
+            surface_path_id: payload.surface_path_id,
+            resumable,
+        })
     })
 }
 
@@ -1564,12 +1666,13 @@ fn validate_chronicle_resume_task_lifecycle(
     Ok(())
 }
 
-fn load_verified_chronicle_snapshot_payload(
+pub(crate) fn load_verified_chronicle_snapshot_payload(
     conn: &Connection,
     run_id: &str,
 ) -> anyhow::Result<Value> {
     let mut statement = conn.prepare(
-        "SELECT artifact.payload_json
+        "SELECT artifact.payload_storage, artifact.payload_json,
+                artifact.payload_ref, artifact.payload_digest
            FROM narrative_extraction_tasks task
            JOIN narrative_extraction_attempts attempt
              ON attempt.task_id = task.id
@@ -1585,22 +1688,156 @@ fn load_verified_chronicle_snapshot_payload(
             AND task.status = 'completed'",
     )?;
     let payloads = statement
-        .query_map(params![run_id], |row| row.get::<_, Option<String>>(0))?
+        .query_map(params![run_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     anyhow::ensure!(
         payloads.len() == 1,
         "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: completed source.snapshot@1 requires exactly one current payload"
     );
-    let payload = payloads.into_iter().next().flatten().ok_or_else(|| {
+    let (storage, payload, payload_ref, payload_digest) = payloads
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("unreachable checked Snapshot payload row"))?;
+    anyhow::ensure!(
+        storage == "inline-json" && payload_ref.is_none(),
+        "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: source.snapshot@1 is not an inline-json artifact"
+    );
+    let payload = payload.ok_or_else(|| {
         anyhow::anyhow!(
             "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: source.snapshot@1 has no inline payload"
         )
     })?;
-    serde_json::from_str(&payload).map_err(|error| {
+    let payload: Value = serde_json::from_str(&payload).map_err(|error| {
         anyhow::anyhow!(
             "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: source.snapshot@1 payload is malformed: {error}"
         )
-    })
+    })?;
+    anyhow::ensure!(
+        payload_digest.as_deref() == Some(canonical_json_digest(&payload)?.as_str()),
+        "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: source.snapshot@1 payloadDigest is not Native canonical JSON"
+    );
+    Ok(payload)
+}
+
+/// Load the exact Snapshot authority used by current Chronicle Apply. This is
+/// stricter than merely parsing the artifact: it rechecks the Run seal, the
+/// Task/Attempt output CAS, the canonical artifact digest, and every internal
+/// document/snapshot digest before commit compilation may consume it.
+pub(crate) fn load_verified_chronicle_snapshot_for_apply(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<Value> {
+    let (snapshot_digest, catalog_digest, scope_json): (Option<String>, Option<String>, String) =
+        conn.query_row(
+            "SELECT snapshot_digest, catalog_digest, scope_json
+               FROM narrative_extraction_runs
+              WHERE id = ?1 AND project_id = ?2",
+            params![run_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+    let snapshot_digest = snapshot_digest.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: current Chronicle Run has no snapshotDigest"
+        )
+    })?;
+    let catalog_digest = catalog_digest.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_CATALOG_MISSING: current Chronicle Run has no catalogDigest"
+        )
+    })?;
+    let scope_json: Value = serde_json::from_str(&scope_json).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: current Chronicle Run scope is malformed: {error}"
+        )
+    })?;
+    let mut owner_statement = conn.prepare(
+        "SELECT task.id, attempt.id, task.output_json, attempt.output_json,
+                (SELECT COUNT(*)
+                   FROM narrative_extraction_attempts current_attempt
+                  WHERE current_attempt.task_id = task.id
+                    AND current_attempt.attempt_number = task.attempt_count)
+           FROM narrative_extraction_tasks task
+           JOIN narrative_extraction_attempts attempt
+             ON attempt.task_id = task.id
+            AND attempt.attempt_number = task.attempt_count
+            AND attempt.status = 'completed'
+          WHERE task.run_id = ?1
+            AND task.task_kind = 'source.snapshot@1'
+            AND task.status = 'completed'",
+    )?;
+    let owners = owner_statement
+        .query_map(params![run_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        owners.len() == 1,
+        "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: current Chronicle Apply requires exactly one completed Snapshot Task/current Attempt"
+    );
+    let (task_id, attempt_id, task_output_json, attempt_output_json, current_attempt_rows) = owners
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("unreachable checked Snapshot owner"))?;
+    anyhow::ensure!(
+        current_attempt_rows == 1,
+        "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: Snapshot Task current Attempt number is ambiguous"
+    );
+    let owned_artifact_count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+           FROM narrative_extraction_artifacts
+          WHERE run_id = ?1 AND task_id = ?2 AND attempt_id = ?3
+            AND artifact_kind = 'source.snapshot@1'",
+        params![run_id, task_id, attempt_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        owned_artifact_count == 1,
+        "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT: current Snapshot Task/Attempt does not own exactly one source.snapshot@1 artifact"
+    );
+    let task_output: Value = serde_json::from_str(&task_output_json).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: snapshot Task output is malformed: {error}"
+        )
+    })?;
+    let attempt_output: Value = serde_json::from_str(&attempt_output_json).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: snapshot Attempt output is malformed: {error}"
+        )
+    })?;
+    anyhow::ensure!(
+        task_output == attempt_output,
+        "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: snapshot Task and current Attempt outputs differ"
+    );
+    let payload = load_verified_chronicle_snapshot_payload(conn, run_id)?;
+    let snapshot_inputs = validate_chronicle_resume_snapshot_inputs(
+        &payload,
+        project_id,
+        run_id,
+        &snapshot_digest,
+        &catalog_digest,
+        &scope_json,
+    )?;
+    validate_chronicle_resume_snapshot_output(
+        &task_output,
+        run_id,
+        &snapshot_digest,
+        &snapshot_inputs,
+    )?;
+    Ok(payload)
 }
 
 fn validate_chronicle_resume_snapshot_inputs(
@@ -2864,6 +3101,115 @@ fn load_chronicle_plan_artifact_payload(
     Ok((artifact_value, expected_digest))
 }
 
+/// Reconstruct the immutable ProposalKey -> match metadata roster sealed by
+/// the current Chronicle plan Task. Commit validation uses this instead of a
+/// renderer-supplied duplicate choice, so a probable duplicate cannot be
+/// promoted by appending a bare `approved` Decision through a lower-level API.
+pub(crate) fn load_current_chronicle_proposal_matches(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    proposal_set_id: &str,
+) -> anyhow::Result<HashMap<String, Value>> {
+    let mut coordinate_statement = conn.prepare(
+        "SELECT task_id, attempt_id
+           FROM narrative_extraction_artifacts
+          WHERE run_id = ?1 AND artifact_kind = ?2
+          ORDER BY created_at ASC, id ASC",
+    )?;
+    let coordinates = coordinate_statement
+        .query_map(params![run_id, CHRONICLE_PLAN_ARTIFACT_KIND], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        coordinates.len() == 1,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: current Chronicle Apply requires exactly one durable proposal-plan artifact"
+    );
+    let (task_id, attempt_id) = coordinates
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("unreachable checked proposal-plan coordinate"))?;
+    let task_id = task_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan artifact has no Task owner"
+        )
+    })?;
+    let attempt_id = attempt_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan artifact has no Attempt owner"
+        )
+    })?;
+    let validated_set_id = validate_chronicle_plan_proposal_set_binding_for_resume(
+        conn,
+        project_id,
+        run_id,
+        &task_id,
+        &attempt_id,
+    )?;
+    anyhow::ensure!(
+        validated_set_id == proposal_set_id,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Native terminal plan binding does not own the Commit ProposalSet"
+    );
+    let (artifact, _) = load_chronicle_plan_artifact_payload(conn, run_id, &task_id, &attempt_id)?;
+    anyhow::ensure!(
+        artifact.get("proposalSetId").and_then(Value::as_str) == Some(proposal_set_id),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan artifact does not bind the Commit ProposalSet"
+    );
+    let proposals = artifact
+        .get("proposals")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan artifact has no proposal roster"
+            )
+        })?;
+    let planned = artifact
+        .get("planned")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: current Chronicle proposal-plan artifact has no planned match roster"
+            )
+        })?;
+    anyhow::ensure!(
+        planned.len() == proposals.len(),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: planned match roster differs from proposal roster"
+    );
+
+    let mut matches = HashMap::with_capacity(planned.len());
+    for (index, (planned_row, proposal)) in planned.iter().zip(proposals.iter()).enumerate() {
+        let planned_proposal = planned_row.get("proposal").ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: planned entry {index} has no proposal"
+            )
+        })?;
+        anyhow::ensure!(
+            canonical_json_digest(planned_proposal)? == canonical_json_digest(proposal)?,
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: planned entry {index} proposal differs from the sealed proposal roster"
+        );
+        let event_id = proposal.get("eventId").and_then(Value::as_str).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan entry {index} has no eventId"
+            )
+        })?;
+        let proposal_key = format!("{event_id}:{index}");
+        let match_value = planned_row.get("match").cloned().ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: planned entry {index} has no match metadata"
+            )
+        })?;
+        anyhow::ensure!(
+            matches.insert(proposal_key, match_value).is_none(),
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: planned match roster has a duplicate proposalKey"
+        );
+    }
+    Ok(matches)
+}
+
 fn load_chronicle_plan_proposal_manifest(
     conn: &Connection,
     project_id: &str,
@@ -3089,6 +3435,18 @@ fn validate_chronicle_plan_proposal_set_binding_for_resume(
     task_id: &str,
     attempt_id: &str,
 ) -> anyhow::Result<String> {
+    struct PlanOwnerState {
+        summary_json: String,
+        output_json: Option<String>,
+        status: String,
+        task_kind: String,
+        attempt_count: i64,
+        attempt_output_json: Option<String>,
+        attempt_status: Option<String>,
+        attempt_number: Option<i64>,
+        current_attempt_rows: i64,
+    }
+
     let proposal_set_id = chronicle_plan_proposal_set_id(run_id, task_id);
     let proposal_set_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM narrative_proposal_sets WHERE run_id = ?1 AND project_id = ?2",
@@ -3099,19 +3457,48 @@ fn validate_chronicle_plan_proposal_set_binding_for_resume(
         proposal_set_count == 1,
         "NEX_CHRONICLE_PLAN_PROPOSAL_SET_AMBIGUOUS: Chronicle Run must have exactly one ProposalSet"
     );
-    let (summary_json, output_json, status): (String, Option<String>, String) = conn.query_row(
-        "SELECT s.summary_json, t.output_json, t.status
+    let owner = conn.query_row(
+        "SELECT s.summary_json, t.output_json, t.status, t.task_kind,
+                t.attempt_count, a.output_json, a.status, a.attempt_number,
+                (SELECT COUNT(*)
+                   FROM narrative_extraction_attempts current_attempt
+                  WHERE current_attempt.task_id = t.id
+                    AND current_attempt.attempt_number = t.attempt_count)
            FROM narrative_proposal_sets s
            JOIN narrative_extraction_tasks t ON t.id = ?1 AND t.run_id = ?2
+           LEFT JOIN narrative_extraction_attempts a
+             ON a.id = ?5 AND a.task_id = t.id
           WHERE s.id = ?3 AND s.run_id = ?2 AND s.project_id = ?4",
-        params![task_id, run_id, proposal_set_id, project_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        params![task_id, run_id, proposal_set_id, project_id, attempt_id],
+        |row| {
+            Ok(PlanOwnerState {
+                summary_json: row.get(0)?,
+                output_json: row.get(1)?,
+                status: row.get(2)?,
+                task_kind: row.get(3)?,
+                attempt_count: row.get(4)?,
+                attempt_output_json: row.get(5)?,
+                attempt_status: row.get(6)?,
+                attempt_number: row.get(7)?,
+                current_attempt_rows: row.get(8)?,
+            })
+        },
     )?;
     anyhow::ensure!(
-        status == "completed",
-        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: ProposalSet owner Task is not completed"
+        owner.task_kind == CHRONICLE_PLAN_TASK_KIND
+            && owner.status == "completed"
+            && owner.attempt_count > 0
+            && owner.current_attempt_rows == 1
+            && owner.attempt_status.as_deref() == Some("completed")
+            && owner.attempt_number == Some(owner.attempt_count),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: ProposalSet owner is not the exact completed current plan Task/Attempt"
     );
-    let output: Value = output_json
+    anyhow::ensure!(
+        owner.attempt_output_json.as_deref() == owner.output_json.as_deref(),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: owner Task/current Attempt outputs differ"
+    );
+    let output: Value = owner
+        .output_json
         .as_deref()
         .map(serde_json::from_str)
         .transpose()?
@@ -3124,7 +3511,7 @@ fn validate_chronicle_plan_proposal_set_binding_for_resume(
         output.get("proposalSetId").and_then(Value::as_str) == Some(proposal_set_id.as_str()),
         "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: owner Task output does not bind ProposalSet"
     );
-    let mut summary: Value = serde_json::from_str(&summary_json)?;
+    let mut summary: Value = serde_json::from_str(&owner.summary_json)?;
     let binding = summary
         .as_object_mut()
         .and_then(|object| object.remove(CHRONICLE_PLAN_BINDING_FIELD))
@@ -4301,6 +4688,7 @@ pub(crate) fn ensure_v2_proposal_evidence_binding(
     expected_documents.sort();
     material_ids.sort();
     material_documents.sort();
+    material_documents.dedup();
     anyhow::ensure!(
         expected_ids.windows(2).all(|window| window[0] != window[1])
             && expected_documents.windows(2).all(|window| window[0] != window[1])
@@ -4423,6 +4811,7 @@ fn append_revision_on_conn(
     payload: &AppendRevisionPayload,
 ) -> anyhow::Result<Value> {
     ensure_proposal_not_applied(conn, &payload.proposal_id)?;
+    ensure_current_chronicle_proposal_set_unconsumed(conn, &payload.proposal_id)?;
     let payload_json = serde_json::to_string(&payload.payload_json)?;
     let revision_id = Uuid::new_v4().to_string();
     let created_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
@@ -4667,10 +5056,20 @@ fn append_decision_on_conn(
     actor: &TrustedDecisionActor,
 ) -> anyhow::Result<Value> {
     ensure_proposal_not_applied(conn, &payload.proposal_id)?;
+    let proposal_status = map_decision_to_status(&payload.decision)?;
+    if proposal_status != "rejected" {
+        ensure_current_chronicle_proposal_set_unconsumed(conn, &payload.proposal_id)?;
+    }
     let decision_value = payload
         .decision_json
         .clone()
         .unwrap_or_else(default_object_json);
+    validate_current_chronicle_decision_against_plan(
+        conn,
+        payload,
+        proposal_status,
+        &decision_value,
+    )?;
     let decision_json = serde_json::to_string(&decision_value)?;
     let decision_id = Uuid::new_v4().to_string();
     let created_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
@@ -4678,8 +5077,6 @@ fn append_decision_on_conn(
         .created_by
         .clone()
         .unwrap_or_else(|| "user".to_string());
-    let proposal_status = map_decision_to_status(&payload.decision)?;
-
     ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
 
     let (revision_owner, current_revision_id): (Option<String>, Option<String>) = conn
@@ -4759,6 +5156,81 @@ fn append_decision_on_conn(
         "decision": payload.decision,
         "status": proposal_status,
     }))
+}
+
+/// A fully rejected ProposalSet never enters Commit Prepare, so probable
+/// duplicate semantics must be enforced at the Decision writer itself. This
+/// runs before both Decision INSERT and Proposal status UPDATE and is limited
+/// to the exact current Chronicle v2 contract.
+fn validate_current_chronicle_decision_against_plan(
+    conn: &Connection,
+    payload: &AppendDecisionPayload,
+    proposal_status: &str,
+    decision_value: &Value,
+) -> anyhow::Result<()> {
+    let context: Option<(String, String, String, String)> = conn
+        .query_row(
+            "SELECT proposal_set.project_id, proposal_set.run_id,
+                    proposal_set.id, proposal.proposal_key
+               FROM narrative_proposals proposal
+               JOIN narrative_proposal_sets proposal_set
+                 ON proposal_set.id = proposal.proposal_set_id
+              WHERE proposal.id = ?1",
+            params![payload.proposal_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((project_id, run_id, proposal_set_id, proposal_key)) = context else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        project_id == payload.project_id && run_id == payload.run_id,
+        "proposal revision mismatch for run/project"
+    );
+    if !current_chronicle_run_spec_for_run(conn, &project_id, &run_id)? {
+        return Ok(());
+    }
+    let match_value = load_current_chronicle_proposal_matches(
+        conn,
+        &project_id,
+        &run_id,
+        &proposal_set_id,
+    )?
+    .remove(&proposal_key)
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: current Proposal has no sealed match metadata"
+        )
+    })?;
+    let match_status = match_value
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: sealed match has no status"
+            )
+        })?;
+    anyhow::ensure!(
+        matches!(match_status, "none" | "probable-duplicate"),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: unsupported sealed match status '{match_status}'"
+    );
+    if match_status != "probable-duplicate" || proposal_status == "deferred" {
+        return Ok(());
+    }
+    let expected_choice = match proposal_status {
+        "approved" => "create-as-new",
+        "rejected" => "skip-as-same",
+        "held" => "hold",
+        _ => return Ok(()),
+    };
+    anyhow::ensure!(
+        decision_value
+            .get("probableDuplicateChoice")
+            .and_then(Value::as_str)
+            == Some(expected_choice),
+        "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: probable-duplicate Decision '{proposal_status}' requires decisionJson.probableDuplicateChoice='{expected_choice}'"
+    );
+    Ok(())
 }
 
 /// Atomically append a revision then a decision that references the new revision.
@@ -5287,6 +5759,34 @@ mod unit_tests {
         SetNarrativeRuntimePolicyInput,
     };
     use serde_json::json;
+
+    #[test]
+    fn v2_evidence_binding_accepts_multiple_anchors_on_one_document() {
+        let envelope = json!({
+            "effectiveMaterialBasis": {
+                "evidenceSet": [
+                    { "evidenceRef": "anchor:two", "documentRef": "D000001" },
+                    { "evidenceRef": "anchor:one", "documentRef": "D000001" },
+                ],
+            },
+        });
+        let proposal = json!({
+            "evidenceAnchorIds": ["anchor:one", "anchor:two"],
+            "evidenceDocumentRefs": ["D000001"],
+        });
+        ensure_v2_proposal_evidence_binding(&envelope, &proposal)
+            .expect("two anchors may bind the same unique evidence document");
+
+        let malformed_duplicate_documents = json!({
+            "evidenceAnchorIds": ["anchor:one", "anchor:two"],
+            "evidenceDocumentRefs": ["D000001", "D000001"],
+        });
+        let error = ensure_v2_proposal_evidence_binding(&envelope, &malformed_duplicate_documents)
+            .expect_err("Proposal evidenceDocumentRefs itself remains unique");
+        assert!(error
+            .to_string()
+            .contains("NEX_ENVELOPE_PROVENANCE_MISMATCH"));
+    }
 
     fn test_db() -> Database {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
@@ -6135,22 +6635,20 @@ mod unit_tests {
     ) -> (String, String, String) {
         create_current_chronicle_run(db, run_id);
         let (task_id, attempt_id) = claim_current_plan(db, run_id);
+        let proposal = valid_chronicle_proposal("event:catalog-guard", "Catalog guard proposal");
         finish_task(
             db,
             current_plan_finish_payload(
                 run_id,
                 &task_id,
                 &attempt_id,
-                vec![valid_chronicle_proposal(
-                    "event:catalog-guard",
-                    "Catalog guard proposal",
-                )],
-                None,
+                vec![proposal.clone()],
+                Some(vec![proposal]),
             ),
         )
         .expect("terminalize current Chronicle ProposalSet");
         let proposal_set_id = chronicle_plan_proposal_set_id(run_id, &task_id);
-        let (proposal_id, revision_id) = db
+        let (proposal_id, revision_id): (String, String) = db
             .with_conn(|conn| {
                 conn.query_row(
                     "SELECT id, current_revision_id
@@ -6162,6 +6660,19 @@ mod unit_tests {
                 .map_err(Into::into)
             })
             .expect("read terminal current Proposal/Revision");
+        append_decision(
+            db,
+            AppendDecisionPayload {
+                run_id: run_id.to_string(),
+                project_id: "project-1".to_string(),
+                proposal_id: proposal_id.clone(),
+                revision_id: revision_id.clone(),
+                decision: "approved".to_string(),
+                decision_json: None,
+                created_by: Some("catalog-guard-test".to_string()),
+            },
+        )
+        .expect("approve current Chronicle catalog-guard Proposal");
         (proposal_set_id, proposal_id, revision_id)
     }
 
@@ -7759,9 +8270,12 @@ mod unit_tests {
             .expect("read pre-Prepare DML state");
         let error = super::super::commit::narrative_extraction_prepare_commit(&db, prepare)
             .expect_err("stale match-existing catalog must block Prepare");
-        assert!(error
-            .to_string()
-            .contains("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT"));
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT"),
+            "unexpected Prepare rejection: {error:#}"
+        );
         let after: (i64, i64, i64) = db
             .with_conn(|conn| {
                 Ok((
@@ -7862,9 +8376,12 @@ mod unit_tests {
             },
         )
         .expect_err("catalog drift between Prepare and Apply must fail closed");
-        assert!(error
-            .to_string()
-            .contains("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT"));
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT"),
+            "unexpected Apply rejection: {error:#}"
+        );
         let after: (i64, i64, i64, String) = db
             .with_conn(|conn| {
                 Ok((

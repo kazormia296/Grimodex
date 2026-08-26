@@ -29,10 +29,12 @@ import {
 } from "@/application/narrative-extraction/commitCoordinator";
 import {
   captureNarrativeExtractionWorkspaceBinding,
+  narrativeExtractionIsRunResumableForReview,
   type ChronicleBlockedDiscardExpectation,
   type ChronicleTaskResumeCandidate,
   type GetRunReviewBundleResult,
   type ReviewBundleProposal,
+  type ReviewBundleProposalApplication,
 } from "@/application/narrative-extraction/nativeApi";
 import {
   isCurrentMutationAuthority,
@@ -53,6 +55,7 @@ import {
   buildProposalSafetyFlags,
   emptyTaskCounts,
   isSafeForBulkApprove,
+  selectChronicleProposalsForAtomicApply,
   useChronicleExtractionStore,
   type ChronicleExtractionCoverage,
   type ChronicleExtractionRecoveryScope,
@@ -255,6 +258,7 @@ function buildReviewProposalFromPlanned(args: {
   readonly snapshot: NarrativeCorpusSnapshot | null;
   readonly titleBySceneId: ReadonlyMap<string, string>;
   readonly probableDuplicateChoice?: ProbableDuplicateChoice | null;
+  readonly application?: ReviewBundleProposalApplication | null;
 }): ChronicleReviewProposal {
   // Match/safety is computed against the immutable plan-time payload. A
   // human-derived revision may change title/disclosure after the sealed Event
@@ -305,6 +309,7 @@ function buildReviewProposalFromPlanned(args: {
     // after that edit must survive cold hydration even though its match proof
     // remains conservatively non-bulk-safe.
     probableDuplicateChoice: args.probableDuplicateChoice ?? null,
+    application: args.application ?? null,
     blockedReason: fragmented
       ? "断片 Evidence のため適用不可（確認のみ）"
       : undefined,
@@ -320,7 +325,23 @@ type SavedReviewSeed = {
   readonly reconciliationEnvelopeSchemaVersion?: 1 | 2 | null;
   readonly payload?: CreateChronicleEventProposalPayloadV1;
   readonly probableDuplicateChoice?: ProbableDuplicateChoice | null;
+  readonly application?: ReviewBundleProposalApplication | null;
 };
+
+function cloneReviewApplication(
+  application: ReviewBundleProposalApplication | null | undefined,
+): ReviewBundleProposalApplication | null {
+  if (!application) return null;
+  return {
+    commitId: application.commitId,
+    revisionId: application.revisionId,
+    appliedEntityKind: application.appliedEntityKind,
+    appliedEntityId: application.appliedEntityId,
+    createdAt: application.createdAt,
+    applicationKind: application.applicationKind,
+    compensatesApplicationId: application.compensatesApplicationId,
+  };
+}
 
 function probableDuplicateChoiceFromDecisionJson(
   decisionJson: Readonly<Record<string, unknown>> | null | undefined,
@@ -349,6 +370,7 @@ function savedSeedsFromBundle(
           proposal.reconciliationEnvelopeSchemaVersion,
         status: proposal.status,
         payload,
+        application: cloneReviewApplication(proposal.application),
         probableDuplicateChoice:
           proposal.latestDecision?.revisionId === proposal.currentRevisionId
             ? probableDuplicateChoiceFromDecisionJson(
@@ -373,6 +395,7 @@ function savedSeedsFromCoordinator(
       proposal.reconciliationEnvelopeSchemaVersion,
     payload: proposal.payload,
     probableDuplicateChoice: proposal.probableDuplicateChoice,
+    application: null,
   }));
 }
 
@@ -430,6 +453,7 @@ export function buildChronicleExtractionReviewProjection(args: {
         snapshot: args.snapshot ?? null,
         titleBySceneId,
         probableDuplicateChoice: seed.probableDuplicateChoice ?? null,
+        application: seed.application ?? null,
       });
     },
   );
@@ -457,6 +481,7 @@ export function buildChronicleExtractionReviewProjection(args: {
         evidenceMethods: ["exact"],
       }),
       probableDuplicateChoice: null,
+      application: null,
     });
   }
 
@@ -1386,15 +1411,7 @@ export async function applyChronicleExtractionCommit(input: {
     throw new Error("Missing snapshot artifact for chronicle commit");
   }
 
-  const approved = input.proposals.filter(
-    (proposal) =>
-      proposal.applicability === "applicable" &&
-      proposal.status === "approved" &&
-      proposal.payload &&
-      proposal.revisionId &&
-      (proposal.match.status !== "probable-duplicate" ||
-        proposal.probableDuplicateChoice === "create-as-new"),
-  );
+  const approved = selectChronicleProposalsForAtomicApply(input.proposals);
 
   if (approved.length === 0) return 0;
 
@@ -1557,6 +1574,11 @@ export async function decideChronicleProposal(args: {
   if (!proposal?.revisionId) {
     throw new Error(`Proposal ${args.proposalId} missing revisionId`);
   }
+  if (proposal.application !== null) {
+    throw new Error(
+      "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH: applied Chronicle proposal is immutable",
+    );
+  }
   if (args.status === "unreviewed") {
     useChronicleExtractionStore
       .getState()
@@ -1608,6 +1630,129 @@ export async function decideChronicleProbableDuplicate(args: {
     .setProbableDuplicateChoice(args.proposalId, args.choice);
 }
 
+export interface AbandonChroniclePartialReviewRequest {
+  readonly runId: string;
+  readonly projectId: string;
+}
+
+export interface AbandonChroniclePartialReviewResult {
+  readonly runId: string;
+  readonly terminalizedProposalCount: number;
+}
+
+/**
+ * Terminalize the unapplied remainder of a historical partial Chronicle
+ * review, then prove that Native no longer advertises the exact Run for review
+ * restore. The facade owns the exclusive Apply/review mutation lease.
+ */
+export async function abandonChroniclePartialReview(
+  args: AbandonChroniclePartialReviewRequest,
+): Promise<AbandonChroniclePartialReviewResult> {
+  const initialState = useChronicleExtractionStore.getState();
+  if (
+    !initialState.applyMutationInFlight ||
+    initialState.reviewMutationCount !== 0
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_PARTIAL_REVIEW_LEASE_REQUIRED: exclusive review settlement lease is required",
+    );
+  }
+  const projection = initialState.projection;
+  if (
+    !projection ||
+    projection.runId !== args.runId ||
+    projection.projectId !== args.projectId
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_PARTIAL_REVIEW_STATE_CHANGED: active review does not match the requested Run",
+    );
+  }
+
+  const applicable = projection.proposals.filter(
+    (proposal) => proposal.applicability === "applicable",
+  );
+  const hasPriorApplication = applicable.some(
+    (proposal) => proposal.application !== null,
+  );
+  const unapplied = applicable.filter(
+    (proposal) => proposal.application === null,
+  );
+  if (!hasPriorApplication || unapplied.length === 0) {
+    throw new Error(
+      "NEX_CHRONICLE_PARTIAL_REVIEW_NOT_APPLICABLE: review is not a historical partial Apply",
+    );
+  }
+  for (const proposal of unapplied) {
+    if (
+      proposal.revisionId === null ||
+      proposal.revisionId.length === 0 ||
+      proposal.revisionId.trim() !== proposal.revisionId
+    ) {
+      throw new Error(
+        `NEX_CHRONICLE_PARTIAL_REVIEW_REVISION_REQUIRED: proposal ${proposal.proposalId} has no exact current revision`,
+      );
+    }
+  }
+
+  let terminalizedProposalCount = 0;
+  for (const proposal of unapplied) {
+    if (proposal.match.status === "probable-duplicate") {
+      if (
+        proposal.status === "rejected" &&
+        proposal.probableDuplicateChoice === "skip-as-same"
+      ) {
+        continue;
+      }
+      await decideChronicleProbableDuplicate({
+        proposalId: proposal.proposalId,
+        choice: "skip-as-same",
+      });
+      terminalizedProposalCount += 1;
+      continue;
+    }
+    if (proposal.status === "rejected") continue;
+    await decideChronicleProposal({
+      proposalId: proposal.proposalId,
+      status: "rejected",
+      decisionJson: { reason: "historical-partial-review-abandoned" },
+    });
+    terminalizedProposalCount += 1;
+  }
+
+  const resumability = await narrativeExtractionIsRunResumableForReview({
+    runId: args.runId,
+    projectId: args.projectId,
+    surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
+  });
+  if (
+    resumability.runId !== args.runId ||
+    resumability.projectId !== args.projectId ||
+    resumability.surfacePathId !== CHRONICLE_EXTRACT_SURFACE_PATH ||
+    typeof resumability.resumable !== "boolean"
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_PARTIAL_REVIEW_RESUMABILITY_MISMATCH: Native returned an invalid exact Run result",
+    );
+  }
+  if (resumability.resumable) {
+    throw new Error(
+      "NEX_CHRONICLE_PARTIAL_REVIEW_STILL_RESUMABLE: Native still advertises the abandoned Run",
+    );
+  }
+
+  const settledState = useChronicleExtractionStore.getState();
+  if (
+    settledState.projection?.runId !== args.runId ||
+    settledState.projection.projectId !== args.projectId
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_PARTIAL_REVIEW_STATE_CHANGED: active review changed before settlement completed",
+    );
+  }
+  settledState.clearProjection();
+  return { runId: args.runId, terminalizedProposalCount };
+}
+
 /**
  * Persist field edits as a Native revision, then update the local projection.
  */
@@ -1629,6 +1774,11 @@ export async function reviseChronicleProposal(args: {
   );
   if (!current?.payload || !current.revisionId) {
     throw new Error(`Proposal ${args.proposalId} missing payload/revision`);
+  }
+  if (current.application !== null) {
+    throw new Error(
+      "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH: applied Chronicle proposal is immutable",
+    );
   }
   const nextPayload: CreateChronicleEventProposalPayloadV1 = {
     ...current.payload,
@@ -1688,6 +1838,7 @@ export async function bulkApproveSafeChronicleProposals(): Promise<number> {
   for (const proposal of projection.proposals) {
     if (
       proposal.applicability !== "applicable" ||
+      proposal.application !== null ||
       proposal.status !== "unreviewed" ||
       !isSafeForBulkApprove(proposal.safety) ||
       !proposal.revisionId
