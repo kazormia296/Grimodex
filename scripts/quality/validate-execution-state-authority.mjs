@@ -278,13 +278,18 @@ function validateExecutionStateEntities(executionState, errors) {
   }
 }
 
-function validateRunSupersedeCascade(executionState, failurePolicy, errors) {
+function validateRunCascade(
+  executionState,
+  failurePolicy,
+  cascadeName,
+  errors,
+) {
   if (!isObject(executionState) || !isObject(failurePolicy)) return;
   const taskStatuses = new Set(executionState.entities?.task?.statuses ?? []);
   const attemptStatuses = new Set(
     executionState.entities?.attempt?.statuses ?? [],
   );
-  const cascade = executionState.runSupersedeCascade;
+  const cascade = executionState[cascadeName];
   if (!isObject(cascade)) return;
 
   const taskCascade = cascade.task;
@@ -292,13 +297,13 @@ function validateRunSupersedeCascade(executionState, failurePolicy, errors) {
     for (const status of taskCascade.fromStatuses ?? []) {
       if (!taskStatuses.has(status)) {
         errors.push(
-          `runSupersedeCascade.task.fromStatuses references unknown task status: ${status}`,
+          `${cascadeName}.task.fromStatuses references unknown task status: ${status}`,
         );
       }
     }
     if (!taskStatuses.has(taskCascade.toStatus)) {
       errors.push(
-        `runSupersedeCascade.task.toStatus is not a known task status: ${taskCascade.toStatus}`,
+        `${cascadeName}.task.toStatus is not a known task status: ${taskCascade.toStatus}`,
       );
     }
   }
@@ -308,13 +313,13 @@ function validateRunSupersedeCascade(executionState, failurePolicy, errors) {
     for (const status of attemptCascade.fromStatuses ?? []) {
       if (!attemptStatuses.has(status)) {
         errors.push(
-          `runSupersedeCascade.attempt.fromStatuses references unknown attempt status: ${status}`,
+          `${cascadeName}.attempt.fromStatuses references unknown attempt status: ${status}`,
         );
       }
     }
     if (!attemptStatuses.has(attemptCascade.toStatus)) {
       errors.push(
-        `runSupersedeCascade.attempt.toStatus is not a known attempt status: ${attemptCascade.toStatus}`,
+        `${cascadeName}.attempt.toStatus is not a known attempt status: ${attemptCascade.toStatus}`,
       );
     }
     const policies = Array.isArray(failurePolicy.policies)
@@ -325,11 +330,11 @@ function validateRunSupersedeCascade(executionState, failurePolicy, errors) {
     );
     if (!policy) {
       errors.push(
-        `runSupersedeCascade.attempt.failureCode is not registered in narrative-failure-policy.json: ${attemptCascade.failureCode}`,
+        `${cascadeName}.attempt.failureCode is not registered in narrative-failure-policy.json: ${attemptCascade.failureCode}`,
       );
     } else if (policy.retryDisposition !== attemptCascade.retryDisposition) {
       errors.push(
-        `runSupersedeCascade.attempt.retryDisposition (${attemptCascade.retryDisposition}) disagrees with the registered failure policy for ${attemptCascade.failureCode} (${policy.retryDisposition})`,
+        `${cascadeName}.attempt.retryDisposition (${attemptCascade.retryDisposition}) disagrees with the registered failure policy for ${attemptCascade.failureCode} (${policy.retryDisposition})`,
       );
     }
   }
@@ -750,7 +755,13 @@ export function validateExecutionStateAuthority({ repoRoot = REPO_ROOT } = {}) {
   );
 
   validateExecutionStateEntities(executionState, errors);
-  validateRunSupersedeCascade(executionState, failurePolicy, errors);
+  validateRunCascade(
+    executionState,
+    failurePolicy,
+    "runSupersedeCascade",
+    errors,
+  );
+  validateRunCascade(executionState, failurePolicy, "runCancelCascade", errors);
   validateFailurePolicy(failurePolicy, errors);
   validateFindingRuleRegistry(findingContract, errors);
   validateAttentionApplicationConditions(attentionContract, errors);

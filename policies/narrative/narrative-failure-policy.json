@@ -84,6 +84,14 @@
       "policyVersion": "v1"
     },
     {
+      "failureCode": "NEX_RUN_CANCELLED",
+      "retryDisposition": "terminal",
+      "maxAttempts": 0,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
       "failureCode": "NEX_ATTENTION_VERSION_CONFLICT",
       "retryDisposition": "manual",
       "maxAttempts": 0,

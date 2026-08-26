@@ -2,7 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://grimodex.dev/schema/narrative/narrative-execution-state-v1.json",
   "type": "object",
-  "required": ["schemaVersion", "contract", "entities", "runSupersedeCascade", "crossEntityInvariant"],
+  "required": [
+    "schemaVersion",
+    "contract",
+    "entities",
+    "runSupersedeCascade",
+    "runCancelCascade",
+    "crossEntityInvariant"
+  ],
   "properties": {
     "schemaVersion": { "const": 1 },
     "contract": { "const": "narrative-execution-state" },
@@ -16,7 +23,13 @@
       },
       "additionalProperties": false
     },
-    "runSupersedeCascade": {
+    "runSupersedeCascade": { "$ref": "#/$defs/runCascade" },
+    "runCancelCascade": { "$ref": "#/$defs/runCascade" },
+    "crossEntityInvariant": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "runCascade": {
       "type": "object",
       "required": ["task", "attempt"],
       "properties": {
@@ -24,29 +37,40 @@
           "type": "object",
           "required": ["fromStatuses", "toStatus"],
           "properties": {
-            "fromStatuses": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "fromStatuses": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string" }
+            },
             "toStatus": { "type": "string", "minLength": 1 }
           },
           "additionalProperties": false
         },
         "attempt": {
           "type": "object",
-          "required": ["fromStatuses", "toStatus", "failureCode", "retryDisposition"],
+          "required": [
+            "fromStatuses",
+            "toStatus",
+            "failureCode",
+            "retryDisposition"
+          ],
           "properties": {
-            "fromStatuses": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "fromStatuses": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string" }
+            },
             "toStatus": { "type": "string", "minLength": 1 },
             "failureCode": { "type": "string", "pattern": "^NEX_[A-Z0-9_]+$" },
-            "retryDisposition": { "enum": ["retryable", "terminal", "superseded", "manual"] }
+            "retryDisposition": {
+              "enum": ["retryable", "terminal", "superseded", "manual"]
+            }
           },
           "additionalProperties": false
         }
       },
       "additionalProperties": false
     },
-    "crossEntityInvariant": { "type": "string", "minLength": 1 }
-  },
-  "additionalProperties": false,
-  "$defs": {
     "entityState": {
       "type": "object",
       "required": ["statuses", "terminalStatuses", "derivedView"],

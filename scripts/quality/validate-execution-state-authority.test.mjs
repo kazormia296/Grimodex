@@ -95,6 +95,15 @@ function baseExecutionState(overrides = {}) {
         retryDisposition: "superseded",
       },
     },
+    runCancelCascade: {
+      task: { fromStatuses: ["queued", "running"], toStatus: "cancelled" },
+      attempt: {
+        fromStatuses: ["running"],
+        toStatus: "failed",
+        failureCode: "NEX_RUN_CANCELLED",
+        retryDisposition: "terminal",
+      },
+    },
     crossEntityInvariant: "each entity owns its own vocabulary",
     ...overrides,
   };
@@ -113,6 +122,14 @@ function baseFailurePolicy(overrides = {}) {
       {
         failureCode: "NEX_RUN_SUPERSEDED",
         retryDisposition: "superseded",
+        maxAttempts: 0,
+        backoffPolicy: "none",
+        nextAttemptPolicy: "none",
+        policyVersion: "v1",
+      },
+      {
+        failureCode: "NEX_RUN_CANCELLED",
+        retryDisposition: "terminal",
         maxAttempts: 0,
         backoffPolicy: "none",
         nextAttemptPolicy: "none",
@@ -620,6 +637,42 @@ describe("validate-execution-state-authority", () => {
       result.errors.some((error) =>
         error.includes(
           "runSupersedeCascade.attempt.failureCode is not registered",
+        ),
+      ),
+    );
+  });
+
+  it("rejects a cancel cascade with an unregistered code or policy mismatch", () => {
+    const unregisteredExecutionState = baseExecutionState();
+    unregisteredExecutionState.runCancelCascade.attempt.failureCode =
+      "NEX_UNKNOWN_CANCEL_CODE";
+    const unregisteredRoot = writeFixtureRoot({
+      executionState: unregisteredExecutionState,
+    });
+    const unregisteredResult = validateExecutionStateAuthority({
+      repoRoot: unregisteredRoot,
+    });
+    assert.ok(
+      unregisteredResult.errors.some((error) =>
+        error.includes(
+          "runCancelCascade.attempt.failureCode is not registered",
+        ),
+      ),
+    );
+
+    const mismatchExecutionState = baseExecutionState();
+    mismatchExecutionState.runCancelCascade.attempt.retryDisposition =
+      "superseded";
+    const mismatchRoot = writeFixtureRoot({
+      executionState: mismatchExecutionState,
+    });
+    const mismatchResult = validateExecutionStateAuthority({
+      repoRoot: mismatchRoot,
+    });
+    assert.ok(
+      mismatchResult.errors.some((error) =>
+        error.includes(
+          "runCancelCascade.attempt.retryDisposition (superseded) disagrees",
         ),
       ),
     );

@@ -59,6 +59,9 @@ use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
 
 const CHRONICLE_EXTRACT_SURFACE_PATH: &str = "chronicle.extract";
+const RUN_CANCELLED_ATTEMPT_ERROR_MESSAGE: &str = "NEX_RUN_CANCELLED: Run cancelled";
+const RUN_CANCELLED_ATTEMPT_FAILURE_CODE: &str = "NEX_RUN_CANCELLED";
+const RUN_CANCELLED_ATTEMPT_POLICY_VERSION: &str = "v1";
 const CHRONICLE_RUN_SPEC_KIND: &str = "chronicle.extract.run-spec@2";
 const CHRONICLE_EXISTING_EVENTS_CATALOG_KIND: &str = "chronicle.existing-events-catalog@1";
 const CHRONICLE_EXTRACT_TASK_CHAIN: [&str; 9] = [
@@ -2411,6 +2414,34 @@ pub fn cancel_run_with_expectation(
                   WHERE run_id = ?1
                     AND status IN ('queued', 'running')",
                 params![run_id, lifecycle_at],
+            )?;
+
+            // Attempts do not own a `cancelled` status. Preserve every
+            // already-terminal Attempt, but close all running executions for
+            // this Run with the canonical non-retryable cancellation policy.
+            // This includes older Attempts left running by lease reclaim.
+            conn.execute(
+                "UPDATE narrative_extraction_attempts
+                    SET status = 'failed',
+                        completed_at = ?2,
+                        error_message = ?3,
+                        failure_code = ?4,
+                        retry_disposition = 'terminal',
+                        policy_version = ?5,
+                        next_attempt_at = NULL
+                  WHERE status = 'running'
+                    AND task_id IN (
+                      SELECT id
+                        FROM narrative_extraction_tasks
+                       WHERE run_id = ?1
+                    )",
+                params![
+                    run_id,
+                    lifecycle_at,
+                    RUN_CANCELLED_ATTEMPT_ERROR_MESSAGE,
+                    RUN_CANCELLED_ATTEMPT_FAILURE_CODE,
+                    RUN_CANCELLED_ATTEMPT_POLICY_VERSION,
+                ],
             )?;
 
             Ok(json!({ "runId": run_id, "status": "cancelled" }))
@@ -6732,6 +6763,94 @@ mod unit_tests {
         )
         .expect("same typed expectation may cancel once the Run is blocked again");
         assert_eq!(cancelled["status"], "cancelled");
+
+        db.with_conn(|conn| {
+            let (run_status, run_completed_at): (String, Option<String>) = conn.query_row(
+                "SELECT status, completed_at
+                   FROM narrative_extraction_runs
+                  WHERE id = 'resume-snapshot-discard-race'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(run_status, "cancelled");
+            let lifecycle_at = run_completed_at.expect("cancelled Run lifecycle timestamp");
+
+            let (task_status, task_completed_at): (String, Option<String>) = conn.query_row(
+                "SELECT status, completed_at
+                   FROM narrative_extraction_tasks
+                  WHERE run_id = 'resume-snapshot-discard-race'
+                    AND task_kind = 'source.snapshot@1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(task_status, "cancelled");
+            assert_eq!(task_completed_at.as_deref(), Some(lifecycle_at.as_str()));
+
+            let mut statement = conn.prepare(
+                "SELECT attempt_number, status, completed_at, error_message,
+                        failure_code, retry_disposition, policy_version, next_attempt_at
+                   FROM narrative_extraction_attempts
+                  WHERE task_id IN (
+                    SELECT id
+                      FROM narrative_extraction_tasks
+                     WHERE run_id = 'resume-snapshot-discard-race'
+                  )
+                  ORDER BY attempt_number ASC",
+            )?;
+            let attempts = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(attempts.len(), 2, "both reclaimed Attempts remain durable");
+            for (
+                attempt_number,
+                status,
+                completed_at,
+                error_message,
+                failure_code,
+                retry_disposition,
+                policy_version,
+                next_attempt_at,
+            ) in attempts
+            {
+                assert_eq!(status, "failed", "Attempt {attempt_number} is terminal");
+                assert_eq!(completed_at.as_deref(), Some(lifecycle_at.as_str()));
+                assert_eq!(
+                    error_message.as_deref(),
+                    Some("NEX_RUN_CANCELLED: Run cancelled")
+                );
+                assert_eq!(failure_code.as_deref(), Some("NEX_RUN_CANCELLED"));
+                assert_eq!(retry_disposition.as_deref(), Some("terminal"));
+                assert_eq!(policy_version.as_deref(), Some("v1"));
+                assert_eq!(next_attempt_at, None);
+            }
+
+            let running_attempts: i64 = conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_extraction_attempts
+                  WHERE status = 'running'
+                    AND task_id IN (
+                      SELECT id
+                        FROM narrative_extraction_tasks
+                       WHERE run_id = 'resume-snapshot-discard-race'
+                    )",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(running_attempts, 0);
+            Ok(())
+        })
+        .expect("cancelled Run has a coherent terminal execution ledger");
     }
 
     #[test]

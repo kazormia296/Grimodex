@@ -68,6 +68,75 @@ fn set_task_lease_expires_at(db: &Database, task_id: &str, lease_expires_at: &st
     .expect("set lease_expires_at");
 }
 
+fn cancellation_ledger_state(db: &Database, run_id: &str) -> Value {
+    db.with_conn(|conn| {
+        let run = conn.query_row(
+            "SELECT status, completed_at, version
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            [run_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?;
+        let tasks = conn
+            .prepare(
+                "SELECT id, status, lease_owner, lease_expires_at, heartbeat_at,
+                        completed_at, version
+                   FROM narrative_extraction_tasks
+                  WHERE run_id = ?1
+                  ORDER BY id ASC",
+            )?
+            .query_map([run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let attempts = conn
+            .prepare(
+                "SELECT attempt.id, attempt.status, attempt.completed_at,
+                        attempt.error_message, attempt.failure_code,
+                        attempt.retry_disposition, attempt.policy_version,
+                        attempt.next_attempt_at, attempt.output_json
+                   FROM narrative_extraction_attempts attempt
+                   JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+                  WHERE task.run_id = ?1
+                  ORDER BY attempt.id ASC",
+            )?
+            .query_map([run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(json!({
+            "run": run,
+            "tasks": tasks,
+            "attempts": attempts,
+        }))
+    })
+    .expect("load cancellation ledger state")
+}
+
 fn test_db() -> Database {
     let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
     db.with_conn(|conn| {
@@ -739,7 +808,7 @@ fn finish_task_rejects_after_lease_expiry() {
 
 #[test]
 fn cancel_run_marks_active_tasks_cancelled() {
-    let db = test_db();
+    let db = migrated_db();
     narrative_extraction::narrative_extraction_create_run(
         &db,
         CreateRunPayload {
@@ -753,15 +822,60 @@ fn cancel_run_marks_active_tasks_cancelled() {
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
-            tasks: vec![CreateTaskSeed {
-                task_id: Some("task-cancel-1".to_string()),
-                task_kind: "plan_windows".to_string(),
-                input_json: None,
-                priority: None,
-            }],
+            tasks: vec![
+                CreateTaskSeed {
+                    task_id: Some("task-cancel-1".to_string()),
+                    task_kind: "plan_windows".to_string(),
+                    input_json: None,
+                    priority: None,
+                },
+                CreateTaskSeed {
+                    task_id: Some("task-cancel-terminal".to_string()),
+                    task_kind: "already_completed".to_string(),
+                    input_json: None,
+                    priority: None,
+                },
+            ],
         },
     )
     .expect("create run");
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_tasks
+                SET status = 'completed', attempt_count = 1,
+                    started_at = '2026-08-25T00:00:00.000Z',
+                    completed_at = '2026-08-25T00:00:01.000Z'
+              WHERE id = 'task-cancel-terminal'",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_attempts
+                (id, task_id, attempt_number, status, started_at, completed_at, output_json)
+             VALUES ('attempt-cancel-terminal', 'task-cancel-terminal', 1, 'completed',
+                     '2026-08-25T00:00:00.000Z', '2026-08-25T00:00:01.000Z',
+                     '{\"preserved\":true}')",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("seed already-terminal Task and Attempt");
+
+    let claimed = narrative_extraction::narrative_extraction_claim_task(
+        &db,
+        ClaimTaskPayload {
+            run_id: "run-integration-3".to_string(),
+            project_id: "project-1".to_string(),
+            lease_owner: "cancel-worker".to_string(),
+            lease_duration_secs: Some(300),
+            task_kinds: None,
+        },
+    )
+    .expect("claim task before generic cancellation");
+    let attempt_id = claimed["task"]["attemptId"]
+        .as_str()
+        .expect("claimed Attempt id")
+        .to_string();
 
     let cancelled = narrative_extraction::narrative_extraction_cancel_run(
         &db,
@@ -783,6 +897,151 @@ fn cancel_run_marks_active_tasks_cancelled() {
     .expect("get cancelled run");
     assert_eq!(loaded["run"]["status"], "cancelled");
     assert_eq!(loaded["taskCounts"]["cancelled"], 1);
+    assert_eq!(loaded["taskCounts"]["completed"], 1);
+
+    let terminal_ledger = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT run.completed_at, task.completed_at, attempt.status,
+                        attempt.completed_at, attempt.error_message,
+                        attempt.failure_code, attempt.retry_disposition,
+                        attempt.policy_version, attempt.next_attempt_at
+                   FROM narrative_extraction_runs run
+                   JOIN narrative_extraction_tasks task ON task.run_id = run.id
+                   JOIN narrative_extraction_attempts attempt ON attempt.task_id = task.id
+                  WHERE run.id = 'run-integration-3'
+                    AND attempt.id = ?1",
+                [&attempt_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                    ))
+                },
+            )
+            .map_err(Into::into)
+        })
+        .expect("load generic cancellation terminal ledger");
+    let lifecycle_at = terminal_ledger
+        .0
+        .as_deref()
+        .expect("cancelled Run lifecycle timestamp");
+    assert_eq!(terminal_ledger.1.as_deref(), Some(lifecycle_at));
+    assert_eq!(terminal_ledger.2, "failed");
+    assert_eq!(terminal_ledger.3.as_deref(), Some(lifecycle_at));
+    assert_eq!(
+        terminal_ledger.4.as_deref(),
+        Some("NEX_RUN_CANCELLED: Run cancelled")
+    );
+    assert_eq!(terminal_ledger.5.as_deref(), Some("NEX_RUN_CANCELLED"));
+    assert_eq!(terminal_ledger.6.as_deref(), Some("terminal"));
+    assert_eq!(terminal_ledger.7.as_deref(), Some("v1"));
+    assert_eq!(terminal_ledger.8, None);
+
+    let preserved_terminal: (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT status, completed_at, failure_code, retry_disposition, output_json
+                   FROM narrative_extraction_attempts
+                  WHERE id = 'attempt-cancel-terminal'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .map_err(Into::into)
+        })
+        .expect("load preserved terminal Attempt");
+    assert_eq!(preserved_terminal.0, "completed");
+    assert_eq!(
+        preserved_terminal.1.as_deref(),
+        Some("2026-08-25T00:00:01.000Z")
+    );
+    assert_eq!(preserved_terminal.2, None);
+    assert_eq!(preserved_terminal.3, None);
+    assert_eq!(
+        preserved_terminal.4.as_deref(),
+        Some("{\"preserved\":true}")
+    );
+
+    let before_duplicate = cancellation_ledger_state(&db, "run-integration-3");
+    let duplicate_error = narrative_extraction::narrative_extraction_cancel_run(
+        &db,
+        RunRefPayload {
+            run_id: "run-integration-3".to_string(),
+            project_id: "project-1".to_string(),
+            chronicle_blocked_discard: None,
+        },
+    )
+    .expect_err("duplicate cancellation remains fail closed");
+    assert!(duplicate_error
+        .to_string()
+        .contains("run is not cancellable"));
+    assert_eq!(
+        cancellation_ledger_state(&db, "run-integration-3"),
+        before_duplicate
+    );
+}
+
+#[test]
+fn cancel_run_rolls_back_run_and_task_when_attempt_terminalization_fails() {
+    let db = migrated_db();
+    create_run_with_task(&db, "run-cancel-rollback", "task-cancel-rollback");
+    let claimed = claim_with_owner(&db, "run-cancel-rollback", "cancel-worker", 300);
+    assert_eq!(claimed["claimed"], true);
+    let before = cancellation_ledger_state(&db, "run-cancel-rollback");
+
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "CREATE TRIGGER reject_run_cancelled_attempt
+             BEFORE UPDATE ON narrative_extraction_attempts
+             WHEN OLD.status = 'running'
+              AND NEW.status = 'failed'
+              AND NEW.failure_code = 'NEX_RUN_CANCELLED'
+             BEGIN
+               SELECT RAISE(ABORT, 'injected cancellation terminalization failure');
+             END;",
+        )?;
+        Ok(())
+    })
+    .expect("install cancellation failure trigger");
+
+    let error = narrative_extraction::narrative_extraction_cancel_run(
+        &db,
+        RunRefPayload {
+            run_id: "run-cancel-rollback".to_string(),
+            project_id: "project-1".to_string(),
+            chronicle_blocked_discard: None,
+        },
+    )
+    .expect_err("Attempt terminalization failure rolls back the transaction");
+    assert!(error
+        .to_string()
+        .contains("injected cancellation terminalization failure"));
+    assert_eq!(
+        cancellation_ledger_state(&db, "run-cancel-rollback"),
+        before,
+        "Run, Task, Attempt, and lease evidence remain unchanged after rollback"
+    );
 }
 
 #[test]
