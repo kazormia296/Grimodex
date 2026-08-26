@@ -283,6 +283,17 @@ export async function discoverChronicleTaskResumeCandidates(
   return mod.discoverChronicleTaskResumeCandidates(...args);
 }
 
+export async function discardChronicleTaskResumeCandidate(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").discardChronicleTaskResumeCandidate
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").discardChronicleTaskResumeCandidate
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.discardChronicleTaskResumeCandidate(...args);
+}
+
 export async function resumeChronicleExtraction(
   ...args: Parameters<
     typeof import("./chronicleExtractionApi").resumeChronicleExtraction

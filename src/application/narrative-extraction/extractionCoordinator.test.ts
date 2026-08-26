@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MutationAuthority } from "@/features/concurrency/mutationAuthority";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { buildNarrativeCorpusSnapshot } from "@/features/narrative-extraction/source/buildSnapshot";
 import { digestStableJson } from "@/features/narrative-extraction/source/digest";
-import { resetNarrativeArtifactIndexForTests } from "./artifactRepository";
+import {
+  buildInlineJsonArtifact,
+  resetNarrativeArtifactIndexForTests,
+} from "./artifactRepository";
 import { resetNarrativeExtractionRunIndexForTests } from "./runRepository";
 
 const claimMock = vi.hoisted(() => vi.fn());
@@ -15,8 +19,10 @@ const getRunReviewBundleMock = vi.hoisted(() => vi.fn());
 const buildProposalSetPayloadMock = vi.hoisted(() => vi.fn());
 const buildSnapshotSourceBasisMock = vi.hoisted(() => vi.fn());
 const buildProductionV2EnvelopesMock = vi.hoisted(() => vi.fn());
+const captureWorkspaceBindingMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./nativeApi", () => ({
+  captureNarrativeExtractionWorkspaceBinding: captureWorkspaceBindingMock,
   narrativeExtractionClaimTask: claimMock,
   narrativeExtractionFinishTask: finishMock,
   narrativeExtractionFailTask: failMock,
@@ -66,6 +72,11 @@ import {
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
 
 const TEST_STAGE_DIGEST = `sha256:${"a".repeat(64)}` as const;
+const TEST_WORKSPACE_BINDING = {
+  authorityId: "workspace:a",
+  generation: 1,
+  authorityInstanceId: "1",
+} as const;
 
 function prose(text: string): string {
   return JSON.stringify({
@@ -79,12 +90,22 @@ function prose(text: string): string {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function authority(): MutationAuthority {
   return {
     projectId: "project-a",
     currentProjectId: () => "project-a",
-    workspacePath: null,
-    workspaceOpenRevision: null,
+    workspacePath: "/workspace/a",
+    workspaceOpenRevision: 1,
   };
 }
 
@@ -181,9 +202,11 @@ const CATALOG_EVENT: ExistingChronicleEventCatalogRecord = {
 
 describe("runChronicleExtractionCoordinator (fake path)", () => {
   beforeEach(() => {
+    setCurrentWorkspaceIdentity({ path: "/workspace/a", openRevision: 1 });
     resetNarrativeArtifactIndexForTests();
     resetNarrativeExtractionRunIndexForTests();
     vi.clearAllMocks();
+    captureWorkspaceBindingMock.mockResolvedValue(TEST_WORKSPACE_BINDING);
 
     let taskSeq = 0;
     createRunMock.mockImplementation(async (payload: { runId?: string }) => ({
@@ -285,6 +308,8 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
           stageExecutionReceiptDigest: `sha256:${"a".repeat(64)}`,
         },
       ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
     });
   });
 
@@ -368,6 +393,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
         projectId: "project-a",
       }),
+      TEST_WORKSPACE_BINDING,
     );
     expect(claimMock).toHaveBeenCalled();
     expect(finishMock).toHaveBeenCalled();
@@ -403,6 +429,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
           }),
         }),
       }),
+      TEST_WORKSPACE_BINDING,
     );
     const finishPayloads = finishMock.mock.calls.map(
       ([payload]) => payload as Record<string, unknown>,
@@ -610,8 +637,8 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     }>("run-ai-observe", CHRONICLE_EXTRACT_ARTIFACT_KINDS.observations, {
       scope: {
         projectId: "project-a",
-        workspacePath: null,
-        workspaceOpenRevision: null,
+        workspacePath: "/workspace/a",
+        workspaceOpenRevision: 1,
       },
     });
     expect(observationPayload?.observations).toHaveLength(2);
@@ -1317,6 +1344,8 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
           },
         },
       ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
     });
 
     const resumed = await runChronicleExtractionCoordinator(
@@ -1495,8 +1524,8 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         {
           scope: {
             projectId: "project-a",
-            workspacePath: null,
-            workspaceOpenRevision: null,
+            workspacePath: "/workspace/a",
+            workspaceOpenRevision: 1,
           },
         },
       ),
@@ -1729,8 +1758,8 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
           expect(input.authority).toEqual({
             projectId: "project-a",
             currentProjectId: originalCurrentProjectId,
-            workspacePath: null,
-            workspaceOpenRevision: null,
+            workspacePath: "/workspace/a",
+            workspaceOpenRevision: 1,
           });
           throw new Error("stop after authority capture");
         },
@@ -1744,6 +1773,350 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     mutableAuthority.currentProjectId = () => "project-b";
 
     await expect(extraction).rejects.toThrow("stop after authority capture");
+  });
+
+  it("does not create a Run in Workspace B when the Snapshot digest resumes after an A-to-B switch", async () => {
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-authority-race",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "Authority race",
+          orderIndex: 0,
+          proseMirrorJson: prose("宿舎が砲撃で崩れ落ちた。"),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 1,
+            sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
+    });
+    if (!built.ok) throw new Error("snapshot fixture failed");
+
+    const digestStarted = deferred<void>();
+    const releaseDigest = deferred<void>();
+    let activeNativeBinding: import("./nativeApi").NarrativeExtractionWorkspaceBinding =
+      TEST_WORKSPACE_BINDING;
+    const workspaceB = { runs: 0, tasks: 0, artifacts: 0 };
+    createRunMock.mockImplementation(
+      async (
+        payload: { tasks?: readonly unknown[] },
+        binding: import("./nativeApi").NarrativeExtractionWorkspaceBinding,
+      ) => {
+        if (
+          binding.authorityInstanceId !==
+          activeNativeBinding.authorityInstanceId
+        ) {
+          throw new Error(
+            "NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED: stale binding",
+          );
+        }
+        workspaceB.runs += 1;
+        workspaceB.tasks += payload.tasks?.length ?? 0;
+        return { runId: "must-not-exist-in-b", status: "running", taskIds: [] };
+      },
+    );
+    finishMock.mockImplementation(
+      async (payload: { artifacts?: readonly unknown[] }) => {
+        workspaceB.artifacts += Array.isArray(payload.artifacts)
+          ? payload.artifacts.length
+          : 0;
+        return { status: "completed" };
+      },
+    );
+
+    const extraction = runChronicleExtractionCoordinator(
+      {
+        projectId: "project-a",
+        folderId: "folder-1",
+        language: "ja",
+        sceneIds: ["scene-one"],
+        authority: authority(),
+        runId: "run-authority-race",
+      },
+      {
+        useAi: false,
+        buildSnapshot: async () => ({
+          ok: true as const,
+          snapshot: built.snapshot,
+          scopeAuthorityDocuments: [],
+          flush: { status: "already-clean" as const, blockedDocuments: [] },
+        }),
+        digestSnapshotPayload: async (payload) => {
+          digestStarted.resolve();
+          await releaseDigest.promise;
+          return digestStableJson(payload);
+        },
+      },
+    );
+
+    await digestStarted.promise;
+    setCurrentWorkspaceIdentity({ path: "/workspace/b", openRevision: 2 });
+    activeNativeBinding = {
+      authorityId: "workspace:b",
+      generation: 1,
+      authorityInstanceId: "2",
+    };
+    releaseDigest.resolve();
+
+    await expect(extraction).rejects.toThrow(
+      "NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED",
+    );
+    expect(workspaceB).toEqual({ runs: 0, tasks: 0, artifacts: 0 });
+    expect(claimMock).not.toHaveBeenCalled();
+    expect(finishMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a same-path replacement that completes while Native binding capture is pending", async () => {
+    const captureStarted = deferred<void>();
+    const binding =
+      deferred<import("./nativeApi").NarrativeExtractionWorkspaceBinding>();
+    captureWorkspaceBindingMock.mockImplementation(async () => {
+      captureStarted.resolve();
+      return binding.promise;
+    });
+    const buildSnapshot = vi.fn();
+
+    const extraction = runChronicleExtractionCoordinator(
+      {
+        projectId: "project-a",
+        folderId: "folder-1",
+        language: "ja",
+        sceneIds: ["scene-one"],
+        authority: authority(),
+      },
+      { buildSnapshot },
+    );
+    await captureStarted.promise;
+    setCurrentWorkspaceIdentity({ path: "/workspace/a", openRevision: 2 });
+    binding.resolve({
+      authorityId: "workspace:a",
+      generation: 2,
+      authorityInstanceId: "2",
+    });
+
+    await expect(extraction).rejects.toThrow(
+      "NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED",
+    );
+    expect(buildSnapshot).not.toHaveBeenCalled();
+    expect(createRunMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a resumed Task finish when Workspace replacement occurs after claim", async () => {
+    const runId = "run-resume-authority-race";
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-resume-authority-race",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "Resume authority race",
+          orderIndex: 0,
+          proseMirrorJson: prose("宿舎が砲撃で崩れ落ちた。"),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 1,
+            sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
+    });
+    if (!built.ok) throw new Error("snapshot fixture failed");
+    const resumeSpec = await sealedResumeSpec("deterministic-fallback");
+    const snapshotPayload = {
+      snapshot: built.snapshot,
+      sourceViews: [],
+      existingEventsCatalog: {
+        kind: "chronicle.existing-events-catalog@1" as const,
+        events: [],
+      },
+      scopeAuthorityDocuments: [
+        {
+          documentRef: built.snapshot.documents[0]!.ref,
+          sourceKey: "project:scene:one" as const,
+          rawStoryKey: null,
+        },
+      ],
+    };
+    const snapshotDraft = buildInlineJsonArtifact(
+      CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+      snapshotPayload,
+      "artifact-resume-authority-race",
+    );
+    const taskKinds = [...TEST_CHRONICLE_TASK_CHAIN];
+    getRunMock.mockResolvedValue({
+      run: {
+        runId,
+        projectId: "project-a",
+        surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-1", sceneIds: ["scene-one"] },
+        specJson: resumeSpec.specJson,
+        specDigest: resumeSpec.specDigest,
+        snapshotDigest: built.snapshot.digest,
+        catalogDigest: resumeSpec.catalogDigest,
+        registryDigest: null,
+        status: "running",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "2026-08-10T00:00:00.000Z",
+        startedAt: "2026-08-10T00:00:00.000Z",
+        completedAt: null,
+        version: 1,
+      },
+      tasks: taskKinds.map((taskKind, index) => ({
+        taskId: `resume-authority-task-${index + 1}`,
+        runId,
+        taskKind,
+        status: index === 0 ? "completed" : "queued",
+        inputJson: { stage: index + 1 },
+        outputJson:
+          index === 0
+            ? {
+                snapshotDigest: built.snapshot.digest,
+                documentCount: built.snapshot.documents.length,
+                corpusPayloadDigest: TEST_STAGE_DIGEST,
+                scopeAuthorityCompositeDigest: null,
+              }
+            : null,
+        priority: taskKinds.length - index,
+        attemptCount: index === 0 ? 1 : 0,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        errorMessage: null,
+        createdAt: "2026-08-10T00:00:00.000Z",
+        startedAt: index === 0 ? "2026-08-10T00:00:00.000Z" : null,
+        completedAt: index === 0 ? "2026-08-10T00:00:00.000Z" : null,
+        version: 1,
+      })),
+      taskCounts: {
+        queued: 8,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+    getRunReviewBundleMock.mockResolvedValue({
+      runId,
+      projectId: "project-a",
+      artifacts: [
+        {
+          artifactId: snapshotDraft.artifactId,
+          runId,
+          taskId: "resume-authority-task-1",
+          attemptId: "resume-authority-attempt-1",
+          artifactKind: snapshotDraft.artifactKind,
+          payloadStorage: "inline-json",
+          payloadJson: snapshotDraft.payloadJson,
+          payloadRef: null,
+          payloadDigest: null,
+          createdAt: "2026-08-10T00:00:00.000Z",
+        },
+      ],
+      stageReceipts: [],
+      proposalSet: null,
+      proposals: [],
+    });
+    claimMock.mockResolvedValue({
+      claimed: true,
+      task: {
+        taskId: "resume-authority-task-2",
+        runId,
+        taskKind: CHRONICLE_EXTRACT_TASK_KINDS.windowPlan,
+        status: "running",
+        inputJson: { stage: 2 },
+        attemptId: "resume-authority-attempt-2",
+        attemptNumber: 1,
+        leaseOwner: "test",
+        leaseExpiresAt: "2099-01-01T00:00:00.000Z",
+      },
+    });
+    let activeBinding: import("./nativeApi").NarrativeExtractionWorkspaceBinding =
+      TEST_WORKSPACE_BINDING;
+    const workspaceB = { taskFinishes: 0, taskFailures: 0, artifacts: 0 };
+    finishMock.mockImplementation(
+      async (
+        payload: { artifacts?: readonly unknown[] },
+        binding: import("./nativeApi").NarrativeExtractionWorkspaceBinding,
+      ) => {
+        // Claim was committed in A. Replacement happens while the completed
+        // output is crossing the finish boundary.
+        setCurrentWorkspaceIdentity({ path: "/workspace/b", openRevision: 2 });
+        activeBinding = {
+          authorityId: "workspace:b",
+          generation: 1,
+          authorityInstanceId: "2",
+        };
+        if (binding.authorityInstanceId !== activeBinding.authorityInstanceId) {
+          throw new Error(
+            "NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED: stale finish binding",
+          );
+        }
+        workspaceB.taskFinishes += 1;
+        workspaceB.artifacts += payload.artifacts?.length ?? 0;
+        return { status: "completed" };
+      },
+    );
+    failMock.mockImplementation(
+      async (
+        _payload: unknown,
+        binding: import("./nativeApi").NarrativeExtractionWorkspaceBinding,
+      ) => {
+        if (binding.authorityInstanceId !== activeBinding.authorityInstanceId) {
+          throw new Error(
+            "NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED: stale fail binding",
+          );
+        }
+        workspaceB.taskFailures += 1;
+        return { status: "failed" };
+      },
+    );
+
+    await expect(
+      runChronicleExtractionCoordinator(
+        {
+          projectId: "project-a",
+          folderId: "folder-1",
+          language: "ja",
+          sceneIds: ["scene-one"],
+          authority: authority(),
+          runId,
+          resume: true,
+          specDigest: TEST_COORDINATOR_CONTRACT_DIGEST,
+          existingEvents: [],
+        },
+        { useAi: false },
+      ),
+    ).rejects.toThrow("NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED");
+    expect(claimMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId,
+        taskKinds: [CHRONICLE_EXTRACT_TASK_KINDS.windowPlan],
+      }),
+      TEST_WORKSPACE_BINDING,
+    );
+    expect(workspaceB).toEqual({
+      taskFinishes: 0,
+      taskFailures: 0,
+      artifacts: 0,
+    });
   });
 
   it("calls fail_task when a claimed task throws", async () => {
@@ -1810,6 +2183,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         errorMessage: "model unavailable",
         requeue: false,
       }),
+      TEST_WORKSPACE_BINDING,
     );
   });
 
@@ -1894,6 +2268,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
           "NEX_CHRONICLE_SYNTHESIS_TERMINAL_OUTPUT_REQUIRED",
         ),
       }),
+      TEST_WORKSPACE_BINDING,
     );
   });
 

@@ -2298,6 +2298,7 @@ fn generic_task_apis_cannot_take_over_the_system_owned_freshness_lifecycle() {
         RunRefPayload {
             run_id: "system-run".to_string(),
             project_id: PROJECT_ID.to_string(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect_err("generic cancel must be denied");

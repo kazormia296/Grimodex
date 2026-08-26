@@ -13,6 +13,7 @@ import {
   type NarrativeArtifactCacheScope,
 } from "@/application/narrative-extraction/artifactRepository";
 import {
+  cancelRun,
   getRun,
   listChronicleTaskResumeCandidates,
   listResumableRuns,
@@ -26,13 +27,16 @@ import {
   applyChronicleCommit,
   prepareChronicleCommit,
 } from "@/application/narrative-extraction/commitCoordinator";
-import type {
-  ChronicleTaskResumeCandidate,
-  GetRunReviewBundleResult,
-  ReviewBundleProposal,
+import {
+  captureNarrativeExtractionWorkspaceBinding,
+  type ChronicleBlockedDiscardExpectation,
+  type ChronicleTaskResumeCandidate,
+  type GetRunReviewBundleResult,
+  type ReviewBundleProposal,
 } from "@/application/narrative-extraction/nativeApi";
 import {
   isCurrentMutationAuthority,
+  runAuthoritativeMutation,
   type MutationAuthority,
 } from "@/features/concurrency/mutationAuthority";
 import { compileCreateChronicleEventOperation } from "./extraction/compiler";
@@ -69,6 +73,13 @@ export interface ResumeChronicleExtractionRequest {
   readonly openRevision: number;
 }
 
+export interface DiscardChronicleTaskResumeCandidateRequest {
+  readonly candidate: ChronicleTaskResumeCandidate;
+  readonly authority: MutationAuthority;
+  readonly workspacePath: string;
+  readonly openRevision: number;
+}
+
 interface PlannedProposalArtifactRow {
   readonly proposal: CreateChronicleEventProposalPayloadV1;
   readonly match: ChronicleExistingMatch;
@@ -96,6 +107,7 @@ interface SnapshotArtifactPayload {
 
 const proposalSetIdByRunId = new Map<string, string>();
 const resumeInFlight = new Map<string, Promise<{ runId: string }>>();
+const discardInFlight = new Map<string, Promise<{ runId: string }>>();
 
 function artifactCacheScope(input: {
   readonly projectId: string;
@@ -116,6 +128,7 @@ function rememberProposalSetId(runId: string, proposalSetId: string): void {
 export function resetChronicleExtractionApiCachesForTests(): void {
   proposalSetIdByRunId.clear();
   resumeInFlight.clear();
+  discardInFlight.clear();
 }
 
 function resolveProposalSetId(
@@ -655,6 +668,172 @@ export async function discoverChronicleTaskResumeCandidates(
   }
 }
 
+function captureDiscardCandidateRequest(
+  request: DiscardChronicleTaskResumeCandidateRequest,
+): {
+  readonly candidate: ChronicleTaskResumeCandidate;
+  readonly authority: MutationAuthority;
+  readonly scope: ChronicleExtractionRecoveryScope;
+} {
+  const authority: MutationAuthority = {
+    projectId: request.authority.projectId,
+    currentProjectId: request.authority.currentProjectId,
+    workspacePath: request.authority.workspacePath,
+    workspaceOpenRevision: request.authority.workspaceOpenRevision,
+  };
+  const scope: ChronicleExtractionRecoveryScope = {
+    projectId: request.candidate.projectId,
+    workspacePath: request.workspacePath,
+    openRevision: request.openRevision,
+  };
+  const recovery = useChronicleExtractionStore.getState().recovery;
+  const durableCandidate = recoveryScopeMatches(recovery.scope, scope)
+    ? recovery.candidates.find(
+        (candidate) => candidate.runId === request.candidate.runId,
+      )
+    : undefined;
+  if (
+    !durableCandidate ||
+    durableCandidate.projectId !== request.candidate.projectId ||
+    durableCandidate.availability !== "blocked"
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_RESUME_DISCARD_NOT_ALLOWED: exact blocked candidate is not present in the current recovery scope",
+    );
+  }
+  if (
+    authority.projectId !== durableCandidate.projectId ||
+    authority.workspacePath !== request.workspacePath ||
+    authority.workspaceOpenRevision !== request.openRevision ||
+    !isCurrentMutationAuthority(authority)
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_RESUME_AUTHORITY_STALE: workspace or project authority changed before discard",
+    );
+  }
+  return {
+    candidate: cloneResumeCandidate(durableCandidate),
+    authority,
+    scope,
+  };
+}
+
+function blockedDiscardExpectation(
+  candidate: ChronicleTaskResumeCandidate,
+): ChronicleBlockedDiscardExpectation {
+  if (candidate.availability !== "blocked" || candidate.blockedCode === null) {
+    throw new Error(
+      "NEX_CHRONICLE_RESUME_DISCARD_NOT_ALLOWED: candidate is no longer durably blocked",
+    );
+  }
+  return {
+    nextTaskId: candidate.nextTask.taskId,
+    blockedCode: candidate.blockedCode,
+    runSpecDigest: candidate.runSpecDigest,
+    snapshotDigest: candidate.snapshotDigest,
+    catalogDigest: candidate.catalogDigest,
+  };
+}
+
+/**
+ * Explicitly cancel one exact blocked Chronicle Run, then re-read Native
+ * recovery state before fresh extraction is enabled. This is intentionally
+ * limited to durable candidates that cannot be resumed; lease-held and ready
+ * Runs keep their existing recovery actions.
+ */
+export async function discardChronicleTaskResumeCandidate(
+  request: DiscardChronicleTaskResumeCandidateRequest,
+): Promise<{ runId: string }> {
+  const captured = captureDiscardCandidateRequest(request);
+  const inFlightKey = [
+    captured.scope.workspacePath,
+    String(captured.scope.openRevision),
+    captured.candidate.projectId,
+    captured.candidate.runId,
+  ].join("\u0000");
+  const existing = discardInFlight.get(inFlightKey);
+  if (existing) return existing;
+
+  const pending = (async () => {
+    const bindingOutcome = await runAuthoritativeMutation(
+      captured.authority,
+      () =>
+        captureNarrativeExtractionWorkspaceBinding(
+          captured.scope.workspacePath,
+        ),
+    );
+    if (
+      bindingOutcome.status !== "current" ||
+      !bindingOutcome.value ||
+      !isCurrentMutationAuthority(captured.authority)
+    ) {
+      throw new Error(
+        "NEX_CHRONICLE_RESUME_AUTHORITY_STALE: workspace or project authority changed before bound discard",
+      );
+    }
+    const workspaceBinding = bindingOutcome.value;
+    const outcome = await runAuthoritativeMutation(captured.authority, () =>
+      cancelRun(
+        captured.candidate.runId,
+        captured.candidate.projectId,
+        workspaceBinding,
+        blockedDiscardExpectation(captured.candidate),
+      ),
+    );
+    if (outcome.status === "stale") {
+      throw new Error(
+        "NEX_CHRONICLE_RESUME_AUTHORITY_STALE: workspace or project authority changed during bound discard",
+      );
+    }
+    const cancelled = outcome.value;
+    if (
+      cancelled.runId !== captured.candidate.runId ||
+      cancelled.status !== "cancelled"
+    ) {
+      throw new Error(
+        "NEX_CHRONICLE_RESUME_DISCARD_FAILED: Native did not cancel the exact blocked Run",
+      );
+    }
+    if (!isCurrentMutationAuthority(captured.authority)) {
+      throw new Error(
+        "NEX_CHRONICLE_RESUME_AUTHORITY_STALE: workspace or project authority changed during discard",
+      );
+    }
+    const remaining = await discoverChronicleTaskResumeCandidates(
+      captured.scope,
+    );
+    if (
+      remaining.some(
+        (candidate) => candidate.runId === captured.candidate.runId,
+      )
+    ) {
+      useChronicleExtractionStore
+        .getState()
+        .blockRecovery(
+          captured.scope,
+          "NEX_CHRONICLE_RESUME_DISCARD_NOT_DURABLE",
+        );
+      throw new Error(
+        "NEX_CHRONICLE_RESUME_DISCARD_NOT_DURABLE: cancelled Run remained discoverable",
+      );
+    }
+    if (!isCurrentMutationAuthority(captured.authority)) {
+      throw new Error(
+        "NEX_CHRONICLE_RESUME_AUTHORITY_STALE: workspace or project authority changed while confirming discard",
+      );
+    }
+    return { runId: captured.candidate.runId };
+  })();
+  discardInFlight.set(inFlightKey, pending);
+  try {
+    return await pending;
+  } finally {
+    if (discardInFlight.get(inFlightKey) === pending) {
+      discardInFlight.delete(inFlightKey);
+    }
+  }
+}
+
 function isStringArray(value: unknown): value is readonly string[] {
   return (
     Array.isArray(value) && value.every((item) => typeof item === "string")
@@ -724,7 +903,6 @@ function captureResumeRequest(request: ResumeChronicleExtractionRequest): {
   readonly authority: MutationAuthority;
   readonly workspacePath: string;
   readonly openRevision: number;
-  readonly existingEvents: readonly ExistingChronicleEventCatalogRecord[];
 } {
   const candidate = cloneResumeCandidate(request.candidate);
   const authority: MutationAuthority = {
@@ -771,13 +949,87 @@ function captureResumeRequest(request: ResumeChronicleExtractionRequest): {
       "NEX_CHRONICLE_RESUME_AUTHORITY_STALE: workspace or project authority changed before resume",
     );
   }
+  // Reject a malformed caller-supplied candidate up front, but never dispatch
+  // this advisory catalog. Resume re-reads and parses the current Native row.
+  captureCandidateCatalog(candidate);
   return {
     candidate,
     authority,
     workspacePath: request.workspacePath,
     openRevision: request.openRevision,
-    existingEvents: captureCandidateCatalog(candidate),
   };
+}
+
+function sameImmutableResumeCoordinates(
+  sealed: ChronicleTaskResumeCandidate,
+  current: ChronicleTaskResumeCandidate,
+): boolean {
+  return (
+    sealed.runId === current.runId &&
+    sealed.projectId === current.projectId &&
+    sealed.runSpecDigest === current.runSpecDigest &&
+    sealed.snapshotDigest === current.snapshotDigest &&
+    sealed.catalogDigest === current.catalogDigest &&
+    sealed.executionMode === current.executionMode &&
+    sealed.coordinatorContractDigest === current.coordinatorContractDigest &&
+    sealed.language === current.language &&
+    stableJsonStringify(sealed.scopeJson) ===
+      stableJsonStringify(current.scopeJson) &&
+    stableJsonStringify(sealed.specJson) ===
+      stableJsonStringify(current.specJson)
+  );
+}
+
+/**
+ * Re-read Native immediately before coordinator dispatch. Discovery is only
+ * an advisory snapshot; the live Event Catalog or lease state may have
+ * changed while the recovery CTA was visible. Native also repeats the same
+ * Catalog CAS in each claim/finish transaction to close the remaining race.
+ */
+async function revalidateChronicleResumeCandidate(
+  captured: ReturnType<typeof captureResumeRequest>,
+  scope: ChronicleExtractionRecoveryScope,
+): Promise<readonly ExistingChronicleEventCatalogRecord[]> {
+  if (!isCurrentMutationAuthority(captured.authority)) {
+    throw new Error(
+      "NEX_CHRONICLE_RESUME_AUTHORITY_STALE: workspace or project authority changed before resume revalidation",
+    );
+  }
+  const currentCandidates = await listChronicleTaskResumeCandidates({
+    projectId: captured.candidate.projectId,
+    limit: 100,
+  });
+  if (!isCurrentMutationAuthority(captured.authority)) {
+    throw new Error(
+      "NEX_CHRONICLE_RESUME_AUTHORITY_STALE: workspace or project authority changed during resume revalidation",
+    );
+  }
+  const current = currentCandidates.find(
+    (candidate) => candidate.runId === captured.candidate.runId,
+  );
+  if (
+    !current ||
+    !sameImmutableResumeCoordinates(captured.candidate, current)
+  ) {
+    useChronicleExtractionStore
+      .getState()
+      .setRecoveryCandidates(scope, currentCandidates);
+    throw new Error(
+      "NEX_CHRONICLE_RESUME_CANDIDATE_STALE: exact durable Run coordinates changed before resume",
+    );
+  }
+  if (current.availability !== "ready") {
+    useChronicleExtractionStore
+      .getState()
+      .setRecoveryCandidates(scope, currentCandidates);
+    throw new Error(
+      current.blockedCode ??
+        (current.availability === "lease-held"
+          ? "NEX_CHRONICLE_RESUME_LEASE_HELD"
+          : "NEX_CHRONICLE_RESUME_CANDIDATE_BLOCKED"),
+    );
+  }
+  return captureCandidateCatalog(current);
 }
 
 /** Continue one exact durable Chronicle Run. Never creates or falls back. */
@@ -804,6 +1056,10 @@ export async function resumeChronicleExtraction(
     .beginCandidateResume(captured.candidate.runId);
   const pending = (async () => {
     try {
+      const currentExistingEvents = await revalidateChronicleResumeCandidate(
+        captured,
+        scope,
+      );
       const { runChronicleExtractionCoordinator } =
         await import("@/application/narrative-extraction/extractionCoordinator");
       const coordinatorRequest: ChronicleExtractionRequest = {
@@ -815,7 +1071,7 @@ export async function resumeChronicleExtraction(
         runId: captured.candidate.runId,
         resume: true,
         specDigest: captured.candidate.coordinatorContractDigest,
-        existingEvents: captured.existingEvents,
+        existingEvents: currentExistingEvents,
       };
       const result = await runChronicleExtractionCoordinator(
         coordinatorRequest,
@@ -835,12 +1091,38 @@ export async function resumeChronicleExtraction(
         .completeCandidateResume(captured.candidate.runId);
       return projected;
     } catch (error) {
-      useChronicleExtractionStore
-        .getState()
-        .blockRecovery(
-          scope,
-          errorCodeFrom(error, "NEX_CHRONICLE_RESUME_FAILED"),
-        );
+      const errorCode = errorCodeFrom(error, "NEX_CHRONICLE_RESUME_FAILED");
+      const recovery = useChronicleExtractionStore.getState().recovery;
+      const retained = recovery.candidates.find(
+        (candidate) => candidate.runId === captured.candidate.runId,
+      );
+      let refreshedNativeState =
+        errorCode === "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT" &&
+        recoveryScopeMatches(recovery.scope, scope) &&
+        retained?.availability === "blocked";
+      if (
+        errorCode === "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT" &&
+        !refreshedNativeState &&
+        isCurrentMutationAuthority(captured.authority)
+      ) {
+        try {
+          await discoverChronicleTaskResumeCandidates(scope);
+          refreshedNativeState = true;
+        } catch {
+          // Discovery owns its explicit failure state. Preserve the original
+          // claim/finish error code below instead of treating drift as absent.
+        }
+      }
+      const latestRecovery = useChronicleExtractionStore.getState().recovery;
+      const latestCandidate = latestRecovery.candidates.find(
+        (candidate) => candidate.runId === captured.candidate.runId,
+      );
+      if (
+        !refreshedNativeState ||
+        latestCandidate?.availability === "blocked"
+      ) {
+        useChronicleExtractionStore.getState().blockRecovery(scope, errorCode);
+      }
       throw error;
     }
   })();

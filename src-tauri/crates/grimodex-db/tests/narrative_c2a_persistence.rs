@@ -2497,6 +2497,7 @@ fn observation_terminal_receipt_is_durable_before_a_later_synthesis_closure() {
         narrative_extraction::RunRefPayload {
             run_id: run_id.to_owned(),
             project_id: PROJECT_A.to_owned(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect("restart hydration must reconstruct the pre-synthesis Observation receipt");

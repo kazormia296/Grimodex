@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const nativeCreateRunMock = vi.hoisted(() => vi.fn());
+const nativeCaptureWorkspaceBindingMock = vi.hoisted(() => vi.fn());
 const nativeGetRunMock = vi.hoisted(() => vi.fn());
 const nativeCancelRunMock = vi.hoisted(() => vi.fn());
 const nativeClaimTaskMock = vi.hoisted(() => vi.fn());
@@ -23,6 +24,8 @@ vi.mock(
       >();
     return {
       ...actual,
+      captureNarrativeExtractionWorkspaceBinding:
+        nativeCaptureWorkspaceBindingMock,
       narrativeExtractionCreateRun: nativeCreateRunMock,
       narrativeExtractionGetRun: nativeGetRunMock,
       narrativeExtractionCancelRun: nativeCancelRunMock,
@@ -99,6 +102,7 @@ import type {
 } from "@/features/narrative-extraction/runtime/types";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import {
+  discardChronicleTaskResumeCandidate,
   discoverChronicleTaskResumeCandidates,
   resetChronicleExtractionApiCachesForTests,
   resumeChronicleExtraction,
@@ -187,13 +191,16 @@ function authority(): MutationAuthority {
 class StatefulNarrativeNative {
   readonly runs = new Map<string, DurableRunState>();
   createCount = 0;
+  crashBeforeSnapshotFinish = false;
   crashBeforeSynthesis = false;
   private processExited = false;
   private artifactOrdinal = 0;
 
   createRun(payload: CreateRunPayload) {
     this.createCount += 1;
-    const runId = payload.runId ?? RUN_ID;
+    const runId =
+      payload.runId ??
+      (this.createCount === 1 ? RUN_ID : `${RUN_ID}-${this.createCount}`);
     if (this.runs.has(runId)) {
       throw new Error(`duplicate run ${runId}`);
     }
@@ -311,6 +318,14 @@ class StatefulNarrativeNative {
     const state = this.requireRun(payload.runId, payload.projectId);
     const task = this.requireTask(state, payload.taskId);
     const attempt = this.requireAttempt(state, payload.attemptId, task.taskId);
+    if (
+      this.crashBeforeSnapshotFinish &&
+      task.taskKind === CHRONICLE_EXTRACT_TASK_KINDS.snapshot
+    ) {
+      this.crashBeforeSnapshotFinish = false;
+      this.processExited = true;
+      throw new Error("SIMULATED_PROCESS_EXIT_BEFORE_SNAPSHOT_FINISH");
+    }
     task.status = "completed";
     task.outputJson = cloneJson(payload.outputJson ?? {});
     task.leaseOwner = null;
@@ -407,6 +422,9 @@ class StatefulNarrativeNative {
   }
 
   fail(payload: FailTaskPayload) {
+    if (this.processExited) {
+      throw new Error("SIMULATED_PROCESS_ALREADY_GONE");
+    }
     const state = this.requireRun(payload.runId, payload.projectId);
     const task = this.requireTask(state, payload.taskId);
     const attempt = this.requireAttempt(state, payload.attemptId, task.taskId);
@@ -435,6 +453,14 @@ class StatefulNarrativeNative {
       status: "cancelled",
       completedAt: "2026-08-26T00:00:10.000Z",
     };
+    for (const task of state.tasks) {
+      if (task.status === "queued" || task.status === "running") {
+        task.status = "cancelled";
+        task.leaseOwner = null;
+        task.leaseExpiresAt = null;
+        task.completedAt = "2026-08-26T00:00:10.000Z";
+      }
+    }
     return { runId, status: "cancelled" };
   }
 
@@ -474,6 +500,7 @@ class StatefulNarrativeNative {
         readonly executionMode?: ChronicleTaskResumeCandidate["executionMode"];
         readonly coordinatorContractDigest?: string;
       };
+      const snapshotComplete = Boolean(snapshotArtifact);
       if (
         !nextTask ||
         (nextTask.status !== "queued" && nextTask.status !== "running") ||
@@ -484,6 +511,10 @@ class StatefulNarrativeNative {
       ) {
         continue;
       }
+      const leaseHeld =
+        nextTask.status === "running" &&
+        nextTask.leaseExpiresAt !== null &&
+        Date.parse(nextTask.leaseExpiresAt) >= Date.now();
       candidates.push({
         runId: state.run.runId,
         projectId: state.run.projectId,
@@ -506,19 +537,40 @@ class StatefulNarrativeNative {
           status: nextTask.status,
           leaseExpiresAt: nextTask.leaseExpiresAt,
         },
-        availability: nextTask.status === "queued" ? "ready" : "lease-held",
+        availability: leaseHeld
+          ? "lease-held"
+          : !snapshotComplete
+            ? "blocked"
+            : "ready",
         blockedCode:
-          nextTask.status === "queued"
-            ? null
-            : "NEX_CHRONICLE_RESUME_LEASE_HELD",
-        language: snapshotPayload?.snapshot?.language ?? null,
-        existingEventsCatalog:
-          cloneJson(snapshotPayload?.existingEventsCatalog) ?? null,
+          !leaseHeld && !snapshotComplete
+            ? "NEX_CHRONICLE_RESUME_SNAPSHOT_INCOMPLETE"
+            : null,
+        language: snapshotComplete
+          ? (snapshotPayload?.snapshot?.language ?? null)
+          : null,
+        existingEventsCatalog: snapshotComplete
+          ? (cloneJson(snapshotPayload?.existingEventsCatalog) ?? null)
+          : null,
         createdAt: state.run.createdAt,
         startedAt: state.run.startedAt,
       });
     }
     return candidates;
+  }
+
+  restartProcess(): void {
+    this.processExited = false;
+    // Model the first cold-start recovery read after the old renderer/worker
+    // is gone. A running Task keeps its durable status/Attempt, but its old
+    // process lease is no longer live and may be classified for recovery.
+    for (const state of this.runs.values()) {
+      for (const task of state.tasks) {
+        if (task.status === "running") {
+          task.leaseExpiresAt = "2000-01-01T00:00:00.000Z";
+        }
+      }
+    }
   }
 
   private persistArtifact(
@@ -619,6 +671,11 @@ describe("Chronicle product cold-start Task resume journey", () => {
     nativeCreateRunMock.mockImplementation((payload: CreateRunPayload) =>
       native.createRun(payload),
     );
+    nativeCaptureWorkspaceBindingMock.mockResolvedValue({
+      authorityId: "workspace-authority-product-resume",
+      generation: 1,
+      authorityInstanceId: "1",
+    });
     nativeGetRunMock.mockImplementation(
       (payload: { runId: string; projectId: string }) =>
         native.getRun(payload.runId, payload.projectId),
@@ -874,6 +931,7 @@ describe("Chronicle product cold-start Task resume journey", () => {
     resetChronicleExtractionStoreForTests();
     resetNarrativeArtifactIndexForTests();
     resetNarrativeExtractionRunIndexForTests();
+    native.restartProcess();
 
     const discovered = await discoverChronicleTaskResumeCandidates(SCOPE);
     expect(nativeListTaskResumeCandidatesMock).toHaveBeenCalledWith({
@@ -932,5 +990,102 @@ describe("Chronicle product cold-start Task resume journey", () => {
     expect(useChronicleExtractionStore.getState().recovery.candidates).toEqual(
       [],
     );
+  });
+
+  it("discards a cold-start blocked Run whose Snapshot never finished, then permits a fresh Run", async () => {
+    native.crashBeforeSnapshotFinish = true;
+    await expect(
+      startChronicleExtraction({
+        projectId: SCOPE.projectId,
+        folderId: "folder-product-resume",
+        language: "ja",
+        sceneIds: ["scene-product-resume"],
+        authority: authority(),
+        workspacePath: SCOPE.workspacePath,
+        openRevision: SCOPE.openRevision,
+        existingEvents: [],
+        useAi: true,
+      }),
+    ).rejects.toThrow("SIMULATED_PROCESS_EXIT_BEFORE_SNAPSHOT_FINISH");
+
+    expect(native.createCount).toBe(1);
+    const interrupted = native.runs.get(RUN_ID);
+    expect(interrupted?.run.status).toBe("running");
+    expect(interrupted?.tasks[0]).toMatchObject({
+      taskKind: CHRONICLE_EXTRACT_TASK_KINDS.snapshot,
+      status: "running",
+    });
+    expect(interrupted?.artifacts).toEqual([]);
+    expect(native.taskResumeCandidates(SCOPE.projectId)).toEqual([
+      expect.objectContaining({
+        runId: RUN_ID,
+        availability: "lease-held",
+        blockedCode: null,
+      }),
+    ]);
+
+    // Renderer process state is gone, but the Native ledger still contains the
+    // Run created before Snapshot terminalization.
+    resetChronicleExtractionApiCachesForTests();
+    resetChronicleExtractionStoreForTests();
+    resetNarrativeArtifactIndexForTests();
+    resetNarrativeExtractionRunIndexForTests();
+    native.restartProcess();
+
+    const discovered = await discoverChronicleTaskResumeCandidates(SCOPE);
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]).toMatchObject({
+      runId: RUN_ID,
+      availability: "blocked",
+      blockedCode: "NEX_CHRONICLE_RESUME_SNAPSHOT_INCOMPLETE",
+      completedTaskKinds: [],
+      nextTask: {
+        taskKind: CHRONICLE_EXTRACT_TASK_KINDS.snapshot,
+        status: "running",
+      },
+      language: null,
+      existingEventsCatalog: null,
+    });
+
+    await expect(
+      discardChronicleTaskResumeCandidate({
+        candidate: discovered[0]!,
+        authority: authority(),
+        workspacePath: SCOPE.workspacePath,
+        openRevision: SCOPE.openRevision,
+      }),
+    ).resolves.toEqual({ runId: RUN_ID });
+
+    expect(native.runs.get(RUN_ID)?.run.status).toBe("cancelled");
+    expect(
+      native.runs
+        .get(RUN_ID)
+        ?.tasks.every(
+          (task) => task.status === "completed" || task.status === "cancelled",
+        ),
+    ).toBe(true);
+    await expect(discoverChronicleTaskResumeCandidates(SCOPE)).resolves.toEqual(
+      [],
+    );
+    expect(useChronicleExtractionStore.getState().recovery.candidates).toEqual(
+      [],
+    );
+
+    await expect(
+      startChronicleExtraction({
+        projectId: SCOPE.projectId,
+        folderId: "folder-product-resume",
+        language: "ja",
+        sceneIds: ["scene-product-resume"],
+        authority: authority(),
+        workspacePath: SCOPE.workspacePath,
+        openRevision: SCOPE.openRevision,
+        existingEvents: [],
+        useAi: true,
+      }),
+    ).resolves.toEqual({ runId: `${RUN_ID}-2` });
+
+    expect(native.createCount).toBe(2);
+    expect(native.runs.get(`${RUN_ID}-2`)?.run.status).toBe("completed");
   });
 });

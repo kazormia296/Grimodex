@@ -130,6 +130,198 @@ fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
     format!("authority:{}", authority.identity())
 }
 
+#[cfg(test)]
+mod narrative_extraction_workspace_binding_tests {
+    use super::*;
+    use grimodex_db::state::{ActiveWorkspace, PinnedWorkspaceDb, WorkspaceAuthority};
+    use std::sync::Arc;
+
+    fn test_root() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "grimodex-node-extraction-binding-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    fn workspace_authority(
+        root: &std::path::Path,
+        directory: &str,
+        metadata_id: &str,
+    ) -> (PinnedWorkspaceDb, PathBuf) {
+        let workspace_path = root.join(directory);
+        let metadata_dir = workspace_path.join(".grimodex");
+        std::fs::create_dir_all(&metadata_dir).expect("workspace metadata directory");
+        std::fs::write(
+            metadata_dir.join("workspace.json"),
+            serde_json::json!({
+                "id": metadata_id,
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project");
+        let authority =
+            WorkspaceAuthority::from_database_for_test(database, workspace_path.clone())
+                .expect("workspace authority");
+        (authority, workspace_path)
+    }
+
+    fn extraction_run_payload(run_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "runId": run_id,
+            "projectId": "project-1",
+            "surfacePathId": "binding-regression",
+            "scopeJson": {},
+            "specJson": { "domain": "binding-regression" },
+            "specDigest": "binding-regression-spec",
+            "snapshotDigest": "binding-regression-snapshot",
+            "tasks": [{
+                "taskId": format!("{run_id}-task"),
+                "taskKind": "binding-regression-task",
+                "inputJson": {},
+                "priority": 1
+            }]
+        })
+    }
+
+    fn table_count(authority: &PinnedWorkspaceDb, table: &str) -> i64 {
+        authority
+            .db()
+            .with_conn(|conn| {
+                Ok(
+                    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })?,
+                )
+            })
+            .expect("table count")
+    }
+
+    #[tokio::test]
+    async fn stale_binding_never_writes_same_metadata_clone_before_generation_rotates() {
+        let root = test_root();
+        let resources = root.join("resources");
+        let (authority_a, path_a) = workspace_authority(&root, "workspace-a", "clone-id");
+        let state = AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+            .expect("app state");
+        *state.ws.inner.lock().expect("workspace lock") =
+            Some(ActiveWorkspace::new(Arc::clone(&authority_a)));
+        let backend = Backend {
+            state: Arc::new(state),
+        };
+
+        // Canonical path equality accepts an equivalent lexical path instead
+        // of rejecting it on Windows/UNC or through a `.` component.
+        let binding_json = backend
+            .narrative_extraction_capture_workspace_binding(
+                path_a.join(".").to_string_lossy().to_string(),
+            )
+            .await
+            .expect("capture Workspace A binding");
+        let binding: serde_json::Value = serde_json::from_str(&binding_json).expect("binding JSON");
+        assert_eq!(
+            binding["authorityInstanceId"],
+            authority_a.identity().to_string()
+        );
+
+        backend
+            .narrative_extraction_create_run(extraction_run_payload("run-a"), binding.clone())
+            .await
+            .expect("create Run in A");
+        let claim: serde_json::Value = serde_json::from_str(
+            &backend
+                .narrative_extraction_claim_task(
+                    serde_json::json!({
+                        "runId": "run-a",
+                        "projectId": "project-1",
+                        "leaseOwner": "binding-test",
+                        "taskKinds": ["binding-regression-task"]
+                    }),
+                    binding.clone(),
+                )
+                .await
+                .expect("claim A Task"),
+        )
+        .expect("claim JSON");
+        assert_eq!(claim["claimed"], true);
+
+        let (authority_b, _) = workspace_authority(&root, "workspace-b", "clone-id");
+        // Model the narrow production handoff: the new DB authority is already
+        // published, while the recovery generation has not rotated yet.
+        *backend.state.ws.inner.lock().expect("workspace lock") =
+            Some(ActiveWorkspace::new(Arc::clone(&authority_b)));
+
+        let stale_create = backend
+            .narrative_extraction_create_run(
+                extraction_run_payload("run-must-not-land-in-b"),
+                binding.clone(),
+            )
+            .await
+            .expect_err("Workspace A binding cannot create a Run in B");
+        assert!(stale_create
+            .to_string()
+            .contains("NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED"));
+
+        let stale_finish = backend
+            .narrative_extraction_finish_task(
+                serde_json::json!({
+                    "runId": "run-a",
+                    "projectId": "project-1",
+                    "taskId": claim["task"]["taskId"],
+                    "attemptId": claim["task"]["attemptId"],
+                    "leaseOwner": "binding-test",
+                    "outputJson": { "completed": true },
+                    "artifacts": [{
+                        "artifactKind": "binding-regression-artifact",
+                        "payloadStorage": "inline-json",
+                        "payloadJson": { "value": "must-not-land-in-b" }
+                    }]
+                }),
+                binding,
+            )
+            .await
+            .expect_err("claimed A Task cannot finish in B");
+        assert!(stale_finish
+            .to_string()
+            .contains("NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED"));
+
+        assert_eq!(table_count(&authority_b, "narrative_extraction_runs"), 0);
+        assert_eq!(table_count(&authority_b, "narrative_extraction_tasks"), 0);
+        assert_eq!(
+            table_count(&authority_b, "narrative_extraction_artifacts"),
+            0
+        );
+        let a_task_status: String = authority_a
+            .db()
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT status FROM narrative_extraction_tasks WHERE id = 'run-a-task'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("A task status");
+        assert_eq!(a_task_status, "running");
+
+        drop(authority_a);
+        drop(authority_b);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 fn narrative_maintenance_binding_for_authority(
     state: &AppState,
     authority: &PinnedWorkspaceDb,
@@ -137,6 +329,48 @@ fn narrative_maintenance_binding_for_authority(
     state
         .narrative_maintenance_recovery_gate
         .binding_for_authority(&narrative_authority_id(authority))
+}
+
+/// Foreground extraction binding. `authority_id` may intentionally survive a
+/// cloned/restored Workspace, and the recovery `generation` rotates just after
+/// authority publication. The process-local authority instance therefore
+/// closes the publication-to-generation-rotation window as an independent
+/// exact CAS coordinate.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NarrativeExtractionWorkspaceBinding {
+    authority_id: String,
+    generation: u64,
+    /// Decimal string keeps the opaque u64 exact across the JS boundary.
+    authority_instance_id: String,
+}
+
+impl NarrativeExtractionWorkspaceBinding {
+    fn validate(&self) -> anyhow::Result<()> {
+        MaintenanceWorkspaceBinding {
+            authority_id: self.authority_id.clone(),
+            generation: self.generation,
+        }
+        .validate()?;
+        let identity = self.authority_instance_id.parse::<u64>()?;
+        anyhow::ensure!(
+            identity > 0 && identity.to_string() == self.authority_instance_id,
+            "authorityInstanceId must be a canonical positive decimal integer"
+        );
+        Ok(())
+    }
+}
+
+fn narrative_extraction_binding_for_authority(
+    state: &AppState,
+    authority: &PinnedWorkspaceDb,
+) -> NarrativeExtractionWorkspaceBinding {
+    let maintenance = narrative_maintenance_binding_for_authority(state, authority);
+    NarrativeExtractionWorkspaceBinding {
+        authority_id: maintenance.authority_id,
+        generation: maintenance.generation,
+        authority_instance_id: authority.identity().to_string(),
+    }
 }
 
 fn idempotency_receipt_exists(
@@ -768,6 +1002,30 @@ fn validate_ai_audit_workspace(
     Ok(())
 }
 
+fn validate_narrative_extraction_workspace(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_workspace_path: &str,
+) -> std::result::Result<(), AppError> {
+    let active = workspace
+        .path()
+        .canonicalize()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+    // Keep both paths on the Rust side of the boundary. Windows may expose
+    // the same directory to JS lexically and to Rust with a verbatim/UNC
+    // representation; canonical equality is the authority check.
+    let expected = PathBuf::from(expected_workspace_path)
+        .canonicalize()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+    if active != expected {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED: expected {}, active {}",
+            expected.display(),
+            active.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Optimistically bind one request token to the exact DB/path snapshot seen at
 /// IPC arrival. A concurrent swap either makes `active_workspace_snapshot`
 /// fail closed or changes the gate generation so registration retries.
@@ -821,6 +1079,49 @@ where
             };
             Ok(serde_json::to_string(&result)?)
         })
+    })
+    .await
+}
+
+/// Chronicle/Codex extraction mutations are part of a long-running renderer
+/// operation.  Bind each write to the exact Native WorkspaceAuthority captured
+/// before that operation started; resolving `with_db_state` at write time
+/// would otherwise let a late continuation land in a same-project clone.
+async fn narrative_extraction_bound_write_cmd<T, F>(
+    state: Arc<AppState>,
+    label: &'static str,
+    payload: serde_json::Value,
+    workspace_binding: serde_json::Value,
+    f: F,
+) -> Result<String>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+    F: FnOnce(&grimodex_db::Database, T) -> anyhow::Result<serde_json::Value> + Send + 'static,
+{
+    run_blocking(move || {
+        let requested_binding: NarrativeExtractionWorkspaceBinding =
+            from_wire("workspaceBinding", workspace_binding)?;
+        requested_binding.validate().map_err(AppError::Anyhow)?;
+        let dto: T = from_wire(label, payload)?;
+        let workspace = active_workspace_snapshot(&state.ws)?;
+        let current_binding =
+            narrative_extraction_binding_for_authority(&state, &workspace.authority);
+        if current_binding != requested_binding {
+            return Err(AppError::Anyhow(anyhow::anyhow!(
+                "NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED: extraction mutation was bound to authority {} generation {} instance {}, active authority is {} generation {} instance {}",
+                requested_binding.authority_id,
+                requested_binding.generation,
+                requested_binding.authority_instance_id,
+                current_binding.authority_id,
+                current_binding.generation,
+                current_binding.authority_instance_id,
+            )));
+        }
+        // Keep this pinned authority (and its shared file lease) for the full
+        // transaction. A concurrent replacement may publish a new active DB,
+        // but this write can only complete against the DB that passed the CAS.
+        serde_json::to_string(&f(workspace.authority.db(), dto)?)
+            .map_err(|error| AppError::Anyhow(error.into()))
     })
     .await
 }
@@ -6156,15 +6457,61 @@ impl Backend {
     // ─────────────────────── narrative_extraction (Chronicle Vertical Slice PR2 —
     // persistent run / task / proposal runtime; payload → JSON string) ─────────
 
+    /// Capture the exact active Native workspace authority for a long-running
+    /// extraction. The expected path is renderer-captured scope, not a path
+    /// selector: Native rejects a mismatch and always owns the returned
+    /// authority id/generation.
+    #[napi]
+    pub async fn narrative_extraction_capture_workspace_binding(
+        &self,
+        expected_workspace_path: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            if expected_workspace_path.is_empty()
+                || expected_workspace_path.trim() != expected_workspace_path
+            {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_CHRONICLE_WORKSPACE_PATH_REQUIRED: expectedWorkspacePath must be a non-empty exact path"
+                )));
+            }
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(
+                &workspace,
+                &expected_workspace_path,
+            )?;
+            let binding =
+                narrative_extraction_binding_for_authority(&state, &workspace.authority);
+
+            // Workspace state and the process generation use separate locks.
+            // Re-pin after binding so a replacement in between cannot return
+            // an old authority paired with the replacement generation.
+            let current_workspace = active_workspace_snapshot(&state.ws)?;
+            let current_binding =
+                narrative_extraction_binding_for_authority(&state, &current_workspace.authority);
+            if !Arc::ptr_eq(&workspace.authority, &current_workspace.authority)
+                || binding != current_binding
+            {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED: Workspace authority changed while capturing extraction binding"
+                )));
+            }
+            serde_json::to_string(&binding).map_err(|error| AppError::Anyhow(error.into()))
+        })
+        .await
+    }
+
     #[napi]
     pub async fn narrative_extraction_create_run(
         &self,
         payload: serde_json::Value,
+        workspace_binding: serde_json::Value,
     ) -> Result<String> {
-        agent_write_cmd(
+        narrative_extraction_bound_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
+            workspace_binding,
             narrative_extraction::narrative_extraction_create_run,
         )
         .await
@@ -6228,11 +6575,13 @@ impl Backend {
     pub async fn narrative_extraction_cancel_run(
         &self,
         payload: serde_json::Value,
+        workspace_binding: serde_json::Value,
     ) -> Result<String> {
-        agent_write_cmd(
+        narrative_extraction_bound_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
+            workspace_binding,
             narrative_extraction::narrative_extraction_cancel_run,
         )
         .await
@@ -6242,11 +6591,13 @@ impl Backend {
     pub async fn narrative_extraction_claim_task(
         &self,
         payload: serde_json::Value,
+        workspace_binding: serde_json::Value,
     ) -> Result<String> {
-        agent_write_cmd(
+        narrative_extraction_bound_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
+            workspace_binding,
             narrative_extraction::narrative_extraction_claim_task,
         )
         .await
@@ -6256,11 +6607,13 @@ impl Backend {
     pub async fn narrative_extraction_finish_task(
         &self,
         payload: serde_json::Value,
+        workspace_binding: serde_json::Value,
     ) -> Result<String> {
-        agent_write_cmd(
+        narrative_extraction_bound_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
+            workspace_binding,
             narrative_extraction::narrative_extraction_finish_task,
         )
         .await
@@ -6270,11 +6623,13 @@ impl Backend {
     pub async fn narrative_extraction_fail_task(
         &self,
         payload: serde_json::Value,
+        workspace_binding: serde_json::Value,
     ) -> Result<String> {
-        agent_write_cmd(
+        narrative_extraction_bound_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
+            workspace_binding,
             narrative_extraction::narrative_extraction_fail_task,
         )
         .await
@@ -6284,11 +6639,13 @@ impl Backend {
     pub async fn narrative_extraction_save_proposal_set(
         &self,
         payload: serde_json::Value,
+        workspace_binding: serde_json::Value,
     ) -> Result<String> {
-        agent_write_cmd(
+        narrative_extraction_bound_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
+            workspace_binding,
             narrative_extraction::narrative_extraction_save_proposal_set,
         )
         .await

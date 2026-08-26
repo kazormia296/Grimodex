@@ -1298,6 +1298,7 @@ fn partial_apply_review_bundle_and_resumable_runs() {
         RunRefPayload {
             run_id: "run-partial".to_string(),
             project_id: "project-1".to_string(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect("review bundle");

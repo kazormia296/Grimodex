@@ -68,7 +68,9 @@ use super::reconciliation_envelope::{
     load_read_set_rows, load_source_basis_rows, validate_reconciliation_envelope, SourceBasisRow,
     ORIGIN_ENVELOPED,
 };
-use super::repository::{ensure_proposal_not_applied, ensure_run_project};
+use super::repository::{
+    ensure_proposal_not_applied, ensure_run_project, validate_current_chronicle_live_catalog,
+};
 use super::semantic_bindings::{
     apply_semantic_binding_upsert_in_tx, parse_semantic_binding_upsert_payload,
     OP_KIND_SEMANTIC_BINDING_UPSERT,
@@ -160,6 +162,15 @@ pub fn narrative_extraction_prepare_commit(
                     "idempotentReplay": true,
                 }));
             }
+            // The Existing Event Catalog is an input to match/safety, but is
+            // not part of each Proposal's Source Basis. Recheck its Native
+            // authority in this same transaction before a prepared Commit row
+            // can make stale `noDuplicate` evidence durable.
+            validate_current_chronicle_live_catalog(
+                conn,
+                &payload.project_id,
+                &payload.run_id,
+            )?;
             validate_commit_plan(
                 conn,
                 CommitPlanValidationContext {
@@ -843,6 +854,15 @@ pub fn narrative_extraction_apply_commit(
                 .and_then(|value| serde_json::from_value(value).map_err(Into::into))?;
             let sealed_plan: PrepareCommitPayload = serde_json::from_value(sealed_plan_value)?;
             require_narrative_apply_allowed(conn)?;
+            // Close the Prepare -> Apply writer race. A prepared plan may
+            // still be byte-valid while its match-existing catalog is stale.
+            // This guard runs under the Apply BEGIN IMMEDIATE and precedes
+            // Event/Application/operation DML.
+            validate_current_chronicle_live_catalog(
+                conn,
+                &sealed_plan.project_id,
+                &sealed_plan.run_id,
+            )?;
             validate_commit_plan(
                 conn,
                 CommitPlanValidationContext {
@@ -1771,6 +1791,7 @@ pub fn narrative_extraction_apply_commit(
                 || message.contains("NEX_READ_SET_DRIFT")
                 || message.contains("NEX_REVISION_ENVELOPE_CHANGED")
                 || message.contains("NEX_REVISION_ENVELOPE_MISSING")
+                || message.contains("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT")
                 || message.contains("NEX_PREPARED_POLICY_CHANGED")
                 || message.contains("NEX_FIELD_AUTHORITY")
                 || message.contains("NEX_RETRACTION");
@@ -1898,6 +1919,7 @@ pub(crate) struct CommitRow {
     pub commit_id: String,
     #[allow(dead_code)]
     pub project_id: String,
+    pub run_id: Option<String>,
     pub request_id: String,
     pub plan_digest: String,
     pub status: String,
@@ -1918,7 +1940,7 @@ pub(crate) fn load_commit_by_id(
     commit_id: &str,
 ) -> anyhow::Result<Option<CommitRow>> {
     conn.query_row(
-        "SELECT id, project_id, request_id, plan_digest, status, receipt_json,
+        "SELECT id, project_id, run_id, request_id, plan_digest, status, receipt_json,
                 prepared_plan_json, prepared_policy_version, authority_digest, session_id,
                 error_message, created_at, completed_at, version
            FROM narrative_apply_commits
@@ -1936,7 +1958,7 @@ pub(crate) fn load_commit_by_request(
     request_id: &str,
 ) -> anyhow::Result<Option<CommitRow>> {
     conn.query_row(
-        "SELECT id, project_id, request_id, plan_digest, status, receipt_json,
+        "SELECT id, project_id, run_id, request_id, plan_digest, status, receipt_json,
                 prepared_plan_json, prepared_policy_version, authority_digest, session_id,
                 error_message, created_at, completed_at, version
            FROM narrative_apply_commits
@@ -1954,18 +1976,19 @@ fn map_commit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommitRow> {
     Ok(CommitRow {
         commit_id: row.get(0)?,
         project_id: row.get(1)?,
-        request_id: row.get(2)?,
-        plan_digest: row.get(3)?,
-        status: row.get(4)?,
-        receipt_json: row.get(5)?,
-        prepared_plan_json: row.get(6)?,
-        prepared_policy_version: row.get(7)?,
-        authority_digest: row.get(8)?,
-        session_id: row.get(9)?,
-        error_message: row.get(10)?,
-        created_at: row.get(11)?,
-        completed_at: row.get(12)?,
-        version: row.get(13)?,
+        run_id: row.get(2)?,
+        request_id: row.get(3)?,
+        plan_digest: row.get(4)?,
+        status: row.get(5)?,
+        receipt_json: row.get(6)?,
+        prepared_plan_json: row.get(7)?,
+        prepared_policy_version: row.get(8)?,
+        authority_digest: row.get(9)?,
+        session_id: row.get(10)?,
+        error_message: row.get(11)?,
+        created_at: row.get(12)?,
+        completed_at: row.get(13)?,
+        version: row.get(14)?,
     })
 }
 

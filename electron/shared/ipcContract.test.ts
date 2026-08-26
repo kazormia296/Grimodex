@@ -619,6 +619,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "temporalScenePatch",
       Promise.resolve('{"sceneId":"scene-1","version":1,"updatedAt":"now"}'),
     ) as never,
+    narrativeExtractionCaptureWorkspaceBinding: record(
+      "narrativeExtractionCaptureWorkspaceBinding",
+      Promise.resolve(
+        '{"authorityId":"workspace:a","generation":1,"authorityInstanceId":"1"}',
+      ),
+    ) as never,
     narrativeExtractionCreateRun: record(
       "narrativeExtractionCreateRun",
       Promise.resolve('{"runId":"r1","status":"running","taskIds":[]}'),
@@ -940,6 +946,87 @@ describe("toErrorString", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("dispatchInvoke", () => {
+  const extractionWorkspaceBinding = {
+    authorityId: "workspace:a",
+    generation: 1,
+    authorityInstanceId: "1",
+  } as const;
+
+  it("captures a Chronicle workspace binding only for the exact expected path", async () => {
+    const { backend, calls } = fakeBackend();
+    const result = await dispatchInvoke(
+      "narrative_extraction_capture_workspace_binding",
+      { expectedWorkspacePath: "/workspaces/a" },
+      { backend, shell: noShell },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      value: extractionWorkspaceBinding,
+    });
+    expect(calls).toEqual([
+      {
+        method: "narrativeExtractionCaptureWorkspaceBinding",
+        args: ["/workspaces/a"],
+      },
+    ]);
+
+    const missingMethod = await dispatchInvoke(
+      "narrative_extraction_capture_workspace_binding",
+      { expectedWorkspacePath: "/workspaces/a" },
+      {
+        backend: {
+          ...backend,
+          narrativeExtractionCaptureWorkspaceBinding: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionCaptureWorkspaceBinding`,
+    });
+
+    for (const args of [
+      {},
+      { expectedWorkspacePath: "" },
+      { expectedWorkspacePath: " /workspaces/a" },
+      { expectedWorkspacePath: "/workspaces/a", extra: true },
+    ]) {
+      const invalid = await dispatchInvoke(
+        "narrative_extraction_capture_workspace_binding",
+        args,
+        { backend, shell: noShell },
+      );
+      expect(invalid.ok).toBe(false);
+    }
+  });
+
+  it("rejects missing or malformed Chronicle mutation workspace bindings", async () => {
+    const { backend } = fakeBackend();
+    for (const workspaceBinding of [
+      undefined,
+      { authorityId: "workspace:a", generation: 0, authorityInstanceId: "1" },
+      { authorityId: "workspace:a", generation: 1, authorityInstanceId: "01" },
+      {
+        authorityId: "workspace:a",
+        generation: 1,
+        authorityInstanceId: "1",
+        extra: true,
+      },
+    ]) {
+      const result = await dispatchInvoke(
+        "narrative_extraction_create_run",
+        {
+          payload: { projectId: "project-a" },
+          ...(workspaceBinding === undefined ? {} : { workspaceBinding }),
+        },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+  });
+
   it("forwards the typed historical Scope-authority companion unchanged", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -957,13 +1044,16 @@ describe("dispatchInvoke", () => {
 
     const result = await dispatchInvoke(
       "narrative_extraction_finish_task",
-      { payload },
+      { payload, workspaceBinding: extractionWorkspaceBinding },
       { backend, shell: noShell },
     );
 
     expect(result).toMatchObject({ ok: true });
     expect(calls).toEqual([
-      { method: "narrativeExtractionFinishTask", args: [payload] },
+      {
+        method: "narrativeExtractionFinishTask",
+        args: [payload, extractionWorkspaceBinding],
+      },
     ]);
   });
 
@@ -4781,6 +4871,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_append_revision",
       "narrative_extraction_apply_commit",
       "narrative_extraction_cancel_run",
+      "narrative_extraction_capture_workspace_binding",
       "narrative_extraction_claim_task",
       "narrative_extraction_create_human_derived_revision",
       "narrative_extraction_create_run",

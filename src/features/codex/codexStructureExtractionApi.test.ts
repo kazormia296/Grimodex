@@ -23,6 +23,7 @@ const prepareApplyMock = vi.hoisted(() => vi.fn());
 const claimTaskMock = vi.hoisted(() => vi.fn());
 const finishTaskMock = vi.hoisted(() => vi.fn());
 const failTaskMock = vi.hoisted(() => vi.fn());
+const captureWorkspaceBindingMock = vi.hoisted(() => vi.fn());
 const buildSnapshotMock = vi.hoisted(() => vi.fn());
 const runPrepassMock = vi.hoisted(() => vi.fn());
 const getRunReviewBundleMock = vi.hoisted(() => vi.fn());
@@ -50,6 +51,8 @@ vi.mock(
       >();
     return {
       ...actual,
+      captureNarrativeExtractionWorkspaceBinding:
+        captureWorkspaceBindingMock,
       narrativeExtractionClaimTask: claimTaskMock,
       narrativeExtractionFinishTask: finishTaskMock,
       narrativeExtractionFailTask: failTaskMock,
@@ -233,6 +236,12 @@ describe("startCodexStructureExtraction product safety", () => {
     claimTaskMock.mockReset();
     finishTaskMock.mockReset();
     failTaskMock.mockReset();
+    captureWorkspaceBindingMock.mockReset();
+    captureWorkspaceBindingMock.mockResolvedValue({
+      authorityId: "workspace-authority-codex",
+      generation: 1,
+      authorityInstanceId: "1",
+    });
     prepareApplyMock.mockReset();
     appendDecisionMock.mockReset();
     appendHumanDecisionMock.mockReset();
@@ -443,8 +452,20 @@ describe("startCodexStructureExtraction product safety", () => {
       ],
     });
 
-    expect(createRunMock).toHaveBeenCalled();
-    expect(saveProposalSetMock).toHaveBeenCalled();
+    const workspaceBinding = {
+      authorityId: "workspace-authority-codex",
+      generation: 1,
+      authorityInstanceId: "1",
+    };
+    expect(captureWorkspaceBindingMock).toHaveBeenCalledWith("/w");
+    expect(createRunMock).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "p1" }),
+      workspaceBinding,
+    );
+    expect(saveProposalSetMock).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "p1" }),
+      workspaceBinding,
+    );
     expect(projection.runId).toBe("native-run-1");
     expect(projection.proposalSetId).toBe("native-ps-1");
     expect(projection.proposals[0]?.revisionId).toBe("native-rev-1");

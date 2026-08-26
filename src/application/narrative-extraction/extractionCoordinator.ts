@@ -1,4 +1,8 @@
-import type { MutationAuthority } from "@/features/concurrency/mutationAuthority";
+import {
+  isCurrentMutationAuthority,
+  runAuthoritativeMutation,
+  type MutationAuthority,
+} from "@/features/concurrency/mutationAuthority";
 import { resolveEvidenceReference } from "@/features/narrative-extraction/evidence/resolveEvidence";
 import type { ResolvedEvidenceAnchor } from "@/features/narrative-extraction/evidence/types";
 import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
@@ -43,6 +47,7 @@ import type {
   SavedProposalSeed,
 } from "./nativeApi";
 import {
+  captureNarrativeExtractionWorkspaceBinding,
   narrativeExtractionClaimTask,
   narrativeExtractionFailTask,
   narrativeExtractionFinishTask,
@@ -190,6 +195,8 @@ export interface ExtractionCoordinatorDeps {
   readonly useAi?: boolean;
   readonly observeWithAi?: typeof runObservationExtractionTask;
   readonly synthesizeWithAi?: typeof runEventSynthesisTask;
+  /** Test seam for the post-Snapshot WebCrypto yield before Run creation. */
+  readonly digestSnapshotPayload?: typeof digestStableJson;
 }
 
 interface SnapshotArtifactPayload {
@@ -1591,6 +1598,26 @@ export async function runChronicleExtractionCoordinator(
   deps: ExtractionCoordinatorDeps = {},
 ): Promise<ChronicleExtractionResult> {
   const capturedRequest = captureChronicleExtractionRequest(request);
+  const expectedWorkspacePath = capturedRequest.authority.workspacePath;
+  if (!expectedWorkspacePath) {
+    throw new Error(
+      "NEX_CHRONICLE_WORKSPACE_PATH_REQUIRED: Chronicle extraction requires an open Workspace",
+    );
+  }
+  const bindingOutcome = await runAuthoritativeMutation(
+    capturedRequest.authority,
+    () => captureNarrativeExtractionWorkspaceBinding(expectedWorkspacePath),
+  );
+  if (
+    bindingOutcome.status !== "current" ||
+    !bindingOutcome.value ||
+    !isCurrentMutationAuthority(capturedRequest.authority)
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED: Workspace or Project authority changed before extraction started",
+    );
+  }
+  const workspaceBinding = bindingOutcome.value;
   const capturedDeps: ExtractionCoordinatorDeps = { ...deps };
   const sealedRunSpec = await buildSealedChronicleRunSpec(
     capturedRequest,
@@ -1814,31 +1841,36 @@ export async function runChronicleExtractionCoordinator(
     // this assertion against its own canonical recomputation in the same finish
     // transaction, so a cross-window caller cannot bind a T1 task result to a
     // different corpus payload.
-    corpusPayloadDigest = await digestStableJson(snapshotDraft.payloadJson);
+    corpusPayloadDigest = await (
+      capturedDeps.digestSnapshotPayload ?? digestStableJson
+    )(snapshotDraft.payloadJson);
 
-    const createdRun = await createRun({
-      runId: sealedRequest.runId,
-      projectId: sealedRequest.projectId,
-      surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
-      scopeJson: {
-        folderId: sealedRequest.folderId,
-        sceneIds: [...sealedRequest.sceneIds],
+    const createdRun = await createRun(
+      {
+        runId: sealedRequest.runId,
+        projectId: sealedRequest.projectId,
+        surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
+        scopeJson: {
+          folderId: sealedRequest.folderId,
+          sceneIds: [...sealedRequest.sceneIds],
+        },
+        specJson: sealedRunSpec.specJson,
+        specDigest: sealedRunSpec.specDigest,
+        catalogDigest: sealedRunSpec.catalogDigest,
+        snapshotDigest: snapshotResult.snapshot.digest,
+        coverageJson: {
+          mode: "complete",
+          documentCount: snapshotResult.snapshot.documents.length,
+          windowCount: windowPlan.windows.length,
+        },
+        tasks: CHRONICLE_EXTRACT_DAG.map((taskKind, index) => ({
+          taskKind,
+          priority: CHRONICLE_EXTRACT_DAG.length - index,
+          inputJson: { stage: index + 1 },
+        })),
       },
-      specJson: sealedRunSpec.specJson,
-      specDigest: sealedRunSpec.specDigest,
-      catalogDigest: sealedRunSpec.catalogDigest,
-      snapshotDigest: snapshotResult.snapshot.digest,
-      coverageJson: {
-        mode: "complete",
-        documentCount: snapshotResult.snapshot.documents.length,
-        windowCount: windowPlan.windows.length,
-      },
-      tasks: CHRONICLE_EXTRACT_DAG.map((taskKind, index) => ({
-        taskKind,
-        priority: CHRONICLE_EXTRACT_DAG.length - index,
-        inputJson: { stage: index + 1 },
-      })),
-    });
+      workspaceBinding,
+    );
 
     runId = createdRun.runId;
     try {
@@ -1855,7 +1887,7 @@ export async function runChronicleExtractionCoordinator(
       }
     } catch (error) {
       try {
-        await cancelRun(runId, sealedRequest.projectId);
+        await cancelRun(runId, sealedRequest.projectId, workspaceBinding);
       } catch {
         // Prefer the invalid historical authority failure; cancel is best-effort.
       }
@@ -1879,16 +1911,19 @@ export async function runChronicleExtractionCoordinator(
     }
     let claim;
     try {
-      claim = await narrativeExtractionClaimTask({
-        runId,
-        projectId: sealedRequest.projectId,
-        leaseOwner,
-        taskKinds: [taskKind],
-      });
+      claim = await narrativeExtractionClaimTask(
+        {
+          runId,
+          projectId: sealedRequest.projectId,
+          leaseOwner,
+          taskKinds: [taskKind],
+        },
+        workspaceBinding,
+      );
     } catch (error) {
       if (!sealedRequest.resume) {
         try {
-          await cancelRun(runId, sealedRequest.projectId);
+          await cancelRun(runId, sealedRequest.projectId, workspaceBinding);
         } catch {
           // Prefer original claim failure; cancel is best-effort.
         }
@@ -1898,7 +1933,7 @@ export async function runChronicleExtractionCoordinator(
     if (!claim.claimed || !claim.task) {
       if (!sealedRequest.resume) {
         try {
-          await cancelRun(runId, sealedRequest.projectId);
+          await cancelRun(runId, sealedRequest.projectId, workspaceBinding);
         } catch {
           // Prefer original claim failure; cancel is best-effort.
         }
@@ -1917,24 +1952,27 @@ export async function runChronicleExtractionCoordinator(
             "NEX_CHRONICLE_RESUME_SNAPSHOT_MISSING: resume cannot recreate source.snapshot@1",
           );
         }
-        await narrativeExtractionFinishTask({
-          runId,
-          projectId: sealedRequest.projectId,
-          taskId: claim.task.taskId,
-          attemptId: claim.task.attemptId,
-          leaseOwner,
-          outputJson: {
-            snapshotDigest: snapshotResult.snapshot.digest,
-            documentCount: snapshotResult.snapshot.documents.length,
-            corpusPayloadDigest,
-            scopeAuthorityCompositeDigest:
-              historicalScopeAuthorityBasis?.digests.compositeDigest ?? null,
+        await narrativeExtractionFinishTask(
+          {
+            runId,
+            projectId: sealedRequest.projectId,
+            taskId: claim.task.taskId,
+            attemptId: claim.task.attemptId,
+            leaseOwner,
+            outputJson: {
+              snapshotDigest: snapshotResult.snapshot.digest,
+              documentCount: snapshotResult.snapshot.documents.length,
+              corpusPayloadDigest,
+              scopeAuthorityCompositeDigest:
+                historicalScopeAuthorityBasis?.digests.compositeDigest ?? null,
+            },
+            artifacts: [snapshotDraft.artifactInput],
+            ...(historicalScopeAuthorityBasis
+              ? { historicalScopeAuthorityBasis }
+              : {}),
           },
-          artifacts: [snapshotDraft.artifactInput],
-          ...(historicalScopeAuthorityBasis
-            ? { historicalScopeAuthorityBasis }
-            : {}),
-        });
+          workspaceBinding,
+        );
         rememberInlineJsonArtifact({
           runId,
           taskId: claim.task.taskId,
@@ -2132,20 +2170,23 @@ export async function runChronicleExtractionCoordinator(
         };
       }
 
-      const finished = await narrativeExtractionFinishTask({
-        runId,
-        projectId: sealedRequest.projectId,
-        taskId: claim.task.taskId,
-        attemptId: claim.task.attemptId,
-        leaseOwner,
-        outputJson,
-        artifacts: artifacts.map((draft) => draft.artifactInput),
-        ...(taskStageReceipts.length > 0
-          ? { chronicleStageReceipts: taskStageReceipts }
-          : {}),
-        ...(chronicleStageBundle ? { chronicleStageBundle } : {}),
-        ...(chroniclePlanProposalSet ? { chroniclePlanProposalSet } : {}),
-      });
+      const finished = await narrativeExtractionFinishTask(
+        {
+          runId,
+          projectId: sealedRequest.projectId,
+          taskId: claim.task.taskId,
+          attemptId: claim.task.attemptId,
+          leaseOwner,
+          outputJson,
+          artifacts: artifacts.map((draft) => draft.artifactInput),
+          ...(taskStageReceipts.length > 0
+            ? { chronicleStageReceipts: taskStageReceipts }
+            : {}),
+          ...(chronicleStageBundle ? { chronicleStageBundle } : {}),
+          ...(chroniclePlanProposalSet ? { chroniclePlanProposalSet } : {}),
+        },
+        workspaceBinding,
+      );
       if (expectedProposalSetId) {
         const saved = finished.proposalSet;
         if (!saved || saved.proposalSetId !== expectedProposalSetId) {
@@ -2171,15 +2212,18 @@ export async function runChronicleExtractionCoordinator(
           ? error.message
           : "chronicle extraction task failed";
       try {
-        await narrativeExtractionFailTask({
-          runId,
-          projectId: sealedRequest.projectId,
-          taskId: claim.task.taskId,
-          attemptId: claim.task.attemptId,
-          leaseOwner,
-          errorMessage: message,
-          requeue: false,
-        });
+        await narrativeExtractionFailTask(
+          {
+            runId,
+            projectId: sealedRequest.projectId,
+            taskId: claim.task.taskId,
+            attemptId: claim.task.attemptId,
+            leaseOwner,
+            errorMessage: message,
+            requeue: false,
+          },
+          workspaceBinding,
+        );
       } catch {
         // Prefer original task failure; ledger fail is best-effort after primary error.
       }

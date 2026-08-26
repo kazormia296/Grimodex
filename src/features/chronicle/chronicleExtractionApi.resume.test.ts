@@ -4,6 +4,22 @@ const coordinatorMock = vi.hoisted(() => vi.fn());
 const loadArtifactMock = vi.hoisted(() => vi.fn());
 const getRunMock = vi.hoisted(() => vi.fn());
 const listCandidatesMock = vi.hoisted(() => vi.fn());
+const cancelRunMock = vi.hoisted(() => vi.fn());
+const captureWorkspaceBindingMock = vi.hoisted(() => vi.fn());
+
+vi.mock(
+  "@/application/narrative-extraction/nativeApi",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/application/narrative-extraction/nativeApi")
+      >();
+    return {
+      ...actual,
+      captureNarrativeExtractionWorkspaceBinding: captureWorkspaceBindingMock,
+    };
+  },
+);
 
 vi.mock("@/application/narrative-extraction/extractionCoordinator", () => ({
   runChronicleExtractionCoordinator: coordinatorMock,
@@ -16,6 +32,7 @@ vi.mock("@/application/narrative-extraction/artifactRepository", () => ({
 }));
 
 vi.mock("@/application/narrative-extraction/runRepository", () => ({
+  cancelRun: cancelRunMock,
   getRun: getRunMock,
   listChronicleTaskResumeCandidates: listCandidatesMock,
   listResumableRuns: vi.fn(),
@@ -27,6 +44,7 @@ import type { MutationAuthority } from "@/features/concurrency/mutationAuthority
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
 import {
+  discardChronicleTaskResumeCandidate,
   discoverChronicleTaskResumeCandidates,
   resetChronicleExtractionApiCachesForTests,
   resumeChronicleExtraction,
@@ -165,6 +183,7 @@ function terminalCoordinatorResult() {
 describe("Chronicle product cold-start Task recovery", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    listCandidatesMock.mockReset().mockResolvedValue([candidate()]);
     resetChronicleExtractionApiCachesForTests();
     resetChronicleExtractionStoreForTests();
     setCurrentWorkspaceIdentity({
@@ -183,6 +202,15 @@ describe("Chronicle product cold-start Task recovery", () => {
       },
     });
     coordinatorMock.mockResolvedValue(terminalCoordinatorResult());
+    cancelRunMock.mockResolvedValue({
+      runId: "run-resume-product",
+      status: "cancelled",
+    });
+    captureWorkspaceBindingMock.mockResolvedValue({
+      authorityId: "workspace-authority-resume",
+      generation: 1,
+      authorityInstanceId: "1",
+    });
   });
 
   it("store/cache消去後にdurable候補を発見し、same runIdをterminal Reviewへ再開する", async () => {
@@ -324,6 +352,14 @@ describe("Chronicle product cold-start Task recovery", () => {
       value: candidate({ existingEventsCatalog: null }),
       error: "NEX_CHRONICLE_RESUME_CATALOG_MISSING",
     },
+    {
+      label: "live catalog drift",
+      value: candidate({
+        availability: "blocked",
+        blockedCode: "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT",
+      }),
+      error: "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT",
+    },
   ])(
     "$label candidateをfresh Runへfallbackしない",
     async ({ value, error }) => {
@@ -352,6 +388,115 @@ describe("Chronicle product cold-start Task recovery", () => {
     expect(coordinatorMock).not.toHaveBeenCalled();
   });
 
+  it("CTA表示後のlive Catalog driftを再列挙でblocked候補へ更新してclaimしない", async () => {
+    const staleReady = candidate();
+    const blocked = candidate({
+      availability: "blocked",
+      blockedCode: "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT",
+    });
+    useChronicleExtractionStore
+      .getState()
+      .setRecoveryCandidates(SCOPE, [staleReady]);
+    listCandidatesMock.mockResolvedValue([blocked]);
+
+    await expect(
+      resumeChronicleExtraction({
+        candidate: staleReady,
+        authority: authority(),
+        workspacePath: SCOPE.workspacePath,
+        openRevision: SCOPE.openRevision,
+      }),
+    ).rejects.toThrow("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT");
+
+    expect(coordinatorMock).not.toHaveBeenCalled();
+    expect(useChronicleExtractionStore.getState().recovery).toMatchObject({
+      status: "blocked",
+      scope: SCOPE,
+      candidates: [
+        expect.objectContaining({
+          runId: staleReady.runId,
+          availability: "blocked",
+          blockedCode: "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT",
+        }),
+      ],
+      errorCode: "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT",
+    });
+  });
+
+  it("再列挙後claimまでのdriftも再発見し、ready候補を残さない", async () => {
+    const staleReady = candidate();
+    const blocked = candidate({
+      availability: "blocked",
+      blockedCode: "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT",
+    });
+    useChronicleExtractionStore
+      .getState()
+      .setRecoveryCandidates(SCOPE, [staleReady]);
+    listCandidatesMock
+      .mockResolvedValueOnce([staleReady])
+      .mockResolvedValueOnce([blocked]);
+    coordinatorMock.mockRejectedValueOnce(
+      new Error(
+        "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT: claim transaction rejected drift",
+      ),
+    );
+
+    await expect(
+      resumeChronicleExtraction({
+        candidate: staleReady,
+        authority: authority(),
+        workspacePath: SCOPE.workspacePath,
+        openRevision: SCOPE.openRevision,
+      }),
+    ).rejects.toThrow("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT");
+
+    expect(coordinatorMock).toHaveBeenCalledTimes(1);
+    expect(listCandidatesMock).toHaveBeenCalledTimes(2);
+    expect(useChronicleExtractionStore.getState().recovery).toMatchObject({
+      status: "blocked",
+      candidates: [
+        expect.objectContaining({
+          runId: staleReady.runId,
+          availability: "blocked",
+        }),
+      ],
+      errorCode: "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT",
+    });
+  });
+
+  it("finish時driftでRunが候補外になった場合はfresh開始を再解放する", async () => {
+    const staleReady = candidate();
+    useChronicleExtractionStore
+      .getState()
+      .setRecoveryCandidates(SCOPE, [staleReady]);
+    listCandidatesMock
+      .mockResolvedValueOnce([staleReady])
+      .mockResolvedValueOnce([]);
+    coordinatorMock.mockRejectedValueOnce(
+      new Error(
+        "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT: finish transaction rejected drift",
+      ),
+    );
+
+    await expect(
+      resumeChronicleExtraction({
+        candidate: staleReady,
+        authority: authority(),
+        workspacePath: SCOPE.workspacePath,
+        openRevision: SCOPE.openRevision,
+      }),
+    ).rejects.toThrow("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT");
+
+    expect(listCandidatesMock).toHaveBeenCalledTimes(2);
+    expect(useChronicleExtractionStore.getState().recovery).toMatchObject({
+      status: "ready",
+      scope: SCOPE,
+      candidates: [],
+      resumingRunId: null,
+      errorCode: null,
+    });
+  });
+
   it("discovery failureをblockedとして保持し、候補なしへcoerceしない", async () => {
     listCandidatesMock.mockRejectedValue(
       new Error("NEX_CHRONICLE_TASK_RESUME_QUERY_FAILED: sqlite read failed"),
@@ -366,5 +511,101 @@ describe("Chronicle product cold-start Task recovery", () => {
       errorCode: "NEX_CHRONICLE_TASK_RESUME_QUERY_FAILED",
     });
     expect(coordinatorMock).not.toHaveBeenCalled();
+  });
+
+  it("exact blocked RunをNativeでcancelし、再列挙から消えるまでfresh開始を解放しない", async () => {
+    const blocked = candidate({
+      status: "pending",
+      completedTaskKinds: [],
+      nextTask: {
+        taskId: "task-snapshot",
+        taskKind: "source.snapshot@1",
+        status: "queued",
+        leaseExpiresAt: null,
+      },
+      availability: "blocked",
+      blockedCode: "NEX_CHRONICLE_RESUME_SNAPSHOT_INCOMPLETE",
+      language: null,
+      existingEventsCatalog: null,
+      startedAt: null,
+    });
+    listCandidatesMock
+      .mockResolvedValueOnce([blocked])
+      .mockResolvedValueOnce([]);
+    const discovered = await discoverChronicleTaskResumeCandidates(SCOPE);
+
+    await expect(
+      discardChronicleTaskResumeCandidate({
+        candidate: discovered[0]!,
+        authority: authority(),
+        workspacePath: SCOPE.workspacePath,
+        openRevision: SCOPE.openRevision,
+      }),
+    ).resolves.toEqual({ runId: blocked.runId });
+
+    expect(cancelRunMock).toHaveBeenCalledWith(
+      blocked.runId,
+      SCOPE.projectId,
+      {
+        authorityId: "workspace-authority-resume",
+        generation: 1,
+        authorityInstanceId: "1",
+      },
+      {
+        nextTaskId: blocked.nextTask.taskId,
+        blockedCode: "NEX_CHRONICLE_RESUME_SNAPSHOT_INCOMPLETE",
+        runSpecDigest: blocked.runSpecDigest,
+        snapshotDigest: blocked.snapshotDigest,
+        catalogDigest: blocked.catalogDigest,
+      },
+    );
+    expect(listCandidatesMock).toHaveBeenCalledTimes(2);
+    expect(useChronicleExtractionStore.getState().recovery).toMatchObject({
+      status: "ready",
+      scope: SCOPE,
+      candidates: [],
+      errorCode: null,
+    });
+    expect(coordinatorMock).not.toHaveBeenCalled();
+  });
+
+  it("ready/lease-heldまたはcurrent recovery外のRunはcancelしない", async () => {
+    const ready = candidate();
+    useChronicleExtractionStore
+      .getState()
+      .setRecoveryCandidates(SCOPE, [ready]);
+
+    await expect(
+      discardChronicleTaskResumeCandidate({
+        candidate: ready,
+        authority: authority(),
+        workspacePath: SCOPE.workspacePath,
+        openRevision: SCOPE.openRevision,
+      }),
+    ).rejects.toThrow("NEX_CHRONICLE_RESUME_DISCARD_NOT_ALLOWED");
+
+    const leaseHeld = candidate({
+      status: "running",
+      availability: "lease-held",
+      blockedCode: null,
+      nextTask: {
+        taskId: "task-observe-held",
+        taskKind: "chronicle.observe-events@1",
+        status: "running",
+        leaseExpiresAt: "2099-01-01T00:00:00.000Z",
+      },
+    });
+    useChronicleExtractionStore
+      .getState()
+      .setRecoveryCandidates(SCOPE, [leaseHeld]);
+    await expect(
+      discardChronicleTaskResumeCandidate({
+        candidate: leaseHeld,
+        authority: authority(),
+        workspacePath: SCOPE.workspacePath,
+        openRevision: SCOPE.openRevision,
+      }),
+    ).rejects.toThrow("NEX_CHRONICLE_RESUME_DISCARD_NOT_ALLOWED");
+    expect(cancelRunMock).not.toHaveBeenCalled();
   });
 });

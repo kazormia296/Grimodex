@@ -4,6 +4,7 @@ import type {
   CreateHumanDerivedRevisionResult,
   AppendRevisionPayload,
   ChronicleStageReceiptRef,
+  NarrativeExtractionWorkspaceBinding,
   ProposalSeed,
   ReviseAndDecidePayload,
   SaveProposalSetPayload,
@@ -225,8 +226,9 @@ export interface SaveChronicleProposalSetInput {
 
 export async function saveProposalSet(
   payload: SaveProposalSetPayload,
+  workspaceBinding: NarrativeExtractionWorkspaceBinding,
 ): Promise<SaveProposalSetResult> {
-  return narrativeExtractionSaveProposalSet(payload);
+  return narrativeExtractionSaveProposalSet(payload, workspaceBinding);
 }
 
 /**
@@ -306,8 +308,12 @@ export async function buildChronicleProposalSetPayload(
  */
 export async function saveChronicleProposalSet(
   input: SaveChronicleProposalSetInput,
+  workspaceBinding: NarrativeExtractionWorkspaceBinding,
 ): Promise<SaveProposalSetResult> {
-  return saveProposalSet(await buildChronicleProposalSetPayload(input));
+  return saveProposalSet(
+    await buildChronicleProposalSetPayload(input),
+    workspaceBinding,
+  );
 }
 
 export async function createHumanDerivedRevision(

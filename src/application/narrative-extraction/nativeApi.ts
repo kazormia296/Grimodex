@@ -45,9 +45,31 @@ export interface CreateRunResult {
   readonly taskIds: readonly string[];
 }
 
+/**
+ * Exact process-local Native workspace authority captured before a
+ * multi-await extraction operation starts. The persisted Workspace id alone
+ * is insufficient because a clone/restore may intentionally retain it;
+ * `generation` changes whenever the active Database authority is replaced.
+ */
+export interface NarrativeExtractionWorkspaceBinding {
+  readonly authorityId: string;
+  readonly generation: number;
+  /** Opaque decimal u64; kept as text so JS cannot round the Native identity. */
+  readonly authorityInstanceId: string;
+}
+
 export interface RunRefPayload {
   readonly runId: string;
   readonly projectId: string;
+  readonly chronicleBlockedDiscard?: ChronicleBlockedDiscardExpectation;
+}
+
+export interface ChronicleBlockedDiscardExpectation {
+  readonly nextTaskId: string;
+  readonly blockedCode: string;
+  readonly runSpecDigest: string;
+  readonly snapshotDigest: string;
+  readonly catalogDigest: string;
 }
 
 export interface ClaimTaskPayload {
@@ -562,11 +584,62 @@ export interface ChronicleTaskResumeCandidate {
   readonly startedAt: string | null;
 }
 
+function assertNarrativeExtractionWorkspaceBinding(
+  value: NarrativeExtractionWorkspaceBinding,
+): NarrativeExtractionWorkspaceBinding {
+  if (
+    typeof value.authorityId !== "string" ||
+    value.authorityId.length === 0 ||
+    value.authorityId.trim() !== value.authorityId ||
+    !Number.isSafeInteger(value.generation) ||
+    value.generation < 1 ||
+    typeof value.authorityInstanceId !== "string" ||
+    !/^[1-9][0-9]*$/u.test(value.authorityInstanceId)
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_WORKSPACE_BINDING_INVALID: Native workspace binding is malformed",
+    );
+  }
+  return {
+    authorityId: value.authorityId,
+    generation: value.generation,
+    authorityInstanceId: value.authorityInstanceId,
+  };
+}
+
+/**
+ * Capture the exact active Native Database authority for a long-running
+ * extraction. Native checks `expectedWorkspacePath` in the same operation,
+ * so a renderer path captured from Workspace A can never be rebound to a
+ * same-project Workspace B clone.
+ */
+export async function captureNarrativeExtractionWorkspaceBinding(
+  expectedWorkspacePath: string,
+): Promise<NarrativeExtractionWorkspaceBinding> {
+  if (
+    expectedWorkspacePath.length === 0 ||
+    expectedWorkspacePath.trim() !== expectedWorkspacePath
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_WORKSPACE_PATH_REQUIRED: an exact open Workspace path is required",
+    );
+  }
+  return assertNarrativeExtractionWorkspaceBinding(
+    await invoke<NarrativeExtractionWorkspaceBinding>(
+      "narrative_extraction_capture_workspace_binding",
+      { expectedWorkspacePath },
+    ),
+  );
+}
+
 export async function narrativeExtractionCreateRun(
   payload: CreateRunPayload,
+  binding: NarrativeExtractionWorkspaceBinding,
 ): Promise<CreateRunResult> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
   return invoke<CreateRunResult>("narrative_extraction_create_run", {
     payload,
+    workspaceBinding,
   });
 }
 
@@ -581,43 +654,56 @@ export async function narrativeExtractionGetRun(
 
 export async function narrativeExtractionCancelRun(
   payload: RunRefPayload,
+  binding: NarrativeExtractionWorkspaceBinding,
 ): Promise<{ runId: string; status: string }> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
   return invoke<{ runId: string; status: string }>(
     "narrative_extraction_cancel_run",
-    { payload },
+    { payload, workspaceBinding },
   );
 }
 
 export async function narrativeExtractionClaimTask(
   payload: ClaimTaskPayload,
+  binding: NarrativeExtractionWorkspaceBinding,
 ): Promise<ClaimTaskResult> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
   return invoke<ClaimTaskResult>("narrative_extraction_claim_task", {
     payload,
+    workspaceBinding,
   });
 }
 
 export async function narrativeExtractionFinishTask(
   payload: FinishTaskPayload,
+  binding: NarrativeExtractionWorkspaceBinding,
 ): Promise<FinishTaskResult> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
   return invoke<FinishTaskResult>("narrative_extraction_finish_task", {
     payload,
+    workspaceBinding,
   });
 }
 
 export async function narrativeExtractionFailTask(
   payload: FailTaskPayload,
+  binding: NarrativeExtractionWorkspaceBinding,
 ): Promise<FinishTaskResult> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
   return invoke<FinishTaskResult>("narrative_extraction_fail_task", {
     payload,
+    workspaceBinding,
   });
 }
 
 export async function narrativeExtractionSaveProposalSet(
   payload: SaveProposalSetPayload,
+  binding: NarrativeExtractionWorkspaceBinding,
 ): Promise<SaveProposalSetResult> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
   return invoke<SaveProposalSetResult>(
     "narrative_extraction_save_proposal_set",
-    { payload },
+    { payload, workspaceBinding },
   );
 }
 

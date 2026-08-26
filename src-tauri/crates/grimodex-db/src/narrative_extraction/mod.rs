@@ -276,19 +276,20 @@ pub(crate) use field_authority::{
 };
 pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,
-    ChronicleStageC1ExecutionBinding, ChronicleStageExecution, ChronicleStageModelBinding,
-    ChronicleStageProvenanceClosure, ChronicleStageReceiptRef, ChronicleStageTerminalReceipt,
-    ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateHumanDerivedRevisionRequest,
-    CreateRunPayload, CreateTaskSeed, EntityBindingSeed, FailTaskPayload, FinishTaskPayload,
-    GetCommitStatusPayload, GetNarrativeBackfillStatusPayload, HumanFieldLockPayload,
-    ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, NarrativeAdapterIdentity,
-    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
-    NarrativeMaintenanceInboxListPayload, PrepareCommitPayload, ProposalSeed,
-    RebuildNarrativeDerivedStatePayload, ReconciliationEnvelopeInheritance,
-    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
-    ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, TrustedHumanDerivationScope,
-    TrustedRevealBasis, TrustedScopeBoundary, TrustedScopeInterval, TrustedUnresolvedConstraint,
-    UndoCommitPayload, VerifyNarrativeDependencyGraphPayload,
+    ChronicleBlockedDiscardExpectation, ChronicleStageC1ExecutionBinding, ChronicleStageExecution,
+    ChronicleStageModelBinding, ChronicleStageProvenanceClosure, ChronicleStageReceiptRef,
+    ChronicleStageTerminalReceipt, ClaimTaskPayload, CommitApplicationRef, CommitOperation,
+    CreateHumanDerivedRevisionRequest, CreateRunPayload, CreateTaskSeed, EntityBindingSeed,
+    FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload, GetNarrativeBackfillStatusPayload,
+    HumanFieldLockPayload, ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload,
+    NarrativeAdapterIdentity, NarrativeMaintenanceAttentionClearPayload,
+    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
+    PrepareCommitPayload, ProposalSeed, RebuildNarrativeDerivedStatePayload,
+    ReconciliationEnvelopeInheritance, RepairNarrativeDependencyDeclarationsPayload,
+    RetryNarrativeLegacyBackfillPayload, ReviseAndDecidePayload, RunRefPayload,
+    SaveProposalSetPayload, TrustedHumanDerivationScope, TrustedRevealBasis, TrustedScopeBoundary,
+    TrustedScopeInterval, TrustedUnresolvedConstraint, UndoCommitPayload,
+    VerifyNarrativeDependencyGraphPayload,
 };
 pub use repository::ensure_test_schema;
 pub use scope_authority_runtime::{
@@ -404,7 +405,12 @@ pub fn narrative_extraction_cancel_run(
     db: &Database,
     payload: RunRefPayload,
 ) -> anyhow::Result<Value> {
-    repository::cancel_run(db, payload.run_id, payload.project_id)
+    repository::cancel_run_with_expectation(
+        db,
+        payload.run_id,
+        payload.project_id,
+        payload.chronicle_blocked_discard,
+    )
 }
 
 pub fn narrative_extraction_claim_task(

@@ -15,6 +15,7 @@ vi.mock("./api", () => apiMocks);
 
 const extractionMocks = vi.hoisted(() => ({
   USE_NARRATIVE_EXTRACTION_RUN: true,
+  discardChronicleTaskResumeCandidate: vi.fn(),
   discoverChronicleTaskResumeCandidates: vi.fn().mockResolvedValue([]),
   startChronicleExtraction: vi.fn(),
   resumeChronicleExtraction: vi.fn(),
@@ -279,6 +280,10 @@ describe("ChronicleExtractDialog run-path cutover", () => {
     });
     extractionMocks.discoverChronicleTaskResumeCandidates.mockReset();
     extractionMocks.discoverChronicleTaskResumeCandidates.mockResolvedValue([]);
+    extractionMocks.discardChronicleTaskResumeCandidate.mockReset();
+    extractionMocks.discardChronicleTaskResumeCandidate.mockResolvedValue({
+      runId: "run-discarded",
+    });
     extractionMocks.resumeChronicleExtraction.mockReset();
     extractionMocks.applyChronicleExtractionReview.mockResolvedValue(1);
     extractionMocks.restoreChronicleExtractionReview.mockResolvedValue(null);
@@ -507,6 +512,11 @@ describe("ChronicleExtractDialog run-path cutover", () => {
       name: "処理中 run-lease-held",
     });
     expect(heldButton).toBeDisabled();
+    expect(
+      screen.queryByRole("button", {
+        name: "中断Runを破棄 run-lease-held",
+      }),
+    ).toBeNull();
     expect(screen.getByRole("button", { name: "解析" })).toBeDisabled();
     expect(extractionMocks.resumeChronicleExtraction).not.toHaveBeenCalled();
     expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
@@ -533,5 +543,64 @@ describe("ChronicleExtractDialog run-path cutover", () => {
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "解析" })).toBeDisabled();
     expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+  });
+
+  it("Snapshot未完了のblocked Runを明示的に破棄し、その後だけfresh解析を許可する", async () => {
+    const blocked = recoveryCandidate("run-snapshot-incomplete", "blocked");
+    useChronicleExtractionStore
+      .getState()
+      .setRecoveryCandidates(SCOPE_A, [blocked]);
+    extractionMocks.discardChronicleTaskResumeCandidate.mockImplementation(
+      async () => {
+        useChronicleExtractionStore
+          .getState()
+          .setRecoveryCandidates(SCOPE_A, []);
+        return { runId: blocked.runId };
+      },
+    );
+
+    render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("前回中断した抽出があります")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "解析" })).toBeDisabled();
+    expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "中断Runを破棄 run-snapshot-incomplete",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        extractionMocks.discardChronicleTaskResumeCandidate,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          candidate: expect.objectContaining({
+            runId: "run-snapshot-incomplete",
+          }),
+          workspacePath: SCOPE_A.workspacePath,
+          openRevision: SCOPE_A.openRevision,
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "解析" })).toBeEnabled(),
+    );
+    expect(screen.getByRole("combobox")).toHaveValue("folder-a");
+    expect(toastMocks.success).toHaveBeenCalledWith(
+      "中断した抽出を破棄しました。新しい解析を開始できます。",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "解析" }));
+    await waitFor(() =>
+      expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(1),
+    );
   });
 });

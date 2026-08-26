@@ -315,6 +315,71 @@ fn build_prepare(
     }
 }
 
+fn seal_run_as_current_chronicle(db: &Database, run_id: &str) {
+    let catalog = json!({
+        "kind": "chronicle.existing-events-catalog@1",
+        "events": [],
+    });
+    let catalog_digest = format!("sha256:{}", narrative_extraction::digest_plan(&catalog));
+    let spec = json!({
+        "kind": "chronicle.extract.run-spec@2",
+        "domain": "chronicle",
+        "version": 2,
+        "taskChain": [
+            "source.snapshot@1",
+            "source.window-plan@1",
+            "chronicle.observe-events@1",
+            "evidence.resolve@1",
+            "chronicle.merge-local-observations@1",
+            "chronicle.cluster-event-observations@1",
+            "chronicle.synthesize-event@1",
+            "chronicle.match-existing-events@1",
+            "chronicle.plan-proposals@1",
+        ],
+        "executionMode": "deterministic-fallback",
+        "existingEventsCatalogDigest": catalog_digest,
+        "coordinatorContractDigest": format!("sha256:{}", "b".repeat(64)),
+    });
+    let spec_digest = format!("sha256:{}", narrative_extraction::digest_plan(&spec));
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_runs
+                SET spec_json = ?1, spec_digest = ?2, catalog_digest = ?3
+              WHERE id = ?4 AND project_id = 'project-1'",
+            rusqlite::params![spec.to_string(), spec_digest, catalog_digest, run_id],
+        )?;
+        Ok(())
+    })
+    .expect("seal current Chronicle Run spec and empty Event catalog");
+}
+
+fn apply_current_chronicle_event(
+    db: &Database,
+    run_id: &str,
+    event_id: &str,
+    title: &str,
+) -> Value {
+    insert_scene(db, "scene-1", 0);
+    let payload = event_create_payload(event_id, title, "scene-1", 0);
+    let pairs = seed_approved_proposals(
+        db,
+        run_id,
+        &format!("{run_id}-set"),
+        std::slice::from_ref(&payload),
+    );
+    seal_run_as_current_chronicle(db, run_id);
+    prepare_and_apply(
+        db,
+        build_prepare(
+            &format!("{run_id}-apply"),
+            &format!("{run_id}-plan"),
+            &format!("{run_id}-set"),
+            run_id,
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), payload)],
+        ),
+    )
+}
+
 #[test]
 fn create_run_and_get_run_persist_projection() {
     let db = test_db();
@@ -703,6 +768,7 @@ fn cancel_run_marks_active_tasks_cancelled() {
         RunRefPayload {
             run_id: "run-integration-3".to_string(),
             project_id: "project-1".to_string(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect("cancel run");
@@ -951,6 +1017,248 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
         .with_conn(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?))
         .unwrap();
     assert_eq!(remaining, 2);
+}
+
+#[test]
+fn legacy_null_run_commit_supports_status_undo_redo_and_idempotent_replay() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let payload =
+        event_create_payload("event-legacy-null-run", "Legacy nullable Run", "scene-1", 0);
+    let pairs = seed_approved_proposals(
+        &db,
+        "run-legacy-null-commit",
+        "set-legacy-null-commit",
+        std::slice::from_ref(&payload),
+    );
+    let prepare = build_prepare(
+        "request-legacy-null-commit",
+        "plan-legacy-null-commit",
+        "set-legacy-null-commit",
+        "run-legacy-null-commit",
+        vec![(pairs[0].0.clone(), pairs[0].1.clone(), payload)],
+    );
+    let applied = prepare_and_apply(&db, prepare.clone());
+    let commit_id = applied["commitId"].as_str().expect("commit id").to_string();
+    db.execute(
+        "UPDATE narrative_apply_commits SET run_id = NULL WHERE id = ?",
+        &[Value::String(commit_id.clone())],
+        "run",
+    )
+    .expect("model a historical nullable-run ApplyCommit");
+
+    let status = narrative_extraction::narrative_extraction_get_commit_status(
+        &db,
+        GetCommitStatusPayload {
+            project_id: "project-1".to_string(),
+            commit_id: Some(commit_id.clone()),
+            request_id: None,
+        },
+    )
+    .expect("legacy NULL run Commit must remain readable");
+    assert_eq!(status["status"], "applied");
+
+    let apply_replay = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id: commit_id.clone(),
+            request_id: prepare.request_id.clone(),
+            session_id: prepare.session_id.clone(),
+            expected_version: None,
+        },
+    )
+    .expect("legacy NULL run Apply lost-response replay must decode");
+    assert_eq!(apply_replay["idempotentReplay"], true);
+
+    let undo_payload = UndoCommitPayload {
+        project_id: "project-1".to_string(),
+        session_id: "sess-legacy-null-run".to_string(),
+        surface: None,
+        commit_id: Some(commit_id.clone()),
+        request_id: Some("undo-legacy-null-run".to_string()),
+    };
+    let undone = narrative_extraction::narrative_extraction_undo_commit(&db, undo_payload.clone())
+        .expect("legacy NULL run Commit must remain undoable");
+    assert_eq!(undone["status"], "undone");
+    let undo_replay = narrative_extraction::narrative_extraction_undo_commit(&db, undo_payload)
+        .expect("legacy NULL run Undo replay must return its durable receipt");
+    assert_eq!(undo_replay, undone);
+
+    let redo_payload = UndoCommitPayload {
+        project_id: "project-1".to_string(),
+        session_id: "sess-legacy-null-run".to_string(),
+        surface: None,
+        commit_id: Some(commit_id.clone()),
+        request_id: Some("redo-legacy-null-run".to_string()),
+    };
+    let redone = narrative_extraction::narrative_extraction_redo_commit(&db, redo_payload.clone())
+        .expect("legacy NULL run Commit must remain redoable");
+    assert_eq!(redone["status"], "redone");
+    let redo_replay = narrative_extraction::narrative_extraction_redo_commit(&db, redo_payload)
+        .expect("legacy NULL run Redo replay must return its durable receipt");
+    assert_eq!(redo_replay, redone);
+
+    let final_state: (Option<String>, String, i64) = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT run_id, status,
+                        (SELECT COUNT(*) FROM events WHERE id = 'event-legacy-null-run')
+                   FROM narrative_apply_commits WHERE id = ?1",
+                rusqlite::params![commit_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read final legacy NULL run lifecycle");
+    assert_eq!(final_state, (None, "redone".to_string(), 1));
+}
+
+#[test]
+fn current_chronicle_redo_accepts_catalog_restored_by_its_own_undo() {
+    let db = migrated_db();
+    let applied = apply_current_chronicle_event(
+        &db,
+        "run-current-redo-clean",
+        "event-current-redo-clean",
+        "宿舎が砲撃される",
+    );
+    let commit_id = applied["commitId"].as_str().expect("commit id").to_string();
+
+    narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        UndoCommitPayload {
+            project_id: "project-1".to_string(),
+            session_id: "sess-current-redo-clean".to_string(),
+            surface: None,
+            commit_id: Some(commit_id.clone()),
+            request_id: Some("undo-current-redo-clean".to_string()),
+        },
+    )
+    .expect("Undo must remove the original Apply Event");
+
+    let redone = narrative_extraction::narrative_extraction_redo_commit(
+        &db,
+        UndoCommitPayload {
+            project_id: "project-1".to_string(),
+            session_id: "sess-current-redo-clean".to_string(),
+            surface: None,
+            commit_id: Some(commit_id),
+            request_id: Some("redo-current-redo-clean".to_string()),
+        },
+    )
+    .expect("an unchanged post-Undo catalog must permit the exact Redo");
+    assert_eq!(redone["status"], "redone");
+    let restored: (i64, String) = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*), MIN(id) FROM events WHERE project_id = 'project-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read restored Event catalog");
+    assert_eq!(restored, (1, "event-current-redo-clean".to_string()));
+}
+
+#[test]
+fn current_chronicle_redo_rejects_different_id_duplicate_added_after_undo() {
+    let db = migrated_db();
+    let applied = apply_current_chronicle_event(
+        &db,
+        "run-current-redo-drift",
+        "event-current-redo-original",
+        "宿舎が砲撃される",
+    );
+    let commit_id = applied["commitId"].as_str().expect("commit id").to_string();
+
+    narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        UndoCommitPayload {
+            project_id: "project-1".to_string(),
+            session_id: "sess-current-redo-drift".to_string(),
+            surface: None,
+            commit_id: Some(commit_id.clone()),
+            request_id: Some("undo-current-redo-drift".to_string()),
+        },
+    )
+    .expect("Undo must remove the original Apply Event");
+    db.execute(
+        "INSERT INTO events (id, project_id, title, ordinal, version)
+         VALUES ('event-current-redo-duplicate', 'project-1', '宿舎が砲撃される', 'a0', 0)",
+        &[],
+        "run",
+    )
+    .expect("add a different-id duplicate after Undo");
+    let before: (String, i64, i64, i64) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+                    rusqlite::params![commit_id],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT version FROM narrative_apply_commits WHERE id = ?1",
+                    rusqlite::params![commit_id],
+                    |row| row.get(0),
+                )?,
+                conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM change_events
+                      WHERE op_type = 'narrative.commit.redo'",
+                    [],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("read pre-Redo durable state");
+
+    let error = narrative_extraction::narrative_extraction_redo_commit(
+        &db,
+        UndoCommitPayload {
+            project_id: "project-1".to_string(),
+            session_id: "sess-current-redo-drift".to_string(),
+            surface: None,
+            commit_id: Some(commit_id.clone()),
+            request_id: Some("redo-current-redo-drift".to_string()),
+        },
+    )
+    .expect_err("a different-id live duplicate must block Redo before Event DML");
+    assert!(error
+        .to_string()
+        .contains("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT"));
+    let after: (String, i64, i64, i64, i64) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+                    rusqlite::params![commit_id],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT version FROM narrative_apply_commits WHERE id = ?1",
+                    rusqlite::params![commit_id],
+                    |row| row.get(0),
+                )?,
+                conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM events WHERE id = 'event-current-redo-original'",
+                    [],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM change_events
+                      WHERE op_type = 'narrative.commit.redo'",
+                    [],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("read rejected Redo durable state");
+    assert_eq!((after.0, after.1, after.2, after.4), before);
+    assert_eq!(after.3, 0, "the original Event must remain absent");
 }
 
 #[test]
@@ -1575,6 +1883,7 @@ fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
         RunRefPayload {
             run_id: "run-review-bundle".to_string(),
             project_id: "project-1".to_string(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect("get review bundle");
@@ -1608,6 +1917,7 @@ fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
         RunRefPayload {
             run_id: "run-review-bundle".to_string(),
             project_id: "other-project".to_string(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect_err("project mismatch must fail closed");
@@ -1692,6 +2002,7 @@ fn get_run_review_bundle_rejects_corrupt_current_chronicle_resume_artifact() {
         RunRefPayload {
             run_id: "run-corrupt-resume-artifact".to_string(),
             project_id: "project-1".to_string(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect_err("resume hydration must reject a corrupted canonical artifact digest");
@@ -1795,6 +2106,7 @@ fn get_run_review_bundle_hydrates_only_the_verified_current_chronicle_attempt() 
         RunRefPayload {
             run_id: run_id.to_string(),
             project_id: "project-1".to_string(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect("Native hydration must ignore a stale prior-attempt artifact");
@@ -2161,6 +2473,7 @@ fn relation_dependencies_in_summary_json_survive_append_revision() {
         RunRefPayload {
             run_id: "run-rel-deps".to_string(),
             project_id: "project-1".to_string(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect("bundle");

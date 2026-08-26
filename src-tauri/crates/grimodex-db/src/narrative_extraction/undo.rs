@@ -31,6 +31,7 @@ use super::plot_thread_undo::{
     reapply_plot_thread_create_snapshot, restore_plot_thread_patch, undo_created_plot_branch,
     undo_created_plot_marker, undo_created_plot_thread,
 };
+use super::repository::validate_current_chronicle_live_catalog;
 use super::semantic_bindings::collect_semantic_binding_snapshot;
 use super::task_leases::with_immediate_transaction;
 use super::temporal_undo::{
@@ -322,6 +323,21 @@ fn mutate_commit(
                         "NEX_COMMIT_NOT_REDOABLE: status is '{}'",
                         commit.status
                     );
+
+                    // Undo removes Event creates made by the original
+                    // Chronicle Apply, so an unchanged workspace is once
+                    // again byte-identical to the Run's sealed match catalog.
+                    // Recheck that catalog under this Redo transaction before
+                    // restoring any journal entity. This blocks a different-id
+                    // duplicate added after Undo while preserving a legitimate
+                    // Redo of the original Event.
+                    if let Some(run_id) = commit.run_id.as_deref() {
+                        validate_current_chronicle_live_catalog(
+                            conn,
+                            &payload.project_id,
+                            run_id,
+                        )?;
+                    }
 
                     // Preflight: current state must still match the post-Undo expectation
                     // before we re-apply after-snapshots (especially patch summary/aliases).

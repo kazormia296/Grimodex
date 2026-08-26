@@ -10,7 +10,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 const apiMock = vi.hoisted(() => ({
   listBackups: vi.fn(),
-  restoreBackup: vi.fn(() => Promise.resolve()),
+  restoreBackupWithWorkspaceAuthority: vi.fn(() => Promise.resolve()),
 }));
 const toastMock = vi.hoisted(() => {
   const fn = vi.fn();
@@ -22,21 +22,19 @@ const storeMock = vi.hoisted(() => ({ path: "/ws" as string | null }));
 const guardMock = vi.hoisted(() => ({ pending: false }));
 
 vi.mock("../backupApi", () => apiMock);
+vi.mock("../backupRestoreAuthority", () => ({
+  isTerminalRestoreError: (error: unknown) =>
+    String(error).includes("RESTORE_SESSION_LOST") ||
+    String(error).includes("RESTORE_SESSION_MARKER_FINALIZE_FAILED") ||
+    String(error).includes("RESTORE_FORENSIC_RECOVERY_REQUIRED"),
+  restoreBackupWithWorkspaceAuthority:
+    apiMock.restoreBackupWithWorkspaceAuthority,
+}));
 vi.mock("sonner", () => ({ toast: toastMock }));
 vi.mock("@/features/workspace/store", () => ({
   useWorkspaceStore: (
     sel: (s: { activeWorkspacePath: string | null }) => unknown,
   ) => sel({ activeWorkspacePath: storeMock.path }),
-}));
-// 復元前の静止化 helper は no-op に。
-vi.mock("@/hooks/useAutoSave", () => ({
-  flushAllAutoSaves: vi.fn(() => Promise.resolve()),
-}));
-vi.mock("@/features/tree/pendingSceneWrites", () => ({
-  awaitAllPendingSceneWrites: vi.fn(() => Promise.resolve()),
-}));
-vi.mock("@/features/timelapse/recorder", () => ({
-  flushNow: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("@/features/editor/inlineAi/pendingGuard", () => ({
   guardInlineAiPending: () => guardMock.pending,
@@ -48,7 +46,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   storeMock.path = "/ws";
   guardMock.pending = false;
-  apiMock.restoreBackup.mockResolvedValue(undefined);
+  apiMock.restoreBackupWithWorkspaceAuthority.mockResolvedValue(undefined);
 });
 
 describe("BackupRestoreSection", () => {
@@ -84,7 +82,7 @@ describe("BackupRestoreSection", () => {
 
     // 1 クリック目: 確認モードに入るだけで復元しない。
     fireEvent.click(btn);
-    expect(apiMock.restoreBackup).not.toHaveBeenCalled();
+    expect(apiMock.restoreBackupWithWorkspaceAuthority).not.toHaveBeenCalled();
     const confirmBtn = await screen.findByRole("button", {
       name: "全体を置換して復元",
     });
@@ -92,7 +90,9 @@ describe("BackupRestoreSection", () => {
     // 2 クリック目: 復元 → 成功トースト → reload。
     fireEvent.click(confirmBtn);
     await waitFor(() =>
-      expect(apiMock.restoreBackup).toHaveBeenCalledWith("grimodex-A.db"),
+      expect(apiMock.restoreBackupWithWorkspaceAuthority).toHaveBeenCalledWith(
+        "grimodex-A.db",
+      ),
     );
     await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
     expect(reloadSpy).toHaveBeenCalled();
@@ -116,7 +116,9 @@ describe("BackupRestoreSection", () => {
       await screen.findByRole("button", { name: "全体を置換して復元" }),
     );
     await waitFor(() =>
-      expect(apiMock.restoreBackup).toHaveBeenCalledWith("grimodex-B.db.gz"),
+      expect(apiMock.restoreBackupWithWorkspaceAuthority).toHaveBeenCalledWith(
+        "grimodex-B.db.gz",
+      ),
     );
     await waitFor(() => expect(reloadSpy).toHaveBeenCalled());
   });
@@ -134,7 +136,7 @@ describe("BackupRestoreSection", () => {
     const btn = await screen.findByRole("button", { name: "復元" });
     expect(btn).toBeDisabled();
     fireEvent.click(btn);
-    expect(apiMock.restoreBackup).not.toHaveBeenCalled();
+    expect(apiMock.restoreBackupWithWorkspaceAuthority).not.toHaveBeenCalled();
   });
 
   it("ワークスペース未オープン時は一覧を取得しない", async () => {
@@ -164,7 +166,7 @@ describe("BackupRestoreSection", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "復元" })).toBeInTheDocument(),
     );
-    expect(apiMock.restoreBackup).not.toHaveBeenCalled();
+    expect(apiMock.restoreBackupWithWorkspaceAuthority).not.toHaveBeenCalled();
   });
 
   it("RESTORE_SESSION_LOST エラーでは reload して回復させる", async () => {
@@ -172,8 +174,56 @@ describe("BackupRestoreSection", () => {
       .spyOn(window.location, "reload")
       .mockImplementation(() => {});
     // Tauri は AppError を文字列で reject する。
-    apiMock.restoreBackup.mockRejectedValue(
+    apiMock.restoreBackupWithWorkspaceAuthority.mockRejectedValue(
       "RESTORE_SESSION_LOST: 復元DBを開けませんでした",
+    );
+    apiMock.listBackups.mockResolvedValue([
+      {
+        fileName: "grimodex-A.db",
+        sizeBytes: 100,
+        modifiedMs: 1,
+        format: "db",
+      },
+    ]);
+    render(<BackupRestoreSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "復元" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "全体を置換して復元" }),
+    );
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalled());
+    await waitFor(() => expect(reloadSpy).toHaveBeenCalled());
+  });
+
+  it("authority publication後のmarker finalize失敗でもreloadする", async () => {
+    const reloadSpy = vi
+      .spyOn(window.location, "reload")
+      .mockImplementation(() => {});
+    apiMock.restoreBackupWithWorkspaceAuthority.mockRejectedValue(
+      "RESTORE_SESSION_MARKER_FINALIZE_FAILED: marker rename failed",
+    );
+    apiMock.listBackups.mockResolvedValue([
+      {
+        fileName: "grimodex-A.db",
+        sizeBytes: 100,
+        modifiedMs: 1,
+        format: "db",
+      },
+    ]);
+    render(<BackupRestoreSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "復元" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "全体を置換して復元" }),
+    );
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalled());
+    await waitFor(() => expect(reloadSpy).toHaveBeenCalled());
+  });
+
+  it("forensic recoveryでNative authorityが未公開の場合もreloadする", async () => {
+    const reloadSpy = vi
+      .spyOn(window.location, "reload")
+      .mockImplementation(() => {});
+    apiMock.restoreBackupWithWorkspaceAuthority.mockRejectedValue(
+      "RESTORE_FORENSIC_RECOVERY_REQUIRED: live authority is unpublished",
     );
     apiMock.listBackups.mockResolvedValue([
       {
@@ -196,7 +246,9 @@ describe("BackupRestoreSection", () => {
     const reloadSpy = vi
       .spyOn(window.location, "reload")
       .mockImplementation(() => {});
-    apiMock.restoreBackup.mockRejectedValue("復元DBの適用に失敗しました");
+    apiMock.restoreBackupWithWorkspaceAuthority.mockRejectedValue(
+      "復元DBの適用に失敗しました",
+    );
     apiMock.listBackups.mockResolvedValue([
       {
         fileName: "grimodex-A.db",

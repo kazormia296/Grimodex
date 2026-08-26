@@ -1,7 +1,9 @@
 import type {
+  ChronicleBlockedDiscardExpectation,
   ChronicleTaskResumeCandidate,
   CreateRunPayload,
   CreateRunResult,
+  NarrativeExtractionWorkspaceBinding,
   RunRefPayload,
 } from "./nativeApi";
 import {
@@ -587,8 +589,9 @@ export function resetNarrativeExtractionRunIndexForTests(): void {
 
 export async function createRun(
   payload: CreateRunPayload,
+  workspaceBinding: NarrativeExtractionWorkspaceBinding,
 ): Promise<CreateRunResult> {
-  const created = await narrativeExtractionCreateRun(payload);
+  const created = await narrativeExtractionCreateRun(payload, workspaceBinding);
   rememberRun(payload.projectId, created.runId);
   return created;
 }
@@ -604,8 +607,17 @@ export async function getRun(
 export async function cancelRun(
   runId: string,
   projectId: string,
+  workspaceBinding: NarrativeExtractionWorkspaceBinding,
+  chronicleBlockedDiscard?: ChronicleBlockedDiscardExpectation,
 ): Promise<{ runId: string; status: string }> {
-  return narrativeExtractionCancelRun({ runId, projectId });
+  const payload: RunRefPayload = {
+    runId,
+    projectId,
+    ...(chronicleBlockedDiscard === undefined
+      ? {}
+      : { chronicleBlockedDiscard }),
+  };
+  return narrativeExtractionCancelRun(payload, workspaceBinding);
 }
 
 export async function listResumableRuns(params: {

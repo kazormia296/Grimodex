@@ -41,9 +41,10 @@ pub const PROPOSAL_REVISION_D1_PRODUCER_GENERATION: i64 = 1;
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
-    ChroniclePlanProposalSetFinish, ChronicleStageId, CreateRunPayload, CreateTaskSeed,
-    FailTaskPayload, FinishTaskPayload, ListChronicleTaskResumeCandidatesPayload,
-    ListResumableRunsPayload, ProposalSeed, ReviseAndDecidePayload, SaveProposalSetPayload,
+    ChronicleBlockedDiscardExpectation, ChroniclePlanProposalSetFinish, ChronicleStageId,
+    CreateRunPayload, CreateTaskSeed, FailTaskPayload, FinishTaskPayload,
+    ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, ProposalSeed,
+    ReviseAndDecidePayload, SaveProposalSetPayload,
 };
 use super::reconciliation_envelope::{
     ensure_v2_proposal_payload_digest, envelope_schema_version, validate_envelope_source_tokens,
@@ -1235,6 +1236,25 @@ struct ChronicleTaskResumeRunRow {
     completed_at: Option<String>,
 }
 
+fn decode_chronicle_task_resume_run_row(
+    row: &Row<'_>,
+) -> rusqlite::Result<ChronicleTaskResumeRunRow> {
+    Ok(ChronicleTaskResumeRunRow {
+        run_id: row.get(0)?,
+        project_id: row.get(1)?,
+        run_kind: row.get(2)?,
+        status: row.get(3)?,
+        scope_json_text: row.get(4)?,
+        spec_json_text: row.get(5)?,
+        spec_digest: row.get(6)?,
+        snapshot_digest: row.get(7)?,
+        catalog_digest: row.get(8)?,
+        created_at: row.get(9)?,
+        started_at: row.get(10)?,
+        completed_at: row.get(11)?,
+    })
+}
+
 #[derive(Debug)]
 struct ChronicleTaskResumeTaskRow {
     task_id: String,
@@ -1846,6 +1866,98 @@ fn validate_chronicle_resume_snapshot_output(
     Ok(())
 }
 
+/// Rebuild the exact catalog shape produced by the Chronicle product's fresh
+/// start path.  The events table is the live authority: the durable Snapshot
+/// catalog only proves what matching saw before the process stopped.
+///
+/// Keep the ORDER BY and every JSON field byte-compatible with the renderer
+/// mapping in `ChronicleExtractDialog`.  In particular, the current product
+/// matcher does not yet hydrate Scene/participant/provenance joins, so those
+/// arrays are deliberately empty here as well.  Adding those authorities is a
+/// future catalog-version change, not an implicit resume-time reinterpretation.
+fn load_live_chronicle_existing_events_catalog(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Value> {
+    let mut statement = conn.prepare(
+        "SELECT id, title, note, version, start_time, end_time
+           FROM events
+          WHERE project_id = ?1
+          ORDER BY ordinal ASC, id ASC",
+    )?;
+    let events = statement
+        .query_map(params![project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })?
+        .map(|row| {
+            let (id, title, note, version, start_time, end_time) = row?;
+            Ok(json!({
+                "ref": id,
+                "sourceKey": id,
+                "title": title,
+                "note": note,
+                "version": version,
+                "linkedDocumentSourceKeys": [],
+                "participantEntityRefs": [],
+                "startTime": start_time,
+                "endTime": end_time,
+                "digest": format!("sha256:{id}"),
+                "applicationProvenanceKeys": [],
+            }))
+        })
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(json!({
+        "kind": CHRONICLE_EXISTING_EVENTS_CATALOG_KIND,
+        "events": events,
+    }))
+}
+
+fn chronicle_live_catalog_matches_sealed(
+    conn: &Connection,
+    project_id: &str,
+    sealed_catalog_digest: &str,
+) -> anyhow::Result<bool> {
+    let live_catalog = load_live_chronicle_existing_events_catalog(conn, project_id)?;
+    Ok(canonical_json_digest(&live_catalog)? == sealed_catalog_digest)
+}
+
+/// Final in-transaction guard for every current Chronicle Task claim/finish.
+/// Candidate discovery is advisory and can race a writer in another process;
+/// this check runs under the same BEGIN IMMEDIATE that owns the Task mutation.
+pub(crate) fn validate_current_chronicle_live_catalog(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<()> {
+    if !current_chronicle_run_spec_for_run(conn, project_id, run_id)? {
+        return Ok(());
+    }
+    let sealed_catalog_digest: Option<String> = conn.query_row(
+        "SELECT catalog_digest
+           FROM narrative_extraction_runs
+          WHERE id = ?1 AND project_id = ?2",
+        params![run_id, project_id],
+        |row| row.get(0),
+    )?;
+    let sealed_catalog_digest = sealed_catalog_digest.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RUN_SPEC_CATALOG_MISMATCH: current Chronicle Run '{run_id}' has no catalogDigest"
+        )
+    })?;
+    anyhow::ensure!(
+        chronicle_live_catalog_matches_sealed(conn, project_id, &sealed_catalog_digest)?,
+        "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT: current Chronicle Event catalog differs from Run '{run_id}'"
+    );
+    Ok(())
+}
+
 fn build_chronicle_task_resume_candidate(
     conn: &Connection,
     row: ChronicleTaskResumeRunRow,
@@ -2064,10 +2176,12 @@ fn build_chronicle_task_resume_candidate(
             snapshot_digest,
             &snapshot_inputs,
         )?;
-        let blocked_code = snapshot_inputs
-            .existing_events_catalog
-            .is_none()
-            .then_some("NEX_CHRONICLE_RESUME_CATALOG_MISSING");
+        let blocked_code = if snapshot_inputs.existing_events_catalog.is_none() {
+            Some("NEX_CHRONICLE_RESUME_CATALOG_MISSING")
+        } else {
+            (!chronicle_live_catalog_matches_sealed(conn, &row.project_id, catalog_digest)?)
+                .then_some("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT")
+        };
         (
             Some(snapshot_inputs.language),
             snapshot_inputs.existing_events_catalog,
@@ -2092,10 +2206,13 @@ fn build_chronicle_task_resume_candidate(
     } else {
         false
     };
-    let (availability, blocked_code) = if let Some(blocked_code) = durable_blocked_code {
-        ("blocked", Some(blocked_code))
-    } else if lease_held {
+    // A live worker always wins over a durable recovery diagnosis. In
+    // particular, Snapshot is necessarily incomplete while its first Attempt
+    // is running; exposing that Run as discardable would cancel active work.
+    let (availability, blocked_code) = if lease_held {
         ("lease-held", None)
+    } else if let Some(blocked_code) = durable_blocked_code {
+        ("blocked", Some(blocked_code))
     } else {
         ("ready", None)
     };
@@ -2174,22 +2291,7 @@ pub fn list_chronicle_task_resume_candidates(
         let rows = statement
             .query_map(
                 params![payload.project_id, CHRONICLE_EXTRACT_SURFACE_PATH],
-                |row| {
-                    Ok(ChronicleTaskResumeRunRow {
-                        run_id: row.get(0)?,
-                        project_id: row.get(1)?,
-                        run_kind: row.get(2)?,
-                        status: row.get(3)?,
-                        scope_json_text: row.get(4)?,
-                        spec_json_text: row.get(5)?,
-                        spec_digest: row.get(6)?,
-                        snapshot_digest: row.get(7)?,
-                        catalog_digest: row.get(8)?,
-                        created_at: row.get(9)?,
-                        started_at: row.get(10)?,
-                        completed_at: row.get(11)?,
-                    })
-                },
+                decode_chronicle_task_resume_run_row,
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let now = Utc::now();
@@ -2213,11 +2315,79 @@ pub fn list_chronicle_task_resume_candidates(
     })
 }
 
-pub fn cancel_run(db: &Database, run_id: String, project_id: String) -> anyhow::Result<Value> {
+fn validate_chronicle_blocked_discard_expectation(
+    conn: &Connection,
+    run_id: &str,
+    project_id: &str,
+    expectation: &ChronicleBlockedDiscardExpectation,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !expectation.next_task_id.is_empty()
+            && expectation.next_task_id.trim() == expectation.next_task_id
+            && expectation.blocked_code.starts_with("NEX_")
+            && is_sha256_digest(&expectation.run_spec_digest)
+            && is_sha256_digest(&expectation.snapshot_digest)
+            && is_sha256_digest(&expectation.catalog_digest),
+        "NEX_CHRONICLE_RESUME_DISCARD_EXPECTATION_INVALID: blocked discard expectation is malformed"
+    );
+    let row = conn
+        .query_row(
+            "SELECT id, project_id, run_kind, status, scope_json, spec_json, spec_digest,
+                    snapshot_digest, catalog_digest, created_at, started_at, completed_at
+               FROM narrative_extraction_runs
+              WHERE id = ?1 AND project_id = ?2",
+            params![run_id, project_id],
+            decode_chronicle_task_resume_run_row,
+        )
+        .optional()?;
+    let row = row.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_CHRONICLE_RESUME_DISCARD_STALE: exact Chronicle Run is no longer present"
+        )
+    })?;
+    let candidate = build_chronicle_task_resume_candidate(conn, row, Utc::now())?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_DISCARD_STALE: Run is not a current Chronicle recovery candidate"
+            )
+        })?;
+    let value = candidate.value;
+    let current_availability = value["availability"].as_str();
+    let current_blocked_code = value["blockedCode"].as_str();
+    let current_next_task_id = value["nextTask"]["taskId"].as_str();
+    let current_run_spec_digest = value["runSpecDigest"].as_str();
+    let current_snapshot_digest = value["snapshotDigest"].as_str();
+    let current_catalog_digest = value["catalogDigest"].as_str();
+    anyhow::ensure!(
+        current_availability == Some("blocked")
+            && current_blocked_code == Some(expectation.blocked_code.as_str())
+            && current_next_task_id == Some(expectation.next_task_id.as_str())
+            && current_run_spec_digest == Some(expectation.run_spec_digest.as_str())
+            && current_snapshot_digest == Some(expectation.snapshot_digest.as_str())
+            && current_catalog_digest == Some(expectation.catalog_digest.as_str()),
+        "NEX_CHRONICLE_RESUME_DISCARD_STALE: Chronicle Run is no longer the exact blocked candidate selected by the product"
+    );
+    Ok(())
+}
+
+pub fn cancel_run_with_expectation(
+    db: &Database,
+    run_id: String,
+    project_id: String,
+    chronicle_blocked_discard: Option<ChronicleBlockedDiscardExpectation>,
+) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             ensure_run_project(conn, &run_id, &project_id)?;
             ensure_generic_task_api_allowed(conn, &run_id)?;
+            if let Some(expectation) = chronicle_blocked_discard.as_ref() {
+                validate_chronicle_blocked_discard_expectation(
+                    conn,
+                    &run_id,
+                    &project_id,
+                    expectation,
+                )?;
+            }
             let lifecycle_at = next_run_lifecycle_timestamp_in_tx(conn, &project_id)?;
             let updated = conn.execute(
                 "UPDATE narrative_extraction_runs
@@ -2248,6 +2418,11 @@ pub fn cancel_run(db: &Database, run_id: String, project_id: String) -> anyhow::
     })
 }
 
+#[cfg(test)]
+pub fn cancel_run(db: &Database, run_id: String, project_id: String) -> anyhow::Result<Value> {
+    cancel_run_with_expectation(db, run_id, project_id, None)
+}
+
 pub fn claim_task(
     db: &Database,
     payload: super::models::ClaimTaskPayload,
@@ -2263,6 +2438,7 @@ pub fn claim_task(
                 &payload.run_id,
                 payload.task_kinds.as_deref(),
             )?;
+            validate_current_chronicle_live_catalog(conn, &payload.project_id, &payload.run_id)?;
             let claimed = claim_next_task(conn, &payload)?;
             Ok(match claimed {
                 Some(task) => json!({
@@ -3091,6 +3267,7 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                 attempt_is_current == Some(1),
                 "attempt is not the current running attempt owned by task"
             );
+            validate_current_chronicle_live_catalog(conn, &payload.project_id, &payload.run_id)?;
             validate_current_chronicle_ai_task_finish_input(conn, &payload, &output_value)?;
             validate_chronicle_plan_proposal_set_finish_input(conn, &payload, &output_value)?;
             let lifecycle_at = grimodex_core::now_rfc3339_millis();
@@ -5069,11 +5246,15 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
 #[cfg(test)]
 mod unit_tests {
     use super::super::{
-        transition_run_status_in_tx, ClaimTaskPayload, FailTaskPayload, FinishTaskPayload,
-        NarrativeRunStatus,
+        transition_run_status_in_tx, ApplyCommitPayload, ClaimTaskPayload, CommitApplicationRef,
+        CommitOperation, FailTaskPayload, FinishTaskPayload, NarrativeRunStatus,
+        PrepareCommitPayload,
     };
     use super::*;
-    use crate::Database;
+    use crate::{
+        load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
+        SetNarrativeRuntimePolicyInput,
+    };
     use serde_json::json;
 
     fn test_db() -> Database {
@@ -5086,6 +5267,21 @@ mod unit_tests {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
                 [],
+            )?;
+            // Current Chronicle Task claims now CAS their sealed catalog
+            // against the live Event authority. Keep the narrow unit schema
+            // representative of the columns used by that production read.
+            conn.execute_batch(
+                "CREATE TABLE events (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    note TEXT,
+                    ordinal TEXT NOT NULL DEFAULT 'a0',
+                    start_time INTEGER,
+                    end_time INTEGER,
+                    version INTEGER NOT NULL DEFAULT 0
+                );",
             )?;
             ensure_test_schema(conn)
         })
@@ -5206,7 +5402,11 @@ mod unit_tests {
         run_id: &str,
         execution_mode: &str,
     ) -> CreateRunPayload {
-        let catalog_digest = test_sha256('a');
+        let catalog_digest = canonical_json_digest(&json!({
+            "kind": CHRONICLE_EXISTING_EVENTS_CATALOG_KIND,
+            "events": [],
+        }))
+        .expect("canonical empty live Chronicle catalog");
         let spec_json = json!({
             "kind": CHRONICLE_RUN_SPEC_KIND,
             "domain": "chronicle",
@@ -5285,10 +5485,36 @@ mod unit_tests {
                 "participantEntityRefs": [],
                 "startTime": null,
                 "endTime": null,
-                "digest": test_sha256('d'),
+                "digest": "sha256:event:existing",
                 "applicationProvenanceKeys": [],
             }],
         })
+    }
+
+    fn seed_live_existing_events_catalog(db: &Database, catalog: &Value) {
+        let events = catalog["events"]
+            .as_array()
+            .expect("test existing-event catalog events");
+        db.with_conn(|conn| {
+            for (index, event) in events.iter().enumerate() {
+                conn.execute(
+                    "INSERT INTO events
+                        (id, project_id, title, note, ordinal, start_time, end_time, version)
+                     VALUES (?1, 'project-1', ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        event["ref"].as_str(),
+                        event["title"].as_str(),
+                        event["note"].as_str(),
+                        format!("a{index}"),
+                        event["startTime"].as_i64(),
+                        event["endTime"].as_i64(),
+                        event["version"].as_i64(),
+                    ],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed live existing-event authority");
     }
 
     fn test_candidate_snapshot_payload_for_scenes(
@@ -5573,6 +5799,7 @@ mod unit_tests {
     }
 
     fn seed_ready_observation_candidate(db: &Database, run_id: &str, catalog: &Value) -> String {
+        seed_live_existing_events_catalog(db, catalog);
         let payload = current_chronicle_candidate_payload(run_id, "project-1", catalog);
         let snapshot_digest = payload
             .snapshot_digest
@@ -5599,6 +5826,56 @@ mod unit_tests {
             json!({ "windowCount": 0 }),
         );
         snapshot_digest
+    }
+
+    type ChronicleRunTaskLedgerState = (String, i64, Vec<(String, String, i64)>, i64, i64, i64);
+
+    fn chronicle_run_task_ledger_state(db: &Database, run_id: &str) -> ChronicleRunTaskLedgerState {
+        db.with_conn(|conn| {
+            let (run_status, run_version) = conn.query_row(
+                "SELECT status, version FROM narrative_extraction_runs WHERE id = ?1",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let tasks = conn
+                .prepare(
+                    "SELECT task_kind, status, version
+                       FROM narrative_extraction_tasks
+                      WHERE run_id = ?1
+                      ORDER BY task_kind ASC",
+                )?
+                .query_map(params![run_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let attempt_count = conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_extraction_attempts attempt
+                   JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+                  WHERE task.run_id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )?;
+            let artifact_count = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_artifacts WHERE run_id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )?;
+            let proposal_set_count = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_sets WHERE run_id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )?;
+            Ok((
+                run_status,
+                run_version,
+                tasks,
+                attempt_count,
+                artifact_count,
+                proposal_set_count,
+            ))
+        })
+        .expect("read Chronicle Run/Task ledger state")
     }
 
     fn mark_current_plan_predecessors_completed(db: &Database, run_id: &str) {
@@ -5806,6 +6083,101 @@ mod unit_tests {
         }
     }
 
+    fn enable_manual_apply_for_test(db: &Database) {
+        let current = load_narrative_runtime_policy_from_db(db).expect("load runtime policy");
+        set_narrative_runtime_policy(
+            db,
+            SetNarrativeRuntimePolicyInput {
+                expected_version: current.version,
+                runtime_mode: "manual-apply".to_string(),
+                maintenance_enabled: false,
+                generic_import_enabled: false,
+                background_ai_enabled: false,
+            },
+        )
+        .expect("enable manual Apply for commit guard test");
+    }
+
+    fn seed_terminal_current_chronicle_proposal(
+        db: &Database,
+        run_id: &str,
+    ) -> (String, String, String) {
+        create_current_chronicle_run(db, run_id);
+        let (task_id, attempt_id) = claim_current_plan(db, run_id);
+        finish_task(
+            db,
+            current_plan_finish_payload(
+                run_id,
+                &task_id,
+                &attempt_id,
+                vec![valid_chronicle_proposal(
+                    "event:catalog-guard",
+                    "Catalog guard proposal",
+                )],
+                None,
+            ),
+        )
+        .expect("terminalize current Chronicle ProposalSet");
+        let proposal_set_id = chronicle_plan_proposal_set_id(run_id, &task_id);
+        let (proposal_id, revision_id) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT id, current_revision_id
+                       FROM narrative_proposals
+                      WHERE proposal_set_id = ?1",
+                    params![proposal_set_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read terminal current Proposal/Revision");
+        (proposal_set_id, proposal_id, revision_id)
+    }
+
+    fn current_catalog_guard_prepare_payload(
+        run_id: &str,
+        proposal_set_id: &str,
+        proposal_id: &str,
+        revision_id: &str,
+        request_id: &str,
+    ) -> PrepareCommitPayload {
+        let operation = CommitOperation {
+            kind: "chronicle.event.create".to_string(),
+            payload: valid_chronicle_proposal("event:catalog-guard", "Catalog guard proposal"),
+            proposal_id: proposal_id.to_string(),
+            revision_id: revision_id.to_string(),
+        };
+        PrepareCommitPayload {
+            project_id: "project-1".to_string(),
+            run_id: run_id.to_string(),
+            proposal_set_id: proposal_set_id.to_string(),
+            request_id: request_id.to_string(),
+            plan_digest: "caller-plan-digest-is-recomputed".to_string(),
+            session_id: "catalog-guard-session".to_string(),
+            surface: Some("narrative-extraction".to_string()),
+            operations: vec![operation],
+            applications: vec![CommitApplicationRef {
+                proposal_id: proposal_id.to_string(),
+                revision_id: revision_id.to_string(),
+            }],
+            expected_tail_ordinal: None,
+            entity_bindings: vec![],
+            expected_calendar_version: None,
+        }
+    }
+
+    fn insert_live_catalog_drift_event(db: &Database, event_id: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO events (id, project_id, title, ordinal, version)
+                 VALUES (?1, 'project-1', '宿舎が砲撃される', 'a1', 0)",
+                params![event_id],
+            )?;
+            Ok(())
+        })
+        .expect("add live Event after Chronicle matching");
+    }
+
     #[test]
     fn create_and_get_run_round_trip() {
         let db = test_db();
@@ -5886,6 +6258,184 @@ mod unit_tests {
         assert!(
             reviews.as_array().expect("review array").is_empty(),
             "a task-resume candidate without ProposalSet is not Review-resumable"
+        );
+    }
+
+    #[test]
+    fn live_chronicle_catalog_matches_fresh_start_canonical_contract() {
+        let db = full_migrated_db();
+        db.with_conn(|conn| {
+            // Same ordinal deliberately exercises the fresh path's secondary
+            // `id` order independently of insertion order.
+            conn.execute(
+                "INSERT INTO events
+                    (id, project_id, title, note, ordinal, start_time, end_time, version)
+                 VALUES ('event:b', 'project-1', '宿舎が砲撃される', NULL,
+                         'a0', 12, NULL, 2)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO events
+                    (id, project_id, title, note, ordinal, start_time, end_time, version)
+                 VALUES ('event:a', 'project-1', 'Alpha', 'note',
+                         'a0', NULL, 99, 1)",
+                [],
+            )?;
+            let catalog = load_live_chronicle_existing_events_catalog(conn, "project-1")?;
+            assert_eq!(
+                catalog,
+                json!({
+                    "kind": "chronicle.existing-events-catalog@1",
+                    "events": [
+                        {
+                            "ref": "event:a",
+                            "sourceKey": "event:a",
+                            "title": "Alpha",
+                            "note": "note",
+                            "version": 1,
+                            "linkedDocumentSourceKeys": [],
+                            "participantEntityRefs": [],
+                            "startTime": null,
+                            "endTime": 99,
+                            "digest": "sha256:event:a",
+                            "applicationProvenanceKeys": [],
+                        },
+                        {
+                            "ref": "event:b",
+                            "sourceKey": "event:b",
+                            "title": "宿舎が砲撃される",
+                            "note": null,
+                            "version": 2,
+                            "linkedDocumentSourceKeys": [],
+                            "participantEntityRefs": [],
+                            "startTime": 12,
+                            "endTime": null,
+                            "digest": "sha256:event:b",
+                            "applicationProvenanceKeys": [],
+                        },
+                    ],
+                })
+            );
+            assert_eq!(
+                canonical_json_digest(&catalog)?,
+                "sha256:3a7548c257c0284af4b435d24c105a159eaa43fc512da14270659096640c3780"
+            );
+            Ok(())
+        })
+        .expect("canonicalize live Chronicle catalog");
+    }
+
+    #[test]
+    fn live_catalog_drift_blocks_discovery_and_claim_without_ledger_mutation() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Existing event");
+        seed_ready_observation_candidate(&db, "resume-live-catalog-drift", &catalog);
+        let ready = list_task_resume_candidates(&db, "project-1")
+            .expect("sealed catalog matches live authority before drift");
+        assert_eq!(ready[0]["availability"], "ready");
+        let before = chronicle_run_task_ledger_state(&db, "resume-live-catalog-drift");
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO events
+                    (id, project_id, title, ordinal, version)
+                 VALUES ('event:live-addition', 'project-1', '宿舎が砲撃される', 'a1', 0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("add a live Event after simulated process exit");
+
+        let blocked = list_task_resume_candidates(&db, "project-1")
+            .expect("catalog drift is a discoverable blocked recovery state");
+        assert_eq!(blocked[0]["availability"], "blocked");
+        assert_eq!(
+            blocked[0]["blockedCode"],
+            "NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT"
+        );
+        assert_eq!(
+            chronicle_run_task_ledger_state(&db, "resume-live-catalog-drift"),
+            before,
+            "read-only discovery must not change Run, Task, Attempt, or artifact state"
+        );
+
+        let claim_error = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "resume-live-catalog-drift".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "resuming-worker".to_string(),
+                lease_duration_secs: Some(60),
+                task_kinds: Some(vec!["chronicle.observe-events@1".to_string()]),
+            },
+        )
+        .expect_err("stale ready candidate must fail again inside claim transaction");
+        assert!(claim_error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT"));
+        assert_eq!(
+            chronicle_run_task_ledger_state(&db, "resume-live-catalog-drift"),
+            before,
+            "failed claim must not create a lease or Attempt"
+        );
+    }
+
+    #[test]
+    fn live_catalog_drift_after_claim_rejects_finish_without_terminal_dml() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Existing event");
+        seed_ready_observation_candidate(&db, "finish-live-catalog-drift", &catalog);
+        let claimed = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "finish-live-catalog-drift".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "running-worker".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: Some(vec!["chronicle.observe-events@1".to_string()]),
+            },
+        )
+        .expect("claim while the live catalog still matches");
+        let task = &claimed["task"];
+        let task_id = task["taskId"].as_str().expect("claimed Task id");
+        let attempt_id = task["attemptId"].as_str().expect("claimed Attempt id");
+        let after_claim = chronicle_run_task_ledger_state(&db, "finish-live-catalog-drift");
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO events
+                    (id, project_id, title, ordinal, version)
+                 VALUES ('event:finish-race', 'project-1', '宿舎が砲撃される', 'a1', 0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("change live Event authority while the Task is leased");
+
+        let error = finish_task(
+            &db,
+            FinishTaskPayload {
+                run_id: "finish-live-catalog-drift".to_string(),
+                project_id: "project-1".to_string(),
+                task_id: task_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                lease_owner: "running-worker".to_string(),
+                output_json: Some(json!({ "observationCount": 0 })),
+                artifacts: vec![],
+                chronicle_stage_bundle: None,
+                chronicle_stage_receipts: vec![],
+                historical_scope_authority_basis: None,
+                chronicle_plan_proposal_set: None,
+            },
+        )
+        .expect_err("finish must compare the live catalog in its own transaction");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT"));
+        assert_eq!(
+            chronicle_run_task_ledger_state(&db, "finish-live-catalog-drift"),
+            after_claim,
+            "rejected finish must retain the claimed lease/Attempt and persist no artifact or ProposalSet"
         );
     }
 
@@ -6054,6 +6604,134 @@ mod unit_tests {
         );
         assert_eq!(missing_catalog["language"], "ja");
         assert!(missing_catalog["existingEventsCatalog"].is_null());
+    }
+
+    #[test]
+    fn snapshot_incomplete_candidate_prefers_live_lease_and_typed_discard_rechecks_it() {
+        let db = full_migrated_db();
+        let catalog = test_existing_events_catalog("Existing event");
+        seed_live_existing_events_catalog(&db, &catalog);
+        create_run(
+            &db,
+            current_chronicle_candidate_payload(
+                "resume-snapshot-discard-race",
+                "project-1",
+                &catalog,
+            ),
+        )
+        .expect("create pre-Snapshot current Chronicle Run");
+
+        let initial_claim = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "resume-snapshot-discard-race".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "first-worker".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: Some(vec!["source.snapshot@1".to_string()]),
+            },
+        )
+        .expect("claim Snapshot with a future lease");
+        assert_eq!(initial_claim["claimed"], true);
+
+        let held = list_task_resume_candidates(&db, "project-1")
+            .expect("active Snapshot worker remains discoverable");
+        let held = &held.as_array().expect("candidate array")[0];
+        assert_eq!(held["availability"], "lease-held");
+        assert!(held["blockedCode"].is_null());
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET lease_expires_at = '2000-01-01T00:00:00.000Z'
+                  WHERE run_id = 'resume-snapshot-discard-race'
+                    AND task_kind = 'source.snapshot@1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("expire the abandoned Snapshot lease");
+        let blocked = list_task_resume_candidates(&db, "project-1")
+            .expect("expired Snapshot is durably blocked");
+        let blocked = &blocked.as_array().expect("candidate array")[0];
+        assert_eq!(blocked["availability"], "blocked");
+        assert_eq!(
+            blocked["blockedCode"],
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_INCOMPLETE"
+        );
+        let expectation = ChronicleBlockedDiscardExpectation {
+            next_task_id: blocked["nextTask"]["taskId"]
+                .as_str()
+                .expect("blocked next Task id")
+                .to_string(),
+            blocked_code: blocked["blockedCode"]
+                .as_str()
+                .expect("blocked code")
+                .to_string(),
+            run_spec_digest: blocked["runSpecDigest"]
+                .as_str()
+                .expect("Run spec digest")
+                .to_string(),
+            snapshot_digest: blocked["snapshotDigest"]
+                .as_str()
+                .expect("Snapshot digest")
+                .to_string(),
+            catalog_digest: blocked["catalogDigest"]
+                .as_str()
+                .expect("catalog digest")
+                .to_string(),
+        };
+
+        let reclaimed = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "resume-snapshot-discard-race".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "replacement-worker".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: Some(vec!["source.snapshot@1".to_string()]),
+            },
+        )
+        .expect("another process reclaims Snapshot before discard dispatch");
+        assert_eq!(reclaimed["claimed"], true);
+        let before_rejected_discard =
+            chronicle_run_task_ledger_state(&db, "resume-snapshot-discard-race");
+
+        let error = cancel_run_with_expectation(
+            &db,
+            "resume-snapshot-discard-race".to_string(),
+            "project-1".to_string(),
+            Some(expectation.clone()),
+        )
+        .expect_err("typed discard must not cancel a newly live worker");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_DISCARD_STALE"));
+        assert_eq!(
+            chronicle_run_task_ledger_state(&db, "resume-snapshot-discard-race"),
+            before_rejected_discard,
+            "stale discard expectation must not change Run, Task, Attempt, artifact, or ProposalSet state"
+        );
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET lease_expires_at = '2000-01-01T00:00:00.000Z'
+                  WHERE run_id = 'resume-snapshot-discard-race'
+                    AND task_kind = 'source.snapshot@1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("replacement worker lease eventually expires");
+        let cancelled = cancel_run_with_expectation(
+            &db,
+            "resume-snapshot-discard-race".to_string(),
+            "project-1".to_string(),
+            Some(expectation),
+        )
+        .expect("same typed expectation may cancel once the Run is blocked again");
+        assert_eq!(cancelled["status"], "cancelled");
     }
 
     #[test]
@@ -6927,6 +7605,225 @@ mod unit_tests {
             after,
             ("completed".to_string(), "completed".to_string(), 1, 1, 1,)
         );
+    }
+
+    #[test]
+    fn current_chronicle_prepare_rejects_live_catalog_drift_before_commit_dml() {
+        let db = full_migrated_db();
+        enable_manual_apply_for_test(&db);
+        let run_id = "current-prepare-catalog-drift";
+        let (proposal_set_id, proposal_id, revision_id) =
+            seed_terminal_current_chronicle_proposal(&db, run_id);
+        let prepare = current_catalog_guard_prepare_payload(
+            run_id,
+            &proposal_set_id,
+            &proposal_id,
+            &revision_id,
+            "request-prepare-catalog-drift",
+        );
+        insert_live_catalog_drift_event(&db, "event:prepare-live-addition");
+
+        let before: (i64, i64, i64) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+                    conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
+                        row.get(0)
+                    })?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_proposal_applications",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("read pre-Prepare DML state");
+        let error = super::super::commit::narrative_extraction_prepare_commit(&db, prepare)
+            .expect_err("stale match-existing catalog must block Prepare");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT"));
+        let after: (i64, i64, i64) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+                    conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
+                        row.get(0)
+                    })?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_proposal_applications",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("read rejected Prepare DML state");
+        assert_eq!(after, before);
+        assert_eq!(after.1, 0, "Prepare drift must not create a Commit row");
+    }
+
+    #[test]
+    fn current_chronicle_apply_rechecks_live_catalog_before_domain_dml() {
+        let db = full_migrated_db();
+        enable_manual_apply_for_test(&db);
+        let run_id = "current-apply-catalog-drift";
+        let (proposal_set_id, proposal_id, revision_id) =
+            seed_terminal_current_chronicle_proposal(&db, run_id);
+        let prepare = current_catalog_guard_prepare_payload(
+            run_id,
+            &proposal_set_id,
+            &proposal_id,
+            &revision_id,
+            "request-apply-catalog-drift",
+        );
+        let mut sealed_plan = serde_json::to_value(&prepare).expect("serialize sealed plan");
+        sealed_plan
+            .as_object_mut()
+            .expect("sealed plan object")
+            .insert(
+                "sourceContract".to_string(),
+                json!({
+                    "revisionEnvelopeDigest": "sha256:sealed-revision",
+                    "aggregateSourceBasisDigest": "sha256:sealed-source-basis",
+                    "aggregateReadSetDigest": "sha256:sealed-read-set",
+                }),
+            );
+        let policy_version = load_narrative_runtime_policy_from_db(&db)
+            .expect("load manual-apply policy")
+            .version;
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_apply_commits
+                    (id, project_id, run_id, proposal_set_id, request_id, plan_digest,
+                     status, receipt_json, error_message, prepared_plan_json,
+                     prepared_policy_version, prepared_at, authority_digest, session_id,
+                     created_at, completed_at, version)
+                 VALUES ('prepared-catalog-drift', 'project-1', ?1, ?2, ?3,
+                         'sha256:prepared-plan', 'prepared', NULL, NULL, ?4,
+                         ?5, '2026-08-26T00:00:00.000Z', 'sha256:authority',
+                         'catalog-guard-session', '2026-08-26T00:00:00.000Z', NULL, 0)",
+                params![
+                    run_id,
+                    proposal_set_id,
+                    prepare.request_id,
+                    sealed_plan.to_string(),
+                    policy_version,
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("seed a durable prepared Commit before catalog drift");
+        insert_live_catalog_drift_event(&db, "event:apply-live-addition");
+
+        let before: (i64, i64, i64) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_proposal_applications",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_apply_operations",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("read pre-Apply domain DML state");
+        let error = super::super::commit::narrative_extraction_apply_commit(
+            &db,
+            ApplyCommitPayload {
+                project_id: "project-1".to_string(),
+                prepared_commit_id: "prepared-catalog-drift".to_string(),
+                request_id: "request-apply-catalog-drift".to_string(),
+                session_id: "catalog-guard-session".to_string(),
+                expected_version: Some(0),
+            },
+        )
+        .expect_err("catalog drift between Prepare and Apply must fail closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT"));
+        let after: (i64, i64, i64, String) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_proposal_applications",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_apply_operations",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT status FROM narrative_apply_commits
+                          WHERE id = 'prepared-catalog-drift'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("read rejected Apply state");
+        assert_eq!((after.0, after.1, after.2), before);
+        assert_eq!(
+            after.3, "invalidated",
+            "catalog drift terminalizes only the Commit audit row"
+        );
+    }
+
+    #[test]
+    fn current_chronicle_already_applied_replay_ignores_post_apply_catalog_change() {
+        let db = full_migrated_db();
+        let run_id = "current-applied-catalog-replay";
+        let (proposal_set_id, _, _) = seed_terminal_current_chronicle_proposal(&db, run_id);
+        let receipt = json!({
+            "commitId": "applied-catalog-replay",
+            "requestId": "request-applied-catalog-replay",
+            "planDigest": "sha256:applied-plan",
+            "status": "applied",
+            "created": [{ "entityKind": "event", "entityId": "event:original-apply" }],
+        });
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_apply_commits
+                    (id, project_id, run_id, proposal_set_id, request_id, plan_digest,
+                     status, receipt_json, error_message, prepared_plan_json,
+                     prepared_policy_version, prepared_at, authority_digest, session_id,
+                     created_at, completed_at, version)
+                 VALUES ('applied-catalog-replay', 'project-1', ?1, ?2,
+                         'request-applied-catalog-replay', 'sha256:applied-plan',
+                         'applied', ?3, NULL, NULL, NULL, NULL, NULL,
+                         'catalog-guard-session', '2026-08-26T00:00:00.000Z',
+                         '2026-08-26T00:00:01.000Z', 1)",
+                params![run_id, proposal_set_id, receipt.to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("seed already-applied Chronicle Commit receipt");
+        // A successful Chronicle Apply normally changes the Event Catalog
+        // itself. Lost-response replay must return its sealed receipt instead
+        // of reinterpreting that expected post-Apply change as pre-Apply drift.
+        insert_live_catalog_drift_event(&db, "event:original-apply");
+
+        let replay = super::super::commit::narrative_extraction_apply_commit(
+            &db,
+            ApplyCommitPayload {
+                project_id: "project-1".to_string(),
+                prepared_commit_id: "applied-catalog-replay".to_string(),
+                request_id: "request-applied-catalog-replay".to_string(),
+                session_id: "catalog-guard-session".to_string(),
+                expected_version: Some(1),
+            },
+        )
+        .expect("already-applied replay must return the prior receipt");
+        assert_eq!(replay["status"], "applied");
+        assert_eq!(replay["idempotentReplay"], true);
+        assert_eq!(replay["created"], receipt["created"]);
     }
 
     #[test]

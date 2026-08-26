@@ -756,17 +756,38 @@ export interface NapiBackendLike {
   treeNodeDelete(payload: unknown): Promise<string>;
   treeNodePatch(payload: unknown): Promise<string>;
   temporalScenePatch(payload: unknown): Promise<string>;
-  narrativeExtractionCreateRun(payload: unknown): Promise<string>;
+  narrativeExtractionCaptureWorkspaceBinding?(
+    expectedWorkspacePath: string,
+  ): Promise<string>;
+  narrativeExtractionCreateRun(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
   narrativeExtractionGetRun(payload: unknown): Promise<string>;
   narrativeExtractionListResumableRuns(payload: unknown): Promise<string>;
   narrativeExtractionListChronicleTaskResumeCandidates?(
     payload: unknown,
   ): Promise<string>;
-  narrativeExtractionCancelRun(payload: unknown): Promise<string>;
-  narrativeExtractionClaimTask(payload: unknown): Promise<string>;
-  narrativeExtractionFinishTask(payload: unknown): Promise<string>;
-  narrativeExtractionFailTask(payload: unknown): Promise<string>;
-  narrativeExtractionSaveProposalSet(payload: unknown): Promise<string>;
+  narrativeExtractionCancelRun(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  narrativeExtractionClaimTask(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  narrativeExtractionFinishTask(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  narrativeExtractionFailTask(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  narrativeExtractionSaveProposalSet(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
   narrativeExtractionCreateHumanDerivedRevision(
     payload: unknown,
   ): Promise<string>;
@@ -1034,6 +1055,87 @@ function requireChronicleTaskResumeCandidatesPayload(
     );
   }
   return { projectId, limit };
+}
+
+function requireNarrativeExtractionWorkspaceBinding(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const binding = requireRecord(args, "workspaceBinding", command);
+  const keys = Object.keys(binding);
+  if (
+    keys.length !== 3 ||
+    !Object.hasOwn(binding, "authorityId") ||
+    !Object.hasOwn(binding, "generation") ||
+    !Object.hasOwn(binding, "authorityInstanceId")
+  ) {
+    throw new Error(
+      `invalid args \`workspaceBinding\` for command \`${command}\`: expected exact authorityId/generation/authorityInstanceId binding`,
+    );
+  }
+  const authorityId = requireNonEmptyString(binding, "authorityId", command);
+  if (authorityId.trim() !== authorityId) {
+    throw new Error(
+      `invalid args \`authorityId\` for command \`${command}\`: expected a non-empty exact string`,
+    );
+  }
+  const generation = requireSafeInteger(binding, "generation", command);
+  if (generation < 1) {
+    throw new Error(
+      `invalid args \`generation\` for command \`${command}\`: expected a positive safe integer`,
+    );
+  }
+  const authorityInstanceId = requireNonEmptyString(
+    binding,
+    "authorityInstanceId",
+    command,
+  );
+  if (!/^[1-9][0-9]*$/u.test(authorityInstanceId)) {
+    throw new Error(
+      `invalid args \`authorityInstanceId\` for command \`${command}\`: expected a canonical positive decimal integer`,
+    );
+  }
+  return { authorityId, generation, authorityInstanceId };
+}
+
+function requireNarrativeExtractionBoundMutation(
+  args: CommandArgs,
+  command: string,
+): readonly [unknown, CommandArgs] {
+  if (
+    Object.keys(args).some(
+      (key) => key !== "payload" && key !== "workspaceBinding",
+    )
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: unknown top-level field`,
+    );
+  }
+  return [
+    requirePresent(args, "payload", command),
+    requireNarrativeExtractionWorkspaceBinding(args, command),
+  ];
+}
+
+function requireNarrativeExtractionCaptureWorkspacePath(
+  args: CommandArgs,
+): string {
+  const command = "narrative_extraction_capture_workspace_binding";
+  if (
+    Object.keys(args).length !== 1 ||
+    !Object.hasOwn(args, "expectedWorkspacePath")
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected only expectedWorkspacePath`,
+    );
+  }
+  const path = requireNonEmptyString(args, "expectedWorkspacePath", command);
+  if (path.trim() !== path) {
+    throw new Error(
+      `invalid args \`expectedWorkspacePath\` for command \`${command}\`: expected a non-empty exact string`,
+    );
+  }
+  return path;
 }
 
 function requireTrashBinRestorePayload(args: CommandArgs): CommandArgs {
@@ -7629,13 +7731,27 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
-  narrative_extraction_create_run: {
+  narrative_extraction_capture_workspace_binding: {
     run: async (b, a) =>
       parseWire(
-        await b.narrativeExtractionCreateRun(
-          requirePresent(a, "payload", "narrative_extraction_create_run"),
-        ),
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionCaptureWorkspaceBinding,
+          "narrativeExtractionCaptureWorkspaceBinding",
+        )(requireNarrativeExtractionCaptureWorkspacePath(a)),
       ),
+  },
+  narrative_extraction_create_run: {
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNarrativeExtractionBoundMutation(
+          a,
+          "narrative_extraction_create_run",
+        );
+      return parseWire(
+        await b.narrativeExtractionCreateRun(payload, workspaceBinding),
+      );
+    },
   },
   narrative_extraction_get_run: {
     run: async (b, a) =>
@@ -7668,48 +7784,64 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   narrative_extraction_cancel_run: {
-    run: async (b, a) =>
-      parseWire(
-        await b.narrativeExtractionCancelRun(
-          requirePresent(a, "payload", "narrative_extraction_cancel_run"),
-        ),
-      ),
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNarrativeExtractionBoundMutation(
+          a,
+          "narrative_extraction_cancel_run",
+        );
+      return parseWire(
+        await b.narrativeExtractionCancelRun(payload, workspaceBinding),
+      );
+    },
   },
   narrative_extraction_claim_task: {
-    run: async (b, a) =>
-      parseWire(
-        await b.narrativeExtractionClaimTask(
-          requirePresent(a, "payload", "narrative_extraction_claim_task"),
-        ),
-      ),
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNarrativeExtractionBoundMutation(
+          a,
+          "narrative_extraction_claim_task",
+        );
+      return parseWire(
+        await b.narrativeExtractionClaimTask(payload, workspaceBinding),
+      );
+    },
   },
   narrative_extraction_finish_task: {
-    run: async (b, a) =>
-      parseWire(
-        await b.narrativeExtractionFinishTask(
-          requirePresent(a, "payload", "narrative_extraction_finish_task"),
-        ),
-      ),
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNarrativeExtractionBoundMutation(
+          a,
+          "narrative_extraction_finish_task",
+        );
+      return parseWire(
+        await b.narrativeExtractionFinishTask(payload, workspaceBinding),
+      );
+    },
   },
   narrative_extraction_fail_task: {
-    run: async (b, a) =>
-      parseWire(
-        await b.narrativeExtractionFailTask(
-          requirePresent(a, "payload", "narrative_extraction_fail_task"),
-        ),
-      ),
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNarrativeExtractionBoundMutation(
+          a,
+          "narrative_extraction_fail_task",
+        );
+      return parseWire(
+        await b.narrativeExtractionFailTask(payload, workspaceBinding),
+      );
+    },
   },
   narrative_extraction_save_proposal_set: {
-    run: async (b, a) =>
-      parseWire(
-        await b.narrativeExtractionSaveProposalSet(
-          requirePresent(
-            a,
-            "payload",
-            "narrative_extraction_save_proposal_set",
-          ),
-        ),
-      ),
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNarrativeExtractionBoundMutation(
+          a,
+          "narrative_extraction_save_proposal_set",
+        );
+      return parseWire(
+        await b.narrativeExtractionSaveProposalSet(payload, workspaceBinding),
+      );
+    },
   },
   narrative_extraction_create_human_derived_revision: {
     run: async (b, a) =>

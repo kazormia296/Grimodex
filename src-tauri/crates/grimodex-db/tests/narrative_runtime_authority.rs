@@ -245,6 +245,7 @@ fn disabled_runtime_still_allows_in_flight_work_to_terminalize_and_release_lease
         RunRefPayload {
             run_id: "run-cancel".into(),
             project_id: "project-1".into(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect("cancel in-flight run after disable");

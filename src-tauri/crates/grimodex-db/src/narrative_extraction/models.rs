@@ -44,6 +44,21 @@ pub struct CreateTaskSeed {
 pub struct RunRefPayload {
     pub run_id: String,
     pub project_id: String,
+    /// Product-only fail-closed cancellation contract for a Chronicle Run
+    /// that Native most recently classified as durably blocked. Generic
+    /// coordinator cancellation leaves this absent.
+    #[serde(default)]
+    pub chronicle_blocked_discard: Option<ChronicleBlockedDiscardExpectation>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleBlockedDiscardExpectation {
+    pub next_task_id: String,
+    pub blocked_code: String,
+    pub run_spec_digest: String,
+    pub snapshot_digest: String,
+    pub catalog_digest: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

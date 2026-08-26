@@ -718,15 +718,22 @@ export declare class Backend {
   sceneEventUnlink(payload: any): Promise<string>
   eventRelationAdd(payload: any): Promise<string>
   eventRelationRemove(payload: any): Promise<string>
-  narrativeExtractionCreateRun(payload: any): Promise<string>
+  /**
+   * Capture the exact active Native workspace authority for a long-running
+   * extraction. The expected path is renderer-captured scope, not a path
+   * selector: Native rejects a mismatch and always owns the returned
+   * authority id/generation.
+   */
+  narrativeExtractionCaptureWorkspaceBinding(expectedWorkspacePath: string): Promise<string>
+  narrativeExtractionCreateRun(payload: any, workspaceBinding: any): Promise<string>
   narrativeExtractionGetRun(payload: any): Promise<string>
   narrativeExtractionListResumableRuns(payload: any): Promise<string>
   narrativeExtractionListChronicleTaskResumeCandidates(payload: any): Promise<string>
-  narrativeExtractionCancelRun(payload: any): Promise<string>
-  narrativeExtractionClaimTask(payload: any): Promise<string>
-  narrativeExtractionFinishTask(payload: any): Promise<string>
-  narrativeExtractionFailTask(payload: any): Promise<string>
-  narrativeExtractionSaveProposalSet(payload: any): Promise<string>
+  narrativeExtractionCancelRun(payload: any, workspaceBinding: any): Promise<string>
+  narrativeExtractionClaimTask(payload: any, workspaceBinding: any): Promise<string>
+  narrativeExtractionFinishTask(payload: any, workspaceBinding: any): Promise<string>
+  narrativeExtractionFailTask(payload: any, workspaceBinding: any): Promise<string>
+  narrativeExtractionSaveProposalSet(payload: any, workspaceBinding: any): Promise<string>
   narrativeExtractionCreateHumanDerivedRevision(payload: any): Promise<string>
   narrativeExtractionGetRunReviewBundle(payload: any): Promise<string>
   narrativeExtractionAppendRevision(payload: any): Promise<string>
