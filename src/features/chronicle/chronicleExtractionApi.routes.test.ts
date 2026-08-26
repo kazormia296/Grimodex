@@ -143,6 +143,7 @@ describe("Chronicle review revision route", () => {
         failed: 0,
         cancelled: 0,
       },
+      existingEventsCatalog: [],
       proposals: [
         {
           proposalId: "proposal-route",
@@ -204,5 +205,11 @@ describe("Chronicle review revision route", () => {
       useChronicleExtractionStore.getState().projection?.proposals[0];
     expect(current?.revisionId).toBe("revision-grandchild");
     expect(current?.reconciliationEnvelopeDigest).toBe(grandchildDigest);
+    expect(current?.match).toEqual({
+      status: "probable-duplicate",
+      candidates: [],
+      reasons: ["human-title-revision"],
+    });
+    expect(current?.probableDuplicateChoice).toBeNull();
   });
 });

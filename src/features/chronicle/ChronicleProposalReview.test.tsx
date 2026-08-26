@@ -179,12 +179,21 @@ describe("ChronicleProposalReview", () => {
         proposalId: string;
         patch: { title?: string; note?: string | null };
       }) => {
+        const match =
+          args.patch.title === undefined
+            ? ({ status: "none" } as const)
+            : ({
+                status: "probable-duplicate",
+                candidates: ["撤退命令"],
+                reasons: ["title"],
+              } as const);
         useChronicleExtractionStore
           .getState()
           .reviseProposalFields(
             args.proposalId,
             "rev-native-2",
             "sha256:review-revision-envelope",
+            match,
             args.patch,
           );
       },
@@ -406,6 +415,20 @@ describe("ChronicleProposalReview", () => {
       useChronicleExtractionStore.getState().projection?.proposals[0];
     expect(updated?.status).toBe("unreviewed");
     expect(updated?.revisionId).toBe("rev-native-2");
+    expect(updated?.match).toEqual({
+      status: "probable-duplicate",
+      candidates: ["撤退命令"],
+      reasons: ["title"],
+    });
+    expect(
+      screen.queryByRole("button", { name: "承認" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "同じものとしてスキップ" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "別Eventとして作成" }),
+    ).toBeEnabled();
     expect(reviseMock).toHaveBeenCalled();
   });
 });

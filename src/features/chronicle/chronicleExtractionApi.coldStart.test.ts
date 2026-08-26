@@ -338,6 +338,38 @@ describe("getChronicleExtractionReview cold-start restore", () => {
           payloadDigest: null,
           createdAt: "2026-01-01T00:00:30.000Z",
         },
+        {
+          artifactId: "art-current-snapshot",
+          runId: "run-cold-current-revision",
+          taskId: "task-snapshot",
+          attemptId: "attempt-snapshot",
+          artifactKind: CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+          payloadStorage: "inline-json",
+          payloadJson: {
+            snapshot: { documents: [] },
+            existingEventsCatalog: {
+              kind: "chronicle.existing-events-catalog@1",
+              events: [
+                {
+                  ref: "event-existing-revised-title",
+                  sourceKey: "chronicle:event:event-existing-revised-title",
+                  title: currentPayload.title,
+                  note: null,
+                  version: 1,
+                  linkedDocumentSourceKeys: [],
+                  participantEntityRefs: [],
+                  startTime: null,
+                  endTime: null,
+                  digest: `sha256:${"c".repeat(64)}`,
+                  applicationProvenanceKeys: [],
+                },
+              ],
+            },
+          },
+          payloadRef: null,
+          payloadDigest: null,
+          createdAt: "2026-01-01T00:00:10.000Z",
+        },
       ],
       proposalSet: {
         proposalSetId:
@@ -395,6 +427,11 @@ describe("getChronicleExtractionReview cold-start restore", () => {
       payload: currentPayload,
     });
     expect(row?.probableDuplicateChoice).toBeNull();
+    expect(row?.match).toEqual({
+      status: "probable-duplicate",
+      candidates: ["event-existing-revised-title"],
+      reasons: ["title-only"],
+    });
     expect(row?.safety).toMatchObject({
       fresh: false,
       noDuplicate: false,

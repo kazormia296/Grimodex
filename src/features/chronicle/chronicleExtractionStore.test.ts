@@ -297,17 +297,20 @@ describe("chronicleExtractionStore", () => {
     useChronicleExtractionStore
       .getState()
       .setProjection(projection([proposal({ status: "approved" })]));
-    useChronicleExtractionStore
-      .getState()
-      .reviseProposalFields(
-        "proposal-1",
-        "rev-native-2",
-        `sha256:${"b".repeat(64)}`,
-        {
-          title: "撤退命令",
-          secret: false,
-        },
-      );
+    useChronicleExtractionStore.getState().reviseProposalFields(
+      "proposal-1",
+      "rev-native-2",
+      `sha256:${"b".repeat(64)}`,
+      {
+        status: "probable-duplicate",
+        candidates: ["event-existing"],
+        reasons: ["title-only"],
+      },
+      {
+        title: "撤退命令",
+        secret: false,
+      },
+    );
     const updated =
       useChronicleExtractionStore.getState().projection?.proposals[0];
     expect(updated?.status).toBe("unreviewed");
@@ -318,6 +321,7 @@ describe("chronicleExtractionStore", () => {
       `sha256:${"b".repeat(64)}`,
     );
     expect(updated?.probableDuplicateChoice).toBeNull();
+    expect(updated?.match.status).toBe("probable-duplicate");
     expect(updated?.safety).toMatchObject({
       fresh: false,
       noDuplicate: false,
@@ -403,6 +407,7 @@ describe("chronicleExtractionStore", () => {
       "proposal-1",
       "rev-2",
       `sha256:${"c".repeat(64)}`,
+      { status: "none" },
       { title: "must not change" },
     );
 

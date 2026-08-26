@@ -203,6 +203,10 @@ export interface ChronicleExtractionReviewProjection {
   readonly status: NarrativeExtractionRunStatus;
   readonly coverage: ChronicleExtractionCoverage;
   readonly taskCounts: NarrativeExtractionTaskCounts;
+  /** Exact immutable Event catalog sealed by this Run, for revision rematch. */
+  readonly existingEventsCatalog?:
+    | readonly ExistingChronicleEventCatalogRecord[]
+    | null;
   readonly proposals: readonly ChronicleReviewProposal[];
 }
 
@@ -337,6 +341,7 @@ interface ChronicleExtractionState {
     proposalId: string,
     revisionId: string,
     reconciliationEnvelopeDigest: string | null,
+    match: ChronicleExistingMatch,
     patch: {
       title?: string;
       note?: string | null;
@@ -572,6 +577,7 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
       proposalId,
       revisionId,
       reconciliationEnvelopeDigest,
+      match,
       patch,
     ) => {
       const projection = get().projection;
@@ -618,11 +624,11 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
             revisionId,
             reconciliationEnvelopeDigest,
             status: "unreviewed",
-            // The durable Event catalog is not present in the review store,
-            // so any human-derived payload must be rematched before it can be
-            // bulk-approved. Do not inherit a parent revision's duplicate
-            // decision or plan-time freshness proof.
+            // The API rematches title edits against the Run-sealed Event
+            // catalog before publishing this revision. Never inherit a parent
+            // revision's duplicate choice or plan-time freshness proof.
             probableDuplicateChoice: null,
+            match,
             safety: {
               ...current.safety,
               fresh: false,

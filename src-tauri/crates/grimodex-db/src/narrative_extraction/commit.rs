@@ -71,9 +71,10 @@ use super::reconciliation_envelope::{
     ORIGIN_ENVELOPED,
 };
 use super::repository::{
+    current_chronicle_revision_requires_probable_duplicate_review,
     current_chronicle_run_spec_for_run, ensure_proposal_not_applied, ensure_run_project,
-    load_current_chronicle_proposal_matches, load_verified_chronicle_snapshot_for_apply,
-    validate_current_chronicle_live_catalog,
+    load_current_chronicle_proposal_matches, load_verified_chronicle_revision_review_authority,
+    load_verified_chronicle_snapshot_for_apply, validate_current_chronicle_live_catalog,
 };
 use super::semantic_bindings::{
     apply_semantic_binding_upsert_in_tx, parse_semantic_binding_upsert_payload,
@@ -120,6 +121,22 @@ struct CommitPlanValidationContext<'a> {
     applications: &'a [CommitApplicationRef],
     expected_tail_ordinal: Option<&'a str>,
     entity_bindings: &'a [EntityBindingSeed],
+}
+
+/// Transaction-local authority for compiling every current Chronicle Event
+/// operation in one commit plan. The constructor performs the expensive full
+/// Snapshot verification once; proposal-specific compilation only reads this
+/// immutable document map.
+struct VerifiedChronicleCommitDocumentAuthority {
+    project_id: String,
+    run_id: String,
+    documents: HashMap<String, (String, u64)>,
+}
+
+#[derive(Clone, Copy)]
+enum ChronicleCommitPlanAuthority<'a> {
+    NonCurrent,
+    Current(&'a VerifiedChronicleCommitDocumentAuthority),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -2067,6 +2084,10 @@ fn validate_commit_plan(
     )?;
     anyhow::ensure!(set_ok == 1, "proposal set not found for run/project");
 
+    let current_chronicle =
+        current_chronicle_run_spec_for_run(conn, ctx.project_id, ctx.run_id)?;
+    let mut chronicle_document_authority = None;
+
     let has_chronicle = ctx.operations.iter().any(|op| is_chronicle_op(&op.kind));
     if has_chronicle {
         ensure_order_neighbor(conn, ctx.project_id, ctx.expected_tail_ordinal)?;
@@ -2231,9 +2252,30 @@ fn validate_commit_plan(
         }
 
         if !op.proposal_id.is_empty() {
+            if current_chronicle && chronicle_document_authority.is_none() {
+                chronicle_document_authority = Some(
+                    load_verified_chronicle_commit_document_authority(
+                        conn,
+                        ctx.project_id,
+                        ctx.run_id,
+                    )?,
+                );
+            }
+            let operation_chronicle_authority = if current_chronicle {
+                ChronicleCommitPlanAuthority::Current(
+                    chronicle_document_authority.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "NEX_CHRONICLE_COMMIT_DOCUMENT_AUTHORITY_MISSING: verified Snapshot document authority was not retained"
+                        )
+                    })?,
+                )
+            } else {
+                ChronicleCommitPlanAuthority::NonCurrent
+            };
             ensure_proposal_approved_and_bound(
                 conn,
                 &ctx,
+                operation_chronicle_authority,
                 &op.proposal_id,
                 Some(op.revision_id.as_str()),
                 &op.kind,
@@ -2268,15 +2310,11 @@ fn validate_commit_plan(
                 && operation.revision_id == application.revision_id,
             "NEX_COMMIT_APPLICATIONS_MISMATCH: index {index} proposal/revision diverge"
         );
-        ensure_proposal_approved_and_bound(
-            conn,
-            &ctx,
-            &application.proposal_id,
-            Some(application.revision_id.as_str()),
-            &operation.kind,
-            &operation.payload,
-        )?;
-        ensure_proposal_not_applied(conn, &application.proposal_id)?;
+        // The operation loop already validated this exact proposal/revision,
+        // its current Decision/Envelope, its Native-compiled payload, and its
+        // unapplied state. Once the application coordinates are proven equal,
+        // repeating that work would add no authority and used to reparse the
+        // complete current Chronicle Snapshot a second time.
     }
 
     Ok(())
@@ -2351,6 +2389,11 @@ fn validate_current_chronicle_apply_coverage(
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     let mut expected_approved = Vec::new();
+    // Snapshot/catalog verification is O(snapshotBytes). Cache one verified
+    // transaction-local authority and reuse it for every terminal Proposal;
+    // per-Proposal work below remains a current-revision row lookup + raw
+    // title comparison.
+    let mut revision_review_authority = None;
     for (
         proposal_id,
         proposal_key,
@@ -2360,12 +2403,13 @@ fn validate_current_chronicle_apply_coverage(
         current_decision_json,
     ) in proposals
     {
-        let match_value = match_by_proposal_key.remove(&proposal_key).ok_or_else(|| {
+        let plan_authority = match_by_proposal_key.remove(&proposal_key).ok_or_else(|| {
             anyhow::anyhow!(
                 "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Proposal '{proposal_id}' has no sealed plan match metadata"
             )
         })?;
-        let match_status = match_value
+        let match_status = plan_authority
+            .match_value
             .get("status")
             .and_then(Value::as_str)
             .ok_or_else(|| {
@@ -2397,27 +2441,76 @@ fn validate_current_chronicle_apply_coverage(
                     decision_matches_status,
                     "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: approved Proposal '{proposal_id}' has no matching current-revision Decision"
                 );
-                let revision_id = current_revision_id.ok_or_else(|| {
+                let revision_id = current_revision_id.as_deref().ok_or_else(|| {
                     anyhow::anyhow!(
                         "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: approved Proposal '{proposal_id}' has no current revision"
                     )
                 })?;
+                if revision_review_authority.is_none() {
+                    revision_review_authority =
+                        Some(load_verified_chronicle_revision_review_authority(
+                            conn,
+                            ctx.project_id,
+                            ctx.run_id,
+                        )?);
+                }
+                let revision_review_authority = revision_review_authority.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_CHRONICLE_REVISION_REVIEW_AUTHORITY_MISSING: verified Snapshot/catalog authority was not retained"
+                    )
+                })?;
+                let requires_probable_duplicate_choice = match_status == "probable-duplicate"
+                    || current_chronicle_revision_requires_probable_duplicate_review(
+                        conn,
+                        revision_review_authority,
+                        ctx.proposal_set_id,
+                        &proposal_id,
+                        revision_id,
+                        &plan_authority.planned_title,
+                    )?;
                 anyhow::ensure!(
-                    match_status != "probable-duplicate"
+                    !requires_probable_duplicate_choice
                         || probable_duplicate_choice == Some("create-as-new"),
-                    "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: probable-duplicate Proposal '{proposal_id}' requires decisionJson.probableDuplicateChoice='create-as-new' before approval"
+                    "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: current-revision probable-duplicate Proposal '{proposal_id}' requires decisionJson.probableDuplicateChoice='create-as-new' before approval"
                 );
-                expected_approved.push((proposal_id, revision_id));
+                expected_approved.push((proposal_id, revision_id.to_string()));
             }
             "rejected" => {
+                let revision_id = current_revision_id.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: rejected Proposal '{proposal_id}' has no current revision"
+                    )
+                })?;
                 anyhow::ensure!(
-                    current_revision_id.is_some() && decision_matches_status,
+                    decision_matches_status,
                     "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: rejected Proposal '{proposal_id}' has no matching current-revision Decision"
                 );
+                if revision_review_authority.is_none() {
+                    revision_review_authority =
+                        Some(load_verified_chronicle_revision_review_authority(
+                            conn,
+                            ctx.project_id,
+                            ctx.run_id,
+                        )?);
+                }
+                let revision_review_authority = revision_review_authority.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_CHRONICLE_REVISION_REVIEW_AUTHORITY_MISSING: verified Snapshot/catalog authority was not retained"
+                    )
+                })?;
+                let requires_probable_duplicate_choice = match_status == "probable-duplicate"
+                    || current_chronicle_revision_requires_probable_duplicate_review(
+                        conn,
+                        revision_review_authority,
+                        ctx.proposal_set_id,
+                        &proposal_id,
+                        revision_id,
+                        &plan_authority.planned_title,
+                    )?;
                 anyhow::ensure!(
-                    match_status != "probable-duplicate"
+                    !requires_probable_duplicate_choice
                         || probable_duplicate_choice == Some("skip-as-same"),
-                    "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: rejected probable-duplicate Proposal '{proposal_id}' requires decisionJson.probableDuplicateChoice='skip-as-same'"
+                    "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: rejected current-revision probable-duplicate Proposal '{proposal_id}' requires decisionJson.probableDuplicateChoice='skip-as-same'"
                 );
             }
             "unreviewed" | "held" | "deferred" => anyhow::bail!(
@@ -2471,11 +2564,16 @@ fn validate_current_chronicle_apply_coverage(
 fn ensure_proposal_approved_and_bound(
     conn: &Connection,
     ctx: &CommitPlanValidationContext<'_>,
+    chronicle_authority: ChronicleCommitPlanAuthority<'_>,
     proposal_id: &str,
     revision_id: Option<&str>,
     operation_kind: &str,
     operation_payload: &Value,
 ) -> anyhow::Result<()> {
+    let current_chronicle = matches!(
+        chronicle_authority,
+        ChronicleCommitPlanAuthority::Current(_)
+    );
     let row: Option<(String, Option<String>, String)> = conn
         .query_row(
             "SELECT status, current_revision_id, kind
@@ -2509,7 +2607,6 @@ fn ensure_proposal_approved_and_bound(
         .split('@')
         .next()
         .unwrap_or(proposal_kind.as_str());
-    let current_chronicle = current_chronicle_run_spec_for_run(conn, ctx.project_id, ctx.run_id)?;
     anyhow::ensure!(
         proposal_kind_allows_operation(proposal_kind_base, operation_kind)
             || (current_chronicle
@@ -2566,10 +2663,20 @@ fn ensure_proposal_approved_and_bound(
             envelope_digest.as_deref() == Some(validated_envelope.digest.as_str()),
             "NEX_REVISION_ENVELOPE_CHANGED: current Chronicle proposal '{proposal_id}' Envelope digest differs"
         );
+        let ChronicleCommitPlanAuthority::Current(chronicle_document_authority) =
+            chronicle_authority
+        else {
+            anyhow::bail!(
+                "NEX_CHRONICLE_COMMIT_DOCUMENT_AUTHORITY_MISSING: verified Snapshot document authority was not retained"
+            );
+        };
+        anyhow::ensure!(
+            chronicle_document_authority.project_id == ctx.project_id
+                && chronicle_document_authority.run_id == ctx.run_id,
+            "NEX_CHRONICLE_COMMIT_DOCUMENT_AUTHORITY_MISMATCH: verified Snapshot document authority belongs to another Run"
+        );
         compile_current_chronicle_event_operation_payload(
-            conn,
-            ctx.project_id,
-            ctx.run_id,
+            chronicle_document_authority,
             &revision_payload,
             &envelope,
         )?
@@ -2585,24 +2692,14 @@ fn ensure_proposal_approved_and_bound(
     Ok(())
 }
 
-/// Reproduce `compileCreateChronicleEventOperation` from Native-owned inputs.
-/// The current Revision supplies the reviewed IR payload, its validated
-/// Envelope supplies the exact evidenceRef -> documentRef pairing, and the
-/// completed sealed Snapshot supplies document -> Scene/version authority.
-/// Renderer-supplied compiled fields never participate in this derivation.
-fn compile_current_chronicle_event_operation_payload(
+/// Load and verify the completed sealed Snapshot once for one current
+/// Chronicle commit-plan validation, then retain only the document authority
+/// required by every Proposal compiler invocation in that transaction.
+fn load_verified_chronicle_commit_document_authority(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
-    proposal: &Value,
-    envelope: &Value,
-) -> anyhow::Result<Value> {
-    validate_chronicle_scene_event_proposal_payload(proposal).map_err(|error| {
-        anyhow::anyhow!(
-            "NEX_PROPOSAL_PAYLOAD_MISMATCH: current Chronicle proposal payload is invalid: {error}"
-        )
-    })?;
-
+) -> anyhow::Result<VerifiedChronicleCommitDocumentAuthority> {
     let snapshot_payload = load_verified_chronicle_snapshot_for_apply(conn, project_id, run_id)?;
     let snapshot_documents = snapshot_payload
         .pointer("/snapshot/documents")
@@ -2650,6 +2747,29 @@ fn compile_current_chronicle_event_operation_payload(
             "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Snapshot has duplicate document ref '{document_ref}'"
         );
     }
+    Ok(VerifiedChronicleCommitDocumentAuthority {
+        project_id: project_id.to_string(),
+        run_id: run_id.to_string(),
+        documents: document_authority,
+    })
+}
+
+/// Reproduce `compileCreateChronicleEventOperation` from Native-owned inputs.
+/// The current Revision supplies the reviewed IR payload, its validated
+/// Envelope supplies the exact evidenceRef -> documentRef pairing, and the
+/// once-verified sealed Snapshot supplies document -> Scene/version authority.
+/// Renderer-supplied compiled fields never participate in this derivation.
+fn compile_current_chronicle_event_operation_payload(
+    authority: &VerifiedChronicleCommitDocumentAuthority,
+    proposal: &Value,
+    envelope: &Value,
+) -> anyhow::Result<Value> {
+    validate_chronicle_scene_event_proposal_payload(proposal).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH: current Chronicle proposal payload is invalid: {error}"
+        )
+    })?;
+    let document_authority = &authority.documents;
 
     let evidence_set = envelope
         .pointer("/effectiveMaterialBasis/evidenceSet")

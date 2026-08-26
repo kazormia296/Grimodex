@@ -51,6 +51,7 @@ import type {
   ChronicleExistingMatch,
   ExistingChronicleEventCatalogRecord,
 } from "./extraction/existingEventMatcher";
+import { matchChronicleEventTitleAgainstCatalog } from "./extraction/existingEventMatcher";
 import {
   buildProposalSafetyFlags,
   emptyTaskCounts,
@@ -106,6 +107,10 @@ interface ResolvedEvidenceArtifactPayload {
 
 interface SnapshotArtifactPayload {
   readonly snapshot: NarrativeCorpusSnapshot;
+  readonly existingEventsCatalog?: {
+    readonly kind: "chronicle.existing-events-catalog@1";
+    readonly events: readonly ExistingChronicleEventCatalogRecord[];
+  };
 }
 
 const proposalSetIdByRunId = new Map<string, string>();
@@ -151,22 +156,6 @@ function resolveProposalSetId(
 function captureStartChronicleExtractionRequest(
   request: StartChronicleExtractionRequest,
 ): StartChronicleExtractionRequest {
-  const cloneCatalog = (
-    catalog: readonly ExistingChronicleEventCatalogRecord[] | undefined,
-  ): readonly ExistingChronicleEventCatalogRecord[] | undefined =>
-    catalog?.map((event) => ({
-      ref: event.ref,
-      sourceKey: event.sourceKey,
-      title: event.title,
-      note: event.note,
-      version: event.version,
-      linkedDocumentSourceKeys: [...event.linkedDocumentSourceKeys],
-      participantEntityRefs: [...event.participantEntityRefs],
-      startTime: event.startTime,
-      endTime: event.endTime,
-      digest: event.digest,
-      applicationProvenanceKeys: [...(event.applicationProvenanceKeys ?? [])],
-    }));
   return {
     projectId: request.projectId,
     folderId: request.folderId,
@@ -182,9 +171,45 @@ function captureStartChronicleExtractionRequest(
     openRevision: request.openRevision,
     ...(request.existingEvents === undefined
       ? {}
-      : { existingEvents: cloneCatalog(request.existingEvents) }),
+      : { existingEvents: cloneCatalog(request.existingEvents) ?? [] }),
     ...(request.useAi === undefined ? {} : { useAi: request.useAi }),
   };
+}
+
+function cloneCatalog(
+  catalog: readonly ExistingChronicleEventCatalogRecord[] | null | undefined,
+): readonly ExistingChronicleEventCatalogRecord[] | null | undefined {
+  if (catalog === null || catalog === undefined) return catalog;
+  return catalog.map((event) => ({
+    ref: event.ref,
+    sourceKey: event.sourceKey,
+    title: event.title,
+    note: event.note,
+    version: event.version,
+    linkedDocumentSourceKeys: [...event.linkedDocumentSourceKeys],
+    participantEntityRefs: [...event.participantEntityRefs],
+    startTime: event.startTime,
+    endTime: event.endTime,
+    digest: event.digest,
+    applicationProvenanceKeys: [...(event.applicationProvenanceKeys ?? [])],
+  }));
+}
+
+function rematchHumanTitleRevision(
+  title: string,
+  catalog: readonly ExistingChronicleEventCatalogRecord[] | null | undefined,
+): Extract<ChronicleExistingMatch, { status: "probable-duplicate" }> {
+  const titleMatch = matchChronicleEventTitleAgainstCatalog(
+    title,
+    catalog ?? [],
+  );
+  return titleMatch.status === "probable-duplicate"
+    ? titleMatch
+    : {
+        status: "probable-duplicate",
+        candidates: [],
+        reasons: ["human-title-revision"],
+      };
 }
 
 function sceneIdFromDocumentRef(
@@ -257,6 +282,9 @@ function buildReviewProposalFromPlanned(args: {
   readonly anchorsById: Map<string, ResolvedEvidenceAnchor>;
   readonly snapshot: NarrativeCorpusSnapshot | null;
   readonly titleBySceneId: ReadonlyMap<string, string>;
+  readonly existingEventsCatalog?:
+    | readonly ExistingChronicleEventCatalogRecord[]
+    | null;
   readonly probableDuplicateChoice?: ProbableDuplicateChoice | null;
   readonly application?: ReviewBundleProposalApplication | null;
 }): ChronicleReviewProposal {
@@ -267,6 +295,11 @@ function buildReviewProposalFromPlanned(args: {
   const payloadStillMatchesPlan =
     stableJsonStringify(args.payload) ===
     stableJsonStringify(args.planned.proposal);
+  const titleChangedFromPlan =
+    args.payload.title !== args.planned.proposal.title;
+  const effectiveMatch = !titleChangedFromPlan
+    ? args.planned.match
+    : rematchHumanTitleRevision(args.payload.title, args.existingEventsCatalog);
   const evidence = evidenceQuotesForProposal(
     args.payload,
     args.anchorsById,
@@ -277,7 +310,7 @@ function buildReviewProposalFromPlanned(args: {
     (item) => item.method === "fragmented" || item.blocked,
   );
   const planSafety = buildProposalSafetyFlags({
-    match: args.planned.match,
+    match: effectiveMatch,
     actuality: args.payload.actuality,
     evidenceMethods: evidence.map((item) => item.method),
     lossless: !fragmented,
@@ -301,7 +334,7 @@ function buildReviewProposalFromPlanned(args: {
     applicability: "applicable",
     displayTitle: args.payload.title,
     payload: args.payload,
-    match: args.planned.match,
+    match: effectiveMatch,
     evidence,
     safety,
     // Callers already bind this choice to the current revision. A new human
@@ -417,6 +450,9 @@ export function buildChronicleExtractionReviewProjection(args: {
   readonly savedProposals?: readonly SavedReviewSeed[];
   readonly anchors?: readonly ResolvedEvidenceAnchor[];
   readonly snapshot?: NarrativeCorpusSnapshot | null;
+  readonly existingEventsCatalog?:
+    | readonly ExistingChronicleEventCatalogRecord[]
+    | null;
   readonly titleBySceneId?: ReadonlyMap<string, string>;
 }): ChronicleExtractionReviewProjection {
   const anchorsById = new Map(
@@ -452,6 +488,7 @@ export function buildChronicleExtractionReviewProjection(args: {
         anchorsById,
         snapshot: args.snapshot ?? null,
         titleBySceneId,
+        existingEventsCatalog: args.existingEventsCatalog,
         probableDuplicateChoice: seed.probableDuplicateChoice ?? null,
         application: seed.application ?? null,
       });
@@ -494,6 +531,7 @@ export function buildChronicleExtractionReviewProjection(args: {
     status: args.status,
     coverage: args.coverage,
     taskCounts: args.taskCounts,
+    existingEventsCatalog: cloneCatalog(args.existingEventsCatalog),
     proposals,
   };
 }
@@ -504,6 +542,7 @@ async function projectChronicleCoordinatorResult(
     readonly projectId: string;
     readonly workspacePath: string;
     readonly openRevision: number;
+    readonly existingEvents?: readonly ExistingChronicleEventCatalogRecord[];
   },
 ): Promise<{ runId: string }> {
   rememberProposalSetId(result.runId, result.savedProposalSetId);
@@ -591,6 +630,7 @@ async function projectChronicleCoordinatorResult(
     savedProposals: savedSeedsFromCoordinator(result.savedProposals),
     anchors: evidenceArtifact?.anchors,
     snapshot: result.snapshot,
+    existingEventsCatalog: scope.existingEvents ?? null,
     titleBySceneId,
   });
 
@@ -1110,7 +1150,10 @@ export async function resumeChronicleExtraction(
           "NEX_CHRONICLE_RESUME_AUTHORITY_STALE: resumed Run completed outside its captured workspace authority",
         );
       }
-      const projected = await projectChronicleCoordinatorResult(result, scope);
+      const projected = await projectChronicleCoordinatorResult(result, {
+        ...scope,
+        existingEvents: currentExistingEvents,
+      });
       useChronicleExtractionStore
         .getState()
         .completeCandidateResume(captured.candidate.runId);
@@ -1327,6 +1370,11 @@ export async function getChronicleExtractionReview(
     savedProposals: savedSeedsFromBundle(bundle.proposals),
     anchors: evidenceArtifact?.anchors,
     snapshot: snapshotArtifact?.snapshot ?? null,
+    existingEventsCatalog:
+      snapshotArtifact?.existingEventsCatalog?.kind ===
+      "chronicle.existing-events-catalog@1"
+        ? snapshotArtifact.existingEventsCatalog.events
+        : null,
     titleBySceneId,
   });
 
@@ -1802,6 +1850,13 @@ export async function reviseChronicleProposal(args: {
         current.payload.disclosure.revealDocumentRef,
     },
   };
+  let effectiveMatch = current.match;
+  if (current.payload.title !== nextPayload.title) {
+    effectiveMatch = rematchHumanTitleRevision(
+      nextPayload.title,
+      projection.existingEventsCatalog,
+    );
+  }
   const revision = await recordChronicleProposalRevision({
     runId: projection.runId,
     projectId: projection.projectId,
@@ -1824,6 +1879,7 @@ export async function reviseChronicleProposal(args: {
       args.proposalId,
       revision.revisionId,
       revision.reconciliationEnvelopeDigest,
+      effectiveMatch,
       args.patch,
     );
 }

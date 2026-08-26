@@ -1840,6 +1840,143 @@ pub(crate) fn load_verified_chronicle_snapshot_for_apply(
     Ok(payload)
 }
 
+/// Proof that this transaction verified the one current Snapshot authority and
+/// its sealed Existing Event Catalog for a current Chronicle Run. Fields stay
+/// private so per-Proposal comparison cannot be called with an unbound marker.
+pub(crate) struct VerifiedChronicleRevisionReviewAuthority {
+    project_id: String,
+    run_id: String,
+}
+
+/// Verify the Snapshot/catalog authority once per Decision or Commit coverage
+/// transaction. Commit coverage may inspect many approved/rejected Proposals;
+/// parsing and hashing the complete Snapshot for every row would hold the
+/// `BEGIN IMMEDIATE` lock for O(P * snapshotBytes).
+pub(crate) fn load_verified_chronicle_revision_review_authority(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<VerifiedChronicleRevisionReviewAuthority> {
+    let snapshot = load_verified_chronicle_snapshot_for_apply(conn, project_id, run_id)?;
+    let catalog = snapshot
+        .get("existingEventsCatalog")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_CATALOG_MISSING: current Chronicle Run '{run_id}' Snapshot has no sealed existing Event catalog"
+            )
+        })?;
+    let events = catalog
+        .get("events")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_CATALOG_INVALID: current Chronicle Run '{run_id}' sealed Event catalog has no event roster"
+            )
+        })?;
+    let mut event_refs = HashSet::with_capacity(events.len());
+    for (index, event) in events.iter().enumerate() {
+        let event = event.as_object().ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_CATALOG_INVALID: current Chronicle Run '{run_id}' sealed Event catalog entry {index} is not an object"
+            )
+        })?;
+        let event_ref = event.get("ref").and_then(Value::as_str).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_CATALOG_INVALID: current Chronicle Run '{run_id}' sealed Event catalog entry {index} has no ref"
+            )
+        })?;
+        let event_title = event.get("title").and_then(Value::as_str).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_CATALOG_INVALID: current Chronicle Run '{run_id}' sealed Event catalog entry {index} has no title"
+            )
+        })?;
+        anyhow::ensure!(
+            !event_ref.trim().is_empty() && !event_title.trim().is_empty(),
+            "NEX_CHRONICLE_RESUME_CATALOG_INVALID: current Chronicle Run '{run_id}' sealed Event catalog entry {index} has an empty ref/title"
+        );
+        anyhow::ensure!(
+            event_refs.insert(event_ref),
+            "NEX_CHRONICLE_RESUME_CATALOG_INVALID: current Chronicle Run '{run_id}' sealed Event catalog has duplicate ref '{event_ref}'"
+        );
+    }
+    Ok(VerifiedChronicleRevisionReviewAuthority {
+        project_id: project_id.to_string(),
+        run_id: run_id.to_string(),
+    })
+}
+
+/// Re-evaluate one current reviewed Chronicle title against the immutable plan
+/// after the transaction has verified its Snapshot/catalog authority. The
+/// plan match describes revision 1; Human review may append a later revision,
+/// so Decision/Prepare/Apply must not continue treating a changed title as
+/// `none`.
+///
+/// Any raw title change from the sealed plan is classified conservatively as
+/// probable-duplicate. Native deliberately does not reinterpret unchanged
+/// titles with a second Unicode normalizer: renderer/Native lowercasing cannot
+/// be assumed byte-for-byte equivalent, while the sealed plan already owns the
+/// unchanged title's match result.
+pub(crate) fn current_chronicle_revision_requires_probable_duplicate_review(
+    conn: &Connection,
+    authority: &VerifiedChronicleRevisionReviewAuthority,
+    proposal_set_id: &str,
+    proposal_id: &str,
+    revision_id: &str,
+    sealed_planned_title: &str,
+) -> anyhow::Result<bool> {
+    let revision_payload: Option<String> = conn
+        .query_row(
+            "SELECT revision.payload_json
+               FROM narrative_proposals proposal
+               JOIN narrative_proposal_sets proposal_set
+                 ON proposal_set.id = proposal.proposal_set_id
+               JOIN narrative_proposal_revisions revision
+                 ON revision.id = ?1
+                AND revision.proposal_id = proposal.id
+              WHERE proposal.id = ?2
+                AND proposal.current_revision_id = revision.id
+                AND proposal.proposal_set_id = ?3
+                AND proposal.kind = ?4
+                AND proposal_set.run_id = ?5
+                AND proposal_set.project_id = ?6",
+            params![
+                revision_id,
+                proposal_id,
+                proposal_set_id,
+                CHRONICLE_EVENT_PROPOSAL_KIND,
+                authority.run_id,
+                authority.project_id,
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let revision_payload = revision_payload.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_PROPOSAL_REVISION_MISMATCH: current Chronicle proposal '{proposal_id}' does not own revision '{revision_id}'"
+        )
+    })?;
+    let revision_payload: Value = serde_json::from_str(&revision_payload).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH: current Chronicle proposal '{proposal_id}' revision payload is malformed: {error}"
+        )
+    })?;
+    validate_chronicle_scene_event_proposal_payload(&revision_payload).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH: current Chronicle proposal '{proposal_id}' revision payload is invalid: {error}"
+        )
+    })?;
+    let title = revision_payload
+        .get("title")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_PROPOSAL_PAYLOAD_MISMATCH: current Chronicle proposal '{proposal_id}' revision title is missing"
+            )
+        })?;
+    Ok(title != sealed_planned_title)
+}
+
 fn validate_chronicle_resume_snapshot_inputs(
     payload: &Value,
     project_id: &str,
@@ -3105,12 +3242,18 @@ fn load_chronicle_plan_artifact_payload(
 /// the current Chronicle plan Task. Commit validation uses this instead of a
 /// renderer-supplied duplicate choice, so a probable duplicate cannot be
 /// promoted by appending a bare `approved` Decision through a lower-level API.
+#[derive(Debug, Clone)]
+pub(crate) struct CurrentChronicleProposalPlanAuthority {
+    pub(crate) match_value: Value,
+    pub(crate) planned_title: String,
+}
+
 pub(crate) fn load_current_chronicle_proposal_matches(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
     proposal_set_id: &str,
-) -> anyhow::Result<HashMap<String, Value>> {
+) -> anyhow::Result<HashMap<String, CurrentChronicleProposalPlanAuthority>> {
     let mut coordinate_statement = conn.prepare(
         "SELECT task_id, attempt_id
            FROM narrative_extraction_artifacts
@@ -3196,6 +3339,15 @@ pub(crate) fn load_current_chronicle_proposal_matches(
                 "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan entry {index} has no eventId"
             )
         })?;
+        let planned_title = planned_proposal
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|title| !title.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: planned entry {index} has no title authority"
+                )
+            })?;
         let proposal_key = format!("{event_id}:{index}");
         let match_value = planned_row.get("match").cloned().ok_or_else(|| {
             anyhow::anyhow!(
@@ -3203,7 +3355,15 @@ pub(crate) fn load_current_chronicle_proposal_matches(
             )
         })?;
         anyhow::ensure!(
-            matches.insert(proposal_key, match_value).is_none(),
+            matches
+                .insert(
+                    proposal_key,
+                    CurrentChronicleProposalPlanAuthority {
+                        match_value,
+                        planned_title: planned_title.to_string(),
+                    },
+                )
+                .is_none(),
             "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: planned match roster has a duplicate proposalKey"
         );
     }
@@ -5190,7 +5350,7 @@ fn validate_current_chronicle_decision_against_plan(
     if !current_chronicle_run_spec_for_run(conn, &project_id, &run_id)? {
         return Ok(());
     }
-    let match_value = load_current_chronicle_proposal_matches(
+    let plan_authority = load_current_chronicle_proposal_matches(
         conn,
         &project_id,
         &run_id,
@@ -5202,7 +5362,8 @@ fn validate_current_chronicle_decision_against_plan(
             "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: current Proposal has no sealed match metadata"
         )
     })?;
-    let match_status = match_value
+    let match_status = plan_authority
+        .match_value
         .get("status")
         .and_then(Value::as_str)
         .ok_or_else(|| {
@@ -5214,13 +5375,36 @@ fn validate_current_chronicle_decision_against_plan(
         matches!(match_status, "none" | "probable-duplicate"),
         "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: unsupported sealed match status '{match_status}'"
     );
-    if match_status != "probable-duplicate" || proposal_status == "deferred" {
+    if proposal_status == "deferred"
+        && decision_value.get("reason").and_then(Value::as_str) == Some("already-satisfied")
+    {
+        anyhow::bail!(
+            "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: current Chronicle Proposal cannot be terminalized as deferred/already-satisfied; the planner omits already-satisfied hypotheses instead of creating a Proposal"
+        );
+    }
+    let revision_review_authority =
+        load_verified_chronicle_revision_review_authority(conn, &project_id, &run_id)?;
+    let current_revision_requires_probable_duplicate_review =
+        current_chronicle_revision_requires_probable_duplicate_review(
+            conn,
+            &revision_review_authority,
+            &proposal_set_id,
+            &payload.proposal_id,
+            &payload.revision_id,
+            &plan_authority.planned_title,
+        )?;
+    let requires_probable_duplicate_choice =
+        match_status == "probable-duplicate" || current_revision_requires_probable_duplicate_review;
+    if !requires_probable_duplicate_choice {
         return Ok(());
     }
     let expected_choice = match proposal_status {
         "approved" => "create-as-new",
         "rejected" => "skip-as-same",
         "held" => "hold",
+        "deferred" => anyhow::bail!(
+            "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: current-revision probable-duplicate Decision 'deferred' cannot replace an explicit create-as-new, skip-as-same, or hold choice"
+        ),
         _ => return Ok(()),
     };
     anyhow::ensure!(
@@ -5228,7 +5412,7 @@ fn validate_current_chronicle_decision_against_plan(
             .get("probableDuplicateChoice")
             .and_then(Value::as_str)
             == Some(expected_choice),
-        "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: probable-duplicate Decision '{proposal_status}' requires decisionJson.probableDuplicateChoice='{expected_choice}'"
+        "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: current-revision probable-duplicate Decision '{proposal_status}' requires decisionJson.probableDuplicateChoice='{expected_choice}'"
     );
     Ok(())
 }

@@ -2,8 +2,9 @@ use chrono::{Duration, Utc};
 use grimodex_db::narrative_extraction::{
     self, ensure_test_schema, AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload,
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
-    FinishTaskPayload, GetCommitStatusPayload, ListResumableRunsPayload, PrepareCommitPayload,
-    ProposalSeed, ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    FinishTaskPayload, GetCommitStatusPayload, IsRunResumableForReviewPayload,
+    ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed, ReviseAndDecidePayload,
+    RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::{
     load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
@@ -304,6 +305,35 @@ fn current_chronicle_plan_proposal(operation_payload: &Value) -> Value {
         proposal["semanticType"] = semantic_type.clone();
     }
     proposal
+}
+
+fn current_chronicle_catalog_event(event_id: &str, title: &str) -> Value {
+    json!({
+        "ref": event_id,
+        "sourceKey": event_id,
+        "title": title,
+        "note": null,
+        "version": 0,
+        "linkedDocumentSourceKeys": [],
+        "participantEntityRefs": [],
+        "startTime": null,
+        "endTime": null,
+        "digest": format!("sha256:{event_id}"),
+        "applicationProvenanceKeys": [],
+    })
+}
+
+fn insert_current_chronicle_catalog_event(db: &Database, event_id: &str, title: &str) {
+    db.execute(
+        "INSERT INTO events (id, project_id, title, ordinal, version)
+         VALUES (?, 'project-1', ?, 'a0', 0)",
+        &[
+            Value::String(event_id.to_string()),
+            Value::String(title.to_string()),
+        ],
+        "run",
+    )
+    .expect("insert Chronicle catalog Event");
 }
 
 fn current_chronicle_envelope(run_id: &str, task_id: &str, operation_payload: &Value) -> Value {
@@ -779,8 +809,18 @@ fn seal_run_as_current_chronicle_with_matches(db: &Database, run_id: &str, match
         "kind": "chronicle.existing-events-catalog@1",
         "events": [],
     });
-    let catalog_digest = format!("sha256:{}", narrative_extraction::digest_plan(&catalog));
-    let snapshot_payload = current_chronicle_snapshot_payload(run_id);
+    seal_run_as_current_chronicle_with_catalog_and_matches(db, run_id, &catalog, matches);
+}
+
+fn seal_run_as_current_chronicle_with_catalog_and_matches(
+    db: &Database,
+    run_id: &str,
+    catalog: &Value,
+    matches: &[Value],
+) {
+    let catalog_digest = format!("sha256:{}", narrative_extraction::digest_plan(catalog));
+    let mut snapshot_payload = current_chronicle_snapshot_payload(run_id);
+    snapshot_payload["existingEventsCatalog"] = catalog.clone();
     let snapshot_digest = snapshot_payload["snapshot"]["digest"]
         .as_str()
         .expect("current Snapshot digest")
@@ -1056,7 +1096,7 @@ fn seal_run_as_current_chronicle_with_matches(db: &Database, run_id: &str, match
         )?;
         Ok(())
     })
-    .expect("seal current Chronicle Run spec, plan artifact, and empty Event catalog");
+    .expect("seal current Chronicle Run spec, plan artifact, and Event catalog");
 }
 
 fn apply_current_chronicle_event(
@@ -2020,6 +2060,641 @@ fn current_chronicle_probable_duplicates_require_typed_current_decisions() {
 }
 
 #[test]
+fn current_chronicle_deferred_cannot_terminalize_or_bypass_duplicate_review() {
+    for case in [
+        "terminal-already-satisfied",
+        "plan-probable-deferred",
+        "title-changed-deferred",
+    ] {
+        let db = migrated_db();
+        insert_scene(&db, "scene-1", 0);
+        let run_id = format!("run-current-deferred-guard-{case}");
+        let set_id = current_chronicle_proposal_set_id(&run_id);
+        let original = event_create_payload(
+            &format!("event-current-deferred-guard-{case}"),
+            "Sealed title",
+            "scene-1",
+            0,
+        );
+        let mut pairs = seed_current_chronicle_proposals(
+            &db,
+            &run_id,
+            &set_id,
+            std::slice::from_ref(&original),
+        );
+        let matches = if case == "plan-probable-deferred" {
+            vec![json!({
+                "status": "probable-duplicate",
+                "candidates": ["event-existing"],
+                "reasons": ["title-only"],
+            })]
+        } else {
+            vec![json!({ "status": "none" })]
+        };
+        seal_run_as_current_chronicle_with_matches(&db, &run_id, &matches);
+        if case == "title-changed-deferred" {
+            let revised_operation = event_create_payload(
+                &format!("event-current-deferred-guard-{case}"),
+                "Human changed title",
+                "scene-1",
+                0,
+            );
+            append_current_chronicle_revision(&db, &run_id, &mut pairs[0], &revised_operation);
+        }
+
+        let exact_before = narrative_extraction::narrative_extraction_is_run_resumable_for_review(
+            &db,
+            IsRunResumableForReviewPayload {
+                run_id: run_id.clone(),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+            },
+        )
+        .expect("exact current Chronicle resumability before rejected deferred Decision");
+        assert!(exact_before.resumable, "{case} must begin review-resumable");
+
+        let decision_json = if case == "terminal-already-satisfied" {
+            json!({ "reason": "already-satisfied" })
+        } else {
+            json!({ "reason": "needs-more-context" })
+        };
+        let error = append_decision(&db, &run_id, &pairs[0], "deferred", Some(decision_json))
+            .expect_err("current Chronicle deferred Decision must not bypass review authority");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE"),
+            "unexpected {case} deferred error: {error:#}"
+        );
+
+        let (status, current_revision_id, decision_count): (String, String, i64) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT proposal.status, proposal.current_revision_id,
+                            (SELECT COUNT(*) FROM narrative_proposal_decisions decision
+                              WHERE decision.proposal_id = proposal.id)
+                       FROM narrative_proposals proposal
+                      WHERE proposal.id = ?1",
+                    [&pairs[0].0],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?)
+            })
+            .expect("read rejected deferred Decision state");
+        assert_eq!(status, "unreviewed", "{case} status DML must roll back");
+        assert_eq!(current_revision_id, pairs[0].1);
+        assert_eq!(decision_count, 0, "{case} Decision DML must roll back");
+
+        let exact_after = narrative_extraction::narrative_extraction_is_run_resumable_for_review(
+            &db,
+            IsRunResumableForReviewPayload {
+                run_id: run_id.clone(),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+            },
+        )
+        .expect("exact current Chronicle resumability after rejected deferred Decision");
+        assert!(
+            exact_after.resumable,
+            "{case} must remain exactly review-resumable after rejected Decision"
+        );
+    }
+}
+
+#[test]
+fn current_chronicle_human_revision_cannot_approve_a_new_catalog_title_collision_bare() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    insert_current_chronicle_catalog_event(&db, "event-existing-rematch-human", "Existing Event");
+    let run_id = "run-current-revision-rematch-human";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let original = event_create_payload(
+        "event-revision-rematch-human",
+        "Originally unmatched",
+        "scene-1",
+        0,
+    );
+    let pairs =
+        seed_current_chronicle_proposals(&db, run_id, &set_id, std::slice::from_ref(&original));
+    let catalog = json!({
+        "kind": "chronicle.existing-events-catalog@1",
+        "events": [current_chronicle_catalog_event(
+            "event-existing-rematch-human",
+            "Existing Event",
+        )],
+    });
+    seal_run_as_current_chronicle_with_catalog_and_matches(
+        &db,
+        run_id,
+        &catalog,
+        &[json!({ "status": "none" })],
+    );
+
+    let revised_operation = event_create_payload(
+        "event-revision-rematch-human",
+        "EXISTING EVENT",
+        "scene-1",
+        0,
+    );
+    let error = narrative_extraction::narrative_extraction_revise_and_decide_as_human(
+        &db,
+        ReviseAndDecidePayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: pairs[0].0.clone(),
+            payload_json: current_chronicle_plan_proposal(&revised_operation),
+            expected_current_revision_id: pairs[0].1.clone(),
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("human-reviewer".to_string()),
+            reconciliation_envelope: Some(current_chronicle_envelope(
+                run_id,
+                &format!("{run_id}-task"),
+                &revised_operation,
+            )),
+            inherit_reconciliation_envelope: None,
+        },
+    )
+    .expect_err("a revised title that collides with the sealed catalog requires typed review");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE"),
+        "unexpected rematch error: {error:#}"
+    );
+
+    let (status, current_revision_id, revision_count, decision_count): (String, String, i64, i64) =
+        db.with_conn(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT status FROM narrative_proposals WHERE id = ?1",
+                    [&pairs[0].0],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT current_revision_id FROM narrative_proposals WHERE id = ?1",
+                    [&pairs[0].0],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_revisions WHERE proposal_id = ?1",
+                    [&pairs[0].0],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_decisions WHERE proposal_id = ?1",
+                    [&pairs[0].0],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("read rejected rematch lifecycle");
+    assert_eq!(status, "unreviewed");
+    assert_eq!(current_revision_id, pairs[0].1);
+    assert_eq!(revision_count, 1);
+    assert_eq!(decision_count, 0);
+}
+
+#[test]
+fn current_chronicle_human_title_change_requires_review_across_contextual_sigma() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    insert_current_chronicle_catalog_event(&db, "event-existing-rematch-sigma", "ος");
+    let run_id = "run-current-revision-rematch-sigma";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let original = event_create_payload(
+        "event-revision-rematch-sigma",
+        "Originally unmatched",
+        "scene-1",
+        0,
+    );
+    let pairs =
+        seed_current_chronicle_proposals(&db, run_id, &set_id, std::slice::from_ref(&original));
+    let catalog = json!({
+        "kind": "chronicle.existing-events-catalog@1",
+        "events": [current_chronicle_catalog_event(
+            "event-existing-rematch-sigma",
+            "ος",
+        )],
+    });
+    seal_run_as_current_chronicle_with_catalog_and_matches(
+        &db,
+        run_id,
+        &catalog,
+        &[json!({ "status": "none" })],
+    );
+    let revised_operation =
+        event_create_payload("event-revision-rematch-sigma", "ΟΣ", "scene-1", 0);
+
+    let error = narrative_extraction::narrative_extraction_revise_and_decide_as_human(
+        &db,
+        ReviseAndDecidePayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: pairs[0].0.clone(),
+            payload_json: current_chronicle_plan_proposal(&revised_operation),
+            expected_current_revision_id: pairs[0].1.clone(),
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("human-reviewer".to_string()),
+            reconciliation_envelope: Some(current_chronicle_envelope(
+                run_id,
+                &format!("{run_id}-task"),
+                &revised_operation,
+            )),
+            inherit_reconciliation_envelope: None,
+        },
+    )
+    .expect_err("a raw title edit must not depend on cross-runtime lowercase parity");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE"),
+        "unexpected contextual sigma rematch error: {error:#}"
+    );
+
+    let (current_revision_id, status, revision_count, decision_count): (String, String, i64, i64) =
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT proposal.current_revision_id, proposal.status,
+                        (SELECT COUNT(*) FROM narrative_proposal_revisions revision
+                          WHERE revision.proposal_id = proposal.id),
+                        (SELECT COUNT(*) FROM narrative_proposal_decisions decision
+                          WHERE decision.proposal_id = proposal.id)
+                   FROM narrative_proposals proposal
+                  WHERE proposal.id = ?1",
+                [&pairs[0].0],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?)
+        })
+        .expect("read contextual sigma rollback");
+    assert_eq!(current_revision_id, pairs[0].1);
+    assert_eq!(status, "unreviewed");
+    assert_eq!((revision_count, decision_count), (1, 0));
+}
+
+#[test]
+fn current_chronicle_exact_title_revert_restores_the_sealed_plan_match() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let run_id = "run-current-revision-exact-title-revert";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let original = event_create_payload(
+        "event-current-revision-exact-title-revert",
+        "Sealed planned title",
+        "scene-1",
+        0,
+    );
+    let mut pairs =
+        seed_current_chronicle_proposals(&db, run_id, &set_id, std::slice::from_ref(&original));
+    seal_run_as_current_chronicle_with_matches(&db, run_id, &[json!({ "status": "none" })]);
+
+    let temporary_edit = event_create_payload(
+        "event-current-revision-exact-title-revert",
+        "Temporary human title",
+        "scene-1",
+        0,
+    );
+    append_current_chronicle_revision(&db, run_id, &mut pairs[0], &temporary_edit);
+    append_current_chronicle_revision(&db, run_id, &mut pairs[0], &original);
+
+    append_decision(&db, run_id, &pairs[0], "approved", None)
+        .expect("an exact raw-title revert may reuse the sealed plan match");
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-current-revision-exact-title-revert",
+            "ignored",
+            &set_id,
+            run_id,
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), original)],
+        ),
+    );
+    assert_eq!(applied["created"].as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn current_chronicle_prepare_rechecks_revised_title_after_decision_writer_bypass() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    insert_current_chronicle_catalog_event(&db, "event-existing-rematch-prepare", "Existing Event");
+    let run_id = "run-current-revision-rematch-prepare";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let original = event_create_payload(
+        "event-revision-rematch-prepare",
+        "Originally unmatched",
+        "scene-1",
+        0,
+    );
+    let mut pairs =
+        seed_current_chronicle_proposals(&db, run_id, &set_id, std::slice::from_ref(&original));
+    let catalog = json!({
+        "kind": "chronicle.existing-events-catalog@1",
+        "events": [current_chronicle_catalog_event(
+            "event-existing-rematch-prepare",
+            "Existing Event",
+        )],
+    });
+    seal_run_as_current_chronicle_with_catalog_and_matches(
+        &db,
+        run_id,
+        &catalog,
+        &[json!({ "status": "none" })],
+    );
+    let revised_operation = event_create_payload(
+        "event-revision-rematch-prepare",
+        "EXISTING EVENT",
+        "scene-1",
+        0,
+    );
+    append_current_chronicle_revision(&db, run_id, &mut pairs[0], &revised_operation);
+
+    // Simulate an internal/backend caller that bypassed the public Decision
+    // writer. Prepare must independently re-evaluate the current revision.
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_proposal_decisions
+                (id, proposal_id, revision_id, decision, decision_json,
+                 created_at, created_by)
+             VALUES ('decision-rematch-prepare-bypass', ?1, ?2, 'approved', '{}',
+                     '2026-08-26T00:00:02.000Z', 'backend-bypass')",
+            rusqlite::params![pairs[0].0, pairs[0].1],
+        )?;
+        conn.execute(
+            "UPDATE narrative_proposals SET status = 'approved' WHERE id = ?1",
+            [&pairs[0].0],
+        )?;
+        Ok(())
+    })
+    .expect("seed bypassed approval");
+    enable_manual_apply(&db);
+
+    let error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-current-revision-rematch-prepare",
+            "ignored",
+            &set_id,
+            run_id,
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), revised_operation)],
+        ),
+    )
+    .expect_err("Prepare must not trust a bypassed bare approval");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE"),
+        "unexpected Prepare rematch error: {error:#}"
+    );
+    let (commit_count, application_count, event_count): (i64, i64, i64) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
+                    row.get(0)
+                })?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_applications",
+                    [],
+                    |row| row.get(0),
+                )?,
+                conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+            ))
+        })
+        .expect("read rejected Prepare state");
+    assert_eq!((commit_count, application_count, event_count), (0, 0, 1));
+}
+
+#[test]
+fn current_chronicle_apply_rechecks_revised_title_choice_after_prepare() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    insert_current_chronicle_catalog_event(&db, "event-existing-rematch-apply", "Existing Event");
+    let run_id = "run-current-revision-rematch-apply";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let original = event_create_payload(
+        "event-revision-rematch-apply",
+        "Originally unmatched",
+        "scene-1",
+        0,
+    );
+    let mut pairs =
+        seed_current_chronicle_proposals(&db, run_id, &set_id, std::slice::from_ref(&original));
+    let catalog = json!({
+        "kind": "chronicle.existing-events-catalog@1",
+        "events": [current_chronicle_catalog_event(
+            "event-existing-rematch-apply",
+            "Existing Event",
+        )],
+    });
+    seal_run_as_current_chronicle_with_catalog_and_matches(
+        &db,
+        run_id,
+        &catalog,
+        &[json!({ "status": "none" })],
+    );
+    let revised_operation = event_create_payload(
+        "event-revision-rematch-apply",
+        "EXISTING EVENT",
+        "scene-1",
+        0,
+    );
+    append_current_chronicle_revision(&db, run_id, &mut pairs[0], &revised_operation);
+    append_decision(
+        &db,
+        run_id,
+        &pairs[0],
+        "approved",
+        Some(json!({ "probableDuplicateChoice": "create-as-new" })),
+    )
+    .expect("typed rematch approval");
+    enable_manual_apply(&db);
+    let mut prepare = build_prepare(
+        "req-current-revision-rematch-apply",
+        "ignored",
+        &set_id,
+        run_id,
+        vec![(pairs[0].0.clone(), pairs[0].1.clone(), revised_operation)],
+    );
+    prepare.expected_tail_ordinal = Some("a0".to_string());
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(&db, prepare.clone())
+        .expect("typed rematch Prepare");
+
+    // Simulate a writer race/direct DB bypass after Prepare. Apply must derive
+    // the current-revision match again before Event/Application DML.
+    db.execute(
+        "UPDATE narrative_proposal_decisions
+            SET decision_json = '{}'
+          WHERE proposal_id = ? AND revision_id = ?",
+        &[
+            Value::String(pairs[0].0.clone()),
+            Value::String(pairs[0].1.clone()),
+        ],
+        "run",
+    )
+    .expect("strip typed duplicate choice after Prepare");
+    let error = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .expect("prepared id")
+                .to_string(),
+            request_id: prepare.request_id,
+            session_id: prepare.session_id,
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect_err("Apply must not trust the stale prepared duplicate choice");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE"),
+        "unexpected Apply rematch error: {error:#}"
+    );
+    let (commit_status, application_count, event_count): (String, i64, i64) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+                    [prepared["preparedCommitId"].as_str().expect("prepared id")],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_applications",
+                    [],
+                    |row| row.get(0),
+                )?,
+                conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+            ))
+        })
+        .expect("read rejected Apply state");
+    assert_eq!(commit_status, "invalidated");
+    assert_eq!((application_count, event_count), (0, 1));
+}
+
+#[test]
+fn current_revision_rematch_revalidates_snapshot_attempt_artifact_and_catalog_seals() {
+    for (corruption, expected_code) in [
+        ("attempt", "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID"),
+        (
+            "artifact-digest",
+            "NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT",
+        ),
+        ("catalog", "NEX_CHRONICLE_RESUME_CATALOG_MISMATCH"),
+    ] {
+        let db = migrated_db();
+        insert_scene(&db, "scene-1", 0);
+        let run_id = format!("run-current-revision-rematch-seal-{corruption}");
+        let existing_event_id = format!("event-existing-rematch-seal-{corruption}");
+        insert_current_chronicle_catalog_event(&db, &existing_event_id, "Existing Event");
+        let set_id = current_chronicle_proposal_set_id(&run_id);
+        let original = event_create_payload(
+            &format!("event-revision-rematch-seal-{corruption}"),
+            "Originally unmatched",
+            "scene-1",
+            0,
+        );
+        let mut pairs = seed_current_chronicle_proposals(
+            &db,
+            &run_id,
+            &set_id,
+            std::slice::from_ref(&original),
+        );
+        let catalog = json!({
+            "kind": "chronicle.existing-events-catalog@1",
+            "events": [current_chronicle_catalog_event(
+                &existing_event_id,
+                "Existing Event",
+            )],
+        });
+        seal_run_as_current_chronicle_with_catalog_and_matches(
+            &db,
+            &run_id,
+            &catalog,
+            &[json!({ "status": "none" })],
+        );
+        let revised_operation = event_create_payload(
+            &format!("event-revision-rematch-seal-{corruption}"),
+            "EXISTING EVENT",
+            "scene-1",
+            0,
+        );
+        append_current_chronicle_revision(&db, &run_id, &mut pairs[0], &revised_operation);
+
+        db.with_conn(|conn| {
+            match corruption {
+                "attempt" => {
+                    conn.execute(
+                        "UPDATE narrative_extraction_attempts
+                            SET status = 'failed'
+                          WHERE id = ?1",
+                        [format!("{run_id}-snapshot-attempt")],
+                    )?;
+                }
+                "artifact-digest" => {
+                    conn.execute(
+                        "UPDATE narrative_extraction_artifacts
+                            SET payload_digest = ?1
+                          WHERE run_id = ?2 AND artifact_kind = 'source.snapshot@1'",
+                        rusqlite::params![format!("sha256:{}", "0".repeat(64)), run_id],
+                    )?;
+                }
+                "catalog" => {
+                    let payload_json: String = conn.query_row(
+                        "SELECT payload_json
+                           FROM narrative_extraction_artifacts
+                          WHERE run_id = ?1 AND artifact_kind = 'source.snapshot@1'",
+                        [&run_id],
+                        |row| row.get(0),
+                    )?;
+                    let mut payload: Value = serde_json::from_str(&payload_json)?;
+                    payload["existingEventsCatalog"]["events"][0]["title"] =
+                        json!("Rehashed tampered title");
+                    conn.execute(
+                        "UPDATE narrative_extraction_artifacts
+                            SET payload_json = ?1, payload_digest = ?2
+                          WHERE run_id = ?3 AND artifact_kind = 'source.snapshot@1'",
+                        rusqlite::params![
+                            payload.to_string(),
+                            grimodex_core::canonical_json_digest(&payload)?,
+                            run_id,
+                        ],
+                    )?;
+                }
+                _ => unreachable!(),
+            }
+            Ok(())
+        })
+        .expect("corrupt sealed rematch authority");
+
+        let error = append_decision(&db, &run_id, &pairs[0], "approved", None)
+            .expect_err("rematch must reject a corrupt sealed Snapshot authority");
+        assert!(
+            error.to_string().contains(expected_code),
+            "unexpected {corruption} seal error: {error:#}"
+        );
+        let (status, decision_count): (String, i64) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT status FROM narrative_proposals WHERE id = ?1",
+                        [&pairs[0].0],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_proposal_decisions WHERE proposal_id = ?1",
+                        [&pairs[0].0],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("read rejected sealed rematch state");
+        assert_eq!(status, "unreviewed");
+        assert_eq!(decision_count, 0);
+    }
+}
+
+#[test]
 fn current_chronicle_plan_attempt_authority_is_exact_before_decision_dml() {
     for corruption in ["orphan", "duplicate-current-number"] {
         let db = migrated_db();
@@ -2247,6 +2922,64 @@ fn current_chronicle_native_compiler_rejects_renderer_field_tampering() {
         })
         .expect("count compiler-tamper commits");
     assert_eq!(commit_count, 0);
+}
+
+#[test]
+fn current_chronicle_shared_snapshot_authority_rejects_later_proposal_tampering() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let run_id = "run-current-shared-snapshot-compiler-tamper";
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let payloads = [
+        event_create_payload("event-shared-snapshot-a", "Sealed A", "scene-1", 0),
+        event_create_payload("event-shared-snapshot-b", "Sealed B", "scene-1", 0),
+    ];
+    let mut pairs = seed_current_chronicle_proposals(&db, run_id, &set_id, &payloads);
+    seal_run_as_current_chronicle(&db, run_id);
+    for (proposal, payload) in pairs.iter_mut().zip(payloads.iter()) {
+        decide_current_chronicle_proposal(&db, run_id, proposal, payload, "approved");
+    }
+    enable_manual_apply(&db);
+
+    let mut tampered_second = payloads[1].clone();
+    tampered_second["revealSceneId"] = json!("scene-renderer-forged");
+    let error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-current-shared-snapshot-compiler-tamper",
+            "ignored",
+            &set_id,
+            run_id,
+            vec![
+                (pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone()),
+                (pairs[1].0.clone(), pairs[1].1.clone(), tampered_second),
+            ],
+        ),
+    )
+    .expect_err("the shared Snapshot map must not weaken later Proposal compilation");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"),
+        "unexpected shared Snapshot compiler error: {error:#}"
+    );
+
+    let (commit_count, application_count, event_count): (i64, i64, i64) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
+                    row.get(0)
+                })?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_applications",
+                    [],
+                    |row| row.get(0),
+                )?,
+                conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?,
+            ))
+        })
+        .expect("read multi-Proposal compiler rejection state");
+    assert_eq!((commit_count, application_count, event_count), (0, 0, 0));
 }
 
 #[test]
