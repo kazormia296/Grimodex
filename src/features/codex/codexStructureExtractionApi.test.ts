@@ -51,8 +51,7 @@ vi.mock(
       >();
     return {
       ...actual,
-      captureNarrativeExtractionWorkspaceBinding:
-        captureWorkspaceBindingMock,
+      captureNarrativeExtractionWorkspaceBinding: captureWorkspaceBindingMock,
       narrativeExtractionClaimTask: claimTaskMock,
       narrativeExtractionFinishTask: finishTaskMock,
       narrativeExtractionFailTask: failTaskMock,

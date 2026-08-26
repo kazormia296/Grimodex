@@ -925,9 +925,8 @@ describe("structured repair root-object contract", () => {
       projectId: "project-test",
       stageExecution: repairRootStage,
       send: async () => ({ text: "not-json", ...usage }),
-      repairSend: captureRepairSend(
-        eventSynthesisResponse("cluster-repair"),
-      ).send,
+      repairSend: captureRepairSend(eventSynthesisResponse("cluster-repair"))
+        .send,
       createStageExecutionId: () => "event-terminal-repair-child",
       onTerminalOutput: (output) => {
         terminalOutputs.push(output);

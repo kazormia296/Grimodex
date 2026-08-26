@@ -266,7 +266,10 @@ function synthesisReceiptsForInput(
 
 type AcceptedSynthesisTerminal = {
   readonly terminal: ChronicleStageTerminalReceiptV1;
-  readonly disposition: "root-success" | "repair-success" | "deterministic-empty";
+  readonly disposition:
+    | "root-success"
+    | "repair-success"
+    | "deterministic-empty";
 };
 
 /**
@@ -289,13 +292,17 @@ function resolveAcceptedSynthesisTerminal(
   if (root.parseStatus === "parsed" && root.terminalStatus === "succeeded") {
     return { terminal: root, disposition: "root-success" };
   }
-  if (root.parseStatus === "not-attempted" && root.terminalStatus === "skipped") {
+  if (
+    root.parseStatus === "not-attempted" &&
+    root.terminalStatus === "skipped"
+  ) {
     return { terminal: root, disposition: "deterministic-empty" };
   }
   if (root.parseStatus === "invalid" && root.terminalStatus === "failed") {
     const repairs = receipts.filter(
       (receipt) =>
-        receipt.stageExecution.stageId === NARRATIVE_STAGE_IDS.structuredRepair &&
+        receipt.stageExecution.stageId ===
+          NARRATIVE_STAGE_IDS.structuredRepair &&
         receipt.stageExecution.parentStageExecutionId ===
           root.stageExecution.stageExecutionId &&
         receipt.stageExecution.taskId === root.stageExecution.taskId &&
@@ -506,18 +513,19 @@ export async function buildChronicleProductionV2Envelopes(
     envelopeByProposalKey,
     ...(stageReceiptRefs.size > 0
       ? {
-          stageReceiptRefs: [...stageReceiptRefs.values()].sort((left, right) =>
-            left.stageExecutionId < right.stageExecutionId
-              ? -1
-              : left.stageExecutionId > right.stageExecutionId
-                ? 1
-                : left.stageExecutionReceiptDigest <
-                    right.stageExecutionReceiptDigest
-                  ? -1
-                  : left.stageExecutionReceiptDigest >
+          stageReceiptRefs: [...stageReceiptRefs.values()].sort(
+            (left, right) =>
+              left.stageExecutionId < right.stageExecutionId
+                ? -1
+                : left.stageExecutionId > right.stageExecutionId
+                  ? 1
+                  : left.stageExecutionReceiptDigest <
                       right.stageExecutionReceiptDigest
-                    ? 1
-                    : 0,
+                    ? -1
+                    : left.stageExecutionReceiptDigest >
+                        right.stageExecutionReceiptDigest
+                      ? 1
+                      : 0,
           ),
         }
       : {}),
