@@ -175,21 +175,43 @@ fn recovery_counts_existing_runs_without_creating_task_or_attempt_rows() {
     .expect("valid work key");
 
     db.with_conn(|conn| {
-        for (id, status) in [
-            ("run-running", "running"),
-            ("run-failed-1", "failed"),
-            ("run-failed-2", "failed"),
+        for (id, status, created_at, started_at, completed_at) in [
+            (
+                "run-failed-1",
+                "failed",
+                "2026-08-26T00:00:00.000Z",
+                "2026-08-26T00:00:00.001Z",
+                Some("2026-08-26T00:00:00.002Z"),
+            ),
+            (
+                "run-failed-2",
+                "failed",
+                "2026-08-26T00:00:00.003Z",
+                "2026-08-26T00:00:00.004Z",
+                Some("2026-08-26T00:00:00.005Z"),
+            ),
+            (
+                "run-running",
+                "running",
+                "2026-08-26T00:00:00.006Z",
+                "2026-08-26T00:00:00.007Z",
+                None,
+            ),
         ] {
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-                     status, coverage_json, created_at, run_kind, work_key)
+                     status, coverage_json, created_at, started_at, completed_at,
+                     run_kind, work_key)
                  VALUES (?1, ?2, 'maintenance', '{}', '{}', 'digest', ?3, '{}',
-                         datetime('now'), ?4, ?5)",
+                         ?4, ?5, ?6, ?7, ?8)",
                 params![
                     id,
                     PROJECT_ID,
                     status,
+                    created_at,
+                    started_at,
+                    completed_at,
                     work.run_kind.as_str(),
                     work.work_key
                 ],
@@ -234,15 +256,22 @@ fn recovery_after_failed_runs_is_bounded() {
         .expect("valid work key");
     db.with_conn(|conn| {
         for index in 0..MAX_AUTOMATIC_RETRIES {
+            let created_at = format!("2026-08-26T00:00:00.{:03}Z", index * 3);
+            let started_at = format!("2026-08-26T00:00:00.{:03}Z", index * 3 + 1);
+            let completed_at = format!("2026-08-26T00:00:00.{:03}Z", index * 3 + 2);
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-                     status, coverage_json, created_at, run_kind, work_key)
+                     status, coverage_json, created_at, started_at, completed_at,
+                     run_kind, work_key)
                  VALUES (?1, ?2, 'maintenance', '{}', '{}', 'digest', 'failed', '{}',
-                         datetime('now'), ?3, ?4)",
+                         ?3, ?4, ?5, ?6, ?7)",
                 params![
                     format!("failed-{index}"),
                     PROJECT_ID,
+                    created_at,
+                    started_at,
+                    completed_at,
                     work.run_kind.as_str(),
                     work.work_key
                 ],
