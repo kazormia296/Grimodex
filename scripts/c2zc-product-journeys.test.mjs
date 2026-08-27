@@ -58,10 +58,11 @@ test("C2-ZC journey launch phases are registered for clean Electron diagnostics"
 });
 
 test("C2-ZC runner reaches the marker only through main scheduler and N-API", async () => {
-  const [runner, main, napi] = await Promise.all([
+  const [runner, main, napi, harness] = await Promise.all([
     read("electron/scripts/c2zc-canonical-product-journey.mjs"),
     read("electron/main/index.ts"),
     read("electron/native/grimodex-node/src/lib.rs"),
+    read("electron/scripts/product-journey-harness.mjs"),
   ]);
 
   assert.match(runner, /harness\.launch\(`\$\{C2ZC_PRODUCT_JOURNEY_ID\}\/open`\)/);
@@ -76,6 +77,8 @@ test("C2-ZC runner reaches the marker only through main scheduler and N-API", as
   assert.match(napi, /record_live_scheduler_heartbeat/);
   assert.match(napi, /cut_over_workspace_freshness/);
   assert.match(napi, /NEX_C2ZC_CUTOVER_NOT_READY:/);
+  assert.match(harness, /ELECTRON_DISABLE_SANDBOX/);
+  assert.match(harness, /\["--no-sandbox", mainCjs\]/);
 });
 
 test("C2-ZC acceptance packet maps failure, swap/stale, restore/import, and birth tests", async () => {

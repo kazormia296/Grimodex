@@ -614,9 +614,13 @@ export function createProductJourneyHarness({
     delete env.ELECTRON_RENDERER_URL;
     env.GRIMODEX_USER_DATA_DIR = userDataDir;
     env[PRODUCT_JOURNEY_AI_ENV] = PRODUCT_JOURNEY_AI_VERSION;
+    const electronArgs =
+      env.ELECTRON_DISABLE_SANDBOX === "1"
+        ? ["--no-sandbox", mainCjs]
+        : [mainCjs];
     const app = await electronLauncher.launch({
       executablePath: electronBin,
-      args: [mainCjs],
+      args: electronArgs,
       env,
       timeout: launchTimeoutMs,
     });
