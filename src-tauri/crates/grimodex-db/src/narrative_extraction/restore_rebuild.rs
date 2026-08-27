@@ -1669,6 +1669,42 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
+    let edge_resolution_inputs = {
+        let mut statement = conn.prepare(
+            "SELECT id, consumer_kind, consumer_key, source_object_identity,
+                    owning_run_id
+               FROM narrative_dependency_edges
+              WHERE project_id = ?1
+              ORDER BY id ASC",
+        )?;
+        let edge_rows = statement
+            .query_map(params![project_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        edge_rows
+            .into_iter()
+            .map(
+                |(edge_id, consumer_kind, consumer_key, source_identity, owning_run_id)| {
+                    durable_edge_resolution_input(
+                        conn,
+                        project_id,
+                        &edge_id,
+                        &consumer_kind,
+                        &consumer_key,
+                        &source_identity,
+                        owning_run_id.as_deref(),
+                    )
+                },
+            )
+            .collect::<anyhow::Result<Vec<_>>>()?
+    };
     let edge_states = {
         let mut statement = conn.prepare(
             "SELECT edge_id, evidence_freshness, reason_code, build_action,
@@ -1863,7 +1899,8 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
                LEFT JOIN narrative_proposal_sets ps ON ps.id = p.proposal_set_id
                LEFT JOIN narrative_proposal_revisions r ON r.id = a.revision_id
                LEFT JOIN narrative_revision_source_basis b ON b.revision_id = a.revision_id
-              WHERE c.project_id = ?1 OR c.id IS NULL
+              WHERE c.project_id = ?1
+                 OR (c.id IS NULL AND ps.project_id = ?1)
               ORDER BY a.id ASC, b.ordinal ASC",
         )?;
         let rows = statement
@@ -2294,6 +2331,7 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
         "projectId": project_id,
         "semanticEpochs": semantic_epochs,
         "edges": edges,
+        "edgeResolutionInputs": edge_resolution_inputs,
         "edgeStates": edge_states,
         "consumerFreshness": consumer_freshness,
         "applicationContributions": application_contributions,
@@ -2712,6 +2750,473 @@ pub struct VerifyRunOutcome {
     pub report: DependencyGraphVerifyReport,
 }
 
+/// Read the Run row that supplies an Edge's scope binding.  The explicit
+/// `exists` marker is intentional: deleting a previously-resolved Run must
+/// change the graph CAS just as much as changing one of its revisions.
+fn durable_edge_run_resolution_input(
+    conn: &Connection,
+    run_id: Option<&str>,
+) -> anyhow::Result<Value> {
+    let Some(run_id) = run_id else {
+        return Ok(json!({
+            "exists": false,
+            "id": Value::Null,
+        }));
+    };
+    let row: Option<(
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        i64,
+    )> = conn
+        .query_row(
+            "SELECT id, project_id, semantic_epoch_id, run_kind, status,
+                    snapshot_digest, surface_path_id, spec_digest, coverage_json,
+                    started_at, completed_at, version
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            params![run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                ))
+            },
+        )
+        .optional()?;
+    Ok(match row {
+        Some((
+            id,
+            project_id,
+            semantic_epoch_id,
+            run_kind,
+            status,
+            snapshot_digest,
+            surface_path_id,
+            spec_digest,
+            coverage_json,
+            started_at,
+            completed_at,
+            version,
+        )) => json!({
+            "exists": true,
+            "id": id,
+            "projectId": project_id,
+            "semanticEpochId": semantic_epoch_id,
+            "runKind": run_kind,
+            "status": status,
+            "snapshotDigest": snapshot_digest,
+            "surfacePathId": surface_path_id,
+            "specDigest": spec_digest,
+            "coverageJson": coverage_json,
+            "startedAt": started_at,
+            "completedAt": completed_at,
+            "version": version,
+        }),
+        None => json!({
+            "exists": false,
+            "id": run_id,
+        }),
+    })
+}
+
+fn durable_edge_scene_source_input(
+    conn: &Connection,
+    project_id: &str,
+    source_identity: &str,
+) -> anyhow::Result<Value> {
+    let scene_id = source_identity
+        .strip_prefix("project:scene:")
+        .unwrap_or_default();
+    let row: Option<(String, String, String, i64, String)> = if scene_id.is_empty() {
+        None
+    } else {
+        conn.query_row(
+            "SELECT id, project_id, node_type, version, updated_at
+               FROM tree_nodes
+              WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+            params![scene_id, project_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?
+    };
+    Ok(match row {
+        Some((id, owner_project_id, node_type, version, updated_at)) => json!({
+            "exists": true,
+            "id": id,
+            "projectId": owner_project_id,
+            "nodeType": node_type,
+            "version": version,
+            "updatedAt": updated_at,
+        }),
+        None => json!({
+            "exists": false,
+            "id": scene_id,
+            "projectId": project_id,
+            "nodeType": "scene",
+        }),
+    })
+}
+
+fn durable_edge_projection_source_input(
+    conn: &Connection,
+    project_id: &str,
+    source_identity: &str,
+) -> anyhow::Result<Value> {
+    let projection_id = source_identity
+        .strip_prefix("projection:")
+        .unwrap_or(source_identity);
+    let row: Option<(String, String, String, i64, String)> = if projection_id.is_empty() {
+        None
+    } else {
+        conn.query_row(
+            "SELECT id, project_id, status, version, updated_at
+               FROM narrative_temporal_projections
+              WHERE id = ?1 AND project_id = ?2",
+            params![projection_id, project_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?
+    };
+    Ok(match row {
+        Some((id, owner_project_id, status, version, updated_at)) => json!({
+            "exists": true,
+            "id": id,
+            "projectId": owner_project_id,
+            "status": status,
+            "version": version,
+            "updatedAt": updated_at,
+        }),
+        None => json!({
+            "exists": false,
+            "id": projection_id,
+            "projectId": project_id,
+        }),
+    })
+}
+
+fn durable_edge_artifact_source_input(
+    conn: &Connection,
+    project_id: &str,
+    source_identity: &str,
+) -> anyhow::Result<Value> {
+    let artifact_id = source_identity
+        .strip_prefix("artifact:")
+        .unwrap_or_default();
+    let row: Option<(
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+    )> = if artifact_id.is_empty() {
+        None
+    } else {
+        conn.query_row(
+            "SELECT artifact.id, artifact.run_id, run.project_id,
+                    artifact.artifact_kind, artifact.payload_digest,
+                    artifact.payload_json, artifact.created_at
+               FROM narrative_extraction_artifacts artifact
+               LEFT JOIN narrative_extraction_runs run ON run.id = artifact.run_id
+              WHERE artifact.id = ?1
+                AND (run.project_id = ?2 OR run.project_id IS NULL)",
+            params![artifact_id, project_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?
+    };
+    Ok(match row {
+        Some((
+            id,
+            run_id,
+            owner_project_id,
+            artifact_kind,
+            payload_digest,
+            payload_json,
+            created_at,
+        )) => json!({
+            "exists": true,
+            "id": id,
+            "runId": run_id,
+            "projectId": owner_project_id,
+            "artifactKind": artifact_kind,
+            "payloadDigest": payload_digest,
+            "payloadJson": payload_json,
+            "createdAt": created_at,
+        }),
+        None => json!({
+            "exists": false,
+            "id": artifact_id,
+            "projectId": project_id,
+        }),
+    })
+}
+
+fn durable_edge_capture_source_input(
+    conn: &Connection,
+    source_identity: &str,
+) -> anyhow::Result<Value> {
+    let capture_id = source_identity.strip_prefix("capture:").unwrap_or_default();
+    let row: Option<(String, String, String, Option<String>, i64, String, String)> =
+        if capture_id.is_empty() {
+            None
+        } else {
+            conn.query_row(
+                "SELECT id, state, source_kind, sealed_digest, version,
+                        created_at, updated_at
+                   FROM import_captures
+                  WHERE id = ?1",
+                params![capture_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .optional()?
+        };
+    Ok(match row {
+        Some((id, state, source_kind, sealed_digest, version, created_at, updated_at)) => json!({
+            "exists": true,
+            "id": id,
+            "state": state,
+            "sourceKind": source_kind,
+            "sealedDigest": sealed_digest,
+            "version": version,
+            "createdAt": created_at,
+            "updatedAt": updated_at,
+        }),
+        None => json!({
+            "exists": false,
+            "id": capture_id,
+        }),
+    })
+}
+
+fn durable_edge_evidence_source_input(
+    conn: &Connection,
+    project_id: &str,
+    source_identity: &str,
+) -> anyhow::Result<Value> {
+    let anchor_id = source_identity
+        .strip_prefix("evidence:")
+        .unwrap_or_default();
+    let mut statement = conn.prepare(
+        "SELECT b.id, b.session_id, b.evidence_anchor_id, b.source_document_key,
+                b.target_scene_id, b.source_document_digest,
+                b.committed_storage_digest, b.projection_status, b.committed_at,
+                n.project_id
+           FROM import_evidence_bindings b
+           JOIN tree_nodes n
+             ON n.id = b.target_scene_id
+            AND n.project_id = ?2
+          WHERE b.evidence_anchor_id = ?1
+          ORDER BY b.committed_at DESC, b.id ASC",
+    )?;
+    let rows = if anchor_id.is_empty() {
+        Vec::new()
+    } else {
+        statement
+            .query_map(params![anchor_id, project_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "sessionId": row.get::<_, String>(1)?,
+                    "evidenceAnchorId": row.get::<_, String>(2)?,
+                    "sourceDocumentKey": row.get::<_, String>(3)?,
+                    "targetSceneId": row.get::<_, String>(4)?,
+                    "sourceDocumentDigest": row.get::<_, String>(5)?,
+                    "committedStorageDigest": row.get::<_, String>(6)?,
+                    "projectionStatus": row.get::<_, String>(7)?,
+                    "committedAt": row.get::<_, String>(8)?,
+                    "projectId": row.get::<_, String>(9)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    Ok(json!({
+        "exists": !rows.is_empty(),
+        "id": anchor_id,
+        "rows": rows,
+    }))
+}
+
+fn durable_edge_scope_authority_source_input(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Value> {
+    let project_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    let mut statement = conn.prepare(
+        "SELECT id, parent_id, node_type, sort_order, story_time_order,
+                archived_at IS NOT NULL
+           FROM tree_nodes
+          WHERE project_id = ?1
+          ORDER BY id ASC",
+    )?;
+    let nodes = statement
+        .query_map(params![project_id], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "parentId": row.get::<_, Option<String>>(1)?,
+                "nodeType": row.get::<_, String>(2)?,
+                "sortOrder": row.get::<_, String>(3)?,
+                "storyTimeOrder": row.get::<_, Option<String>>(4)?,
+                "archived": row.get::<_, bool>(5)?,
+            }))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(json!({
+        "projectExists": project_exists,
+        "projectId": project_id,
+        "nodes": nodes,
+    }))
+}
+
+/// Capture the exact live scope/source inputs used while Verify resolves one
+/// Edge.  The raw Edge row is not enough: its owning Run and the resolver's
+/// row can be deleted or re-pointed while preserving the Edge itself.  Each
+/// lookup records explicit absence, and the resolver token/error is retained
+/// as a compact guard for source kinds whose revision is an aggregate (for
+/// example the Codex catalog).
+fn durable_edge_resolution_input(
+    conn: &Connection,
+    project_id: &str,
+    edge_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    source_identity: &str,
+    owning_run_id: Option<&str>,
+) -> anyhow::Result<Value> {
+    let (snapshot_run_id, snapshot_parse_error) =
+        match parse_snapshot_run_id_from_source_identity(source_identity) {
+            Ok(value) => (value.map(str::to_string), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+    let source_kind = infer_source_kind(source_identity);
+    let source_run_id = snapshot_run_id
+        .as_deref()
+        .or(owning_run_id)
+        .unwrap_or_default();
+    let resolved_source = match source_kind {
+        Some(kind) => match resolve_current_source_state(
+            conn,
+            project_id,
+            source_run_id,
+            kind,
+            source_identity,
+        ) {
+            Ok(state) => json!({
+                "status": if state.usable { "usable" } else if state.exists { "stale" } else { "missing" },
+                "exists": state.exists,
+                "usable": state.usable,
+                "revisionToken": state.revision_token,
+                "contentDigest": state.content_digest,
+                "version": state.version,
+                "normalizerVersion": state.normalizer_version,
+            }),
+            Err(error) => json!({
+                "status": "error",
+                "error": error.to_string(),
+            }),
+        },
+        None => json!({
+            "status": "unsupported",
+        }),
+    };
+    let source_row = match source_kind {
+        Some("snapshot-document") => {
+            durable_edge_run_resolution_input(conn, snapshot_run_id.as_deref())?
+        }
+        Some("scene-body") => durable_edge_scene_source_input(conn, project_id, source_identity)?,
+        Some("domain-projection") => {
+            durable_edge_projection_source_input(conn, project_id, source_identity)?
+        }
+        Some("narrative-artifact") => {
+            durable_edge_artifact_source_input(conn, project_id, source_identity)?
+        }
+        Some("import-capture") => durable_edge_capture_source_input(conn, source_identity)?,
+        Some("evidence-anchor") => {
+            durable_edge_evidence_source_input(conn, project_id, source_identity)?
+        }
+        Some("project-scope-authority") => {
+            durable_edge_scope_authority_source_input(conn, project_id)?
+        }
+        // Codex catalog has no single resolver row; its aggregate resolver
+        // token above covers every catalog row consumed by Verify.
+        Some("codex-catalog") => json!({"resolver": "aggregate"}),
+        None => json!({"exists": false}),
+        Some(other) => json!({"resolver": other}),
+    };
+    Ok(json!({
+        "edgeId": edge_id,
+        "consumerKind": consumer_kind,
+        "consumerKey": consumer_key,
+        "sourceObjectIdentity": source_identity,
+        "sourceKind": source_kind,
+        "owningRunId": owning_run_id,
+        "owningRun": durable_edge_run_resolution_input(conn, owning_run_id)?,
+        "snapshotRunId": snapshot_run_id,
+        "snapshotParseError": snapshot_parse_error,
+        "sourceRow": source_row,
+        "resolvedSource": resolved_source,
+    }))
+}
+
 pub fn verify_narrative_dependency_graph_for_project(
     conn: &Connection,
     project_id: &str,
@@ -2892,6 +3397,46 @@ pub(crate) fn report_requires_derived_rebuild(
         }
     }
     Ok(false)
+}
+
+/// Recompute the conditional Rebuild classification from the same live graph
+/// that was CAS-validated by a durable outcome reader.  `rebuildRequired` is
+/// sealed inside the report/outcome digests, but those digests alone cannot
+/// prevent an actor from changing the bool and re-signing every serialized
+/// digest.  The persisted bool therefore has to equal this canonical,
+/// repairability-aware result before any read/skip/discovery/Repair path may
+/// trust it.
+pub(crate) fn validate_report_rebuild_required(
+    conn: &Connection,
+    project_id: &str,
+    report: &DependencyGraphVerifyReport,
+) -> anyhow::Result<()> {
+    let expected = report_requires_derived_rebuild(conn, project_id, report)?;
+    anyhow::ensure!(
+        report.rebuild_required == expected,
+        "NEX_VERIFY_REBUILD_REQUIRED_MISMATCH: stored rebuildRequired does not match live derived repairability"
+    );
+    Ok(())
+}
+
+/// Validate the reserved Semantic Index footprint independently of the
+/// rebuildability decision.  A nonzero footprint is a terminal/manual
+/// finding in C2-ZC: no current Rebuild writer owns those rows, so it must
+/// not be converted into a Rebuild request merely because a persisted report
+/// was replayed by a destructive Repair reader.
+pub(crate) fn validate_reserved_semantic_index_footprint(
+    report: &DependencyGraphVerifyReport,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        report
+            .semantic_index_dependency_set_digest
+            .has_reserved_footprint_observation()
+            && report
+                .semantic_index_generation_correspondence
+                .has_reserved_footprint_observation(),
+        "NEX_VERIFY_RESERVED_SEMANTIC_INDEX_FOOTPRINT_INVALID: persisted Semantic Index observedCounts are not the exact all-zero reserved footprint"
+    );
+    Ok(())
 }
 
 /// Rows sharing the same `(project_id, consumer_kind, consumer_key,
@@ -4917,6 +5462,42 @@ mod tests {
     }
 
     #[test]
+    fn persisted_rebuild_required_must_match_recomputed_repairability() {
+        let clean_db = test_db();
+        let clean_report = clean_db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("compute a clean Verify report");
+        assert!(!clean_report.rebuild_required);
+        let mut forged_clean_report = clean_report.clone();
+        forged_clean_report.rebuild_required = true;
+        clean_db
+            .with_conn(|conn| {
+                validate_report_rebuild_required(conn, "project-1", &forged_clean_report)
+            })
+            .expect_err("a clean/manual report cannot store rebuildRequired=true");
+
+        let repairable_db = test_db();
+        seed_epoch_for_rebuild(&repairable_db, "project-1");
+        seed_run_edge(
+            &repairable_db,
+            "project-1",
+            "run-repairable",
+            "project:scene:scene-live",
+        );
+        let repairable_report = repairable_db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("compute a repairable Verify report");
+        assert!(repairable_report.rebuild_required);
+        let mut forged_repairable_report = repairable_report;
+        forged_repairable_report.rebuild_required = false;
+        repairable_db
+            .with_conn(|conn| {
+                validate_report_rebuild_required(conn, "project-1", &forged_repairable_report)
+            })
+            .expect_err("a repairable report cannot store rebuildRequired=false");
+    }
+
+    #[test]
     fn project_verify_rejects_reserved_semantic_index_checks_without_all_counts() {
         let db = test_db();
         let mut report = db
@@ -5061,6 +5642,27 @@ mod tests {
     fn project_verify_reports_an_application_with_a_missing_commit() {
         let db = test_db();
         db.with_conn(|conn| {
+            // A missing Commit is project-scoped only when its Proposal Set
+            // supplies the authoritative owner.  Keep the fixture inside
+            // that supported closure; an Application with neither source is
+            // intentionally workspace-level and excluded from this Verify.
+            conn.execute(
+                "INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, created_at, updated_at)
+                 VALUES ('set-missing-commit', 'run-missing-commit', 'project-1',
+                         'extraction', '2026-08-15T00:00:00.000Z',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, payload_json,
+                     created_at, updated_at)
+                 VALUES ('proposal-missing', 'set-missing-commit', 'proposal-missing',
+                         'codex-entry', '{}', '2026-08-15T00:00:00.000Z',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
             conn.execute(
                 "INSERT INTO narrative_proposal_applications
                     (id, commit_id, proposal_id, revision_id, applied_entity_kind,
@@ -5086,6 +5688,144 @@ mod tests {
             ));
         assert!(!report.rebuild_required);
         assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn missing_commit_applications_are_scoped_by_their_proposal_set_project() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            for (project_id, suffix) in [("project-1", "a")] {
+                conn.execute(
+                    "INSERT INTO narrative_proposal_sets
+                        (id, run_id, project_id, set_kind, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'extraction',
+                             '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
+                    params![
+                        format!("set-missing-{suffix}"),
+                        format!("run-{suffix}"),
+                        project_id
+                    ],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_proposals
+                        (id, proposal_set_id, proposal_key, kind, payload_json,
+                         created_at, updated_at)
+                     VALUES (?1, ?2, ?1, 'codex-entry', '{}',
+                             '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
+                    params![
+                        format!("proposal-missing-{suffix}"),
+                        format!("set-missing-{suffix}")
+                    ],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_proposal_applications
+                        (id, commit_id, proposal_id, revision_id, applied_entity_kind,
+                         applied_entity_id, created_at)
+                     VALUES (?1, ?2, ?3, ?4, 'codex-entry', ?5,
+                             '2026-08-15T00:00:00.000Z')",
+                    params![
+                        format!("application-missing-{suffix}"),
+                        format!("commit-missing-{suffix}"),
+                        format!("proposal-missing-{suffix}"),
+                        format!("revision-missing-{suffix}"),
+                        format!("entity-missing-{suffix}")
+                    ],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed project one missing-Commit Application");
+
+        let project_one_before = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest project one before foreign Application");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, created_at, updated_at)
+                 VALUES ('set-missing-b', 'run-b', 'project-2', 'extraction',
+                         '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, payload_json,
+                     created_at, updated_at)
+                 VALUES ('proposal-missing-b', 'set-missing-b', 'proposal-missing-b',
+                         'codex-entry', '{}', '2026-08-15T00:00:00.000Z',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_applications
+                    (id, commit_id, proposal_id, revision_id, applied_entity_kind,
+                     applied_entity_id, created_at)
+                 VALUES ('application-missing-b', 'commit-missing-b',
+                         'proposal-missing-b', 'revision-missing-b', 'codex-entry',
+                         'entity-missing-b', '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            // This row has neither a Commit nor a Proposal Set, so it is
+            // workspace-level evidence and must not be mixed into either
+            // project's Verify report or digest projection.
+            conn.execute(
+                "INSERT INTO narrative_proposal_applications
+                    (id, commit_id, proposal_id, revision_id, applied_entity_kind,
+                     applied_entity_id, created_at)
+                 VALUES ('application-missing-unattributed', 'commit-missing-unattributed',
+                         'proposal-missing-unattributed', 'revision-missing-unattributed',
+                         'codex-entry', 'entity-missing-unattributed',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed foreign and unattributed missing-Commit Applications");
+        let project_one_report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project one");
+        assert!(project_one_report
+            .application_revision_artifact_references
+            .incomplete
+            .iter()
+            .any(|issue| issue.contains("application-missing-a:commit:commit-missing-a")));
+        assert!(!project_one_report
+            .application_revision_artifact_references
+            .incomplete
+            .iter()
+            .any(|issue| issue.contains("application-missing-b")));
+        assert!(!project_one_report
+            .application_revision_artifact_references
+            .incomplete
+            .iter()
+            .any(|issue| issue.contains("application-missing-unattributed")));
+
+        let project_two_report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-2"))
+            .expect("verify project two");
+        assert!(project_two_report
+            .application_revision_artifact_references
+            .incomplete
+            .iter()
+            .any(|issue| issue.contains("application-missing-b:commit:commit-missing-b")));
+        assert!(!project_two_report
+            .application_revision_artifact_references
+            .incomplete
+            .iter()
+            .any(|issue| issue.contains("application-missing-a")));
+        assert!(!project_two_report
+            .application_revision_artifact_references
+            .incomplete
+            .iter()
+            .any(|issue| issue.contains("application-missing-unattributed")));
+
+        let project_one_after = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest project one after foreign Application");
+        assert_eq!(
+            project_one_before, project_one_after,
+            "a project Verify CAS must not include another project's missing-Commit Application"
+        );
     }
 
     #[test]
@@ -7205,6 +7945,214 @@ mod tests {
         assert_ne!(
             freshness_before, freshness_after,
             "consumer Freshness dependency digest is a Verify input and must be CAS-bound"
+        );
+    }
+
+    #[test]
+    fn graph_state_cas_includes_each_edge_scope_and_source_resolution_closure() {
+        let owner_db = test_db();
+        owner_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, snapshot_digest, created_at, version)
+                     VALUES ('edge-owner-run', 'project-1', 'source', '{}', '{}', 'digest',
+                             'completed', '{}', 'sha256:owner-snapshot',
+                             '2026-08-15T00:00:00.000Z', 0)",
+                    [],
+                )?;
+                record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    RUN_CONSUMER_KIND,
+                    "edge-owner-run",
+                    "project:scene:scene-live",
+                    r#"["/body"]"#,
+                    None,
+                    Some("edge-owner-run"),
+                    "2026-08-15T00:00:00.000Z",
+                )?;
+                Ok(())
+            })
+            .expect("seed an owned Edge and its owning Run");
+        let owner_before = owner_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest owned Edge closure");
+        owner_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET project_id = 'project-2'
+                      WHERE id = 'edge-owner-run'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("mutate the owning Run project");
+        let owner_project_changed = owner_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest after owning Run project mutation");
+        assert_ne!(
+            owner_before, owner_project_changed,
+            "an Edge's owning Run project is a Verify scope input"
+        );
+
+        let owner_snapshot_db = test_db();
+        owner_snapshot_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, snapshot_digest, created_at, version)
+                     VALUES ('edge-owner-run', 'project-1', 'source', '{}', '{}', 'digest',
+                             'completed', '{}', 'sha256:owner-snapshot',
+                             '2026-08-15T00:00:00.000Z', 0)",
+                    [],
+                )?;
+                record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    RUN_CONSUMER_KIND,
+                    "edge-owner-run",
+                    "project:scene:scene-live",
+                    r#"["/body"]"#,
+                    None,
+                    Some("edge-owner-run"),
+                    "2026-08-15T00:00:00.000Z",
+                )?;
+                Ok(())
+            })
+            .expect("seed a second owned Edge closure");
+        let owner_snapshot_before = owner_snapshot_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest owning Run snapshot input");
+        owner_snapshot_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET snapshot_digest = 'sha256:owner-snapshot-new'
+                      WHERE id = 'edge-owner-run'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("mutate the owning Run snapshot digest");
+        let owner_snapshot_changed = owner_snapshot_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest after owning Run snapshot mutation");
+        assert_ne!(
+            owner_snapshot_before, owner_snapshot_changed,
+            "an Edge's owning Run snapshot digest is a Verify source input"
+        );
+        owner_snapshot_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "DELETE FROM narrative_extraction_runs WHERE id = 'edge-owner-run'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("delete the owning Run row");
+        let owner_deleted = owner_snapshot_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest after owning Run deletion");
+        assert_ne!(
+            owner_snapshot_changed, owner_deleted,
+            "an Edge's missing owning Run must invalidate the graph CAS"
+        );
+
+        let source_db = test_db();
+        seed_raw_edge(
+            &source_db,
+            "scene-resolution-edge",
+            RUN_CONSUMER_KIND,
+            "scene-resolution-run",
+            "project:scene:scene-live",
+            None,
+        );
+        let source_before = source_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest scene Source closure");
+        source_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE tree_nodes
+                        SET version = version + 1,
+                            updated_at = '2026-08-16T00:00:00.000Z'
+                      WHERE id = 'scene-live' AND project_id = 'project-1'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("mutate the scene Source revision");
+        let source_revision_changed = source_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest after scene Source revision mutation");
+        assert_ne!(
+            source_before, source_revision_changed,
+            "an Edge's Source resolver revision must be graph-CAS bound"
+        );
+        source_db
+            .with_conn(|conn| {
+                conn.execute("DELETE FROM tree_nodes WHERE id = 'scene-live'", [])?;
+                Ok(())
+            })
+            .expect("delete the scene Source row");
+        let source_deleted = source_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest after scene Source deletion");
+        assert_ne!(
+            source_revision_changed, source_deleted,
+            "an Edge's missing Source resolver row must invalidate the graph CAS"
+        );
+
+        let snapshot_db = test_db();
+        seed_sealed_snapshot_run(&snapshot_db, "project-1", "edge-snapshot-source");
+        seed_raw_snapshot_edge(
+            &snapshot_db,
+            "snapshot-resolution-edge",
+            RUN_CONSUMER_KIND,
+            "edge-snapshot-source",
+            "edge-snapshot-source",
+            Some("edge-snapshot-source"),
+        );
+        let snapshot_before = snapshot_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest snapshot Source closure");
+        snapshot_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET snapshot_digest = 'sha256:snap-new'
+                      WHERE id = 'edge-snapshot-source'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("mutate the snapshot Source revision");
+        let snapshot_changed = snapshot_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest after snapshot Source mutation");
+        assert_ne!(
+            snapshot_before, snapshot_changed,
+            "snapshot Source identity and revision must be graph-CAS bound"
+        );
+        snapshot_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "DELETE FROM narrative_extraction_runs WHERE id = 'edge-snapshot-source'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("delete the snapshot Source row");
+        let snapshot_deleted = snapshot_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest after snapshot Source deletion");
+        assert_ne!(
+            snapshot_changed, snapshot_deleted,
+            "a missing snapshot Source row must invalidate the graph CAS"
         );
     }
 

@@ -80,7 +80,7 @@ impl VerifyCoverageCheck {
         self.observed_counts.len() == RESERVED_SEMANTIC_INDEX_OBSERVED_COUNT_KEYS.len()
             && RESERVED_SEMANTIC_INDEX_OBSERVED_COUNT_KEYS
                 .iter()
-                .all(|key| self.observed_counts.contains_key(*key))
+                .all(|key| self.observed_counts.get(*key) == Some(&0))
     }
 }
 
@@ -138,7 +138,8 @@ pub(crate) fn verify_application_revision_artifact_references(
            LEFT JOIN narrative_proposals p ON p.id = a.proposal_id
            LEFT JOIN narrative_proposal_sets ps ON ps.id = p.proposal_set_id
            LEFT JOIN narrative_proposal_revisions r ON r.id = a.revision_id
-          WHERE c.project_id = ?1 OR c.id IS NULL
+          WHERE c.project_id = ?1
+             OR (c.id IS NULL AND ps.project_id = ?1)
           ORDER BY a.id ASC",
     )?;
     let rows = statement.query_map(params![project_id], |row| {

@@ -1194,6 +1194,41 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
         .expect("valid Rebuild follow-up");
     assert_eq!(valid.run_kind, AutomaticRunKind::RebuildDerived);
 
+    // The stored report is allowed to be fully re-digested by an attacker;
+    // discovery must still compare rebuildRequired with the live graph after
+    // its graph-state CAS. A repairable report with the flag forced false is
+    // rejected and starts a fresh Verify rather than silently halting or
+    // routing to the wrong phase.
+    let mut repairability_tampered_outcome = valid_outcome.clone();
+    repairability_tampered_outcome["report"]["rebuildRequired"] = json!(false);
+    let repairability_report_digest = format!(
+        "sha256:{}",
+        digest_plan(
+            repairability_tampered_outcome
+                .get("report")
+                .expect("tampered Verify report"),
+        )
+    );
+    repairability_tampered_outcome["reportDigest"] = json!(repairability_report_digest);
+    repairability_tampered_outcome["outcomeDigest"] = json!(canonical_verify_outcome_digest(
+        &repairability_tampered_outcome
+    )
+    .expect("recompute tampered Verify whole-outcome digest"));
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_runs
+                SET outcome_summary_json = ?1
+              WHERE id = 'discovery-verify'",
+            [repairability_tampered_outcome.to_string()],
+        )?;
+        Ok(())
+    })
+    .expect("store re-digested rebuildRequired mismatch");
+    let discovered = discover_durable_maintenance_work(&db, PROJECT_ID, "restore-completed")
+        .expect("rebuildRequired mismatch must fail closed")
+        .expect("mismatched Verify must request a fresh Verify");
+    assert_eq!(discovered.run_kind, AutomaticRunKind::Verify);
+
     for (label, replacement) in [
         (
             "reportDigest",

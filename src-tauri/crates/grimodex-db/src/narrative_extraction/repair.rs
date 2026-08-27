@@ -74,8 +74,9 @@ use super::repository::{
 use super::restore_rebuild::{
     duplicate_edge_ids_to_deactivate, is_canonical_graph_state_digest,
     rebuild_repair_dependency_edges_in_tx, validate_canonical_verify_outcome_digest,
-    validate_graph_state_digest, validate_verify_check_coverage, DependencyGraphVerifyReport,
-    VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
+    validate_graph_state_digest, validate_report_rebuild_required,
+    validate_reserved_semantic_index_footprint, validate_verify_check_coverage,
+    DependencyGraphVerifyReport, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
 use super::semantic_epoch::get_current_epoch;
 use super::task_leases::with_immediate_transaction;
@@ -737,17 +738,6 @@ fn load_sealable_verify_result(
          '{VERIFY_CONTRACT_VERSION}'"
     );
 
-    validate_canonical_verify_outcome_digest(&outcome).map_err(|error| {
-        anyhow::anyhow!(
-            "NEX_REPAIR_VERIFY_RESULT_OUTCOME_DIGEST_MISMATCH: Verify Run '{verify_run_id}' has an invalid whole-outcome digest: {error}"
-        )
-    })?;
-    validate_verify_check_coverage(&outcome).map_err(|error| {
-        anyhow::anyhow!(
-            "NEX_REPAIR_VERIFY_RESULT_COVERAGE_INVALID: Verify Run '{verify_run_id}' has invalid check coverage: {error}"
-        )
-    })?;
-
     let report_value = outcome.get("report").ok_or_else(|| {
         anyhow::anyhow!(
             "NEX_REPAIR_VERIFY_RESULT_MISSING: Verify Run '{verify_run_id}' recorded no report"
@@ -763,6 +753,21 @@ fn load_sealable_verify_result(
         "NEX_REPAIR_VERIFY_RESULT_DIGEST_MISMATCH: Verify Run '{verify_run_id}' recorded digest \
          '{recorded_digest}' but its stored report digests to '{recomputed_digest}'"
     );
+
+    // Check the report's own sealed digest before the envelope digest.  This
+    // preserves the most specific diagnostic when both seals are invalid
+    // after a report mutation, while still requiring the whole outcome seal
+    // before any plan can be derived.
+    validate_canonical_verify_outcome_digest(&outcome).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_REPAIR_VERIFY_RESULT_OUTCOME_DIGEST_MISMATCH: Verify Run '{verify_run_id}' has an invalid whole-outcome digest: {error}"
+        )
+    })?;
+    validate_verify_check_coverage(&outcome).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_REPAIR_VERIFY_RESULT_COVERAGE_INVALID: Verify Run '{verify_run_id}' has invalid check coverage: {error}"
+        )
+    })?;
 
     let report: DependencyGraphVerifyReport = serde_json::from_value(report_value.clone())
         .map_err(|error| {
@@ -780,6 +785,16 @@ fn load_sealable_verify_result(
         "NEX_REPAIR_VERIFY_GRAPH_STATE_DIGEST_MISSING: Verify Run '{verify_run_id}' recorded no canonical graph state digest"
     );
     validate_graph_state_digest(conn, project_id, graph_state_digest)?;
+    validate_reserved_semantic_index_footprint(&report).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_REPAIR_VERIFY_COVERAGE_INVALID: Verify Run '{verify_run_id}' has an invalid reserved Semantic Index footprint: {error}"
+        )
+    })?;
+    validate_report_rebuild_required(conn, project_id, &report).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_REPAIR_VERIFY_REBUILD_REQUIRED_MISMATCH: Verify Run '{verify_run_id}' stored a rebuildRequired value that does not match live repairability: {error}"
+        )
+    })?;
 
     // A destructive Repair plan must not seal from a Verify weaker than
     // what ordinary maintenance discovery would accept: the same canonical
@@ -1800,7 +1815,8 @@ mod tests {
         record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
     };
     use crate::narrative_extraction::restore_rebuild::{
-        run_dependency_verify_for_project, verify_narrative_dependency_graph_for_project,
+        canonical_verify_outcome_digest, run_dependency_verify_for_project,
+        verify_narrative_dependency_graph_for_project,
     };
     use crate::narrative_extraction::semantic_epoch::create_epoch_in_tx;
     use std::path::PathBuf;
@@ -2324,6 +2340,101 @@ mod tests {
             .expect("seal from an untampered Verify result");
         assert_eq!(plan.edge_ids_to_deactivate, vec![old_id]);
         assert!(plan.verify_report_digest.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn sealing_rejects_a_redigested_rebuild_required_mismatch() {
+        let (_workspace_path, db) = test_workspace("rebuild-required-mismatch");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+
+        db.with_conn(|conn| {
+            let outcome_json: String = conn.query_row(
+                "SELECT outcome_summary_json
+                   FROM narrative_extraction_runs
+                  WHERE id = ?1",
+                params![verify_run_id],
+                |row| row.get(0),
+            )?;
+            let mut outcome: serde_json::Value = serde_json::from_str(&outcome_json)?;
+            outcome["report"]["rebuildRequired"] = serde_json::Value::Bool(false);
+            let report_digest = format!(
+                "sha256:{}",
+                digest_plan(outcome.get("report").expect("Verify report"))
+            );
+            outcome["reportDigest"] = serde_json::Value::String(report_digest);
+            outcome["outcomeDigest"] =
+                serde_json::Value::String(canonical_verify_outcome_digest(&outcome)?);
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET outcome_summary_json = ?1
+                  WHERE id = ?2",
+                params![outcome.to_string(), verify_run_id],
+            )?;
+            Ok(())
+        })
+        .expect("store a fully re-digested rebuildRequired mismatch");
+
+        let error = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect_err("Repair must reject a report whose stored rebuildRequired is forged");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_VERIFY_REBUILD_REQUIRED_MISMATCH"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn sealing_rejects_a_redigested_reserved_semantic_footprint() {
+        let (_workspace_path, db) = test_workspace("reserved-semantic-footprint");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+
+        db.with_conn(|conn| {
+            let outcome_json: String = conn.query_row(
+                "SELECT outcome_summary_json
+                   FROM narrative_extraction_runs
+                  WHERE id = ?1",
+                params![verify_run_id],
+                |row| row.get(0),
+            )?;
+            let mut outcome: serde_json::Value = serde_json::from_str(&outcome_json)?;
+            for check in [
+                "semanticIndexDependencySetDigest",
+                "semanticIndexGenerationCorrespondence",
+            ] {
+                outcome["report"][check]["observedCounts"]["metadataRows"] =
+                    serde_json::Value::from(1);
+            }
+            outcome["reportDigest"] = serde_json::Value::String(format!(
+                "sha256:{}",
+                digest_plan(outcome.get("report").expect("Verify report"))
+            ));
+            outcome["outcomeDigest"] =
+                serde_json::Value::String(canonical_verify_outcome_digest(&outcome)?);
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET outcome_summary_json = ?1
+                  WHERE id = ?2",
+                params![outcome.to_string(), verify_run_id],
+            )?;
+            Ok(())
+        })
+        .expect("store a fully re-digested reserved Semantic footprint");
+
+        let error = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect_err("Repair must reject a nonzero reserved Semantic footprint");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_VERIFY_COVERAGE_INVALID"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

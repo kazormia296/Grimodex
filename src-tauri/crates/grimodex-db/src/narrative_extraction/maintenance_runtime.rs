@@ -38,8 +38,9 @@ use super::maintenance_skip_evidence::{
 };
 use super::restore_rebuild::{
     is_canonical_graph_state_digest, validate_canonical_verify_outcome_digest,
-    validate_graph_state_digest, validate_verify_check_coverage, DependencyGraphVerifyReport,
-    RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
+    validate_graph_state_digest, validate_report_rebuild_required, validate_verify_check_coverage,
+    DependencyGraphVerifyReport, RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION,
+    VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
@@ -944,6 +945,25 @@ pub fn complete_foreground_system_work_run(
                     epoch_id.as_deref(),
                     &completed_outcome,
                 )?;
+                if run_kind == VERIFY_RUN_KIND {
+                    // A completed foreground Run is already terminal.  Its
+                    // duplicate release is an idempotent lifecycle replay,
+                    // including after a later Semantic Epoch rotation has
+                    // changed the live graph-state digest.  Keep the stored
+                    // repairability bit bound to current durable inputs, but
+                    // do not re-run the pre-completion graph CAS here.
+                    let report: DependencyGraphVerifyReport = serde_json::from_value(
+                        completed_outcome
+                            .get("report")
+                            .cloned()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: completed foreground Verify outcome has no report"
+                                )
+                            })?,
+                    )?;
+                    validate_report_rebuild_required(conn, &project_id, &report)?;
+                }
                 load_completed_maintenance_run_in_tx(conn, &barrier.run_id)?;
                 return Ok(());
             }
@@ -970,6 +990,9 @@ pub fn complete_foreground_system_work_run(
                 epoch_id.as_deref(),
                 &outcome,
             )?;
+            if run_kind == VERIFY_RUN_KIND {
+                validate_live_verify_outcome_rebuild_requirement(conn, &project_id, &outcome)?;
+            }
             {
                 let outcome_object = outcome.as_object_mut().ok_or_else(|| {
                     anyhow::anyhow!(
@@ -2059,6 +2082,16 @@ fn validate_discovered_verify_outcome(
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("Verify outcome has no graph state digest"))?,
     )?;
+    let report: DependencyGraphVerifyReport = serde_json::from_value(
+        outcome
+            .get("report")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Verify outcome has no report"))?,
+    )
+    .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify report shape is invalid")?;
+    validate_report_rebuild_required(conn, project_id, &report).context(
+        "NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: rebuildRequired does not match live repairability",
+    )?;
     anyhow::ensure!(
         outcome.get("failure").is_none(),
         "NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: completed Verify outcome carries failure detail"
@@ -2067,13 +2100,26 @@ fn validate_discovered_verify_outcome(
         .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify outcome digest is invalid")?;
     validate_verify_check_coverage(&outcome)
         .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify check coverage is invalid")?;
-    serde_json::from_value(
+    Ok(report)
+}
+
+fn validate_live_verify_outcome_rebuild_requirement(
+    conn: &Connection,
+    project_id: &str,
+    outcome: &Value,
+) -> anyhow::Result<()> {
+    let graph_state_digest = outcome
+        .get("graphStateDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Verify outcome has no graph state digest"))?;
+    validate_graph_state_digest(conn, project_id, graph_state_digest)?;
+    let report: DependencyGraphVerifyReport = serde_json::from_value(
         outcome
             .get("report")
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Verify outcome has no report"))?,
-    )
-    .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify report shape is invalid")
+    )?;
+    validate_report_rebuild_required(conn, project_id, &report)
 }
 
 /// Discover durable work with a CI-only trigger resolved by Native. This

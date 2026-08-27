@@ -386,6 +386,33 @@ fn exact_contract_match_returns_skip_with_the_durable_report_digest() {
 }
 
 #[test]
+fn recomputed_digests_cannot_make_reserved_semantic_counts_look_clean() {
+    let db = fixture_db();
+    let mut outcome = successful_outcome();
+    for check in [
+        "semanticIndexDependencySetDigest",
+        "semanticIndexGenerationCorrespondence",
+    ] {
+        outcome["report"][check]["observedCounts"]["metadataRows"] = json!(1);
+    }
+    let report_digest = format!(
+        "sha256:{}",
+        digest_plan(outcome.get("report").expect("Verify report"))
+    );
+    outcome["reportDigest"] = json!(report_digest.clone());
+    outcome["outcomeDigest"] =
+        json!(canonical_verify_outcome_digest(&outcome).expect("recompute whole-outcome digest"));
+    let mut stored_evidence = evidence();
+    stored_evidence.report_digest = report_digest;
+    insert_completed_verify_run(&db, "completed", Some(outcome));
+
+    assert!(
+        persist_completed_run_skip_evidence(&db, RUN_ID, &stored_evidence).is_err(),
+        "nonzero reserved Semantic footprint must remain incomplete even when every digest is recomputed"
+    );
+}
+
+#[test]
 fn verify_skip_evidence_requires_a_current_rebuild_contract_coordinate() {
     for (label, rebuild_contract_version) in [("missing", None), ("old", Some("0"))] {
         let db = fixture_db();
