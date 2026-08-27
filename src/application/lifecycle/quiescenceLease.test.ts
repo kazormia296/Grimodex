@@ -183,6 +183,40 @@ describe("quiescence lease", () => {
     expect(readRun).toHaveBeenCalledOnce();
   });
 
+  it("gives workspace restore exclusive authority and blocks competing opens", () => {
+    const restoreLease = acquireQuiescenceLease("workspace-restore");
+
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(false);
+    expect(() => acquireQuiescenceLease("workspace-restore")).toThrow(
+      "Cannot restore a workspace while another lifecycle is active",
+    );
+    expect(() => acquireQuiescenceLease("workspace-open")).toThrow(
+      "Cannot start workspace-open while workspace restore is active",
+    );
+    expect(() => acquireQuiescenceLease("project-load")).toThrow(
+      "Cannot start project-load while workspace restore is active",
+    );
+
+    const closeLease = acquireQuiescenceLease("window-close");
+    restoreLease.release();
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(true);
+    closeLease.release();
+  });
+
+  it.each(["workspace-open", "project-load", "window-close"] as const)(
+    "rejects workspace restore while %s is active",
+    (reason) => {
+      const lifecycleLease = acquireQuiescenceLease(reason);
+      try {
+        expect(() => acquireQuiescenceLease("workspace-restore")).toThrow(
+          "Cannot restore a workspace while another lifecycle is active",
+        );
+      } finally {
+        lifecycleLease.release();
+      }
+    },
+  );
+
   it.each(["project-load", "workspace-open", "window-close"] as const)(
     "rejects data deletion while %s is active",
     (reason) => {

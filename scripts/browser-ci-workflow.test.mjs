@@ -150,8 +150,16 @@ test("CI runs Browser, WebGL, and Storybook as independent jobs", async () => {
   );
   assertMeasuredBrowserJob(storybook, "storybook");
 
+  const hostedBrowserBenchmark = browser.steps.find((step) =>
+    step.run?.startsWith("pnpm benchmark:browser-ci -- "),
+  );
   const webglCommands = allRunCommands(webgl);
 
+  assert.doesNotMatch(
+    hostedBrowserBenchmark.run,
+    /--max-workers/,
+    "the measured 4-vCPU hosted runner must retain Vitest auto sizing",
+  );
   assert.match(webglCommands, /pnpm test:zen-shader-webgl --run/);
   assert.doesNotMatch(allRunCommands(browser), /--suite storybook/);
   assert.doesNotMatch(allRunCommands(browser), /--suite webgl/);

@@ -518,6 +518,13 @@ pub fn install_staged_workspace_db(
 
     let db_path = ws_path.join("grimodex.db");
     let backups_dir = ws_path.join("backups");
+    // A C2-ZC marker is an authority boundary, not ordinary backup payload.
+    // Never replace a live Generic-authority workspace with an older
+    // pre-cutover image and silently make legacy projection Freshness current
+    // again.  Capture the published authority before candidate preparation;
+    // normal restore can read its pinned connection, while Safe Mode has no
+    // published handle and is checked from the quiescent live image below.
+    let live_c2zc_marker = read_live_c2zc_marker_for_restore(ws_state, &db_path)?;
 
     // 1) Seal and prepare the candidate before detaching the live authority.
     // Every restore — normal and Safe Mode recovery alike — mints the
@@ -551,6 +558,12 @@ pub fn install_staged_workspace_db(
     let installed = {
         let staged_database = Database::new(staged_plain)
             .map_err(|error| anyhow::anyhow!("RESTORE_STAGED_DB_OPEN_FAILED: {error}"))?;
+        let staged_c2zc_marker = staged_database
+            .with_conn(Database::read_c2zc_cutover_marker)
+            .map_err(|error| {
+                anyhow::anyhow!("NEX_C2ZC_RESTORE_CANDIDATE_MARKER_READ_FAILED: {error}")
+            })?;
+        ensure_restore_c2zc_authority_not_downgraded(live_c2zc_marker, staged_c2zc_marker)?;
         ensure_restore_epochs_for_workspace(&staged_database, &restore_identity)
             .map_err(|error| anyhow::anyhow!("RESTORE_EPOCH_MINT_FAILED: {error}"))?;
         if let Err(error) = staged_database.rebuild_fts_if_stale() {
@@ -1096,6 +1109,126 @@ pub fn install_staged_workspace_db(
     }
 }
 
+/// Read the current C2-ZC authority marker without detaching it.  A normal
+/// restore uses the exact active SQLite handle so WAL state cannot make a
+/// filesystem reread stale; Safe Mode has deliberately unpublished the handle
+/// and therefore reads the quiescent on-disk database instead.
+fn read_live_c2zc_marker_for_restore(
+    ws_state: &WorkspaceState,
+    db_path: &Path,
+) -> AppResult<Option<i64>> {
+    let active_authority = {
+        let inner = ws_state
+            .inner
+            .lock()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        inner.as_ref().map(|active| Arc::clone(&active.authority))
+    };
+    if let Some(authority) = active_authority {
+        return authority
+            .db()
+            .with_conn(Database::read_c2zc_cutover_marker)
+            .map_err(|error| {
+                anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into()
+            });
+    }
+    // Safe Mode must not follow a symlink while sampling the previous
+    // authority marker.  The later install path independently enforces the
+    // same regular-file invariant, but the preflight read occurs before that
+    // guard and must not make the restore decision from an arbitrary target.
+    match std::fs::symlink_metadata(db_path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => {
+            return Err(anyhow::anyhow!(
+                "NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: live DB is not a regular file: {}",
+                db_path.display()
+            )
+            .into())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: cannot inspect live DB: {error}"
+            )
+            .into())
+        }
+    }
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| {
+                anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}")
+            })?;
+    let marker_table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                  WHERE type = 'table' AND name = 'schema_data_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}"))?;
+    if !marker_table_exists {
+        let schema_version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|error| {
+                anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}")
+            })?;
+        if (0..Database::SCHEMA_DATA_MIGRATIONS_INTRODUCED_SCHEMA_VERSION).contains(&schema_version)
+        {
+            // SCHEMA 0-22 predate both the marker table and the C2-ZC
+            // activation authority, so absence is proof of pre-cutover rather
+            // than an indeterminate read. At SCHEMA 23+ the table is a schema
+            // invariant; a missing table remains fail-closed, including for a
+            // future/foreign schema.
+            return Ok(None);
+        }
+        return Err(anyhow::anyhow!(
+            "NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: schema_data_migrations is unavailable for live schema version {schema_version}"
+        )
+        .into());
+    }
+    Database::read_c2zc_cutover_marker(&conn).map_err(|error| {
+        anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into()
+    })
+}
+
+/// Compatibility policy for irreversible C2-ZC authority activation.
+///
+/// A staged marker may be absent only when the currently live workspace has
+/// not cut over.  A future/foreign marker is not a safe substitute for the
+/// current contract version, so it is rejected before any live seal or
+/// authority publication.
+fn ensure_restore_c2zc_authority_not_downgraded(
+    live_marker: Option<i64>,
+    staged_marker: Option<i64>,
+) -> AppResult<()> {
+    let current = Database::C2_ZC_CUTOVER_CONTRACT_VERSION;
+    if let Some(version) = live_marker {
+        if version != current {
+            return Err(anyhow::anyhow!(
+                "NEX_C2ZC_RESTORE_LIVE_MARKER_UNSUPPORTED: live marker contract version {version} is not current"
+            )
+            .into());
+        }
+    }
+    if let Some(version) = staged_marker {
+        if version != current {
+            return Err(anyhow::anyhow!(
+                "NEX_C2ZC_RESTORE_CANDIDATE_MARKER_UNSUPPORTED: staged marker contract version {version} is not current"
+            )
+            .into());
+        }
+    }
+    if live_marker == Some(current) && staged_marker != Some(current) {
+        return Err(anyhow::anyhow!(
+            "NEX_C2ZC_RESTORE_AUTHORITY_DOWNGRADE_REJECTED: refusing to restore a pre-cutover backup over a live Generic Consumer Freshness authority"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn abort_install(
     ws_state: &WorkspaceState,
     db_path: &Path,
@@ -1625,6 +1758,73 @@ mod tests {
         assert!(leftovers.is_empty(), "restore leftovers: {leftovers:?}");
     }
 
+    fn unpublished_workspace_state() -> WorkspaceState {
+        WorkspaceState {
+            inner: std::sync::Mutex::new(None),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: AtomicBool::new(false),
+            open_lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn seed_markerless_live_schema(path: &Path, schema_version: i32) {
+        let conn = rusqlite::Connection::open(path).expect("open markerless live database");
+        conn.pragma_update(None, "user_version", schema_version)
+            .expect("stamp markerless live schema version");
+    }
+
+    #[test]
+    fn safe_mode_marker_read_accepts_known_pre_table_schema_versions() {
+        for schema_version in [
+            0,
+            Database::SCHEMA_DATA_MIGRATIONS_INTRODUCED_SCHEMA_VERSION - 1,
+        ] {
+            let dir = std::env::temp_dir().join(format!(
+                "grimodex-c2zc-pre-table-live-{schema_version}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir).expect("create pre-table workspace");
+            let db_path = dir.join("grimodex.db");
+            seed_markerless_live_schema(&db_path, schema_version);
+
+            let marker =
+                read_live_c2zc_marker_for_restore(&unpublished_workspace_state(), &db_path)
+                    .expect("known pre-table schema must be provably pre-cutover");
+            assert_eq!(marker, None);
+
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn safe_mode_marker_read_rejects_missing_table_outside_known_pre_table_range() {
+        for schema_version in [
+            -1,
+            Database::SCHEMA_DATA_MIGRATIONS_INTRODUCED_SCHEMA_VERSION,
+            grimodex_core::SCHEMA_VERSION,
+            grimodex_core::SCHEMA_VERSION + 1,
+        ] {
+            let dir = std::env::temp_dir().join(format!(
+                "grimodex-c2zc-missing-table-live-{schema_version}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir).expect("create missing-table workspace");
+            let db_path = dir.join("grimodex.db");
+            seed_markerless_live_schema(&db_path, schema_version);
+
+            let error = read_live_c2zc_marker_for_restore(&unpublished_workspace_state(), &db_path)
+                .expect_err("missing marker table outside SCHEMA 0-22 must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED"),
+                "unexpected error for schema {schema_version}: {error}"
+            );
+
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
     #[test]
     fn list_backups_filters_and_serializes_supported_regular_files() {
         let dir =
@@ -1811,6 +2011,92 @@ mod tests {
 
         assert_eq!(marker(&state), "v1");
         assert!(!dir.join("grimodex.db.restore-tmp").exists());
+        assert_no_internal_restore_files(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn normal_restore_rejects_pre_cutover_backup_over_live_generic_authority() {
+        let (dir, state) = fixture("c2zc-authority-downgrade");
+        let backup_name = "grimodex-20200101-000000.db";
+        set_marker(&state, "before-cutover-backup");
+        backup_active(&state, &dir.join("backups").join(backup_name));
+
+        with_db_state(&state, |db| {
+            db.with_conn(|conn| {
+                Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z")
+            })
+        })
+        .expect("activate live Generic authority");
+        set_marker(&state, "live-generic-authority");
+
+        let error = restore_backup_core(&state, backup_name, || {})
+            .expect_err("pre-cutover backup must not downgrade live authority");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2ZC_RESTORE_AUTHORITY_DOWNGRADE_REJECTED"),
+            "unexpected restore error: {error}"
+        );
+        assert_eq!(marker(&state), "live-generic-authority");
+        with_db_state(&state, |db| {
+            db.with_conn(|conn| {
+                assert_eq!(
+                    Database::read_c2zc_cutover_marker(conn)?,
+                    Some(Database::C2_ZC_CUTOVER_CONTRACT_VERSION)
+                );
+                Ok::<_, anyhow::Error>(())
+            })
+        })
+        .expect("live marker remains published");
+        assert_no_internal_restore_files(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn safe_mode_restore_rejects_pre_cutover_backup_over_live_generic_authority() {
+        let (dir, state) = fixture("c2zc-authority-downgrade-safe-mode");
+        let staged_before_cutover = dir.join("backups/grimodex-before-cutover.db");
+        backup_active(&state, &staged_before_cutover);
+
+        with_db_state(&state, |db| {
+            db.with_conn(|conn| {
+                Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z")
+            })
+        })
+        .expect("activate live Generic authority");
+
+        // Safe Mode deliberately has no published database authority.  Drop
+        // the old handle first so the restore check must inspect the
+        // quiescent live image rather than relying on the normal-mode path.
+        state.inner.lock().expect("workspace state lock").take();
+        let lease = workspace_lease::acquire_exclusive_for_migration(&dir)
+            .expect("Safe Mode exclusive lease");
+
+        let error = install_staged_workspace_db(
+            &state,
+            &dir,
+            &staged_before_cutover,
+            InstallStagedOptions::safe_mode(lease),
+        )
+        .expect_err("Safe Mode must not downgrade live Generic authority");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2ZC_RESTORE_AUTHORITY_DOWNGRADE_REJECTED"),
+            "unexpected restore error: {error}"
+        );
+
+        let live = Database::new(&dir.join("grimodex.db")).expect("reopen live database");
+        live.with_conn(|conn| {
+            assert_eq!(
+                Database::read_c2zc_cutover_marker(conn)?,
+                Some(Database::C2_ZC_CUTOVER_CONTRACT_VERSION)
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("live Generic marker remains on disk");
+        drop(live);
         assert_no_internal_restore_files(&dir);
         let _ = std::fs::remove_dir_all(dir);
     }

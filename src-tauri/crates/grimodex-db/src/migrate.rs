@@ -12,6 +12,11 @@ enum ConvergedPreviousFinalize {
 }
 
 impl Database {
+    /// First workspace schema that owns the `schema_data_migrations` table.
+    /// Restore compatibility may treat a missing table as provably
+    /// pre-cutover only for an older, non-negative `user_version`.
+    pub(crate) const SCHEMA_DATA_MIGRATIONS_INTRODUCED_SCHEMA_VERSION: i32 = 23;
+
     /// C2-ZC's activation marker is deliberately kept behind the schema-owner
     /// module.  `schema_data_migrations` is not a general-purpose runtime
     /// table: C2-ZB and every later schema/data contract must serialize its

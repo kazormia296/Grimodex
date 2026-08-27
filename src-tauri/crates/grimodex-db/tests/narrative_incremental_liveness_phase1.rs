@@ -146,10 +146,10 @@ fn seed_completed_freshness_run(
         conn.execute(
             "INSERT INTO narrative_extraction_runs
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-                 status, coverage_json, outcome_summary_json, created_at, completed_at,
+                 status, coverage_json, outcome_summary_json, created_at, started_at, completed_at,
                  run_kind, semantic_epoch_id, work_key, consumer_id)
              VALUES (?1, ?2, 'freshness-evaluation', '{}', '{}', 'freshness-digest',
-                     'completed', '{}', ?3, ?4, ?4, 'freshness-evaluation',
+                     'completed', '{}', ?3, ?4, ?4, ?4, 'freshness-evaluation',
                      ?5, ?6, ?7)",
             params![
                 run_id,
@@ -497,7 +497,7 @@ fn malformed_newer_run_cannot_be_hidden_by_an_older_valid_run() {
     assert!(
         reasons
             .iter()
-            .any(|reason| { reason.contains("not-current") || reason.contains("malformed") }),
+            .any(|reason| reason == "incremental-freshness-run-lifecycle-invalid"),
         "{reasons:?}; valid run was {valid_run_id}"
     );
 }

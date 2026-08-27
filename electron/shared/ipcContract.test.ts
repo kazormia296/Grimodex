@@ -619,6 +619,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "temporalScenePatch",
       Promise.resolve('{"sceneId":"scene-1","version":1,"updatedAt":"now"}'),
     ) as never,
+    narrativeExtractionCaptureWorkspaceBinding: record(
+      "narrativeExtractionCaptureWorkspaceBinding",
+      Promise.resolve(
+        '{"authorityId":"workspace:a","generation":1,"authorityInstanceId":"1"}',
+      ),
+    ) as never,
     narrativeExtractionCreateRun: record(
       "narrativeExtractionCreateRun",
       Promise.resolve('{"runId":"r1","status":"running","taskIds":[]}'),
@@ -632,6 +638,16 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       Promise.resolve(
         '[{"runId":"r1","projectId":"p1","surfacePathId":"chronicle.extract","status":"completed","snapshotDigest":null,"createdAt":"2026-01-01T00:00:00.000Z","startedAt":null,"completedAt":null}]',
       ),
+    ) as never,
+    narrativeExtractionIsRunResumableForReview: record(
+      "narrativeExtractionIsRunResumableForReview",
+      Promise.resolve(
+        '{"runId":"r1","projectId":"p1","surfacePathId":"chronicle.extract","resumable":true}',
+      ),
+    ) as never,
+    narrativeExtractionListChronicleTaskResumeCandidates: record(
+      "narrativeExtractionListChronicleTaskResumeCandidates",
+      Promise.resolve("[]"),
     ) as never,
     narrativeExtractionCancelRun: record(
       "narrativeExtractionCancelRun",
@@ -936,6 +952,87 @@ describe("toErrorString", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("dispatchInvoke", () => {
+  const extractionWorkspaceBinding = {
+    authorityId: "workspace:a",
+    generation: 1,
+    authorityInstanceId: "1",
+  } as const;
+
+  it("captures a Chronicle workspace binding only for the exact expected path", async () => {
+    const { backend, calls } = fakeBackend();
+    const result = await dispatchInvoke(
+      "narrative_extraction_capture_workspace_binding",
+      { expectedWorkspacePath: "/workspaces/a" },
+      { backend, shell: noShell },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      value: extractionWorkspaceBinding,
+    });
+    expect(calls).toEqual([
+      {
+        method: "narrativeExtractionCaptureWorkspaceBinding",
+        args: ["/workspaces/a"],
+      },
+    ]);
+
+    const missingMethod = await dispatchInvoke(
+      "narrative_extraction_capture_workspace_binding",
+      { expectedWorkspacePath: "/workspaces/a" },
+      {
+        backend: {
+          ...backend,
+          narrativeExtractionCaptureWorkspaceBinding: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionCaptureWorkspaceBinding`,
+    });
+
+    for (const args of [
+      {},
+      { expectedWorkspacePath: "" },
+      { expectedWorkspacePath: " /workspaces/a" },
+      { expectedWorkspacePath: "/workspaces/a", extra: true },
+    ]) {
+      const invalid = await dispatchInvoke(
+        "narrative_extraction_capture_workspace_binding",
+        args,
+        { backend, shell: noShell },
+      );
+      expect(invalid.ok).toBe(false);
+    }
+  });
+
+  it("rejects missing or malformed Chronicle mutation workspace bindings", async () => {
+    const { backend } = fakeBackend();
+    for (const workspaceBinding of [
+      undefined,
+      { authorityId: "workspace:a", generation: 0, authorityInstanceId: "1" },
+      { authorityId: "workspace:a", generation: 1, authorityInstanceId: "01" },
+      {
+        authorityId: "workspace:a",
+        generation: 1,
+        authorityInstanceId: "1",
+        extra: true,
+      },
+    ]) {
+      const result = await dispatchInvoke(
+        "narrative_extraction_create_run",
+        {
+          payload: { projectId: "project-a" },
+          ...(workspaceBinding === undefined ? {} : { workspaceBinding }),
+        },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+  });
+
   it("forwards the typed historical Scope-authority companion unchanged", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -953,14 +1050,175 @@ describe("dispatchInvoke", () => {
 
     const result = await dispatchInvoke(
       "narrative_extraction_finish_task",
-      { payload },
+      { payload, workspaceBinding: extractionWorkspaceBinding },
       { backend, shell: noShell },
     );
 
     expect(result).toMatchObject({ ok: true });
     expect(calls).toEqual([
-      { method: "narrativeExtractionFinishTask", args: [payload] },
+      {
+        method: "narrativeExtractionFinishTask",
+        args: [payload, extractionWorkspaceBinding],
+      },
     ]);
+  });
+
+  it("Chronicle task resume candidate discovery forwards only the strict project query", async () => {
+    const { backend, calls } = fakeBackend();
+
+    const result = await dispatchInvoke(
+      "narrative_extraction_list_chronicle_task_resume_candidates",
+      { payload: { projectId: "project-resume", limit: 5 } },
+      { backend, shell: noShell },
+    );
+
+    expect(result).toEqual({ ok: true, value: [] });
+    expect(calls).toEqual([
+      {
+        method: "narrativeExtractionListChronicleTaskResumeCandidates",
+        args: [{ projectId: "project-resume", limit: 5 }],
+      },
+    ]);
+  });
+
+  it("exact Review resumability forwards all durable Run coordinates", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      runId: "run-review",
+      projectId: "project-review",
+      surfacePathId: "chronicle.extract",
+    };
+
+    const result = await dispatchInvoke(
+      "narrative_extraction_is_run_resumable_for_review",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        runId: "r1",
+        projectId: "p1",
+        surfacePathId: "chronicle.extract",
+        resumable: true,
+      },
+    });
+    expect(calls).toEqual([
+      {
+        method: "narrativeExtractionIsRunResumableForReview",
+        args: [payload],
+      },
+    ]);
+  });
+
+  it("exact Review resumability rejects malformed coordinates and backend skew", async () => {
+    const { backend, calls } = fakeBackend();
+    for (const payload of [
+      null,
+      [],
+      "payload",
+      {},
+      { runId: "run-review", projectId: "project-review" },
+      {
+        runId: "",
+        projectId: "project-review",
+        surfacePathId: "chronicle.extract",
+      },
+      {
+        runId: " run-review",
+        projectId: "project-review",
+        surfacePathId: "chronicle.extract",
+      },
+      {
+        runId: "run-review",
+        projectId: "project-review ",
+        surfacePathId: "chronicle.extract",
+      },
+      {
+        runId: "run-review",
+        projectId: "project-review",
+        surfacePathId: " chronicle.extract",
+      },
+      {
+        runId: "run-review",
+        projectId: "project-review",
+        surfacePathId: "chronicle.extract",
+        unknown: true,
+      },
+    ]) {
+      const result = await dispatchInvoke(
+        "narrative_extraction_is_run_resumable_for_review",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+
+    const missingMethod = await dispatchInvoke(
+      "narrative_extraction_is_run_resumable_for_review",
+      {
+        payload: {
+          runId: "run-review",
+          projectId: "project-review",
+          surfacePathId: "chronicle.extract",
+        },
+      },
+      {
+        backend: {
+          ...backend,
+          narrativeExtractionIsRunResumableForReview: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionIsRunResumableForReview`,
+    });
+  });
+
+  it("Chronicle task resume candidate discovery rejects malformed scope and backend skew", async () => {
+    const { backend, calls } = fakeBackend();
+    for (const payload of [
+      null,
+      [],
+      "payload",
+      {},
+      { projectId: "" },
+      { projectId: "   " },
+      { projectId: " project-resume" },
+      { projectId: "project-resume " },
+      { projectId: "project-resume", limit: 0 },
+      { projectId: "project-resume", limit: 101 },
+      { projectId: "project-resume", limit: 1.5 },
+      { projectId: "project-resume", unknown: true },
+    ]) {
+      const result = await dispatchInvoke(
+        "narrative_extraction_list_chronicle_task_resume_candidates",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+
+    const missingMethod = await dispatchInvoke(
+      "narrative_extraction_list_chronicle_task_resume_candidates",
+      { payload: { projectId: "project-resume" } },
+      {
+        backend: {
+          ...backend,
+          narrativeExtractionListChronicleTaskResumeCandidates: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionListChronicleTaskResumeCandidates`,
+    });
   });
 
   it("未知コマンドは IPC_UNIMPLEMENTED: マーカー付き envelope", async () => {
@@ -1318,9 +1576,11 @@ describe("dispatchInvoke", () => {
 
 describe("NAPI_COMMANDS 引数アダプタ", () => {
   it("C2B Human writer は typed payload を専用N-APIへ一度だけ渡す", async () => {
-    const method = vi.fn().mockResolvedValue(
-      '{"proposalId":"p1","revisionId":"rv2","revisionNumber":2,"originKind":"enveloped","createdBy":"human","reconciliationEnvelopeDigest":"sha256:revision","currentRevisionId":"rv2","status":"unreviewed"}',
-    );
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"proposalId":"p1","revisionId":"rv2","revisionNumber":2,"originKind":"enveloped","createdBy":"human","reconciliationEnvelopeDigest":"sha256:revision","currentRevisionId":"rv2","status":"unreviewed"}',
+      );
     const { backend } = fakeBackend({
       narrativeExtractionCreateHumanDerivedRevision: method,
     });
@@ -4715,6 +4975,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_append_revision",
       "narrative_extraction_apply_commit",
       "narrative_extraction_cancel_run",
+      "narrative_extraction_capture_workspace_binding",
       "narrative_extraction_claim_task",
       "narrative_extraction_create_human_derived_revision",
       "narrative_extraction_create_run",
@@ -4723,6 +4984,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_get_commit_status",
       "narrative_extraction_get_run",
       "narrative_extraction_get_run_review_bundle",
+      "narrative_extraction_is_run_resumable_for_review",
+      "narrative_extraction_list_chronicle_task_resume_candidates",
       "narrative_extraction_list_resumable_runs",
       "narrative_extraction_prepare_commit",
       "narrative_extraction_redo_commit",

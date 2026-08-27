@@ -261,6 +261,12 @@ pub(crate) enum TerminalFailureRunBinding {
     /// does (`NEX_MAINTENANCE_FAILURE_LEDGER_MISSING`). Anchored on the
     /// latest Run of any non-failed status for the identity.
     SyntheticLedgerGap,
+    /// A Rebuild recovery selector could not establish a safe latest Run
+    /// (for example, imported rows share a lifecycle instant or a lifecycle
+    /// timestamp is malformed). The anchored row is diagnostic provenance;
+    /// the projected manual verdict is derived from the failed selector, not
+    /// from that row's status or terminal code.
+    SyntheticSelectorEvidence,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -727,6 +733,24 @@ pub(crate) fn record_terminal_failure_observation_in_tx(
             anyhow::ensure!(
                 run_status != "failed",
                 "NEX_FINDING_RUN_STATUS_INVALID: a failed Run contradicts the failure-ledger-missing verdict"
+            );
+        }
+        TerminalFailureRunBinding::SyntheticSelectorEvidence => {
+            anyhow::ensure!(
+                matches!(
+                    write.failure_code,
+                    "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS"
+                        | "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID"
+                ),
+                "NEX_FINDING_FAILURE_CODE_MISMATCH: '{}' is not a selector-evidence code",
+                write.failure_code
+            );
+            anyhow::ensure!(
+                matches!(
+                    run_status.as_str(),
+                    "pending" | "running" | "completed" | "failed" | "cancelled"
+                ),
+                "NEX_FINDING_RUN_STATUS_INVALID: selector evidence must anchor on a canonical maintenance Run status"
             );
         }
         TerminalFailureRunBinding::CompletedReport => {

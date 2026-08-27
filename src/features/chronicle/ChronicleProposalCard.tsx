@@ -13,9 +13,11 @@ export interface ChronicleProposalCardProps {
     status: Exclude<NarrativeProposalStatus, "unreviewed">,
   ) => void;
   readonly onDuplicateChoice?: (choice: ProbableDuplicateChoice) => void;
+  readonly disabled?: boolean;
 }
 
 function statusGlyph(proposal: ChronicleReviewProposal): string {
+  if (proposal.application !== null) return "✓";
   if (proposal.applicability === "already-satisfied") return "✓";
   if (proposal.match.status === "probable-duplicate") return "⚠";
   if (proposal.status === "approved") return "☑";
@@ -33,12 +35,15 @@ export function ChronicleProposalCard({
   onSelect,
   onDecide,
   onDuplicateChoice,
+  disabled = false,
 }: ChronicleProposalCardProps) {
   const alreadySatisfied = proposal.applicability === "already-satisfied";
+  const applied = proposal.application !== null;
   const probable =
     proposal.match.status === "probable-duplicate" ? proposal.match : null;
   const safeHint =
     !alreadySatisfied &&
+    !applied &&
     proposal.status === "unreviewed" &&
     isSafeForBulkApprove(proposal.safety);
 
@@ -67,6 +72,11 @@ export function ChronicleProposalCard({
               既に同じEventが登録されています（適用不要）
             </span>
           )}
+          {applied && (
+            <span className="block text-[10px] text-emerald-700 dark:text-emerald-400">
+              取り込み済み（再適用しません）
+            </span>
+          )}
           {probable && (
             <span className="block text-[10px] text-amber-700 dark:text-amber-400">
               既存Eventと同一の可能性があります
@@ -80,12 +90,12 @@ export function ChronicleProposalCard({
         </span>
       </button>
 
-      {!alreadySatisfied && !probable && (
+      {!alreadySatisfied && !applied && !probable && (
         <div className="flex flex-wrap gap-1 pl-6">
           <button
             type="button"
             className="rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10 disabled:opacity-40"
-            disabled={proposal.status === "approved"}
+            disabled={disabled || proposal.status === "approved"}
             onClick={() => onDecide?.("approved")}
           >
             承認
@@ -93,7 +103,7 @@ export function ChronicleProposalCard({
           <button
             type="button"
             className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent disabled:opacity-40"
-            disabled={proposal.status === "rejected"}
+            disabled={disabled || proposal.status === "rejected"}
             onClick={() => onDecide?.("rejected")}
           >
             拒否
@@ -102,7 +112,9 @@ export function ChronicleProposalCard({
             type="button"
             className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent disabled:opacity-40"
             disabled={
-              proposal.status === "deferred" || proposal.status === "held"
+              disabled ||
+              proposal.status === "deferred" ||
+              proposal.status === "held"
             }
             onClick={() => onDecide?.("deferred")}
           >
@@ -111,7 +123,7 @@ export function ChronicleProposalCard({
         </div>
       )}
 
-      {probable && (
+      {!applied && probable && (
         <div
           className="flex flex-col gap-1 pl-6"
           data-testid={`chronicle-duplicate-choices-${proposal.proposalId}`}
@@ -136,6 +148,7 @@ export function ChronicleProposalCard({
                     : "border-border text-muted-foreground hover:bg-accent"
                 }`}
                 onClick={() => onDuplicateChoice?.(choice)}
+                disabled={disabled}
               >
                 {label}
               </button>

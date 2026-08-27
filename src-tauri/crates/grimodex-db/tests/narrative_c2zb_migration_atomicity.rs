@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use grimodex_db::narrative_extraction::{
-    stable_finding_identity, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
+    digest_plan, stable_finding_identity, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
 };
 use grimodex_db::Database;
 use rusqlite::{params, Connection};
@@ -19,6 +19,7 @@ const MARKER: &str = "narrative-c2-application-rekey-v32";
 const RUN_KIND: &str = "narrative-extraction-run";
 const APPLICATION_KIND: &str = "application";
 const SEEDED_AT: &str = "2026-08-24T00:00:00.000Z";
+const COMPLETED_AT: &str = "2026-08-24T00:00:01.000Z";
 
 fn rewound_database() -> Database {
     let db = Database::new(Path::new(":memory:")).expect("open in-memory database");
@@ -211,20 +212,95 @@ fn seed_project(
     Ok(())
 }
 
-fn seed_fresh_backfill_owner(
+fn seed_completed_v3_backfill_owner(
     conn: &Connection,
     project_id: &str,
     owner_id: &str,
+) -> anyhow::Result<()> {
+    let epoch_id = format!("{project_id}-epoch-0");
+    let spec = serde_json::json!({
+        "backfillAlgorithmVersion": "3",
+    });
+    let spec_json = spec.to_string();
+    let spec_digest = format!("sha256:{}", digest_plan(&spec));
+    let outcome_summary_json = serde_json::json!({
+        "maintenancePhase": "backfill-complete",
+        "backfillAlgorithmVersion": "3",
+        "semanticEpochId": &epoch_id,
+        "summary": {
+            "epoch_created": false,
+            "contributions_created": 0,
+            "edges_created": 0,
+            "applications_without_run_id": 0,
+        },
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO narrative_extraction_runs
+            (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+             status, coverage_json, created_at, started_at, completed_at, version, run_kind,
+             semantic_epoch_id, work_key, outcome_summary_json)
+         VALUES (?1, ?2, 'backfill', '{}', ?3, ?4, 'completed',
+                 '{}', ?5, ?5, ?6, 0, 'backfill', ?7, 'legacy-dependency-backfill:v3', ?8)",
+        params![
+            owner_id,
+            project_id,
+            spec_json,
+            spec_digest,
+            SEEDED_AT,
+            COMPLETED_AT,
+            epoch_id,
+            outcome_summary_json
+        ],
+    )?;
+    let task_id = format!("{owner_id}-task");
+    conn.execute(
+        "INSERT INTO narrative_extraction_tasks
+            (id, run_id, task_kind, status, input_json, attempt_count,
+             created_at, started_at, completed_at, version)
+         VALUES (?1, ?2, 'maintenance-backfill', 'completed', ?3, 1,
+                 ?4, ?4, ?5, 0)",
+        params![task_id, owner_id, spec_json, SEEDED_AT, COMPLETED_AT],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_extraction_attempts
+            (id, task_id, attempt_number, status, started_at, completed_at)
+         VALUES (?1, ?2, 1, 'completed', ?3, ?4)",
+        params![
+            format!("{owner_id}-attempt"),
+            task_id,
+            SEEDED_AT,
+            COMPLETED_AT
+        ],
+    )?;
+    Ok(())
+}
+
+fn seed_unrelated_same_project_owner(
+    conn: &Connection,
+    project_id: &str,
+    owner_id: &str,
+    run_kind: &str,
+    surface_path_id: &str,
+    spec_json: &str,
 ) -> anyhow::Result<()> {
     let epoch_id = format!("{project_id}-epoch-0");
     conn.execute(
         "INSERT INTO narrative_extraction_runs
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
              status, coverage_json, created_at, completed_at, version, run_kind,
-             semantic_epoch_id, work_key)
-         VALUES (?1, ?2, 'maintenance', '{}', '{}', 'c2zb-fresh-owner', 'completed',
-                 '{}', ?3, ?3, 0, 'backfill', ?4, 'legacy-dependency-backfill:v3')",
-        params![owner_id, project_id, SEEDED_AT, epoch_id],
+             semantic_epoch_id, work_key, outcome_summary_json)
+         VALUES (?1, ?2, ?3, '{}', ?4, 'c2zb-unrelated-owner', 'completed',
+                 '{}', ?5, ?5, 0, ?6, ?7, 'unrelated-c2zb-owner', '{}')",
+        params![
+            owner_id,
+            project_id,
+            surface_path_id,
+            spec_json,
+            SEEDED_AT,
+            run_kind,
+            epoch_id,
+        ],
     )?;
     Ok(())
 }
@@ -582,8 +658,9 @@ fn all_projects_are_preflighted_before_a_safe_project_is_written() {
             false,
         )?;
         conn.execute(
-            "DELETE FROM narrative_projection_dependencies
-              WHERE application_id = 'c2zb-unsafe-second-application'",
+            "UPDATE narrative_dependency_edges
+                SET read_set_json = '[\"c2zb-unsafe-second-token\", \"unexpected\"]'
+              WHERE id = 'c2zb-unsafe-second-edge'",
             [],
         )?;
         Ok::<_, anyhow::Error>(())
@@ -631,7 +708,231 @@ fn all_projects_are_preflighted_before_a_safe_project_is_written() {
 }
 
 #[test]
-fn matching_pre_existing_application_target_with_different_fresh_owner_is_reused() {
+fn matching_pre_existing_application_target_with_apply_commit_owner_is_reused() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        seed_project(
+            conn,
+            "c2zb-existing-target-apply",
+            "c2zb-existing-target-apply-run",
+            "c2zb-existing-target-apply-application",
+            "c2zb-existing-target-apply-commit",
+            "c2zb-existing-target-apply-edge",
+            "project:scene:c2zb-existing-target-apply-scene",
+            "c2zb-existing-target-apply-token",
+            false,
+            true,
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed Apply-owned existing target");
+
+    db.migrate()
+        .expect("existing target with its ApplyCommit owner is safe");
+    db.with_conn(|conn| {
+        let target: (String, String, Option<String>) = conn.query_row(
+            "SELECT id, generated_by_transaction_id, owning_run_id
+               FROM narrative_dependency_edges
+              WHERE project_id = 'c2zb-existing-target-apply'
+                AND consumer_kind = 'application'
+                AND consumer_key = 'c2zb-existing-target-apply-application'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(target.0, "c2zb-existing-target-apply-edge-target");
+        assert_eq!(target.1, "target-transaction");
+        assert_eq!(target.2.as_deref(), Some("c2zb-existing-target-apply-run"));
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify Apply-owned existing target reuse");
+}
+
+#[test]
+fn generic_create_run_shape_apply_commit_owner_is_reused_without_maintenance_coordinates() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        seed_project(
+            conn,
+            "c2zb-generic-apply-owner",
+            "c2zb-generic-apply-owner-run",
+            "c2zb-generic-apply-owner-application",
+            "c2zb-generic-apply-owner-commit",
+            "c2zb-generic-apply-owner-edge",
+            "project:scene:c2zb-generic-apply-owner-scene",
+            "c2zb-generic-apply-owner-token",
+            false,
+            true,
+        )?;
+
+        // Use the exact Run column list written by generic `create_run`.
+        // `run_kind` is not NULL: the production schema materialises its
+        // NOT NULL default `interpretation`; only the maintenance-specific
+        // Epoch/work coordinates remain NULL.
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
+                 created_at, started_at, version)
+             VALUES ('c2zb-generic-apply-owner-ordinary-run',
+                     'c2zb-generic-apply-owner', 'chronicle.extract', '{}',
+                     '{\"domain\":\"chronicle\",\"version\":1}', 'generic-spec',
+                     NULL, NULL, NULL, 'completed', '{}', ?1, ?1, 0)",
+            [SEEDED_AT],
+        )?;
+        conn.execute(
+            "UPDATE narrative_apply_commits
+                SET run_id = 'c2zb-generic-apply-owner-ordinary-run'
+              WHERE id = 'c2zb-generic-apply-owner-commit'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges
+                SET owning_run_id = 'c2zb-generic-apply-owner-ordinary-run'
+              WHERE id = 'c2zb-generic-apply-owner-edge-target'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges
+                SET consumer_key = 'c2zb-generic-apply-owner-ordinary-run',
+                    owning_run_id = 'c2zb-generic-apply-owner-ordinary-run'
+              WHERE id = 'c2zb-generic-apply-owner-edge'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE narrative_consumer_freshness
+                SET consumer_key = 'c2zb-generic-apply-owner-ordinary-run',
+                    last_evaluated_run_id = 'c2zb-generic-apply-owner-ordinary-run'
+              WHERE project_id = 'c2zb-generic-apply-owner'
+                AND consumer_kind = 'narrative-extraction-run'
+                AND consumer_key = 'c2zb-generic-apply-owner-run'",
+            [],
+        )?;
+        let maintenance_coordinates: (String, Option<String>, Option<String>) = conn.query_row(
+            "SELECT run_kind, semantic_epoch_id, work_key
+                   FROM narrative_extraction_runs
+                  WHERE id = 'c2zb-generic-apply-owner-ordinary-run'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(
+            maintenance_coordinates,
+            ("interpretation".to_string(), None, None)
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed generic Apply-owned existing target");
+
+    db.migrate()
+        .expect("generic ApplyCommit owner is safe without maintenance coordinates");
+    db.with_conn(|conn| {
+        let target: (String, Option<String>) = conn.query_row(
+            "SELECT id, owning_run_id
+               FROM narrative_dependency_edges
+              WHERE project_id = 'c2zb-generic-apply-owner'
+                AND consumer_kind = 'application'
+                AND consumer_key = 'c2zb-generic-apply-owner-application'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(target.0, "c2zb-generic-apply-owner-edge-target");
+        assert_eq!(
+            target.1.as_deref(),
+            Some("c2zb-generic-apply-owner-ordinary-run")
+        );
+
+        let old_edge_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE id = 'c2zb-generic-apply-owner-edge'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(old_edge_count, 0);
+        let marker_version: i64 = conn.query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [MARKER],
+            |row| row.get(0),
+        )?;
+        assert_eq!(marker_version, 1);
+        let schema_version: i32 =
+            conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        assert_eq!(schema_version, CURRENT_SCHEMA);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify generic Apply-owned existing target reuse");
+}
+
+#[test]
+fn matching_foreign_apply_commit_owner_rejects_before_the_equality_shortcut() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        seed_project(
+            conn,
+            "c2zb-foreign-equal-owner-local",
+            "c2zb-foreign-equal-owner-local-run",
+            "c2zb-foreign-equal-owner-local-application",
+            "c2zb-foreign-equal-owner-local-commit",
+            "c2zb-foreign-equal-owner-local-edge",
+            "project:scene:c2zb-foreign-equal-owner-local-scene",
+            "c2zb-foreign-equal-owner-local-token",
+            false,
+            true,
+        )?;
+        seed_project(
+            conn,
+            "c2zb-foreign-equal-owner-remote",
+            "c2zb-foreign-equal-owner-remote-run",
+            "c2zb-foreign-equal-owner-remote-application",
+            "c2zb-foreign-equal-owner-remote-commit",
+            "c2zb-foreign-equal-owner-remote-edge",
+            "project:scene:c2zb-foreign-equal-owner-remote-scene",
+            "c2zb-foreign-equal-owner-remote-token",
+            false,
+            false,
+        )?;
+        conn.execute(
+            "UPDATE narrative_apply_commits
+                SET run_id = 'c2zb-foreign-equal-owner-remote-run'
+              WHERE id = 'c2zb-foreign-equal-owner-local-commit'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges
+                SET owning_run_id = 'c2zb-foreign-equal-owner-remote-run'
+              WHERE id = 'c2zb-foreign-equal-owner-local-edge-target'",
+            [],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed matching foreign ApplyCommit owner");
+
+    let error = db
+        .migrate()
+        .expect_err("ApplyCommit equality must not bypass same-project ownership");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_FOREIGN"),
+        "unexpected error: {error}"
+    );
+    db.with_conn(|conn| {
+        assert_schema_31_without_marker(conn, "c2zb-foreign-equal-owner-local")?;
+        let owner: Option<String> = conn.query_row(
+            "SELECT owning_run_id FROM narrative_dependency_edges
+              WHERE id = 'c2zb-foreign-equal-owner-local-edge-target'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            owner.as_deref(),
+            Some("c2zb-foreign-equal-owner-remote-run")
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify matching foreign owner left no C2-ZB writes");
+}
+
+#[test]
+fn matching_pre_existing_application_target_with_completed_v3_backfill_owner_is_reused() {
     let db = rewound_database();
     db.with_conn(|conn| {
         seed_project(
@@ -646,7 +947,7 @@ fn matching_pre_existing_application_target_with_different_fresh_owner_is_reused
             false,
             true,
         )?;
-        seed_fresh_backfill_owner(
+        seed_completed_v3_backfill_owner(
             conn,
             "c2zb-existing-target",
             "c2zb-existing-target-fresh-owner",
@@ -706,6 +1007,172 @@ fn matching_pre_existing_application_target_with_different_fresh_owner_is_reused
         Ok::<_, anyhow::Error>(())
     })
     .expect("verify existing target reuse");
+}
+
+#[test]
+fn same_project_verify_owner_on_existing_application_edge_rejects_before_any_c2zb_write() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        seed_project(
+            conn,
+            "c2zb-unrelated-verify-owner",
+            "c2zb-unrelated-verify-owner-apply-run",
+            "c2zb-unrelated-verify-owner-application",
+            "c2zb-unrelated-verify-owner-commit",
+            "c2zb-unrelated-verify-owner-edge",
+            "project:scene:c2zb-unrelated-verify-owner-scene",
+            "c2zb-unrelated-verify-owner-token",
+            false,
+            true,
+        )?;
+        seed_unrelated_same_project_owner(
+            conn,
+            "c2zb-unrelated-verify-owner",
+            "c2zb-unrelated-verify-owner-run",
+            "dependency-verify",
+            "dependency-verify",
+            "{}",
+        )?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges
+                SET owning_run_id = 'c2zb-unrelated-verify-owner-run'
+              WHERE id = 'c2zb-unrelated-verify-owner-edge-target'",
+            [],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed same-project Verify owner");
+
+    let error = db
+        .migrate()
+        .expect_err("a same-project Verify Run is not Application Edge provenance");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_PROVENANCE_INVALID"),
+        "unexpected error: {error}"
+    );
+    db.with_conn(|conn| {
+        assert_schema_31_without_marker(conn, "c2zb-unrelated-verify-owner")?;
+        let owner: Option<String> = conn.query_row(
+            "SELECT owning_run_id FROM narrative_dependency_edges
+              WHERE id = 'c2zb-unrelated-verify-owner-edge-target'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(owner.as_deref(), Some("c2zb-unrelated-verify-owner-run"));
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify rejected Verify owner left no C2-ZB writes");
+}
+
+#[test]
+fn same_project_chronicle_owner_on_existing_application_edge_rejects_before_any_c2zb_write() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        seed_project(
+            conn,
+            "c2zb-unrelated-chronicle-owner",
+            "c2zb-unrelated-chronicle-owner-apply-run",
+            "c2zb-unrelated-chronicle-owner-application",
+            "c2zb-unrelated-chronicle-owner-commit",
+            "c2zb-unrelated-chronicle-owner-edge",
+            "project:scene:c2zb-unrelated-chronicle-owner-scene",
+            "c2zb-unrelated-chronicle-owner-token",
+            false,
+            true,
+        )?;
+        seed_unrelated_same_project_owner(
+            conn,
+            "c2zb-unrelated-chronicle-owner",
+            "c2zb-unrelated-chronicle-owner-run",
+            "interpretation",
+            "chronicle.extract",
+            r#"{"domain":"chronicle","version":1}"#,
+        )?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges
+                SET owning_run_id = 'c2zb-unrelated-chronicle-owner-run'
+              WHERE id = 'c2zb-unrelated-chronicle-owner-edge-target'",
+            [],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed same-project Chronicle owner");
+
+    let error = db
+        .migrate()
+        .expect_err("a same-project Chronicle Run is not Application Edge provenance");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_PROVENANCE_INVALID"),
+        "unexpected error: {error}"
+    );
+    db.with_conn(|conn| {
+        assert_schema_31_without_marker(conn, "c2zb-unrelated-chronicle-owner")?;
+        let owner: Option<String> = conn.query_row(
+            "SELECT owning_run_id FROM narrative_dependency_edges
+              WHERE id = 'c2zb-unrelated-chronicle-owner-edge-target'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(owner.as_deref(), Some("c2zb-unrelated-chronicle-owner-run"));
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify rejected Chronicle owner left no C2-ZB writes");
+}
+
+#[test]
+fn v3_backfill_marker_without_completed_attempt_rejects_before_any_c2zb_write() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        seed_project(
+            conn,
+            "c2zb-v3-backfill-lifecycle-missing",
+            "c2zb-v3-backfill-lifecycle-apply-run",
+            "c2zb-v3-backfill-lifecycle-application",
+            "c2zb-v3-backfill-lifecycle-commit",
+            "c2zb-v3-backfill-lifecycle-edge",
+            "project:scene:c2zb-v3-backfill-lifecycle-scene",
+            "c2zb-v3-backfill-lifecycle-token",
+            false,
+            true,
+        )?;
+        seed_completed_v3_backfill_owner(
+            conn,
+            "c2zb-v3-backfill-lifecycle-missing",
+            "c2zb-v3-backfill-lifecycle-owner",
+        )?;
+        conn.execute(
+            "DELETE FROM narrative_extraction_attempts
+              WHERE id = 'c2zb-v3-backfill-lifecycle-owner-attempt'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges
+                SET owning_run_id = 'c2zb-v3-backfill-lifecycle-owner'
+              WHERE id = 'c2zb-v3-backfill-lifecycle-edge-target'",
+            [],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed v3 marker without its completed Attempt");
+
+    let error = db
+        .migrate()
+        .expect_err("a v3 marker without its lifecycle pair must not own an Application Edge");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_PROVENANCE_INVALID"),
+        "unexpected error: {error}"
+    );
+    db.with_conn(|conn| {
+        assert_schema_31_without_marker(conn, "c2zb-v3-backfill-lifecycle-missing")?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify invalid v3 lifecycle left no C2-ZB writes");
 }
 
 #[test]

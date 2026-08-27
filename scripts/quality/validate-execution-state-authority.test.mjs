@@ -95,6 +95,15 @@ function baseExecutionState(overrides = {}) {
         retryDisposition: "superseded",
       },
     },
+    runCancelCascade: {
+      task: { fromStatuses: ["queued", "running"], toStatus: "cancelled" },
+      attempt: {
+        fromStatuses: ["running"],
+        toStatus: "failed",
+        failureCode: "NEX_RUN_CANCELLED",
+        retryDisposition: "terminal",
+      },
+    },
     crossEntityInvariant: "each entity owns its own vocabulary",
     ...overrides,
   };
@@ -113,6 +122,14 @@ function baseFailurePolicy(overrides = {}) {
       {
         failureCode: "NEX_RUN_SUPERSEDED",
         retryDisposition: "superseded",
+        maxAttempts: 0,
+        backoffPolicy: "none",
+        nextAttemptPolicy: "none",
+        policyVersion: "v1",
+      },
+      {
+        failureCode: "NEX_RUN_CANCELLED",
+        retryDisposition: "terminal",
         maxAttempts: 0,
         backoffPolicy: "none",
         nextAttemptPolicy: "none",
@@ -151,6 +168,14 @@ function c25bFailurePolicies() {
       policyVersion: "v1",
     },
     {
+      failureCode: "NEX_MAINTENANCE_UNCLASSIFIED",
+      retryDisposition: "manual",
+      maxAttempts: 0,
+      backoffPolicy: "none",
+      nextAttemptPolicy: "none",
+      policyVersion: "v1",
+    },
+    {
       failureCode: "NEX_MAINTENANCE_INTERRUPTED",
       retryDisposition: "retryable",
       maxAttempts: 3,
@@ -163,6 +188,8 @@ function c25bFailurePolicies() {
       "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING",
       "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING",
       "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+      "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS",
+      "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID",
       "NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR",
     ].map((failureCode) => ({
       failureCode,
@@ -186,6 +213,10 @@ function c25bFindingRoutingMatrix() {
       findingRoute: "maintenance-inbox",
     },
     {
+      failureCode: "NEX_MAINTENANCE_UNCLASSIFIED",
+      findingRoute: "maintenance-inbox",
+    },
+    {
       failureCode: "NEX_MAINTENANCE_INTERRUPTED",
       findingRoute: "none",
     },
@@ -194,6 +225,8 @@ function c25bFindingRoutingMatrix() {
       "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING",
       "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING",
       "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+      "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS",
+      "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID",
       "NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR",
     ].map((failureCode) => ({
       failureCode,
@@ -604,6 +637,42 @@ describe("validate-execution-state-authority", () => {
       result.errors.some((error) =>
         error.includes(
           "runSupersedeCascade.attempt.failureCode is not registered",
+        ),
+      ),
+    );
+  });
+
+  it("rejects a cancel cascade with an unregistered code or policy mismatch", () => {
+    const unregisteredExecutionState = baseExecutionState();
+    unregisteredExecutionState.runCancelCascade.attempt.failureCode =
+      "NEX_UNKNOWN_CANCEL_CODE";
+    const unregisteredRoot = writeFixtureRoot({
+      executionState: unregisteredExecutionState,
+    });
+    const unregisteredResult = validateExecutionStateAuthority({
+      repoRoot: unregisteredRoot,
+    });
+    assert.ok(
+      unregisteredResult.errors.some((error) =>
+        error.includes(
+          "runCancelCascade.attempt.failureCode is not registered",
+        ),
+      ),
+    );
+
+    const mismatchExecutionState = baseExecutionState();
+    mismatchExecutionState.runCancelCascade.attempt.retryDisposition =
+      "superseded";
+    const mismatchRoot = writeFixtureRoot({
+      executionState: mismatchExecutionState,
+    });
+    const mismatchResult = validateExecutionStateAuthority({
+      repoRoot: mismatchRoot,
+    });
+    assert.ok(
+      mismatchResult.errors.some((error) =>
+        error.includes(
+          "runCancelCascade.attempt.retryDisposition (superseded) disagrees",
         ),
       ),
     );

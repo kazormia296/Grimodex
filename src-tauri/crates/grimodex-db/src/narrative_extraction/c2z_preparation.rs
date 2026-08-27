@@ -13,9 +13,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::commit::digest_plan;
+use super::consumer_identity::validate_consumer_identity;
 pub(crate) use super::consumer_identity::APPLICATION_CONSUMER_KIND;
 use super::dependency_edges::{
-    canonical_source_object_identity, validate_stored_source_object_identity, RUN_CONSUMER_KIND,
+    canonical_source_object_identity, parse_snapshot_run_id_from_source_identity,
+    run_id_belongs_to_another_project, validate_stored_source_object_identity, RUN_CONSUMER_KIND,
 };
 use super::legacy_backfill::{is_valid_completed_backfill_marker, CompletedBackfillMarker};
 use super::maintenance_lifecycle::load_completed_maintenance_run_in_tx;
@@ -200,15 +202,18 @@ type IncrementalCursorRow = (
     Option<i64>,
     Option<String>,
 );
-type IncrementalLatestRunRow = (
-    String,
-    String,
-    Option<String>,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
+#[derive(Debug, Clone)]
+struct IncrementalReadinessRun {
+    run_id: String,
+    project_id: String,
+    semantic_epoch_id: Option<String>,
+    status: String,
+    created_at: String,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+    work_key: Option<String>,
+    outcome_summary_json: Option<String>,
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -272,6 +277,31 @@ pub struct UnattributedRekeyItem {
     pub reason: String,
 }
 
+/// A legacy Application whose v2 Run Edge is absent or cannot be named by
+/// the old ApplyCommit lineage.  C2-ZB must not invent a Run identity for
+/// this row: the current v3 Backfill writer owns creation of its Application
+/// Edge instead.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingV3BackfillApplication {
+    pub application_id: String,
+    pub run_id: Option<String>,
+    pub source_object_identity: String,
+    pub reason: String,
+}
+
+/// A Run-consumer Edge for which C2-ZB has no exact legacy Application
+/// provenance.  It remains a Run Edge; treating it as a legacy Application
+/// Edge would either delete a valid independent consumer or fabricate an
+/// Application identity.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetainedRunConsumerEdge {
+    pub edge_id: String,
+    pub run_id: String,
+    pub source_object_identity: String,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RekeyCollision {
@@ -305,6 +335,14 @@ pub struct ApplicationRekeyPlan {
     pub project_id: String,
     pub exact: Vec<ApplicationRekeyCandidate>,
     pub fan_out: Vec<ApplicationRekeyFanOut>,
+    /// Legacy Application dependencies which need a v3 Backfill-owned
+    /// Application Edge rather than a C2-ZB re-key.
+    pub pending_v3_backfill_applications: Vec<PendingV3BackfillApplication>,
+    /// Non-Application Run-consumer Edges retained unchanged by C2-ZB.
+    pub retained_run_edges: Vec<RetainedRunConsumerEdge>,
+    /// Retained for backwards-compatible plan deserialization. New planning
+    /// classifies known non-migration rows above instead of conflating them
+    /// with a blocking unattributed condition.
     pub unattributed: Vec<UnattributedRekeyItem>,
     pub collisions: Vec<RekeyCollision>,
     pub invalid: Vec<RekeyInvalidItem>,
@@ -314,13 +352,11 @@ pub struct ApplicationRekeyPlan {
 
 impl ApplicationRekeyPlan {
     /// Whether every candidate is deterministic and does not conflict with a
-    /// stored Application target. A fan-out is safe when every exact legacy
-    /// dependency match is enumerated; it is not collapsed into one guess.
+    /// stored Application target. Pending v3 Backfill Applications and
+    /// retained Run Edges are safe, non-mutating classifications; only
+    /// ambiguity/corruption blocks the migration.
     pub fn is_safe(&self) -> bool {
-        self.unattributed.is_empty()
-            && self.collisions.is_empty()
-            && self.invalid.is_empty()
-            && self.applications_without_run_id.is_empty()
+        self.unattributed.is_empty() && self.collisions.is_empty() && self.invalid.is_empty()
     }
 }
 
@@ -474,6 +510,7 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
 
     let (legacy_dependencies, mut invalid) = load_legacy_dependencies_for_rekey(conn, project_id)?;
     let mut applications_without_run_id = BTreeSet::new();
+    let mut pending_v3_backfill = BTreeMap::new();
     let mut expected_by_run_source: BTreeMap<(String, String), Vec<LegacyDependency>> =
         BTreeMap::new();
     let mut all_legacy_by_application: BTreeMap<String, Vec<LegacyDependency>> = BTreeMap::new();
@@ -492,6 +529,19 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
                 .push(dependency.clone());
         } else {
             applications_without_run_id.insert(dependency.application_id.clone());
+            pending_v3_backfill.insert(
+                (
+                    dependency.application_id.clone(),
+                    None,
+                    dependency.source_object_identity.clone(),
+                ),
+                PendingV3BackfillApplication {
+                    application_id: dependency.application_id.clone(),
+                    run_id: None,
+                    source_object_identity: dependency.source_object_identity.clone(),
+                    reason: "apply-commit-run-id-missing".to_string(),
+                },
+            );
         }
         all_legacy_by_application
             .entry(dependency.application_id.clone())
@@ -513,33 +563,39 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
     let run_edges = load_run_edges(conn, project_id)?;
     let mut exact = Vec::new();
     let mut fan_out = Vec::new();
-    let mut unattributed = Vec::new();
+    let mut retained_run_edges = Vec::new();
     let mut collisions = Vec::new();
     let mut existing_targets = Vec::new();
     let mut matched_legacy = BTreeSet::new();
 
     for edge in run_edges {
-        if !edge.owning_run_exists_in_project {
+        let key = (edge.run_id.clone(), edge.source_object_identity.clone());
+        let candidates = expected_by_run_source
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        let invalid_reason = if candidates.is_empty() {
+            invalid_retained_run_edge_reason(conn, project_id, &edge)?
+        } else {
+            invalid_matched_legacy_run_edge_reason(&edge)
+        };
+        if let Some(reason) = invalid_reason {
             invalid.push(RekeyInvalidItem {
                 edge_id: Some(edge.id.clone()),
                 application_id: None,
-                reason: "run-edge-owning-run-missing-or-foreign-project".to_string(),
+                reason: reason.to_string(),
             });
             continue;
         }
-        if validate_stored_source_object_identity(&edge.source_object_identity).is_err() {
-            invalid.push(RekeyInvalidItem {
-                edge_id: Some(edge.id.clone()),
-                application_id: None,
-                reason: "run-edge-source-identity-invalid".to_string(),
-            });
-            continue;
-        }
-        if edge.owning_run_id.as_deref() != Some(edge.run_id.as_str()) {
-            invalid.push(RekeyInvalidItem {
-                edge_id: Some(edge.id.clone()),
-                application_id: None,
-                reason: "run-edge-owning-run-missing-or-mismatched".to_string(),
+        if candidates.is_empty() {
+            // Run Edges are not Application-specific by consumer kind alone.
+            // In particular, their read set need not satisfy the v2
+            // single-token Application migration shape. Preserve any row for
+            // which there is no exact legacy Application provenance.
+            retained_run_edges.push(RetainedRunConsumerEdge {
+                edge_id: edge.id,
+                run_id: edge.run_id,
+                source_object_identity: edge.source_object_identity,
             });
             continue;
         }
@@ -555,22 +611,6 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
                 continue;
             }
         };
-
-        let key = (edge.run_id.clone(), edge.source_object_identity.clone());
-        let candidates = expected_by_run_source
-            .get(&key)
-            .cloned()
-            .unwrap_or_default();
-        if candidates.is_empty() {
-            unattributed.push(UnattributedRekeyItem {
-                edge_id: Some(edge.id),
-                run_id: Some(edge.run_id),
-                application_id: None,
-                source_object_identity: Some(edge.source_object_identity),
-                reason: "run-edge-has-no-legacy-application-dependency".to_string(),
-            });
-            continue;
-        }
 
         let mapping_kind = if candidates.len() == 1 {
             RekeyMappingKind::Exact
@@ -663,13 +703,19 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
                     dependency.source_object_identity.clone(),
                 ))
             {
-                unattributed.push(UnattributedRekeyItem {
-                    edge_id: None,
-                    run_id: dependency.run_id.clone(),
-                    application_id: Some(dependency.application_id.clone()),
-                    source_object_identity: Some(dependency.source_object_identity.clone()),
-                    reason: "legacy-application-dependency-has-no-run-edge".to_string(),
-                });
+                pending_v3_backfill.insert(
+                    (
+                        dependency.application_id.clone(),
+                        dependency.run_id.clone(),
+                        dependency.source_object_identity.clone(),
+                    ),
+                    PendingV3BackfillApplication {
+                        application_id: dependency.application_id.clone(),
+                        run_id: dependency.run_id.clone(),
+                        source_object_identity: dependency.source_object_identity.clone(),
+                        reason: "legacy-application-dependency-has-no-run-edge".to_string(),
+                    },
+                );
             }
         }
     }
@@ -681,7 +727,9 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
         project_id: project_id.to_string(),
         exact,
         fan_out,
-        unattributed,
+        pending_v3_backfill_applications: pending_v3_backfill.into_values().collect(),
+        retained_run_edges,
+        unattributed: Vec::new(),
         collisions,
         invalid,
         applications_without_run_id,
@@ -984,6 +1032,90 @@ fn load_run_edges(conn: &Connection, project_id: &str) -> Result<Vec<RunEdgeForR
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Validate the coordinate and Source grammar shared by every Run Consumer
+/// Edge. The migration's classification decides separately whether the
+/// historical owner has to be fully resolved.
+fn invalid_run_edge_identity_reason(edge: &RunEdgeForRekey) -> Option<&'static str> {
+    if validate_consumer_identity(RUN_CONSUMER_KIND, &edge.run_id).is_err() {
+        return Some("run-edge-consumer-key-invalid");
+    }
+    if validate_stored_source_object_identity(&edge.source_object_identity).is_err() {
+        return Some("run-edge-source-identity-invalid");
+    }
+    None
+}
+
+/// An Edge that C2-ZB will re-key has exact legacy Application provenance, so
+/// there is no compatibility fallback: its declared owner must already be the
+/// matching persisted Run in this Project.
+fn invalid_matched_legacy_run_edge_reason(edge: &RunEdgeForRekey) -> Option<&'static str> {
+    if let Some(reason) = invalid_run_edge_identity_reason(edge) {
+        return Some(reason);
+    }
+    if !edge.owning_run_exists_in_project {
+        return Some("run-edge-owning-run-missing-or-foreign-project");
+    }
+    if edge.owning_run_id.as_deref() != Some(edge.run_id.as_str()) {
+        return Some("run-edge-owning-run-missing-or-mismatched");
+    }
+    match parse_snapshot_run_id_from_source_identity(&edge.source_object_identity) {
+        Ok(Some(snapshot_run_id)) if snapshot_run_id != edge.run_id => {
+            return Some("run-edge-snapshot-run-mismatch");
+        }
+        Ok(_) => {}
+        Err(_) => return Some("run-edge-source-identity-invalid"),
+    }
+    None
+}
+
+/// An unrelated Run Consumer remains live after C2-ZB. Preserve the existing
+/// Run-Consumer compatibility contract: a blank/missing owner falls back to
+/// the exact consumer key, and a non-Snapshot declaration may predate the
+/// persisted Run row. A populated owner is never a loose hint, however: it
+/// must be canonical, equal the Run key, and not belong to another Project.
+fn invalid_retained_run_edge_reason(
+    conn: &Connection,
+    project_id: &str,
+    edge: &RunEdgeForRekey,
+) -> Result<Option<&'static str>> {
+    if let Some(reason) = invalid_run_edge_identity_reason(edge) {
+        return Ok(Some(reason));
+    }
+
+    let stored_owner = match edge.owning_run_id.as_deref() {
+        Some(owner) if owner.trim().is_empty() => None,
+        Some(owner) if owner.trim() != owner => {
+            return Ok(Some("run-edge-owning-run-invalid"));
+        }
+        Some(owner) if owner != edge.run_id => {
+            return Ok(Some("run-edge-owning-run-missing-or-mismatched"));
+        }
+        Some(owner) => Some(owner),
+        None => None,
+    };
+
+    if let Some(owner) = stored_owner {
+        if run_id_belongs_to_another_project(conn, project_id, owner)? {
+            return Ok(Some("run-edge-owning-run-missing-or-foreign-project"));
+        }
+    }
+
+    match parse_snapshot_run_id_from_source_identity(&edge.source_object_identity) {
+        Ok(Some(snapshot_run_id)) => {
+            let resolved_run_id = stored_owner.unwrap_or(edge.run_id.as_str());
+            if snapshot_run_id != resolved_run_id {
+                return Ok(Some("run-edge-snapshot-run-mismatch"));
+            }
+            if run_id_belongs_to_another_project(conn, project_id, resolved_run_id)? {
+                return Ok(Some("run-edge-snapshot-run-foreign-project"));
+            }
+        }
+        Ok(None) => {}
+        Err(_) => return Ok(Some("run-edge-source-identity-invalid")),
+    }
+    Ok(None)
 }
 
 fn single_rekey_read_set_token(read_set_json: &str) -> Result<String> {
@@ -1410,125 +1542,134 @@ fn inspect_phase_lifecycle_gate(
         return Ok(ReadinessGate::incomplete("current-semantic-epoch-missing"));
     };
 
-    struct PhaseRun {
-        run_id: String,
-        created_at: String,
-        completed_at: Option<String>,
-    }
-
-    let latest_phase = |run_kind: &str, work_key: Option<&str>| -> Result<Option<PhaseRun>> {
-        let (sql, params_vec): (String, Vec<&str>) = match work_key {
-            Some(work_key) => (
-                "SELECT id, status, semantic_epoch_id, created_at, completed_at
-                   FROM narrative_extraction_runs
-                  WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
-                  ORDER BY created_at DESC, id DESC LIMIT 1"
-                    .to_string(),
-                vec![project_id, run_kind, work_key],
-            ),
-            None => (
-                "SELECT id, status, semantic_epoch_id, created_at, completed_at
-                   FROM narrative_extraction_runs
-                  WHERE project_id = ?1 AND run_kind = ?2
-                  ORDER BY created_at DESC, id DESC LIMIT 1"
-                    .to_string(),
-                vec![project_id, run_kind],
-            ),
-        };
-        type PhaseRunRow = (String, String, Option<String>, String, Option<String>);
-        let row: Option<PhaseRunRow> = conn
-            .query_row(&sql, rusqlite::params_from_iter(params_vec), |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            })
-            .optional()?;
-        Ok(
-            row.and_then(|(run_id, status, run_epoch, created_at, completed_at)| {
-                (status == "completed" && run_epoch.as_deref() == Some(epoch_id)).then_some(
-                    PhaseRun {
-                        run_id,
-                        created_at,
-                        completed_at,
-                    },
-                )
-            }),
+    // Each individual readiness gate already resolves its phase through the
+    // lifecycle-aware `select_latest_relevant_run_for_readiness` helper. Do
+    // not grow a second, weaker `created_at`/UUID ordering here: a newer
+    // failed phase (or two terminal rows at one instant) must block the same
+    // way it blocks the individual gate.
+    let runs = match load_durable_maintenance_runs(conn, project_id) {
+        Ok(runs) => runs,
+        Err(_) => return Ok(ReadinessGate::blocked("phase-lifecycle-ledger-invalid")),
+    };
+    let select_phase = |phase: &str, allow_historical_fallback: bool| {
+        select_latest_relevant_run_for_readiness(
+            &runs,
+            Some(epoch_id),
+            allow_historical_fallback,
+            |run| match phase {
+                "backfill" => run.run_kind == "backfill",
+                "verify" => run.run_kind == "dependency-verify",
+                "rebuild" => run.run_kind == "semantic-index-rebuild",
+                _ => false,
+            },
         )
     };
 
-    let backfill = latest_phase("backfill", Some("legacy-dependency-backfill:v3"))?;
-    let verify = latest_phase("dependency-verify", None)?;
-    let rebuild = latest_phase("semantic-index-rebuild", None)?;
-    let (Some(backfill), Some(verify), Some(rebuild)) = (backfill, verify, rebuild) else {
-        // The per-phase gates report the precise missing/blocked reason.
-        return Ok(ReadinessGate::incomplete(
-            "phase-lifecycle-evidence-missing",
-        ));
+    let backfill = match select_phase("backfill", true) {
+        Ok(Some(run)) => run,
+        Ok(None) => {
+            return Ok(ReadinessGate::incomplete(
+                "phase-lifecycle-evidence-missing",
+            ))
+        }
+        Err(_) => {
+            return Ok(ReadinessGate::blocked(
+                "phase-lifecycle-selection-invalid:backfill",
+            ))
+        }
+    };
+    let rebuild = match select_phase("rebuild", false) {
+        Ok(Some(run)) => run,
+        Ok(None) => {
+            return Ok(ReadinessGate::incomplete(
+                "phase-lifecycle-evidence-missing",
+            ))
+        }
+        Err(_) => {
+            return Ok(ReadinessGate::blocked(
+                "phase-lifecycle-selection-invalid:rebuild",
+            ))
+        }
+    };
+    let verify = match select_phase("verify", false) {
+        Ok(Some(run)) => run,
+        Ok(None) => {
+            return Ok(ReadinessGate::incomplete(
+                "phase-lifecycle-evidence-missing",
+            ))
+        }
+        Err(_) => {
+            return Ok(ReadinessGate::blocked(
+                "phase-lifecycle-selection-invalid:verify",
+            ))
+        }
     };
 
-    for (phase, run) in [
-        ("backfill", &backfill),
-        ("verify", &verify),
-        ("rebuild", &rebuild),
-    ] {
-        let (task_total, task_closed): (i64, i64) = conn.query_row(
-            "SELECT COUNT(*),
-                    COALESCE(SUM(CASE WHEN status = 'completed'
-                                       AND completed_at IS NOT NULL THEN 1 ELSE 0 END), 0)
-               FROM narrative_extraction_tasks WHERE run_id = ?1",
-            params![run.run_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        let (attempt_total, attempt_closed): (i64, i64) = conn.query_row(
-            "SELECT COUNT(*),
-                    COALESCE(SUM(CASE WHEN a.status = 'completed'
-                                       AND a.completed_at IS NOT NULL THEN 1 ELSE 0 END), 0)
-               FROM narrative_extraction_attempts a
-               JOIN narrative_extraction_tasks t ON t.id = a.task_id
-              WHERE t.run_id = ?1",
-            params![run.run_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        if task_total != 1 || task_closed != 1 || attempt_total != 1 || attempt_closed != 1 {
-            return Ok(ReadinessGate::blocked(format!(
-                "phase-lifecycle-closure-invalid:{phase}"
-            )));
-        }
+    struct PhaseTiming {
+        task_started_at: chrono::DateTime<chrono::Utc>,
+        completed_at: chrono::DateTime<chrono::Utc>,
     }
 
-    let parse_instant = |value: Option<&str>| -> Option<chrono::DateTime<chrono::Utc>> {
-        value.and_then(|value| {
-            chrono::DateTime::parse_from_rfc3339(value)
-                .ok()
-                .map(|parsed| parsed.with_timezone(&chrono::Utc))
+    let load_phase_timing = |phase: &str,
+                             run: &super::maintenance_runtime::DurableMaintenanceRun|
+     -> Result<PhaseTiming> {
+        anyhow::ensure!(
+            run.status == "completed",
+            "NEX_C2ZC_PHASE_LIFECYCLE_NOT_COMPLETED: {phase} Run '{}' is not completed",
+            run.run_id
+        );
+        anyhow::ensure!(
+            run.semantic_epoch_id.as_deref() == Some(epoch_id),
+            "NEX_C2ZC_PHASE_LIFECYCLE_EPOCH_MISMATCH: {phase} Run '{}' is not current",
+            run.run_id
+        );
+        let handle = load_completed_maintenance_run_in_tx(conn, &run.run_id)?;
+        let (task_started_at, completed_at): (String, String) = conn.query_row(
+            "SELECT t.started_at, r.completed_at
+               FROM narrative_extraction_runs r
+               JOIN narrative_extraction_tasks t ON t.id = ?2 AND t.run_id = r.id
+              WHERE r.id = ?1",
+            params![&handle.run_id, &handle.task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(PhaseTiming {
+            task_started_at: super::legacy_backfill::parse_maintenance_instant(&task_started_at)?,
+            completed_at: super::legacy_backfill::parse_maintenance_instant(&completed_at)?,
         })
     };
-    let backfill_completed = parse_instant(backfill.completed_at.as_deref());
-    let rebuild_created = parse_instant(Some(rebuild.created_at.as_str()));
-    let rebuild_completed = parse_instant(rebuild.completed_at.as_deref());
-    let verify_created = parse_instant(Some(verify.created_at.as_str()));
-    let (
-        Some(backfill_completed),
-        Some(rebuild_created),
-        Some(rebuild_completed),
-        Some(verify_created),
-    ) = (
-        backfill_completed,
-        rebuild_created,
-        rebuild_completed,
-        verify_created,
-    )
-    else {
-        return Ok(ReadinessGate::blocked("phase-lifecycle-instant-invalid"));
+
+    let backfill = match load_phase_timing("backfill", &backfill) {
+        Ok(timing) => timing,
+        Err(_) => {
+            return Ok(ReadinessGate::blocked(
+                "phase-lifecycle-ownership-invalid:backfill",
+            ))
+        }
     };
-    // The clean Verify the readiness gate accepted must be the confirmation
-    // Verify that strictly followed the Rebuild, and the Rebuild must not
-    // predate the Backfill boundary. Equal instants cannot prove order.
-    if !(backfill_completed <= rebuild_created && rebuild_completed < verify_created) {
+    let rebuild = match load_phase_timing("rebuild", &rebuild) {
+        Ok(timing) => timing,
+        Err(_) => {
+            return Ok(ReadinessGate::blocked(
+                "phase-lifecycle-ownership-invalid:rebuild",
+            ))
+        }
+    };
+    let verify = match load_phase_timing("verify", &verify) {
+        Ok(timing) => timing,
+        Err(_) => {
+            return Ok(ReadinessGate::blocked(
+                "phase-lifecycle-ownership-invalid:verify",
+            ))
+        }
+    };
+
+    // Task start is the first exact lifecycle-owned point at which the next
+    // phase could observe its predecessor. `created_at` only allocates a Run
+    // and says nothing about the order in which work executed. Equality is
+    // deliberately rejected: it cannot establish a causal boundary.
+    if !(backfill.completed_at < rebuild.task_started_at
+        && rebuild.completed_at < verify.task_started_at)
+    {
         return Ok(ReadinessGate::blocked("phase-causality-unproven"));
     }
     Ok(ReadinessGate::passed())
@@ -1628,7 +1769,7 @@ fn inspect_incremental_runtime_gate(
     {
         return Ok(ReadinessGate::blocked("incremental-freshness-cursor-error"));
     }
-    match (
+    let cursor_active_run_id = match (
         active_run_id.as_deref(),
         reserved,
         cursor_epoch.as_deref(),
@@ -1638,7 +1779,7 @@ fn inspect_incremental_runtime_gate(
         // cursor with no owner must have all reservation columns cleared;
         // accepting a current epoch without a run would let a stale lease
         // masquerade as durable quiescence.
-        (None, None, None, None) => {}
+        (None, None, None, None) => None,
         (Some(run_id), Some(reserved), Some(cursor_epoch), Some(lease_expires_at)) => {
             if reserved < acknowledged || reserved > feed_head {
                 return Ok(ReadinessGate::blocked("cursor-reservation-range-invalid"));
@@ -1658,71 +1799,99 @@ fn inspect_incremental_runtime_gate(
             if !lease_valid {
                 return Ok(ReadinessGate::blocked("cursor-reservation-lease-invalid"));
             }
-            let active: Option<(String, String)> = conn
-                .query_row(
-                    "SELECT project_id, status FROM narrative_extraction_runs WHERE id = ?1",
-                    params![run_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            let Some((run_project_id, status)) = active else {
-                return Ok(ReadinessGate::blocked("cursor-active-run-missing"));
-            };
-            if run_project_id != project_id || !matches!(status.as_str(), "pending" | "running") {
-                return Ok(ReadinessGate::blocked("cursor-active-run-invalid"));
-            }
-            // A reservation, even a well-formed one with a future lease, is
-            // active work rather than completed liveness evidence.  Do not
-            // let an older completed Run below satisfy the gate while this
-            // reservation still owns the cursor.
-            return Ok(ReadinessGate::incomplete(
-                "incremental-freshness-reservation-active",
-            ));
+            Some(run_id)
         }
         _ => return Ok(ReadinessGate::blocked("cursor-reservation-shape-invalid")),
-    }
-    let latest: Option<IncrementalLatestRunRow> = conn
-        .query_row(
-            "SELECT id, project_id, semantic_epoch_id, status, completed_at,
-                    work_key, outcome_summary_json
-               FROM narrative_extraction_runs
-              WHERE project_id = ?1
-                AND run_kind = 'freshness-evaluation'
-                AND consumer_id = ?2
-              ORDER BY (julianday(created_at) IS NULL) DESC,
-                       julianday(created_at) DESC, created_at DESC, id DESC
-              LIMIT 1",
-            params![project_id, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((run_id, run_project_id, run_epoch, status, completed_at, work_key, outcome_json)) =
-        latest
-    else {
-        return Ok(ReadinessGate::incomplete(
-            "incremental-freshness-completed-run-missing",
-        ));
     };
-    if run_project_id != project_id
-        || run_epoch.as_deref() != Some(epoch_id)
-        || status != "completed"
-        || !completed_at.as_deref().is_some_and(is_canonical_instant)
+
+    let runs = match load_incremental_readiness_runs(conn, project_id, epoch_id) {
+        Ok(runs) => runs,
+        Err(_) => {
+            return Ok(ReadinessGate::blocked(
+                "incremental-freshness-run-ledger-invalid",
+            ))
+        }
+    };
+    let active_runs = runs
+        .iter()
+        .filter(|run| matches!(run.status.as_str(), "pending" | "running"))
+        .collect::<Vec<_>>();
+    if let Some(cursor_active_run_id) = cursor_active_run_id {
+        if active_runs.len() != 1 {
+            return Ok(ReadinessGate::blocked(
+                "incremental-freshness-active-run-ambiguous",
+            ));
+        }
+        let active = active_runs[0];
+        if active.run_id != cursor_active_run_id
+            || active.project_id != project_id
+            || active.semantic_epoch_id.as_deref() != Some(epoch_id)
+        {
+            return Ok(ReadinessGate::blocked("cursor-active-run-invalid"));
+        }
+        // A reservation, even a well-formed one with a future lease, is
+        // active work rather than completed liveness evidence.  Do not let
+        // an older completed Run satisfy the gate while it owns the cursor.
+        return Ok(ReadinessGate::incomplete(
+            "incremental-freshness-reservation-active",
+        ));
+    }
+    if active_runs.len() > 1 {
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-active-run-ambiguous",
+        ));
+    }
+    if active_runs.len() == 1 {
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-active-run-unbound",
+        ));
+    }
+
+    let latest = match select_latest_incremental_readiness_run(&runs) {
+        Ok(Some(run)) => run,
+        Ok(None) => {
+            return Ok(ReadinessGate::incomplete(
+                "incremental-freshness-completed-run-missing",
+            ))
+        }
+        Err(error) if error.to_string().contains("RUN_ORDER_AMBIGUOUS") => {
+            return Ok(ReadinessGate::blocked(
+                "incremental-freshness-run-order-ambiguous",
+            ))
+        }
+        Err(_) => {
+            return Ok(ReadinessGate::blocked(
+                "incremental-freshness-run-lifecycle-invalid",
+            ))
+        }
+    };
+    let IncrementalReadinessRun {
+        run_id,
+        project_id: run_project_id,
+        semantic_epoch_id: run_epoch,
+        status,
+        completed_at,
+        work_key,
+        outcome_summary_json: outcome_json,
+        ..
+    } = latest;
+    if run_project_id != project_id || run_epoch.as_deref() != Some(epoch_id) {
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-completed-run-not-current",
+        ));
+    }
+    if status != "completed" {
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-latest-run-not-completed",
+        ));
+    }
+    if !completed_at.as_deref().is_some_and(is_canonical_instant)
         || work_key
             .as_deref()
             .is_none_or(|key| incremental_work_key_range(key, epoch_id).is_none())
     {
-        return Ok(ReadinessGate::incomplete(
-            "incremental-freshness-completed-run-not-current",
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-completed-run-invalid",
         ));
     }
     let Some(outcome_json) = outcome_json else {
@@ -1784,6 +1953,158 @@ fn inspect_incremental_runtime_gate(
     ))
 }
 
+/// Load every current-Epoch Incremental Freshness Run that could establish
+/// liveness.  Readiness intentionally does not let a foreign Epoch's later
+/// UUID or `created_at` change the answer for the current Epoch.
+fn load_incremental_readiness_runs(
+    conn: &Connection,
+    project_id: &str,
+    epoch_id: &str,
+) -> Result<Vec<IncrementalReadinessRun>> {
+    let mut statement = conn.prepare(
+        "SELECT id, project_id, semantic_epoch_id, status, created_at, started_at,
+                completed_at, work_key, outcome_summary_json
+           FROM narrative_extraction_runs
+          WHERE project_id = ?1
+            AND run_kind = 'freshness-evaluation'
+            AND consumer_id = ?2
+            AND semantic_epoch_id = ?3",
+    )?;
+    let rows = statement.query_map(
+        params![
+            project_id,
+            INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID,
+            epoch_id
+        ],
+        |row| {
+            Ok(IncrementalReadinessRun {
+                run_id: row.get(0)?,
+                project_id: row.get(1)?,
+                semantic_epoch_id: row.get(2)?,
+                status: row.get(3)?,
+                created_at: row.get(4)?,
+                started_at: row.get(5)?,
+                completed_at: row.get(6)?,
+                work_key: row.get(7)?,
+                outcome_summary_json: row.get(8)?,
+            })
+        },
+    )?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+/// Select readiness evidence by the Run's actual lifecycle instant. A
+/// creation record only allocates an id; it cannot order completed work, and
+/// UUIDs must never resolve a temporal tie. All relevant timestamp shapes are
+/// validated before selection so an imported malformed or failed newer Run
+/// blocks rather than letting an older completion self-attest the scheduler.
+fn select_latest_incremental_readiness_run(
+    runs: &[IncrementalReadinessRun],
+) -> Result<Option<IncrementalReadinessRun>> {
+    let mut temporal = Vec::with_capacity(runs.len());
+    for run in runs {
+        let created_at = parse_incremental_readiness_instant(&run.created_at, "createdAt")?;
+        let lifecycle_at = match run.status.as_str() {
+            "pending" => {
+                anyhow::ensure!(
+                    run.started_at.is_none() && run.completed_at.is_none(),
+                    "NEX_C2ZC_INCREMENTAL_RUN_TIMESTAMP_INVALID: pending Run '{}' has lifecycle timestamps",
+                    run.run_id
+                );
+                created_at
+            }
+            "running" => {
+                anyhow::ensure!(
+                    run.completed_at.is_none(),
+                    "NEX_C2ZC_INCREMENTAL_RUN_TIMESTAMP_INVALID: running Run '{}' has completed_at",
+                    run.run_id
+                );
+                let started_at = run
+                    .started_at
+                    .as_deref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "NEX_C2ZC_INCREMENTAL_RUN_TIMESTAMP_INVALID: running Run '{}' is missing started_at",
+                            run.run_id
+                        )
+                    })
+                    .and_then(|value| parse_incremental_readiness_instant(value, "startedAt"))?;
+                anyhow::ensure!(
+                    started_at >= created_at,
+                    "NEX_C2ZC_INCREMENTAL_RUN_TIMESTAMP_INVALID: running Run '{}' started before creation",
+                    run.run_id
+                );
+                started_at
+            }
+            "completed" | "failed" | "cancelled" => {
+                let started_at = run
+                    .started_at
+                    .as_deref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "NEX_C2ZC_INCREMENTAL_RUN_TIMESTAMP_INVALID: terminal Run '{}' is missing started_at",
+                            run.run_id
+                        )
+                    })
+                    .and_then(|value| parse_incremental_readiness_instant(value, "startedAt"))?;
+                let completed_at = run
+                    .completed_at
+                    .as_deref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "NEX_C2ZC_INCREMENTAL_RUN_TIMESTAMP_INVALID: terminal Run '{}' is missing completed_at",
+                            run.run_id
+                        )
+                    })
+                    .and_then(|value| parse_incremental_readiness_instant(value, "completedAt"))?;
+                anyhow::ensure!(
+                    started_at >= created_at && completed_at >= started_at,
+                    "NEX_C2ZC_INCREMENTAL_RUN_TIMESTAMP_INVALID: terminal Run '{}' has non-monotonic lifecycle timestamps",
+                    run.run_id
+                );
+                completed_at
+            }
+            status => anyhow::bail!(
+                "NEX_C2ZC_INCREMENTAL_RUN_STATUS_INVALID: Run '{}' has unsupported status '{status}'",
+                run.run_id
+            ),
+        };
+        temporal.push((lifecycle_at, run));
+    }
+    let Some(max_lifecycle_at) = temporal.iter().map(|(instant, _)| *instant).max() else {
+        return Ok(None);
+    };
+    let maximal = temporal
+        .iter()
+        .filter(|(instant, _)| *instant == max_lifecycle_at)
+        .map(|(_, run)| *run)
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        maximal.len() == 1,
+        "NEX_C2ZC_INCREMENTAL_RUN_ORDER_AMBIGUOUS: Runs {:?} share lifecycle instant {}",
+        maximal
+            .iter()
+            .map(|run| run.run_id.as_str())
+            .collect::<Vec<_>>(),
+        max_lifecycle_at.to_rfc3339()
+    );
+    Ok(maximal.first().cloned().cloned())
+}
+
+fn parse_incremental_readiness_instant(
+    value: &str,
+    field: &str,
+) -> Result<chrono::DateTime<chrono::Utc>> {
+    anyhow::ensure!(
+        is_canonical_instant(value),
+        "NEX_C2ZC_INCREMENTAL_RUN_TIMESTAMP_INVALID: {field} is not canonical RFC3339 milliseconds"
+    );
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|value| value.with_timezone(&chrono::Utc))
+        .map_err(Into::into)
+}
+
 fn is_canonical_instant(value: &str) -> bool {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|parsed| parsed.to_rfc3339_opts(chrono::SecondsFormat::Millis, true) == value)
@@ -1827,6 +2148,104 @@ mod tests {
         db.with_conn(|conn| seed_project(conn, PROJECT_ID))
             .expect("seed project");
         db
+    }
+
+    fn incremental_readiness_run(
+        run_id: &str,
+        status: &str,
+        created_at: &str,
+        started_at: Option<&str>,
+        completed_at: Option<&str>,
+    ) -> IncrementalReadinessRun {
+        IncrementalReadinessRun {
+            run_id: run_id.to_string(),
+            project_id: PROJECT_ID.to_string(),
+            semantic_epoch_id: Some(EPOCH_ID.to_string()),
+            status: status.to_string(),
+            created_at: created_at.to_string(),
+            started_at: started_at.map(ToString::to_string),
+            completed_at: completed_at.map(ToString::to_string),
+            work_key: Some(format!("incremental-freshness:{EPOCH_ID}:0:0:fixture")),
+            outcome_summary_json: None,
+        }
+    }
+
+    #[test]
+    fn incremental_readiness_uses_terminal_lifecycle_not_created_at_or_run_id() {
+        // `z-completed` has both a later allocation time and a lexically later
+        // identifier, but the later terminal failure is the only valid latest
+        // lifecycle evidence.  UUID/order-by-created_at must never turn this
+        // into a pass based on the older completion.
+        let older_completion = incremental_readiness_run(
+            "z-completed",
+            "completed",
+            "2026-08-20T00:00:40.000Z",
+            Some("2026-08-20T00:00:41.000Z"),
+            Some("2026-08-20T00:00:50.000Z"),
+        );
+        let later_failure = incremental_readiness_run(
+            "a-failed",
+            "failed",
+            "2026-08-20T00:00:00.000Z",
+            Some("2026-08-20T00:00:01.000Z"),
+            Some("2026-08-20T00:01:00.000Z"),
+        );
+
+        let latest = select_latest_incremental_readiness_run(&[older_completion, later_failure])
+            .expect("valid lifecycle chronology")
+            .expect("latest Run");
+
+        assert_eq!(latest.run_id, "a-failed");
+        assert_eq!(latest.status, "failed");
+    }
+
+    #[test]
+    fn incremental_readiness_rejects_same_terminal_instant_without_uuid_tiebreak() {
+        let first = incremental_readiness_run(
+            "a-run",
+            "completed",
+            "2026-08-20T00:00:00.000Z",
+            Some("2026-08-20T00:00:01.000Z"),
+            Some("2026-08-20T00:00:02.000Z"),
+        );
+        let second = incremental_readiness_run(
+            "z-run",
+            "failed",
+            "2026-08-20T00:00:01.000Z",
+            Some("2026-08-20T00:00:01.500Z"),
+            Some("2026-08-20T00:00:02.000Z"),
+        );
+
+        let error = select_latest_incremental_readiness_run(&[first, second])
+            .expect_err("same lifecycle instant is ambiguous");
+
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2ZC_INCREMENTAL_RUN_ORDER_AMBIGUOUS"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn incremental_readiness_rejects_malformed_nonnull_terminal_timestamp() {
+        let malformed = incremental_readiness_run(
+            "completed-malformed",
+            "completed",
+            "2026-08-20T00:00:00.000Z",
+            Some("2026-08-20T00:00:01.000Z"),
+            Some("not-an-instant"),
+        );
+
+        let error = select_latest_incremental_readiness_run(&[malformed])
+            .expect_err("malformed non-null terminal timestamp must block");
+
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2ZC_INCREMENTAL_RUN_TIMESTAMP_INVALID"),
+            "unexpected error: {error}"
+        );
     }
 
     fn seed_project(conn: &Connection, project_id: &str) -> anyhow::Result<()> {
@@ -2005,6 +2424,93 @@ mod tests {
             Ok(())
         })
         .expect("rekey dry-run");
+    }
+
+    #[test]
+    fn application_rekey_plan_separates_pending_v3_apps_from_retained_run_edges() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            // The original Application has a valid v2 lineage but no v2 Run
+            // Edge. C2-ZB must leave creation to the v3 Backfill writer.
+            seed_legacy_freshness_and_dependency(conn, "fresh");
+
+            // A NULL ApplyCommit.run_id is also a valid historical shape for
+            // v3 Backfill, not provenance C2-ZB can safely reconstruct.
+            conn.execute(
+                "INSERT INTO narrative_apply_commits
+                    (id, project_id, run_id, request_id, plan_digest, status, created_at)
+                 VALUES ('commit-c2z-null', ?1, NULL, 'request-c2z-null',
+                         'digest-c2z-null', 'committed', '2026-08-20T00:00:00.000Z')",
+                [PROJECT_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_applications
+                    (id, commit_id, proposal_id, revision_id, applied_entity_kind,
+                     applied_entity_id, created_at)
+                 VALUES ('application-c2z-null', 'commit-c2z-null', 'proposal-c2z-null',
+                         'revision-c2z-null', 'codex-entry', 'entry-c2z-null',
+                         '2026-08-20T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_projection_dependencies
+                    (application_id, source_kind, source_key, observed_revision_token,
+                     propagation)
+                 VALUES ('application-c2z-null', 'scene-body',
+                         'project:scene:scene-c2z-null', 'token-c2z-null',
+                         'freshness-only')",
+                [],
+            )?;
+
+            // A Run Edge is not necessarily an old Application Edge. Its
+            // multi-token read set intentionally does not meet C2-ZB's
+            // single-token re-key shape, but remains legitimate and retained.
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                     read_set_json, created_at, owning_run_id)
+                 VALUES ('edge-run-c2z-retained', ?1, 'narrative-extraction-run', ?2,
+                         'project:scene:scene-c2z-retained',
+                         '[\"token-retained-a\",\"token-retained-b\"]',
+                         '2026-08-20T00:00:00.000Z', ?2)",
+                params![PROJECT_ID, RUN_ID],
+            )?;
+
+            let before = conn.total_changes();
+            let plan = plan_application_rekey(conn, PROJECT_ID)?;
+
+            assert!(plan.exact.is_empty());
+            assert!(plan.fan_out.is_empty());
+            assert!(plan.unattributed.is_empty());
+            assert!(plan.collisions.is_empty());
+            assert!(plan.invalid.is_empty());
+            assert!(plan.is_safe());
+            assert_eq!(
+                plan.applications_without_run_id,
+                vec!["application-c2z-null"]
+            );
+            assert!(plan.pending_v3_backfill_applications.iter().any(|item| {
+                item.application_id == APPLICATION_ID
+                    && item.run_id.as_deref() == Some(RUN_ID)
+                    && item.reason == "legacy-application-dependency-has-no-run-edge"
+            }));
+            assert!(plan.pending_v3_backfill_applications.iter().any(|item| {
+                item.application_id == "application-c2z-null"
+                    && item.run_id.is_none()
+                    && item.reason == "apply-commit-run-id-missing"
+            }));
+            assert_eq!(
+                plan.retained_run_edges,
+                vec![RetainedRunConsumerEdge {
+                    edge_id: "edge-run-c2z-retained".to_string(),
+                    run_id: RUN_ID.to_string(),
+                    source_object_identity: "project:scene:scene-c2z-retained".to_string(),
+                }]
+            );
+            assert_eq!(conn.total_changes(), before);
+            Ok(())
+        })
+        .expect("pending and retained rekey classifications");
     }
 
     #[test]

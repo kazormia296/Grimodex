@@ -555,7 +555,7 @@ fn executes_all_shared_scope_and_human_classification_goldens() {
     let cases = object(&corpus, "cases")
         .as_array()
         .expect("fixture cases array");
-    assert_eq!(cases.len(), 10);
+    assert_eq!(cases.len(), 11);
 
     for case in cases {
         let id = object(case, "id").as_str().expect("case id");

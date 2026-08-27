@@ -10,6 +10,13 @@ import type {
   ReconciliationEnvelopeV2,
 } from "@/features/narrative-extraction/reconciler/types";
 import type { NarrativeScopeAuthorityBasisV2 } from "@/features/narrative-extraction/source/scopeAuthorityBasisV2";
+import type {
+  ChronicleStageProvenanceClosureV1,
+  ChronicleStageProvenanceReceiptRefV1,
+  ChronicleStageTerminalReceiptV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
+import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
+import type { ExistingChronicleEventCatalogRecord } from "@/features/chronicle/extraction/existingEventMatcher";
 
 export interface CreateRunTaskSeed {
   readonly taskId?: string;
@@ -38,9 +45,31 @@ export interface CreateRunResult {
   readonly taskIds: readonly string[];
 }
 
+/**
+ * Exact process-local Native workspace authority captured before a
+ * multi-await extraction operation starts. The persisted Workspace id alone
+ * is insufficient because a clone/restore may intentionally retain it;
+ * `generation` changes whenever the active Database authority is replaced.
+ */
+export interface NarrativeExtractionWorkspaceBinding {
+  readonly authorityId: string;
+  readonly generation: number;
+  /** Opaque decimal u64; kept as text so JS cannot round the Native identity. */
+  readonly authorityInstanceId: string;
+}
+
 export interface RunRefPayload {
   readonly runId: string;
   readonly projectId: string;
+  readonly chronicleBlockedDiscard?: ChronicleBlockedDiscardExpectation;
+}
+
+export interface ChronicleBlockedDiscardExpectation {
+  readonly nextTaskId: string;
+  readonly blockedCode: string;
+  readonly runSpecDigest: string;
+  readonly snapshotDigest: string;
+  readonly catalogDigest: string;
 }
 
 export interface ClaimTaskPayload {
@@ -68,7 +97,47 @@ export interface FinishTaskPayload {
   readonly leaseOwner: string;
   readonly outputJson?: Readonly<Record<string, unknown>>;
   readonly artifacts?: readonly ArtifactInput[];
+  /**
+   * Native-only C1 persistence proof. The closure is transport-ephemeral:
+   * Native validates it and stores only verified terminal receipt/model rows.
+   */
+  readonly chronicleStageBundle?: ChronicleStageC1ExecutionBinding;
+  /**
+   * Task-local typed C1 receipts. Native verifies the finishing Task/Attempt
+   * plus exact AI-audit evidence before retaining receipt/model rows. This
+   * lets a later process resume after Observation completed but before the
+   * synthesis closure could be assembled.
+   */
+  readonly chronicleStageReceipts?: readonly ChronicleStageTerminalReceiptV1[];
   readonly historicalScopeAuthorityBasis?: NarrativeScopeAuthorityBasisV2;
+  /**
+   * The terminal Chronicle ProposalSet is persisted with this plan Task in
+   * one Native immediate transaction.  A separate save command would leave a
+   * crash window where a durable review ledger exists but its owning Task is
+   * still resumable.
+   */
+  readonly chroniclePlanProposalSet?: ChroniclePlanProposalSetFinish;
+}
+
+/**
+ * C1 finish binding. `taskId`/`attemptId` name the closure aggregator (the
+ * task being finished); `stageExecutionOwner*` identifies the actual model
+ * stage whose prompt coordinates bind the aggregate proof. The distinction is
+ * required in the multi-window Chronicle DAG.
+ */
+export interface ChronicleStageC1ExecutionBinding {
+  readonly projectId: string;
+  readonly runId: string;
+  readonly taskId: string;
+  readonly attemptId: string;
+  readonly stageExecutionOwnerTaskId: string;
+  readonly stageExecutionOwnerAttemptId: string;
+  readonly stageExecutionOwnerStageExecutionId: string;
+  readonly contextSetDigest: Sha256Digest;
+  readonly componentContractDigest: Sha256Digest;
+  readonly finalRequestDigest: Sha256Digest;
+  readonly stageProvenanceClosureDigest: Sha256Digest;
+  readonly closure: ChronicleStageProvenanceClosureV1;
 }
 
 export interface FailTaskPayload {
@@ -103,6 +172,8 @@ export interface FinishTaskResult {
   readonly taskId: string;
   readonly attemptId: string;
   readonly status: string;
+  /** Present only for the typed Chronicle plan terminalization route. */
+  readonly proposalSet?: SaveProposalSetResult;
 }
 
 export interface ProposalSeed {
@@ -124,6 +195,13 @@ export interface SaveProposalSetPayload {
   readonly summaryJson?: Readonly<Record<string, unknown>>;
   readonly proposals: readonly ProposalSeed[];
 }
+
+/** Typed terminal companion for `chronicle.plan-proposals@1`. */
+export interface ChroniclePlanProposalSetFinish {
+  readonly proposalSet: SaveProposalSetPayload;
+}
+
+export type ChronicleStageReceiptRef = ChronicleStageProvenanceReceiptRefV1;
 
 export interface SavedProposalSeed {
   readonly proposalId: string;
@@ -217,6 +295,8 @@ export interface GetRunReviewBundleResult {
   readonly runId: string;
   readonly projectId: string;
   readonly artifacts: readonly ReviewBundleArtifact[];
+  /** Native-validated C1 terminal receipts for process-restart hydration. */
+  readonly stageReceipts: readonly ChronicleStageTerminalReceiptV1[];
   readonly proposalSet: ReviewBundleProposalSet | null;
   readonly proposals: readonly ReviewBundleProposal[];
 }
@@ -451,6 +531,19 @@ export interface ListResumableRunsPayload {
   readonly limit?: number;
 }
 
+export interface IsRunResumableForReviewPayload {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly surfacePathId: string;
+}
+
+export interface IsRunResumableForReviewResult {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly surfacePathId: string;
+  readonly resumable: boolean;
+}
+
 export interface ResumableRunSummary {
   readonly runId: string;
   readonly projectId: string;
@@ -462,11 +555,104 @@ export interface ResumableRunSummary {
   readonly completedAt: string | null;
 }
 
+export interface ListChronicleTaskResumeCandidatesPayload {
+  readonly projectId: string;
+  readonly limit?: number;
+}
+
+export type ChronicleTaskResumeAvailability =
+  | "ready"
+  | "lease-held"
+  | "blocked";
+
+export interface ChronicleTaskResumeCandidate {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly status: "pending" | "running";
+  readonly scopeJson: {
+    readonly folderId: string;
+    readonly sceneIds: readonly string[];
+  };
+  readonly specJson: Readonly<Record<string, unknown>>;
+  readonly runSpecDigest: string;
+  readonly snapshotDigest: string;
+  readonly catalogDigest: string;
+  readonly executionMode: "ai" | "deterministic-fallback";
+  readonly coordinatorContractDigest: string;
+  readonly completedTaskKinds: readonly string[];
+  readonly nextTask: {
+    readonly taskId: string;
+    readonly taskKind: string;
+    readonly status: "queued" | "running";
+    readonly leaseExpiresAt: string | null;
+  };
+  readonly availability: ChronicleTaskResumeAvailability;
+  readonly blockedCode: string | null;
+  readonly language: string | null;
+  readonly existingEventsCatalog: {
+    readonly kind: "chronicle.existing-events-catalog@1";
+    readonly events: readonly ExistingChronicleEventCatalogRecord[];
+  } | null;
+  readonly createdAt: string;
+  readonly startedAt: string | null;
+}
+
+function assertNarrativeExtractionWorkspaceBinding(
+  value: NarrativeExtractionWorkspaceBinding,
+): NarrativeExtractionWorkspaceBinding {
+  if (
+    typeof value.authorityId !== "string" ||
+    value.authorityId.length === 0 ||
+    value.authorityId.trim() !== value.authorityId ||
+    !Number.isSafeInteger(value.generation) ||
+    value.generation < 1 ||
+    typeof value.authorityInstanceId !== "string" ||
+    !/^[1-9][0-9]*$/u.test(value.authorityInstanceId)
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_WORKSPACE_BINDING_INVALID: Native workspace binding is malformed",
+    );
+  }
+  return {
+    authorityId: value.authorityId,
+    generation: value.generation,
+    authorityInstanceId: value.authorityInstanceId,
+  };
+}
+
+/**
+ * Capture the exact active Native Database authority for a long-running
+ * extraction. Native checks `expectedWorkspacePath` in the same operation,
+ * so a renderer path captured from Workspace A can never be rebound to a
+ * same-project Workspace B clone.
+ */
+export async function captureNarrativeExtractionWorkspaceBinding(
+  expectedWorkspacePath: string,
+): Promise<NarrativeExtractionWorkspaceBinding> {
+  if (
+    expectedWorkspacePath.length === 0 ||
+    expectedWorkspacePath.trim() !== expectedWorkspacePath
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_WORKSPACE_PATH_REQUIRED: an exact open Workspace path is required",
+    );
+  }
+  return assertNarrativeExtractionWorkspaceBinding(
+    await invoke<NarrativeExtractionWorkspaceBinding>(
+      "narrative_extraction_capture_workspace_binding",
+      { expectedWorkspacePath },
+    ),
+  );
+}
+
 export async function narrativeExtractionCreateRun(
   payload: CreateRunPayload,
+  binding: NarrativeExtractionWorkspaceBinding,
 ): Promise<CreateRunResult> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
   return invoke<CreateRunResult>("narrative_extraction_create_run", {
     payload,
+    workspaceBinding,
   });
 }
 
@@ -481,43 +667,56 @@ export async function narrativeExtractionGetRun(
 
 export async function narrativeExtractionCancelRun(
   payload: RunRefPayload,
+  binding: NarrativeExtractionWorkspaceBinding,
 ): Promise<{ runId: string; status: string }> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
   return invoke<{ runId: string; status: string }>(
     "narrative_extraction_cancel_run",
-    { payload },
+    { payload, workspaceBinding },
   );
 }
 
 export async function narrativeExtractionClaimTask(
   payload: ClaimTaskPayload,
+  binding: NarrativeExtractionWorkspaceBinding,
 ): Promise<ClaimTaskResult> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
   return invoke<ClaimTaskResult>("narrative_extraction_claim_task", {
     payload,
+    workspaceBinding,
   });
 }
 
 export async function narrativeExtractionFinishTask(
   payload: FinishTaskPayload,
+  binding: NarrativeExtractionWorkspaceBinding,
 ): Promise<FinishTaskResult> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
   return invoke<FinishTaskResult>("narrative_extraction_finish_task", {
     payload,
+    workspaceBinding,
   });
 }
 
 export async function narrativeExtractionFailTask(
   payload: FailTaskPayload,
+  binding: NarrativeExtractionWorkspaceBinding,
 ): Promise<FinishTaskResult> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
   return invoke<FinishTaskResult>("narrative_extraction_fail_task", {
     payload,
+    workspaceBinding,
   });
 }
 
 export async function narrativeExtractionSaveProposalSet(
   payload: SaveProposalSetPayload,
+  binding: NarrativeExtractionWorkspaceBinding,
 ): Promise<SaveProposalSetResult> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
   return invoke<SaveProposalSetResult>(
     "narrative_extraction_save_proposal_set",
-    { payload },
+    { payload, workspaceBinding },
   );
 }
 
@@ -643,6 +842,24 @@ export async function narrativeExtractionListResumableRuns(
 ): Promise<readonly ResumableRunSummary[]> {
   return invoke<readonly ResumableRunSummary[]>(
     "narrative_extraction_list_resumable_runs",
+    { payload },
+  );
+}
+
+export async function narrativeExtractionIsRunResumableForReview(
+  payload: IsRunResumableForReviewPayload,
+): Promise<IsRunResumableForReviewResult> {
+  return invoke<IsRunResumableForReviewResult>(
+    "narrative_extraction_is_run_resumable_for_review",
+    { payload },
+  );
+}
+
+export async function narrativeExtractionListChronicleTaskResumeCandidates(
+  payload: ListChronicleTaskResumeCandidatesPayload,
+): Promise<readonly ChronicleTaskResumeCandidate[]> {
+  return invoke<readonly ChronicleTaskResumeCandidate[]>(
+    "narrative_extraction_list_chronicle_task_resume_candidates",
     { payload },
   );
 }

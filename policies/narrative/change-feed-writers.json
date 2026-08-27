@@ -78,8 +78,11 @@
         "foreshadow_list_linked_codex",
         "foreshadow_load_anchors_for_scene",
         "trash_bin_list",
+        "narrative_extraction_capture_workspace_binding",
         "narrative_extraction_get_run",
+        "narrative_extraction_is_run_resumable_for_review",
         "narrative_extraction_list_resumable_runs",
+        "narrative_extraction_list_chronicle_task_resume_candidates",
         "narrative_extraction_get_run_review_bundle",
         "narrative_extraction_get_commit_status"
       ]

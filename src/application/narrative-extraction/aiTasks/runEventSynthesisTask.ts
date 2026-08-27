@@ -78,6 +78,31 @@ export interface RunEventSynthesisTaskInput {
   readonly onStageReceipt?: (
     receipt: ChronicleStageTerminalReceiptV1,
   ) => void | Promise<void>;
+  /**
+   * Exact terminal output seam for the Native C1 companion.  It is invoked
+   * only after a direct parsed success, a parsed structured-repair child, or
+   * the deterministic empty-input terminal; response bodies themselves stay
+   * in the audit ledger rather than this callback.
+   */
+  readonly onTerminalOutput?: (
+    output: ChronicleSynthesisTerminalOutput,
+  ) => void | Promise<void>;
+}
+
+export interface ChronicleSynthesisTerminalOutput {
+  readonly rootStageExecution: NarrativeStageExecutionContext;
+  readonly terminalStageExecution: NarrativeStageExecutionContext;
+  readonly disposition:
+    | "root-success"
+    | "repair-success"
+    | "deterministic-empty";
+  readonly clusterRef: string;
+  readonly rawObservations: readonly RawChronicleEventObservation[];
+  /** Canonical parser projection of the actual terminal response. */
+  readonly eventOutput: Readonly<Record<string, unknown>>;
+  readonly hypotheses: readonly EventHypothesis[];
+  readonly rawObservationsDigest: Sha256Digest;
+  readonly parsedOutputDigest: Sha256Digest;
 }
 
 const EVENT_COMPONENT_CONTRACT = {
@@ -194,6 +219,7 @@ async function parseSynthesisFromText(
 ): Promise<{
   readonly hypotheses: readonly EventHypothesis[];
   readonly status: "parsed" | "invalid";
+  readonly eventOutput: Readonly<Record<string, unknown>> | null;
 } | null> {
   const jsonText = extractJsonObject(responseText);
   if (!jsonText) return null;
@@ -217,6 +243,14 @@ async function parseSynthesisFromText(
       schemaResult.ok && schemaResult.value.clusterRef === input.clusterRef
         ? "parsed"
         : "invalid",
+    eventOutput:
+      schemaResult.ok && schemaResult.value.clusterRef === input.clusterRef
+        ? {
+            clusterRef: schemaResult.value.clusterRef,
+            resolution: schemaResult.value.resolution,
+            events: schemaResult.value.events,
+          }
+        : null,
   };
 }
 
@@ -256,17 +290,15 @@ async function chronicleStageDigestBinding(
       try {
         const parsed = parseRawEventSynthesisResult(JSON.parse(jsonText));
         if (parsed.ok && parsed.value.clusterRef === input.clusterRef) {
-          parsedOutputDigest = await digestStableJson({
-            domain: CHRONICLE_PARSED_OUTPUT_DIGEST_DOMAIN,
-            kind: "chronicle.event-synthesis-output@1",
-            observationCount: input.observations.length,
-            eventCount: parsed.value.events.length,
-            // The typed C2A output binds the complete raw observation set;
-            // Native then checks that the artifact's local-id set is exact.
-            observationRefs: input.observations.map(
-              (observation) => observation.localId,
-            ),
+          parsedOutputDigest = await digestParsedSynthesisOutput({
+            input,
             rawObservationsDigest,
+            eventOutput: {
+              clusterRef: parsed.value.clusterRef,
+              resolution: parsed.value.resolution,
+              events: parsed.value.events,
+            },
+            eventCount: parsed.value.events.length,
           });
         }
       } catch {
@@ -275,6 +307,54 @@ async function chronicleStageDigestBinding(
     }
   }
   return { rawObservationsDigest, parsedOutputDigest };
+}
+
+async function digestParsedSynthesisOutput(input: {
+  readonly input: RunEventSynthesisTaskInput;
+  readonly rawObservationsDigest: Sha256Digest;
+  readonly eventOutput: Readonly<Record<string, unknown>>;
+  readonly eventCount: number;
+}): Promise<Sha256Digest> {
+  const eventOutputDigest = await digestStableJson(input.eventOutput);
+  return digestStableJson({
+    domain: CHRONICLE_PARSED_OUTPUT_DIGEST_DOMAIN,
+    kind: "chronicle.event-synthesis-output@1",
+    observationCount: input.input.observations.length,
+    eventCount: input.eventCount,
+    // The typed C1 output binds the complete raw observation set; Native
+    // checks the exact local-id order and recomputes this digest.
+    observationRefs: input.input.observations.map(
+      (observation) => observation.localId,
+    ),
+    rawObservationsDigest: input.rawObservationsDigest,
+    eventOutputDigest,
+  });
+}
+
+async function deterministicEmptyOutput(
+  input: RunEventSynthesisTaskInput,
+): Promise<{
+  readonly eventOutput: Readonly<Record<string, unknown>>;
+  readonly rawObservationsDigest: Sha256Digest;
+  readonly parsedOutputDigest: Sha256Digest;
+}> {
+  const rawObservationsDigest = await digestStableJson({
+    kind: "chronicle.raw-observations@1",
+    version: 1,
+    observations: input.observations,
+  });
+  const eventOutput = {
+    clusterRef: input.clusterRef,
+    resolution: "no-events",
+    events: [],
+  } as const;
+  const parsedOutputDigest = await digestParsedSynthesisOutput({
+    input,
+    rawObservationsDigest,
+    eventOutput,
+    eventCount: 0,
+  });
+  return { eventOutput, rawObservationsDigest, parsedOutputDigest };
 }
 
 /**
@@ -308,6 +388,10 @@ export async function runEventSynthesisTask(
     if (input.stageExecution) {
       const promptArtifact = buildSynthesisPromptArtifact(input);
       const promptDigests = await buildChroniclePromptDigests(promptArtifact);
+      const deterministicOutput =
+        emptyInput && !blocked
+          ? await deterministicEmptyOutput(input)
+          : undefined;
       await emitChronicleStageAuditSkippedReceipt({
         stageExecution: input.stageExecution,
         ...promptDigests,
@@ -317,8 +401,23 @@ export async function runEventSynthesisTask(
         reason: blocked
           ? "narrative-event-preflight-blocked"
           : "narrative-event-preflight-empty",
+        rawObservationsDigest: deterministicOutput?.rawObservationsDigest,
+        parsedOutputDigest: deterministicOutput?.parsedOutputDigest,
         onReceipt: input.onStageReceipt,
       });
+      if (deterministicOutput) {
+        await input.onTerminalOutput?.({
+          rootStageExecution: input.stageExecution,
+          terminalStageExecution: input.stageExecution,
+          disposition: "deterministic-empty",
+          clusterRef: input.clusterRef,
+          rawObservations: input.observations,
+          eventOutput: deterministicOutput.eventOutput,
+          hypotheses: [],
+          rawObservationsDigest: deterministicOutput.rawObservationsDigest,
+          parsedOutputDigest: deterministicOutput.parsedOutputDigest,
+        });
+      }
     }
     return [];
   }
@@ -467,6 +566,27 @@ export async function runEventSynthesisTask(
         capturedTerminalMetadata,
         capturedStageReceipt,
       );
+      const digestBinding = await chronicleStageDigestBinding(
+        input,
+        response.text,
+        "parsed",
+      );
+      if (
+        digestBinding.parsedOutputDigest !== null &&
+        first.eventOutput !== null
+      ) {
+        await input.onTerminalOutput?.({
+          rootStageExecution: input.stageExecution,
+          terminalStageExecution: input.stageExecution,
+          disposition: "root-success",
+          clusterRef: input.clusterRef,
+          rawObservations: input.observations,
+          eventOutput: first.eventOutput,
+          hypotheses: first.hypotheses,
+          rawObservationsDigest: digestBinding.rawObservationsDigest,
+          parsedOutputDigest: digestBinding.parsedOutputDigest,
+        });
+      }
     }
     return first.hypotheses;
   }
@@ -511,6 +631,10 @@ export async function runEventSynthesisTask(
       ? {
           responseValidator: (candidate: string) =>
             synthesisParseStatus(candidate, input.clusterRef),
+          terminalOutputDigests: async (
+            candidate: string,
+            parseStatus: "parsed" | "invalid",
+          ) => chronicleStageDigestBinding(input, candidate, parseStatus),
         }
       : {}),
     send: input.repairSend,
@@ -559,6 +683,29 @@ export async function runEventSynthesisTask(
       capturedTerminalMetadata,
       capturedStageReceipt,
     );
+    const digestBinding = await chronicleStageDigestBinding(
+      input,
+      repaired,
+      parsed?.status ?? "invalid",
+    );
+    if (
+      parsed?.status === "parsed" &&
+      parsed.eventOutput !== null &&
+      digestBinding.parsedOutputDigest !== null &&
+      repairStageExecution !== undefined
+    ) {
+      await input.onTerminalOutput?.({
+        rootStageExecution: input.stageExecution,
+        terminalStageExecution: repairStageExecution,
+        disposition: "repair-success",
+        clusterRef: input.clusterRef,
+        rawObservations: input.observations,
+        eventOutput: parsed.eventOutput,
+        hypotheses: parsed.hypotheses,
+        rawObservationsDigest: digestBinding.rawObservationsDigest,
+        parsedOutputDigest: digestBinding.parsedOutputDigest,
+      });
+    }
   }
   return parsed?.status === "parsed" ? parsed.hypotheses : [];
 }

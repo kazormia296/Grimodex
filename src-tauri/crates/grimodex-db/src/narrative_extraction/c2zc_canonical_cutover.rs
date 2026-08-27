@@ -29,10 +29,15 @@ use super::dependency_edges::{
     canonical_source_object_identity, consumer_dependency_set_digest, record_dependency_edge_in_tx,
 };
 use super::evaluator::{BuildAction, EvidenceFreshness};
-use super::maintenance_runtime::NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION;
+use super::incremental_freshness::SuccessfulIncrementalFreshnessCycle;
+use super::maintenance_lifecycle::load_completed_maintenance_run_in_tx;
+use super::maintenance_runtime::{
+    NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION, REBUILD_DERIVED_WORK_KEY,
+};
 use super::reconciliation_envelope::SourceBasisRow;
-use super::semantic_epoch::get_current_epoch;
+use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::task_leases::with_immediate_transaction;
+use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
 use crate::{read_sqlite_source_revision, Database};
 
 /// Durable activation marker for the C2-ZC Generic Consumer Freshness
@@ -259,6 +264,13 @@ pub fn cut_over_workspace_freshness(
                 );
             };
         }
+        // Validation above can perform nontrivial current-state checks. The
+        // activation boundary must re-read the process-local liveness receipt
+        // and workspace scope immediately before writing the irreversible
+        // marker; a receipt replaced/staled during readiness validation is
+        // not evidence for this authority transition.
+        let final_project_ids = workspace_project_ids(conn)?;
+        validate_registered_scheduler_liveness(conn, evidence, &final_project_ids)?;
         let applied_at = canonical_now();
         Database::record_c2zc_cutover_marker(conn, &applied_at)?;
         Ok(CanonicalCutoverReceipt {
@@ -331,12 +343,12 @@ pub fn canonical_application_freshness(
         );
     };
 
-    EvidenceFreshness::try_from(freshness.as_str()).map_err(|error| {
+    let evidence_freshness = EvidenceFreshness::try_from(freshness.as_str()).map_err(|error| {
         anyhow::anyhow!(
             "NEX_C2ZC_GENERIC_FRESHNESS_INVALID: application '{application_id}' has invalid evidence freshness: {error}"
         )
     })?;
-    BuildAction::try_from(build_action.as_str()).map_err(|error| {
+    let build_action_kind = BuildAction::try_from(build_action.as_str()).map_err(|error| {
         anyhow::anyhow!(
             "NEX_C2ZC_GENERIC_FRESHNESS_INVALID: application '{application_id}' has invalid build action: {error}"
         )
@@ -363,19 +375,15 @@ pub fn canonical_application_freshness(
         dependency_set_digest.as_deref() == Some(expected_digest.as_str()),
         "NEX_C2ZC_GENERIC_FRESHNESS_DIGEST_MISMATCH: application '{application_id}' has a dependency-set digest that does not match its current Generic Edges"
     );
-    if let Some(run_id) = run_id.as_deref() {
-        let run_project: Option<String> = conn
-            .query_row(
-                "SELECT project_id FROM narrative_extraction_runs WHERE id = ?1",
-                [run_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        anyhow::ensure!(
-            run_project.as_deref() == Some(project_id),
-            "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' has a run outside project '{project_id}'"
-        );
-    }
+    validate_freshness_evaluation_reference(
+        conn,
+        project_id,
+        &current_epoch.id,
+        application_id,
+        evidence_freshness,
+        build_action_kind,
+        run_id.as_deref(),
+    )?;
 
     Ok(Some(CanonicalFreshnessRow {
         application_id: application_id.to_string(),
@@ -389,6 +397,113 @@ pub fn canonical_application_freshness(
     }))
 }
 
+/// Validate the provenance of a canonical Generic Consumer Freshness row.
+/// A runless row is a narrowly scoped pre-evaluation seed only: it must be
+/// `unknown/manual`. Every evaluated state, including a `fresh/none` state,
+/// requires an exact completed current-Epoch Freshness publisher Run.
+fn validate_freshness_evaluation_reference(
+    conn: &Connection,
+    project_id: &str,
+    current_epoch_id: &str,
+    application_id: &str,
+    evidence_freshness: EvidenceFreshness,
+    build_action: BuildAction,
+    run_id: Option<&str>,
+) -> Result<()> {
+    let Some(run_id) = run_id else {
+        anyhow::ensure!(
+            evidence_freshness == EvidenceFreshness::Unknown && build_action == BuildAction::Manual,
+            "NEX_C2ZC_GENERIC_FRESHNESS_RUN_REQUIRED: application '{application_id}' has '{}/{}' without lastEvaluatedRunId; only the deliberate unknown/manual pre-evaluation seed may omit it",
+            evidence_freshness.as_str(),
+            build_action.as_str(),
+        );
+        return Ok(());
+    };
+    validate_current_evaluation_run_reference(
+        conn,
+        project_id,
+        current_epoch_id,
+        application_id,
+        run_id,
+    )
+}
+
+/// A populated `last_evaluated_run_id` must be the exact completed
+/// current-Epoch Freshness publisher. Incremental evaluation publishes from
+/// its cursor-owned Freshness Run; a full Rebuild publishes from the strict
+/// shared maintenance lifecycle owned by `dependency-rebuild-derived`.
+/// Otherwise a stale Verify/Backfill id or an incomplete Rebuild ledger can
+/// make old evidence look current after canonical cutover.
+fn validate_current_evaluation_run_reference(
+    conn: &Connection,
+    project_id: &str,
+    current_epoch_id: &str,
+    application_id: &str,
+    run_id: &str,
+) -> Result<()> {
+    require_non_blank(run_id, "lastEvaluatedRunId")?;
+    type EvaluationPublisherRow = (
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+    );
+    let row: Option<EvaluationPublisherRow> = conn
+        .query_row(
+            "SELECT project_id, run_kind, semantic_epoch_id, status, consumer_id
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            [run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((run_project_id, run_kind, run_epoch_id, status, consumer_id)) = row else {
+        anyhow::bail!(
+            "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISSING: application '{application_id}' references missing Freshness publisher Run '{run_id}'"
+        );
+    };
+    match run_kind.as_deref() {
+        Some("freshness-evaluation") => {
+            anyhow::ensure!(
+                run_project_id == project_id
+                    && run_epoch_id.as_deref() == Some(current_epoch_id)
+                    && status == "completed"
+                    && consumer_id.as_deref()
+                        == Some(INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID),
+                "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Run '{run_id}' that is not the completed current-Epoch Freshness publisher"
+            );
+            Ok(())
+        }
+        Some("semantic-index-rebuild") => {
+            let handle = load_completed_maintenance_run_in_tx(conn, run_id).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Rebuild Run '{run_id}' without the exact completed maintenance lifecycle: {error}"
+                )
+            })?;
+            anyhow::ensure!(
+                handle.project_id == project_id
+                    && handle.run_kind == "semantic-index-rebuild"
+                    && handle.semantic_epoch_id == current_epoch_id
+                    && handle.work_key == REBUILD_DERIVED_WORK_KEY,
+                "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Run '{run_id}' that is not the completed current-Epoch Freshness publisher"
+            );
+            Ok(())
+        }
+        _ => anyhow::bail!(
+            "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Run '{run_id}' that is not the completed current-Epoch Freshness publisher"
+        ),
+    }
+}
+
 /// Mint and register the only scheduler-liveness receipt accepted by the
 /// cutover gate.  This is called by the main-only N-API scheduler after it has
 /// pinned the active workspace authority.  A caller cannot choose the
@@ -398,6 +513,7 @@ pub fn record_live_scheduler_heartbeat(
     db: &Database,
     authority_id: &str,
     generation: u64,
+    successful_cycle: SuccessfulIncrementalFreshnessCycle,
 ) -> Result<SchedulerLivenessEvidence> {
     require_non_blank(authority_id, "authorityId")?;
     anyhow::ensure!(
@@ -410,6 +526,14 @@ pub fn record_live_scheduler_heartbeat(
             connection_epoch_identity(conn)?,
         ))
     })?;
+    anyhow::ensure!(
+        successful_cycle.connection_epoch() == connection_epoch,
+        "NEX_C2ZC_SCHEDULER_LIVENESS_CYCLE_DATABASE_MISMATCH: completed Incremental Freshness cycle belongs to a different Database authority"
+    );
+    anyhow::ensure!(
+        successful_cycle.is_fresh_for_liveness(MAX_SCHEDULER_LIVENESS_AGE),
+        "NEX_C2ZC_SCHEDULER_LIVENESS_CYCLE_STALE: completed Incremental Freshness cycle exceeded its monotonic age bound before heartbeat registration"
+    );
     anyhow::ensure!(
         !project_ids.is_empty(),
         "NEX_C2ZC_SCHEDULER_LIVENESS_SCOPE_MISSING: workspace has no project"
@@ -444,6 +568,153 @@ pub(crate) fn is_generic_freshness_canonical(conn: &Connection) -> Result<bool> 
             "NEX_C2ZC_CUTOVER_MARKER_UNSUPPORTED: marker contract version {version} is not current"
         ),
     }
+}
+
+/// The canonical authority event that proves a Project was created by one of
+/// the allowed Project-birth writers.  Each variant keeps its own identity
+/// contract; a generic "any change event" bootstrap would let unrelated
+/// writes fabricate a Semantic Epoch boundary.
+#[derive(Clone, Copy)]
+enum C2zcProjectBirthAuthority<'a> {
+    ProjectCreate,
+    ImportApply { import_session_id: &'a str },
+}
+
+impl C2zcProjectBirthAuthority<'_> {
+    fn marker_unsupported_code(self) -> &'static str {
+        match self {
+            Self::ProjectCreate => "NEX_C2ZC_PROJECT_BIRTH_MARKER_UNSUPPORTED",
+            Self::ImportApply { .. } => "NEX_C2ZC_IMPORT_PROJECT_BIRTH_MARKER_UNSUPPORTED",
+        }
+    }
+
+    fn event_missing_code(self) -> &'static str {
+        match self {
+            Self::ProjectCreate => "NEX_C2ZC_PROJECT_BIRTH_EVENT_MISSING",
+            Self::ImportApply { .. } => "NEX_C2ZC_IMPORT_PROJECT_BIRTH_EVENT_MISSING",
+        }
+    }
+
+    fn epoch_conflict_code(self) -> &'static str {
+        match self {
+            Self::ProjectCreate => "NEX_C2ZC_PROJECT_BIRTH_EPOCH_CONFLICT",
+            Self::ImportApply { .. } => "NEX_C2ZC_IMPORT_PROJECT_BIRTH_EPOCH_CONFLICT",
+        }
+    }
+
+    fn event_description(self) -> &'static str {
+        match self {
+            Self::ProjectCreate => "project.create",
+            Self::ImportApply { .. } => "import.session.apply",
+        }
+    }
+}
+
+/// Bind a Project created through the normal Project writer to its first
+/// Semantic Epoch once C2-ZC owns Generic Consumer Freshness. The caller must
+/// have appended its canonical `project.create` event in the same transaction.
+pub(crate) fn mint_c2zc_project_birth_epoch_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    project_create_event_uid: &str,
+) -> Result<Option<String>> {
+    mint_c2zc_project_birth_epoch_for_canonical_event_in_tx(
+        conn,
+        project_id,
+        project_create_event_uid,
+        "projectCreateEventUid",
+        C2zcProjectBirthAuthority::ProjectCreate,
+    )
+}
+
+/// Bind a Project created through Import Apply to its first Semantic Epoch.
+/// Import has a distinct canonical authority event: its exact session identity
+/// and payload target must match, so an arbitrary import-domain event cannot
+/// mint a Project-birth Epoch.
+pub(crate) fn mint_c2zc_import_project_birth_epoch_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    import_session_id: &str,
+    import_apply_event_uid: &str,
+) -> Result<Option<String>> {
+    require_non_blank(import_session_id, "importSessionId")?;
+    mint_c2zc_project_birth_epoch_for_canonical_event_in_tx(
+        conn,
+        project_id,
+        import_apply_event_uid,
+        "importApplyEventUid",
+        C2zcProjectBirthAuthority::ImportApply { import_session_id },
+    )
+}
+
+fn mint_c2zc_project_birth_epoch_for_canonical_event_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    event_uid: &str,
+    event_uid_parameter_name: &str,
+    authority: C2zcProjectBirthAuthority<'_>,
+) -> Result<Option<String>> {
+    require_non_blank(project_id, "projectId")?;
+    require_non_blank(event_uid, event_uid_parameter_name)?;
+
+    match read_cutover_marker(conn)? {
+        None => return Ok(None),
+        Some(version) if version == C2_ZC_CUTOVER_CONTRACT_VERSION => {}
+        Some(version) => anyhow::bail!(
+            "{}: marker contract version {version} is not current",
+            authority.marker_unsupported_code()
+        ),
+    }
+
+    let event_matches: bool = match authority {
+        C2zcProjectBirthAuthority::ProjectCreate => conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM change_events
+                  WHERE project_id = ?1
+                    AND event_uid = ?2
+                    AND domain = 'project'
+                    AND op_type = 'project.create'
+               )",
+            params![project_id, event_uid],
+            |row| row.get(0),
+        )?,
+        C2zcProjectBirthAuthority::ImportApply { import_session_id } => conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM change_events
+                  WHERE project_id = ?1
+                    AND event_uid = ?2
+                    AND domain = 'import'
+                    AND op_type = 'import.session.apply'
+                    AND entity_type = 'import_session'
+                    AND entity_id = ?3
+                    AND json_extract(payload, '$.projectId') = ?1
+                    AND json_extract(payload, '$.sessionId') = ?3
+               )",
+            params![project_id, event_uid, import_session_id],
+            |row| row.get(0),
+        )?,
+    };
+    anyhow::ensure!(
+        event_matches,
+        "{}: Project '{}' has no canonical {} event '{}' in this transaction",
+        authority.event_missing_code(),
+        project_id,
+        authority.event_description(),
+        event_uid
+    );
+    anyhow::ensure!(
+        get_current_epoch(conn, project_id)?.is_none(),
+        "{}: Project '{}' already has a Semantic Epoch",
+        authority.epoch_conflict_code(),
+        project_id
+    );
+
+    Ok(Some(create_epoch_in_tx(
+        conn,
+        project_id,
+        "initial",
+        Some(event_uid),
+    )?))
 }
 
 /// Producer generation for the post-cutover Application Edge writer. Folded
@@ -788,35 +1059,21 @@ fn validate_generic_rows_for_cutover(
                     "NEX_C2ZC_GENERIC_FRESHNESS_CONTRACT_INVALID: build action missing for application '{application_id}'"
                 )
             })?;
-            EvidenceFreshness::try_from(freshness.as_str())?;
-            BuildAction::try_from(build_action.as_str())?;
+            let evidence_freshness = EvidenceFreshness::try_from(freshness.as_str())?;
+            let build_action_kind = BuildAction::try_from(build_action.as_str())?;
             anyhow::ensure!(
                 epoch_id.as_deref() == Some(current_epoch),
                 "NEX_C2ZC_GENERIC_FRESHNESS_EPOCH_MISMATCH: application '{application_id}' is not at current epoch"
             );
-            if let Some(last_evaluated_run_id) = last_evaluated_run_id.as_deref() {
-                anyhow::ensure!(
-                    !last_evaluated_run_id.trim().is_empty(),
-                    "NEX_C2ZC_GENERIC_FRESHNESS_RUN_INVALID: application '{application_id}' has an empty evaluation run"
-                );
-            }
-            let run_project: Option<String> = if let Some(run_id) = last_evaluated_run_id.as_deref()
-            {
-                conn.query_row(
-                    "SELECT project_id FROM narrative_extraction_runs WHERE id = ?1",
-                    [run_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-            } else {
-                None
-            };
-            if last_evaluated_run_id.is_some() {
-                anyhow::ensure!(
-                    run_project.as_deref() == Some(project.project_id.as_str()),
-                    "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' has an evaluation run outside its project"
-                );
-            }
+            validate_freshness_evaluation_reference(
+                conn,
+                &project.project_id,
+                current_epoch,
+                &application_id,
+                evidence_freshness,
+                build_action_kind,
+                last_evaluated_run_id.as_deref(),
+            )?;
             anyhow::ensure!(
                 digest.as_deref().is_some_and(|value| !value.trim().is_empty()),
                 "NEX_C2ZC_GENERIC_FRESHNESS_DIGEST_MISSING: application '{application_id}' has no dependency-set digest"
@@ -916,4 +1173,67 @@ fn require_canonical_instant(value: &str, name: &str) -> Result<()> {
 
 fn canonical_now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::params;
+    use std::path::Path;
+
+    fn migrated_db() -> Database {
+        let db = Database::new(Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db
+    }
+
+    #[test]
+    fn import_project_birth_rejects_a_canonical_event_with_mismatched_payload_target() {
+        let db = migrated_db();
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z")?;
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES (?1, ?2)",
+                    params!["imported-project", "Imported project"],
+                )?;
+                // The database row and session entity look like Import Apply,
+                // but the canonical payload does not bind that event to this
+                // Project. It must not be accepted as a birth authority.
+                conn.execute(
+                    "INSERT INTO change_events (
+                         event_uid, project_id, scene_id, domain, op_type,
+                         entity_type, entity_id, payload, session_id, sequence,
+                         timestamp, prev_hash, hash
+                     ) VALUES (?1, ?2, NULL, 'import', 'import.session.apply',
+                               'import_session', ?3, ?4, ?3, 1, 0, '', '')",
+                    params![
+                        "import-event",
+                        "imported-project",
+                        "import-session",
+                        r#"{"projectId":"another-project","sessionId":"import-session"}"#,
+                    ],
+                )?;
+
+                let error = mint_c2zc_import_project_birth_epoch_in_tx(
+                    conn,
+                    "imported-project",
+                    "import-session",
+                    "import-event",
+                )
+                .expect_err("mismatched canonical payload must not mint a birth Epoch");
+                assert!(error
+                    .to_string()
+                    .contains("NEX_C2ZC_IMPORT_PROJECT_BIRTH_EVENT_MISSING"));
+                let epoch_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE project_id = ?1",
+                    ["imported-project"],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(epoch_count, 0);
+                Ok(())
+            })
+        })
+        .expect("verify mismatched Import authority event is rejected");
+    }
 }

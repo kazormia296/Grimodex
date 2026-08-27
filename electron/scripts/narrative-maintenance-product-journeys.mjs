@@ -2066,6 +2066,11 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       epochNumber: Number(initialEpoch.epochNumber),
       reason: initialEpoch.reason,
     });
+    const workspaceBinding = await context.harness.invokeOk(
+      context.page,
+      "narrative_extraction_capture_workspace_binding",
+      { expectedWorkspacePath: workspace },
+    );
     const runId = `c2-5b-restore-fixture-run-${randomUUID()}`;
     const createdRun = await context.harness.invokeOk(
       context.page,
@@ -2080,6 +2085,7 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
           specDigest: RESTORE_FIXTURE_SPEC_DIGEST,
           tasks: [],
         },
+        workspaceBinding,
       },
     );
     if (createdRun?.runId !== runId || createdRun?.status !== "pending") {
@@ -2090,7 +2096,10 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
     await context.harness.invokeOk(
       context.page,
       "narrative_extraction_cancel_run",
-      { payload: { runId, projectId: context.projectId } },
+      {
+        payload: { runId, projectId: context.projectId },
+        workspaceBinding,
+      },
     );
     const edgeId = `c2-5b-restore-fixture-edge-${randomUUID()}`;
     const consumerKey = runId;

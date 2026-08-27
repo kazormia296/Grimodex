@@ -382,15 +382,30 @@ fn fixture_db_for_payload_kind_with_source_token(
             coverage_json: None,
             tasks: vec![CreateTaskSeed {
                 task_id: Some(TASK_ID.to_owned()),
-                task_kind: "chronicle.plan-proposals".to_owned(),
+                task_kind: if fixture_kind == ParentFixtureKind::C2B {
+                    "source.snapshot@1".to_owned()
+                } else {
+                    "chronicle.plan-proposals".to_owned()
+                },
                 input_json: None,
                 priority: None,
             }],
         },
     )
     .expect("seed Human run and task");
+    if fixture_kind == ParentFixtureKind::C2B {
+        replace_c2b_source_snapshot(&db, &[("D000001", SCENE_ID)]);
+    }
 
     let source_revision_token = source_revision_token(&db);
+    let mut parent_payload = parent_payload;
+    if fixture_kind == ParentFixtureKind::C2B {
+        // Real snapshot document refs are deterministic D000001-style
+        // identifiers. Keep C2A's deliberately generic fixture refs intact,
+        // but make the C2B parent resolve through the same sealed namespace
+        // as the source.snapshot companion below.
+        parent_payload["disclosure"]["revealDocumentRef"] = json!("D000001");
+    }
     let mut parent_scope = parent_scope_for_payload(&parent_payload);
     if fixture_kind == ParentFixtureKind::C2B {
         parent_scope["scene"]["ref"] = json!(format!("scene:{SCENE_ID}"));
@@ -542,6 +557,163 @@ fn fixture_db_for_payload_kind_with_source_token(
         .expect("seed C2B current semantic epoch");
     }
     db
+}
+
+/// Seed the completed parent corpus that C2B must use to resolve a changed
+/// revealDocumentRef.  The fixture deliberately keeps this document→node
+/// binding separate from the event Scene so cross-scene tests cannot regress
+/// to the old `context.scene_ref` shortcut.
+fn replace_c2b_source_snapshot(db: &Database, bindings: &[(&str, &str)]) {
+    let projection = json!({
+        "schemaVersion": 1,
+        "unit": "utf16",
+        "canonicalLength": 0,
+        "segments": [],
+    });
+    let documents = bindings
+        .iter()
+        .enumerate()
+        .map(|(index, (document_ref, node_id))| {
+            assert_eq!(
+                *document_ref,
+                format!("D{:06}", index + 1),
+                "C2B snapshot fixtures must use deterministic document refs"
+            );
+            let source_key = format!("project:scene:{node_id}");
+            let origin = json!({
+                "kind": "project-node",
+                "projectId": PROJECT_A,
+                "nodeId": node_id,
+                "sourceVersion": 0,
+                "sourceUpdatedAt": DECLARATION_CREATED_AT,
+                "sourceUri": null,
+            });
+            let content_digest = digest(&json!({
+                "normalizerVersion": "gdx-canonical-text/1",
+                "text": "",
+            }));
+            let document_digest = digest(&json!({
+                "normalizerVersion": "gdx-canonical-text/1",
+                "parentSourceKey": null,
+                "title": format!("Snapshot {index}"),
+                "orderIndex": index,
+                "canonical": {"text": "", "blocks": []},
+            }));
+            let artifact_digest = digest(&json!({
+                "schemaVersion": 1,
+                "normalizerVersion": "gdx-canonical-text/1",
+                "sourceKey": source_key,
+                "parentSourceKey": null,
+                "semanticDigest": document_digest,
+                "contentDigest": content_digest,
+                "projection": projection,
+                "origin": origin,
+            }));
+            json!({
+                "ref": document_ref,
+                "sourceKey": source_key,
+                "parentRef": null,
+                "title": format!("Snapshot {index}"),
+                "orderIndex": index,
+                "canonical": {
+                    "unit": "utf16",
+                    "text": "",
+                    "blocks": [],
+                    "projection": projection,
+                    "projectionMap": projection,
+                    "diagnostics": [],
+                },
+                "contentDigest": content_digest,
+                "documentDigest": document_digest,
+                "artifactDigest": artifact_digest,
+                "origin": origin,
+            })
+        })
+        .collect::<Vec<_>>();
+    let snapshot_digest = digest(&json!({
+        "schemaVersion": 1,
+        "language": "ja",
+        "normalizerVersion": "gdx-canonical-text/1",
+        "documentDigests": documents
+            .iter()
+            .map(|document| document["documentDigest"].clone())
+            .collect::<Vec<_>>(),
+        "omissions": [],
+    }));
+    let snapshot_artifact_digest = digest(&json!({
+        "schemaVersion": 1,
+        "normalizerVersion": "gdx-canonical-text/1",
+        "semanticDigest": snapshot_digest,
+        "originProjectId": PROJECT_A,
+        "documents": documents.iter().map(|document| json!({
+            "sourceKey": document["sourceKey"].clone(),
+            "artifactDigest": document["artifactDigest"].clone(),
+        })).collect::<Vec<_>>(),
+        "omissions": [],
+    }));
+    let payload = json!({
+        "snapshot": {
+            "schemaVersion": 1,
+            "id": "snapshot-human-v2",
+            "snapshotId": "snapshot-human-v2",
+            "createdAt": DECLARATION_CREATED_AT,
+            "language": "ja",
+            "normalizerVersion": "gdx-canonical-text/1",
+            "origin": {"kind": "grimodex-project", "projectId": PROJECT_A},
+            "documents": documents,
+            "omissions": [],
+            "digest": snapshot_digest,
+            "artifactDigest": snapshot_artifact_digest,
+        },
+        "sourceViews": [],
+        "scopeAuthorityDocuments": bindings.iter().map(|(document_ref, node_id)| json!({
+            "documentRef": document_ref,
+            "sourceKey": format!("project:scene:{node_id}"),
+            "rawStoryKey": null,
+        })).collect::<Vec<_>>(),
+    });
+    let snapshot_digest = payload["snapshot"]["digest"]
+        .as_str()
+        .expect("sealed snapshot digest")
+        .to_owned();
+    let payload_json = canonical_json_string(&payload).expect("canonical source snapshot");
+    let payload_digest = digest(&payload);
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_tasks
+                SET status = 'completed', attempt_count = 1,
+                    completed_at = ?2, lease_owner = NULL, lease_expires_at = NULL
+              WHERE id = ?1 AND run_id = ?3",
+            rusqlite::params![TASK_ID, DECLARATION_CREATED_AT, RUN_ID],
+        )?;
+        conn.execute(
+            "UPDATE narrative_extraction_runs SET snapshot_digest = ?1 WHERE id = ?2",
+            rusqlite::params![snapshot_digest, RUN_ID],
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO narrative_extraction_attempts
+                (id, task_id, attempt_number, status, started_at, completed_at, output_json)
+             VALUES ('attempt-source-snapshot-human', ?1, 1, 'completed', ?2, ?2, '{}')",
+            rusqlite::params![TASK_ID, DECLARATION_CREATED_AT],
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO narrative_extraction_artifacts
+                (id, run_id, task_id, attempt_id, artifact_kind, payload_storage,
+                 payload_json, payload_ref, payload_digest, created_at)
+             VALUES ('artifact-source-snapshot-human', ?1, ?2,
+                     'attempt-source-snapshot-human', 'source.snapshot@1', 'inline-json',
+                     ?3, NULL, ?4, ?5)",
+            rusqlite::params![
+                RUN_ID,
+                TASK_ID,
+                payload_json,
+                payload_digest,
+                DECLARATION_CREATED_AT
+            ],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed completed C2B source snapshot");
 }
 
 fn source_revision_token(db: &Database) -> String {
@@ -1595,11 +1767,13 @@ mod c2b_atomic_materialization_red {
     use sha2::{Digest, Sha256};
 
     fn c2b_request(db: &Database) -> CreateHumanDerivedRevisionRequest {
-        request(
+        let mut request = request(
             PARENT_REVISION_ID,
             PARENT_REVISION_ID,
             &parent_envelope_digest(db),
-        )
+        );
+        request.proposal_payload["disclosure"]["revealDocumentRef"] = json!("D000001");
+        request
     }
 
     fn assert_execution_authority_unchanged(before: &C2BStateSnapshot, after: &C2BStateSnapshot) {
@@ -1813,6 +1987,7 @@ mod c2b_atomic_materialization_red {
     fn scope_override_request(db: &Database) -> CreateHumanDerivedRevisionRequest {
         let mut edited = proposal_payload();
         edited["disclosure"]["secret"] = json!(true);
+        edited["disclosure"]["revealDocumentRef"] = json!("D000001");
         request_with_payload(
             PARENT_REVISION_ID,
             PARENT_REVISION_ID,
@@ -2297,6 +2472,101 @@ mod c2b_atomic_materialization_red {
     }
 
     #[test]
+    fn c2b_scope_override_uses_the_sealed_reveal_document_node_not_the_event_scene() {
+        let db = c2b_projection_fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, sort_order, story_time_order,
+                     content, version, created_at, updated_at)
+                 VALUES ('scene-reveal', ?1, 'scene', 'Reveal', 'z0', 'reveal-story',
+                         '{\"type\":\"doc\",\"content\":[]}', 0, ?2, ?2)",
+                rusqlite::params![PROJECT_A, DECLARATION_CREATED_AT],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed a current reveal Scene");
+        replace_c2b_source_snapshot(&db, &[("D000001", SCENE_ID), ("D000002", "scene-reveal")]);
+        let mut request = scope_override_request(&db);
+        request.proposal_payload["disclosure"]["revealDocumentRef"] = json!("D000002");
+        let edited_payload = request.proposal_payload.clone();
+
+        let saved =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto(
+                &db,
+                PROJECT_A,
+                request,
+            )
+            .expect("cross-scene ScopeOverride must resolve its reveal document");
+        let child_revision_id = saved["revisionId"].as_str().expect("child revision");
+        let (child_scope, child_scope_digest): (Value, String) = db
+            .with_conn(|conn| {
+                let envelope_json: String = conn.query_row(
+                    "SELECT reconciliation_envelope_json
+                       FROM narrative_proposal_revisions WHERE id = ?1",
+                    [child_revision_id],
+                    |row| row.get(0),
+                )?;
+                let envelope: Value = serde_json::from_str(&envelope_json)?;
+                Ok((
+                    envelope["assertion"]["scope"].clone(),
+                    envelope["assertionDigests"]["scopeDigest"]
+                        .as_str()
+                        .expect("child Scope digest")
+                        .to_owned(),
+                ))
+            })
+            .expect("read cross-scene child Scope");
+
+        // `scene` remains the asserted event Scene, while both disclosure
+        // boundaries come from the sealed reveal document's live node.
+        assert_eq!(
+            child_scope["scene"],
+            json!({"kind": "exact", "ref": format!("scene:{SCENE_ID}")})
+        );
+        assert_eq!(
+            child_scope["readingOrder"],
+            json!({
+                "kind": "interval",
+                "from": {"ref": "reading:scene-reveal", "inclusive": true},
+                "until": {"ref": "reading:scene-reveal", "inclusive": true}
+            })
+        );
+        assert_eq!(
+            child_scope["storyTime"],
+            json!({
+                "kind": "interval",
+                "from": {"ref": "story:scene-reveal", "inclusive": true},
+                "until": {"ref": "story:scene-reveal", "inclusive": true}
+            })
+        );
+
+        // This is the shared Core derivation shape used by the TypeScript
+        // adapter. Verify both canonical Scope JSON and digest so a Rust-only
+        // shortcut cannot silently diverge on a cross-scene reveal target.
+        let expected = derive_chronicle_scene_event_scope(
+            &format!("scene:{SCENE_ID}"),
+            &edited_payload,
+            &json!({
+                "status": "resolved",
+                "documentRef": "D000002",
+                "audienceRef": "reader",
+                "readingOrder": {
+                    "from": {"ref": "reading:scene-reveal", "inclusive": true},
+                    "until": {"ref": "reading:scene-reveal", "inclusive": true}
+                },
+                "storyTime": {
+                    "from": {"ref": "story:scene-reveal", "inclusive": true},
+                    "until": {"ref": "story:scene-reveal", "inclusive": true}
+                }
+            }),
+        )
+        .expect("derive canonical cross-scene Scope");
+        assert_eq!(child_scope, expected.scope);
+        assert_eq!(child_scope_digest, expected.digest);
+    }
+
+    #[test]
     fn c2b_scope_override_rederives_after_live_authority_advanced() {
         let db = c2b_projection_fixture_db();
         db.with_conn(|conn| {
@@ -2350,7 +2620,32 @@ mod c2b_atomic_materialization_red {
     }
 
     #[test]
-    fn c2b_scope_override_missing_live_scene_fails_before_dml_and_rolls_back() {
+    fn c2b_scope_override_missing_sealed_reveal_document_fails_before_dml() {
+        let db = c2b_projection_fixture_db();
+        let before = c2b_state_snapshot(&db);
+        install_child_revision_dml_guard(&db);
+        let mut request = scope_override_request(&db);
+        request.proposal_payload["disclosure"]["revealDocumentRef"] = json!("D000002");
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                request,
+                HumanMaterialDerivationKind::ScopeOverride,
+            )
+            .expect_err("an absent sealed reveal document must fail before child DML");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_MISSING"),
+            "unexpected missing sealed-document error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
+
+    #[test]
+    fn c2b_scope_override_missing_live_reveal_target_fails_before_dml_and_rolls_back() {
         let db = c2b_projection_fixture_db();
         db.with_conn(|conn| {
             conn.execute("DELETE FROM tree_nodes WHERE id = ?1", [SCENE_ID])?;
@@ -2371,8 +2666,39 @@ mod c2b_atomic_materialization_red {
         assert!(
             error
                 .to_string()
-                .contains("NEX_C2B_SCOPE_AUTHORITY_SCENE_MISSING"),
+                .contains("NEX_C2B_SCOPE_AUTHORITY_REVEAL_TARGET_MISSING"),
             "unexpected missing authority error: {error:#}"
+        );
+        assert_eq!(before, c2b_state_snapshot(&db));
+    }
+
+    #[test]
+    fn c2b_scope_override_archived_live_reveal_target_fails_before_dml() {
+        let db = c2b_projection_fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET archived_at = ?2 WHERE id = ?1",
+                rusqlite::params![SCENE_ID, DECLARATION_CREATED_AT],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("archive live reveal target");
+        let before = c2b_state_snapshot(&db);
+        install_child_revision_dml_guard(&db);
+
+        let error =
+            narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
+                &db,
+                PROJECT_A,
+                scope_override_request(&db),
+                HumanMaterialDerivationKind::ScopeOverride,
+            )
+            .expect_err("an archived live reveal target must fail before child DML");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2B_SCOPE_AUTHORITY_REVEAL_TARGET_MISSING"),
+            "unexpected archived authority error: {error:#}"
         );
         assert_eq!(before, c2b_state_snapshot(&db));
     }
@@ -2594,7 +2920,7 @@ mod c2b_atomic_materialization_red {
     fn c2b_success_preserves_execution_state_and_separates_d1_from_v1_digest() {
         let db = c2b_projection_fixture_db();
         install_final_pointer_cas_order_guard(&db);
-        let mut edited = proposal_payload();
+        let mut edited = c2b_request(&db).proposal_payload;
         edited["title"] = json!("Arrival at Dawn");
         let before = c2b_state_snapshot(&db);
         let saved =

@@ -676,6 +676,46 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_allocator_rejects_each_malformed_nonnull_run_timestamp() {
+        for field in ["created_at", "started_at", "completed_at"] {
+            let db = open_db();
+            db.with_conn(|conn| {
+                insert_run(conn, "run-malformed-lifecycle", "pending");
+                // `field` is a fixed test-only allowlist, never caller
+                // input.  Each non-NULL lifecycle component participates in
+                // the project-wide chronology, so none may be silently
+                // skipped while allocating the next Run instant.
+                conn.execute(
+                    &format!(
+                        "UPDATE narrative_extraction_runs
+                            SET {field} = 'not-a-lifecycle-instant'
+                          WHERE id = 'run-malformed-lifecycle'"
+                    ),
+                    [],
+                )?;
+
+                let error = next_run_lifecycle_timestamp_in_tx(conn, "project-1")
+                    .expect_err("malformed non-null Run lifecycle evidence must fail closed");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"),
+                    "unexpected {field} error: {error}"
+                );
+                let status: String = conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs
+                      WHERE id = 'run-malformed-lifecycle'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(status, "pending", "allocator must not mutate {field} row");
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("allocator must fail closed for malformed lifecycle evidence");
+        }
+    }
+
+    #[test]
     fn run_transition_completed_to_running_is_fail_closed() {
         let db = open_db();
         db.with_conn(|conn| {

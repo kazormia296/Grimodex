@@ -13,8 +13,9 @@ use uuid::Uuid;
 use super::commit::digest_plan;
 use super::execution_state::{next_run_lifecycle_timestamp_in_tx, parse_run_lifecycle_instant};
 use super::maintenance_runtime::{
-    canonical_work_key_for_epoch, explicit_failure_code, retry_backoff_ms,
-    spec_with_active_system_work_marker, NarrativeSystemWorkMarker,
+    canonical_work_key_for_epoch, classify_failure, explicit_failure_code, retry_backoff_ms,
+    select_unique_latest_lifecycle_evidence, spec_with_active_system_work_marker,
+    LifecycleEvidence, NarrativeSystemWorkMarker,
 };
 use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
 use super::restore_rebuild::VERIFY_CONTRACT_VERSION;
@@ -43,7 +44,12 @@ impl MaintenanceFailureKind {
     pub(crate) fn failure_code(self) -> &'static str {
         match self {
             Self::Transient => "NEX_MAINTENANCE_TRANSIENT",
-            Self::Manual => "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
+            // A caller that has no exact `NEX_*` evidence must not make a
+            // Verify/Rebuild failure look like a Backfill-only contract
+            // violation. Explicit messages still win in
+            // `canonical_failure_message`; this is only the durable fallback
+            // for unclassified manual failures.
+            Self::Manual => "NEX_MAINTENANCE_UNCLASSIFIED",
             Self::Interrupted => "NEX_MAINTENANCE_INTERRUPTED",
         }
     }
@@ -58,6 +64,40 @@ impl MaintenanceFailureKind {
     fn is_retryable(self) -> bool {
         matches!(self, Self::Transient | Self::Interrupted)
     }
+}
+
+/// Resolve an explicit failure code back to the only lifecycle policy bucket
+/// that may persist it. The exact-code classifier is the Rust-owned authority
+/// for retryability; Maintenance interruption remains distinct because its
+/// next-attempt contract reclaims a new Run instead of retrying the same Run.
+fn failure_kind_for_explicit_code(code: &str) -> MaintenanceFailureKind {
+    if code == "NEX_MAINTENANCE_INTERRUPTED" {
+        MaintenanceFailureKind::Interrupted
+    } else if classify_failure(code).retryable {
+        MaintenanceFailureKind::Transient
+    } else {
+        MaintenanceFailureKind::Manual
+    }
+}
+
+/// An explicit immutable failure identity and its retry policy are one writer
+/// invariant. Refuse contradictory caller inputs before any lifecycle row is
+/// mutated instead of persisting a manual code with retryable metadata (or the
+/// reverse).
+fn validate_explicit_failure_policy(
+    failure_kind: MaintenanceFailureKind,
+    error_message: &str,
+) -> anyhow::Result<()> {
+    let Some(failure_code) = explicit_failure_code(error_message) else {
+        return Ok(());
+    };
+    let expected_kind = failure_kind_for_explicit_code(failure_code);
+    anyhow::ensure!(
+        failure_kind == expected_kind,
+        "NEX_MAINTENANCE_FAILURE_POLICY_MISMATCH: explicit failure code \
+         '{failure_code}' requires {expected_kind:?}, but caller supplied {failure_kind:?}"
+    );
+    Ok(())
 }
 
 /// Ensure the failure message leads with an explicit `NEX_*` code. A message
@@ -1131,6 +1171,7 @@ pub(crate) fn fail_maintenance_run_in_tx(
         !error_message.trim().is_empty(),
         "NEX_MAINTENANCE_LIFECYCLE_FAILURE_INVALID: error message must not be empty"
     );
+    validate_explicit_failure_policy(failure_kind, error_message)?;
     validate_handle_in_tx(conn, handle)?;
     let completed_at = next_maintenance_terminal_timestamp_in_tx(conn, handle)?;
     // The exact code carried by the message is the primary immutable
@@ -1144,14 +1185,8 @@ pub(crate) fn fail_maintenance_run_in_tx(
     // instant itself. Recovery must refuse to dispatch a retry earlier than
     // this durable boundary, including across process restarts.
     let next_attempt_at = if failure_kind.is_retryable() {
-        let prior_failed: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM narrative_extraction_runs
-              WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
-                AND status = 'failed'",
-            params![&handle.project_id, &handle.run_kind, &handle.work_key],
-            |row| row.get(0),
-        )?;
-        let attempt = u32::try_from(prior_failed.saturating_add(1)).unwrap_or(u32::MAX);
+        let prior_failed = retry_chain_failed_run_count_in_tx(conn, handle)?;
+        let attempt = prior_failed.saturating_add(1);
         let failed_at = parse_run_lifecycle_instant(&completed_at)?;
         let not_before = failed_at
             .checked_add_signed(Duration::milliseconds(i64::try_from(retry_backoff_ms(
@@ -1238,6 +1273,72 @@ pub(crate) fn fail_maintenance_run_in_tx(
         "NEX_MAINTENANCE_LIFECYCLE_TRANSITION_CONFLICT: Run changed concurrently"
     );
     Ok(completed_at)
+}
+
+/// Count only failures in the current Semantic Epoch's active retry chain.
+/// A completed Run resets the chain, while imported evidence that ties a
+/// failed Run with that completion has no safe before/after order and must
+/// never be silently counted as either an old or a new failure.
+fn retry_chain_failed_run_count_in_tx(
+    conn: &Connection,
+    handle: &MaintenanceRunHandle,
+) -> anyhow::Result<u32> {
+    let mut statement = conn.prepare(
+        "SELECT id, status, COALESCE(completed_at, started_at, created_at)
+           FROM narrative_extraction_runs
+          WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
+            AND semantic_epoch_id = ?4
+            AND status IN ('failed', 'completed')",
+    )?;
+    let rows = statement
+        .query_map(
+            params![
+                &handle.project_id,
+                &handle.run_kind,
+                &handle.work_key,
+                &handle.semantic_epoch_id,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut lifecycle_evidence = Vec::with_capacity(rows.len());
+    for (run_id, status, lifecycle_raw) in rows {
+        lifecycle_evidence.push(LifecycleEvidence {
+            id: run_id,
+            lifecycle_at: parse_run_lifecycle_instant(&lifecycle_raw)?,
+            value: status,
+        });
+    }
+    // This writer must not be weaker than recovery: a tied maximal prior
+    // Run must never be converted into a query-order-dependent retry ordinal.
+    // Historical ties before a later unique completion are outside the
+    // current retry chain and do not affect the next post-success Attempt.
+    let _ = select_unique_latest_lifecycle_evidence(lifecycle_evidence.clone())?;
+    let latest_completed_at = select_unique_latest_lifecycle_evidence(
+        lifecycle_evidence
+            .iter()
+            .filter(|evidence| evidence.value == "completed")
+            .cloned()
+            .collect(),
+    )?
+    .map(|evidence| evidence.lifecycle_at);
+    let count = lifecycle_evidence
+        .iter()
+        .filter(|evidence| {
+            evidence.value == "failed"
+                && latest_completed_at
+                    .as_ref()
+                    .is_none_or(|completed_at| evidence.lifecycle_at > *completed_at)
+        })
+        .count();
+    u32::try_from(count).map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -1330,6 +1431,56 @@ mod tests {
               WHERE id = ?1",
             params![handle.attempt_id],
         )?;
+        Ok(())
+    }
+
+    fn assert_failure_policy_rejection_did_not_mutate_lifecycle(
+        conn: &Connection,
+        handle: &MaintenanceRunHandle,
+    ) -> anyhow::Result<()> {
+        type FailurePolicyLifecycleState = (
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let state: FailurePolicyLifecycleState = conn.query_row(
+            "SELECT r.status, t.status, a.status,
+                    a.failure_code, a.retry_disposition,
+                    a.policy_version, a.next_attempt_at
+               FROM narrative_extraction_runs r
+               JOIN narrative_extraction_tasks t ON t.run_id = r.id
+               JOIN narrative_extraction_attempts a ON a.task_id = t.id
+              WHERE r.id = ?1",
+            params![handle.run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )?;
+        assert_eq!(
+            state,
+            (
+                "running".to_string(),
+                "running".to_string(),
+                "running".to_string(),
+                None,
+                None,
+                None,
+                None,
+            ),
+            "policy mismatch must not mutate Run, Task, or Attempt"
+        );
         Ok(())
     }
 
@@ -1756,16 +1907,295 @@ mod tests {
                 params![manual.attempt_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-            assert_eq!(
-                manual_metadata.0,
-                "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"
-            );
+            assert_eq!(manual_metadata.0, "NEX_MAINTENANCE_UNCLASSIFIED");
             assert_eq!(manual_metadata.1, "manual");
             assert_eq!(manual_metadata.2, "v1");
             assert_eq!(manual_metadata.3, None);
+
+            let explicit_rebuild = create(conn, "semantic-index-rebuild")?;
+            fail_maintenance_run_in_tx(
+                conn,
+                &explicit_rebuild,
+                MaintenanceFailureKind::Manual,
+                "NEX_REBUILD_DERIVED_CONTRACT_VIOLATION: malformed derived state",
+            )?;
+            let explicit_code: String = conn.query_row(
+                "SELECT failure_code
+                   FROM narrative_extraction_attempts WHERE id = ?1",
+                params![explicit_rebuild.attempt_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                explicit_code, "NEX_REBUILD_DERIVED_CONTRACT_VIOLATION",
+                "a caller-supplied exact code remains primary evidence"
+            );
             Ok(())
         })
         .expect("failure metadata");
+    }
+
+    #[test]
+    fn failure_terminalizer_rejects_explicit_code_policy_mismatch_before_dml() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create(conn, "backfill")?;
+            let error = fail_maintenance_run_in_tx(
+                conn,
+                &handle,
+                MaintenanceFailureKind::Transient,
+                "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: database is locked",
+            )
+            .expect_err("a manual explicit code must not acquire retryable metadata");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_MAINTENANCE_FAILURE_POLICY_MISMATCH"),
+                "unexpected policy mismatch error: {error:#}"
+            );
+            assert_failure_policy_rejection_did_not_mutate_lifecycle(conn, &handle)?;
+            Ok(())
+        })
+        .expect("pre-DML policy mismatch rejection");
+    }
+
+    #[test]
+    fn failure_terminalizer_rejects_retryable_explicit_code_with_manual_kind_before_dml() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create(conn, "dependency-verify")?;
+            let error = fail_maintenance_run_in_tx(
+                conn,
+                &handle,
+                MaintenanceFailureKind::Manual,
+                "NEX_MAINTENANCE_TRANSIENT: database is locked",
+            )
+            .expect_err("a retryable explicit code must not acquire manual metadata");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_MAINTENANCE_FAILURE_POLICY_MISMATCH"),
+                "unexpected policy mismatch error: {error:#}"
+            );
+            assert_failure_policy_rejection_did_not_mutate_lifecycle(conn, &handle)?;
+            Ok(())
+        })
+        .expect("reverse pre-DML policy mismatch rejection");
+    }
+
+    #[test]
+    fn failure_terminalizer_rejects_exact_interruption_with_transient_kind_before_dml() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create(conn, "semantic-index-rebuild")?;
+            let error = fail_maintenance_run_in_tx(
+                conn,
+                &handle,
+                MaintenanceFailureKind::Transient,
+                "NEX_MAINTENANCE_INTERRUPTED: process interruption",
+            )
+            .expect_err("an exact interruption must retain its new-Run recovery semantics");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_MAINTENANCE_FAILURE_POLICY_MISMATCH"),
+                "unexpected interruption policy mismatch error: {error:#}"
+            );
+            assert_failure_policy_rejection_did_not_mutate_lifecycle(conn, &handle)?;
+            Ok(())
+        })
+        .expect("interruption-vs-transient mismatch rejection");
+    }
+
+    #[test]
+    fn failure_terminalizer_accepts_exact_interruption_with_interrupted_kind() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create(conn, "dependency-verify")?;
+            fail_maintenance_run_in_tx(
+                conn,
+                &handle,
+                MaintenanceFailureKind::Interrupted,
+                "NEX_MAINTENANCE_INTERRUPTED: process interruption",
+            )?;
+            let metadata: (
+                String,
+                String,
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+            ) = conn.query_row(
+                "SELECT r.status, t.status, a.status,
+                            a.failure_code, a.retry_disposition,
+                            a.policy_version, a.next_attempt_at
+                       FROM narrative_extraction_runs r
+                       JOIN narrative_extraction_tasks t ON t.run_id = r.id
+                       JOIN narrative_extraction_attempts a ON a.task_id = t.id
+                      WHERE r.id = ?1",
+                params![handle.run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )?;
+            assert_eq!(metadata.0, "failed");
+            assert_eq!(metadata.1, "failed");
+            assert_eq!(metadata.2, "failed");
+            assert_eq!(metadata.3, "NEX_MAINTENANCE_INTERRUPTED");
+            assert_eq!(metadata.4, "retryable");
+            assert_eq!(metadata.5, FAILURE_POLICY_VERSION);
+            assert!(metadata.6.is_some());
+            Ok(())
+        })
+        .expect("exact interruption policy acceptance");
+    }
+
+    #[test]
+    fn retry_backoff_uses_only_the_current_epoch_retry_chain() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-old', 'project-1', 1, 'migration',
+                         '2026-08-22T00:00:00.000Z')",
+                [],
+            )?;
+            for index in 0..2 {
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, created_at, completed_at,
+                         run_kind, semantic_epoch_id, work_key)
+                     VALUES (?1, 'project-1', 'maintenance', '{}', '{}', 'digest',
+                             'failed', '{}', ?2, ?3, 'semantic-index-rebuild', 'epoch-old',
+                             'dependency-rebuild-derived')",
+                    params![
+                        format!("old-epoch-failure-{index}"),
+                        format!("2026-08-22T00:00:0{index}.000Z"),
+                        format!("2026-08-22T00:00:0{}.500Z", index + 1),
+                    ],
+                )?;
+            }
+
+            let first = create(conn, "semantic-index-rebuild")?;
+            fail_maintenance_run_in_tx(
+                conn,
+                &first,
+                MaintenanceFailureKind::Transient,
+                "current first failure",
+            )?;
+            let delay_ms = retry_delay_ms(conn, &first)?;
+            assert_eq!(
+                delay_ms, 1_000,
+                "old-epoch failures must not make the first current-epoch failure a third retry"
+            );
+
+            let reset = create(conn, "semantic-index-rebuild")?;
+            complete_maintenance_run_in_tx(conn, &reset)?;
+
+            let after_success = create(conn, "semantic-index-rebuild")?;
+            fail_maintenance_run_in_tx(
+                conn,
+                &after_success,
+                MaintenanceFailureKind::Transient,
+                "first failure after current success",
+            )?;
+            assert_eq!(
+                retry_delay_ms(conn, &after_success)?,
+                1_000,
+                "a current-epoch success resets the retry chain"
+            );
+
+            let second_after_success = create(conn, "semantic-index-rebuild")?;
+            fail_maintenance_run_in_tx(
+                conn,
+                &second_after_success,
+                MaintenanceFailureKind::Transient,
+                "second failure after current success",
+            )?;
+            assert_eq!(
+                retry_delay_ms(conn, &second_after_success)?,
+                2_000,
+                "only the current post-success chain increases the backoff ordinal"
+            );
+            Ok(())
+        })
+        .expect("retry chain backoff");
+    }
+
+    #[test]
+    fn retry_backoff_rejects_equal_latest_failed_run_evidence() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            for run_id in ["equal-failed-a", "equal-failed-b"] {
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, created_at, completed_at,
+                         run_kind, semantic_epoch_id, work_key)
+                     VALUES (?1, 'project-1', 'maintenance', '{}', '{}', 'digest',
+                             'failed', '{}', '2026-08-20T00:00:00.000Z',
+                             '2026-08-20T00:00:02.000Z', 'semantic-index-rebuild', 'epoch-1',
+                             'dependency-rebuild-derived')",
+                    params![run_id],
+                )?;
+            }
+            let handle = create(conn, "semantic-index-rebuild")?;
+            let error = fail_maintenance_run_in_tx(
+                conn,
+                &handle,
+                MaintenanceFailureKind::Transient,
+                "a new failure must not choose a retry ordinal by row order",
+            )
+            .expect_err("tied failed history must not get a 4s retry ordinal");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS"),
+                "unexpected tied-history error: {error:#}"
+            );
+            let statuses: (String, String, String) = conn.query_row(
+                "SELECT r.status, t.status, a.status
+                   FROM narrative_extraction_runs r
+                   JOIN narrative_extraction_tasks t ON t.run_id = r.id
+                   JOIN narrative_extraction_attempts a ON a.task_id = t.id
+                  WHERE r.id = ?1",
+                params![handle.run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(
+                statuses,
+                ("running".to_string(), "running".to_string(), "running".to_string()),
+                "the failed terminalization must roll back rather than emit a guessed retry boundary"
+            );
+            Ok(())
+        })
+        .expect("tied retry evidence rejection");
+    }
+
+    fn retry_delay_ms(conn: &Connection, handle: &MaintenanceRunHandle) -> anyhow::Result<i64> {
+        let (failed_at, not_before): (String, String) = conn.query_row(
+            "SELECT r.completed_at, a.next_attempt_at
+               FROM narrative_extraction_runs r
+               JOIN narrative_extraction_tasks t ON t.run_id = r.id
+               JOIN narrative_extraction_attempts a ON a.task_id = t.id
+              WHERE r.id = ?1",
+            params![handle.run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(
+            (parse_run_lifecycle_instant(&not_before)? - parse_run_lifecycle_instant(&failed_at)?)
+                .num_milliseconds(),
+        )
     }
 
     #[test]

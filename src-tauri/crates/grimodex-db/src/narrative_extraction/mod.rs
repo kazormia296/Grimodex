@@ -154,9 +154,10 @@ pub use c2z_preparation::{
     inspect_workspace_cutover_readiness, plan_application_rekey, ApplicationRekeyCandidate,
     ApplicationRekeyFanOut, ApplicationRekeyPlan, DependencySetMismatch, ExistingApplicationTarget,
     FreshnessParityReport, FreshnessStatusMismatch, InvalidLegacyDependency,
-    ProjectCutoverReadiness, ReadinessGate, ReadinessState, RekeyCollision, RekeyInvalidItem,
-    RekeyMappingKind, UnattributedRekeyItem, UnsupportedGenericFreshness, VerifyReadiness,
-    WorkspaceCutoverReadiness, REQUIRED_VERIFY_CHECKS,
+    PendingV3BackfillApplication, ProjectCutoverReadiness, ReadinessGate, ReadinessState,
+    RekeyCollision, RekeyInvalidItem, RekeyMappingKind, RetainedRunConsumerEdge,
+    UnattributedRekeyItem, UnsupportedGenericFreshness, VerifyReadiness, WorkspaceCutoverReadiness,
+    REQUIRED_VERIFY_CHECKS,
 };
 pub use c2zc_canonical_cutover::{
     canonical_application_freshness, cut_over_workspace_freshness,
@@ -165,11 +166,15 @@ pub use c2zc_canonical_cutover::{
     CanonicalFreshnessRow, SchedulerLivenessEvidence, C2_ZC_CUTOVER_CONTRACT_VERSION,
     C2_ZC_CUTOVER_MIGRATION_ID,
 };
+pub(crate) use c2zc_canonical_cutover::{
+    mint_c2zc_import_project_birth_epoch_in_tx, mint_c2zc_project_birth_epoch_in_tx,
+};
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
 pub use incremental_freshness::{
-    run_incremental_freshness_cycle, IncrementalFreshnessBatchSummary,
-    IncrementalFreshnessCycleOutcome, IncrementalFreshnessShadowConsumerSummary,
-    IncrementalFreshnessShadowSummary, NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
+    run_incremental_freshness_cycle, run_incremental_freshness_cycle_with_liveness_capability,
+    IncrementalFreshnessBatchSummary, IncrementalFreshnessCycleOutcome,
+    IncrementalFreshnessShadowConsumerSummary, IncrementalFreshnessShadowSummary,
+    SuccessfulIncrementalFreshnessCycle, NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
 };
 pub use maintenance_route_registry::{
     route_descriptor_by_id, route_descriptor_for_run_kind, route_descriptors,
@@ -233,8 +238,8 @@ pub use repair::{
 };
 pub use restore_rebuild::{
     ack_maintenance_wakes, durable_graph_state_digest, ensure_restore_epochs_for_workspace,
-    list_pending_maintenance_wakes,
-    rebuild_narrative_derived_state_for_project, run_dependency_verify_for_project,
+    list_pending_maintenance_wakes, rebuild_narrative_derived_state_for_project,
+    record_maintenance_delivery_failure_wake, run_dependency_verify_for_project,
     run_dependency_verify_for_project_with_coordinates,
     verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
     PendingMaintenanceWake, RebuildDerivedStateOutcome, RebuildDerivedStateSummary,
@@ -271,19 +276,20 @@ pub(crate) use field_authority::{
 };
 pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,
-    ChronicleStageC1ExecutionBinding, ChronicleStageExecution, ChronicleStageModelBinding,
-    ChronicleStageProvenanceClosure, ChronicleStageReceiptRef, ChronicleStageTerminalReceipt,
-    ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateHumanDerivedRevisionRequest,
-    CreateRunPayload, CreateTaskSeed, EntityBindingSeed, FailTaskPayload, FinishTaskPayload,
-    GetCommitStatusPayload, GetNarrativeBackfillStatusPayload, HumanFieldLockPayload,
-    ListResumableRunsPayload, NarrativeAdapterIdentity, NarrativeMaintenanceAttentionClearPayload,
-    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
-    PrepareCommitPayload, ProposalSeed, RebuildNarrativeDerivedStatePayload,
-    ReconciliationEnvelopeInheritance, RepairNarrativeDependencyDeclarationsPayload,
-    RetryNarrativeLegacyBackfillPayload, ReviseAndDecidePayload, RunRefPayload,
-    SaveProposalSetPayload, TrustedHumanDerivationScope, TrustedRevealBasis, TrustedScopeBoundary,
-    TrustedScopeInterval, TrustedUnresolvedConstraint, UndoCommitPayload,
-    VerifyNarrativeDependencyGraphPayload,
+    ChronicleBlockedDiscardExpectation, ChronicleStageC1ExecutionBinding, ChronicleStageExecution,
+    ChronicleStageModelBinding, ChronicleStageProvenanceClosure, ChronicleStageReceiptRef,
+    ChronicleStageTerminalReceipt, ClaimTaskPayload, CommitApplicationRef, CommitOperation,
+    CreateHumanDerivedRevisionRequest, CreateRunPayload, CreateTaskSeed, EntityBindingSeed,
+    FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload, GetNarrativeBackfillStatusPayload,
+    HumanFieldLockPayload, IsRunResumableForReviewPayload, IsRunResumableForReviewResult,
+    ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, NarrativeAdapterIdentity,
+    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
+    NarrativeMaintenanceInboxListPayload, PrepareCommitPayload, ProposalSeed,
+    RebuildNarrativeDerivedStatePayload, ReconciliationEnvelopeInheritance,
+    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, TrustedHumanDerivationScope,
+    TrustedRevealBasis, TrustedScopeBoundary, TrustedScopeInterval, TrustedUnresolvedConstraint,
+    UndoCommitPayload, VerifyNarrativeDependencyGraphPayload,
 };
 pub use repository::ensure_test_schema;
 pub use scope_authority_runtime::{
@@ -388,11 +394,30 @@ pub fn narrative_extraction_list_resumable_runs(
     repository::list_resumable_runs(db, payload)
 }
 
+pub fn narrative_extraction_is_run_resumable_for_review(
+    db: &Database,
+    payload: IsRunResumableForReviewPayload,
+) -> anyhow::Result<IsRunResumableForReviewResult> {
+    repository::is_run_resumable_for_review(db, payload)
+}
+
+pub fn narrative_extraction_list_chronicle_task_resume_candidates(
+    db: &Database,
+    payload: ListChronicleTaskResumeCandidatesPayload,
+) -> anyhow::Result<Value> {
+    repository::list_chronicle_task_resume_candidates(db, payload)
+}
+
 pub fn narrative_extraction_cancel_run(
     db: &Database,
     payload: RunRefPayload,
 ) -> anyhow::Result<Value> {
-    repository::cancel_run(db, payload.run_id, payload.project_id)
+    repository::cancel_run_with_expectation(
+        db,
+        payload.run_id,
+        payload.project_id,
+        payload.chronicle_blocked_discard,
+    )
 }
 
 pub fn narrative_extraction_claim_task(

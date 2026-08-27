@@ -543,6 +543,8 @@ fn is_synthetic_manual_code(code: &str) -> bool {
             | "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING"
             | "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING"
             | "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID"
+            | "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS"
+            | "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID"
     )
 }
 
@@ -562,18 +564,34 @@ pub(crate) fn project_manual_intervention_finding(
     let observed_at = grimodex_core::now_rfc3339_millis();
     // FAILURE_LEDGER_MISSING is selected exactly when NO failed Run exists
     // for the identity: a failed-Run anchor is structurally impossible for
-    // it, so it anchors on the latest non-failed Run instead. The other
-    // synthetic codes keep the failed-Run anchor.
+    // it, so it anchors on the latest non-failed Run instead. Selector
+    // failures deliberately do not use timestamp ordering for their anchor:
+    // equal/malformed lifecycle evidence is the condition being reported, so
+    // row identity is diagnostic provenance only. The remaining synthetic
+    // codes keep the failed-Run anchor.
     let ledger_gap = code == "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING";
-    let run_binding = if ledger_gap {
-        TerminalFailureRunBinding::SyntheticLedgerGap
+    let selector_failure = matches!(
+        code,
+        "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS" | "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID"
+    );
+    let (run_binding, status_predicate, order_by) = if ledger_gap {
+        (
+            TerminalFailureRunBinding::SyntheticLedgerGap,
+            "AND status <> 'failed'",
+            "ORDER BY julianday(COALESCE(completed_at, started_at, created_at)) DESC, id ASC",
+        )
+    } else if selector_failure {
+        (
+            TerminalFailureRunBinding::SyntheticSelectorEvidence,
+            "",
+            "ORDER BY id ASC",
+        )
     } else {
-        TerminalFailureRunBinding::SyntheticRecovery
-    };
-    let status_predicate = if ledger_gap {
-        "AND status <> 'failed'"
-    } else {
-        "AND status = 'failed'"
+        (
+            TerminalFailureRunBinding::SyntheticRecovery,
+            "AND status = 'failed'",
+            "ORDER BY julianday(COALESCE(completed_at, started_at, created_at)) DESC, id ASC",
+        )
     };
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
@@ -588,8 +606,7 @@ pub(crate) fn project_manual_intervention_finding(
                           WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
                             {status_predicate}
                             AND (?4 IS NULL OR semantic_epoch_id = ?4)
-                          ORDER BY julianday(COALESCE(completed_at, started_at, created_at)) DESC,
-                                   id ASC
+                          {order_by}
                           LIMIT 1"
                     ),
                     params![
@@ -621,7 +638,15 @@ pub(crate) fn project_manual_intervention_finding(
                 run_kind: work.run_kind.as_str().to_string(),
                 work_key: work.work_key.clone(),
                 semantic_epoch_id,
-                terminal_order_time,
+                // A malformed/tied lifecycle row cannot provide a valid
+                // failure chronology. The selector verdict becomes durable
+                // at this projection instant, so only a later completed Run
+                // can resolve the Inbox Finding.
+                terminal_order_time: if selector_failure {
+                    observed_at.to_string()
+                } else {
+                    terminal_order_time
+                },
             };
             validate_canonical_work_key(&context)?;
             record_failure_projection_in_tx(

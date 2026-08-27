@@ -14,10 +14,155 @@ const PROJECT_ID: &str = "project-scope-runtime";
 const RUN_ID: &str = "run-scope-runtime";
 const TASK_ID: &str = "task-scope-runtime";
 const LEASE_OWNER: &str = "scope-runtime-test";
-const SNAPSHOT_DIGEST: &str =
-    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const SNAPSHOT_CREATED_AT: &str = "2026-08-25T00:00:00.000Z";
+const SNAPSHOT_NORMALIZER_VERSION: &str = "gdx-canonical-text/1";
+
+fn sealed_snapshot_documents() -> Vec<serde_json::Value> {
+    [
+        ("D000001", "scene-one", "0010"),
+        ("D000002", "scene-two", "0020"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (document_ref, node_id, _raw_story_key))| {
+        let source_key = format!("project:scene:{node_id}");
+        let projection = json!({
+            "schemaVersion": 1,
+            "unit": "utf16",
+            "canonicalLength": 0,
+            "segments": [],
+        });
+        let origin = json!({
+            "kind": "project-node",
+            "projectId": PROJECT_ID,
+            "nodeId": node_id,
+            "sourceVersion": 0,
+            "sourceUpdatedAt": SNAPSHOT_CREATED_AT,
+            "sourceUri": null,
+        });
+        let content_digest = grimodex_core::canonical_json_digest(&json!({
+            "normalizerVersion": SNAPSHOT_NORMALIZER_VERSION,
+            "text": "",
+        }))
+        .expect("seal snapshot document content");
+        let document_digest = grimodex_core::canonical_json_digest(&json!({
+            "normalizerVersion": SNAPSHOT_NORMALIZER_VERSION,
+            "parentSourceKey": null,
+            "title": format!("Snapshot {index}"),
+            "orderIndex": index,
+            "canonical": {"text": "", "blocks": []},
+        }))
+        .expect("seal snapshot document");
+        let artifact_digest = grimodex_core::canonical_json_digest(&json!({
+            "schemaVersion": 1,
+            "normalizerVersion": SNAPSHOT_NORMALIZER_VERSION,
+            "sourceKey": source_key,
+            "parentSourceKey": null,
+            "semanticDigest": document_digest,
+            "contentDigest": content_digest,
+            "projection": projection,
+            "origin": origin,
+        }))
+        .expect("seal snapshot artifact");
+        json!({
+            "ref": document_ref,
+            "sourceKey": source_key,
+            "parentRef": null,
+            "title": format!("Snapshot {index}"),
+            "orderIndex": index,
+            "canonical": {
+                "unit": "utf16",
+                "text": "",
+                "blocks": [],
+                "projection": projection,
+                "projectionMap": projection,
+                "diagnostics": [],
+            },
+            "contentDigest": content_digest,
+            "documentDigest": document_digest,
+            "artifactDigest": artifact_digest,
+            "origin": origin,
+        })
+    })
+    .collect()
+}
+
+fn sealed_snapshot_payload() -> serde_json::Value {
+    let documents = sealed_snapshot_documents();
+    let omissions = json!([]);
+    let digest = grimodex_core::canonical_json_digest(&json!({
+        "schemaVersion": 1,
+        "language": "ja",
+        "normalizerVersion": SNAPSHOT_NORMALIZER_VERSION,
+        "documentDigests": documents
+            .iter()
+            .map(|document| document["documentDigest"].clone())
+            .collect::<Vec<_>>(),
+        "omissions": omissions,
+    }))
+    .expect("seal snapshot digest");
+    let artifact_digest = grimodex_core::canonical_json_digest(&json!({
+        "schemaVersion": 1,
+        "normalizerVersion": SNAPSHOT_NORMALIZER_VERSION,
+        "semanticDigest": digest,
+        "originProjectId": PROJECT_ID,
+        "documents": documents.iter().map(|document| json!({
+            "sourceKey": document["sourceKey"].clone(),
+            "artifactDigest": document["artifactDigest"].clone(),
+        })).collect::<Vec<_>>(),
+        "omissions": omissions,
+    }))
+    .expect("seal snapshot artifact digest");
+    let source_view = {
+        let document = &documents[0];
+        let digest = grimodex_core::canonical_json_digest(&json!({
+            "schemaVersion": 1,
+            "ref": "SV000001",
+            "documentRef": "D000001",
+            "documentArtifactDigest": document["artifactDigest"].clone(),
+            "documentRange": {"start": 0, "end": 0},
+            "text": "",
+        }))
+        .expect("seal source view");
+        json!({
+            "ref": "SV000001",
+            "documentRef": "D000001",
+            "documentRange": {"start": 0, "end": 0},
+            "text": "",
+            "digest": digest,
+        })
+    };
+    json!({
+        "snapshot": {
+            "schemaVersion": 1,
+            "id": "snapshot-scope-runtime",
+            "snapshotId": "snapshot-scope-runtime",
+            "createdAt": SNAPSHOT_CREATED_AT,
+            "language": "ja",
+            "normalizerVersion": SNAPSHOT_NORMALIZER_VERSION,
+            "origin": {"kind": "grimodex-project", "projectId": PROJECT_ID},
+            "documents": documents,
+            "omissions": omissions,
+            "digest": digest,
+            "artifactDigest": artifact_digest,
+        },
+        "sourceViews": [source_view],
+        "scopeAuthorityDocuments": [
+            {"documentRef": "D000001", "sourceKey": "project:scene:scene-one", "rawStoryKey": "0010"},
+            {"documentRef": "D000002", "sourceKey": "project:scene:scene-two", "rawStoryKey": "0020"},
+        ],
+    })
+}
+
+fn snapshot_digest() -> String {
+    sealed_snapshot_payload()["snapshot"]["digest"]
+        .as_str()
+        .expect("sealed snapshot digest")
+        .to_owned()
+}
 
 fn fixture() -> Database {
+    let snapshot_digest = snapshot_digest();
     let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
     db.migrate().expect("migrate");
     db.with_conn(|conn| {
@@ -58,7 +203,7 @@ fn fixture() -> Database {
             }),
             spec_json: json!({"domain": "chronicle", "version": 1}),
             spec_digest: "spec:scope-runtime".to_owned(),
-            snapshot_digest: Some(SNAPSHOT_DIGEST.to_owned()),
+            snapshot_digest: Some(snapshot_digest),
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
@@ -97,10 +242,11 @@ fn basis_for(
     run_id: &str,
     first_story_key: &str,
 ) -> NarrativeScopeAuthorityBasisV2 {
+    let snapshot_digest = snapshot_digest();
     build_narrative_scope_authority_basis_v2(
         project_id,
         run_id,
-        SNAPSHOT_DIGEST,
+        &snapshot_digest,
         &[
             NarrativeScopeAuthorityDocumentInputV2 {
                 document_ref: "D000001".to_owned(),
@@ -124,16 +270,7 @@ fn basis(first_story_key: &str) -> NarrativeScopeAuthorityBasisV2 {
 /// The `source.snapshot@1` corpus artifact production sends in the same
 /// typed finish. The sealed basis must bind to this corpus closure.
 fn corpus_artifact_json() -> serde_json::Value {
-    let payload = json!({
-        "snapshot": {
-            "digest": SNAPSHOT_DIGEST,
-            "documents": [
-                {"ref": "D000001", "sourceKey": "project:scene:scene-one"},
-                {"ref": "D000002", "sourceKey": "project:scene:scene-two"}
-            ]
-        },
-        "sourceViews": []
-    });
+    let payload = sealed_snapshot_payload();
     let payload_digest =
         grimodex_core::canonical_json_digest(&payload).expect("canonical corpus digest");
     json!({
@@ -145,6 +282,11 @@ fn corpus_artifact_json() -> serde_json::Value {
     })
 }
 
+fn refresh_corpus_payload_digest(corpus: &mut serde_json::Value) {
+    corpus["payloadDigest"] = json!(grimodex_core::canonical_json_digest(&corpus["payloadJson"])
+        .expect("refresh canonical corpus payload digest"));
+}
+
 fn finish_with_basis_and_artifacts(
     db: &Database,
     attempt_id: String,
@@ -154,13 +296,22 @@ fn finish_with_basis_and_artifacts(
     // This is the exact camelCase JSON decode used by the N-API
     // `agent_write_cmd` boundary. Keep it here so a wire-name drift cannot
     // silently turn the typed companion into `None` while finish still passes.
+    let snapshot_digest = snapshot_digest();
+    let corpus_payload = sealed_snapshot_payload();
+    let corpus_payload_digest = grimodex_core::canonical_json_digest(&corpus_payload)
+        .expect("canonical corpus payload digest");
     let payload: FinishTaskPayload = serde_json::from_value(json!({
         "runId": RUN_ID,
         "projectId": PROJECT_ID,
         "taskId": TASK_ID,
         "attemptId": attempt_id,
         "leaseOwner": LEASE_OWNER,
-        "outputJson": {"snapshotDigest": SNAPSHOT_DIGEST},
+        "outputJson": {
+            "snapshotDigest": snapshot_digest,
+            "documentCount": 2,
+            "corpusPayloadDigest": corpus_payload_digest,
+            "scopeAuthorityCompositeDigest": historical_scope_authority_basis.digests.composite_digest,
+        },
         "artifacts": artifacts,
         "historicalScopeAuthorityBasis": historical_scope_authority_basis,
     }))
@@ -233,7 +384,9 @@ fn generic_finish_cannot_mint_the_reserved_scope_authority_carrier() {
                 payload_digest: None,
             }],
             chronicle_stage_bundle: None,
+            chronicle_stage_receipts: vec![],
             historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
     .expect_err("generic finish must reject the reserved authority carrier");
@@ -317,7 +470,10 @@ fn typed_finish_requires_the_snapshot_corpus_artifact_in_the_same_finish() {
     assert!(
         error
             .to_string()
-            .contains("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_REQUIRED"),
+            .contains("NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID")
+            || error
+                .to_string()
+                .contains("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_REQUIRED"),
         "unexpected error: {error}"
     );
     assert_finish_rolled_back(&db);
@@ -325,9 +481,11 @@ fn typed_finish_requires_the_snapshot_corpus_artifact_in_the_same_finish() {
 
 #[test]
 fn typed_finish_rejects_a_corpus_artifact_that_does_not_match_the_basis() {
-    for (label, mutate) in [
+    for (label, refresh_outer_digest, expected_code, mutate) in [
         (
             "digest",
+            true,
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID",
             Box::new(|corpus: &mut serde_json::Value| {
                 corpus["payloadJson"]["snapshot"]["digest"] = json!(
                     "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -336,6 +494,8 @@ fn typed_finish_rejects_a_corpus_artifact_that_does_not_match_the_basis() {
         ),
         (
             "document-order",
+            true,
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID",
             Box::new(|corpus: &mut serde_json::Value| {
                 let documents = corpus["payloadJson"]["snapshot"]["documents"]
                     .as_array_mut()
@@ -345,6 +505,8 @@ fn typed_finish_rejects_a_corpus_artifact_that_does_not_match_the_basis() {
         ),
         (
             "document-source-key",
+            true,
+            "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID",
             Box::new(|corpus: &mut serde_json::Value| {
                 corpus["payloadJson"]["snapshot"]["documents"][0]["sourceKey"] =
                     json!("project:scene:scene-forged");
@@ -352,6 +514,8 @@ fn typed_finish_rejects_a_corpus_artifact_that_does_not_match_the_basis() {
         ),
         (
             "forged-payload-digest",
+            false,
+            "NEX_INLINE_ARTIFACT_DIGEST_MISMATCH",
             Box::new(|corpus: &mut serde_json::Value| {
                 corpus["payloadDigest"] =
                     json!("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
@@ -361,6 +525,9 @@ fn typed_finish_rejects_a_corpus_artifact_that_does_not_match_the_basis() {
         let db = fixture();
         let mut corpus = corpus_artifact_json();
         mutate(&mut corpus);
+        if refresh_outer_digest {
+            refresh_corpus_payload_digest(&mut corpus);
+        }
         let error = finish_with_basis_and_artifacts(
             &db,
             claim_attempt(&db),
@@ -369,13 +536,50 @@ fn typed_finish_rejects_a_corpus_artifact_that_does_not_match_the_basis() {
         )
         .expect_err("corpus drifting from the basis must fail closed");
         assert!(
-            error
-                .to_string()
-                .contains("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID"),
+            error.to_string().contains(expected_code),
             "case {label}: unexpected error: {error}"
         );
         assert_finish_rolled_back(&db);
     }
+}
+
+#[test]
+fn typed_finish_rejects_an_invalid_internal_document_seal_even_with_a_fresh_outer_digest() {
+    let db = fixture();
+    let mut corpus = corpus_artifact_json();
+    corpus["payloadJson"]["snapshot"]["documents"][0]["artifactDigest"] =
+        json!("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    refresh_corpus_payload_digest(&mut corpus);
+
+    let error =
+        finish_with_basis_and_artifacts(&db, claim_attempt(&db), basis("0010"), json!([corpus]))
+            .expect_err("a recomputed outer payloadDigest cannot bless a forged document seal");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID"),
+        "unexpected error: {error}"
+    );
+    assert_finish_rolled_back(&db);
+}
+
+#[test]
+fn typed_finish_rejects_a_t2_story_authority_companion_for_a_t1_snapshot() {
+    let db = fixture();
+    let mut corpus = corpus_artifact_json();
+    corpus["payloadJson"]["scopeAuthorityDocuments"][0]["rawStoryKey"] = json!("9999");
+    refresh_corpus_payload_digest(&mut corpus);
+
+    let error =
+        finish_with_basis_and_artifacts(&db, claim_attempt(&db), basis("0010"), json!([corpus]))
+            .expect_err("the basis must be rederived from the exact sealed T1 authority companion");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_SCOPE_AUTHORITY_BINDING_MISMATCH"),
+        "unexpected error: {error}"
+    );
+    assert_finish_rolled_back(&db);
 }
 
 #[test]
@@ -413,7 +617,7 @@ fn typed_finish_rejects_valid_bases_bound_to_another_project_or_run() {
 }
 
 #[test]
-fn typed_finish_rejects_current_scope_membership_and_order_drift() {
+fn typed_finish_uses_the_t1_sealed_snapshot_when_live_tree_moves_to_t2() {
     for mutation in [
         "UPDATE tree_nodes SET archived_at = datetime('now') WHERE id = 'scene-two'",
         "UPDATE tree_nodes SET sort_order = CASE id
@@ -429,15 +633,13 @@ fn typed_finish_rejects_current_scope_membership_and_order_drift() {
         })
         .expect("mutate durable tree after basis build");
 
-        let error = finish_with_basis(&db, attempt_id, submitted)
-            .expect_err("scope drift must fail closed");
-        assert!(
-            error
-                .to_string()
-                .contains("NEX_SCOPE_AUTHORITY_DURABLE_SCOPE_MISMATCH"),
-            "unexpected error: {error}"
-        );
-        assert_finish_rolled_back(&db);
+        finish_with_basis(&db, attempt_id, submitted.clone())
+            .expect("the T1 snapshot, not mutable T2 tree state, owns the basis");
+        let loaded =
+            narrative_extraction::load_historical_scope_authority_basis(&db, PROJECT_ID, RUN_ID)
+                .expect("load T1-sealed basis")
+                .expect("stored basis");
+        assert_eq!(loaded, submitted);
     }
 }
 
@@ -499,7 +701,7 @@ fn typed_finish_rejects_a_reclaimed_stale_attempt_even_with_the_same_lease_owner
 }
 
 #[test]
-fn typed_finish_handles_a_deep_valid_folder_chain_without_recursive_stack_growth() {
+fn typed_finish_does_not_traverse_a_deep_live_tree_after_the_snapshot_is_sealed() {
     const DEPTH: usize = 16_384;
     let db = fixture();
     db.with_conn(|conn| {
@@ -534,7 +736,7 @@ fn typed_finish_handles_a_deep_valid_folder_chain_without_recursive_stack_growth
     .expect("seed deep durable folder chain");
 
     finish_with_basis(&db, claim_attempt(&db), basis("0010"))
-        .expect("iterative durable traversal must finish the deep scope");
+        .expect("sealed snapshot validation must not walk the deep live tree");
 }
 
 #[test]

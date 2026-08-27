@@ -14,6 +14,10 @@
       "findingRoute": "maintenance-inbox"
     },
     {
+      "failureCode": "NEX_MAINTENANCE_UNCLASSIFIED",
+      "findingRoute": "maintenance-inbox"
+    },
+    {
       "failureCode": "NEX_MAINTENANCE_INTERRUPTED",
       "findingRoute": "none"
     },
@@ -31,6 +35,14 @@
     },
     {
       "failureCode": "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+      "findingRoute": "maintenance-inbox"
+    },
+    {
+      "failureCode": "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS",
+      "findingRoute": "maintenance-inbox"
+    },
+    {
+      "failureCode": "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID",
       "findingRoute": "maintenance-inbox"
     },
     {
@@ -66,6 +78,14 @@
     {
       "failureCode": "NEX_RUN_SUPERSEDED",
       "retryDisposition": "superseded",
+      "maxAttempts": 0,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_RUN_CANCELLED",
+      "retryDisposition": "terminal",
       "maxAttempts": 0,
       "backoffPolicy": "none",
       "nextAttemptPolicy": "none",
@@ -128,6 +148,14 @@
       "policyVersion": "v1"
     },
     {
+      "failureCode": "NEX_MAINTENANCE_UNCLASSIFIED",
+      "retryDisposition": "manual",
+      "maxAttempts": 0,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
       "failureCode": "NEX_MAINTENANCE_INTERRUPTED",
       "retryDisposition": "retryable",
       "maxAttempts": 3,
@@ -161,6 +189,22 @@
     },
     {
       "failureCode": "NEX_MAINTENANCE_RETRY_EVIDENCE_INVALID",
+      "retryDisposition": "manual",
+      "maxAttempts": 0,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS",
+      "retryDisposition": "manual",
+      "maxAttempts": 0,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID",
       "retryDisposition": "manual",
       "maxAttempts": 0,
       "backoffPolicy": "none",

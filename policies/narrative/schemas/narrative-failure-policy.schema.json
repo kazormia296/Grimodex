@@ -16,8 +16,8 @@
     "nextAttemptInvariant": { "type": "string", "minLength": 1 },
     "findingRoutingMatrix": {
       "type": "array",
-      "minItems": 8,
-      "maxItems": 8,
+      "minItems": 11,
+      "maxItems": 11,
       "uniqueItems": true,
       "items": {
         "type": "object",

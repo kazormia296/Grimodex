@@ -3,6 +3,8 @@ import type {
   CreateHumanDerivedRevisionPayload,
   CreateHumanDerivedRevisionResult,
   AppendRevisionPayload,
+  ChronicleStageReceiptRef,
+  NarrativeExtractionWorkspaceBinding,
   ProposalSeed,
   ReviseAndDecidePayload,
   SaveProposalSetPayload,
@@ -211,10 +213,11 @@ export interface SaveChronicleProposalSetInput {
     string,
     ReconciliationEnvelopeV2<unknown>
   >;
-  readonly stageProvenanceBundle?: Readonly<{
-    readonly closure: unknown;
-    readonly binding: unknown;
-  }>;
+  /**
+   * Only receipt references may cross the ProposalSet boundary. The full C1
+   * closure is FinishTask-only and must remain transport-ephemeral.
+   */
+  readonly stageReceiptRefs?: readonly ChronicleStageReceiptRef[];
   readonly proposals: readonly {
     readonly proposalKey: string;
     readonly payload: CreateChronicleEventProposalPayloadV1;
@@ -223,13 +226,20 @@ export interface SaveChronicleProposalSetInput {
 
 export async function saveProposalSet(
   payload: SaveProposalSetPayload,
+  workspaceBinding: NarrativeExtractionWorkspaceBinding,
 ): Promise<SaveProposalSetResult> {
-  return narrativeExtractionSaveProposalSet(payload);
+  return narrativeExtractionSaveProposalSet(payload, workspaceBinding);
 }
 
-export async function saveChronicleProposalSet(
+/**
+ * Build the immutable rows for Chronicle's terminal ProposalSet without
+ * persisting them.  The coordinator passes this exact payload through its
+ * typed plan Task finish so Native can commit the rows, plan artifact, and
+ * Task/Run completion atomically.
+ */
+export async function buildChronicleProposalSetPayload(
   input: SaveChronicleProposalSetInput,
-): Promise<SaveProposalSetResult> {
+): Promise<SaveProposalSetPayload> {
   const proposals: ProposalSeed[] = await Promise.all(
     input.proposals.map(async (proposal) => ({
       proposalKey: proposal.proposalKey,
@@ -275,7 +285,7 @@ export async function saveChronicleProposalSet(
         })),
     })),
   );
-  return saveProposalSet({
+  return {
     runId: input.runId,
     projectId: input.projectId,
     proposalSetId: input.proposalSetId,
@@ -283,12 +293,27 @@ export async function saveChronicleProposalSet(
     summaryJson: {
       ...(input.summaryJson ?? {}),
       proposalCount: proposals.length,
-      ...(input.stageProvenanceBundle
-        ? { stageProvenanceBundle: input.stageProvenanceBundle }
+      ...(input.stageReceiptRefs
+        ? { chronicleStageReceiptRefs: input.stageReceiptRefs }
         : {}),
     },
     proposals,
-  });
+  };
+}
+
+/**
+ * Legacy direct save wrapper retained for non-terminal callers. Chronicle's
+ * production coordinator must use `buildChronicleProposalSetPayload` and the
+ * typed FinishTask boundary instead.
+ */
+export async function saveChronicleProposalSet(
+  input: SaveChronicleProposalSetInput,
+  workspaceBinding: NarrativeExtractionWorkspaceBinding,
+): Promise<SaveProposalSetResult> {
+  return saveProposalSet(
+    await buildChronicleProposalSetPayload(input),
+    workspaceBinding,
+  );
 }
 
 export async function createHumanDerivedRevision(

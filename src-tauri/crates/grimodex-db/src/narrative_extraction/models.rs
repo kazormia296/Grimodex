@@ -44,6 +44,21 @@ pub struct CreateTaskSeed {
 pub struct RunRefPayload {
     pub run_id: String,
     pub project_id: String,
+    /// Product-only fail-closed cancellation contract for a Chronicle Run
+    /// that Native most recently classified as durably blocked. Generic
+    /// coordinator cancellation leaves this absent.
+    #[serde(default)]
+    pub chronicle_blocked_discard: Option<ChronicleBlockedDiscardExpectation>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleBlockedDiscardExpectation {
+    pub next_task_id: String,
+    pub blocked_code: String,
+    pub run_spec_digest: String,
+    pub snapshot_digest: String,
+    pub catalog_digest: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -75,20 +90,41 @@ pub struct FinishTaskPayload {
     /// companion contract and cannot be inferred from artifact JSON.
     #[serde(default)]
     pub chronicle_stage_bundle: Option<ChronicleStageC1ExecutionBinding>,
+    /// Independently terminalized Chronicle stage receipts.  Unlike the C1
+    /// closure above this is a task-local, typed receipt batch: Native
+    /// verifies it against the finishing Task/Attempt and exact AI audit
+    /// evidence, then retains only the receipt/model-binding rows.  It makes
+    /// an Observation stage recoverable if the process exits before a later
+    /// synthesis task can aggregate the ephemeral closure.
+    #[serde(default)]
+    pub chronicle_stage_receipts: Vec<ChronicleStageTerminalReceipt>,
     /// Typed historical Scope-authority companion. Generic ArtifactInput JSON
     /// cannot mint its reserved artifact kind; Native re-derives this value
     /// from the durable Run and project tree before persistence.
     #[serde(default)]
     pub historical_scope_authority_basis: Option<NarrativeScopeAuthorityBasisV2>,
+    /// Chronicle's terminal ProposalSet must be saved in this Task's same
+    /// immediate transaction.  It is deliberately a typed FinishTask
+    /// companion rather than a second renderer-issued save command: a crash
+    /// can therefore leave either neither the review ledger nor both the
+    /// ledger and completed plan Task, never an orphaned ProposalSet.
+    #[serde(default)]
+    pub chronicle_plan_proposal_set: Option<ChroniclePlanProposalSetFinish>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChronicleStageC1ExecutionBinding {
+    /// The Task/Attempt currently being finished. It owns aggregation of the
+    /// ephemeral closure and is deliberately distinct from the selected model
+    /// Stage execution below in the multi-window production DAG.
     pub project_id: String,
     pub run_id: String,
     pub task_id: String,
     pub attempt_id: String,
+    pub stage_execution_owner_task_id: String,
+    pub stage_execution_owner_attempt_id: String,
+    pub stage_execution_owner_stage_execution_id: String,
     pub context_set_digest: String,
     pub component_contract_digest: String,
     pub final_request_digest: String,
@@ -263,6 +299,16 @@ pub struct SaveProposalSetPayload {
     #[serde(default)]
     pub summary_json: Option<Value>,
     pub proposals: Vec<ProposalSeed>,
+}
+
+/// Native-validated terminal ledger input for `chronicle.plan-proposals@1`.
+/// The nested payload remains the generic proposal-set shape for its proposal
+/// rows, but only this typed FinishTask route may bind it to the Chronicle
+/// plan Task/Attempt and make the Run complete.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChroniclePlanProposalSetFinish {
+    pub proposal_set: SaveProposalSetPayload,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -503,6 +549,39 @@ pub struct ListResumableRunsPayload {
     pub project_id: String,
     #[serde(default)]
     pub surface_path_id: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+/// Exact, limit-free authority query for one durable Review Run.
+///
+/// Unlike [`ListResumableRunsPayload`], all three coordinates are required so
+/// callers cannot mistake absence from a bounded discovery page for terminal
+/// Review state.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IsRunResumableForReviewPayload {
+    pub run_id: String,
+    pub project_id: String,
+    pub surface_path_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IsRunResumableForReviewResult {
+    pub run_id: String,
+    pub project_id: String,
+    pub surface_path_id: String,
+    pub resumable: bool,
+}
+
+/// Project-scoped discovery input for interrupted current Chronicle DAGs.
+/// This is deliberately separate from [`ListResumableRunsPayload`], whose
+/// contract is Review restoration for Runs that already own a ProposalSet.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListChronicleTaskResumeCandidatesPayload {
+    pub project_id: String,
     #[serde(default)]
     pub limit: Option<i64>,
 }

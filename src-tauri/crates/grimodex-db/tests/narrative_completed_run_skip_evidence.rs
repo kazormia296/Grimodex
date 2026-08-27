@@ -94,20 +94,6 @@ fn rebuild_report_digest() -> String {
     format!("sha256:{}", digest_plan(&rebuild_summary()))
 }
 
-/// The graph-state digest of this suite's fixture project, which owns no
-/// Durable Graph Edges. Mirrors `durable_graph_state_digest`'s canonical
-/// form for an empty edge table.
-fn empty_graph_state_digest() -> String {
-    format!(
-        "sha256:{}",
-        digest_plan(&json!({
-            "domain": "grimodex:narrative:durable-graph-state:v1",
-            "projectId": PROJECT_ID,
-            "edges": [],
-        }))
-    )
-}
-
 fn evidence() -> CompletedRunSkipEvidence {
     CompletedRunSkipEvidence {
         project_id: PROJECT_ID.to_string(),
@@ -120,7 +106,7 @@ fn evidence() -> CompletedRunSkipEvidence {
         rebuild_contract_version: REBUILD_RUN_KIND_CONTRACT_VERSION.to_string(),
         run_kind_contract_version: RUN_CONTRACT_VERSION.to_string(),
         report_digest: report_digest(),
-        graph_state_digest: empty_graph_state_digest(),
+        graph_state_digest: graph_state_digest(),
     }
 }
 
@@ -151,7 +137,7 @@ fn rebuild_evidence() -> CompletedRunSkipEvidence {
         rebuild_contract_version: REBUILD_RUN_KIND_CONTRACT_VERSION.to_string(),
         run_kind_contract_version: "1".to_string(),
         report_digest: rebuild_report_digest(),
-        graph_state_digest: empty_graph_state_digest(),
+        graph_state_digest: graph_state_digest(),
     }
 }
 

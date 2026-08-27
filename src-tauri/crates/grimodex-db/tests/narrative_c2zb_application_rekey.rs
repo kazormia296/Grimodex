@@ -10,8 +10,9 @@ use std::path::Path;
 
 use grimodex_db::narrative_extraction::{
     bootstrap_legacy_dependency_backfill_for_project, material_basis_digest, observation_digest,
-    stable_finding_identity, LegacyBackfillBootstrapOutcome, MaterialBasisInput,
-    ObservationDigestInput, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
+    plan_application_rekey, stable_finding_identity, LegacyBackfillBootstrapOutcome,
+    MaterialBasisInput, ObservationDigestInput, BUNDLED_FINDING_RULE_ID,
+    BUNDLED_FINDING_RULE_VERSION,
 };
 use grimodex_db::Database;
 use rusqlite::{params, Connection};
@@ -615,9 +616,354 @@ fn c2zb_fanout_without_finding_history_creates_all_application_edges() {
 }
 
 #[test]
+fn c2zb_defers_legacy_application_without_v2_run_edge_to_v3_backfill() {
+    let db = current_db_rewound_to_schema_31();
+    db.with_conn(|conn| {
+        seed_project(conn, EXACT, false)?;
+        conn.execute(
+            "DELETE FROM narrative_dependency_edges WHERE id = ?1",
+            [EXACT.edge_id],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed legacy Application without a v2 Run Edge");
+
+    db.migrate()
+        .expect("missing v2 edge must be delegated to v3 Backfill, not reject workspace open");
+    db.with_conn(|conn| {
+        let marker_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM schema_data_migrations WHERE migration_id = ?1",
+            [APPLICATION_REKEY_MARKER],
+            |row| row.get(0),
+        )?;
+        let application_edges: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+            params![
+                EXACT.project_id,
+                APPLICATION_CONSUMER_KIND,
+                EXACT.application_id
+            ],
+            |row| row.get(0),
+        )?;
+        let migration_epochs: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_semantic_epochs
+              WHERE project_id = ?1 AND reason = 'migration'",
+            [EXACT.project_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(marker_count, 1);
+        assert_eq!(
+            application_edges, 0,
+            "C2-ZB must not fabricate a v2 Run identity"
+        );
+        assert_eq!(migration_epochs, 0, "no Edge was re-keyed");
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify v3 Backfill deferral");
+}
+
+#[test]
+fn c2zb_defers_null_run_application_and_retains_its_existing_run_edge() {
+    let db = current_db_rewound_to_schema_31();
+    db.with_conn(|conn| {
+        seed_project(conn, EXACT, false)?;
+        conn.execute(
+            "UPDATE narrative_apply_commits SET run_id = NULL WHERE id = ?1",
+            [EXACT.commit_id],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed historical NULL ApplyCommit.run_id");
+
+    db.migrate()
+        .expect("NULL historical run lineage must be delegated to v3 Backfill");
+    db.with_conn(|conn| {
+        let retained: (String, String, String) = conn.query_row(
+            "SELECT consumer_kind, consumer_key, read_set_json
+               FROM narrative_dependency_edges WHERE id = ?1",
+            [EXACT.edge_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let application_edges: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+            params![
+                EXACT.project_id,
+                APPLICATION_CONSUMER_KIND,
+                EXACT.application_id
+            ],
+            |row| row.get(0),
+        )?;
+        assert_eq!(retained.0, RUN_CONSUMER_KIND);
+        assert_eq!(retained.1, EXACT.run_id);
+        assert_eq!(retained.2, format!("[\"{}\"]", EXACT.revision_token));
+        assert_eq!(
+            application_edges, 0,
+            "unattributed edge must remain untouched"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify NULL lineage edge retention");
+}
+
+#[test]
+fn c2zb_rekeys_only_application_proven_edges_and_retains_other_run_consumers() {
+    let db = current_db_rewound_to_schema_31();
+    db.with_conn(|conn| {
+        seed_project(conn, EXACT, false)?;
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                 read_set_json, created_at, owning_run_id)
+             VALUES ('c2zb-edge-unrelated-run', ?1, ?2, ?3,
+                     'project:scene:c2zb-unrelated', '[\"a\",\"b\"]', ?4, ?3)",
+            params![EXACT.project_id, RUN_CONSUMER_KIND, EXACT.run_id, SEEDED_AT],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed unrelated Run Consumer Edge");
+
+    db.migrate()
+        .expect("unrelated Run Consumer Edge must not block C2-ZB migration");
+    db.with_conn(|conn| {
+        let migrated_kind: String = conn.query_row(
+            "SELECT consumer_kind FROM narrative_dependency_edges WHERE id = ?1",
+            [EXACT.edge_id],
+            |row| row.get(0),
+        )?;
+        let retained: (String, String) = conn.query_row(
+            "SELECT consumer_kind, read_set_json
+               FROM narrative_dependency_edges WHERE id = 'c2zb-edge-unrelated-run'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(migrated_kind, APPLICATION_CONSUMER_KIND);
+        assert_eq!(retained.0, RUN_CONSUMER_KIND);
+        assert_eq!(retained.1, "[\"a\",\"b\"]");
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify exact-only re-key and Run Edge retention");
+}
+
+#[test]
+fn c2zb_retains_unmatched_run_edges_using_the_compatibility_owner_fallback() {
+    let cases = [
+        (
+            "snapshot-null-owner",
+            "c2zb-edge-unmatched-snapshot-null",
+            EXACT.run_id,
+            "snapshot:c2zb-run-exact",
+            None,
+            Some(EXACT.run_id),
+        ),
+        (
+            "snapshot-blank-owner",
+            "c2zb-edge-unmatched-snapshot-blank",
+            EXACT.run_id,
+            "snapshot:c2zb-run-exact",
+            Some(""),
+            Some(""),
+        ),
+        (
+            "non-snapshot-unresolved-owner",
+            "c2zb-edge-unmatched-unresolved-owner",
+            "c2zb-run-unmatched-unresolved",
+            "project:scene:c2zb-unmatched-unresolved",
+            Some("c2zb-run-unmatched-unresolved"),
+            Some("c2zb-run-unmatched-unresolved"),
+        ),
+    ];
+    for (
+        case,
+        edge_id,
+        consumer_key,
+        source_object_identity,
+        owning_run_id,
+        expected_owner_after_migration,
+    ) in cases
+    {
+        let db = current_db_rewound_to_schema_31();
+        db.with_conn(|conn| {
+            seed_project(conn, EXACT, false)?;
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                     read_set_json, created_at, owning_run_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, '[\"retained-a\",\"retained-b\"]', ?6, ?7)",
+                params![
+                    edge_id,
+                    EXACT.project_id,
+                    RUN_CONSUMER_KIND,
+                    consumer_key,
+                    source_object_identity,
+                    SEEDED_AT,
+                    owning_run_id
+                ],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap_or_else(|error| panic!("seed {case} Run Edge: {error:#}"));
+
+        db.with_conn(|conn| {
+            let plan = plan_application_rekey(conn, EXACT.project_id)?;
+            assert!(
+                plan.is_safe(),
+                "{case} must be a retained compatibility Edge, not migration-fatal: {:?}",
+                plan.invalid
+            );
+            assert!(plan.retained_run_edges.iter().any(|edge| {
+                edge.edge_id == edge_id
+                    && edge.run_id == consumer_key
+                    && edge.source_object_identity == source_object_identity
+            }));
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap_or_else(|error| panic!("plan {case} compatibility retention: {error:#}"));
+
+        db.migrate().unwrap_or_else(|error| {
+            panic!("{case} must be retained without blocking C2-ZB: {error:#}")
+        });
+        db.with_conn(|conn| {
+            let migrated_kind: String = conn.query_row(
+                "SELECT consumer_kind FROM narrative_dependency_edges WHERE id = ?1",
+                [EXACT.edge_id],
+                |row| row.get(0),
+            )?;
+            let retained: (String, String, String, String, Option<String>) = conn.query_row(
+                "SELECT consumer_kind, consumer_key, source_object_identity, read_set_json,
+                        owning_run_id
+                   FROM narrative_dependency_edges WHERE id = ?1",
+                [edge_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+            assert_eq!(migrated_kind, APPLICATION_CONSUMER_KIND);
+            assert_eq!(retained.0, RUN_CONSUMER_KIND);
+            assert_eq!(retained.1, consumer_key);
+            assert_eq!(retained.2, source_object_identity);
+            assert_eq!(retained.3, "[\"retained-a\",\"retained-b\"]");
+            assert_eq!(retained.4.as_deref(), expected_owner_after_migration);
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap_or_else(|error| panic!("verify {case} retention: {error:#}"));
+    }
+}
+
+#[test]
+fn c2zb_rejects_invalid_unmatched_run_edges_instead_of_retaining_them() {
+    let cases = [
+        "foreign-owner",
+        "consumer-owner-mismatch",
+        "invalid-consumer-key",
+        "invalid-source",
+        "snapshot-owner-mismatch",
+    ];
+    for case in cases {
+        let db = current_db_rewound_to_schema_31();
+        db.with_conn(|conn| {
+            seed_project(conn, EXACT, false)?;
+            if case == "foreign-owner" {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('c2zb-project-unmatched-foreign', 'Foreign')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, created_at, version, run_kind)
+                     VALUES ('c2zb-run-unmatched-foreign', 'c2zb-project-unmatched-foreign',
+                             'maintenance', '{}', '{}', 'foreign', 'completed', '{}', ?1, 0,
+                             'backfill')",
+                    [SEEDED_AT],
+                )?;
+            }
+            let (consumer_key, source_object_identity, owning_run_id) = match case {
+                "foreign-owner" => (
+                    "c2zb-run-unmatched-foreign",
+                    "project:scene:c2zb-unmatched-foreign",
+                    Some("c2zb-run-unmatched-foreign"),
+                ),
+                "consumer-owner-mismatch" => (
+                    "c2zb-run-unmatched-mismatched",
+                    "project:scene:c2zb-unmatched-mismatched",
+                    Some(EXACT.run_id),
+                ),
+                "invalid-consumer-key" => (
+                    " c2zb-run-unmatched-padded",
+                    "project:scene:c2zb-unmatched-padded",
+                    Some(EXACT.run_id),
+                ),
+                "invalid-source" => (
+                    EXACT.run_id,
+                    "not-a-source:c2zb-unmatched-invalid",
+                    Some(EXACT.run_id),
+                ),
+                "snapshot-owner-mismatch" => (
+                    EXACT.run_id,
+                    "snapshot:c2zb-run-unmatched-snapshot",
+                    Some(EXACT.run_id),
+                ),
+                _ => unreachable!("known unmatched Run Edge refusal case"),
+            };
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                     read_set_json, created_at, owning_run_id)
+                 VALUES ('c2zb-edge-unmatched-invalid', ?1, ?2, ?3, ?4,
+                         '[\"retained-a\",\"retained-b\"]', ?5, ?6)",
+                params![
+                    EXACT.project_id,
+                    RUN_CONSUMER_KIND,
+                    consumer_key,
+                    source_object_identity,
+                    SEEDED_AT,
+                    owning_run_id
+                ],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap_or_else(|error| panic!("seed {case} unmatched Run Edge: {error:#}"));
+
+        db.migrate()
+            .expect_err("invalid unmatched Run Edge must refuse C2-ZB atomically");
+        db.with_conn(|conn| {
+            assert_no_rekey_marker_or_epoch(conn, EXACT.project_id)?;
+            let exact_edge_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edges
+                  WHERE id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+                params![EXACT.edge_id, RUN_CONSUMER_KIND, EXACT.run_id],
+                |row| row.get(0),
+            )?;
+            let invalid_edge_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edges
+                  WHERE id = 'c2zb-edge-unmatched-invalid' AND consumer_kind = ?1",
+                [RUN_CONSUMER_KIND],
+                |row| row.get(0),
+            )?;
+            assert_eq!(exact_edge_count, 1, "refusal must retain the exact Edge");
+            assert_eq!(
+                invalid_edge_count, 1,
+                "refusal must not mutate the invalid unmatched Run Edge"
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap_or_else(|error| panic!("verify atomic refusal for {case}: {error:#}"));
+    }
+}
+
+#[test]
 fn c2zb_rejects_invalid_unattributed_foreign_owner_and_historical_collision_atomically() {
     let cases = [
-        "unattributed",
+        "read-set-mismatch",
+        "matched-owner-blank",
         "foreign-owner",
         "historical-collision",
         "ambiguous-fanout",
@@ -627,10 +973,17 @@ fn c2zb_rejects_invalid_unattributed_foreign_owner_and_historical_collision_atom
         db.with_conn(|conn| {
             seed_project(conn, EXACT, case == "ambiguous-fanout")?;
             match case {
-                "unattributed" => {
+                "read-set-mismatch" => {
                     conn.execute(
-                        "DELETE FROM narrative_projection_dependencies WHERE application_id = ?1",
-                        [EXACT.application_id],
+                        "UPDATE narrative_dependency_edges SET read_set_json = '[\"wrong-token\"]'
+                          WHERE id = ?1",
+                        [EXACT.edge_id],
+                    )?;
+                }
+                "matched-owner-blank" => {
+                    conn.execute(
+                        "UPDATE narrative_dependency_edges SET owning_run_id = '' WHERE id = ?1",
+                        [EXACT.edge_id],
                     )?;
                 }
                 "foreign-owner" => {
@@ -783,10 +1136,85 @@ fn c2zb_marker_failpoint_rolls_back_and_retry_is_safe() {
 }
 
 #[test]
-fn legacy_backfill_v3_emits_application_edges_bound_to_the_owning_run() {
+fn legacy_backfill_v3_refuses_pre_c2zb_marker_before_creating_run_or_edge_state() {
+    let db = current_db_rewound_to_schema_31();
+    db.with_conn(|conn| seed_project(conn, EXACT, false))
+        .expect("seed legacy Application on pre-marker fixture");
+
+    let before = db
+        .with_conn(|conn| {
+            Ok::<_, anyhow::Error>((
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+                    [EXACT.project_id],
+                    |row| row.get::<_, i64>(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id = ?1",
+                    [EXACT.project_id],
+                    |row| row.get::<_, i64>(0),
+                )?,
+            ))
+        })
+        .expect("snapshot pre-marker durable state");
+
+    let error = bootstrap_legacy_dependency_backfill_for_project(&db, EXACT.project_id)
+        .expect_err("v3 Backfill must reject a pre-C2-ZB workspace before phase 1");
+    assert!(
+        error.to_string().contains("NEX_C2ZB_MARKER_MISSING"),
+        "unexpected precondition error: {error:#}"
+    );
+
+    db.with_conn(|conn| {
+        let after = (
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+                [EXACT.project_id],
+                |row| row.get::<_, i64>(0),
+            )?,
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id = ?1",
+                [EXACT.project_id],
+                |row| row.get::<_, i64>(0),
+            )?,
+        );
+        assert_eq!(
+            after, before,
+            "precondition failure must not write Run or Edge state"
+        );
+        let v3_run_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs
+              WHERE project_id = ?1 AND work_key = ?2",
+            params![EXACT.project_id, BACKFILL_V3_WORK_KEY],
+            |row| row.get(0),
+        )?;
+        assert_eq!(v3_run_count, 0, "phase-1 Backfill Run must not be created");
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify pre-marker Backfill refusal is DML-free");
+}
+
+#[test]
+fn legacy_backfill_v3_emits_application_edges_bound_to_the_owning_run_after_c2zb() {
     let db = current_db_rewound_to_schema_31();
     db.with_conn(|conn| seed_project(conn, EXACT, false))
         .expect("seed legacy Application for the future Backfill writer");
+    db.migrate()
+        .expect("C2-ZB marker must be installed before the v3 Backfill writer runs");
+
+    db.with_conn(|conn| {
+        let marker_version: i64 = conn.query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [APPLICATION_REKEY_MARKER],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            marker_version, 1,
+            "fixture must carry the exact C2-ZB marker"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify C2-ZB marker");
 
     let outcome = bootstrap_legacy_dependency_backfill_for_project(&db, EXACT.project_id)
         .expect("run legacy Backfill writer");

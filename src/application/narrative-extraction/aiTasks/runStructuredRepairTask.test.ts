@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   runEventSynthesisTask,
+  type ChronicleSynthesisTerminalOutput,
   type EventSynthesisSend,
 } from "./runEventSynthesisTask";
 import {
@@ -880,6 +881,123 @@ describe("structured repair root-object contract", () => {
     });
   });
 
+  it("emits the shared C1 terminal-output matrix for root, repair, and deterministic-empty paths", async () => {
+    const terminalOutputs: ChronicleSynthesisTerminalOutput[] = [];
+    const rootStage = createEventStageExecution({
+      projectId: "project-test",
+      runId: "run-terminal-root",
+      taskId: "task-terminal-root",
+      attemptId: "attempt-terminal-root",
+      stageExecutionId: "event-terminal-root",
+    });
+    const repairRootStage = createEventStageExecution({
+      projectId: "project-test",
+      runId: "run-terminal-repair",
+      taskId: "task-terminal-repair",
+      attemptId: "attempt-terminal-repair",
+      stageExecutionId: "event-terminal-repair-root",
+    });
+    const emptyStage = createEventStageExecution({
+      projectId: "project-test",
+      runId: "run-terminal-empty",
+      taskId: "task-terminal-empty",
+      attemptId: "attempt-terminal-empty",
+      stageExecutionId: "event-terminal-empty",
+    });
+
+    await runEventSynthesisTask({
+      clusterRef: "cluster-root",
+      observations: [observation],
+      projectId: "project-test",
+      stageExecution: rootStage,
+      send: async () => ({
+        text: eventSynthesisResponse("cluster-root"),
+        ...usage,
+      }),
+      repairOnFailure: false,
+      onTerminalOutput: (output) => {
+        terminalOutputs.push(output);
+      },
+    });
+    await runEventSynthesisTask({
+      clusterRef: "cluster-repair",
+      observations: [observation],
+      projectId: "project-test",
+      stageExecution: repairRootStage,
+      send: async () => ({ text: "not-json", ...usage }),
+      repairSend: captureRepairSend(eventSynthesisResponse("cluster-repair"))
+        .send,
+      createStageExecutionId: () => "event-terminal-repair-child",
+      onTerminalOutput: (output) => {
+        terminalOutputs.push(output);
+      },
+    });
+    await runEventSynthesisTask({
+      clusterRef: "cluster-empty",
+      observations: [],
+      projectId: "project-test",
+      stageExecution: emptyStage,
+      onTerminalOutput: (output) => {
+        terminalOutputs.push(output);
+      },
+    });
+
+    expect(
+      terminalOutputs.map((output) => ({
+        disposition: output.disposition,
+        root: output.rootStageExecution.stageExecutionId,
+        terminal: output.terminalStageExecution.stageExecutionId,
+        eventCount: output.hypotheses.length,
+      })),
+    ).toEqual([
+      {
+        disposition: "root-success",
+        root: "event-terminal-root",
+        terminal: "event-terminal-root",
+        eventCount: 1,
+      },
+      {
+        disposition: "repair-success",
+        root: "event-terminal-repair-root",
+        terminal: "event-terminal-repair-child",
+        eventCount: 1,
+      },
+      {
+        disposition: "deterministic-empty",
+        root: "event-terminal-empty",
+        terminal: "event-terminal-empty",
+        eventCount: 0,
+      },
+    ]);
+    expect(terminalOutputs[1]?.terminalStageExecution).toMatchObject({
+      parentStageExecutionId: "event-terminal-repair-root",
+    });
+    expect(terminalOutputs[2]).toMatchObject({
+      rawObservations: [],
+      hypotheses: [],
+      eventOutput: {
+        clusterRef: "cluster-empty",
+        resolution: "no-events",
+        events: [],
+      },
+    });
+
+    const rootOutput = terminalOutputs[0];
+    expect(rootOutput).toBeDefined();
+    if (!rootOutput) return;
+    expect(rootOutput.parsedOutputDigest).toBe(
+      await digestStableJson({
+        domain: "chronicle.parsed-output/1",
+        kind: "chronicle.event-synthesis-output@1",
+        observationCount: 1,
+        eventCount: 1,
+        observationRefs: ["obs-1"],
+        rawObservationsDigest: rootOutput.rawObservationsDigest,
+        eventOutputDigest: await digestStableJson(rootOutput.eventOutput),
+      }),
+    );
+  });
+
   it("returns no events and audits a failed child for a wrapper repair output", async () => {
     const repair = captureRepairSend(
       '{"repairedJson":{"clusterRef":"cluster-1","events":[]}}',
@@ -1083,6 +1201,19 @@ describe("structured repair root-object contract", () => {
       version: 1,
       observations: [observation],
     });
+    const eventOutput = {
+      clusterRef: "cluster-1",
+      resolution: "single-event",
+      events: [
+        {
+          observationRefs: ["obs-1"],
+          titleSuggestion: "門が開く",
+          summary: "門が開いた",
+          actuality: "actual",
+          significance: "major",
+        },
+      ],
+    };
     const parsedOutputDigest = await digestStableJson({
       domain: "chronicle.parsed-output/1",
       kind: "chronicle.event-synthesis-output@1",
@@ -1090,6 +1221,7 @@ describe("structured repair root-object contract", () => {
       eventCount: 1,
       observationRefs: ["obs-1"],
       rawObservationsDigest,
+      eventOutputDigest: await digestStableJson(eventOutput),
     });
     expect(stageAudit).toMatchObject({
       rawObservationsDigest,

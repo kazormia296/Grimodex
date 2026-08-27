@@ -23,6 +23,8 @@ use super::dependency_edges::{
     canonical_source_object_identity, validate_stored_source_object_identity,
 };
 use super::finding_identity::stable_finding_identity;
+use super::legacy_backfill::{is_valid_completed_backfill_marker, CompletedBackfillMarker};
+use super::maintenance_lifecycle::load_completed_maintenance_run_in_tx;
 use super::semantic_epoch::create_epoch_in_tx;
 
 pub(crate) const C2_ZB_MIGRATION_ID: &str = "narrative-c2-application-rekey-v32";
@@ -36,7 +38,27 @@ struct ExistingApplicationEdge {
     id: String,
     read_set_json: String,
     owning_run_id: Option<String>,
-    owning_project_id: Option<String>,
+}
+
+/// The immutable Run lineage recorded by the Application's ApplyCommit.
+///
+/// C2-ZB may retain an already-written Application Edge under this original
+/// owner, or under the canonical v3 Backfill owner.  No other same-project
+/// Run is provenance for an Application Edge.
+#[derive(Debug, Clone)]
+struct ApplicationApplyLineage {
+    run_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ApplicationEdgeBackfillOwnerRun {
+    run_kind: String,
+    status: String,
+    spec_json: Option<String>,
+    semantic_epoch_id: Option<String>,
+    work_key: Option<String>,
+    completed_at: Option<String>,
+    outcome_summary_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,7 +99,7 @@ struct ProjectPreflight {
 /// unsupported and fails closed rather than being silently accepted or
 /// downgraded.
 pub(crate) fn migrate_narrative_application_rekey_v32(conn: &Connection) -> Result<bool> {
-    match marker_version(conn)? {
+    match read_c2zb_marker_version(conn)? {
         Some(version) if version == C2_ZB_CONTRACT_VERSION => return Ok(false),
         Some(version) => anyhow::bail!(
             "NEX_C2ZB_MARKER_UNSUPPORTED: marker contract version {version} is not current"
@@ -129,7 +151,24 @@ fn load_project_ids(conn: &Connection) -> Result<Vec<String>> {
     rows
 }
 
-fn marker_version(conn: &Connection) -> Result<Option<i64>> {
+/// Read the schema-owned C2-ZB completion marker.
+///
+/// Runtime writers must use [`require_current_c2zb_marker`] rather than
+/// querying `schema_data_migrations` themselves, so all consumers share the
+/// same exact-version contract as the migration entry point.
+pub(crate) fn read_c2zb_marker_version(conn: &Connection) -> Result<Option<i64>> {
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master
+              WHERE type = 'table' AND name = 'schema_data_migrations'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        table_exists,
+        "NEX_C2ZB_MARKER_MISSING: schema_data_migrations is unavailable"
+    );
     conn.query_row(
         "SELECT contract_version FROM schema_data_migrations
           WHERE migration_id = ?1",
@@ -140,6 +179,26 @@ fn marker_version(conn: &Connection) -> Result<Option<i64>> {
     .map_err(Into::into)
 }
 
+/// Require the exact C2-ZB contract marker before a v3 Backfill writer can
+/// create any durable Run or Edge state.
+///
+/// The C2-ZB migration moves historical Run-owned Application Edges before
+/// the v3 writer is allowed to emit new Application-owned Edges.  Keeping
+/// this check at the writer boundary prevents a direct/pre-open caller from
+/// committing phase 2 of Backfill on a pre-marker database and then making
+/// the subsequent migration unable to establish that boundary.
+pub(crate) fn require_current_c2zb_marker(conn: &Connection) -> Result<()> {
+    match read_c2zb_marker_version(conn)? {
+        Some(version) if version == C2_ZB_CONTRACT_VERSION => Ok(()),
+        Some(version) => anyhow::bail!(
+            "NEX_C2ZB_MARKER_UNSUPPORTED: marker contract version {version} is not current"
+        ),
+        None => anyhow::bail!(
+            "NEX_C2ZB_MARKER_MISSING: current C2-ZB marker is required before Legacy Dependency Backfill v3"
+        ),
+    }
+}
+
 fn preflight_plan(
     conn: &Connection,
     plan: &ApplicationRekeyPlan,
@@ -147,12 +206,6 @@ fn preflight_plan(
     BTreeMap<String, FindingHistorySnapshot>,
     BTreeMap<String, AttentionRehome>,
 )> {
-    ensure!(
-        plan.unattributed.is_empty(),
-        "NEX_C2ZB_PREFLIGHT_UNATTRIBUTED: project '{}' has unattributed legacy dependency evidence: {:?}",
-        plan.project_id,
-        plan.unattributed
-    );
     ensure!(
         plan.invalid.is_empty(),
         "NEX_C2ZB_PREFLIGHT_INVALID: project '{}' has invalid legacy provenance: {:?}",
@@ -165,13 +218,6 @@ fn preflight_plan(
         plan.project_id,
         plan.collisions
     );
-    ensure!(
-        plan.applications_without_run_id.is_empty(),
-        "NEX_C2ZB_PREFLIGHT_NULL_RUN: project '{}' has Applications with NULL ApplyCommit.run_id: {:?}",
-        plan.project_id,
-        plan.applications_without_run_id
-    );
-
     let mut candidates_by_old_consumer: BTreeMap<String, Vec<&ApplicationRekeyCandidate>> =
         BTreeMap::new();
     let mut exact_history = BTreeMap::new();
@@ -415,9 +461,8 @@ fn candidate_for_finding_identity<'a>(
 fn preflight_existing_application_edges(conn: &Connection, project_id: &str) -> Result<()> {
     let mut statement = conn.prepare(
         "SELECT e.id, e.consumer_key, e.source_object_identity, e.read_set_json,
-                e.owning_run_id, r.project_id
+                e.owning_run_id
            FROM narrative_dependency_edges e
-           LEFT JOIN narrative_extraction_runs r ON r.id = e.owning_run_id
           WHERE e.project_id = ?1 AND e.consumer_kind = ?2
           ORDER BY e.id",
     )?;
@@ -428,12 +473,10 @@ fn preflight_existing_application_edges(conn: &Connection, project_id: &str) -> 
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
             row.get::<_, Option<String>>(4)?,
-            row.get::<_, Option<String>>(5)?,
         ))
     })?;
     for row in rows {
-        let (edge_id, application_id, source, read_set_json, owning_run_id, owning_project_id) =
-            row?;
+        let (edge_id, application_id, source, read_set_json, owning_run_id) = row?;
         validate_consumer_identity(APPLICATION_CONSUMER_KIND, &application_id)?;
         ensure!(
             !source.trim().is_empty() && source.trim() == source,
@@ -446,27 +489,21 @@ fn preflight_existing_application_edges(conn: &Connection, project_id: &str) -> 
             )
         })?;
         validate_read_set_json(&read_set_json, &edge_id)?;
-        let owner = owning_run_id.ok_or_else(|| {
-            anyhow::anyhow!(
-                "NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_MISSING: Edge '{}' has no owning Run",
-                edge_id
-            )
-        })?;
-        validate_consumer_identity(RUN_CONSUMER_KIND, &owner)?;
-        ensure!(
-            owning_project_id.as_deref() == Some(project_id),
-            "NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_FOREIGN: Edge '{}' owner '{}' is not in project '{}'",
-            edge_id,
-            owner,
-            project_id
-        );
-        preflight_existing_application_provenance(
+        let lineage = preflight_existing_application_provenance(
             conn,
             project_id,
             &edge_id,
             &application_id,
             &source,
             &read_set_json,
+        )?;
+        validate_application_edge_owner_provenance(
+            conn,
+            project_id,
+            &edge_id,
+            &application_id,
+            owning_run_id.as_deref(),
+            &lineage,
         )?;
     }
     Ok(())
@@ -479,32 +516,8 @@ fn preflight_existing_application_provenance(
     application_id: &str,
     source_object_identity: &str,
     read_set_json: &str,
-) -> Result<()> {
-    let application_commit_project: Option<String> = conn
-        .query_row(
-            "SELECT c.project_id
-               FROM narrative_proposal_applications a
-               JOIN narrative_apply_commits c ON c.id = a.commit_id
-              WHERE a.id = ?1",
-            [application_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let application_commit_project = application_commit_project.ok_or_else(|| {
-        anyhow::anyhow!(
-            "NEX_C2ZB_PREFLIGHT_APPLICATION_PROVENANCE_MISSING: Edge '{}' Application '{}' has no durable ApplyCommit",
-            edge_id,
-            application_id
-        )
-    })?;
-    ensure!(
-        application_commit_project == project_id,
-        "NEX_C2ZB_PREFLIGHT_APPLICATION_PROJECT_MISMATCH: Edge '{}' Application '{}' belongs to project '{}' rather than '{}'",
-        edge_id,
-        application_id,
-        application_commit_project,
-        project_id
-    );
+) -> Result<ApplicationApplyLineage> {
+    let apply_lineage = load_application_apply_lineage(conn, project_id, edge_id, application_id)?;
 
     let observed_token = read_set_token(read_set_json)?;
     let mut statement = conn.prepare(
@@ -541,7 +554,156 @@ fn preflight_existing_application_provenance(
         application_id,
         exact_matches
     );
+    Ok(apply_lineage)
+}
+
+/// Verify the only two durable owner lineages C2-ZB may accept for an
+/// existing Application Edge:
+///
+/// - the Run recorded by the Application's immutable ApplyCommit; or
+/// - a completed canonical v3 Legacy Dependency Backfill Run.
+///
+/// Merely belonging to the same Project is deliberately insufficient.  In
+/// particular it must not let a Verify, Chronicle, or unrelated maintenance
+/// Run become durable provenance for an Application Edge during migration.
+fn validate_application_edge_owner_provenance(
+    conn: &Connection,
+    project_id: &str,
+    edge_id: &str,
+    application_id: &str,
+    owning_run_id: Option<&str>,
+    apply_lineage: &ApplicationApplyLineage,
+) -> Result<()> {
+    let owner_id = owning_run_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_MISSING: Edge '{}' has no owning Run",
+            edge_id
+        )
+    })?;
+    validate_consumer_identity(RUN_CONSUMER_KIND, owner_id)?;
+
+    // An ApplyCommit may legitimately be owned by an ordinary extraction Run.
+    // Resolve the common Run identity first, before consulting the
+    // maintenance-only Backfill coordinates.
+    let owner_project_id: Option<String> = conn
+        .query_row(
+            "SELECT project_id
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            [owner_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let owner_project_id = owner_project_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_FOREIGN: Edge '{}' owner '{}' is not in project '{}'",
+            edge_id,
+            owner_id,
+            project_id
+        )
+    })?;
+    ensure!(
+        owner_project_id == project_id,
+        "NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_FOREIGN: Edge '{}' owner '{}' is not in project '{}'",
+        edge_id,
+        owner_id,
+        project_id
+    );
+
+    if apply_lineage.run_id.as_deref() == Some(owner_id) {
+        return Ok(());
+    }
+
+    let owner_run: Option<ApplicationEdgeBackfillOwnerRun> = conn
+        .query_row(
+            "SELECT run_kind, status, spec_json, semantic_epoch_id,
+                    work_key, completed_at, outcome_summary_json
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            [owner_id],
+            |row| {
+                Ok(ApplicationEdgeBackfillOwnerRun {
+                    run_kind: row.get(0)?,
+                    status: row.get(1)?,
+                    spec_json: row.get(2)?,
+                    semantic_epoch_id: row.get(3)?,
+                    work_key: row.get(4)?,
+                    completed_at: row.get(5)?,
+                    outcome_summary_json: row.get(6)?,
+                })
+            },
+        )
+        .optional()?;
+    let owner_run = owner_run.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_FOREIGN: Edge '{}' owner '{}' is not in project '{}'",
+            edge_id,
+            owner_id,
+            project_id
+        )
+    })?;
+    // A v3 Backfill marker is not a substitute for its terminal lifecycle
+    // ownership.  Require the exact completed Run/Task/Attempt pair before
+    // accepting it as an Application Edge owner, matching readiness.
+    let has_completed_backfill_lifecycle =
+        load_completed_maintenance_run_in_tx(conn, owner_id).is_ok();
+    let is_canonical_v3_backfill = is_valid_completed_backfill_marker(
+        conn,
+        project_id,
+        &CompletedBackfillMarker {
+            run_kind: &owner_run.run_kind,
+            status: &owner_run.status,
+            spec_json: owner_run.spec_json.as_deref(),
+            semantic_epoch_id: owner_run.semantic_epoch_id.as_deref(),
+            work_key: owner_run.work_key.as_deref(),
+            completed_at: owner_run.completed_at.as_deref(),
+            outcome_summary_json: owner_run.outcome_summary_json.as_deref(),
+        },
+    )?;
+    ensure!(
+        has_completed_backfill_lifecycle && is_canonical_v3_backfill,
+        "NEX_C2ZB_PREFLIGHT_APPLICATION_EDGE_OWNER_PROVENANCE_INVALID: Edge '{}' Application '{}' owner '{}' is neither its ApplyCommit Run nor a completed canonical v3 Backfill Run",
+        edge_id,
+        application_id,
+        owner_id
+    );
     Ok(())
+}
+
+fn load_application_apply_lineage(
+    conn: &Connection,
+    project_id: &str,
+    edge_id: &str,
+    application_id: &str,
+) -> Result<ApplicationApplyLineage> {
+    let application_commit: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT c.project_id, c.run_id
+               FROM narrative_proposal_applications a
+               JOIN narrative_apply_commits c ON c.id = a.commit_id
+              WHERE a.id = ?1",
+            [application_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (application_commit_project, application_commit_run_id) = application_commit.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_C2ZB_PREFLIGHT_APPLICATION_PROVENANCE_MISSING: Edge '{}' Application '{}' has no durable ApplyCommit",
+            edge_id,
+            application_id
+        )
+    })?;
+    ensure!(
+        application_commit_project == project_id,
+        "NEX_C2ZB_PREFLIGHT_APPLICATION_PROJECT_MISMATCH: Edge '{}' Application '{}' belongs to project '{}' rather than '{}'",
+        edge_id,
+        application_id,
+        application_commit_project,
+        project_id
+    );
+    Ok(ApplicationApplyLineage {
+        run_id: application_commit_run_id,
+    })
 }
 
 fn preflight_existing_target(
@@ -566,13 +728,20 @@ fn preflight_existing_target(
         target.read_set_json,
         candidate.planned_read_set_json
     );
-    ensure!(
-        target.owning_run_id.is_some()
-            && target.owning_project_id.as_deref() == Some(plan.project_id.as_str()),
-        "NEX_C2ZB_PREFLIGHT_TARGET_OWNER_MISMATCH: Application '{}' Source '{}' does not name a valid same-project owner Run",
-        candidate.application_id,
-        candidate.source_object_identity
-    );
+    let apply_lineage = load_application_apply_lineage(
+        conn,
+        &plan.project_id,
+        &target.id,
+        &candidate.application_id,
+    )?;
+    validate_application_edge_owner_provenance(
+        conn,
+        &plan.project_id,
+        &target.id,
+        &candidate.application_id,
+        target.owning_run_id.as_deref(),
+        &apply_lineage,
+    )?;
     if target.id != candidate.edge_id {
         let history = load_finding_history(
             conn,
@@ -685,9 +854,8 @@ fn load_existing_target(
     source_object_identity: &str,
 ) -> Result<Option<ExistingApplicationEdge>> {
     conn.query_row(
-        "SELECT e.id, e.read_set_json, e.owning_run_id, r.project_id
+        "SELECT e.id, e.read_set_json, e.owning_run_id
            FROM narrative_dependency_edges e
-           LEFT JOIN narrative_extraction_runs r ON r.id = e.owning_run_id
           WHERE e.project_id = ?1 AND e.consumer_kind = ?2
             AND e.consumer_key = ?3 AND e.source_object_identity = ?4",
         params![
@@ -701,7 +869,6 @@ fn load_existing_target(
                 id: row.get(0)?,
                 read_set_json: row.get(1)?,
                 owning_run_id: row.get(2)?,
-                owning_project_id: row.get(3)?,
             })
         },
     )

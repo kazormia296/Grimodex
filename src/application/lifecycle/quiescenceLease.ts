@@ -18,6 +18,7 @@ import {
 export type QuiescenceLeaseReason =
   | "project-load"
   | "workspace-open"
+  | "workspace-restore"
   | "data-delete"
   | "window-close"
   | "audit-export"
@@ -143,6 +144,7 @@ function hasAuthorityBlockingLifecycle(): boolean {
     if (
       reason === "project-load" ||
       reason === "workspace-open" ||
+      reason === "workspace-restore" ||
       reason === "data-delete" ||
       reason === "audit-export" ||
       reason === "narrative-snapshot"
@@ -186,6 +188,15 @@ export function acquireQuiescenceLease(
   const narrativeSnapshotActive = [...activeLeases.values()].some(
     (activeReason) => activeReason === "narrative-snapshot",
   );
+  const workspaceRestoreActive = [...activeLeases.values()].some(
+    (activeReason) => activeReason === "workspace-restore",
+  );
+  if (reason === "workspace-restore" && activeLeases.size > 0) {
+    throw new QuiescenceLeaseConflictError(
+      reason,
+      "Cannot restore a workspace while another lifecycle is active",
+    );
+  }
   if (reason === "narrative-snapshot" && activeLeases.size > 0) {
     throw new QuiescenceLeaseConflictError(
       reason,
@@ -226,6 +237,15 @@ export function acquireQuiescenceLease(
     throw new QuiescenceLeaseConflictError(
       reason,
       `Cannot start ${reason} while a narrative snapshot is active`,
+    );
+  }
+  if (
+    workspaceRestoreActive &&
+    (reason === "project-load" || reason === "workspace-open")
+  ) {
+    throw new QuiescenceLeaseConflictError(
+      reason,
+      `Cannot start ${reason} while workspace restore is active`,
     );
   }
   // A close requested after data deletion began is allowed to acquire its

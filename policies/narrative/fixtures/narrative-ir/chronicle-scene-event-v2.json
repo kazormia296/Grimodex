@@ -736,6 +736,69 @@
         "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
         "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
       }
+    },
+    {
+      "id": "scope-override-cross-scene-reveal-basis",
+      "kind": "cross-runtime-parity",
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
+        },
+        "operation": "cross-runtime-scope-parity",
+        "sceneRef": "scene:event",
+        "proposalPayload": {
+          "eventId": "event:cross-scene-secret",
+          "title": "Cross-scene secret",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:cross-scene-secret"
+          ],
+          "evidenceDocumentRefs": [
+            "D000002"
+          ],
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "D000002"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "D000002",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:scene-reveal",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:scene-reveal",
+              "inclusive": true
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:scene-reveal",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:scene-reveal",
+              "inclusive": true
+            }
+          }
+        }
+      },
+      "expected": {
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:scene-reveal\"},\"kind\":\"interval\",\"until\":{\"inclusive\":true,\"ref\":\"reading:scene-reveal\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:event\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:scene-reveal\"},\"kind\":\"interval\",\"until\":{\"inclusive\":true,\"ref\":\"story:scene-reveal\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:b5c654ed41db6916cda303ae27ef07ba748b2d49172050fce00fa58da7ca9b4a"
+      }
     }
   ]
 }

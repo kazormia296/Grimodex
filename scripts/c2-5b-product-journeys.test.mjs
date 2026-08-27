@@ -869,6 +869,51 @@ test("restore fixture requires a typed completed legacy Backfill boundary", asyn
   );
 });
 
+test("restore fixture binds owner Run mutations to the exact active workspace", async () => {
+  const source = await readFile(
+    new URL(
+      "../electron/scripts/narrative-maintenance-product-journeys.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const seedBody = source.match(
+    /async function seedRestoreFixtureEvidence\([\s\S]*?\n}\n\n\/\*\*/,
+  )?.[0];
+  assert.ok(seedBody, "restore fixture seeding helper must remain inspectable");
+  const bindingCaptureAt = seedBody.indexOf(
+    '"narrative_extraction_capture_workspace_binding"',
+  );
+  const ownerRunAt = seedBody.indexOf('"narrative_extraction_create_run"');
+  const cancelRunAt = seedBody.indexOf('"narrative_extraction_cancel_run"');
+  assert.ok(
+    bindingCaptureAt >= 0 &&
+      bindingCaptureAt < ownerRunAt &&
+      ownerRunAt < cancelRunAt,
+    "the exact workspace binding must be captured before owner Run mutations",
+  );
+  const createRunBody = seedBody.slice(ownerRunAt, cancelRunAt);
+  const cancelRunBody = seedBody.slice(
+    cancelRunAt,
+    seedBody.indexOf("const edgeId", cancelRunAt),
+  );
+  assert.match(
+    seedBody,
+    /"narrative_extraction_capture_workspace_binding",\s*\{\s*expectedWorkspacePath:\s*workspace\s*}/,
+    "the fixture must bind mutations to its exact workspace path",
+  );
+  assert.match(
+    createRunBody,
+    /"narrative_extraction_create_run",[\s\S]*?payload:\s*\{[\s\S]*?tasks:\s*\[\],[\s\S]*?},\s*workspaceBinding,\s*}/,
+    "the owner Run must be created with the captured binding",
+  );
+  assert.match(
+    cancelRunBody,
+    /"narrative_extraction_cancel_run",\s*\{\s*payload:\s*\{\s*runId,\s*projectId:\s*context\.projectId\s*},\s*workspaceBinding,\s*}/,
+    "the owner Run must be cancelled with the same captured binding",
+  );
+});
+
 test("restore journey must exercise the Settings backup UI and rebind after reload", async () => {
   const source = await readFile(
     new URL(

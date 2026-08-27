@@ -25,7 +25,7 @@ use serde_json::json;
 use super::commit::digest_plan;
 use super::finding_identity::{
     material_basis_digest, stable_finding_identity, MaterialBasisInput, BUNDLED_FINDING_RULE_ID,
-    BUNDLED_FINDING_RULE_VERSION,
+    BUNDLED_FINDING_RULE_VERSION, MAINTENANCE_FAILURE_FINDING_RULE_ID,
 };
 use super::task_leases::with_immediate_transaction;
 use crate::idempotency::{
@@ -640,6 +640,9 @@ pub(crate) fn get_attention(
 /// sufficient proof: the old digest -> Observation -> Edge chain is the
 /// identity-preserving evidence. This is a migration-only repair; ambiguous,
 /// missing, and target-conflicting rows remain untouched and are reported.
+/// Attention exactly linked to a terminal maintenance-failure Observation is
+/// durable Inbox output, not an orphaned graph Consumer, and remains untouched
+/// without being reported as a migration ambiguity.
 pub(crate) fn rehome_orphaned_attention_in_tx(conn: &Connection) -> anyhow::Result<Vec<String>> {
     let mapping_tables_available: bool = conn.query_row(
         "SELECT EXISTS(
@@ -675,9 +678,20 @@ pub(crate) fn rehome_orphaned_attention_in_tx(conn: &Connection) -> anyhow::Resu
                      WHERE e.project_id = a.project_id
                        AND e.consumer_kind || ':' || e.consumer_key = a.finding_key
               )
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM narrative_maintenance_finding_observations o
+                     WHERE o.project_id = a.project_id
+                       AND o.finding_key = a.finding_key
+                       AND o.finding_identity = a.finding_identity
+                       AND o.material_basis_digest = a.material_basis_digest
+                       AND o.rule_id = ?1
+                )
               ORDER BY a.project_id, a.finding_key",
         )?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .query_map([MAINTENANCE_FAILURE_FINDING_RULE_ID], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     let mut unresolved = Vec::new();
 
@@ -1070,6 +1084,62 @@ mod tests {
             .with_conn(|conn| get_attention(conn, "proj-1", "legacy:old"))
             .expect("read old attention")
             .is_none());
+    }
+
+    #[test]
+    fn orphan_rehome_ignores_attention_exactly_linked_to_terminal_output() {
+        let db = fixture();
+        let finding_key = "narrative-maintenance-failure:verify:verify:epoch-1";
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-terminal-attention', 'proj-1', 1, 'initial',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_observations
+                    (id, project_id, run_id, semantic_epoch_id, edge_id,
+                     finding_key, reason_code, evidence_freshness_snapshot,
+                     material_basis_digest, observed_at, finding_identity,
+                     rule_id, rule_version, observation_digest)
+                 VALUES ('terminal-failure:v1:NEX_MAINTENANCE_UNCLASSIFIED:run-terminal',
+                         'proj-1', 'run-terminal', 'epoch-terminal-attention', NULL, ?1,
+                         'component-incompatible', 'unknown', 'terminal-material',
+                         '2026-08-15T00:00:00.000Z', 'terminal-identity', ?2, 1,
+                         'terminal-observation')",
+                params![finding_key, MAINTENANCE_FAILURE_FINDING_RULE_ID],
+            )?;
+            let mut attention = request(
+                AttentionDisposition::Dismissed,
+                "terminal-material",
+                None,
+                "req-terminal-attention",
+                0,
+            );
+            attention.finding_key = finding_key;
+            set_attention_in_tx(conn, attention)?;
+            Ok(())
+        })
+        .expect("seed exact terminal Attention output");
+
+        let unresolved = db
+            .with_conn(rehome_orphaned_attention_in_tx)
+            .expect("run orphan rehome");
+        assert!(
+            unresolved.is_empty(),
+            "terminal Inbox output is not a graph orphan to migrate"
+        );
+        let preserved = db
+            .with_conn(|conn| get_attention(conn, "proj-1", finding_key))
+            .expect("read terminal Attention")
+            .expect("terminal Attention must remain durable");
+        assert_eq!(
+            preserved.finding_identity.as_deref(),
+            Some("terminal-identity")
+        );
+        assert_eq!(preserved.material_basis_digest, "terminal-material");
     }
 
     #[test]

@@ -131,11 +131,40 @@ describe("NIR-0 Narrative IR contract", () => {
         /terminal receipt status matrix/i,
       ],
       [
+        "parsed output digest domain",
+        (value) => {
+          value.stageProvenance.parsedOutputDigestDomain = "wrong-domain";
+        },
+        /parsed-output domains/i,
+      ],
+      [
         "C1 owner digest",
         (value) => {
           value.stageProvenance.c1Completeness.ownerDigestsMatchExecution = false;
         },
         /C1 completeness.*owner digest/i,
+      ],
+      [
+        "C1 deterministic-empty status",
+        (value) => {
+          value.stageProvenance.c1Completeness.terminalOutputContract.acceptedTerminalStatusMatrix[2].zeroObservationOnly = false;
+        },
+        /C1 terminal-output status matrix/i,
+      ],
+      [
+        "C1 raw observations generic boundary",
+        (value) => {
+          value.stageProvenance.c1Completeness.terminalOutputContract.rawObservationsArtifact.reservedByC1 = true;
+        },
+        /generic raw-observation boundary/i,
+      ],
+      [
+        "C1 hypothesis semantic binding",
+        (value) => {
+          value.stageProvenance.c1Completeness.terminalOutputContract.hypothesisSemanticBinding =
+            "observation-refs-only";
+        },
+        /hypothesis semantic binding/i,
       ],
       [
         "repair lineage",
@@ -162,6 +191,14 @@ describe("NIR-0 Narrative IR contract", () => {
         "source literal pin",
         (value) => {
           value.stageProvenance.sourceLiteralPins.digestDomains[2].literal =
+            "wrong-domain";
+        },
+        /source literal pins/i,
+      ],
+      [
+        "parsed output source literal pin",
+        (value) => {
+          value.stageProvenance.sourceLiteralPins.digestDomains[6].literal =
             "wrong-domain";
         },
         /source literal pins/i,
@@ -803,13 +840,35 @@ describe("NIR-0 Narrative IR contract", () => {
         "proposal-binding",
       ],
       structuralDefense: {
-        kind: "sqlite-before-insert-trigger",
+        kind: "sqlite-trigger-suite",
         role: "structural-defense-only",
         state: "implemented-wired",
         productionEntryPoints: [
           "src-tauri/crates/grimodex-db/src/migrate.rs::repair_narrative_v2_monotonicity_trigger",
         ],
-        errorCode: "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
+        triggers: [
+          {
+            name: "narrative_proposal_revisions_v2_monotonicity_guard",
+            operation: "before-insert",
+            target: "narrative_proposal_revisions",
+            forbiddenTransition: "current-v2-to-non-v2-child",
+            errorCode: "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
+          },
+          {
+            name: "narrative_proposals_v2_pointer_monotonicity_guard",
+            operation: "before-update-of-current_revision_id",
+            target: "narrative_proposals",
+            forbiddenTransition: "current-v2-to-non-v2-current-pointer",
+            errorCode: "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
+          },
+          {
+            name: "narrative_proposal_revisions_v2_immutable_update_guard",
+            operation: "before-update",
+            target: "narrative_proposal_revisions",
+            forbiddenTransition: "v2-revision-mutation",
+            errorCode: "NEX_REVISION_V2_IMMUTABLE",
+          },
+        ],
       },
       contractFreezeOnly: false,
     });
@@ -837,9 +896,26 @@ describe("NIR-0 Narrative IR contract", () => {
     const staleErrors = validate(staleDeferred);
     assert.ok(
       staleErrors.some((error) =>
-        /implemented-wired.*migrate\.rs/i.test(error),
+        /trigger suite.*insert.*current-pointer.*immutable-v2 update/i.test(
+          error,
+        ),
       ),
       `expected stale deferred-trigger declaration error: ${JSON.stringify(staleErrors)}`,
+    );
+
+    const missingUpdateGuard = structuredClone(contract);
+    missingUpdateGuard.monotonicity.structuralDefense.triggers =
+      missingUpdateGuard.monotonicity.structuralDefense.triggers.filter(
+        (trigger) =>
+          trigger.name !==
+          "narrative_proposal_revisions_v2_immutable_update_guard",
+      );
+    const missingUpdateErrors = validate(missingUpdateGuard);
+    assert.ok(
+      missingUpdateErrors.some((error) =>
+        /trigger suite.*immutable-v2 update/i.test(error),
+      ),
+      `expected missing immutable update guard to fail closed: ${JSON.stringify(missingUpdateErrors)}`,
     );
   });
 

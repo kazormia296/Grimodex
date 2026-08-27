@@ -31,7 +31,8 @@ use super::reconciliation_envelope::{
     ensure_v2_proposal_payload_digest, validate_reconciliation_envelope, ORIGIN_ENVELOPED,
 };
 use super::repository::{
-    ensure_proposal_not_applied, ensure_v2_proposal_evidence_binding, insert_source_basis_rows,
+    ensure_current_chronicle_proposal_set_unconsumed, ensure_proposal_not_applied,
+    ensure_v2_proposal_evidence_binding, insert_source_basis_rows,
 };
 use super::task_leases::with_immediate_transaction;
 use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
@@ -106,6 +107,7 @@ pub(crate) fn create_human_derived_revision_in_tx_with_authorities(
         "NEX_HUMAN_DERIVATION_TRANSACTION_REQUIRED: Human derivation requires a caller-owned transaction"
     );
     ensure_proposal_not_applied(conn, &request.proposal_id)?;
+    ensure_current_chronicle_proposal_set_unconsumed(conn, &request.proposal_id)?;
 
     let proposal_project: Option<String> = conn
         .query_row(
@@ -481,20 +483,15 @@ fn build_human_envelope(
     } else {
         None
     };
-    // C2A cannot yet materialize a scope-override child faithfully: §6.3
-    // requires the child to add the scope-resolution Dependency for the
-    // resolver input, refresh Scope/Registry/Oracle inputs, drop obsolete
-    // Scope Dependencies, and recompute dependencySetDigest and
-    // materialBasisDigest — none of which this parent-cloned Envelope does.
-    // Until that materialization is wired, fail closed (after the trusted
-    // scope authority-binding checks above, so a forged sidecar still
-    // surfaces its specific mismatch code) instead of persisting an
-    // immutable child whose Material Basis omits its own Scope inputs.
-    if derivation_kind == "scope-override" {
-        anyhow::bail!(
-            "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE: Native scope authority cannot yet rebuild a scope-override Material Basis; C2A persistence is rejected"
-        );
-    }
+    // C2B supplies the rebuilt Material Basis below.  Keep direct C2A
+    // ScopeOverride fail-closed, but do not reject the fully authorized C2B
+    // route after it has rebuilt the ScopeResolution source/dependency
+    // closure.  The guard follows trusted-sidecar validation above so forged
+    // sidecars still receive their specific authority error.
+    anyhow::ensure!(
+        derivation_kind != "scope-override" || trusted_material_basis.is_some(),
+        "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE: Native scope authority cannot materialize a scope-override child without a rebuilt C2B Material Basis"
+    );
     let mut derivation_context = derivation_context;
     if let Some(trusted_scope_v2) = trusted_scope_v2 {
         anyhow::ensure!(
