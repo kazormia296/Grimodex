@@ -944,11 +944,26 @@ test("restore fixture readiness requires a current completed Freshness and relea
       mutate((readiness) => (readiness.feedAndCursor.feedHead = 3.5)),
     ],
     [
+      "fractional feed and acknowledged head",
+      mutate((readiness) => {
+        readiness.feedAndCursor.feedHead = 3.5;
+        readiness.feedAndCursor.cursor.acknowledgedThrough = 3.5;
+      }),
+    ],
+    [
       "unsafe feed head",
       mutate(
         (readiness) =>
           (readiness.feedAndCursor.feedHead = Number.MAX_SAFE_INTEGER + 1),
       ),
+    ],
+    [
+      "unsafe feed and acknowledged head",
+      mutate((readiness) => {
+        readiness.feedAndCursor.feedHead = Number.MAX_SAFE_INTEGER + 1;
+        readiness.feedAndCursor.cursor.acknowledgedThrough =
+          Number.MAX_SAFE_INTEGER + 1;
+      }),
     ],
     [
       "fractional acknowledged head",
