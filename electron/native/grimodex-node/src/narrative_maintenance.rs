@@ -8,6 +8,7 @@
 use serde::Serialize;
 
 use grimodex_db::narrative_extraction::{
+    discover_before_cutover_maintenance_work_with_coordinates,
     discover_durable_maintenance_work_with_coordinates, effective_maintenance_coordinates,
     DesiredWork, MaintenanceWorkRequest, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
     MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
@@ -19,6 +20,7 @@ pub(crate) enum WakeReason {
     WorkspaceOpened,
     RestoreCompleted,
     SemanticEpochRotated,
+    BeforeCutover,
 }
 
 impl WakeReason {
@@ -27,6 +29,7 @@ impl WakeReason {
             "workspace-opened" => Ok(Self::WorkspaceOpened),
             "restore-completed" => Ok(Self::RestoreCompleted),
             "semantic-epoch-rotated" => Ok(Self::SemanticEpochRotated),
+            "before-cutover" => Ok(Self::BeforeCutover),
             _ => anyhow::bail!(
                 "NEX_MAINTENANCE_DISCOVERY_INVALID_REASON: '{value}' is not a supported wake reason"
             ),
@@ -38,6 +41,7 @@ impl WakeReason {
             Self::WorkspaceOpened => "workspace-opened",
             Self::RestoreCompleted => "restore-completed",
             Self::SemanticEpochRotated => "semantic-epoch-rotated",
+            Self::BeforeCutover => "before-cutover",
         }
     }
 }
@@ -93,12 +97,19 @@ pub(crate) fn discover_all(
     let mut page_work = Vec::new();
     let effective_coordinates = effective_maintenance_coordinates(ci_config)?;
     for project_id in project_ids {
-        let planned = discover_durable_maintenance_work_with_coordinates(
-            db,
-            &project_id,
-            reason.durable_reason(),
-            Some(&effective_coordinates),
-        )?
+        let planned = match reason {
+            WakeReason::BeforeCutover => discover_before_cutover_maintenance_work_with_coordinates(
+                db,
+                &project_id,
+                Some(&effective_coordinates),
+            )?,
+            _ => discover_durable_maintenance_work_with_coordinates(
+                db,
+                &project_id,
+                reason.durable_reason(),
+                Some(&effective_coordinates),
+            )?,
+        }
         .into_iter()
         .map(work_request)
         .collect::<Vec<_>>();
@@ -129,7 +140,8 @@ mod tests {
     use super::*;
     use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
     use grimodex_db::narrative_extraction::{
-        run_dependency_verify_for_project, AutomaticRunKind, NarrativeMaintenanceCiTrigger,
+        run_dependency_verify_for_project, run_system_work_cycle, AutomaticRunKind,
+        MaintenanceCycleRequest, NarrativeMaintenanceCiTrigger, RecoveryMode,
     };
     use serde_json::json;
 
@@ -146,6 +158,10 @@ mod tests {
         assert_eq!(
             WakeReason::parse("semantic-epoch-rotated").unwrap(),
             WakeReason::SemanticEpochRotated
+        );
+        assert_eq!(
+            WakeReason::parse("before-cutover").unwrap(),
+            WakeReason::BeforeCutover
         );
         assert!(WakeReason::parse("workspace:restored").is_err());
         assert!(WakeReason::parse("repair").is_err());
@@ -246,5 +262,128 @@ mod tests {
         assert_eq!(work.len(), 1, "changed graph coordinate must reach Verify");
         assert_eq!(work[0].project_id, "default-project");
         assert_eq!(work[0].run_kind, AutomaticRunKind::Verify);
+    }
+
+    #[test]
+    fn before_cutover_discovery_starts_with_verify_after_a_reusable_verify() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        let backfill_spec = json!({ "backfillAlgorithmVersion": "3" }).to_string();
+        let backfill_outcome = json!({
+            "maintenancePhase": "backfill-complete",
+            "backfillAlgorithmVersion": "3",
+            "semanticEpochId": "epoch-1",
+            "summary": {
+                "epoch_created": true,
+                "contributions_created": 0,
+                "edges_created": 0,
+                "applications_without_run_id": 0
+            }
+        })
+        .to_string();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'default-project', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, outcome_summary_json, created_at, completed_at,
+                     run_kind, semantic_epoch_id, work_key)
+                 VALUES ('backfill-complete', 'default-project', 'maintenance', ?1, ?1,
+                         'sha256:backfill', 'completed', '{}', ?2,
+                         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
+                         'backfill', 'epoch-1', 'legacy-dependency-backfill:v3')",
+                [backfill_spec.as_str(), backfill_outcome.as_str()],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed completed backfill boundary");
+
+        run_dependency_verify_for_project(&db, "default-project")
+            .expect("baseline Verify must persist durable evidence");
+
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority:test".to_string(),
+            generation: 1,
+        };
+        let discovered = discover_all(&db, binding, WakeReason::BeforeCutover, None)
+            .expect("discover before-cutover preparation");
+        let work = discovered
+            .pages
+            .into_iter()
+            .flat_map(|page| page.work)
+            .next()
+            .expect("Verify work must be dispatchable");
+        assert_eq!(work.run_kind, AutomaticRunKind::Verify);
+        assert_eq!(work.semantic_epoch_id.as_deref(), Some("epoch-1"));
+
+        let followup = discover_durable_maintenance_work_with_coordinates(
+            &db,
+            "default-project",
+            "before-cutover-follow-up",
+            None,
+        )
+        .expect("discover durable BeforeCutover follow-up")
+        .expect("completed Verify must hand off to Rebuild");
+        assert_eq!(followup.run_kind, AutomaticRunKind::RebuildDerived);
+        assert_eq!(followup.semantic_epoch_id.as_deref(), Some("epoch-1"));
+
+        let request = MaintenanceCycleRequest {
+            work: vec![work],
+            wake_project_ids: Vec::new(),
+            workspace_binding: None,
+        };
+        let cycle = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)
+            .expect("BeforeCutover Verify/Rebuild chain");
+        assert!(
+            !cycle.has_more,
+            "the bounded preparation chain should drain"
+        );
+        let phases: Vec<(String, String)> = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT run_kind, status
+                       FROM narrative_extraction_runs
+                      WHERE project_id = 'default-project'
+                        AND run_kind IN ('dependency-verify', 'semantic-index-rebuild')
+                      ORDER BY created_at ASC, rowid ASC",
+                )?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<std::result::Result<Vec<(String, String)>, _>>()?;
+                Ok::<_, anyhow::Error>(rows)
+            })
+            .expect("read preparation phase ledger");
+        assert!(phases.len() >= 4);
+        assert_eq!(
+            &phases[phases.len() - 3..],
+            &[
+                ("dependency-verify".to_string(), "completed".to_string()),
+                (
+                    "semantic-index-rebuild".to_string(),
+                    "completed".to_string()
+                ),
+                ("dependency-verify".to_string(), "completed".to_string()),
+            ]
+        );
+        let repeated = discover_all(
+            &db,
+            MaintenanceWorkspaceBinding {
+                authority_id: "authority:test".to_string(),
+                generation: 1,
+            },
+            WakeReason::BeforeCutover,
+            None,
+        )
+        .expect("repeat BeforeCutover discovery");
+        assert!(
+            repeated.pages.is_empty(),
+            "a completed current-Epoch chain must be idempotent"
+        );
     }
 }

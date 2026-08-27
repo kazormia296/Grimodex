@@ -21,7 +21,7 @@ export interface NarrativeMaintenanceRequest {
   semanticEpochId?: string | null;
 }
 
-/** DTO delivered to the future main-only NAPI cycle method. */
+/** DTO delivered to the main-only NAPI maintenance cycle method. */
 export interface NarrativeMaintenanceWork {
   projectId: string;
   runKind: NarrativeMaintenanceRunKind;
@@ -47,7 +47,7 @@ interface PendingNarrativeMaintenanceWork extends NarrativeMaintenanceWork {
 }
 
 /**
- * Request delivered to the future main-only NAPI cycle method. Empty `work`
+ * Request delivered to the main-only NAPI maintenance cycle method. Empty `work`
  * is valid only when `wakeProjectIds` names the durable native backlog scope;
  * this keeps an empty wake meaningful across scheduler/backend boundaries.
  */

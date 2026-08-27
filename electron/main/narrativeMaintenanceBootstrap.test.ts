@@ -39,6 +39,7 @@ function fakeScheduler() {
 function fakeCoordinator() {
   return {
     handleBackendEvent: vi.fn(),
+    requestBeforeCutoverPreparation: vi.fn(),
     requestRediscovery: vi.fn(),
     drainWakeOutbox: vi.fn(async () => {}),
     dispose: vi.fn(),

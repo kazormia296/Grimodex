@@ -1160,6 +1160,13 @@ impl MaintenanceCycleRequest {
                 !item.reasons.is_empty(),
                 "NEX_MAINTENANCE_INVALID_REQUEST: at least one reason is required"
             );
+            anyhow::ensure!(
+                !item
+                    .reasons
+                    .iter()
+                    .any(|reason| reason == BEFORE_CUTOVER_FOLLOW_UP_REASON),
+                "NEX_MAINTENANCE_INVALID_REQUEST: C2-ZC follow-up reason is Rust-internal"
+            );
             let epoch = item
                 .semantic_epoch_id
                 .clone()
@@ -1674,6 +1681,55 @@ pub fn discover_durable_maintenance_work(
     discover_durable_maintenance_work_with_coordinates(db, project_id, reason, None)
 }
 
+/// Discover the first durable work item for a C2-ZC readiness wake.
+///
+/// `BeforeCutover` is a Verify-owned trigger: even when a previous clean
+/// Verify is reusable, the trigger must execute one current Verify before its
+/// Rebuild decision. Once that Verify/Rebuild/confirmation chain has already
+/// completed, a repeated freshness wake is a no-op. Keeping this distinction
+/// in the Rust state machine makes the wake restart-safe without asking main
+/// to infer phase state from a process-local flag.
+pub fn discover_before_cutover_maintenance_work_with_coordinates(
+    db: &Database,
+    project_id: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+) -> anyhow::Result<Option<DesiredWork>> {
+    let discovered = discover_durable_maintenance_work_with_coordinates(
+        db,
+        project_id,
+        "before-cutover",
+        coordinates,
+    )?;
+    if discovered.is_some() {
+        return Ok(discovered);
+    }
+
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            let Some(current_epoch_id) =
+                super::semantic_epoch::get_current_epoch(conn, project_id)?.map(|epoch| epoch.id)
+            else {
+                return Ok(None);
+            };
+            let runs = load_durable_maintenance_runs(conn, project_id)?;
+            let latest_completed_rebuild =
+                select_latest_relevant_run(&runs, Some(&current_epoch_id), false, |run| {
+                    run.run_kind == "semantic-index-rebuild" && run.status == "completed"
+                })?;
+            if latest_completed_rebuild.as_ref().is_some_and(|run| {
+                completed_rebuild_outcome_is_current(project_id, &current_epoch_id, run)
+            }) {
+                return Ok(None);
+            }
+            let trigger = MaintenanceTrigger::BeforeCutover {
+                project_id: project_id.to_string(),
+                semantic_epoch_id: current_epoch_id,
+            };
+            Ok(plan_maintenance_trigger(&trigger)?.into_iter().next())
+        })
+    })
+}
+
 /// Discover durable work using one effective coordinate set selected by the
 /// native caller. The coordinate set is computed once per live authority
 /// operation and is used only for Verify skip evidence; the durable ledger
@@ -1847,6 +1903,24 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
                         reason.to_string(),
                     )?));
                 }
+                if reason == BEFORE_CUTOVER_FOLLOW_UP_REASON
+                    && !latest_completed_rebuild.as_ref().is_some_and(|run| {
+                        completed_rebuild_outcome_is_current(project_id, &current_epoch_id, run)
+                    })
+                {
+                    // The first BeforeCutover wake is deliberately Verify-
+                    // owned. Once that Verify has completed, this internal
+                    // follow-up reason is the durable hand-off to the
+                    // conditional Rebuild; it is never accepted from a
+                    // renderer or an arbitrary N-API caller.
+                    return Ok(Some(DesiredWork::new_with_epoch(
+                        project_id.to_string(),
+                        AutomaticRunKind::RebuildDerived,
+                        REBUILD_DERIVED_WORK_KEY,
+                        Some(current_epoch_id),
+                        reason.to_string(),
+                    )?));
+                }
                 return Ok(None);
             }
             // Non-clean and not rebuildable: duplicate Edges, cross-project
@@ -1922,6 +1996,25 @@ fn completed_rebuild_outcome_is_current(
         &outcome,
     )
     .is_ok()
+}
+
+const BEFORE_CUTOVER_FOLLOW_UP_REASON: &str = "before-cutover-follow-up";
+
+fn maintenance_rediscovery_reason(item: &DesiredWork) -> &str {
+    if item.run_kind == AutomaticRunKind::Verify
+        && item.reasons.iter().any(|reason| {
+            matches!(
+                reason.as_str(),
+                "before-cutover" | BEFORE_CUTOVER_FOLLOW_UP_REASON
+            )
+        })
+    {
+        return BEFORE_CUTOVER_FOLLOW_UP_REASON;
+    }
+    item.reasons
+        .first()
+        .map(String::as_str)
+        .unwrap_or("durable-wake")
 }
 
 fn validate_discovered_verify_outcome(
@@ -2270,7 +2363,14 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
 
         // Verify-only completed-run skip is checked before recovery. Rebuild
         // completed rows are intentionally never reused.
-        if item.run_kind == AutomaticRunKind::Verify {
+        if item.run_kind == AutomaticRunKind::Verify
+            && !item.reasons.iter().any(|reason| {
+                matches!(
+                    reason.as_str(),
+                    "before-cutover" | BEFORE_CUTOVER_FOLLOW_UP_REASON
+                )
+            })
+        {
             let expected = verify_skip_expectation(
                 &item.project_id,
                 item.semantic_epoch_id.as_deref().unwrap_or_default(),
@@ -2281,10 +2381,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                 let next = discover_durable_maintenance_work_with_coordinates(
                     db,
                     &item.project_id,
-                    item.reasons
-                        .first()
-                        .map(String::as_str)
-                        .unwrap_or("durable-wake"),
+                    maintenance_rediscovery_reason(&item),
                     Some(&effective_coordinates),
                 )?;
                 match next {
@@ -2336,10 +2433,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                     if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                         db,
                         &item.project_id,
-                        item.reasons
-                            .first()
-                            .map(String::as_str)
-                            .unwrap_or("durable-wake"),
+                        maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
                     )? {
                         queue.push_back(next);
@@ -2474,10 +2568,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                     let next = discover_durable_maintenance_work_with_coordinates(
                         db,
                         &item.project_id,
-                        item.reasons
-                            .first()
-                            .map(String::as_str)
-                            .unwrap_or("durable-wake"),
+                        maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
                     )?;
                     match next {
@@ -2517,10 +2608,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                     if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                         db,
                         &item.project_id,
-                        item.reasons
-                            .first()
-                            .map(String::as_str)
-                            .unwrap_or("durable-wake"),
+                        maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
                     )? {
                         queue.push_back(next);
@@ -2564,10 +2652,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                 if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                     db,
                     &item.project_id,
-                    item.reasons
-                        .first()
-                        .map(String::as_str)
-                        .unwrap_or("durable-wake"),
+                    maintenance_rediscovery_reason(&item),
                     Some(&effective_coordinates),
                 )? {
                     queue.push_back(next);
@@ -4230,6 +4315,27 @@ mod tests {
         let result = coalesce_desired_work([first, second]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].reasons, ["a", "b"]);
+    }
+
+    #[test]
+    fn preflight_rejects_rust_internal_c2zc_follow_up_reason() {
+        let request = MaintenanceCycleRequest {
+            work: vec![MaintenanceWorkRequest {
+                project_id: "project".to_string(),
+                run_kind: AutomaticRunKind::Verify,
+                work_key: "verify:epoch-1".to_string(),
+                semantic_epoch_id: Some("epoch-1".to_string()),
+                reasons: vec![BEFORE_CUTOVER_FOLLOW_UP_REASON.to_string()],
+            }],
+            wake_project_ids: Vec::new(),
+            workspace_binding: None,
+        };
+        let error = request
+            .normalized_work()
+            .expect_err("internal follow-up must not be accepted on the wire");
+        assert!(error
+            .to_string()
+            .contains("C2-ZC follow-up reason is Rust-internal"));
     }
 
     #[test]

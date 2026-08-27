@@ -93,6 +93,23 @@ describe("createNarrativeFreshnessScheduler", () => {
     expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
   });
 
+  it("C2-ZCのexpected NOT_READYだけをactivation ownerへ通知する", async () => {
+    const runNarrativeFreshnessCycle = vi.fn().mockResolvedValue(
+      JSON.stringify({ hasMore: false, cutoverNotReady: true }),
+    );
+    const onCutoverNotReady = vi.fn();
+    const scheduler = createNarrativeFreshnessScheduler(
+      { runNarrativeFreshnessCycle },
+      { warn: vi.fn(), onCutoverNotReady },
+    );
+    schedulers.push(scheduler);
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(onCutoverNotReady).toHaveBeenCalledOnce();
+  });
+
   it("in-flight cycleを重複実行しない", async () => {
     const first = deferred<string | null>();
     const runNarrativeFreshnessCycle = vi

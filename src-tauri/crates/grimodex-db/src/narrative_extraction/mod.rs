@@ -184,6 +184,7 @@ pub use maintenance_route_registry::{
 pub use maintenance_runtime::{
     canonical_work_key, canonical_work_key_for_epoch, classify_failure, coalesce_desired_work,
     decide_execution, decide_run_recovery, decide_run_recovery_for_epoch,
+    discover_before_cutover_maintenance_work_with_coordinates,
     discover_durable_maintenance_work, discover_durable_maintenance_work_with_config,
     discover_durable_maintenance_work_with_coordinates, effective_maintenance_coordinates,
     plan_maintenance_trigger, preflight_maintenance_cycle_request, read_run_ledger,

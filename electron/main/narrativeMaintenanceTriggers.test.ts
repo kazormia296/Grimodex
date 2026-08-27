@@ -98,6 +98,39 @@ describe("narrative maintenance trigger coordinator", () => {
     coordinator.dispose();
   });
 
+  it("routes an expected C2-ZC NOT_READY wake through BeforeCutover discovery", async () => {
+    const scheduler = makeScheduler();
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery("authority-cutover", 9, [
+        [
+          {
+            projectId: "project-1",
+            runKind: "dependency-verify",
+            workKey: "dependency-verify:epoch-9",
+            semanticEpochId: "epoch-9",
+            reasons: ["before-cutover"],
+          },
+        ],
+      ]),
+    );
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      { discoverNarrativeMaintenanceWork },
+      scheduler,
+    );
+
+    coordinator.requestBeforeCutoverPreparation();
+    await vi.runAllTimersAsync();
+
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledWith(
+      "before-cutover",
+    );
+    expect(scheduler.requestManyWithBinding).toHaveBeenCalledWith(
+      [expect.objectContaining({ reason: "before-cutover" })],
+      { authorityId: "authority-cutover", generation: 9 },
+    );
+    coordinator.dispose();
+  });
+
   it("maps the existing restore workspace:opened reason to RestoreCompleted without forwarding its path", async () => {
     const scheduler = makeScheduler();
     const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(

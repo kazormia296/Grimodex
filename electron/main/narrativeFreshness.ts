@@ -23,6 +23,8 @@ export interface NarrativeFreshnessScheduler {
 
 interface SchedulerOptions {
   warn?: (...args: unknown[]) => void;
+  /** Notify the main-only maintenance owner of an expected C2-ZC gate miss. */
+  onCutoverNotReady?: () => void | Promise<void>;
 }
 
 function batchHasMore(raw: string): boolean {
@@ -33,6 +35,20 @@ function batchHasMore(raw: string): boolean {
     "hasMore" in value &&
     value.hasMore === true
   );
+}
+
+function cutoverNotReady(raw: string): boolean {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "cutoverNotReady" in value &&
+      value.cutoverNotReady === true
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -97,6 +113,22 @@ export function createNarrativeFreshnessScheduler(
       if (result !== null) {
         for (const diagnostic of shadowDiagnostics(result)) {
           warn("[narrative-freshness] D2 shadow diagnostic:", diagnostic);
+        }
+        if (cutoverNotReady(result)) {
+          try {
+            const followup = options.onCutoverNotReady?.();
+            void Promise.resolve(followup).catch((callbackError: unknown) => {
+              warn(
+                "[narrative-freshness] C2-ZC activation follow-up failed:",
+                callbackError,
+              );
+            });
+          } catch (callbackError) {
+            warn(
+              "[narrative-freshness] C2-ZC activation follow-up failed:",
+              callbackError,
+            );
+          }
         }
         if (batchHasMore(result)) {
           nextDelayMs = BACKLOG_DELAY_MS;

@@ -632,7 +632,11 @@ mod narrative_freshness_restore_lock_tests {
 
         let result = run_narrative_freshness_cycle_inner(&state, || {})
             .expect("not-ready cutover is an expected scheduler outcome");
-        assert_eq!(result, None);
+        let result = result.expect("not-ready cutover must notify the activation owner");
+        let result: serde_json::Value =
+            serde_json::from_str(&result).expect("not-ready result JSON");
+        assert_eq!(result["hasMore"], false);
+        assert_eq!(result["cutoverNotReady"], true);
 
         let active = state.ws.inner.lock().expect("workspace state").take();
         drop(active);
@@ -2339,14 +2343,28 @@ fn run_narrative_freshness_cycle_inner(
     let cutover_result = current_workspace.authority.db().with_conn(|conn| {
         narrative_extraction::cut_over_workspace_freshness(conn, &liveness_evidence)
     });
+    let mut cutover_not_ready = false;
     if let Err(error) = cutover_result {
         if !is_expected_c2zc_cutover_not_ready(&error) {
             return Err(AppError::Anyhow(error));
         }
+        cutover_not_ready = true;
     }
 
     match cycle_outcome {
-        narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => Ok(None),
+        narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => {
+            if cutover_not_ready {
+                Ok(Some(
+                    serde_json::json!({
+                        "hasMore": false,
+                        "cutoverNotReady": true,
+                    })
+                    .to_string(),
+                ))
+            } else {
+                Ok(None)
+            }
+        }
         narrative_extraction::IncrementalFreshnessCycleOutcome::Processed(summary) => {
             // D2 shadow diagnostics stay out of the durable Freshness
             // authority, but they must not be silently discarded at
@@ -2355,18 +2373,19 @@ fn run_narrative_freshness_cycle_inner(
             // and effect diagnostics.
             let v2_shadow =
                 serde_json::to_value(&summary.v2_shadow).map_err(anyhow::Error::from)?;
-            Ok(Some(
-                serde_json::json!({
-                    "projectId": summary.project_id,
-                    "fromSequenceExclusive": summary.from_sequence_exclusive,
-                    "throughSequenceInclusive": summary.through_sequence_inclusive,
-                    "affectedEdgeCount": summary.affected_edge_count,
-                    "affectedConsumerCount": summary.affected_consumer_count,
-                    "hasMore": summary.has_more,
-                    "v2Shadow": v2_shadow,
-                })
-                .to_string(),
-            ))
+            let mut result = serde_json::json!({
+                "projectId": summary.project_id,
+                "fromSequenceExclusive": summary.from_sequence_exclusive,
+                "throughSequenceInclusive": summary.through_sequence_inclusive,
+                "affectedEdgeCount": summary.affected_edge_count,
+                "affectedConsumerCount": summary.affected_consumer_count,
+                "hasMore": summary.has_more,
+                "v2Shadow": v2_shadow,
+            });
+            if cutover_not_ready {
+                result["cutoverNotReady"] = serde_json::json!(true);
+            }
+            Ok(Some(result.to_string()))
         }
     }
 }
@@ -2510,7 +2529,8 @@ impl Backend {
 
     /// Electron main scheduler 専用の Change Feed freshness cycle。
     /// renderer IPC には登録せず、1 call で共有runtimeの有界batchを最大1件だけ
-    /// 処理する。workspace未open・切替中・Safe Mode・feed空はJS nullを返す。
+    /// 処理する。workspace未open・切替中・Safe Mode・通常のfeed空はJS nullを返し、
+    /// C2-ZCのexpected NOT_READYだけはmain activation owner向けの小さなJSONを返す。
     #[napi]
     pub async fn run_narrative_freshness_cycle(&self) -> Result<Option<String>> {
         let state = Arc::clone(&self.state);

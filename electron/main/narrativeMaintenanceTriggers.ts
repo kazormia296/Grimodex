@@ -10,7 +10,8 @@ import {
 export type NarrativeMaintenanceWakeReason =
   | "workspace-opened"
   | "restore-completed"
-  | "semantic-epoch-rotated";
+  | "semantic-epoch-rotated"
+  | "before-cutover";
 
 export const NARRATIVE_MAINTENANCE_REDISCOVERY_DELAY_MS = 250;
 export const NARRATIVE_MAINTENANCE_MAX_REDISCOVERY_ATTEMPTS = 3;
@@ -43,6 +44,8 @@ interface NarrativeMaintenanceUnavailable {
 
 export interface NarrativeMaintenanceTriggerCoordinator {
   handleBackendEvent(channel: string, payload: unknown): void;
+  /** Re-enter the durable BeforeCutover preparation chain after NOT_READY. */
+  requestBeforeCutoverPreparation(): void;
   requestRediscovery(): void;
   /**
    * Deliver Epoch-rotation wakes committed to the durable outbox. Each
@@ -547,6 +550,24 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   };
 
   return {
+    requestBeforeCutoverPreparation(): void {
+      if (disposed) return;
+      const generation = ++chainGeneration;
+      rediscoveryAttempts = 0;
+      lastDiscoveryFingerprint = null;
+      lastWakeReason = "before-cutover";
+      clearTimer();
+      pendingRetryDelayMs = null;
+      if (discoveryInFlight) {
+        // A C2-ZC readiness miss is a new durable preparation chain. The
+        // in-flight result may belong to an older wake and must not enqueue
+        // work under that chain's authority.
+        pendingEvent = { reason: "before-cutover", generation };
+        return;
+      }
+      pendingEvent = null;
+      armTimer("before-cutover", 0, generation);
+    },
     handleBackendEvent(channel, payload): void {
       if (
         disposed ||

@@ -32,6 +32,7 @@ import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
 import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
+import type { NarrativeMaintenanceTriggerCoordinator } from "./narrativeMaintenanceTriggers.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
 import {
@@ -409,13 +410,19 @@ if (!gotSingleInstanceLock) {
       backend,
       broadcastBackendEvent,
     );
-    const narrativeFreshness = createNarrativeFreshnessScheduler(backend);
+    let narrativeMaintenanceTriggers: NarrativeMaintenanceTriggerCoordinator | null = null;
+    const narrativeFreshness = createNarrativeFreshnessScheduler(backend, {
+      onCutoverNotReady: () => {
+        narrativeMaintenanceTriggers?.requestBeforeCutoverPreparation();
+      },
+    });
     // Main-only system-work seam. Trigger discovery is owned by this process;
     // renderer/preload never supplies project scope, paths, or phase data.
     const {
       scheduler: narrativeMaintenance,
-      coordinator: narrativeMaintenanceTriggers,
+      coordinator,
     } = bootstrapNarrativeMaintenance(backend, narrativeMaintenanceCiSeam);
+    narrativeMaintenanceTriggers = coordinator;
     licenseValidation.start();
     narrativeFreshness.start();
     app.on("will-quit", () => {
