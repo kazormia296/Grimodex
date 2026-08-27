@@ -132,6 +132,25 @@
                 }
               }
             }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": { "const": "semantic-index" }
+              },
+              "required": ["kind"]
+            },
+            "then": {
+              "properties": {
+                "status": { "const": "reserved" },
+                "durableIdentitySource": {
+                  "const": "narrative_semantic_index_metadata.index_key"
+                },
+                "notes": {
+                  "pattern": "no Narrative dependency authority claim"
+                }
+              }
+            }
           }
         ]
       },

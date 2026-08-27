@@ -333,6 +333,20 @@
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         },
+        "verifyCoverage": {
+          "type": "object",
+          "required": [
+            "requiredCheckCount",
+            "productionCoverage",
+            "reductionForbidden"
+          ],
+          "properties": {
+            "requiredCheckCount": { "const": 13 },
+            "productionCoverage": { "const": "13/13" },
+            "reductionForbidden": { "const": true }
+          },
+          "additionalProperties": false
+        },
         "rebuildableTargets": {
           "type": "array",
           "minItems": 1,
@@ -603,10 +617,43 @@
             "required": ["runKind"]
           },
           "then": {
+            "required": [
+              "verifiesDurableGraph",
+              "verifiesRebuildableState",
+              "verifyCoverage"
+            ],
             "properties": {
               "trigger": { "const": "automatic-on-trigger-event" },
               "adminCommands": {
                 "const": ["verifyNarrativeDependencyGraph"]
+              },
+              "verifiesDurableGraph": {
+                "const": [
+                  "producer-and-generation-consistency",
+                  "active-edge-duplicates",
+                  "cross-project-edge",
+                  "consumer-and-source-key-format",
+                  "application-revision-artifact-references",
+                  "dependency-set-digest",
+                  "contribution-to-application-commit-correspondence",
+                  "legacy-mirror-migration-parity"
+                ]
+              },
+              "verifiesRebuildableState": {
+                "const": [
+                  "edge-state-belongs-to-current-epoch",
+                  "consumer-freshness-dependency-set-digest",
+                  "finding-observation-belongs-to-current-epoch",
+                  "cursor-and-feed-head-consistency",
+                  "semantic-index-generation-correspondence"
+                ]
+              },
+              "verifyCoverage": {
+                "const": {
+                  "requiredCheckCount": 13,
+                  "productionCoverage": "13/13",
+                  "reductionForbidden": true
+                }
               }
             }
           }

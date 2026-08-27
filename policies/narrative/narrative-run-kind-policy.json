@@ -111,6 +111,11 @@
         "cursor-and-feed-head-consistency",
         "semantic-index-generation-correspondence"
       ],
+      "verifyCoverage": {
+        "requiredCheckCount": 13,
+        "productionCoverage": "13/13",
+        "reductionForbidden": true
+      },
       "forbidSideEffectRepair": true,
       "adminCommands": ["verifyNarrativeDependencyGraph"],
       "runtimeRoute": {

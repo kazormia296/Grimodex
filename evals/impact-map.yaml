@@ -186,6 +186,11 @@ rules:
       - docs/adr/009-narrative-scope-relation-contract.md
       - docs/adr/010-narrative-dependency-role-granularity-contract.md
       - docs/adr/011-narrative-ir-revision-semantics-contract.md
+      - docs/certification/nir0/NIR0-CERT.md
+      - docs/plans/narrative-c2zc-canonical-cutover-impact-matrix.md
+      - docs/plans/narrative-ir-nir0-implementation-plan.md
+      - docs/plans/narrative-semantic-core-roadmap.md
+      - docs/plans/nir0-d2-impact-matrix.md
       - policies/narrative/**
       - policies/narrative/fixtures/canonical-json-number-parity.json
       - src/features/narrative-semantic-core/**
@@ -313,7 +318,7 @@ rules:
     suites:
       - narrative-extraction
   - id: narrative-maintenance-product-journeys
-    reason: C2-5B durable maintenance journeys and the accepted C2-ZC canonical-authority journey bind schema, epoch, digest, retry, interruption, workspace-wake, feed-liveness, and one-way Generic authority evidence to the runtime and semantic contract gates.
+    reason: C2-5B durable maintenance journeys and the C2-ZC canonical-authority candidate journey and final acceptance gates bind schema, epoch, digest, retry, interruption, workspace-wake, feed-liveness, and one-way Generic authority evidence to the runtime and semantic contract gates.
     paths:
       - electron/scripts/narrative-maintenance-product-journeys.mjs
       - electron/scripts/c2zc-canonical-product-journey.mjs

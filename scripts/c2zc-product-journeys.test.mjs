@@ -71,7 +71,9 @@ test("C2-ZC runner reaches the marker only through main scheduler and N-API", as
   assert.match(runner, /schema_data_migrations/);
   assert.match(runner, /activationOwner: "electron-main:narrativeFreshness->napi"/);
   assert.doesNotMatch(runner, /cut_over_workspace_freshness|record_c2zc_cutover_marker/);
-  assert.match(main, /createNarrativeFreshnessScheduler\(backend\)/);
+  assert.match(main, /createNarrativeFreshnessScheduler\(backend,\s*\{/);
+  assert.match(main, /onCutoverNotReady/);
+  assert.match(main, /requestBeforeCutoverPreparation/);
   assert.match(main, /narrativeFreshness\.start\(\)/);
   assert.match(napi, /run_incremental_freshness_cycle_with_liveness_capability/);
   assert.match(napi, /record_live_scheduler_heartbeat/);
@@ -81,7 +83,7 @@ test("C2-ZC runner reaches the marker only through main scheduler and N-API", as
   assert.match(harness, /\["--no-sandbox", mainCjs\]/);
 });
 
-test("C2-ZC acceptance packet maps failure, swap/stale, restore/import, and birth tests", async () => {
+test("C2-ZC evidence packet maps failure, swap/stale, restore/import, and birth tests", async () => {
   const [cutover, liveness, importCommit, backupRestore, domainWrites] =
     await Promise.all([
       read("src-tauri/crates/grimodex-db/tests/narrative_c2zc_canonical_cutover.rs"),
@@ -113,7 +115,10 @@ test("C2-ZC acceptance packet maps failure, swap/stale, restore/import, and birt
 
 test("C2-ZC journey is named in the quality impact manifest", async () => {
   const manifest = await read("evals/impact-map.yaml");
-  assert.match(manifest, /accepted C2-ZC canonical-authority journey/);
+  assert.match(
+    manifest,
+    /C2-ZC canonical-authority candidate journey and final acceptance gates/,
+  );
   assert.match(manifest, /electron\/scripts\/c2zc-canonical-product-journey\.mjs/);
   assert.match(manifest, /scripts\/c2zc-product-journeys\.test\.mjs/);
 });

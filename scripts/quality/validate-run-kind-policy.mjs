@@ -39,6 +39,28 @@ const EXPECTED_EXISTING_RUN_KIND_VALUES = {
   "dependency-repair": null,
 };
 
+const REQUIRED_DEPENDENCY_VERIFY_DURABLE_CHECKS = [
+  "producer-and-generation-consistency",
+  "active-edge-duplicates",
+  "cross-project-edge",
+  "consumer-and-source-key-format",
+  "application-revision-artifact-references",
+  "dependency-set-digest",
+  "contribution-to-application-commit-correspondence",
+  "legacy-mirror-migration-parity",
+];
+
+const REQUIRED_DEPENDENCY_VERIFY_REBUILDABLE_CHECKS = [
+  "edge-state-belongs-to-current-epoch",
+  "consumer-freshness-dependency-set-digest",
+  "finding-observation-belongs-to-current-epoch",
+  "cursor-and-feed-head-consistency",
+  "semantic-index-generation-correspondence",
+];
+
+const REQUIRED_DEPENDENCY_VERIFY_CHECK_COUNT = 13;
+const REQUIRED_DEPENDENCY_VERIFY_PRODUCTION_COVERAGE = "13/13";
+
 const MAINTENANCE_ROUTE_REGISTRY_VERSION = "narrative-maintenance-route/v1";
 const MAINTENANCE_ROUTE_ENTRY_POINT = "run_narrative_maintenance_cycle";
 const MAINTENANCE_ROUTE_IDS = new Set([
@@ -278,7 +300,7 @@ function validateRetiredC2ZcTriggerDeclarations(entry, errors) {
   }
   if (obligations !== undefined) {
     errors.push(
-      `${entry.runKind}.futureTriggerObligations is obsolete after the accepted C2-ZC cutover; use the main-only scheduler wake`,
+      `${entry.runKind}.futureTriggerObligations is obsolete under the C2-ZC main-only scheduler contract; final C2-ZC acceptance remains pending`,
     );
   }
 }
@@ -494,6 +516,7 @@ function validateRunKindSpecificFields(entry, errors) {
         "dependency-verify must declare forbidSideEffectRepair: true",
       );
     }
+    validateDependencyVerifyCoverage(entry, errors);
   }
 
   if (entry.runKind === "dependency-rebuild-derived") {
@@ -510,6 +533,46 @@ function validateRunKindSpecificFields(entry, errors) {
         "dependency-rebuild-derived must declare a non-empty forbiddenWrites list",
       );
     }
+  }
+}
+
+function validateDependencyVerifyCoverage(entry, errors) {
+  if (
+    !sameStringArray(
+      entry.verifiesDurableGraph,
+      REQUIRED_DEPENDENCY_VERIFY_DURABLE_CHECKS,
+    ) ||
+    !sameStringArray(
+      entry.verifiesRebuildableState,
+      REQUIRED_DEPENDENCY_VERIFY_REBUILDABLE_CHECKS,
+    )
+  ) {
+    errors.push(
+      "dependency-verify must retain all 13 production Verify checks without reduction",
+    );
+  }
+
+  const coverage = entry.verifyCoverage;
+  if (
+    !isObject(coverage) ||
+    coverage.requiredCheckCount !== REQUIRED_DEPENDENCY_VERIFY_CHECK_COUNT
+  ) {
+    errors.push(
+      "dependency-verify.verifyCoverage.requiredCheckCount must be 13",
+    );
+  }
+  if (
+    !isObject(coverage) ||
+    coverage.productionCoverage !== REQUIRED_DEPENDENCY_VERIFY_PRODUCTION_COVERAGE
+  ) {
+    errors.push(
+      "dependency-verify.verifyCoverage.productionCoverage must be '13/13'",
+    );
+  }
+  if (!isObject(coverage) || coverage.reductionForbidden !== true) {
+    errors.push(
+      "dependency-verify.verifyCoverage.reductionForbidden must be true",
+    );
   }
 }
 

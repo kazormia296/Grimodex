@@ -117,6 +117,41 @@ describe("validate-run-kind-policy", () => {
     assert.deepEqual(validateFixture(policy).errors, []);
   });
 
+  it("keeps all 13 production Verify checks and forbids coverage reduction", () => {
+    const policy = bundledPolicy();
+    const verify = runKind(policy, "dependency-verify");
+    assert.deepEqual(verify.verifyCoverage, {
+      requiredCheckCount: 13,
+      productionCoverage: "13/13",
+      reductionForbidden: true,
+    });
+    assert.equal(
+      (verify.verifiesDurableGraph ?? []).length +
+        (verify.verifiesRebuildableState ?? []).length,
+      13,
+    );
+    assert.deepEqual(validateFixture(policy).errors, []);
+
+    const reduced = bundledPolicy();
+    runKind(reduced, "dependency-verify").verifiesRebuildableState.pop();
+    const reducedResult = validateFixture(reduced);
+    assert.ok(
+      reducedResult.errors.some((error) =>
+        error.includes("dependency-verify must retain all 13 production Verify checks"),
+      ),
+    );
+
+    const staleCoverage = bundledPolicy();
+    runKind(staleCoverage, "dependency-verify").verifyCoverage.productionCoverage =
+      [11, 13].join("/");
+    const staleCoverageResult = validateFixture(staleCoverage);
+    assert.ok(
+      staleCoverageResult.errors.some((error) =>
+        error.includes("productionCoverage must be '13/13'"),
+      ),
+    );
+  });
+
   it("rejects duplicate run kinds", () => {
     const policy = bundledPolicy();
     policy.runKinds[4] = JSON.parse(
@@ -249,7 +284,7 @@ describe("validate-run-kind-policy", () => {
     );
   });
 
-  it("rejects an obsolete C2-ZC future obligation after activation", () => {
+  it("rejects an obsolete C2-ZC future obligation under the scheduler contract", () => {
     const policy = bundledPolicy();
     runKind(policy, "dependency-verify").futureTriggerObligations = [
       {

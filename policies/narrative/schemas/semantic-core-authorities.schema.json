@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://grimodex.dev/schema/narrative/semantic-core-authorities-v1.json",
   "type": "object",
-  "required": ["schemaVersion", "contract", "authorities", "semanticIndexAllowedFields", "forbiddenFreshnessClaims", "secondaryFreshnessAuthorityPolicy"],
+  "required": ["schemaVersion", "contract", "authorities", "semanticIndexAllowedFields", "semanticIndexReservation", "forbiddenFreshnessClaims", "secondaryFreshnessAuthorityPolicy"],
   "properties": {
     "schemaVersion": { "const": 1 },
     "contract": { "const": "narrative-semantic-core-authorities" },
@@ -18,10 +18,116 @@
           "compatibilityMirror": { "type": ["string", "null"] },
           "writePolicy": { "type": "string", "minLength": 1 }
         },
+        "if": {
+          "properties": { "concern": { "const": "search-generation" } },
+          "required": ["concern"]
+        },
+        "then": {
+          "properties": {
+            "canonicalAuthority": {
+              "const": "none (semantic-index reserved; NIR-1 pending)"
+            },
+            "compatibilityMirror": { "const": null },
+            "writePolicy": { "const": "reserved-no-writer" }
+          }
+        },
         "additionalProperties": false
       }
     },
     "semanticIndexAllowedFields": { "const": ["generation", "builtAt", "sourceDigest", "dependencySetDigest", "dirtyCacheFlag"] },
+    "semanticIndexReservation": {
+      "type": "object",
+      "required": ["status", "authorityFootprint", "chunkRows", "futureBinding"],
+      "properties": {
+        "status": { "const": "reserved" },
+        "authorityFootprint": {
+          "type": "object",
+          "required": ["surfaces", "passCondition", "nonZeroDisposition", "rebuildTarget"],
+          "properties": {
+              "surfaces": {
+                "type": "array",
+                "const": [
+                {
+                  "id": "metadataRows",
+                  "relation": "narrative_semantic_index_metadata",
+                  "rowSet": "all-project-rows",
+                  "predicate": "project_id = ?1"
+                },
+                {
+                  "id": "activeD1HeadRows",
+                  "relation": "narrative_dependency_declaration_heads",
+                  "rowSet": "active-sealed-D1-heads",
+                  "predicate": "project_id = ?1 AND consumer_kind = 'semantic-index'"
+                },
+                {
+                  "id": "v1EdgeRows",
+                  "relation": "narrative_dependency_edges",
+                  "rowSet": "V1-edges",
+                  "predicate": "project_id = ?1 AND consumer_kind = 'semantic-index'"
+                },
+                {
+                  "id": "consumerFreshnessRows",
+                  "relation": "narrative_consumer_freshness",
+                  "rowSet": "consumer-freshness",
+                  "predicate": "project_id = ?1 AND consumer_kind = 'semantic-index'"
+                }
+              ]
+            },
+            "passCondition": { "const": "all-zero" },
+            "nonZeroDisposition": { "const": "manual-terminal" },
+            "rebuildTarget": { "const": "forbidden" }
+          },
+          "additionalProperties": false
+        },
+        "chunkRows": {
+          "type": "object",
+          "required": ["allowed", "classification", "narrativeDependencyAuthorityClaim"],
+          "properties": {
+            "allowed": { "const": true },
+            "classification": { "const": "rebuildable-acceleration" },
+            "narrativeDependencyAuthorityClaim": { "const": "forbidden" }
+          },
+          "additionalProperties": false
+        },
+        "futureBinding": {
+          "type": "object",
+          "required": ["status", "approvalGate", "firstCandidate", "mapping", "unapprovedDecisions"],
+          "properties": {
+            "status": { "const": "dormant" },
+            "approvalGate": { "const": "NIR-1" },
+            "firstCandidate": { "const": "one-shared-producer" },
+            "mapping": {
+              "type": "object",
+              "required": ["metadata.index_key", "metadata.generation", "metadata.dependency_set_digest"],
+              "properties": {
+                "metadata.index_key": { "const": "D1.consumer_key=freshness.consumer_key" },
+                "metadata.generation": { "const": "active-sealed-D1-head.consumer-scoped-producer_generation" },
+                "metadata.dependency_set_digest": { "const": "active-sealed-D1-set.digest" }
+              },
+              "additionalProperties": false
+            },
+            "unapprovedDecisions": {
+              "const": [
+                "fixed-keys",
+                "producer-registry",
+                "source-identities",
+                "writers",
+                "D1-declarations",
+                "metadata-migration",
+                "restore-invalidation",
+                "reserved-to-declared-activation",
+                "producer-granularity",
+                "metadata-producer-identity-composition",
+                "dirty-pending-semantics",
+                "Codex-source-granularity"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "forbiddenFreshnessClaims": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
     "secondaryFreshnessAuthorityPolicy": { "const": "forbid" }
   },
