@@ -152,6 +152,26 @@ describe("validate-run-kind-policy", () => {
     );
   });
 
+  it("rejects reintroducing the reserved Semantic Index cache as Rebuild-Derived state", () => {
+    const policy = bundledPolicy();
+    const rebuild = runKind(policy, "dependency-rebuild-derived");
+    rebuild.rebuildableTargets = rebuild.rebuildableTargets.filter(
+      (target) => target !== "semantic-index-generation-cache",
+    );
+    rebuild.rebuildableTargets.push("semantic-index-generation-cache");
+
+    const result = validateFixture(policy);
+
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes(
+          "dependency-rebuild-derived.rebuildableTargets must not include 'semantic-index-generation-cache' while semantic-index is reserved",
+        ),
+      ),
+      `reserved Semantic Index cache must remain outside Rebuild-Derived: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
   it("rejects duplicate run kinds", () => {
     const policy = bundledPolicy();
     policy.runKinds[4] = JSON.parse(

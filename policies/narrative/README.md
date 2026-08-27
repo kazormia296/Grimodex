@@ -543,10 +543,10 @@ backfillAlgorithmVersion}` at creation. Editing is never blocked while
 - **`dependency-rebuild-derived`** (Lane N; reuses the existing `run_kind
 = 'semantic-index-rebuild'` column value) — automatic whenever
   Rebuildable Derived State (`narrative_dependency_edge_states`,
-  `narrative_consumer_freshness`,
+  non-semantic-index rows in `narrative_consumer_freshness`,
   `narrative_maintenance_finding_observations`, reanchor candidates,
-  Semantic Index generation/cache, the Freshness evaluator's cursor
-  reservation) is absent, contract-mismatched, digest-mismatched, or
+  the Freshness evaluator's cursor reservation) is absent,
+  contract-mismatched, digest-mismatched, or
   Verify reports it as required. The reserved Semantic Index authority
   footprint is not a Rebuild-Derived target; a non-zero footprint is
   manual/terminal evidence. Scene/Codex/Event/Chat chunk rows may be

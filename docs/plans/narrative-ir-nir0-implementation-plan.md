@@ -884,8 +884,11 @@ D1 owns:
 
 ### 10.3 D2 — shadow runtime integration
 
-Starts after C2-ZC final acceptance is recorded; the current focused-green
-candidate does not satisfy this start condition.
+D2 shadow integration is already implemented and verified by the focused
+evidence on the current tree. That evidence does not activate D2 authority or
+complete the full V2 cutover. Those authority changes start only after C2-ZC
+final acceptance is recorded; the current focused-green candidate does not
+satisfy that acceptance condition.
 
 D2 owns V2 shadow evaluation in:
 

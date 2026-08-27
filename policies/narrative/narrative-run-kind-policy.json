@@ -137,7 +137,6 @@
         "narrative_consumer_freshness",
         "narrative_maintenance_finding_observations",
         "reanchor-candidates",
-        "semantic-index-generation-cache",
         "freshness-evaluator-cursor-reservation"
       ],
       "trigger": "automatic-when-derived-state-absent-or-invalid",

@@ -66,7 +66,7 @@
       "status": "reserved",
       "consumerKeyMeaning": "narrative_semantic_index_metadata.index_key -- one index a project builds (for example a lexical index and an embedding index are two Consumers).",
       "durableIdentitySource": "narrative_semantic_index_metadata.index_key",
-      "notes": "The table's primary key is (project_id, index_key); only index_key belongs in the Consumer key, because narrative_consumer_freshness already carries project_id as its own column and a Consumer key must never repeat the project scope. semantic-core-authorities.json keeps semantic-index reserved with no Narrative dependency authority claim: its Freshness is a rebuildable acceleration signal, never a truth claim or activation path. No Producer declares Edges under this kind yet."
+      "notes": "The table's primary key is (project_id, index_key); only index_key belongs in the Consumer key, because narrative_consumer_freshness already carries project_id as its own column and a Consumer key must never repeat the project scope. semantic-core-authorities.json keeps semantic-index reserved with no Narrative dependency authority claim. While reserved, no semantic-index Generic Freshness/metadata rows are permitted; any non-zero footprint is manual-terminal evidence and never a Rebuild-Derived target. Only existing Scene/Codex/Event/Chat embedding chunk rows are rebuildable acceleration, and they cannot imply Narrative dependency authority. No Producer declares Edges under this kind yet."
     },
     {
       "kind": "narrative-ir-revision",

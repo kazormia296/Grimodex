@@ -60,6 +60,8 @@ const REQUIRED_DEPENDENCY_VERIFY_REBUILDABLE_CHECKS = [
 
 const REQUIRED_DEPENDENCY_VERIFY_CHECK_COUNT = 13;
 const REQUIRED_DEPENDENCY_VERIFY_PRODUCTION_COVERAGE = "13/13";
+const RESERVED_SEMANTIC_INDEX_REBUILDABLE_TARGET =
+  "semantic-index-generation-cache";
 
 const MAINTENANCE_ROUTE_REGISTRY_VERSION = "narrative-maintenance-route/v1";
 const MAINTENANCE_ROUTE_ENTRY_POINT = "run_narrative_maintenance_cycle";
@@ -531,6 +533,15 @@ function validateRunKindSpecificFields(entry, errors) {
     ) {
       errors.push(
         "dependency-rebuild-derived must declare a non-empty forbiddenWrites list",
+      );
+    }
+    if (
+      entry.rebuildableTargets?.includes(
+        RESERVED_SEMANTIC_INDEX_REBUILDABLE_TARGET,
+      )
+    ) {
+      errors.push(
+        `dependency-rebuild-derived.rebuildableTargets must not include '${RESERVED_SEMANTIC_INDEX_REBUILDABLE_TARGET}' while semantic-index is reserved`,
       );
     }
   }

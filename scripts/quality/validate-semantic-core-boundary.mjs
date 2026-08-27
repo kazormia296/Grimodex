@@ -98,6 +98,15 @@ const REQUIRED_SEMANTIC_INDEX_UNAPPROVED_DECISIONS = Object.freeze([
 ]);
 const RESERVED_SEMANTIC_INDEX_CANONICAL_AUTHORITY =
   "none (semantic-index reserved; NIR-1 pending)";
+const REQUIRED_RESERVED_SEMANTIC_INDEX_NOTE_FRAGMENTS = Object.freeze([
+  "no Narrative dependency authority claim",
+  "no semantic-index Generic Freshness/metadata rows are permitted",
+  "non-zero footprint is manual-terminal",
+  "never a Rebuild-Derived target",
+  "Only existing Scene/Codex/Event/Chat embedding chunk rows",
+  "rebuildable acceleration",
+  "cannot imply Narrative dependency authority",
+]);
 
 export const AUTHORITY_ROUTE_IDS = Object.freeze([
   "human-direct",
@@ -7178,6 +7187,13 @@ export function validateConsumerContract(repoRoot, contract, errors) {
       errors.push(
         "semantic-index consumer must state that no Narrative dependency authority claim exists",
       );
+    }
+    for (const fragment of REQUIRED_RESERVED_SEMANTIC_INDEX_NOTE_FRAGMENTS) {
+      if (!semanticIndex.notes?.includes(fragment)) {
+        errors.push(
+          `semantic-index consumer notes must state '${fragment}' while the consumer is reserved`,
+        );
+      }
     }
   }
 

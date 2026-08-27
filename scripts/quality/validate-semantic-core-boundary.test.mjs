@@ -396,6 +396,74 @@ describe("validate-semantic-core-boundary", () => {
     );
   });
 
+  it("keeps reserved Semantic Index Freshness distinct from rebuildable chunk acceleration", () => {
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-consumer-contract.json",
+        ),
+        "utf8",
+      ),
+    );
+    const semanticIndex = contract.consumerKinds.find(
+      (entry) => entry.kind === "semantic-index",
+    );
+
+    assert.match(
+      semanticIndex.notes,
+      /no semantic-index Generic Freshness\/metadata rows are permitted/,
+    );
+    assert.match(semanticIndex.notes, /non-zero footprint is manual-terminal/);
+    assert.match(
+      semanticIndex.notes,
+      /Only existing Scene\/Codex\/Event\/Chat embedding chunk rows are rebuildable acceleration/,
+    );
+    assert.match(
+      semanticIndex.notes,
+      /cannot imply Narrative dependency authority/,
+    );
+
+    const errors = [];
+    validateConsumerContract(REPO_ROOT, contract, errors);
+    assert.deepEqual(errors, []);
+  });
+
+  it("rejects the former Semantic Index Freshness-as-acceleration note", () => {
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-consumer-contract.json",
+        ),
+        "utf8",
+      ),
+    );
+    const semanticIndex = contract.consumerKinds.find(
+      (entry) => entry.kind === "semantic-index",
+    );
+    semanticIndex.notes =
+      "semantic-index remains reserved without the required reservation details";
+    const errors = [];
+
+    validateConsumerContract(REPO_ROOT, contract, errors);
+
+    assert.ok(
+      errors.some((error) =>
+        /Generic Freshness\/metadata rows are permitted/i.test(error),
+      ),
+      `reserved Freshness/metadata boundary must fail closed: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) =>
+        /Only existing Scene\/Codex\/Event\/Chat embedding chunk rows/i.test(
+          error,
+        ),
+      ),
+      `chunk-only acceleration boundary must fail closed: ${JSON.stringify(errors)}`,
+    );
+  });
+
   it("accepts the repository's ratified semantic contract", () => {
     const result = validateSemanticCoreBoundary({ repoRoot: REPO_ROOT });
     assert.deepEqual(result.errors, []);

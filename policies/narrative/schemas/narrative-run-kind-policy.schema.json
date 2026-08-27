@@ -672,6 +672,13 @@
               },
               "adminCommands": {
                 "const": ["rebuildNarrativeDerivedState"]
+              },
+              "rebuildableTargets": {
+                "not": {
+                  "contains": {
+                    "const": "semantic-index-generation-cache"
+                  }
+                }
               }
             }
           }
