@@ -61,6 +61,7 @@ use super::task_leases::with_immediate_transaction;
 use super::terminal_failure::{
     project_terminal_failure_for_run_in_tx, resolve_terminal_failure_for_run_in_tx,
 };
+use super::verify_coverage::{self, VerifyCoverageCheck};
 use crate::Database;
 use uuid::Uuid;
 
@@ -1515,6 +1516,19 @@ pub struct DependencyGraphVerifyReport {
     /// conflict). These rows are deliberately preserved and must be surfaced
     /// to an operator rather than guessed into a new Consumer.
     pub orphaned_attention_rehome_ambiguities: Vec<String>,
+    /// The typed production check for revision-owned artifact references.
+    pub application_revision_artifact_references: VerifyCoverageCheck,
+    /// The typed production check for the Semantic Index half of the
+    /// dependency-set digest contract.
+    pub semantic_index_dependency_set_digest: VerifyCoverageCheck,
+    /// The typed production check for Application Contribution provenance.
+    pub contribution_to_application_commit_correspondence: VerifyCoverageCheck,
+    /// The typed production check for the Legacy/Generic Application mirror.
+    pub legacy_mirror_migration_parity: VerifyCoverageCheck,
+    /// The typed production check for cursor/feed parent-child coherence.
+    pub cursor_and_feed_head_consistency: VerifyCoverageCheck,
+    /// The typed production check for Semantic Index producer generation.
+    pub semantic_index_generation_correspondence: VerifyCoverageCheck,
     /// Explicit Verify decision: the current derived state is missing or
     /// stale and a same-epoch Rebuild must run before confirmation Verify.
     pub rebuild_required: bool,
@@ -1537,11 +1551,21 @@ impl DependencyGraphVerifyReport {
                 .is_empty()
             && self.orphaned_attention_finding_keys.is_empty()
             && self.orphaned_attention_rehome_ambiguities.is_empty()
+            && self
+                .application_revision_artifact_references
+                .is_consistent()
+            && self.semantic_index_dependency_set_digest.is_consistent()
+            && self
+                .contribution_to_application_commit_correspondence
+                .is_consistent()
+            && self.legacy_mirror_migration_parity.is_consistent()
+            && self.cursor_and_feed_head_consistency.is_consistent()
+            && self
+                .semantic_index_generation_correspondence
+                .is_consistent()
     }
 
-    /// Whether every Consumer Freshness row had enough stored evidence to run
-    /// the covered dependency-set check. This does not claim the six policy
-    /// checks outside this report are implemented.
+    /// Whether every covered check had enough stored evidence to run.
     pub fn is_complete(&self) -> bool {
         self.consumer_keys_with_uncomputed_dependency_set_digest
             .is_empty()
@@ -1549,12 +1573,17 @@ impl DependencyGraphVerifyReport {
             && self
                 .consumer_keys_without_current_epoch_freshness
                 .is_empty()
+            && self.application_revision_artifact_references.is_complete()
+            && self.semantic_index_dependency_set_digest.is_complete()
+            && self
+                .contribution_to_application_commit_correspondence
+                .is_complete()
+            && self.legacy_mirror_migration_parity.is_complete()
+            && self.cursor_and_feed_head_consistency.is_complete()
+            && self.semantic_index_generation_correspondence.is_complete()
     }
 
-    /// Whether the covered checks are both consistent and complete. Does not
-    /// mean the entire Durable Graph is healthy -- only that the 7 checks this
-    /// report actually runs found no defect and no not-yet-evaluated input;
-    /// see the struct's doc comment on the 6 checks it does not implement.
+    /// Whether all thirteen policy checks are both consistent and complete.
     pub fn is_clean(&self) -> bool {
         self.is_consistent() && self.is_complete() && !self.rebuild_required
     }
@@ -1705,6 +1734,358 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
+    let application_operations = {
+        let mut statement = conn.prepare(
+            "SELECT o.id, o.commit_id, o.operation_index, o.operation_kind,
+                    o.payload_json, o.result_entity_kind, o.result_entity_id,
+                    o.status, o.created_at
+               FROM narrative_apply_operations o
+               JOIN narrative_apply_commits c ON c.id = o.commit_id
+              WHERE c.project_id = ?1
+              ORDER BY o.commit_id ASC, o.operation_index ASC, o.id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "commitId": row.get::<_, String>(1)?,
+                    "operationIndex": row.get::<_, i64>(2)?,
+                    "operationKind": row.get::<_, String>(3)?,
+                    "payloadJson": row.get::<_, String>(4)?,
+                    "resultEntityKind": row.get::<_, Option<String>>(5)?,
+                    "resultEntityId": row.get::<_, Option<String>>(6)?,
+                    "status": row.get::<_, String>(7)?,
+                    "createdAt": row.get::<_, String>(8)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    // The C2-Z durable Verify checks below also read the legacy mirror,
+    // Revision/Artifact provenance, and the Change Feed/cursor tables. Keep
+    // those inputs in the compare-and-swap fingerprint as well; otherwise a
+    // row could change after Verify while its graphStateDigest stayed equal.
+    let application_revision_artifacts = {
+        let mut statement = conn.prepare(
+            "SELECT a.id, a.commit_id, a.proposal_id, a.revision_id,
+                    c.proposal_set_id, p.proposal_set_id, ps.project_id,
+                    r.origin_kind, r.proposal_id,
+                    b.ordinal, b.source_kind, b.source_key,
+                    b.revision_token, b.observed_at
+               FROM narrative_proposal_applications a
+               JOIN narrative_apply_commits c ON c.id = a.commit_id
+               LEFT JOIN narrative_proposals p ON p.id = a.proposal_id
+               LEFT JOIN narrative_proposal_sets ps ON ps.id = p.proposal_set_id
+               LEFT JOIN narrative_proposal_revisions r ON r.id = a.revision_id
+               LEFT JOIN narrative_revision_source_basis b ON b.revision_id = a.revision_id
+              WHERE c.project_id = ?1
+              ORDER BY a.id ASC, b.ordinal ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "applicationId": row.get::<_, String>(0)?,
+                    "commitId": row.get::<_, String>(1)?,
+                    "proposalId": row.get::<_, String>(2)?,
+                    "revisionId": row.get::<_, String>(3)?,
+                    "commitProposalSetId": row.get::<_, Option<String>>(4)?,
+                    "proposalProposalSetId": row.get::<_, Option<String>>(5)?,
+                    "proposalSetProjectId": row.get::<_, Option<String>>(6)?,
+                    "originKind": row.get::<_, Option<String>>(7)?,
+                    "revisionProposalId": row.get::<_, Option<String>>(8)?,
+                    "ordinal": row.get::<_, Option<i64>>(9)?,
+                    "sourceKind": row.get::<_, Option<String>>(10)?,
+                    "sourceKey": row.get::<_, Option<String>>(11)?,
+                    "revisionToken": row.get::<_, Option<String>>(12)?,
+                    "observedAt": row.get::<_, Option<String>>(13)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let extraction_artifacts = {
+        let mut statement = conn.prepare(
+            "SELECT artifact.id, artifact.run_id, run.project_id, artifact.task_id,
+                    artifact.attempt_id, artifact.artifact_kind,
+                    artifact.payload_storage, artifact.payload_json,
+                    artifact.payload_ref, artifact.payload_digest, artifact.created_at
+               FROM narrative_extraction_artifacts artifact
+               LEFT JOIN narrative_extraction_runs run ON run.id = artifact.run_id
+              WHERE run.project_id = ?1
+                 OR EXISTS (
+                    SELECT 1
+                      FROM narrative_revision_source_basis b
+                      JOIN narrative_proposal_revisions r ON r.id = b.revision_id
+                      JOIN narrative_proposal_applications a ON a.revision_id = r.id
+                      JOIN narrative_apply_commits c ON c.id = a.commit_id
+                     WHERE c.project_id = ?1
+                       AND b.source_kind = 'narrative-artifact'
+                       AND b.source_key = 'artifact:' || artifact.id
+                 )
+              ORDER BY artifact.id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "runId": row.get::<_, String>(1)?,
+                    "runProjectId": row.get::<_, Option<String>>(2)?,
+                    "taskId": row.get::<_, Option<String>>(3)?,
+                    "attemptId": row.get::<_, Option<String>>(4)?,
+                    "artifactKind": row.get::<_, String>(5)?,
+                    "payloadStorage": row.get::<_, String>(6)?,
+                    "payloadJson": row.get::<_, Option<String>>(7)?,
+                    "payloadRef": row.get::<_, Option<String>>(8)?,
+                    "payloadDigest": row.get::<_, Option<String>>(9)?,
+                    "createdAt": row.get::<_, String>(10)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let legacy_projection_freshness = {
+        let mut statement = conn.prepare(
+            "SELECT f.application_id, f.status, f.reason_json, f.version, f.updated_at
+               FROM narrative_projection_freshness f
+               JOIN narrative_proposal_applications a ON a.id = f.application_id
+               JOIN narrative_apply_commits c ON c.id = a.commit_id
+              WHERE c.project_id = ?1
+              ORDER BY f.application_id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "applicationId": row.get::<_, String>(0)?,
+                    "status": row.get::<_, String>(1)?,
+                    "reasonJson": row.get::<_, Option<String>>(2)?,
+                    "version": row.get::<_, i64>(3)?,
+                    "updatedAt": row.get::<_, String>(4)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let legacy_projection_dependencies = {
+        let mut statement = conn.prepare(
+            "SELECT d.application_id, d.source_kind, d.source_key,
+                    d.observed_revision_token, d.propagation
+               FROM narrative_projection_dependencies d
+               JOIN narrative_proposal_applications a ON a.id = d.application_id
+               JOIN narrative_apply_commits c ON c.id = a.commit_id
+              WHERE c.project_id = ?1
+              ORDER BY d.application_id ASC, d.source_kind ASC, d.source_key ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "applicationId": row.get::<_, String>(0)?,
+                    "sourceKind": row.get::<_, String>(1)?,
+                    "sourceKey": row.get::<_, String>(2)?,
+                    "observedRevisionToken": row.get::<_, String>(3)?,
+                    "propagation": row.get::<_, String>(4)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let change_transactions = {
+        let mut statement = conn.prepare(
+            "SELECT id, request_id, source_domain, source_change_event_uid,
+                    source_change_event_sequence, cause_kind,
+                    original_transaction_id, commit_id, journal_id,
+                    undo_journal_id, application_ids_json, payload_digest, created_at
+               FROM narrative_change_transactions
+              WHERE project_id = ?1
+              ORDER BY id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "requestId": row.get::<_, String>(1)?,
+                    "sourceDomain": row.get::<_, String>(2)?,
+                    "sourceChangeEventUid": row.get::<_, String>(3)?,
+                    "sourceChangeEventSequence": row.get::<_, i64>(4)?,
+                    "causeKind": row.get::<_, String>(5)?,
+                    "originalTransactionId": row.get::<_, Option<String>>(6)?,
+                    "commitId": row.get::<_, Option<String>>(7)?,
+                    "journalId": row.get::<_, Option<String>>(8)?,
+                    "undoJournalId": row.get::<_, Option<String>>(9)?,
+                    "applicationIdsJson": row.get::<_, String>(10)?,
+                    "payloadDigest": row.get::<_, String>(11)?,
+                    "createdAt": row.get::<_, String>(12)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let canonical_change_events = {
+        let mut statement = conn.prepare(
+            "SELECT event_uid, scene_id, domain, op_type, entity_type,
+                    entity_id, payload, session_id, sequence, timestamp,
+                    prev_hash, hash
+               FROM change_events
+              WHERE project_id = ?1
+              ORDER BY sequence ASC, event_uid ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "eventUid": row.get::<_, Option<String>>(0)?,
+                    "sceneId": row.get::<_, Option<String>>(1)?,
+                    "domain": row.get::<_, String>(2)?,
+                    "opType": row.get::<_, String>(3)?,
+                    "entityType": row.get::<_, Option<String>>(4)?,
+                    "entityId": row.get::<_, Option<String>>(5)?,
+                    "payload": row.get::<_, String>(6)?,
+                    "sessionId": row.get::<_, String>(7)?,
+                    "sequence": row.get::<_, i64>(8)?,
+                    "timestamp": row.get::<_, i64>(9)?,
+                    "prevHash": row.get::<_, String>(10)?,
+                    "hash": row.get::<_, String>(11)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let change_feed_events = {
+        let mut statement = conn.prepare(
+            "SELECT id, transaction_id, canonical_change_event_uid,
+                    canonical_sequence, event_ordinal, object_key_json,
+                    change_kind, mutation_kind, before_version, before_digest,
+                    after_version, after_digest, changed_paths_json,
+                    text_impact_json, structural_impact_json, occurred_at
+               FROM narrative_change_events
+              WHERE project_id = ?1
+              ORDER BY id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "transactionId": row.get::<_, String>(1)?,
+                    "canonicalChangeEventUid": row.get::<_, String>(2)?,
+                    "canonicalSequence": row.get::<_, i64>(3)?,
+                    "eventOrdinal": row.get::<_, i64>(4)?,
+                    "objectKeyJson": row.get::<_, String>(5)?,
+                    "changeKind": row.get::<_, String>(6)?,
+                    "mutationKind": row.get::<_, String>(7)?,
+                    "beforeVersion": row.get::<_, Option<i64>>(8)?,
+                    "beforeDigest": row.get::<_, Option<String>>(9)?,
+                    "afterVersion": row.get::<_, Option<i64>>(10)?,
+                    "afterDigest": row.get::<_, Option<String>>(11)?,
+                    "changedPathsJson": row.get::<_, String>(12)?,
+                    "textImpactJson": row.get::<_, Option<String>>(13)?,
+                    "structuralImpactJson": row.get::<_, Option<String>>(14)?,
+                    "occurredAt": row.get::<_, String>(15)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let change_cursors = {
+        let mut statement = conn.prepare(
+            "SELECT consumer_id, acknowledged_through_sequence,
+                    lease_owner, lease_expires_at, last_error, updated_at,
+                    semantic_epoch_id, reserved_through_sequence, active_run_id
+               FROM narrative_change_cursors
+              WHERE project_id = ?1
+              ORDER BY consumer_id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "consumerId": row.get::<_, String>(0)?,
+                    "acknowledgedThroughSequence": row.get::<_, i64>(1)?,
+                    "leaseOwner": row.get::<_, Option<String>>(2)?,
+                    "leaseExpiresAt": row.get::<_, Option<String>>(3)?,
+                    "lastError": row.get::<_, Option<String>>(4)?,
+                    "updatedAt": row.get::<_, String>(5)?,
+                    "semanticEpochId": row.get::<_, Option<String>>(6)?,
+                    "reservedThroughSequence": row.get::<_, Option<i64>>(7)?,
+                    "activeRunId": row.get::<_, Option<String>>(8)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let semantic_index_metadata = {
+        let mut statement = conn.prepare(
+            "SELECT index_key, generation, built_at, source_digest,
+                    dependency_set_digest, dirty_cache_flag
+               FROM narrative_semantic_index_metadata
+              WHERE project_id = ?1
+              ORDER BY index_key ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "indexKey": row.get::<_, String>(0)?,
+                    "generation": row.get::<_, i64>(1)?,
+                    "builtAt": row.get::<_, String>(2)?,
+                    "sourceDigest": row.get::<_, String>(3)?,
+                    "dependencySetDigest": row.get::<_, String>(4)?,
+                    "dirtyCacheFlag": row.get::<_, i64>(5)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let dependency_declaration_state = {
+        let mut statement = conn.prepare(
+            "SELECT set_row.id, set_row.consumer_kind, set_row.consumer_key,
+                    set_row.producer_id, set_row.producer_generation,
+                    set_row.dependency_set_digest, set_row.state,
+                    entry.source_object_identity, entry.dependency_key,
+                    entry.dependency_role, entry.selector_digest
+               FROM narrative_dependency_declaration_sets set_row
+               LEFT JOIN narrative_dependency_declaration_entries entry
+                 ON entry.declaration_set_id = set_row.id
+              WHERE set_row.project_id = ?1
+              ORDER BY set_row.id ASC, entry.id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "consumerKind": row.get::<_, String>(1)?,
+                    "consumerKey": row.get::<_, String>(2)?,
+                    "producerId": row.get::<_, String>(3)?,
+                    "producerGeneration": row.get::<_, i64>(4)?,
+                    "dependencySetDigest": row.get::<_, String>(5)?,
+                    "state": row.get::<_, String>(6)?,
+                    "sourceObjectIdentity": row.get::<_, Option<String>>(7)?,
+                    "dependencyKey": row.get::<_, Option<String>>(8)?,
+                    "role": row.get::<_, Option<String>>(9)?,
+                    "selectorDigest": row.get::<_, Option<String>>(10)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let dependency_declaration_heads = {
+        let mut statement = conn.prepare(
+            "SELECT consumer_kind, consumer_key, active_declaration_set_id,
+                    producer_id, producer_generation, version, updated_at
+               FROM narrative_dependency_declaration_heads
+              WHERE project_id = ?1
+              ORDER BY consumer_kind ASC, consumer_key ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(json!({
+                    "consumerKind": row.get::<_, String>(0)?,
+                    "consumerKey": row.get::<_, String>(1)?,
+                    "activeDeclarationSetId": row.get::<_, String>(2)?,
+                    "producerId": row.get::<_, String>(3)?,
+                    "producerGeneration": row.get::<_, i64>(4)?,
+                    "version": row.get::<_, i64>(5)?,
+                    "updatedAt": row.get::<_, String>(6)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
     let finding_observations = {
         let mut statement = conn.prepare(
             "SELECT id, run_id, semantic_epoch_id, edge_id, finding_key, reason_code,
@@ -1821,6 +2202,18 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
         "edgeStates": edge_states,
         "consumerFreshness": consumer_freshness,
         "applicationContributions": application_contributions,
+        "applicationOperations": application_operations,
+        "applicationRevisionArtifacts": application_revision_artifacts,
+        "extractionArtifacts": extraction_artifacts,
+        "legacyProjectionFreshness": legacy_projection_freshness,
+        "legacyProjectionDependencies": legacy_projection_dependencies,
+        "changeTransactions": change_transactions,
+        "canonicalChangeEvents": canonical_change_events,
+        "changeFeedEvents": change_feed_events,
+        "changeCursors": change_cursors,
+        "semanticIndexMetadata": semantic_index_metadata,
+        "dependencyDeclarationState": dependency_declaration_state,
+        "dependencyDeclarationHeads": dependency_declaration_heads,
         "findingObservations": finding_observations,
         "findingLifecycle": finding_lifecycle,
         "attention": attention,
@@ -1862,7 +2255,12 @@ pub(crate) fn is_canonical_graph_state_digest(value: &str) -> bool {
 /// records the report and terminal Run outcome, while this diagnostic remains
 /// read-only per `forbidSideEffectRepair: true`.
 ///
-/// Currently checks 7 of the policy's 13 named items:
+/// The report inspects all 13 policy-named items. The four checks with a
+/// production owner among the six formerly uncovered items are represented
+/// by typed `VerifyCoverageCheck` fields below. The two Semantic Index items
+/// are also inspected when rows exist, but remain explicit static-coverage
+/// blockers until a production Index writer binds metadata to D1 generation
+/// and digest; neither path relies on fixture-only evidence.
 ///
 /// - `verifiesDurableGraph`: an inlined version of
 ///   [`edge_source_is_missing`] (closest existing match to
@@ -1876,14 +2274,6 @@ pub(crate) fn is_canonical_graph_state_digest(value: &str) -> bool {
 ///   `finding-observation-belongs-to-current-epoch`,
 ///   `consumer-freshness-dependency-set-digest`.
 ///
-/// Still outside this report, and not silently treated as passing (the owner
-/// must not present this report as if it covered them):
-/// `application-revision-artifact-references`, `dependency-set-digest`
-/// (the Semantic Index half -- nothing writes
-/// `narrative_semantic_index_metadata` yet; the Consumer half is covered
-/// above), `contribution-to-application-commit-correspondence`,
-/// `legacy-mirror-migration-parity`, `cursor-and-feed-head-consistency`,
-/// `semantic-index-generation-correspondence`.
 /// Runs a `dependency-verify` under a real Run and persists its report, so
 /// a later Repair can prove which diagnostic result it was sealed from.
 ///
@@ -1905,29 +2295,39 @@ pub fn run_dependency_verify_for_project(
 /// the main-only CI seam passes the effective set computed for the same live
 /// authority and never a JavaScript-provided digest.
 /// The Verify check catalogue this executor actually runs, versus the
-/// policy's 13 `REQUIRED_VERIFY_CHECKS`. Stored typed and honest into every
-/// production Verify outcome: `complete` is false until every required
-/// check has an implemented owner, so the C2-ZC readiness gate reports
-/// `verify-check-coverage-incomplete` from real evidence instead of being
-/// satisfiable only by self-declared fixture JSON.
-pub const PRODUCTION_VERIFY_COVERED_CHECKS: [&str; 7] = [
+/// policy's 13 `REQUIRED_VERIFY_CHECKS`. The four newly implemented durable
+/// checks and the existing seven checks have production owners. The two
+/// Semantic Index checks still have no production Producer: the metadata
+/// table has no writer and D1's current writer is Proposal Revision-only.
+/// Keep those names in `PRODUCTION_VERIFY_MISSING_CHECKS` until a real Index
+/// writer can bind its metadata to a sealed declaration generation and
+/// dependency digest. Per-check evidence remains fail-closed when rows are
+/// missing or inconsistent; readiness must not be satisfied by fixture-only
+/// JSON or a no-index/vacuous result.
+pub const PRODUCTION_VERIFY_COVERED_CHECKS: [&str; 11] = [
     "producer-and-generation-consistency",
     "active-edge-duplicates",
     "cross-project-edge",
     "consumer-and-source-key-format",
-    "edge-state-belongs-to-current-epoch",
-    "finding-observation-belongs-to-current-epoch",
-    "consumer-freshness-dependency-set-digest",
-];
-
-/// The required checks with no implemented owner yet. Kept in one place with
-/// the covered list so their union is provably the policy's required set.
-pub const PRODUCTION_VERIFY_MISSING_CHECKS: [&str; 6] = [
     "application-revision-artifact-references",
-    "dependency-set-digest",
     "contribution-to-application-commit-correspondence",
     "legacy-mirror-migration-parity",
+    "edge-state-belongs-to-current-epoch",
+    "consumer-freshness-dependency-set-digest",
+    "finding-observation-belongs-to-current-epoch",
     "cursor-and-feed-head-consistency",
+];
+
+/// The required checks with no production owner yet. Kept in one place with
+/// the covered list so their union is provably the policy's required set.
+///
+/// These are not waived. `verify_coverage::verify_semantic_index_checks` still
+/// inspects any existing metadata, V1 Edge, and D1 rows and reports concrete
+/// `incomplete`/`issues` evidence. The static gap says only that the current
+/// product cannot produce the metadata/producer binding needed to certify
+/// those checks as a C2-ZC cutover precondition.
+pub const PRODUCTION_VERIFY_MISSING_CHECKS: [&str; 2] = [
+    "dependency-set-digest",
     "semantic-index-generation-correspondence",
 ];
 
@@ -2111,7 +2511,8 @@ pub fn run_dependency_verify_for_project_with_coordinates(
 /// checks behind it changes in a way that makes an older stored report
 /// unsafe to seal a Repair plan from.
 ///
-/// Version 8 seals a canonical graph-state fingerprint alongside the report
+/// Version 9 adds production evidence for all six previously uncovered
+/// policy checks. Version 8 seals a canonical graph-state fingerprint alongside the report
 /// so both clean-run reuse and non-clean manual/Repair decisions are
 /// compare-and-swap decisions over the same live graph generation.
 ///
@@ -2152,7 +2553,7 @@ pub fn run_dependency_verify_for_project_with_coordinates(
 /// `#[serde(default)]`) and may assert a clean bill of health over less
 /// evidence. The operational consequence is that an in-flight Verify result
 /// does not survive this upgrade: re-run Verify before sealing a Repair.
-pub(crate) const VERIFY_CONTRACT_VERSION: &str = "8";
+pub(crate) const VERIFY_CONTRACT_VERSION: &str = "9";
 
 /// `narrative_extraction_runs.run_kind` value a Verify Run is stored
 /// under. Shared with `repair.rs` so the writer and the reader that
@@ -2237,7 +2638,8 @@ pub fn verify_narrative_dependency_graph_for_project(
     report.orphaned_attention_rehome_ambiguities =
         orphaned_attention_rehome_ambiguities(conn, project_id)?;
 
-    if let Some(current_epoch_id) = get_current_epoch(conn, project_id)?.map(|epoch| epoch.id) {
+    let current_epoch_id = get_current_epoch(conn, project_id)?.map(|epoch| epoch.id);
+    if let Some(current_epoch_id) = current_epoch_id.as_deref() {
         report.edge_state_ids_outside_current_epoch =
             edge_state_ids_outside_epoch(conn, project_id, &current_epoch_id)?;
         report.finding_observation_ids_outside_current_epoch =
@@ -2247,6 +2649,28 @@ pub fn verify_narrative_dependency_graph_for_project(
         report.consumer_keys_without_current_epoch_freshness =
             consumer_keys_without_current_epoch_freshness(conn, project_id, &current_epoch_id)?;
     }
+
+    report.application_revision_artifact_references =
+        verify_coverage::verify_application_revision_artifact_references(conn, project_id)?;
+    let (semantic_index_digest, semantic_index_generation) =
+        verify_coverage::verify_semantic_index_checks(conn, project_id)?;
+    report.semantic_index_dependency_set_digest = semantic_index_digest;
+    report.semantic_index_generation_correspondence = semantic_index_generation;
+    report.contribution_to_application_commit_correspondence =
+        verify_coverage::verify_contribution_to_application_commit_correspondence(
+            conn, project_id,
+        )?;
+    report.legacy_mirror_migration_parity = verify_coverage::verify_legacy_mirror_migration_parity(
+        conn,
+        project_id,
+        current_epoch_id.as_deref(),
+    )?;
+    report.cursor_and_feed_head_consistency =
+        verify_coverage::verify_cursor_and_feed_head_consistency(
+            conn,
+            project_id,
+            current_epoch_id.as_deref(),
+        )?;
 
     report.duplicate_edge_keys = duplicate_edge_keys(conn, project_id)?;
     report.duplicate_edge_ids_to_deactivate = {
@@ -2268,7 +2692,16 @@ pub fn verify_narrative_dependency_graph_for_project(
             .is_empty()
         || !report
             .consumer_keys_with_uncomputed_dependency_set_digest
-            .is_empty();
+            .is_empty()
+        || !report
+            .semantic_index_dependency_set_digest
+            .issues
+            .is_empty()
+        || !report
+            .semantic_index_generation_correspondence
+            .issues
+            .is_empty()
+        || !report.cursor_and_feed_head_consistency.issues.is_empty();
 
     Ok(report)
 }
@@ -3318,6 +3751,57 @@ mod tests {
         .expect("record run-scoped edge")
     }
 
+    fn seed_application_fixture(
+        db: &Database,
+        application_id: &str,
+        commit_id: &str,
+        proposal_id: &str,
+        revision_id: &str,
+    ) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, created_at, updated_at)
+                 VALUES (?1, 'run-1', 'project-1', 'extraction',
+                         '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
+                params![format!("set-{proposal_id}")],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, payload_json,
+                     created_at, updated_at)
+                 VALUES (?1, ?2, ?1, 'codex-entry', '{}',
+                         '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
+                params![proposal_id, format!("set-{proposal_id}")],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, origin_kind,
+                     created_at, created_by)
+                 VALUES (?1, ?2, 1, '{}', 'enveloped',
+                         '2026-08-15T00:00:00.000Z', 'test')",
+                params![revision_id, proposal_id],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_apply_commits
+                    (id, project_id, request_id, plan_digest, status, created_at)
+                 VALUES (?1, 'project-1', ?1, 'sha256:test', 'completed',
+                         '2026-08-15T00:00:00.000Z')",
+                params![commit_id],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_applications
+                    (id, commit_id, proposal_id, revision_id, applied_entity_kind,
+                     applied_entity_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, 'codex-entry', 'entity-1',
+                         '2026-08-15T00:00:00.000Z')",
+                params![application_id, commit_id, proposal_id, revision_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed Application/Proposal/Revision fixture");
+    }
+
     fn seed_sealed_snapshot_run(db: &Database, project_id: &str, run_id: &str) {
         db.with_conn(|conn| {
             conn.execute(
@@ -4208,6 +4692,265 @@ mod tests {
         assert!(report.is_consistent());
         assert!(report.is_complete());
         assert!(report.is_clean());
+    }
+
+    #[test]
+    fn production_verify_coverage_reports_semantic_index_owner_gap() {
+        let coverage = production_verify_check_coverage();
+        assert_eq!(coverage["complete"], Value::Bool(false));
+        assert_eq!(coverage["required"].as_array().map(Vec::len), Some(13));
+        assert_eq!(coverage["covered"].as_array().map(Vec::len), Some(11));
+        assert_eq!(
+            coverage["missing"],
+            serde_json::json!([
+                "dependency-set-digest",
+                "semantic-index-generation-correspondence"
+            ])
+        );
+    }
+
+    #[test]
+    fn project_verify_reports_a_missing_revision_artifact_reference() {
+        let db = test_db();
+        seed_application_fixture(&db, "application-1", "commit-1", "proposal-1", "revision-1");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_revision_source_basis
+                    (revision_id, ordinal, source_kind, source_key, revision_token)
+                 VALUES ('revision-1', 0, 'narrative-artifact', 'artifact:missing',
+                         'sha256:artifact-token')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed typed artifact source basis");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert!(report
+            .application_revision_artifact_references
+            .issues
+            .iter()
+            .any(|issue| issue.contains("artifact-missing:missing")));
+        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn project_verify_reports_contribution_commit_provenance_drift() {
+        let db = test_db();
+        seed_application_fixture(&db, "application-1", "commit-1", "proposal-1", "revision-1");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_application_contributions
+                    (id, project_id, application_id, commit_id, proposal_id, revision_id,
+                     target_object_identity, field_path, target_state, created_at)
+                 VALUES ('contribution-1', 'project-1', 'application-1', 'wrong-commit',
+                         'proposal-1', 'revision-1', 'object-1', '/title', 'unchanged',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed contribution with drifted commit provenance");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert!(report
+            .contribution_to_application_commit_correspondence
+            .issues
+            .iter()
+            .any(|issue| issue.contains("application-commit-mismatch")));
+        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn project_verify_reports_legacy_generic_mirror_status_drift() {
+        let db = test_db();
+        seed_application_fixture(&db, "application-1", "commit-1", "proposal-1", "revision-1");
+        let epoch_id = db
+            .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
+            .expect("mint current epoch");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_projection_freshness
+                    (application_id, status, updated_at)
+                 VALUES ('application-1', 'fresh', '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness,
+                     build_action, semantic_epoch_id, dependency_set_digest, updated_at)
+                 VALUES ('project-1', 'application', 'application-1', 'stale', 'manual',
+                         ?1, '', '2026-08-15T00:00:00.000Z')",
+                params![epoch_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed Legacy/Generic mirror rows");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert!(report
+            .legacy_mirror_migration_parity
+            .issues
+            .iter()
+            .any(|issue| issue.contains("status-mismatch")));
+        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn project_verify_reports_a_cursor_acknowledging_past_the_feed_head() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO change_events
+                    (event_uid, project_id, scene_id, domain, op_type, entity_type,
+                     entity_id, payload, session_id, sequence, timestamp, prev_hash, hash)
+                 VALUES ('event-1', 'project-1', 'scene-live', 'scene', 'update', 'scene',
+                         'scene-live', '{}', 'session-1', 1, 1, 'prev', 'hash')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_transactions
+                    (id, project_id, request_id, source_domain, source_change_event_uid,
+                     source_change_event_sequence, cause_kind, origin, payload_digest, created_at)
+                 VALUES ('transaction-1', 'project-1', 'request-1', 'scene', 'event-1',
+                         1, 'forward', 'human', 'sha256:transaction',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_events
+                    (id, project_id, transaction_id, canonical_change_event_uid,
+                     canonical_sequence, event_ordinal, object_key_json, change_kind,
+                     mutation_kind, changed_paths_json, occurred_at)
+                 VALUES ('feed-event-1', 'project-1', 'transaction-1', 'event-1', 1, 0,
+                         '{\"kind\":\"scene\",\"id\":\"scene-live\"}', 'content',
+                         'update', '[]', '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_cursors
+                    (project_id, consumer_id, acknowledged_through_sequence, updated_at)
+                 VALUES ('project-1', 'reader-1', 2, '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed feed and invalid cursor");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert!(report
+            .cursor_and_feed_head_consistency
+            .issues
+            .iter()
+            .any(|issue| issue.contains("acknowledges-past-feed-head")));
+        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn project_verify_keeps_semantic_index_generation_incomplete_without_binding() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_index_metadata
+                    (project_id, index_key, generation, built_at, source_digest,
+                     dependency_set_digest, dirty_cache_flag)
+                 VALUES ('project-1', 'lexical', 1, '2026-08-15T00:00:00.000Z',
+                         'source', 'dependency', 0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed Semantic Index metadata without a generation owner");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert!(report
+            .semantic_index_dependency_set_digest
+            .issues
+            .iter()
+            .any(|issue| issue.contains("dependency-set-digest-mismatch")));
+        assert!(report
+            .semantic_index_generation_correspondence
+            .incomplete
+            .iter()
+            .any(|issue| issue.contains("generation-binding-missing")));
+        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn project_verify_keeps_active_semantic_index_d1_incomplete_without_metadata_binding() {
+        use crate::narrative_extraction::{
+            write_dependency_declaration_set, DependencyDeclaration,
+            DependencyDeclarationSetRequest,
+        };
+        use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
+
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_index_metadata
+                    (project_id, index_key, generation, built_at, source_digest,
+                     dependency_set_digest, dirty_cache_flag)
+                 VALUES ('project-1', 'lexical', 1, '2026-08-15T00:00:00.000Z',
+                         'source', 'dependency', 0)",
+                [],
+            )?;
+            record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                "semantic-index",
+                "lexical",
+                "project:scene:scene-live",
+                r#"["/body"]"#,
+                None,
+                None,
+                "2026-08-15T00:00:00.000Z",
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed Semantic Index V1 metadata and typed edge");
+        write_dependency_declaration_set(
+            &db,
+            DependencyDeclarationSetRequest {
+                project_id: "project-1".to_string(),
+                consumer_kind: "semantic-index".to_string(),
+                consumer_key: "lexical".to_string(),
+                producer_id: "semantic-index-test-producer".to_string(),
+                producer_generation: 1,
+                expected_head_version: 0,
+                declarations: vec![DependencyDeclaration {
+                    source_object_identity: "project:scene:scene-live".to_string(),
+                    role: DependencyRole::RankingOnly,
+                    selector: DependencySelector::WholeSource,
+                }],
+                created_at: "2026-08-15T00:00:00.000Z".to_string(),
+            },
+        )
+        .expect("seed active Semantic Index D1 head through the typed writer");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert!(report
+            .semantic_index_dependency_set_digest
+            .incomplete
+            .iter()
+            .any(|issue| issue.contains("v2-semantic-index-metadata-binding-missing")));
+        assert!(report
+            .semantic_index_generation_correspondence
+            .incomplete
+            .iter()
+            .any(|issue| issue.contains("v2-semantic-index-metadata-binding-missing")));
+        assert!(!report.is_clean());
     }
 
     /// An Edge under a Consumer kind this build does not implement gets its

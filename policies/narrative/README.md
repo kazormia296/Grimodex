@@ -814,33 +814,30 @@ with different Freshness outcomes both get evaluated and published
 correctly in one Run, and the `RunningOnly` reuse policy — reused while
 genuinely `running`, not reused once `completed`).
 
-**6 of the 13 `dependency-verify` checks landed**
+**11 of the 13 `dependency-verify` checks are production-owned**
 (`restore_rebuild.rs`'s new `verify_narrative_dependency_graph_for_project`
 / `DependencyGraphVerifyReport`): a project-wide diagnostic (every
 Consumer, not one Run's own Edges like the pre-existing
 `rebuild_verify_dependency_edges`, which predates the Run Kind Policy and
-stays as-is for its own narrower callers). Covers: the closest available
-match to `producer-and-generation-consistency` (this crate has no
-separate Producer "generation" concept yet, only "does the Source still
-resolve"), `active-edge-duplicates` (defense-in-depth: the `UNIQUE` index
-`record_dependency_edge_in_tx` relies on should make this structurally
-impossible through this crate's own writers), `cross-project-edge` (a
-`RUN_CONSUMER_KIND` Edge whose Run belongs to a different project — the
-one place the project boundary could silently slip, since
-`source_object_identity` carries no project scope of its own),
-`consumer-and-source-key-format`, `edge-state-belongs-to-current-epoch`,
-`finding-observation-belongs-to-current-epoch`. `DependencyGraphVerifyReport::is_clean()`
-reports whether all 6 covered checks passed — explicitly not a claim
-about the other 7.
+stays as-is for its own narrower callers). The durable checks cover the
+producer/source graph, typed Revision Source Basis artifact references,
+Contribution provenance, and Legacy/Generic parity. The derived checks cover
+current-epoch Edge/Freshness/Observation state and cursor/feed coherence.
+`DependencyGraphVerifyReport` also runs read-only Semantic Index dependency
+digest and generation diagnostics, but those two checks are not counted as
+production coverage yet: the current product has no Semantic Index Producer
+that writes `narrative_semantic_index_metadata` or binds it to a sealed D1
+generation. `DependencyGraphVerifyReport::is_clean()` reports whether the
+available rows are consistent and complete; the cutover readiness gate also
+requires the static 13-check coverage object, so an active Semantic Index
+cannot pass by taking the empty/no-index path. Each newly covered check carries
+explicit `completed`, `passed`, `issues`, and `incomplete` evidence; missing
+production rows remain fail-closed rather than becoming a pass.
 
-Not yet implemented, and not silently treated as passing:
-`application-revision-artifact-references`, `dependency-set-digest`/
-`consumer-freshness-dependency-set-digest` (nothing writes
-`narrative_consumer_freshness.dependency_set_digest`/
-`narrative_semantic_index_metadata` yet),
-`contribution-to-application-commit-correspondence`,
-`legacy-mirror-migration-parity`, `cursor-and-feed-head-consistency`,
-`semantic-index-generation-correspondence`.
+Semantic Index metadata without an explicit generation owner remains
+incomplete, and an active D1 Semantic Index head remains blocked until a
+production writer binds both generation and digest. Verify does not fabricate
+a Semantic Index writer, generation, or payload-derived artifact identity.
 
 **Real bug found and fixed while building this**: the previous commit's
 `dependency-rebuild-derived` orchestrator passed the _Rebuild Run's own_
@@ -857,10 +854,12 @@ passing each Edge's own `consumer_key` instead; a regression test
 seeds a real sealed-snapshot Run and Edge and asserts it resolves
 `Fresh`, not `SourceMissing`.
 
-Verified: all new SQL (duplicate-key, cross-project, stale-epoch queries)
-replayed against real SQLite via Python, plus four new
-`project_verify_*` Rust `#[cfg(test)]` unit tests and the snapshot-source
-regression test above.
+Verified: all new SQL (duplicate-key, cross-project, stale-epoch, provenance,
+mirror, feed, and Semantic Index queries) replayed against real SQLite via
+the Rust test database, plus six new `project_verify_*` Rust `#[cfg(test)]`
+unit tests and the snapshot-source regression test above. The static coverage
+report intentionally remains incomplete for the two Semantic Index checks
+until their production writer exists.
 
 **The `dependency-repair` Run Kind landed** (new module,
 `narrative_extraction/repair.rs`): the lease/backup/sealed-plan/execution
@@ -869,16 +868,16 @@ real, end-to-end repair category.
 
 Scope, stated up front rather than discovered later: the policy's
 `allowedRepairs` names six categories; only `deactivate-duplicate-edge`
-is implemented, because it is the _only_ one
-`verify_narrative_dependency_graph_for_project`'s current 6-of-13 check
-coverage can actually surface — the other five all need Verify checks
-this crate does not implement yet
-(`contribution-to-application-commit-correspondence`,
-`application-revision-artifact-references`,
-`legacy-mirror-migration-parity`). There is nothing yet to seal a repair
-plan _from_ for those five. The safety machinery below is generic and
-does not need to change as more categories are added; only
-`seal_repair_plan` needs to grow.
+is implemented. The other five require their own durable repair derivation
+and mutation contracts: `edge-fully-reconstructible-from-durable-ledger`,
+`artifact-with-explicit-dependency-manifest`,
+`proposal-revision-edge-uniquely-derivable-from-source-basis-or-read-set`,
+`application-contribution-uniquely-derivable-from-commit-receipt`, and
+`supersede-a-clear-prior-generation`. Verify now inspects all 13 check names,
+but the two Semantic Index checks remain an explicit production-coverage
+blocker and there is still nothing to seal a repair plan _from_ for those
+five. The safety machinery below is generic and does not need to change as
+more categories are added; only `seal_repair_plan` needs to grow.
 
 - `claim_repair_lease_in_tx`/`release_repair_lease_in_tx` — CAS over
   `narrative_maintenance_repair_leases` (`PRIMARY KEY(project_id)`, one
@@ -1008,13 +1007,13 @@ before them) — inspection plus the TypeScript-side contract tests above
 is the best available verification until a working toolchain runs
 `napi build`.
 
-This closes every task the ratified Run Kind Policy
-(`narrative-run-kind-policy.json`) originally scoped as
-not-yet-implemented. Remaining, explicitly out of scope for this pass
-and documented at each landing commit above: 7 of the 13
-`dependency-verify` checks, five of the six `dependency-repair`
-`allowedRepairs` categories (both blocked on Verify checks this crate
-does not implement yet), and the crash-recovery gap for a Run stuck
+The `dependency-verify` coverage task in the ratified Run Kind Policy
+(`narrative-run-kind-policy.json`) now has production owners for 11 checks;
+the two Semantic Index checks remain an explicit cutover blocker until a
+production metadata writer and D1 binding are added. Remaining, explicitly
+out of scope for this pass and documented at each landing commit above: five
+of the six `dependency-repair`
+`allowedRepairs` categories and the crash-recovery gap for a Run stuck
 `running` after a terminated process (a Lane B / execution-state-model
 concern spanning every Run Kind, not specific to any one of these).
 
@@ -1111,10 +1110,12 @@ evaluation stamps the digest, and
 `consumer-freshness-dependency-set-digest` — the "is this Consumer still
 reading the same things?" question no per-Edge Freshness value can answer,
 since a Consumer that stopped depending on a Source has no Edge left to go
-stale. Verify coverage is therefore **7 of the 13 named checks**, not 6.
-The Semantic Index half of
-`dependency-set-digest` is still unimplemented — nothing writes
-`narrative_semantic_index_metadata` yet.
+stale. Verify coverage is now **11 of the 13 named checks**. The Semantic
+Index half is read-only: an existing metadata row is compared with current
+typed dependency identities and an explicit D1 producer generation, but both
+Semantic Index check names remain outside static production coverage because
+the production index builder has no metadata writer or D1 binding yet. No
+metadata writer is invented when that builder is absent.
 
 Gate C2-2 originally moved `VERIFY_CONTRACT_VERSION` to `"3"` rather than
 `"2"` because the report gained three fields in one Gate, not one:
@@ -1123,15 +1124,16 @@ Gate C2-2 originally moved `VERIFY_CONTRACT_VERSION` to `"3"` rather than
 `orphaned_attention_finding_keys`. `"2"` existed only mid-branch and was
 never released.
 
-The current version is `"5"`. It adds the required
+The current version is `"9"`. It adds six typed Verify coverage reports (four
+production-owned checks and two explicit Semantic Index blockers) while retaining the required
 `orphaned_attention_rehome_ambiguities` field, which reports every preserved
 Attention row for which the material-digest → Observation → Edge mapping was
 zero, ambiguous, or collided with an existing target. It also reports
 `legacy-identity-unresolved` Attention rows whose old history cannot prove a
 stable Edge identity; those rows remain durable but are never considered
-applicable by the Inbox. A stored version-`"4"` result lacks this field and
-must not be accepted as the new report shape: the workspace must re-run
-Verify under contract version 5 before Repair can be sealed.
+applicable by the Inbox. A stored result under an older version must not be
+accepted as the new report shape: the workspace must re-run Verify under
+contract version 9 before Repair can be sealed.
 
 Attention application additionally requires `finding-identity-resolved`.
 Matching the finding key and material-basis digest is insufficient when a

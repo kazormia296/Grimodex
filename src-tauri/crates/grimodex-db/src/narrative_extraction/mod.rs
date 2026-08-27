@@ -81,6 +81,7 @@ mod temporal_snapshots;
 mod temporal_undo;
 mod terminal_failure;
 mod undo;
+mod verify_coverage;
 
 pub(crate) const INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID: &str =
     "narrative-incremental-freshness/v1";
@@ -259,6 +260,7 @@ pub(crate) use semantic_index_diagnostics::{
     compute_dependency_set_digest, is_semantic_index_dirty,
     semantic_index_metadata_from_dependency_edges, SemanticIndexMetadata,
 };
+pub use verify_coverage::VerifyCoverageCheck;
 
 pub(crate) use foreshadow_operations::collect_aggregate_snapshot;
 pub(crate) use foreshadow_undo::{

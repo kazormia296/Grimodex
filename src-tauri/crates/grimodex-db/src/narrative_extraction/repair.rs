@@ -39,21 +39,19 @@
 //!
 //! `narrative-run-kind-policy.json`'s `allowedRepairs` names six
 //! categories. Only one is implemented end-to-end here --
-//! `deactivate-duplicate-edge` -- because it is the only category
-//! `restore_rebuild.rs`'s current `dependency-verify` coverage
-//! (`DependencyGraphVerifyReport`, 7 of the policy's 13 named checks) can
-//! actually surface: `edge-fully-reconstructible-from-durable-ledger`,
+//! `deactivate-duplicate-edge`. The `dependency-verify` report now inspects
+//! all 13 policy checks; its two Semantic Index checks remain explicit
+//! production-coverage blockers until an Index writer exists. The other five
+//! repair categories still need their own durable repair derivation and
+//! mutation contracts:
+//! `edge-fully-reconstructible-from-durable-ledger`,
 //! `artifact-with-explicit-dependency-manifest`,
 //! `proposal-revision-edge-uniquely-derivable-from-source-basis-or-read-set`,
 //! `application-contribution-uniquely-derivable-from-commit-receipt`, and
-//! `supersede-a-clear-prior-generation` all depend on Verify checks this
-//! crate does not implement yet
-//! (`contribution-to-application-commit-correspondence`,
-//! `application-revision-artifact-references`,
-//! `legacy-mirror-migration-parity`, ...) -- there is nothing yet to seal
-//! a plan *from* for those five. The lease/backup/epoch-match/confirmation
-//! safety machinery below is generic and does not need to change as more
-//! repair categories are added; only [`seal_repair_plan`] needs to grow.
+//! `supersede-a-clear-prior-generation`. The lease/backup/epoch-match/
+//! confirmation safety machinery below is generic and does not need to
+//! change as more repair categories are added; only [`seal_repair_plan`]
+//! needs to grow.
 //! `unrecoverableDisposition` (`detached`/`unknown`/`manual-review-required`)
 //! is therefore also not implemented: nothing here classifies a finding
 //! into that disposition yet, since the only finding this module can act
