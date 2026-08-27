@@ -43,7 +43,8 @@ export declare class Backend {
   /**
    * Electron main scheduler 専用の Change Feed freshness cycle。
    * renderer IPC には登録せず、1 call で共有runtimeの有界batchを最大1件だけ
-   * 処理する。workspace未open・切替中・Safe Mode・feed空はJS nullを返す。
+   * 処理する。workspace未open・切替中・Safe Mode・通常のfeed空はJS nullを返し、
+   * C2-ZCのexpected NOT_READYだけはmain activation owner向けの小さなJSONを返す。
    */
   runNarrativeFreshnessCycle(): Promise<string | null>
   /**
