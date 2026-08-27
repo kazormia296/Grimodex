@@ -25,6 +25,7 @@ import {
   NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
   NARRATIVE_MAINTENANCE_TRIGGERS,
   assertRestoreFixtureEvidence,
+  assertRestoreFixturePreGapReadiness,
   assertRestoreVerifyRebuildVerifyCausality,
   assertForegroundLifecycle,
   assertForegroundTargetBaseline,
@@ -810,6 +811,31 @@ test("restore fixture captures the derived-state gap before the normal launch se
       seedBody.indexOf("createRestoreBackupFixture(workspace)"),
     "the gap must be captured in the WAL-safe backup",
   );
+  const gapAt = seedBody.indexOf("createRestoreFixtureDerivedStateGap(context");
+  const readinessMatch = seedBody.match(
+    /waitForReadiness\(\s*context,\s*"restore fixture pre-gap freshness settled",[\s\S]*?\n\s*\);/,
+  );
+  const readinessAt = readinessMatch?.index ?? -1;
+  assert.ok(
+    readinessAt >= 0 && readinessAt < gapAt,
+    "restore fixture must settle production Freshness/cursor before deleting derived state",
+  );
+  const readinessBlock = seedBody.slice(readinessAt, gapAt);
+  assert.match(
+    readinessBlock,
+    /requireMaintenanceSettled:\s*true/,
+    "pre-gap readiness must exclude active maintenance Runs",
+  );
+  assert.match(
+    readinessBlock,
+    /minimumFeedHead:/,
+    "pre-gap readiness must wait for the observed Change Feed head",
+  );
+  assert.match(
+    readinessBlock,
+    /requireFreshRun:\s*true/,
+    "pre-gap readiness must require Freshness after source seeding",
+  );
   const journeyBody = source.match(
     /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
   )?.[0];
@@ -818,6 +844,35 @@ test("restore fixture captures the derived-state gap before the normal launch se
     journeyBody.includes("createRestoreFixtureDerivedStateGap(context"),
     false,
     "normal launch must restore the pre-settled gap image, not create a post-settle clean backup",
+  );
+});
+
+test("restore fixture readiness requires a current completed Freshness and released cursor", () => {
+  const readiness = {
+    epoch: { id: "epoch-1" },
+    freshness: { status: "completed", semanticEpochId: "epoch-1" },
+    feedAndCursor: {
+      feedHead: 3,
+      cursor: {
+        acknowledgedThrough: 3,
+        reservedThrough: null,
+        activeRunId: null,
+        semanticEpochId: null,
+        lastError: null,
+      },
+    },
+  };
+  assert.doesNotThrow(() => assertRestoreFixturePreGapReadiness(readiness));
+  assert.throws(
+    () =>
+      assertRestoreFixturePreGapReadiness({
+        ...readiness,
+        feedAndCursor: {
+          ...readiness.feedAndCursor,
+          cursor: { ...readiness.feedAndCursor.cursor, activeRunId: "run-1" },
+        },
+      }),
+    /released cursor/,
   );
 });
 

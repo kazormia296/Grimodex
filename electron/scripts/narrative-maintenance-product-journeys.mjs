@@ -1269,6 +1269,54 @@ export function isSettledFreshnessCursor(cursor) {
   );
 }
 
+/**
+ * The restore fixture must snapshot a database after production Freshness has
+ * consumed every Change Feed event created while seeding its source.  Without
+ * this boundary, deleting derived rows can race a late Freshness cycle and
+ * produce a backup that already contains a post-gap repair.
+ */
+export function assertRestoreFixturePreGapReadiness(
+  readiness,
+  label = "restore fixture pre-gap readiness",
+) {
+  if (!readiness || typeof readiness !== "object") {
+    throw new Error(`${label}: readiness result is not an object`);
+  }
+  const epoch = readiness.epoch;
+  const freshness = readiness.freshness;
+  const feedAndCursor = readiness.feedAndCursor;
+  const epochId = epoch?.id;
+  if (typeof epochId !== "string" || epochId.trim() === "") {
+    throw new Error(`${label}: current Semantic Epoch is missing`);
+  }
+  if (
+    freshness?.status !== "completed" ||
+    freshness.semanticEpochId !== epochId
+  ) {
+    throw new Error(
+      `${label}: Freshness is not completed for the current Semantic Epoch`,
+    );
+  }
+  const feedHead = Number(feedAndCursor?.feedHead);
+  const cursor = feedAndCursor?.cursor;
+  const acknowledgedThrough = Number(cursor?.acknowledgedThrough);
+  if (
+    !Number.isSafeInteger(feedHead) ||
+    !Number.isSafeInteger(acknowledgedThrough) ||
+    acknowledgedThrough !== feedHead
+  ) {
+    throw new Error(
+      `${label}: Freshness cursor does not acknowledge the observed Change Feed head`,
+    );
+  }
+  if (!isSettledFreshnessCursor(cursor)) {
+    throw new Error(
+      `${label}: Freshness cursor is not a released cursor`,
+    );
+  }
+  return readiness;
+}
+
 async function runLedger(harness, page, projectId) {
   return queryRows(
     harness,
@@ -1957,6 +2005,8 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       id,
       null,
     );
+    const preSceneRuns = await context.runs();
+    const preSceneFeedAndCursor = await context.feedAndCursor();
     const scene = await createSceneIfNeeded(context, "restore-fixture-source");
     const readSetToken = `v${scene.version}@${scene.updatedAt}`;
     if (!/^v[0-9]+@.+$/.test(readSetToken)) {
@@ -2211,6 +2261,33 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       },
       "restore fixture pre-gap maintenance settled",
     );
+    const postSceneFeedAndCursor = await context.feedAndCursor();
+    if (
+      postSceneFeedAndCursor.feedHead <= preSceneFeedAndCursor.feedHead
+    ) {
+      throw new Error(
+        `restore fixture scene did not append a new Change Feed event: ${JSON.stringify({
+          before: preSceneFeedAndCursor,
+          after: postSceneFeedAndCursor,
+        })}`,
+      );
+    }
+    const preGapReadiness = await waitForReadiness(
+      context,
+      "restore fixture pre-gap freshness settled",
+      {
+        baselineRuns: preSceneRuns,
+        minimumFeedHead: postSceneFeedAndCursor.feedHead,
+        requireFreshRun: true,
+        requireMaintenanceSettled: true,
+      },
+    );
+    assertRestoreFixturePreGapReadiness(preGapReadiness);
+    context.record("restore-fixture-pre-gap-readiness-settled", {
+      epoch: preGapReadiness.epoch,
+      freshness: preGapReadiness.freshness,
+      feedAndCursor: preGapReadiness.feedAndCursor,
+    });
     context.record("restore-fixture-evidence-seeded", {
       edgeId: edge.id,
       consumerKind: edge.consumerKind,
@@ -2227,6 +2304,12 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       consumerKey,
     });
     const backupName = await createRestoreBackupFixture(workspace);
+    const backupReadiness = await readRestoreFixtureBackupReadiness(
+      workspace,
+      backupName,
+      context.projectId,
+    );
+    assertRestoreFixturePreGapReadiness(backupReadiness);
     return {
       edgeId,
       consumerKey,
@@ -2386,6 +2469,88 @@ async function readRunSnapshotQuery(workspace, query) {
   } catch (error) {
     throw new Error(
       `durable Run snapshot requires the sqlite3 test dependency: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+}
+
+async function readRestoreFixtureBackupReadiness(
+  workspace,
+  backupName,
+  projectId,
+) {
+  const databasePath = path.join(workspace, "backups", backupName);
+  const quotedProjectId = projectId.replaceAll("'", "''");
+  const query = `
+    SELECT
+      (SELECT id
+         FROM narrative_semantic_epochs
+        WHERE project_id = '${quotedProjectId}'
+        ORDER BY epoch_number DESC, id DESC
+        LIMIT 1) AS epochId,
+      (SELECT status
+         FROM narrative_extraction_runs
+        WHERE project_id = '${quotedProjectId}'
+          AND run_kind = 'freshness-evaluation'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1) AS freshnessStatus,
+      (SELECT semantic_epoch_id
+         FROM narrative_extraction_runs
+        WHERE project_id = '${quotedProjectId}'
+          AND run_kind = 'freshness-evaluation'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1) AS freshnessSemanticEpochId,
+      (SELECT COALESCE(MAX(canonical_sequence), 0)
+         FROM narrative_change_events
+        WHERE project_id = '${quotedProjectId}') AS feedHead,
+      (SELECT acknowledged_through_sequence
+         FROM narrative_change_cursors
+        WHERE project_id = '${quotedProjectId}'
+          AND consumer_id = 'narrative-incremental-freshness/v1'
+        LIMIT 1) AS acknowledgedThrough,
+      (SELECT reserved_through_sequence
+         FROM narrative_change_cursors
+        WHERE project_id = '${quotedProjectId}'
+          AND consumer_id = 'narrative-incremental-freshness/v1'
+        LIMIT 1) AS reservedThrough,
+      (SELECT active_run_id
+         FROM narrative_change_cursors
+        WHERE project_id = '${quotedProjectId}'
+          AND consumer_id = 'narrative-incremental-freshness/v1'
+        LIMIT 1) AS activeRunId,
+      (SELECT semantic_epoch_id
+         FROM narrative_change_cursors
+        WHERE project_id = '${quotedProjectId}'
+          AND consumer_id = 'narrative-incremental-freshness/v1'
+        LIMIT 1) AS cursorSemanticEpochId,
+      (SELECT last_error
+         FROM narrative_change_cursors
+        WHERE project_id = '${quotedProjectId}'
+          AND consumer_id = 'narrative-incremental-freshness/v1'
+        LIMIT 1) AS lastError;`;
+  try {
+    const { stdout } = await execFile("sqlite3", ["-json", databasePath, query]);
+    const row = JSON.parse(String(stdout).trim() || "[]")[0] ?? {};
+    return {
+      epoch: { id: row.epochId },
+      freshness: {
+        status: row.freshnessStatus,
+        semanticEpochId: row.freshnessSemanticEpochId,
+      },
+      feedAndCursor: {
+        feedHead: Number(row.feedHead),
+        cursor: {
+          acknowledgedThrough: row.acknowledgedThrough,
+          reservedThrough: row.reservedThrough,
+          activeRunId: row.activeRunId,
+          semanticEpochId: row.cursorSemanticEpochId,
+          lastError: row.lastError,
+        },
+      },
+    };
+  } catch (error) {
+    throw new Error(
+      `restore fixture backup readiness requires sqlite3: ${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
     );
   }
