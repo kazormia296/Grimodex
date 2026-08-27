@@ -155,6 +155,7 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "--test",
         "scripts/product-journey-phase1.test.mjs",
         "scripts/c2-5b-product-journeys.test.mjs",
+        "scripts/c2zc-product-journeys.test.mjs",
       ],
       [
         "cargo",

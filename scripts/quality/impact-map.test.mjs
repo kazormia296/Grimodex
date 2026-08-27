@@ -77,7 +77,7 @@ test("the Narrative runtime suite executes incremental Freshness integration", (
   );
   assert.ok(
     commandLines.includes(
-      "node --test scripts/product-journey-phase1.test.mjs scripts/c2-5b-product-journeys.test.mjs",
+      "node --test scripts/product-journey-phase1.test.mjs scripts/c2-5b-product-journeys.test.mjs scripts/c2zc-product-journeys.test.mjs",
     ),
   );
 });

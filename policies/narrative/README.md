@@ -185,7 +185,7 @@ binds PR #559's clean candidate base/head/tree to the byte-identical tree merged
 as `651791655177538ee02bc7e773f7d98c534ea324`. Credentialed/live-model Heavy
 work remains deferred and is not counted as passing NIR-0 evidence.
 
-## Gate C2 — IN PROGRESS (C2-ZC pending)
+## Gate C2 — COMPLETE
 
 Gate C2 begins from ADR 005's existing "Authority matrix and C2 start
 condition" checklist (Mutation Route / Source Event Contract / Object
@@ -198,7 +198,7 @@ file; this section is the running status record, alongside PR history and the
 accepted ADR/policy contracts.
 
 ```text
-Gate C2 — IN PROGRESS (C2-ZC pending)
+Gate C2 — COMPLETE
   Contract / Registry / Ledger Spine (C2-00): complete
   Schema / Transport Extension Spine (C2-01): complete
   Wave 1 foundation lanes:                    complete
@@ -208,7 +208,7 @@ Gate C2 — IN PROGRESS (C2-ZC pending)
   C2-3 Finding identity / Attention re-home:  complete; merged through PR #556/#559
   C2-5 shared triggers / lifecycle recovery:  complete; merged through PR #556/#559
   C2-ZB Application re-key migration:         complete; SCHEMA 32 merged and hardened
-  C2-ZC Canonical Authority Cutover:          blocked / next explicit boundary
+  C2-ZC Canonical Authority Cutover:          complete; Generic is canonical
 ```
 
 ### C2-1 Change-Feed-driven incremental Freshness runtime
@@ -233,13 +233,14 @@ surface. Contract-level fixtures live in
 `src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs`
 and `electron/main/narrativeFreshness.test.ts`.
 
-This completion is intentionally narrower than the final Gate boundary. C2-3's
+The C2-1 runtime completion is intentionally narrower than later NIR-1
+retrieval work. C2-3's
 three-layer Finding identity and exact Attention re-homing, C2-5's automatic
 Backfill/Verify/Rebuild-Derived scheduling and shared cross-Run-Kind recovery,
 and C2-ZB's schema-owned Application re-key are merged through PR #556 and PR
-#559. C2-ZC remains blocked as a separately accepted authority switch, and
-Generic Consumer Freshness remains shadow rather than the canonical read
-authority.
+#559. C2-ZC is now accepted as the canonical authority switch: Generic
+Consumer Freshness is canonical after the durable marker, while the Legacy
+projection remains compatibility-only and is never a canonical read fallback.
 
 The paragraphs below preserve the landing rationale for earlier C2 slices;
 their historical environment-specific validation caveats are not the current
@@ -516,8 +517,8 @@ open — automatic or human-triggered?" framing with one principle:
   `{projectId, runKind, semanticEpochId, legacySourceSchemaVersion,
 legacyHighWaterMark, targetGraphContractDigest,
 backfillAlgorithmVersion}` at creation. Editing is never blocked while
-  Backfill runs or if it fails — Legacy Freshness stays the read authority
-  throughout; only the C2-Z cutover is gated on completion. Auto-retry is
+  Backfill runs or if it fails — the pre-marker Legacy Freshness path remains
+  the compatibility behavior until C2-Z readiness. Auto-retry is
   bounded to transient causes (SQLite busy, process interruption, app
   shutdown, lease timeout, transient I/O); a contract-shaped failure
   (`NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION` — cross-project
@@ -529,9 +530,9 @@ backfillAlgorithmVersion}` at creation. Editing is never blocked while
 - **`dependency-verify`** (Lane N's `rebuild_verify_dependency_edges`; no
   existing `run_kind` value, new) — automatic after Backfill completes, a
   Restore or Migration Semantic Epoch rotation, an Integrity Repair, or a
-  Dependency/Rule/Normalizer contract digest change; the later C2-ZC check is
-  recorded as a future obligation, not a current trigger. Manual re-run is
-  also allowed. Skips
+  Dependency/Rule/Normalizer contract digest change. The scheduler-owned C2-ZC
+  activation consumes current Verify evidence; it is not a separate user or
+  renderer trigger. Manual re-run is also allowed. Skips
   re-running when the same Epoch, graph contract, and Producer generation
   set already passed. Read-only: may write only Run status, typed
   diagnostics, Finding Observations, and its own report digest — it must
@@ -578,20 +579,23 @@ C2-Z cutover (Generic Consumer Freshness becoming canonical, ending
 Legacy Freshness's read authority) requires, per Workspace: Legacy
 Backfill completed, the current Epoch's Verify passed, no unresolved
 Durable Graph errors, Derived State rebuild completed, Legacy/Generic
-parity within contract, and no active Backfill/Repair Run. Until then,
-Legacy Freshness stays canonical and the Generic Graph stays shadow;
-ordinary editing is never blocked either way, only C2's own Structure
-Health/Freshness UI degrades to "semantic index is being prepared" or
-"semantic graph requires repair".
+parity within contract, and no active Backfill/Repair Run. Before its durable
+marker, Legacy Freshness remains the compatibility behavior and the Generic
+Graph is prepared; after the marker Generic Consumer Freshness is canonical
+and Legacy is compatibility-only. Ordinary editing is never blocked either
+way, only C2's own Structure Health/Freshness UI degrades to "semantic index is
+being prepared" or "semantic graph requires repair".
 
-This is a policy/schema contract only — `validate-run-kind-policy.mjs`
+This is a policy/schema contract — `validate-run-kind-policy.mjs`
 confirms internal consistency (all five Run Kinds present, repair-only
 fields confined to `dependency-repair`, `dependency-verify` is
 diagnostics-only and side-effect-free, every `adminCommands` entry is
 covered by the five named operations), requires the stable
 `narrative-maintenance-route/v1` metadata for the three automatic maintenance
-Run Kinds, and keeps the C2-ZC cutover condition in an explicit future
-obligation that cannot establish current wired status. `triggerEvents` names
+Run Kinds, and requires the C2-ZC cutover condition to be owned by the
+main-only scheduler wake rather than a renderer or the retired manual
+obligation.
+`triggerEvents` names
 semantic database/runtime discovery conditions, not literal emitter names.
 The validator is intentionally JSON-only: it does not parse TypeScript, Rust,
 SQL, call graphs, aliases, callbacks, or execution order. Electron integration
@@ -1091,9 +1095,10 @@ whitespace, since either would let two different Consumers collide on one
 `(project_id, consumer_kind, consumer_key)` is the one canonical Consumer
 Freshness authority and `narrative_projection_freshness` — keyed by
 `application_id` alone, so structurally unable to express any other
-Consumer kind — is compatibility-only. Legacy still serves reads until the
-C2-Z cutover per `narrative-run-kind-policy.json`; that makes it the
-mirror, not a second authority. `dependencySetDigest` fixes
+Consumer kind — is compatibility-only. Before the C2-Z marker it remains the
+legacy compatibility read path; after the marker canonical reads use Generic
+Consumer Freshness only. In both states it is a mirror, not a second
+authority. `dependencySetDigest` fixes
 `narrative_consumer_freshness.dependency_set_digest` as a digest over the
 set of `source_object_identity` values declared under the Consumer, and
 records that `NULL` means "not evaluated since SCHEMA 24 added the
@@ -1202,7 +1207,9 @@ Three cases the re-key deliberately does **not** collapse:
   `finding_key`, preserving disposition, identity status, digests, version,
   and all other human fields. Fan-out with history, NULL/ambiguous identity,
   or a conflicting target fails closed; no Attention is broadened to multiple
-  Applications. Generic Consumer Freshness remains shadow until C2-ZC.
+  Applications. The re-key is precondition evidence for C2-ZC; after its
+  durable marker, Generic Consumer Freshness is canonical and this historical
+  re-key data remains compatibility evidence only.
 
 Freshness decided against the old Consumer identity _is_ discarded, since
 a verdict reached about `(run, sources)` is not a verdict about

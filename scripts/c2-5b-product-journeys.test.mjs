@@ -44,6 +44,7 @@ import {
   NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB,
   NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_DOMAIN_RULES,
 } from "../electron/scripts/product-journey-catalog.mjs";
@@ -1808,9 +1809,10 @@ test("c2-5b runner IDs are wired to the central catalog and impact selector", ()
 });
 
 test("maintenance source changes select the executable C2-5B journey subset", () => {
-  const expectedIds = NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
-    (journey) => journey.id,
-  );
+  const expectedIds = [
+    ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+    ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+  ].map((journey) => journey.id);
   for (const changedPath of [
     "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
     "electron/native/grimodex-node/src/lib.rs",
@@ -1840,9 +1842,10 @@ test("C2-5B runtime/semantic impact is direct for every launch owner path", asyn
     ),
   ]);
   const impactMap = parseImpactMap(impactSource);
-  const expectedIds = NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
-    (journey) => journey.id,
-  );
+  const expectedIds = [
+    ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+    ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+  ].map((journey) => journey.id);
   const ownerPaths = [
     ...NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
     "src-tauri/crates/grimodex-db/src/migrate.rs",
@@ -1921,10 +1924,10 @@ test("current C2-5B scheduler owner tests route directly to product and quality 
     ]),
   );
   const impactMap = parseImpactMap(impactSource);
-  const expectedProductJourneyIds =
-    NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
-      (journey) => journey.id,
-    );
+  const expectedProductJourneyIds = [
+    ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+    ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+  ].map((journey) => journey.id);
   const expectedQualityRuleIds = [
     "narrative-runtime-authority",
     "narrative-semantic-contract",
@@ -1984,9 +1987,10 @@ test("future narrativeMaintenance files route directly without safe-all fallback
   );
   const changedPath =
     "electron/main/narrativeMaintenance.futureRegression.test.ts";
-  const expectedIds = NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
-    (journey) => journey.id,
-  );
+  const expectedIds = [
+    ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+    ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+  ].map((journey) => journey.id);
   const productSelection = selectProductJourneys({
     catalog: PRODUCT_JOURNEY_CATALOG,
     domainRules: PRODUCT_DOMAIN_RULES,

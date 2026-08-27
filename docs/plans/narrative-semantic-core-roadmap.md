@@ -4,7 +4,7 @@
 
 - **Lifecycle:** Active mutable roadmap
 - **Last updated:** 2026-08-27
-- **Current focus:** C2-ZC canonical authority cutover after NIR-0 certification
+- **Current focus:** NIR-1 retrieval vertical slice after the accepted C2-ZC cutover
 - **North star:** **本文に追従し、根拠を示し、人間の修正を覚える Living Story Bible**
 
 This document is the canonical **mutable implementation and product roadmap** for Narrative Semantic Core, AI-assisted extraction, incremental maintenance, and the Living Story Bible product surface.
@@ -61,8 +61,8 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 | C2-5B contract-aware activation    | **Complete** | Durable Backfill/Verify/Rebuild lifecycle ownership, current-contract evidence, bounded recovery, live-authority dispatch, Maintenance Inbox routing, and product journeys are merged through PR #556 and PR #559.                                                                                                                                                               |
 | C2-ZA cutover preparation          | **Complete** | SELECT-only legacy/Generic parity measurement, fail-closed per-workspace readiness, and `application` re-key dry-run classification are merged without changing the canonical read authority.                                                                                                                                                                                    |
 | C2-ZB Application re-key migration | **Complete** | SCHEMA 32 performs the schema-owned, all-project preflighted Application re-key, Finding/Attention re-home, derived invalidation, migration Epoch, and final marker atomically. PR #559 closed the remaining ownership, restart, and compatibility findings.                                                                                                                        |
-| C2-ZC canonical cutover            | **Blocked — next explicit boundary** | Generic Consumer Freshness remains shadow until the separately accepted current Verify/rebuild/parity/runtime-liveness gate switches the canonical read authority. NIR-0 certification does not perform this irreversible transition.                                                                                                                                            |
-| First Retrieval Vertical Slice     | **Planned**  | Begins after C2-ZC; the minimum shared Narrative IR contract is now certified.                                                                                                                                                                                                                                                                                                   |
+| C2-ZC canonical cutover            | **Complete — accepted canonical authority cutover** | The main/N-API successful Freshness wake now activates the shared-Rust cutover after current-Epoch Verify/Rebuild/parity/no-active-maintenance/liveness gates pass. The durable marker is atomic and idempotent; canonical reads have no Legacy fallback. Evidence is recorded in the [C2-ZC impact matrix](narrative-c2zc-canonical-cutover-impact-matrix.md), the `c2-zc-canonical-authority-cutover` product journey, and focused C2-ZC/N-API tests. |
+| First Retrieval Vertical Slice     | **Planned**  | Begins from the now-accepted C2-ZC canonical Freshness authority; the minimum shared Narrative IR contract is now certified.                                                                                                                                                                                                                                                     |
 | Living Story Bible product Epics   | **Planned**  | Correction Memory, live Structure Health, Change Review, reports, graph exploration, and Map proposals are defined below.                                                                                                                                                                                                                                                        |
 
 ## Critical path
@@ -76,7 +76,7 @@ C2-ZA: parity/readiness/re-key dry-run ── complete
 C2-ZB: `application` re-key + Attention re-home migration ── complete
 NIR-0: Chronicle `scene-event@1` add-only pilot ── certified
   ↓
-C2-ZC: Generic Consumer Freshness becomes canonical ── next explicit authority boundary
+C2-ZC: Generic Consumer Freshness becomes canonical ── complete
   ↓
 First Retrieval Vertical Slice
   ↓
@@ -91,7 +91,7 @@ Readable reports and graph exploration
 Map draft proposals and later visualization products
 ```
 
-The ordering after PR #536 remains intentional: **Consumer granularity → Finding identity → lifecycle activation → Application re-key → canonical cutover**. The first four joins are now merged. The canonical authority switch remains last because it must be accepted from durable current evidence and must not be smuggled into NIR-0 certification or an ordinary scheduler wake.
+The ordering after PR #536 remains intentional: **Consumer granularity → Finding identity → lifecycle activation → Application re-key → canonical cutover**. The first four joins and the C2-ZC authority switch are now accepted from durable current evidence. The scheduler owns the one-way activation; later NIR-1 work must not reopen it or smuggle another authority into NIR-0 certification.
 
 ### Parallel branch ownership
 
@@ -283,7 +283,7 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 ## C2-Z: Canonical authority cutover
 
-**State:** C2-ZB complete; C2-ZC remains blocked as the next explicit authority boundary
+**State:** C2-ZC complete — Generic Consumer Freshness is the canonical authority
 
 ### C2-ZA read-only preparation
 
@@ -302,14 +302,18 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 ### C2-ZC canonical switch boundary
 
-**State:** Blocked / next
+**State:** Complete — accepted
 
-- Run only after C2-5B and every per-workspace gate below passes from durable current evidence.
-- Switching the read authority and removing the possibility of silent dual-authority divergence is an explicit later change, not part of C2-ZA, C2-ZB, or NIR-0 certification.
-- The ordinary Freshness scheduler may run its bounded cycle and register
-  liveness evidence, but it must not write the C2-ZC marker or activate the
-  canonical read/write switch. That irreversible transition remains a
-  separately accepted authority boundary.
+- The existing main-only Freshness scheduler runs one bounded cycle, revalidates
+  the current workspace authority/generation, and mints a capability-bound
+  liveness receipt before it attempts cutover.
+- The shared-Rust cutover is fail-soft only for the exact
+  `NEX_C2ZC_CUTOVER_NOT_READY:` readiness result. Marker, schema, evidence, and
+  authority failures surface to the scheduler caller and are retried through
+  the normal scheduler error policy.
+- Marker persistence and canonical reader/writer selection remain inside the
+  shared-Rust/database authority boundary; renderer and preload gain no
+  cutover surface.
 
 ### Per-Workspace cutover requirements
 
@@ -380,7 +384,7 @@ evaluations remain explicitly deferred and were not counted as passing evidence.
 
 ## NIR-1: First Retrieval Vertical Slice
 
-**State:** Blocked on C2-ZC canonical cutover
+**State:** Planned — starts from the accepted C2-ZC canonical cutover
 
 ### Canonical slice
 

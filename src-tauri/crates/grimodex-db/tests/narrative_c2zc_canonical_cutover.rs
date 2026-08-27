@@ -1,8 +1,7 @@
-//! C2-ZC public cutover contract (RED on the frozen C2-ZB base).
+//! C2-ZC public cutover contract.
 //!
-//! These tests intentionally describe the externally visible boundary before
-//! the canonical-authority implementation exists.  They do not exercise a
-//! private helper or a schema re-key: the only allowed transition is a
+//! These tests describe the externally visible boundary. They do not exercise
+//! a private helper or a schema re-key: the only allowed transition is a
 //! runtime-owned cutover after all durable workspace evidence and an explicit
 //! scheduler-liveness proof are present.
 
@@ -111,7 +110,7 @@ fn fixture_db() -> Database {
 
 fn scheduler_evidence(project_ids: &[&str]) -> SchedulerLivenessEvidence {
     SchedulerLivenessEvidence {
-        scheduler_instance_id: "scheduler-c2zc-red".to_string(),
+        scheduler_instance_id: "scheduler-c2zc-test".to_string(),
         observed_at: NOW.to_string(),
         project_ids: project_ids.iter().map(|id| (*id).to_string()).collect(),
     }
@@ -231,7 +230,7 @@ fn canonical_read_has_no_legacy_fallback_after_generic_cutover() {
     let db = fixture_db();
 
     db.with_conn(|conn| {
-        // The RED fixture deliberately calls the public cutover API only
+        // The fixture deliberately calls the public cutover API only
         // after a test-owned durable fixture has satisfied the full contract.
         seed_cutover_ready_application(conn)?;
         Ok::<_, anyhow::Error>(())

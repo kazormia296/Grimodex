@@ -86,6 +86,26 @@ export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG = freezeEntries(
 );
 
 /**
+ * C2-ZC is a separate acceptance boundary from the C2-5B maintenance
+ * journeys. Keep its production reachability journey explicit so the
+ * canonical-authority cutover cannot disappear behind the broader catalog.
+ */
+export const NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG = freezeEntries([
+  {
+    id: "c2-zc-canonical-authority-cutover",
+    domains: ["narrative-maintenance"],
+    interactions: ["narrative-maintenance->sqlite"],
+    contracts: [
+      "c2-zc:canonical-authority-cutover",
+      "c2-zc:post-marker-lifecycle",
+    ],
+    capabilities: ["electron", "napi"],
+    description:
+      "main scheduler -> N-API freshness cycle -> Generic authority cutover -> restart/new-project continuity",
+  },
+]);
+
+/**
  * Dependency-free product journey catalog.
  *
  * Keep this file free of Playwright, Electron, YAML, and workspace package
@@ -215,6 +235,7 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     capabilities: ["electron", "napi"],
   },
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+  ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
 ]);
 
 /**
@@ -346,8 +367,10 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
     domains: ["narrative-maintenance"],
     paths: [
       "electron/scripts/narrative-maintenance-product-journeys.mjs",
+      "electron/scripts/c2zc-canonical-product-journey.mjs",
       "electron/scripts/product-journeys.mjs",
       "scripts/c2-5b-product-journeys.test.mjs",
+      "scripts/c2zc-product-journeys.test.mjs",
       "scripts/product-journey-phase1.test.mjs",
       "electron/main/narrativeFreshness.ts",
       "electron/main/narrativeFreshness.test.ts",
@@ -606,6 +629,12 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
     id: journey.contracts[0],
     domains: ["narrative-maintenance"],
   })),
+  ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.flatMap((journey) =>
+    journey.contracts.map((id) => ({
+      id,
+      domains: ["narrative-maintenance"],
+    })),
+  ),
 ]);
 
 export const PRODUCT_SCOPE_TRANSITIONS = freezeEntries([

@@ -75,6 +75,9 @@ export const PRODUCT_JOURNEY_ELECTRON_PHASES = Object.freeze([
   "c2-5b-foreground-write-workspace-wake/authoring",
   "c2-5b-incremental-liveness/before-restart",
   "c2-5b-incremental-liveness/after-restart",
+  "c2-zc-canonical-authority-cutover/open",
+  "c2-zc-canonical-authority-cutover/restart",
+  "c2-zc-canonical-authority-cutover/new-project",
 ]);
 
 export const MAIN_PROCESS_NOISE_ALLOWLIST = Object.freeze([

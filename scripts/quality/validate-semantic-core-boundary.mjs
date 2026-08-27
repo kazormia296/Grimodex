@@ -31,11 +31,11 @@ const REPO_ROOT = path.resolve(
 // into the ratified Object Addressing vocabulary. It is a data-only migration:
 // no table, column, or authority changes, so the concern matrix below is
 // unchanged.
-// SCHEMA 33 (NIR-0 D1) adds sealed Dependency declaration storage. It is a
-// shadow persistence boundary only; V1 remains the canonical Freshness
-// authority, so the authority matrix is still unchanged.
+// SCHEMA 33 (NIR-0 D1) adds sealed Dependency declaration storage. It remains
+// a shadow persistence boundary; C2-ZC's Generic Consumer Freshness is now
+// the canonical current authority, while the V1 graph remains its input.
 // SCHEMA 34 (NIR-0 C2A) adds non-authoritative Chronicle V2 persistence and
-// stage-provenance closure storage; V1 remains the production fallback.
+// stage-provenance closure storage; D2 V2 evaluation remains a shadow lane.
 export const EXPECTED_SCHEMA_VERSION = 34;
 
 // The manifest may add narrower roots as the architecture evolves, but it

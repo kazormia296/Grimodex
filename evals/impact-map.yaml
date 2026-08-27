@@ -313,9 +313,10 @@ rules:
     suites:
       - narrative-extraction
   - id: narrative-maintenance-product-journeys
-    reason: C2-5B durable maintenance journeys bind schema, epoch, digest, retry, interruption, workspace-wake, and feed-liveness evidence to the runtime and semantic contract gates.
+    reason: C2-5B durable maintenance journeys and the accepted C2-ZC canonical-authority journey bind schema, epoch, digest, retry, interruption, workspace-wake, feed-liveness, and one-way Generic authority evidence to the runtime and semantic contract gates.
     paths:
       - electron/scripts/narrative-maintenance-product-journeys.mjs
+      - electron/scripts/c2zc-canonical-product-journey.mjs
       - electron/scripts/product-journeys.mjs
       - electron/main/narrativeFreshness.ts
       - electron/main/narrativeFreshness.test.ts
@@ -326,6 +327,7 @@ rules:
       - policies/narrative/narrative-run-kind-policy.json
       - policies/narrative/narrative-failure-policy.json
       - scripts/c2-5b-product-journeys.test.mjs
+      - scripts/c2zc-product-journeys.test.mjs
       - scripts/product-journey-phase1.test.mjs
     requirements:
       - GDX-POLICY-001

@@ -206,30 +206,24 @@ describe("validate-run-kind-policy", () => {
     );
   });
 
-  it("keeps triggerEvents as discovery conditions and moves C2-ZC work to a future obligation", () => {
+  it("keeps triggerEvents as discovery conditions after C2-ZC activation", () => {
     const policy = bundledPolicy();
     for (const name of ["dependency-verify", "dependency-rebuild-derived"]) {
       const entry = runKind(policy, name);
       assert.ok(!entry.triggerEvents.includes("before-c2z-cutover"));
-      assert.deepEqual(entry.futureTriggerObligations, [
-        {
-          condition: "before-c2z-cutover",
-          gate: "C2-ZC",
-          satisfiesCurrentWiredStatus: false,
-        },
-      ]);
+      assert.equal(entry.futureTriggerObligations, undefined);
     }
     assert.deepEqual(validateFixture(policy).errors, []);
   });
 
-  it("rejects a future C2-ZC condition when it is still shipped as a trigger", () => {
+  it("rejects a retired C2-ZC condition when it is shipped as a trigger", () => {
     const policy = bundledPolicy();
     runKind(policy, "dependency-verify").triggerEvents.push(
       "before-c2z-cutover",
     );
     const result = validateFixture(policy);
     assert.ok(
-      result.errors.some((error) => error.includes("futureTriggerObligation")),
+      result.errors.some((error) => error.includes("before-c2z-cutover")),
     );
   });
 
@@ -255,45 +249,20 @@ describe("validate-run-kind-policy", () => {
     );
   });
 
-  it("requires the explicit C2-ZC obligation on Verify and Rebuild-Derived", () => {
+  it("rejects an obsolete C2-ZC future obligation after activation", () => {
     const policy = bundledPolicy();
-    delete runKind(policy, "dependency-verify").futureTriggerObligations;
-    runKind(
-      policy,
-      "dependency-rebuild-derived",
-    ).futureTriggerObligations[0].gate = "C2-ZB";
+    runKind(policy, "dependency-verify").futureTriggerObligations = [
+      {
+        condition: "before-c2z-cutover",
+        gate: "C2-ZC",
+        satisfiesCurrentWiredStatus: false,
+      },
+    ];
     const result = validateFixture(policy);
     assert.ok(
       result.errors.some((error) =>
-        error.includes("must contain exactly one before-c2z-cutover"),
+        error.includes("futureTriggerObligations is obsolete"),
       ),
-    );
-  });
-
-  it("rejects a duplicate future C2-ZC obligation", () => {
-    const policy = bundledPolicy();
-    const obligations = runKind(
-      policy,
-      "dependency-verify",
-    ).futureTriggerObligations;
-    obligations.push(JSON.parse(JSON.stringify(obligations[0])));
-    const result = validateFixture(policy);
-    assert.ok(
-      result.errors.some((error) =>
-        error.includes("must contain exactly one before-c2z-cutover"),
-      ),
-    );
-  });
-
-  it("rejects a future obligation that claims current wired status", () => {
-    const policy = bundledPolicy();
-    runKind(
-      policy,
-      "dependency-verify",
-    ).futureTriggerObligations[0].satisfiesCurrentWiredStatus = true;
-    const result = validateFixture(policy);
-    assert.ok(
-      result.errors.some((error) => error.includes("schema rejects policy")),
     );
   });
 

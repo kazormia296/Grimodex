@@ -131,6 +131,10 @@ fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
     format!("authority:{}", authority.identity())
 }
 
+fn is_expected_c2zc_cutover_not_ready(error: &anyhow::Error) -> bool {
+    error.to_string().starts_with("NEX_C2ZC_CUTOVER_NOT_READY:")
+}
+
 #[cfg(test)]
 mod narrative_extraction_workspace_binding_tests {
     use super::*;
@@ -586,6 +590,110 @@ mod narrative_freshness_restore_lock_tests {
         let restored_authority = active_database(&state.ws).expect("restored authority");
         assert_ne!(restored_authority.identity(), old_authority_identity);
         drop(restored_authority);
+        let active = state.ws.inner.lock().expect("workspace state").take();
+        drop(active);
+        drop(state);
+        drop(cleanup);
+        assert!(!root.exists(), "fixture must clean up");
+    }
+
+    #[test]
+    fn freshness_scheduler_keeps_not_ready_workspace_fail_soft() {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-freshness-cutover-not-ready-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = TestRoot(root.clone());
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        std::fs::create_dir_all(&workspace_path).expect("workspace directory");
+
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project");
+
+        let authority =
+            WorkspaceAuthority::from_database_for_test(database, workspace_path)
+                .expect("workspace authority");
+        let state = Arc::new(
+            AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+                .expect("app state"),
+        );
+        *state.ws.inner.lock().expect("workspace state") = Some(ActiveWorkspace::new(authority));
+
+        let result = run_narrative_freshness_cycle_inner(&state, || {})
+            .expect("not-ready cutover is an expected scheduler outcome");
+        assert_eq!(result, None);
+
+        let active = state.ws.inner.lock().expect("workspace state").take();
+        drop(active);
+        drop(state);
+        drop(cleanup);
+        assert!(!root.exists(), "fixture must clean up");
+    }
+
+    #[test]
+    fn freshness_scheduler_surfaces_unexpected_cutover_marker_errors() {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-freshness-cutover-marker-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = TestRoot(root.clone());
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        let metadata_dir = workspace_path.join(".grimodex");
+        std::fs::create_dir_all(&metadata_dir).expect("workspace metadata directory");
+        std::fs::write(
+            metadata_dir.join("workspace.json"),
+            serde_json::json!({
+                "id": "freshness-cutover-marker",
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO schema_data_migrations
+                        (migration_id, contract_version, applied_at)
+                     VALUES (?1, 999, '2026-01-01T00:00:00.000Z')",
+                    [grimodex_db::narrative_extraction::C2_ZC_CUTOVER_MIGRATION_ID],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed unsupported cutover marker");
+
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
+        let state = Arc::new(
+            AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+                .expect("app state"),
+        );
+        *state.ws.inner.lock().expect("workspace state") = Some(ActiveWorkspace::new(authority));
+
+        let error = run_narrative_freshness_cycle_inner(&state, || {})
+            .expect_err("scheduler must surface an unexpected marker/schema error");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2ZC_CUTOVER_MARKER_UNSUPPORTED"),
+            "unexpected scheduler error: {error}"
+        );
+
         let active = state.ws.inner.lock().expect("workspace state").take();
         drop(active);
         drop(state);
@@ -2216,16 +2324,26 @@ fn run_narrative_freshness_cycle_inner(
     else {
         return Ok(None);
     };
-    // C2-ZC canonical cutover stays an unaccepted authority boundary:
-    // this wake only mints durable liveness evidence and must not
-    // call cut_over_workspace_freshness until the roadmap unblocks
-    // the canonical read-authority switch.
-    narrative_extraction::record_live_scheduler_heartbeat(
+    // The existing main-only scheduler wake is the production owner of
+    // automatic C2-ZC activation.  Durable readiness may still be incomplete
+    // for a newly opened or recovering workspace, so that one expected state
+    // is fail-soft and will be retried by the next wake.  Marker/schema,
+    // malformed evidence, or any other unexpected failure remains visible to
+    // the scheduler caller instead of silently leaving a split authority.
+    let liveness_evidence = narrative_extraction::record_live_scheduler_heartbeat(
         current_workspace.authority.db(),
         &binding.authority_id,
         binding.generation,
         successful_cycle,
     )?;
+    let cutover_result = current_workspace.authority.db().with_conn(|conn| {
+        narrative_extraction::cut_over_workspace_freshness(conn, &liveness_evidence)
+    });
+    if let Err(error) = cutover_result {
+        if !is_expected_c2zc_cutover_not_ready(&error) {
+            return Err(AppError::Anyhow(error));
+        }
+    }
 
     match cycle_outcome {
         narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => Ok(None),

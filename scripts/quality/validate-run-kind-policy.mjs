@@ -46,11 +46,6 @@ const MAINTENANCE_ROUTE_IDS = new Set([
   "dependency-verify",
   "dependency-rebuild-derived",
 ]);
-const C2ZC_FUTURE_OBLIGATION_RUN_KINDS = new Set([
-  "dependency-verify",
-  "dependency-rebuild-derived",
-]);
-
 const MAINTENANCE_TRIGGER_VALUES = {
   "dependency-backfill": "automatic-once-after-schema-upgrade",
   "dependency-verify": "automatic-on-trigger-event",
@@ -274,43 +269,17 @@ function validateImplementationStatus(entry, errors) {
   }
 }
 
-function validateFutureTriggerObligations(entry, errors) {
+function validateRetiredC2ZcTriggerDeclarations(entry, errors) {
   const obligations = entry.futureTriggerObligations;
   if (entry.triggerEvents?.includes("before-c2z-cutover")) {
     errors.push(
-      `${entry.runKind} must keep 'before-c2z-cutover' out of current triggerEvents; record it only as a futureTriggerObligation`,
+      `${entry.runKind} must keep obsolete 'before-c2z-cutover' out of current triggerEvents; C2-ZC activation is owned by the main-only scheduler wake`,
     );
   }
-  if (C2ZC_FUTURE_OBLIGATION_RUN_KINDS.has(entry.runKind)) {
-    const obligation = obligations?.length === 1 ? obligations[0] : null;
-    if (
-      !isObject(obligation) ||
-      obligation.condition !== "before-c2z-cutover" ||
-      obligation.gate !== "C2-ZC" ||
-      obligation.satisfiesCurrentWiredStatus !== false
-    ) {
-      errors.push(
-        `${entry.runKind}.futureTriggerObligations must contain exactly one before-c2z-cutover obligation for gate 'C2-ZC' with satisfiesCurrentWiredStatus: false`,
-      );
-    }
-  }
-  if (obligations === undefined) return;
-  if (!Array.isArray(obligations)) return;
-
-  for (const obligation of obligations) {
-    if (!isObject(obligation)) continue;
-    if (obligation.condition === "before-c2z-cutover") {
-      if (obligation.gate !== "C2-ZC") {
-        errors.push(
-          `${entry.runKind}.futureTriggerObligations.before-c2z-cutover must target gate 'C2-ZC'`,
-        );
-      }
-      if (obligation.satisfiesCurrentWiredStatus !== false) {
-        errors.push(
-          `${entry.runKind}.futureTriggerObligations.before-c2z-cutover cannot satisfy current wired status`,
-        );
-      }
-    }
+  if (obligations !== undefined) {
+    errors.push(
+      `${entry.runKind}.futureTriggerObligations is obsolete after the accepted C2-ZC cutover; use the main-only scheduler wake`,
+    );
   }
 }
 
@@ -599,7 +568,7 @@ function validateCrossFieldContract(policy, errors) {
     }
 
     validateImplementationStatus(entry, errors);
-    validateFutureTriggerObligations(entry, errors);
+    validateRetiredC2ZcTriggerDeclarations(entry, errors);
     validateIncrementalFreshness(entry, errors);
     validateRunKindSpecificFields(entry, errors);
   }

@@ -15,6 +15,7 @@ import {
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_COVERAGE_BACKLOG,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_NATIVE_PERSISTENCE_DOMAINS,
   PRODUCT_SCOPE_TRANSITIONS,
 } from "../electron/scripts/product-journey-catalog.mjs";
@@ -68,6 +69,7 @@ test("the current catalog has complete journey, contract, and interaction covera
     ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
       (journey) => journey.id,
     ),
+    ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
   ]);
   assert.equal(result.uncoveredContracts.length, 0);
   assert.equal(result.uncoveredInteractions.length, 0);

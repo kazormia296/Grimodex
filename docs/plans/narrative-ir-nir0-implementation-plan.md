@@ -884,7 +884,7 @@ D1 owns:
 
 ### 10.3 D2 — shadow runtime integration
 
-Starts after C2-ZC merges.
+Starts after the C2-ZC canonical cutover is accepted.
 
 D2 owns V2 shadow evaluation in:
 
@@ -893,7 +893,9 @@ D2 owns V2 shadow evaluation in:
 - incremental Freshness runtime,
 - restore/rebuild verification.
 
-V1 remains canonical unless a later explicit cutover changes the ratified V1/V2 priority.
+Generic Consumer Freshness is now the C2-ZC canonical authority. Within this
+D2 shadow lane, V1 evaluation remains the compatibility baseline until a
+separate V1/V2 priority decision changes the ratified D2 contract.
 
 ---
 
@@ -1217,5 +1219,6 @@ NIR0-CERT
 ```
 
 NIR0-CERT has now closed the NIR-0 milestone against PR #559's tested and
-integrated tree. C2-ZC retains ownership of the next canonical-authority
-boundary; future NIR-1 work must not reopen or silently widen this certificate.
+integrated tree. The post-certification C2-ZC closeout records the accepted
+Generic Consumer Freshness authority; future NIR-1 work must not reopen or
+silently widen this certificate.

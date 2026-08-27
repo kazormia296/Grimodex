@@ -240,6 +240,7 @@ requirements:
       - src-tauri/crates/grimodex-db/src/backup_restore.rs
       - src-tauri/crates/grimodex-core/src/workspace_schema.rs
       - electron/scripts/narrative-maintenance-product-journeys.mjs
+      - electron/scripts/c2zc-canonical-product-journey.mjs
       - electron/scripts/product-journeys.mjs
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
@@ -252,6 +253,7 @@ requirements:
       - src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs
       - scripts/product-journey-phase1.test.mjs
       - scripts/c2-5b-product-journeys.test.mjs
+      - scripts/c2zc-product-journeys.test.mjs
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:

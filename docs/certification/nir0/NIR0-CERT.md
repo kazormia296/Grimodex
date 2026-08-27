@@ -150,7 +150,8 @@ The following remain outside this certificate:
 - the consumed retrieval holdout and other unrelated blocked Heavy evidence;
 - Windows NSIS final compilation, retained as release-only/manual coverage;
 - D2 full V2 authority cutover and replacement of the existing V1
-  Source-grained canonical Freshness path;
+  Source-grained semantic path (distinct from the accepted C2-ZC Generic
+  Consumer Freshness authority cutover);
 - Scope Disclosure production admission and Retrieval connection;
 - Chronicle `revise`, `retract`, `merge`, and `split`;
 - human Assertion Core edits without an `author-declaration` Source;
@@ -159,10 +160,21 @@ The following remain outside this certificate:
 - the diagnostic-only motif fixture work in PR #554 and future Evaluation
   Contract v2/content-aware alignment work.
 
+## Post-certification C2-ZC closeout
+
+NIR0-CERT remains a bounded certificate for the Chronicle `scene-event@1`
+`add` pilot and does not retroactively include later authority changes. The
+separate C2-ZC cutover was accepted on 2026-08-27: the main/N-API Freshness
+wake now activates Generic Consumer Freshness only after current-Epoch
+Verify/Rebuild/parity/no-active-maintenance/liveness gates pass. The durable
+marker and canonical no-fallback behavior are recorded in the
+[C2-ZC impact matrix](../plans/narrative-c2zc-canonical-cutover-impact-matrix.md)
+and its focused Rust/N-API contract tests.
+
 ## Certification verdict
 
 The tested and integrated implementation satisfies NIR-0 for the bounded
 Chronicle `scene-event@1` `add` pilot. NIR-0 is therefore **PASS** when this
-closeout record lands. C2-ZC remains the next explicit authority boundary, and
-NIR-1 remains blocked on that cutover rather than being silently activated by
-this certificate.
+closeout record lands. C2-ZC is a separate accepted post-certification
+authority boundary; NIR-1 is now unblocked and remains planned work rather
+than being silently activated by this certificate.

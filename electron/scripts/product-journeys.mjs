@@ -12,6 +12,10 @@ import { createProductJourneyHarness } from "./product-journey-harness.mjs";
 import { launchProductJourneyMcpClient } from "./product-journey-mcp-client.mjs";
 import { createNativeRoundTripJourneys } from "./product-journey-native-roundtrips.mjs";
 import { createNarrativeMaintenanceProductJourneys } from "./narrative-maintenance-product-journeys.mjs";
+import {
+  C2ZC_PRODUCT_JOURNEY_ID,
+  runC2ZcCanonicalAuthorityJourney,
+} from "./c2zc-canonical-product-journey.mjs";
 
 const mainCjs = path.join(rootDir, "dist-electron", "main.cjs");
 const DEFAULT_SCENE_TITLE = "シーン 1";
@@ -262,17 +266,27 @@ export async function configureWorkspace(
 /**
  * C2-5B's durable maintenance acceptance lane is canonical in the runner.
  * The `c2-5b` selector is retained for focused acceptance and reporting; the
- * default canonical run includes these IDs and remains red until the main /
- * N-API trigger owners are integrated.
+ * default canonical run includes these IDs. C2-ZC has its own focused selector
+ * because its one-way Generic-authority transition is a distinct boundary.
  */
 export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS =
   createNarrativeMaintenanceProductJourneys({ configureWorkspace });
+
+/** C2-ZC production reachability is a distinct acceptance journey. */
+export const NARRATIVE_C2ZC_PRODUCT_JOURNEYS = [
+  {
+    id: C2ZC_PRODUCT_JOURNEY_ID,
+    run: (harness) =>
+      runC2ZcCanonicalAuthorityJourney(harness, configureWorkspace),
+  },
+];
 
 export function resolveProductJourneySet(
   name = process.env.GRIMODEX_PRODUCT_JOURNEY_SET,
 ) {
   if (name === undefined || name === "") return PRODUCT_JOURNEYS;
   if (name === "c2-5b") return NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS;
+  if (name === "c2-zc") return NARRATIVE_C2ZC_PRODUCT_JOURNEYS;
   throw new Error(`unknown GRIMODEX_PRODUCT_JOURNEY_SET: ${name}`);
 }
 
@@ -1994,6 +2008,7 @@ export const PRODUCT_JOURNEYS = [
   },
   ...NATIVE_ROUND_TRIP_JOURNEYS,
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS,
+  ...NARRATIVE_C2ZC_PRODUCT_JOURNEYS,
 ];
 
 export function resolveSelectedProductJourneys(journeys, serializedIds) {

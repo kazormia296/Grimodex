@@ -8,7 +8,7 @@
       "existingRunKindColumnValue": "backfill",
       "purpose": "Deterministic versioned transform from the existing limited Application Dependency data to the Generic Dependency Graph, once per project after a schema upgrade.",
       "trigger": "automatic-once-after-schema-upgrade",
-      "triggerDetail": "The SCHEMA 32 owner performs the C2-ZB Application re-key atomically for durable legacy evidence. A post-open bootstrap Backfill still runs the v3 transform for evidence created outside that migration boundary; it creates the fresh owning Run after workspace open and never switches the canonical Freshness readers (that remains C2-ZC).",
+      "triggerDetail": "The SCHEMA 32 owner performs the C2-ZB Application re-key atomically for durable legacy evidence. A post-open bootstrap Backfill still runs the v3 transform for evidence created outside that migration boundary and creates the fresh owning Run after workspace open. Its completion is one prerequisite for the scheduler-owned C2-ZC canonical-authority activation.",
       "sameWorkKeyReuse": "reuse-running-and-completed",
       "epochBound": true,
       "cursorBound": false,
@@ -79,13 +79,6 @@
         "integrity-repair-completed",
         "dependency-rule-or-normalizer-contract-digest-changed"
       ],
-      "futureTriggerObligations": [
-        {
-          "condition": "before-c2z-cutover",
-          "gate": "C2-ZC",
-          "satisfiesCurrentWiredStatus": false
-        }
-      ],
       "manualTriggerAllowed": true,
       "sameWorkKeyReuse": "reuse-running-only",
       "completedRunManualRepeat": true,
@@ -150,13 +143,6 @@
         "dependency-set-digest-mismatch",
         "verify-reports-derived-rebuild-required",
         "restore-completed"
-      ],
-      "futureTriggerObligations": [
-        {
-          "condition": "before-c2z-cutover",
-          "gate": "C2-ZC",
-          "satisfiesCurrentWiredStatus": false
-        }
       ],
       "manualTriggerAllowed": true,
       "sameWorkKeyReuse": "reuse-running-only",

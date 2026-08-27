@@ -13,11 +13,12 @@ const execFile = promisify(execFileCallback);
  * C2-5B product acceptance journeys.
  *
  * These are intentionally separate from the already-green editor/chat
- * journeys.  Every assertion below reads the live workspace through the
- * product journey harness and observes the durable Run/epoch/feed tables.  No
+ * journeys. Every assertion below reads the live workspace through the
+ * product journey harness and observes the durable Run/epoch/feed tables. No
  * maintenance IPC is invoked from the renderer: the expected owner is the
- * main/N-API scheduler.  On the C2-5A base these journeys are expected to be
- * red because the production trigger owners and adapters are not wired yet.
+ * main/N-API scheduler. The C2-5B maintenance owner and the C2-ZC canonical
+ * authority wake are now production-wired; failures in these journeys are
+ * acceptance failures rather than a dormant foundation state.
  */
 
 export const NARRATIVE_MAINTENANCE_WAIT_MS = 5_000;
