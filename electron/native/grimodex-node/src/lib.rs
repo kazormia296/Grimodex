@@ -323,6 +323,277 @@ mod narrative_extraction_workspace_binding_tests {
     }
 }
 
+#[cfg(test)]
+mod narrative_freshness_restore_lock_tests {
+    use super::*;
+    use grimodex_db::state::{ActiveWorkspace, WorkspaceAuthority};
+    use std::sync::{mpsc, Arc, TryLockError};
+    use std::time::{Duration, Instant};
+
+    struct TestRoot(PathBuf);
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn completed_freshness_cycle_releases_authority_before_restore_quiescence() {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-freshness-restore-lock-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = TestRoot(root.clone());
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        let metadata_dir = workspace_path.join(".grimodex");
+        std::fs::create_dir_all(&metadata_dir).expect("workspace metadata directory");
+        std::fs::write(
+            metadata_dir.join("workspace.json"),
+            serde_json::json!({
+                "id": "freshness-restore-lock",
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project");
+        let backup_name = "grimodex-freshness-restore-lock.db";
+        let backups_dir = workspace_path.join("backups");
+        std::fs::create_dir_all(&backups_dir).expect("backups directory");
+        database
+            .backup_to(&backups_dir.join(backup_name))
+            .expect("write restore candidate");
+
+        let authority =
+            WorkspaceAuthority::from_database_for_test(database, workspace_path.clone())
+                .expect("workspace authority");
+        let old_authority_identity = authority.identity();
+        let state = Arc::new(
+            AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+                .expect("app state"),
+        );
+        *state.ws.inner.lock().expect("workspace state") = Some(ActiveWorkspace::new(authority));
+
+        let (cycle_completed_tx, cycle_completed_rx) = mpsc::channel();
+        let (release_cycle_tx, release_cycle_rx) = mpsc::channel();
+        let cycle_state = Arc::clone(&state);
+        let cycle_thread = std::thread::spawn(move || {
+            run_narrative_freshness_cycle_inner(&cycle_state, || {
+                cycle_completed_tx
+                    .send(())
+                    .expect("publish cycle completion");
+                release_cycle_rx.recv().expect("release cycle finalization");
+            })
+        });
+        cycle_completed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("freshness cycle completed before authority recheck");
+
+        let restore_state = Arc::clone(&state);
+        let restore_started_at = Instant::now();
+        let restore_thread = std::thread::spawn(move || {
+            let state_for_hook = Arc::clone(&restore_state);
+            restore_backup_core(&restore_state.ws, backup_name, move || {
+                state_for_hook
+                    .narrative_maintenance_recovery_gate
+                    .mark_workspace_swapped();
+            })
+        });
+
+        // restore_backup_core takes open_lock before detaching the active
+        // authority and entering wait_for_sole_owner. Observe that exact lock
+        // boundary without timing sleeps, then let freshness finalize.
+        let lock_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match state.ws.open_lock.try_lock() {
+                Err(TryLockError::WouldBlock) => break,
+                Err(TryLockError::Poisoned(error)) => {
+                    panic!("workspace open lock poisoned: {error}")
+                }
+                Ok(guard) => {
+                    drop(guard);
+                    assert!(
+                        Instant::now() < lock_deadline,
+                        "restore did not acquire workspace open lock"
+                    );
+                    std::thread::yield_now();
+                }
+            }
+        }
+        release_cycle_tx
+            .send(())
+            .expect("release freshness finalization");
+
+        let restore_result = restore_thread.join().expect("restore thread");
+        let restore_elapsed = restore_started_at.elapsed();
+        let cycle_result = cycle_thread.join().expect("freshness thread");
+        restore_result.expect("restore must not time out waiting for freshness authority");
+        assert!(
+            restore_elapsed < Duration::from_secs(10),
+            "restore crossed the sole-owner timeout boundary: {restore_elapsed:?}"
+        );
+        assert!(
+            cycle_result
+                .expect("workspace replacement is a fail-soft scheduler outcome")
+                .is_none(),
+            "restored authority must reject the old cycle without a heartbeat"
+        );
+
+        let restored_authority = active_database(&state.ws).expect("restored authority");
+        assert_ne!(restored_authority.identity(), old_authority_identity);
+        drop(restored_authority);
+        let active = state.ws.inner.lock().expect("workspace state").take();
+        drop(active);
+        drop(state);
+        drop(cleanup);
+        assert!(!root.exists(), "fixture must clean up");
+    }
+
+    #[test]
+    fn maintenance_revalidation_releases_both_cycle_pins_before_restore_quiescence() {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-maintenance-restore-lock-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = TestRoot(root.clone());
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        let metadata_dir = workspace_path.join(".grimodex");
+        std::fs::create_dir_all(&metadata_dir).expect("workspace metadata directory");
+        std::fs::write(
+            metadata_dir.join("workspace.json"),
+            serde_json::json!({
+                "id": "maintenance-restore-lock",
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project");
+        let backup_name = "grimodex-maintenance-restore-lock.db";
+        let backups_dir = workspace_path.join("backups");
+        std::fs::create_dir_all(&backups_dir).expect("backups directory");
+        database
+            .backup_to(&backups_dir.join(backup_name))
+            .expect("write restore candidate");
+
+        let authority =
+            WorkspaceAuthority::from_database_for_test(database, workspace_path.clone())
+                .expect("workspace authority");
+        let old_authority_identity = authority.identity();
+        let state = Arc::new(
+            AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+                .expect("app state"),
+        );
+        let expected_binding = narrative_maintenance_binding_for_authority(&state, &authority);
+        *state.ws.inner.lock().expect("workspace state") = Some(ActiveWorkspace::new(authority));
+        let completed_authority = active_database(&state.ws).expect("cycle authority");
+        let validation_snapshot =
+            active_workspace_snapshot(&state.ws).expect("cycle validation snapshot");
+
+        let (cycle_completed_tx, cycle_completed_rx) = mpsc::channel();
+        let (release_cycle_tx, release_cycle_rx) = mpsc::channel();
+        let revalidation_state = Arc::clone(&state);
+        let revalidation_thread = std::thread::spawn(move || {
+            let current = revalidate_narrative_workspace_after_cycle(
+                &revalidation_state,
+                completed_authority,
+                vec![validation_snapshot.authority],
+                &expected_binding,
+                || {
+                    cycle_completed_tx
+                        .send(())
+                        .expect("publish cycle completion");
+                    release_cycle_rx.recv().expect("release cycle finalization");
+                },
+            )?;
+            Ok::<_, AppError>(current.is_some())
+        });
+        cycle_completed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("maintenance cycle completed before authority recheck");
+
+        let restore_state = Arc::clone(&state);
+        let restore_started_at = Instant::now();
+        let restore_thread = std::thread::spawn(move || {
+            let state_for_hook = Arc::clone(&restore_state);
+            restore_backup_core(&restore_state.ws, backup_name, move || {
+                state_for_hook
+                    .narrative_maintenance_recovery_gate
+                    .mark_workspace_swapped();
+            })
+        });
+        let lock_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match state.ws.open_lock.try_lock() {
+                Err(TryLockError::WouldBlock) => break,
+                Err(TryLockError::Poisoned(error)) => {
+                    panic!("workspace open lock poisoned: {error}")
+                }
+                Ok(guard) => {
+                    drop(guard);
+                    assert!(
+                        Instant::now() < lock_deadline,
+                        "restore did not acquire workspace open lock"
+                    );
+                    std::thread::yield_now();
+                }
+            }
+        }
+        release_cycle_tx
+            .send(())
+            .expect("release maintenance finalization");
+
+        let restore_result = restore_thread.join().expect("restore thread");
+        let restore_elapsed = restore_started_at.elapsed();
+        let revalidation_result = revalidation_thread.join().expect("revalidation thread");
+        restore_result.expect("restore must not time out waiting for maintenance authorities");
+        assert!(
+            restore_elapsed < Duration::from_secs(10),
+            "restore crossed the sole-owner timeout boundary: {restore_elapsed:?}"
+        );
+        assert!(
+            !revalidation_result.expect("maintenance revalidation"),
+            "replacement authority must reject the completed old cycle"
+        );
+
+        let restored_authority = active_database(&state.ws).expect("restored authority");
+        assert_ne!(restored_authority.identity(), old_authority_identity);
+        drop(restored_authority);
+        let active = state.ws.inner.lock().expect("workspace state").take();
+        drop(active);
+        drop(state);
+        drop(cleanup);
+        assert!(!root.exists(), "fixture must clean up");
+    }
+}
+
 fn narrative_maintenance_binding_for_authority(
     state: &AppState,
     authority: &PinnedWorkspaceDb,
@@ -1865,6 +2136,123 @@ struct TestAiConnectionRequest {
     audit_context: NativeAiAuditContext,
 }
 
+struct RevalidatedNarrativeWorkspace<'a> {
+    _open_guard: std::sync::MutexGuard<'a, ()>,
+    authority: PinnedWorkspaceDb,
+}
+
+fn revalidate_narrative_workspace_after_cycle<'a>(
+    state: &'a AppState,
+    completed_authority: PinnedWorkspaceDb,
+    additional_cycle_pins: Vec<PinnedWorkspaceDb>,
+    expected_binding: &MaintenanceWorkspaceBinding,
+    before_authority_release: impl FnOnce(),
+) -> std::result::Result<Option<RevalidatedNarrativeWorkspace<'a>>, AppError> {
+    let completed_authority_identity = completed_authority.identity();
+    before_authority_release();
+    // open/restore own open_lock while waiting for every pinned authority Arc
+    // to drain. Never wait for that lock while retaining a completed cycle's
+    // shared workspace lease, or the two quiescence protocols wait on each
+    // other. Maintenance passes its second validation snapshot here too.
+    drop(additional_cycle_pins);
+    drop(completed_authority);
+
+    let open_guard = state
+        .ws
+        .open_lock
+        .lock()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+    let current_authority = match active_database(&state.ws) {
+        Ok(current_authority) => current_authority,
+        Err(AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive) => {
+            return Ok(None)
+        }
+        Err(error) => return Err(error),
+    };
+    let current_binding = narrative_maintenance_binding_for_authority(state, &current_authority);
+    if current_authority.identity() != completed_authority_identity
+        || &current_binding != expected_binding
+    {
+        return Ok(None);
+    }
+    Ok(Some(RevalidatedNarrativeWorkspace {
+        _open_guard: open_guard,
+        authority: current_authority,
+    }))
+}
+
+fn run_narrative_freshness_cycle_inner(
+    state: &AppState,
+    after_cycle: impl FnOnce(),
+) -> std::result::Result<Option<String>, AppError> {
+    let authority = match active_database(&state.ws) {
+        Ok(authority) => authority,
+        Err(AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive) => {
+            return Ok(None)
+        }
+        Err(error) => return Err(error),
+    };
+    let binding = narrative_maintenance_binding_for_authority(state, &authority);
+    binding.validate()?;
+    // Liveness is minted only after the bounded cycle has returned
+    // successfully. A failed graph evaluation, cursor reservation,
+    // or publication therefore cannot attest a live scheduler or
+    // activate the canonical authority.
+    let (cycle_outcome, successful_cycle) =
+        narrative_extraction::run_incremental_freshness_cycle_with_liveness_capability(
+            authority.db(),
+        )?;
+    // A workspace swap may complete while the bounded cycle is
+    // evaluating its pinned old authority. Re-resolve the active
+    // authority before minting liveness so that a late old cycle can
+    // never activate the database that is no longer current.
+    let Some(current_workspace) = revalidate_narrative_workspace_after_cycle(
+        state,
+        authority,
+        Vec::new(),
+        &binding,
+        after_cycle,
+    )?
+    else {
+        return Ok(None);
+    };
+    // C2-ZC canonical cutover stays an unaccepted authority boundary:
+    // this wake only mints durable liveness evidence and must not
+    // call cut_over_workspace_freshness until the roadmap unblocks
+    // the canonical read-authority switch.
+    narrative_extraction::record_live_scheduler_heartbeat(
+        current_workspace.authority.db(),
+        &binding.authority_id,
+        binding.generation,
+        successful_cycle,
+    )?;
+
+    match cycle_outcome {
+        narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => Ok(None),
+        narrative_extraction::IncrementalFreshnessCycleOutcome::Processed(summary) => {
+            // D2 shadow diagnostics stay out of the durable Freshness
+            // authority, but they must not be silently discarded at
+            // the production boundary either: main is the only
+            // observable telemetry sink for corrupt-head, selector,
+            // and effect diagnostics.
+            let v2_shadow =
+                serde_json::to_value(&summary.v2_shadow).map_err(anyhow::Error::from)?;
+            Ok(Some(
+                serde_json::json!({
+                    "projectId": summary.project_id,
+                    "fromSequenceExclusive": summary.from_sequence_exclusive,
+                    "throughSequenceInclusive": summary.through_sequence_inclusive,
+                    "affectedEdgeCount": summary.affected_edge_count,
+                    "affectedConsumerCount": summary.affected_consumer_count,
+                    "hasMore": summary.has_more,
+                    "v2Shadow": v2_shadow,
+                })
+                .to_string(),
+            ))
+        }
+    }
+}
+
 #[napi]
 pub struct Backend {
     state: Arc<AppState>,
@@ -2008,89 +2396,7 @@ impl Backend {
     #[napi]
     pub async fn run_narrative_freshness_cycle(&self) -> Result<Option<String>> {
         let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let authority = match active_database(&state.ws) {
-                Ok(authority) => authority,
-                Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
-                ) => return Ok(None),
-                Err(error) => return Err(error),
-            };
-            let binding = narrative_maintenance_binding_for_authority(&state, &authority);
-            binding.validate()?;
-            // Liveness is minted only after the bounded cycle has returned
-            // successfully.  A failed graph evaluation, cursor reservation,
-            // or publication therefore cannot attest a live scheduler or
-            // activate the canonical authority.
-            let (cycle_outcome, successful_cycle) =
-                narrative_extraction::run_incremental_freshness_cycle_with_liveness_capability(
-                    authority.db(),
-                )?;
-            // A workspace swap may complete while the bounded cycle is
-            // evaluating its pinned old authority.  Re-resolve the active
-            // authority before minting liveness so that a late old cycle can
-            // never activate the database that is no longer current.
-            let _workspace_open_guard = state
-                .ws
-                .open_lock
-                .lock()
-                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
-            let current_authority = match active_database(&state.ws) {
-                Ok(current_authority) => current_authority,
-                Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
-                ) => return Ok(None),
-                Err(error) => return Err(error),
-            };
-            if current_authority.identity() != authority.identity() {
-                return Err(AppError::Anyhow(anyhow::anyhow!(
-                    "NEX_C2ZC_SCHEDULER_AUTHORITY_CHANGED: active workspace authority changed during freshness cycle"
-                )));
-            }
-            let current_binding =
-                narrative_maintenance_binding_for_authority(&state, &current_authority);
-            if current_binding != binding {
-                return Err(AppError::Anyhow(anyhow::anyhow!(
-                    "NEX_C2ZC_SCHEDULER_BINDING_CHANGED: maintenance authority binding changed during freshness cycle"
-                )));
-            }
-            // C2-ZC canonical cutover stays an unaccepted authority boundary:
-            // this wake only mints durable liveness evidence and must not
-            // call cut_over_workspace_freshness until the roadmap unblocks
-            // the canonical read-authority switch.
-            narrative_extraction::record_live_scheduler_heartbeat(
-                current_authority.db(),
-                &binding.authority_id,
-                binding.generation,
-                successful_cycle,
-            )?;
-
-            match cycle_outcome {
-                narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => Ok(None),
-                narrative_extraction::IncrementalFreshnessCycleOutcome::Processed(summary) => {
-                    // D2 shadow diagnostics stay out of the durable Freshness
-                    // authority, but they must not be silently discarded at
-                    // the production boundary either: main is the only
-                    // observable telemetry sink for corrupt-head, selector,
-                    // and effect diagnostics.
-                    let v2_shadow = serde_json::to_value(&summary.v2_shadow)
-                        .map_err(anyhow::Error::from)?;
-                    Ok(Some(
-                        serde_json::json!({
-                            "projectId": summary.project_id,
-                            "fromSequenceExclusive": summary.from_sequence_exclusive,
-                            "throughSequenceInclusive": summary.through_sequence_inclusive,
-                            "affectedEdgeCount": summary.affected_edge_count,
-                            "affectedConsumerCount": summary.affected_consumer_count,
-                            "hasMore": summary.has_more,
-                            "v2Shadow": v2_shadow,
-                        })
-                        .to_string(),
-                    ))
-                }
-            }
-        })
-        .await
+        run_blocking(move || run_narrative_freshness_cycle_inner(&state, || {})).await
     }
 
     /// Main-process-only enqueue snapshot for the serialized maintenance
@@ -2603,38 +2909,20 @@ impl Backend {
             // cycle as an ACK: a late cycle pinned to a replaced workspace
             // must not mark the global recovery gate recovered or remember a
             // foreground barrier for the new workspace.
-            {
-                let _workspace_open_guard = state
-                    .ws
-                    .open_lock
-                    .lock()
-                    .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
-                let current_authority = match active_database(&state.ws) {
-                    Ok(current_authority) => current_authority,
-                    Err(
-                        AppError::NoWorkspace
-                        | AppError::WorkspaceSwitching
-                        | AppError::SafeModeActive,
-                    ) => {
-                        return Ok(serde_json::json!({
-                            "status": "workspace-unavailable",
-                            "reason": "maintenance-workspace-changed-during-cycle",
-                        })
-                        .to_string());
-                    }
-                    Err(error) => return Err(error),
-                };
-                if !Arc::ptr_eq(&authority, &current_authority)
-                    || narrative_authority_id(&current_authority)
-                        != request_binding.authority_id
-                {
-                    return Ok(serde_json::json!({
-                        "status": "workspace-unavailable",
-                        "reason": "maintenance-workspace-changed-during-cycle",
-                    })
-                    .to_string());
-                }
-            }
+            let Some(current_workspace) = revalidate_narrative_workspace_after_cycle(
+                &state,
+                authority,
+                vec![current_snapshot.authority],
+                request_binding,
+                || {},
+            )? else {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "maintenance-workspace-changed-during-cycle",
+                })
+                .to_string());
+            };
+            let current_authority = &current_workspace.authority;
             if matches!(
                 result.status,
                 MaintenanceCycleStatus::Accepted | MaintenanceCycleStatus::Coalesced
@@ -2643,7 +2931,7 @@ impl Backend {
                     if config.product_journey_barrier_id.is_some() && config.correlation.is_some() {
                         if let Some(barrier) =
                             narrative_extraction::find_running_foreground_system_work_run(
-                                authority.db(),
+                                current_authority.db(),
                                 config,
                                 request_binding,
                             )?
@@ -2669,7 +2957,10 @@ impl Backend {
                     // Mark the epoch-normalized identity the cycle actually
                     // recovered. If normalization fails, marking is skipped
                     // fail-closed: the key stays in StartupRecovery.
-                    match narrative_extraction::recovery_canonical_key(authority.db(), item) {
+                    match narrative_extraction::recovery_canonical_key(
+                        current_authority.db(),
+                        item,
+                    ) {
                         Ok(recovered_key) => {
                             state
                                 .narrative_maintenance_recovery_gate
