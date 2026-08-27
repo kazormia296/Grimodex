@@ -2,12 +2,14 @@
 
 ## Status
 
-- **Lifecycle:** NIR0-CERT candidate implementation plan
+- **Lifecycle:** Complete — certified Chronicle add-only pilot
 - **Milestone:** NIR-0 — C2B activation and Chronicle add-only certification
-- **Last updated:** 2026-08-25
+- **Last updated:** 2026-08-27
 - **Stacked base at creation:** PR #551, `codex/c2-parallel-foundations` at `eb428bd75a3ff08936526eaeb82ae58ff7e76146`
 - **Contract PR:** `NIR0-00: Narrative Revision Semantics, Native-Verified Human Derivation, Material-Basis Inheritance, Monotonicity, and Project-Scoped Identity Contract`
 - **Pilot:** Chronicle `scene-event@1`
+- **Certification subject:** base `f78c008088937134d3c0c080ef694891cca225b0`, head `daa20f7d605da9d4c2882bb19b8469c481379353`, tree `1430eeab4c036ab8201dbcf0a8e1192e43152f40`
+- **Remote integration:** PR #559 merged as `651791655177538ee02bc7e773f7d98c534ea324` with the same tree
 - **Concurrency limit:** At most three active implementation lanes
 
 This document fixes the implementation order and cross-PR ownership for NIR-0. It is subordinate to accepted ADRs and validated machine-readable policy. In particular:
@@ -23,9 +25,12 @@ Pull request descriptions and chat history are implementation evidence, not arch
 
 NIR0-00 was the contract-only foundation. E2.1 is the explicitly ratified
 additive exception for the Chronicle AI-audit stage seam: it may carry durable
-audit metadata and an ephemeral request-scoped pure sidecar. The current
+audit metadata and an ephemeral request-scoped pure sidecar. The certified
 NIR0-CERT slice adds the C2B V2 persistence, Native Human writer, activation
 markers, and bounded Chronicle add-only production route described below.
+PR #559 supplied the clean candidate-bound Quick/Full receipts and merged the
+same tested tree into `master`; the completion ledger records that evidence
+without widening the certified scope or treating deferred Heavy work as PASS.
 
 ---
 
@@ -949,7 +954,7 @@ C1 may start after S1 + K1 + E1. It does not wait for C2-ZB because it is pure T
 
 ### Wave 2/3 — completed C2B add-only convergence
 
-The candidate branch now contains the required C2B convergence slice:
+The merged implementation contains the required C2B convergence slice:
 
 ```text
 C2A + D1 + D2 shadow foundations
@@ -1156,10 +1161,13 @@ pnpm ci:local:verify -- full --base <resolved-base> --head HEAD
 Local CI receipts are candidate-bound. A stacked PR based on PR #551 must rerun Quick and Full after rebase / retarget to merged `master`.
 
 The completion ledger is [NIR0-CERT](../certification/nir0/NIR0-CERT.md). It
-records the candidate commit, exact base/HEAD pair, focused suite counts,
-semantic contract result, local CI receipts, and the deferred remote merge
-evidence. A local certificate is not a substitute for the later PR #556/#557
-merge and clean-master revalidation.
+records the certified candidate base/head/tree, focused suite counts, semantic
+contract result, candidate-bound Quick/Full receipts, explicit deferred work,
+and remote integration. PR #559 supplied the clean implementation evidence;
+its tested tree is byte-identical to merge commit
+`651791655177538ee02bc7e773f7d98c534ea324`. The closeout documentation PR
+must pass its own ordinary candidate-bound merge checks, but it does not replace
+or relabel the certified implementation candidate.
 
 ---
 
@@ -1193,7 +1201,7 @@ This plan is updated when:
 
 Status updates must name merged implementation evidence. A PR under review is `Active`, not `Complete`.
 
-NIR0-00 and NIR0-CERT are the only planned NIR PRs that edit the roadmap:
+NIR0-00 and NIR0-CERT own the two planned NIR roadmap updates:
 
 ```text
 NIR0-00
@@ -1208,4 +1216,6 @@ NIR0-CERT
   deferred work
 ```
 
-C2-5B / C2-ZB / C2-ZC retain ownership of the C2 status table. This separates edit regions and reduces stacked-branch conflicts.
+NIR0-CERT has now closed the NIR-0 milestone against PR #559's tested and
+integrated tree. C2-ZC retains ownership of the next canonical-authority
+boundary; future NIR-1 work must not reopen or silently widen this certificate.
