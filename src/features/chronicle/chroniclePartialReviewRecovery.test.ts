@@ -76,6 +76,8 @@ function proposal(
         temporalExpressions: [],
       },
     },
+    plannedTitle: proposalId,
+    plannedMatch: { status: "none" },
     match: { status: "none" },
     evidence: [],
     safety: buildProposalSafetyFlags({

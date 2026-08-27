@@ -75,6 +75,10 @@ export interface ChronicleReviewProposal {
   readonly applicability: "applicable" | "already-satisfied";
   readonly displayTitle: string;
   readonly payload: CreateChronicleEventProposalPayloadV1 | null;
+  /** Immutable Run-sealed title used to classify human title revisions. */
+  readonly plannedTitle: string;
+  /** Immutable Run-sealed match restored by an exact title revert. */
+  readonly plannedMatch: ChronicleExistingMatch;
   readonly match: ChronicleExistingMatch;
   readonly evidence: readonly ChronicleReviewEvidenceQuote[];
   readonly safety: ChronicleProposalSafetyFlags;

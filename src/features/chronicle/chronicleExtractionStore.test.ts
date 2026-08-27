@@ -43,6 +43,8 @@ function proposal(
     applicability: "applicable",
     displayTitle: basePayload.title,
     payload: basePayload,
+    plannedTitle: basePayload.title,
+    plannedMatch: { status: "none" },
     match: { status: "none" },
     evidence: [
       {

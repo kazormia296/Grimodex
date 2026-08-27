@@ -115,10 +115,11 @@ describe("Chronicle review revision route", () => {
     expect(createHumanDerivedRevisionMock).not.toHaveBeenCalled();
   });
 
-  it("uses the immediately preceding V2 child and its fresh envelope on a second edit", async () => {
+  it("uses the immediately preceding V2 child and restores the sealed plan match on exact title revert", async () => {
     const initialDigest = `sha256:${"a".repeat(64)}`;
     const childDigest = `sha256:${"b".repeat(64)}`;
     const grandchildDigest = `sha256:${"c".repeat(64)}`;
+    const revertedDigest = `sha256:${"d".repeat(64)}`;
     createHumanDerivedRevisionMock
       .mockResolvedValueOnce({
         revisionId: "revision-child",
@@ -127,6 +128,10 @@ describe("Chronicle review revision route", () => {
       .mockResolvedValueOnce({
         revisionId: "revision-grandchild",
         reconciliationEnvelopeDigest: grandchildDigest,
+      })
+      .mockResolvedValueOnce({
+        revisionId: "revision-reverted",
+        reconciliationEnvelopeDigest: revertedDigest,
       });
     useChronicleExtractionStore.getState().setProjection({
       runId: "run-route",
@@ -155,6 +160,8 @@ describe("Chronicle review revision route", () => {
           applicability: "applicable",
           displayTitle: "Route",
           payload,
+          plannedTitle: "Route",
+          plannedMatch: { status: "none" },
           match: { status: "none" },
           evidence: [],
           safety: {
@@ -211,5 +218,112 @@ describe("Chronicle review revision route", () => {
       reasons: ["human-title-revision"],
     });
     expect(current?.probableDuplicateChoice).toBeNull();
+
+    await reviseChronicleProposal({
+      proposalId: "proposal-route",
+      patch: { title: "Route" },
+    });
+
+    expect(createHumanDerivedRevisionMock).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        request: expect.objectContaining({
+          expectedCurrentRevisionId: "revision-grandchild",
+          parentRevisionId: "revision-grandchild",
+          expectedParentEnvelopeDigest: grandchildDigest,
+        }),
+      }),
+    );
+    const reverted =
+      useChronicleExtractionStore.getState().projection?.proposals[0];
+    expect(reverted?.revisionId).toBe("revision-reverted");
+    expect(reverted?.reconciliationEnvelopeDigest).toBe(revertedDigest);
+    expect(reverted?.match).toEqual({ status: "none" });
+    expect(reverted?.probableDuplicateChoice).toBeNull();
+  });
+
+  it("restores the exact sealed probable match instead of collapsing it to none", async () => {
+    const initialDigest = `sha256:${"1".repeat(64)}`;
+    const childDigest = `sha256:${"2".repeat(64)}`;
+    const revertedDigest = `sha256:${"3".repeat(64)}`;
+    const plannedMatch = {
+      status: "probable-duplicate",
+      candidates: ["event-existing-route"],
+      reasons: ["title-only"],
+    } as const;
+    createHumanDerivedRevisionMock
+      .mockResolvedValueOnce({
+        revisionId: "revision-probable-child",
+        reconciliationEnvelopeDigest: childDigest,
+      })
+      .mockResolvedValueOnce({
+        revisionId: "revision-probable-reverted",
+        reconciliationEnvelopeDigest: revertedDigest,
+      });
+    useChronicleExtractionStore.getState().setProjection({
+      runId: "run-route-probable",
+      projectId: "project-route",
+      workspacePath: "/workspace-route",
+      openRevision: 1,
+      proposalSetId: "proposal-set-route-probable",
+      status: "completed",
+      coverage: {},
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+      existingEventsCatalog: [],
+      proposals: [
+        {
+          proposalId: "proposal-route-probable",
+          revisionId: "revision-probable-parent",
+          reconciliationEnvelopeDigest: initialDigest,
+          reconciliationEnvelopeSchemaVersion: 2,
+          proposalKey: "proposal-key-route-probable",
+          status: "unreviewed",
+          applicability: "applicable",
+          displayTitle: "Route",
+          payload,
+          plannedTitle: "Route",
+          plannedMatch,
+          match: plannedMatch,
+          evidence: [],
+          safety: {
+            fresh: false,
+            evidenceExact: true,
+            actualitySettled: true,
+            noDuplicate: false,
+            lossless: true,
+            noDeps: true,
+            riskLow: false,
+          },
+          probableDuplicateChoice: null,
+          application: null,
+        },
+      ],
+    } satisfies ChronicleExtractionReviewProjection);
+
+    await reviseChronicleProposal({
+      proposalId: "proposal-route-probable",
+      patch: { title: "Route child" },
+    });
+    useChronicleExtractionStore
+      .getState()
+      .setProbableDuplicateChoice("proposal-route-probable", "create-as-new");
+    await reviseChronicleProposal({
+      proposalId: "proposal-route-probable",
+      patch: { title: "Route" },
+    });
+
+    const reverted =
+      useChronicleExtractionStore.getState().projection?.proposals[0];
+    expect(reverted?.revisionId).toBe("revision-probable-reverted");
+    expect(reverted?.reconciliationEnvelopeDigest).toBe(revertedDigest);
+    expect(reverted?.match).toEqual(plannedMatch);
+    expect(reverted?.probableDuplicateChoice).toBeNull();
+    expect(reverted?.status).toBe("unreviewed");
   });
 });

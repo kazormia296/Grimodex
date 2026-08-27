@@ -12,6 +12,7 @@ afterEach(() => {
 const getRunReviewBundleMock = vi.hoisted(() => vi.fn());
 const getRunMock = vi.hoisted(() => vi.fn());
 const listResumableRunsMock = vi.hoisted(() => vi.fn());
+const createHumanDerivedRevisionMock = vi.hoisted(() => vi.fn());
 
 vi.mock(
   "@/application/narrative-extraction/nativeApi",
@@ -34,12 +35,27 @@ vi.mock("@/application/narrative-extraction/runRepository", () => ({
   listResumableRuns: listResumableRunsMock,
 }));
 
+vi.mock(
+  "@/application/narrative-extraction/proposalRepository",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/application/narrative-extraction/proposalRepository")
+      >();
+    return {
+      ...actual,
+      createHumanDerivedRevision: createHumanDerivedRevisionMock,
+    };
+  },
+);
+
 import { resetNarrativeArtifactIndexForTests } from "@/application/narrative-extraction/artifactRepository";
 import { CHRONICLE_EXTRACT_ARTIFACT_KINDS } from "@/application/narrative-extraction/extractionCoordinator";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
 import {
   getChronicleExtractionReview,
   resetChronicleExtractionApiCachesForTests,
+  reviseChronicleProposal,
   restoreChronicleExtractionReview,
 } from "./chronicleExtractionApi";
 import {
@@ -79,6 +95,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
     getRunReviewBundleMock.mockReset();
     getRunMock.mockReset();
     listResumableRunsMock.mockReset();
+    createHumanDerivedRevisionMock.mockReset();
   });
 
   it("hydrates Map from Native bundle and restores proposals with Native revision ids", async () => {
@@ -216,6 +233,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
           currentRevisionId: nativeRevisionId,
           createdAt: "2026-01-01T00:00:40.000Z",
           updatedAt: "2026-01-01T00:00:50.000Z",
+          reconciliationEnvelopeDigest: `sha256:${"d".repeat(64)}`,
           reconciliationEnvelopeSchemaVersion: 2,
           latestDecision: {
             decisionId: "dec-1",
@@ -395,6 +413,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
           currentRevisionId: "revision-2-current",
           createdAt: "2026-01-01T00:00:40.000Z",
           updatedAt: "2026-01-01T00:00:50.000Z",
+          reconciliationEnvelopeDigest: `sha256:${"f".repeat(64)}`,
           reconciliationEnvelopeSchemaVersion: 2,
           latestDecision: {
             decisionId: "decision-on-revision-1",
@@ -438,6 +457,27 @@ describe("getChronicleExtractionReview cold-start restore", () => {
       riskLow: false,
     });
     expect(useChronicleExtractionStore.getState().bulkApproveSafe()).toBe(0);
+
+    createHumanDerivedRevisionMock.mockResolvedValue({
+      revisionId: "revision-3-reverted",
+      reconciliationEnvelopeDigest: `sha256:${"e".repeat(64)}`,
+    });
+    await reviseChronicleProposal({
+      proposalId: "prop-current-revision",
+      patch: { title: plannedPayload.title },
+    });
+
+    const reverted =
+      useChronicleExtractionStore.getState().projection?.proposals[0];
+    expect(reverted).toMatchObject({
+      revisionId: "revision-3-reverted",
+      displayTitle: plannedPayload.title,
+      plannedTitle: plannedPayload.title,
+      plannedMatch: { status: "none" },
+      match: { status: "none" },
+      status: "unreviewed",
+      probableDuplicateChoice: null,
+    });
   });
 
   it("fails closed when Native proposal set is missing", async () => {

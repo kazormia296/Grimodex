@@ -334,6 +334,8 @@ function buildReviewProposalFromPlanned(args: {
     applicability: "applicable",
     displayTitle: args.payload.title,
     payload: args.payload,
+    plannedTitle: args.planned.proposal.title,
+    plannedMatch: args.planned.match,
     match: effectiveMatch,
     evidence,
     safety,
@@ -504,6 +506,11 @@ export function buildChronicleExtractionReviewProjection(args: {
       applicability: "already-satisfied",
       displayTitle: item.title,
       payload: null,
+      plannedTitle: item.title,
+      plannedMatch: {
+        status: "already-satisfied",
+        existingRef: item.existingRef,
+      },
       match: {
         status: "already-satisfied",
         existingRef: item.existingRef,
@@ -1851,7 +1858,9 @@ export async function reviseChronicleProposal(args: {
     },
   };
   let effectiveMatch = current.match;
-  if (current.payload.title !== nextPayload.title) {
+  if (nextPayload.title === current.plannedTitle) {
+    effectiveMatch = current.plannedMatch;
+  } else if (current.payload.title !== nextPayload.title) {
     effectiveMatch = rematchHumanTitleRevision(
       nextPayload.title,
       projection.existingEventsCatalog,

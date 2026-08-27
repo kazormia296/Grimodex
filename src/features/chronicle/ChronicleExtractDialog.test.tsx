@@ -193,6 +193,8 @@ function seedProjection(
         temporalExpressions: [],
       },
     },
+    plannedTitle: "抽出候補",
+    plannedMatch: { status: "none" },
     match: { status: "none" },
     evidence: [
       {

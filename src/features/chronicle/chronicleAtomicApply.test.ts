@@ -60,6 +60,8 @@ function proposal(
     applicability: "applicable",
     displayTitle: body.title,
     payload: body,
+    plannedTitle: body.title,
+    plannedMatch: { status: "none" },
     match: { status: "none" },
     evidence: [],
     safety: buildProposalSafetyFlags({
