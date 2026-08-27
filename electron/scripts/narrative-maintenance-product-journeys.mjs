@@ -2474,7 +2474,7 @@ async function readRunSnapshotQuery(workspace, query) {
   }
 }
 
-async function readRestoreFixtureBackupReadiness(
+export async function readRestoreFixtureBackupReadiness(
   workspace,
   backupName,
   projectId,

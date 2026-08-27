@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import yaml from "js-yaml";
 
@@ -58,6 +62,8 @@ import {
   parseImpactMap,
   selectImpact,
 } from "./quality/impact-map.mjs";
+
+const execFile = promisify(execFileCallback);
 
 test("Run ledger scopes attempt evidence through task and Run ownership", async () => {
   const source = await readFile(
@@ -833,8 +839,33 @@ test("restore fixture captures the derived-state gap before the normal launch se
   );
   assert.match(
     readinessBlock,
+    /baselineRuns:\s*preSceneRuns/,
+    "pre-gap readiness must compare against the pre-scene Run baseline",
+  );
+  assert.match(
+    readinessBlock,
+    /minimumFeedHead:\s*postSceneFeedAndCursor\.feedHead/,
+    "pre-gap readiness must wait for the post-scene Change Feed head",
+  );
+  assert.match(
+    readinessBlock,
     /requireFreshRun:\s*true/,
     "pre-gap readiness must require Freshness after source seeding",
+  );
+  const preSceneRunsAt = seedBody.indexOf("const preSceneRuns");
+  const sceneCreationAt = seedBody.indexOf(
+    'createSceneIfNeeded(context, "restore-fixture-source")',
+  );
+  assert.ok(
+    preSceneRunsAt >= 0 && preSceneRunsAt < sceneCreationAt,
+    "the Freshness Run baseline must be captured before scene creation",
+  );
+  const postSceneFeedAndCursorAt = seedBody.indexOf(
+    "const postSceneFeedAndCursor",
+  );
+  assert.ok(
+    postSceneFeedAndCursorAt >= 0 && postSceneFeedAndCursorAt < readinessAt,
+    "the observed post-scene feed head must be captured before readiness polling",
   );
   const journeyBody = source.match(
     /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
@@ -848,7 +879,7 @@ test("restore fixture captures the derived-state gap before the normal launch se
 });
 
 test("restore fixture readiness requires a current completed Freshness and released cursor", () => {
-  const readiness = {
+  const makeReadiness = () => ({
     epoch: { id: "epoch-1" },
     freshness: { status: "completed", semanticEpochId: "epoch-1" },
     feedAndCursor: {
@@ -861,19 +892,251 @@ test("restore fixture readiness requires a current completed Freshness and relea
         lastError: null,
       },
     },
+  });
+  const mutate = (change) => {
+    const readiness = makeReadiness();
+    change(readiness);
+    return readiness;
   };
-  assert.doesNotThrow(() => assertRestoreFixturePreGapReadiness(readiness));
-  assert.throws(
-    () =>
-      assertRestoreFixturePreGapReadiness({
-        ...readiness,
-        feedAndCursor: {
-          ...readiness.feedAndCursor,
-          cursor: { ...readiness.feedAndCursor.cursor, activeRunId: "run-1" },
+
+  assert.doesNotThrow(() => assertRestoreFixturePreGapReadiness(makeReadiness()));
+  assert.doesNotThrow(() => {
+    const zeroHead = makeReadiness();
+    zeroHead.feedAndCursor.feedHead = 0;
+    zeroHead.feedAndCursor.cursor.acknowledgedThrough = 0;
+    assertRestoreFixturePreGapReadiness(zeroHead);
+  }, "zero is a valid settled Change Feed head");
+
+  const invalidCases = [
+    ["missing readiness", null],
+    ["missing epoch", mutate((readiness) => (readiness.epoch = undefined))],
+    ["empty epoch id", mutate((readiness) => (readiness.epoch.id = ""))],
+    [
+      "whitespace epoch id",
+      mutate((readiness) => (readiness.epoch.id = "   ")),
+    ],
+    [
+      "missing Freshness",
+      mutate((readiness) => (readiness.freshness = undefined)),
+    ],
+    [
+      "pending Freshness",
+      mutate((readiness) => (readiness.freshness.status = "pending")),
+    ],
+    [
+      "running Freshness",
+      mutate((readiness) => (readiness.freshness.status = "running")),
+    ],
+    [
+      "failed Freshness",
+      mutate((readiness) => (readiness.freshness.status = "failed")),
+    ],
+    [
+      "stale Freshness epoch",
+      mutate((readiness) => (readiness.freshness.semanticEpochId = "epoch-old")),
+    ],
+    [
+      "missing feed head",
+      mutate((readiness) => (readiness.feedAndCursor.feedHead = undefined)),
+    ],
+    [
+      "fractional feed head",
+      mutate((readiness) => (readiness.feedAndCursor.feedHead = 3.5)),
+    ],
+    [
+      "unsafe feed head",
+      mutate(
+        (readiness) =>
+          (readiness.feedAndCursor.feedHead = Number.MAX_SAFE_INTEGER + 1),
+      ),
+    ],
+    [
+      "fractional acknowledged head",
+      mutate((readiness) => (readiness.feedAndCursor.cursor.acknowledgedThrough = 2.5)),
+    ],
+    [
+      "unequal acknowledged head",
+      mutate((readiness) => (readiness.feedAndCursor.cursor.acknowledgedThrough = 2)),
+    ],
+    [
+      "missing cursor",
+      mutate((readiness) => (readiness.feedAndCursor.cursor = undefined)),
+    ],
+    [
+      "reserved cursor",
+      mutate((readiness) => (readiness.feedAndCursor.cursor.reservedThrough = 4)),
+    ],
+    [
+      "active cursor Run",
+      mutate((readiness) => (readiness.feedAndCursor.cursor.activeRunId = "run-1")),
+    ],
+    [
+      "cursor epoch",
+      mutate(
+        (readiness) =>
+          (readiness.feedAndCursor.cursor.semanticEpochId = "epoch-1"),
+      ),
+    ],
+    [
+      "cursor error",
+      mutate(
+        (readiness) =>
+          (readiness.feedAndCursor.cursor.lastError = "NEX_TEST_FAILURE"),
+      ),
+    ],
+    [
+      "null cursor",
+      mutate((readiness) => (readiness.feedAndCursor.cursor = null)),
+    ],
+  ];
+
+  for (const [label, readiness] of invalidCases) {
+    assert.throws(
+      () => assertRestoreFixturePreGapReadiness(readiness, label),
+      new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      `invalid restore readiness must be rejected: ${label}`,
+    );
+  }
+});
+
+test("restore fixture backup readiness reads the online backup snapshot, not the live DB", async () => {
+  await execFile("sqlite3", ["--version"]);
+  const root = await mkdtemp(path.join(tmpdir(), "c2-5b-backup-reader-"));
+  const workspace = path.join(root, "workspace");
+  const databasePath = path.join(workspace, "grimodex.db");
+  const backupName = "restore-fixture.db";
+  const backupPath = path.join(workspace, "backups", backupName);
+  const projectId = "project-backup-reader";
+  try {
+    await mkdir(path.dirname(backupPath), { recursive: true });
+    await execFile("sqlite3", [
+      databasePath,
+      `
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE narrative_semantic_epochs (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          epoch_number INTEGER NOT NULL,
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE narrative_extraction_runs (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          run_kind TEXT NOT NULL,
+          status TEXT NOT NULL,
+          semantic_epoch_id TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE narrative_change_events (
+          canonical_sequence INTEGER NOT NULL,
+          project_id TEXT NOT NULL
+        );
+        CREATE TABLE narrative_change_cursors (
+          project_id TEXT NOT NULL,
+          consumer_id TEXT NOT NULL,
+          acknowledged_through_sequence INTEGER,
+          reserved_through_sequence INTEGER,
+          active_run_id TEXT,
+          semantic_epoch_id TEXT,
+          last_error TEXT
+        );
+        INSERT INTO narrative_semantic_epochs
+          (id, project_id, epoch_number, reason, created_at)
+        VALUES
+          ('epoch-1', '${projectId}', 0, 'initial', '2026-08-28T16:05:00.000Z');
+        INSERT INTO narrative_extraction_runs
+          (id, project_id, run_kind, status, semantic_epoch_id, created_at)
+        VALUES
+          ('freshness-1', '${projectId}', 'freshness-evaluation', 'completed',
+           'epoch-1', '2026-08-28T16:05:01.000Z');
+        INSERT INTO narrative_change_events (canonical_sequence, project_id)
+        VALUES (1, '${projectId}');
+        INSERT INTO narrative_change_cursors
+          (project_id, consumer_id, acknowledged_through_sequence,
+           reserved_through_sequence, active_run_id, semantic_epoch_id, last_error)
+        VALUES
+          ('${projectId}', 'narrative-incremental-freshness/v1', 1, NULL, NULL, NULL, NULL);
+      `,
+    ]);
+    await execFile("sqlite3", [
+      databasePath,
+      `.backup '${backupPath.replaceAll("'", "''")}'`,
+    ]);
+    await execFile("sqlite3", [
+      databasePath,
+      `
+        INSERT INTO narrative_semantic_epochs
+          (id, project_id, epoch_number, reason, created_at)
+        VALUES
+          ('epoch-2', '${projectId}', 1, 'live-only-change', '2026-08-28T16:05:02.000Z');
+        INSERT INTO narrative_extraction_runs
+          (id, project_id, run_kind, status, semantic_epoch_id, created_at)
+        VALUES
+          ('freshness-2', '${projectId}', 'freshness-evaluation', 'completed',
+           'epoch-2', '2026-08-28T16:05:03.000Z');
+        INSERT INTO narrative_change_events (canonical_sequence, project_id)
+        VALUES (2, '${projectId}');
+        UPDATE narrative_change_cursors
+           SET acknowledged_through_sequence = 2
+         WHERE project_id = '${projectId}'
+           AND consumer_id = 'narrative-incremental-freshness/v1';
+      `,
+    ]);
+    const { stdout: liveStdout } = await execFile("sqlite3", [
+      "-json",
+      databasePath,
+      `
+        SELECT
+          (SELECT id FROM narrative_semantic_epochs
+            WHERE project_id = '${projectId}'
+            ORDER BY epoch_number DESC LIMIT 1) AS epochId,
+          (SELECT id FROM narrative_extraction_runs
+            WHERE project_id = '${projectId}'
+              AND run_kind = 'freshness-evaluation'
+            ORDER BY created_at DESC LIMIT 1) AS freshnessRunId,
+          (SELECT MAX(canonical_sequence) FROM narrative_change_events
+            WHERE project_id = '${projectId}') AS feedHead,
+          (SELECT acknowledged_through_sequence FROM narrative_change_cursors
+            WHERE project_id = '${projectId}') AS acknowledgedThrough;
+      `,
+    ]);
+    const liveRow = JSON.parse(liveStdout.trim())[0];
+    assert.deepEqual(liveRow, {
+      epochId: "epoch-2",
+      freshnessRunId: "freshness-2",
+      feedHead: 2,
+      acknowledgedThrough: 2,
+    });
+
+    const readBackupReadiness =
+      narrativeMaintenanceProductJourneys.readRestoreFixtureBackupReadiness;
+    assert.equal(typeof readBackupReadiness, "function");
+    const backupReadiness = await readBackupReadiness(
+      workspace,
+      backupName,
+      projectId,
+    );
+    assert.deepEqual(backupReadiness, {
+      epoch: { id: "epoch-1" },
+      freshness: {
+        status: "completed",
+        semanticEpochId: "epoch-1",
+      },
+      feedAndCursor: {
+        feedHead: 1,
+        cursor: {
+          acknowledgedThrough: 1,
+          reservedThrough: null,
+          activeRunId: null,
+          semanticEpochId: null,
+          lastError: null,
         },
-      }),
-    /released cursor/,
-  );
+      },
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("restore fixture requires a typed completed legacy Backfill boundary", async () => {
