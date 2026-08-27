@@ -180,7 +180,12 @@ existing `scope.ts`, Disclosure evaluator, Dependency Edge, and Consumer
 Freshness paths remain V1-compatible. Disclosure admission, revise/retract/
 merge/split, D2 full cutover, and NIR1 retrieval remain deferred.
 
-## Gate C2 — IN PROGRESS
+The [NIR0-CERT completion ledger](../../docs/certification/nir0/NIR0-CERT.md)
+binds PR #559's clean candidate base/head/tree to the byte-identical tree merged
+as `651791655177538ee02bc7e773f7d98c534ea324`. Credentialed/live-model Heavy
+work remains deferred and is not counted as passing NIR-0 evidence.
+
+## Gate C2 — IN PROGRESS (C2-ZC pending)
 
 Gate C2 begins from ADR 005's existing "Authority matrix and C2 start
 condition" checklist (Mutation Route / Source Event Contract / Object
@@ -189,21 +194,21 @@ Evidence-Scope, all fixed at C1.5) and implements only Dependency Edge, Edge
 State, Consumer Freshness, Application Contribution, Reverse Lookup,
 Incremental Evaluator, Cursor, and Backfill persistence/runtime, per that
 ADR. There is no separate `docs/certification/gate-c2/` directory or base-SHA
-file; the C2 branch base is simply `master` at branch creation, and this
-section is the running status record, alongside PR history and this ADR.
+file; this section is the running status record, alongside PR history and the
+accepted ADR/policy contracts.
 
 ```text
-Gate C2 — IN PROGRESS
+Gate C2 — IN PROGRESS (C2-ZC pending)
   Contract / Registry / Ledger Spine (C2-00): complete
   Schema / Transport Extension Spine (C2-01): complete
   Wave 1 foundation lanes:                    complete
   Wave 1 Transport Assembly (C2-T1):          complete
   Wave 2 runtime / read-model lanes:          complete
   C2-1 incremental Freshness runtime:         complete (see below)
-  C2-3 Finding identity / Attention re-home:  implemented on branch; gate/merge pending
-  C2-5 shared triggers / lifecycle recovery:  complete on integration branch
-  C2-ZB Application re-key migration:         implemented on branch; gate/merge pending (schema 32)
-  C2-ZC Canonical Authority Cutover:          blocked (see below)
+  C2-3 Finding identity / Attention re-home:  complete; merged through PR #556/#559
+  C2-5 shared triggers / lifecycle recovery:  complete; merged through PR #556/#559
+  C2-ZB Application re-key migration:         complete; SCHEMA 32 merged and hardened
+  C2-ZC Canonical Authority Cutover:          blocked / next explicit boundary
 ```
 
 ### C2-1 Change-Feed-driven incremental Freshness runtime
@@ -228,14 +233,13 @@ surface. Contract-level fixtures live in
 `src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs`
 and `electron/main/narrativeFreshness.test.ts`.
 
-This completion is intentionally narrower than the remaining Gate work. C2-3's
-three-layer Finding identity and exact Attention re-homing are implemented on
-the active branch and await acceptance/merge. C2-5's automatic Backfill /
-Verify / Rebuild-Derived scheduling and shared cross-Run-Kind lifecycle
-recovery are complete on the integration branch. C2-ZB's schema-owned
-Application re-key is implemented but still awaits the branch gate and merge;
-C2-ZC remains blocked, and Generic Consumer Freshness remains shadow rather
-than the canonical read authority.
+This completion is intentionally narrower than the final Gate boundary. C2-3's
+three-layer Finding identity and exact Attention re-homing, C2-5's automatic
+Backfill/Verify/Rebuild-Derived scheduling and shared cross-Run-Kind recovery,
+and C2-ZB's schema-owned Application re-key are merged through PR #556 and PR
+#559. C2-ZC remains blocked as a separately accepted authority switch, and
+Generic Consumer Freshness remains shadow rather than the canonical read
+authority.
 
 The paragraphs below preserve the landing rationale for earlier C2 slices;
 their historical environment-specific validation caveats are not the current
