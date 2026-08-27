@@ -21,9 +21,10 @@ use grimodex_db::narrative_extraction::{
     production_verify_check_coverage, record_live_scheduler_heartbeat,
     run_incremental_freshness_cycle, verify_narrative_dependency_graph_for_project,
     AppendDecisionPayload, ApplyCommitPayload, CanonicalFreshnessAuthority, CommitApplicationRef,
-    CommitOperation, CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed,
-    ReadinessState, SaveProposalSetPayload, SchedulerLivenessEvidence, C2_ZC_CUTOVER_MIGRATION_ID,
-    REBUILD_DERIVED_WORK_KEY, VERIFY_RUN_KIND_CONTRACT_VERSION, VERIFY_WORK_KEY_PREFIX,
+    CommitOperation, CreateRunPayload, CreateTaskSeed, DependencyGraphVerifyReport,
+    PrepareCommitPayload, ProposalSeed, ReadinessState, SaveProposalSetPayload,
+    SchedulerLivenessEvidence, C2_ZC_CUTOVER_MIGRATION_ID, REBUILD_DERIVED_WORK_KEY,
+    VERIFY_RUN_KIND_CONTRACT_VERSION, VERIFY_WORK_KEY_PREFIX,
 };
 use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
 use grimodex_db::{
@@ -545,6 +546,151 @@ fn cutover_rejects_evaluated_freshness_without_a_publisher_run() {
         })
         .expect("reject runless evaluated freshness at cutover");
     }
+}
+
+#[test]
+fn cutover_rejects_fabricated_clean_verify_after_live_derived_state_deletion() {
+    let _test_guard = serialize_liveness_test();
+    let db = fixture_db();
+    db.with_conn(seed_cutover_ready_application)
+        .expect("seed cutover-ready fixture");
+    let evidence = scheduler_heartbeat(&db, "c2zc-live-verify-tamper-authority", 40);
+
+    db.with_conn(|conn| {
+        // Keep the Application's current state intact so the ordinary
+        // cutover row validation cannot identify this mutation first. The
+        // non-Application Revision Edge is still a production Verify input,
+        // and deleting its derived state makes the live graph Rebuildable.
+        conn.execute(
+            "DELETE FROM narrative_dependency_edge_states
+              WHERE edge_id = 'edge-revision-c2zc'",
+            [],
+        )?;
+        let live_report = verify_narrative_dependency_graph_for_project(conn, PROJECT_ID)?;
+        assert!(live_report.rebuild_required);
+        assert_eq!(live_report.edge_ids_without_current_epoch_state.len(), 1);
+
+        // Forge a clean-looking persisted Verify report after the graph was
+        // changed. Every finding array and the rebuild decision are cleared,
+        // while the two reserved Semantic Index checks retain exactly the
+        // four all-zero observations required by the production contract.
+        let mut fabricated_report = serde_json::to_value(live_report)?;
+        let report_object = fabricated_report
+            .as_object_mut()
+            .expect("Verify report serializes as an object");
+        for field in [
+            "edgeIdsWithMissingSource",
+            "duplicateEdgeKeys",
+            "edgeIdsWithCrossProjectConsumer",
+            "edgeIdsWithMalformedKeys",
+            "edgeStateIdsOutsideCurrentEpoch",
+            "edgeIdsWithoutCurrentEpochState",
+            "findingObservationIdsOutsideCurrentEpoch",
+            "consumerKeysWithoutCurrentEpochFreshness",
+            "duplicateEdgeIdsToDeactivate",
+            "edgeIdsWithUnresolvableConsumerScope",
+            "consumerKeysWithStaleDependencySetDigest",
+            "consumerKeysWithUncomputedDependencySetDigest",
+            "orphanedAttentionFindingKeys",
+            "orphanedAttentionRehomeAmbiguities",
+        ] {
+            report_object.insert(field.to_string(), json!([]));
+        }
+        report_object.insert("rebuildRequired".to_string(), json!(false));
+        let reserved_counts = json!({
+            "metadataRows": 0,
+            "activeD1HeadRows": 0,
+            "v1EdgeRows": 0,
+            "consumerFreshnessRows": 0,
+        });
+        for field in [
+            "applicationRevisionArtifactReferences",
+            "semanticIndexDependencySetDigest",
+            "contributionToApplicationCommitCorrespondence",
+            "legacyMirrorMigrationParity",
+            "cursorAndFeedHeadConsistency",
+            "semanticIndexGenerationCorrespondence",
+        ] {
+            let check = report_object
+                .get_mut(field)
+                .and_then(Value::as_object_mut)
+                .expect("Verify coverage check serializes as an object");
+            check.insert("completed".to_string(), json!(true));
+            check.insert("passed".to_string(), json!(true));
+            check.insert("issues".to_string(), json!([]));
+            check.insert("incomplete".to_string(), json!([]));
+            if matches!(
+                field,
+                "semanticIndexDependencySetDigest" | "semanticIndexGenerationCorrespondence"
+            ) {
+                check.insert("observedCounts".to_string(), reserved_counts.clone());
+            } else {
+                check.remove("observedCounts");
+            }
+        }
+        let fabricated_report: DependencyGraphVerifyReport =
+            serde_json::from_value(fabricated_report)?;
+        assert!(fabricated_report.is_clean());
+        let fabricated_report = serde_json::to_value(fabricated_report)?;
+        let report_digest = format!("sha256:{}", digest_plan(&fabricated_report));
+        let graph_state_digest = durable_graph_state_digest(conn, PROJECT_ID)?;
+
+        let mut outcome: Value = conn
+            .query_row(
+                "SELECT outcome_summary_json
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+                [BASELINE_VERIFY_RUN_ID],
+                |row| row.get::<_, String>(0),
+            )?
+            .parse()
+            .expect("Verify outcome is valid JSON");
+        outcome["semanticEpochId"] = json!(EPOCH_ID);
+        outcome["verifyContractVersion"] = json!(VERIFY_RUN_KIND_CONTRACT_VERSION);
+        outcome["reportDigest"] = json!(report_digest.clone());
+        outcome["graphStateDigest"] = json!(graph_state_digest.clone());
+        outcome["report"] = fabricated_report;
+        outcome["checkCoverage"] = production_verify_check_coverage();
+        outcome["outcomeDigest"] = json!(canonical_verify_outcome_digest(&outcome)?);
+        outcome["skipEvidence"]["reportDigest"] = json!(report_digest);
+        outcome["skipEvidence"]["graphStateDigest"] = json!(graph_state_digest);
+        conn.execute(
+            "UPDATE narrative_extraction_runs
+                SET outcome_summary_json = ?1
+              WHERE id = ?2",
+            params![outcome.to_string(), BASELINE_VERIFY_RUN_ID],
+        )?;
+
+        // The persisted report now has current graph/evidence digests and
+        // exact 13/13 coverage, so the initial readiness inspection alone is
+        // intentionally fooled. The cutover's same-transaction live Verify
+        // guard must be the boundary that rejects the tamper.
+        let readiness = inspect_workspace_cutover_readiness_with_liveness(conn, Some(&evidence))?;
+        assert!(
+            readiness.ready,
+            "tampered persisted evidence should fool readiness only: {readiness:?}"
+        );
+
+        let error = cut_over_workspace_freshness(conn, &evidence)
+            .expect_err("live Verify must reject fabricated clean evidence");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2ZC_CUTOVER_VERIFY_EVIDENCE_STALE"),
+            "unexpected tampered Verify error: {error}"
+        );
+        let marker_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM schema_data_migrations WHERE migration_id = ?1",
+            [C2_ZC_CUTOVER_MIGRATION_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            marker_count, 0,
+            "stale Verify evidence must not activate C2-ZC"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("reject fabricated clean Verify evidence at cutover");
 }
 
 #[test]
