@@ -239,8 +239,9 @@ pub use repair::{
     RepairPlan,
 };
 pub use restore_rebuild::{
-    ack_maintenance_wakes, durable_graph_state_digest, ensure_restore_epochs_for_workspace,
-    list_pending_maintenance_wakes, rebuild_narrative_derived_state_for_project,
+    ack_maintenance_wakes, canonical_verify_outcome_digest, durable_graph_state_digest,
+    ensure_restore_epochs_for_workspace, list_pending_maintenance_wakes,
+    production_verify_check_coverage, rebuild_narrative_derived_state_for_project,
     record_maintenance_delivery_failure_wake, run_dependency_verify_for_project,
     run_dependency_verify_for_project_with_coordinates,
     verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,

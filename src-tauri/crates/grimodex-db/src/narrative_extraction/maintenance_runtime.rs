@@ -37,7 +37,8 @@ use super::maintenance_skip_evidence::{
     CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
 };
 use super::restore_rebuild::{
-    is_canonical_graph_state_digest, validate_graph_state_digest, DependencyGraphVerifyReport,
+    is_canonical_graph_state_digest, validate_canonical_verify_outcome_digest,
+    validate_graph_state_digest, validate_verify_check_coverage, DependencyGraphVerifyReport,
     RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
 use super::task_leases::with_immediate_transaction;
@@ -779,6 +780,16 @@ pub(crate) fn validate_phase_success_outcome(
                     )
                 },
             )?;
+            validate_canonical_verify_outcome_digest(outcome).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_OUTCOME_INVALID: Verify outcome digest is invalid: {error}"
+                )
+            })?;
+            validate_verify_check_coverage(outcome).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_OUTCOME_INVALID: Verify check coverage is invalid: {error}"
+                )
+            })?;
             let report_digest = object
                 .get("reportDigest")
                 .and_then(Value::as_str)
@@ -959,23 +970,29 @@ pub fn complete_foreground_system_work_run(
                 epoch_id.as_deref(),
                 &outcome,
             )?;
-            let outcome_object = outcome.as_object_mut().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: foreground Run outcome is not an object"
-                )
-            })?;
-            outcome_object.insert(
-                "foregroundBarrierReleased".to_string(),
-                Value::Bool(true),
-            );
-            outcome_object.insert(
-                "productJourneyBarrierId".to_string(),
-                Value::String(barrier.marker.product_journey_barrier_id.clone()),
-            );
-            outcome_object.insert(
-                "correlation".to_string(),
-                Value::String(barrier.marker.correlation.clone()),
-            );
+            {
+                let outcome_object = outcome.as_object_mut().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: foreground Run outcome is not an object"
+                    )
+                })?;
+                outcome_object.insert(
+                    "foregroundBarrierReleased".to_string(),
+                    Value::Bool(true),
+                );
+                outcome_object.insert(
+                    "productJourneyBarrierId".to_string(),
+                    Value::String(barrier.marker.product_journey_barrier_id.clone()),
+                );
+                outcome_object.insert(
+                    "correlation".to_string(),
+                    Value::String(barrier.marker.correlation.clone()),
+                );
+            }
+            if run_kind == VERIFY_RUN_KIND {
+                let outcome_digest = super::restore_rebuild::canonical_verify_outcome_digest(&outcome)?;
+                outcome["outcomeDigest"] = Value::String(outcome_digest);
+            }
             super::repository::record_run_outcome_in_tx(conn, &barrier.run_id, &outcome)?;
             let finalized_at = release_foreground_maintenance_run_in_tx(conn, &handle)?;
             if run_kind == VERIFY_RUN_KIND {
@@ -2046,6 +2063,10 @@ fn validate_discovered_verify_outcome(
         outcome.get("failure").is_none(),
         "NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: completed Verify outcome carries failure detail"
     );
+    validate_canonical_verify_outcome_digest(&outcome)
+        .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify outcome digest is invalid")?;
+    validate_verify_check_coverage(&outcome)
+        .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify check coverage is invalid")?;
     serde_json::from_value(
         outcome
             .get("report")

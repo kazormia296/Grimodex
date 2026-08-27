@@ -14,7 +14,9 @@ use grimodex_db::narrative_extraction::maintenance_runtime::{
     LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES,
 };
 use grimodex_db::narrative_extraction::{
-    digest_plan, durable_graph_state_digest, ensure_test_schema,
+    canonical_verify_outcome_digest, digest_plan, durable_graph_state_digest, ensure_test_schema,
+    production_verify_check_coverage, verify_narrative_dependency_graph_for_project,
+    VERIFY_RUN_KIND_CONTRACT_VERSION,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -413,13 +415,15 @@ fn insert_canonical_maintenance_run(
     work: &WorkKey,
 ) -> rusqlite::Result<()> {
     let spec_json = match work.run_kind {
-        AutomaticRunKind::Backfill => r#"{"backfillAlgorithmVersion":"3"}"#,
-        AutomaticRunKind::Verify => r#"{"verifyContractVersion":"8"}"#,
-        AutomaticRunKind::RebuildDerived => "{}",
+        AutomaticRunKind::Backfill => r#"{"backfillAlgorithmVersion":"3"}"#.to_string(),
+        AutomaticRunKind::Verify => {
+            format!(r#"{{"verifyContractVersion":"{VERIFY_RUN_KIND_CONTRACT_VERSION}"}}"#)
+        }
+        AutomaticRunKind::RebuildDerived => "{}".to_string(),
     };
-    let spec_value: serde_json::Value = serde_json::from_str(spec_json).expect("valid spec JSON");
+    let spec_value: serde_json::Value = serde_json::from_str(&spec_json).expect("valid spec JSON");
     let spec_digest = format!("sha256:{}", digest_plan(&spec_value));
-    insert_run_with_spec(conn, id, status, epoch_id, work, spec_json, &spec_digest)
+    insert_run_with_spec(conn, id, status, epoch_id, work, &spec_json, &spec_digest)
 }
 
 fn assert_interrupted_lifecycle(db: &Database, run_id: &str) {
@@ -1093,40 +1097,61 @@ fn discovery_rejects_same_lifecycle_instant_instead_of_using_uuid_order() {
 #[test]
 fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
     let db = fixture_db();
+    // Build the stored report through the production Verify reader. The
+    // missing current-epoch Edge State/Freshness rows are the real reason
+    // this fixture requires Rebuild; no test-owned 13-check JSON can make a
+    // malformed report look like a current production result.
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, run_kind, semantic_epoch_id, work_key)
+             VALUES ('discovery-source-run', ?1, 'source', '{}', '{}', 'source-spec',
+                     'completed', '{}', '2026-08-23T09:00:00.000Z',
+                     'interpretation', ?2, 'discovery-source-run')",
+            params![PROJECT_ID, OLD_EPOCH_ID],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                 read_set_json, created_at, owning_run_id)
+             VALUES ('discovery-edge', ?1, 'narrative-extraction-run',
+                     'discovery-source-run', 'project:scene:missing', '[]',
+                     '2026-08-23T09:00:00.000Z', 'discovery-source-run')",
+            [PROJECT_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed a real Edge whose derived state requires Rebuild");
+    let report = db
+        .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, PROJECT_ID))
+        .expect("production Verify report");
+    assert!(report.requires_rebuild());
+    let report_value = serde_json::to_value(&report).expect("serialize production Verify report");
     let graph_state_digest = db
         .with_conn(|conn| durable_graph_state_digest(conn, PROJECT_ID))
         .expect("fixture graph state digest");
-    let report_value = json!({
-        "totalEdges": 0,
-        "edgeIdsWithMissingSource": [],
-        "duplicateEdgeKeys": [],
-        "edgeIdsWithCrossProjectConsumer": [],
-        "edgeIdsWithMalformedKeys": [],
-        "edgeStateIdsOutsideCurrentEpoch": [],
-        "edgeIdsWithoutCurrentEpochState": [],
-        "findingObservationIdsOutsideCurrentEpoch": [],
-        "consumerKeysWithoutCurrentEpochFreshness": [],
-        "duplicateEdgeIdsToDeactivate": [],
-        "edgeIdsWithUnresolvableConsumerScope": [],
-        "consumerKeysWithStaleDependencySetDigest": [],
-        "consumerKeysWithUncomputedDependencySetDigest": [],
-        "orphanedAttentionFindingKeys": [],
-        "orphanedAttentionRehomeAmbiguities": [],
-        "rebuildRequired": true,
-    });
     let report_digest = format!(
         "sha256:{}",
         grimodex_db::narrative_extraction::digest_plan(&report_value)
     );
     let mut tampered_report_value = report_value.clone();
     tampered_report_value["totalEdges"] = json!(999);
-    let valid_outcome = json!({
-        "verifyContractVersion": "8",
+    let mut valid_outcome = json!({
+        "verifyContractVersion": VERIFY_RUN_KIND_CONTRACT_VERSION,
         "semanticEpochId": OLD_EPOCH_ID,
         "reportDigest": report_digest,
         "graphStateDigest": graph_state_digest.clone(),
         "report": report_value.clone(),
+        "checkCoverage": production_verify_check_coverage(),
     });
+    valid_outcome["outcomeDigest"] =
+        json!(canonical_verify_outcome_digest(&valid_outcome).expect("digest Verify outcome"));
+    let verify_spec = json!({
+        "verifyContractVersion": VERIFY_RUN_KIND_CONTRACT_VERSION
+    });
+    let verify_spec_json = verify_spec.to_string();
+    let verify_spec_digest = format!("sha256:{}", digest_plan(&verify_spec));
     db.with_conn(|conn| {
         conn.execute(
             r#"INSERT INTO narrative_extraction_runs
@@ -1147,19 +1172,17 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
                  status, coverage_json, created_at, started_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('discovery-verify', ?1, 'maintenance', '{}',
-                     '{"verifyContractVersion":"8"}', ?2, 'completed', '{}',
+                     ?6, ?2, 'completed', '{}',
                      '2026-08-23T10:00:00.000Z', '2026-08-23T10:00:00.000Z',
                      '2026-08-23T10:00:01.000Z', ?3,
                      'dependency-verify', ?4, ?5)"#,
             params![
                 PROJECT_ID,
-                format!(
-                    "sha256:{}",
-                    digest_plan(&json!({"verifyContractVersion": "8"}))
-                ),
+                verify_spec_digest,
                 valid_outcome.to_string(),
                 OLD_EPOCH_ID,
                 format!("dependency-verify:{OLD_EPOCH_ID}"),
+                verify_spec_json,
             ],
         )?;
         Ok(())
@@ -1175,7 +1198,7 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
         (
             "reportDigest",
             json!({
-                "verifyContractVersion": "8",
+                "verifyContractVersion": VERIFY_RUN_KIND_CONTRACT_VERSION,
                 "semanticEpochId": OLD_EPOCH_ID,
                 "reportDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
                 "graphStateDigest": graph_state_digest.clone(),
@@ -1185,7 +1208,7 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
         (
             "semanticEpochId",
             json!({
-                "verifyContractVersion": "8",
+                "verifyContractVersion": VERIFY_RUN_KIND_CONTRACT_VERSION,
                 "semanticEpochId": "wrong-epoch",
                 "reportDigest": report_digest.clone(),
                 "graphStateDigest": graph_state_digest.clone(),
@@ -1205,7 +1228,7 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
         (
             "report",
             json!({
-                "verifyContractVersion": "8",
+                "verifyContractVersion": VERIFY_RUN_KIND_CONTRACT_VERSION,
                 "semanticEpochId": OLD_EPOCH_ID,
                 "reportDigest": report_digest.clone(),
                 "graphStateDigest": graph_state_digest.clone(),

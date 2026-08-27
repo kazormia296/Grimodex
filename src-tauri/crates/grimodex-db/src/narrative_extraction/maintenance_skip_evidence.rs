@@ -21,7 +21,8 @@ use super::commit::digest_plan;
 use super::maintenance_runtime::{REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX};
 pub use super::restore_rebuild::durable_graph_state_digest;
 use super::restore_rebuild::{
-    is_canonical_graph_state_digest, verify_narrative_dependency_graph_for_project,
+    canonical_verify_outcome_digest, is_canonical_graph_state_digest,
+    validate_verify_check_coverage, verify_narrative_dependency_graph_for_project,
     DependencyGraphVerifyReport, RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION,
     VERIFY_CONTRACT_VERSION,
 };
@@ -937,6 +938,21 @@ fn successful_outcome_digest(
                 .with_context(|| {
                     "NEX_MAINTENANCE_SKIP_REPORT_SHAPE_INVALID: Verify report shape is not current"
                 })?;
+            validate_verify_check_coverage(outcome).with_context(|| {
+                "NEX_MAINTENANCE_SKIP_COVERAGE_SHAPE_INVALID: Verify check coverage is not current"
+            })?;
+            let recorded_outcome_digest = outcome
+                .get("outcomeDigest")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_MAINTENANCE_SKIP_OUTCOME_DIGEST_MISSING: Verify outcome has no whole-outcome digest"
+                    )
+                })?;
+            ensure!(
+                recorded_outcome_digest == canonical_verify_outcome_digest(outcome)?,
+                "NEX_MAINTENANCE_SKIP_OUTCOME_DIGEST_MISMATCH: Verify outcome whole-outcome digest does not match"
+            );
             ensure!(
                 report.is_clean(),
                 "NEX_MAINTENANCE_SKIP_DERIVED_STATE_INVALID: Verify report is not clean"

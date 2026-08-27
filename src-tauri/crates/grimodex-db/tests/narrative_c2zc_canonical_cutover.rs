@@ -13,17 +13,17 @@ use grimodex_db::narrative_extraction::maintenance_skip_evidence::{
     durable_graph_state_digest, persist_completed_run_skip_evidence_in_tx, CompletedRunSkipEvidence,
 };
 use grimodex_db::narrative_extraction::{
-    canonical_application_freshness, current_maintenance_coordinates, cut_over_workspace_freshness,
-    digest_plan, ensure_test_schema, inspect_workspace_cutover_readiness_with_liveness,
-    narrative_extraction_append_human_decision, narrative_extraction_apply_commit,
-    narrative_extraction_create_run, narrative_extraction_prepare_commit,
-    narrative_extraction_save_proposal_set, record_live_scheduler_heartbeat,
+    canonical_application_freshness, canonical_verify_outcome_digest,
+    current_maintenance_coordinates, cut_over_workspace_freshness, digest_plan, ensure_test_schema,
+    inspect_workspace_cutover_readiness_with_liveness, narrative_extraction_append_human_decision,
+    narrative_extraction_apply_commit, narrative_extraction_create_run,
+    narrative_extraction_prepare_commit, narrative_extraction_save_proposal_set,
+    production_verify_check_coverage, record_live_scheduler_heartbeat,
     run_incremental_freshness_cycle, verify_narrative_dependency_graph_for_project,
     AppendDecisionPayload, ApplyCommitPayload, CanonicalFreshnessAuthority, CommitApplicationRef,
     CommitOperation, CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed,
     ReadinessState, SaveProposalSetPayload, SchedulerLivenessEvidence, C2_ZC_CUTOVER_MIGRATION_ID,
-    REBUILD_DERIVED_WORK_KEY, REQUIRED_VERIFY_CHECKS, VERIFY_RUN_KIND_CONTRACT_VERSION,
-    VERIFY_WORK_KEY_PREFIX,
+    REBUILD_DERIVED_WORK_KEY, VERIFY_RUN_KIND_CONTRACT_VERSION, VERIFY_WORK_KEY_PREFIX,
 };
 use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
 use grimodex_db::{
@@ -620,9 +620,48 @@ fn seed_cutover_ready_application_with_freshness_state(
         },
     });
     conn.execute(
+        "INSERT INTO narrative_proposal_sets
+            (id, run_id, project_id, set_kind, status, summary_json, created_at, updated_at)
+         VALUES ('set-c2zc', ?1, ?2, 'extraction', 'applied', '{}', ?3, ?3)",
+        params![BASELINE_RUN_ID, PROJECT_ID, NOW],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_proposals
+            (id, proposal_set_id, proposal_key, kind, status, payload_json,
+             created_at, updated_at)
+         VALUES ('proposal-c2zc', 'set-c2zc', 'proposal-c2zc', 'codex-entry',
+                 'approved', '{}', ?1, ?1)",
+        params![NOW],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_proposal_revisions
+            (id, proposal_id, revision_number, payload_json, origin_kind,
+             reconciliation_envelope_json, created_at, created_by)
+         VALUES ('revision-c2zc', 'proposal-c2zc', 1, '{}', 'enveloped',
+                 ?1, ?2, 'c2zc-fixture')",
+        params![
+            json!({
+                "sourceBasis": [{
+                    "sourceKind": "scene-body",
+                    "sourceKey": SOURCE_IDENTITY,
+                    "revisionToken": "token-c2zc",
+                }]
+            })
+            .to_string(),
+            NOW,
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_revision_source_basis
+            (revision_id, ordinal, source_kind, source_key, revision_token, observed_at)
+         VALUES ('revision-c2zc', 0, 'scene-body', ?1, 'token-c2zc', ?2)",
+        params![SOURCE_IDENTITY, NOW],
+    )?;
+    conn.execute(
         "INSERT INTO narrative_apply_commits
-            (id, project_id, run_id, request_id, plan_digest, status, created_at)
-         VALUES ('commit-c2zc', ?1, ?2, 'request-c2zc', 'sha256:c2zc',
+            (id, project_id, run_id, proposal_set_id, request_id, plan_digest,
+             status, created_at)
+         VALUES ('commit-c2zc', ?1, ?2, 'set-c2zc', 'request-c2zc', 'sha256:c2zc',
                  'committed', ?3)",
         params![PROJECT_ID, BASELINE_RUN_ID, NOW],
     )?;
@@ -715,6 +754,73 @@ fn seed_cutover_ready_application_with_freshness_state(
          VALUES ('edge-c2zc', ?1, ?2, NULL, ?3, ?4, ?5)",
         params![PROJECT_ID, evidence_freshness, build_action, EPOCH_ID, NOW],
     )?;
+    conn.execute(
+        "INSERT INTO narrative_dependency_edges
+            (id, project_id, consumer_kind, consumer_key, source_object_identity,
+             read_set_json, created_at, owning_run_id)
+         VALUES ('edge-revision-c2zc', ?1, 'proposal-revision', 'revision-c2zc', ?2,
+                 '[\"token-c2zc\"]', ?3, ?4)",
+        params![PROJECT_ID, SOURCE_IDENTITY, NOW, BASELINE_RUN_ID],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_dependency_edge_states
+            (edge_id, project_id, evidence_freshness, reason_code, build_action,
+             evaluated_at_epoch_id, evaluated_at)
+         VALUES ('edge-revision-c2zc', ?1, ?2, NULL, ?3, ?4, ?5)",
+        params![PROJECT_ID, evidence_freshness, build_action, EPOCH_ID, NOW],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_consumer_freshness
+            (project_id, consumer_kind, consumer_key, evidence_freshness,
+             build_action, semantic_epoch_id, last_evaluated_run_id,
+             dependency_set_digest, updated_at)
+         VALUES (?1, 'proposal-revision', 'revision-c2zc', ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            PROJECT_ID,
+            evidence_freshness,
+            build_action,
+            EPOCH_ID,
+            Some(BASELINE_FRESHNESS_RUN_ID),
+            dependency_set_digest(&[SOURCE_IDENTITY]),
+            NOW,
+        ],
+    )?;
+
+    // Cursor and freshness rows are part of the Verify CAS graph snapshot.
+    // Seed the completed publisher Run before taking that snapshot so the
+    // fixture does not manufacture a digest for a pre-cursor database state.
+    let incremental_outcome = json!({
+        "projectId": PROJECT_ID,
+        "runId": BASELINE_FRESHNESS_RUN_ID,
+        "fromSequenceExclusive": 0,
+        "throughSequenceInclusive": 0,
+        "affectedEdgeCount": 0,
+        "affectedConsumerCount": 0,
+        "hasMore": false,
+    });
+    conn.execute(
+        "INSERT INTO narrative_change_cursors
+            (project_id, consumer_id, acknowledged_through_sequence, updated_at)
+         VALUES (?1, 'narrative-incremental-freshness/v1', 0, ?2)",
+        params![PROJECT_ID, NOW],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_extraction_runs
+            (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+             status, coverage_json, outcome_summary_json, created_at, completed_at,
+             started_at, run_kind, semantic_epoch_id, work_key, consumer_id)
+         VALUES (?1, ?2, 'maintenance', '{}', '{}', 'freshness-c2zc', 'completed',
+                 '{}', ?3, ?4, ?4, ?4, 'freshness-evaluation', ?5, ?6,
+                 'narrative-incremental-freshness/v1')",
+        params![
+            BASELINE_FRESHNESS_RUN_ID,
+            PROJECT_ID,
+            incremental_outcome.to_string(),
+            NOW,
+            EPOCH_ID,
+            format!("incremental-freshness:{EPOCH_ID}:0:0:baseline"),
+        ],
+    )?;
 
     // The sealed Verify evidence must be the live graph's own report: the
     // cutover now runs the same skip-evidence CAS an ordinary maintenance
@@ -725,23 +831,18 @@ fn seed_cutover_ready_application_with_freshness_state(
         "fixture graph must verify clean: {live_report:?}"
     );
     let report = serde_json::to_value(&live_report)?;
-    let check_coverage = json!({
-        "complete": true,
-        "required": REQUIRED_VERIFY_CHECKS,
-        "covered": REQUIRED_VERIFY_CHECKS,
-        "missing": [],
-    });
     let verify_spec = json!({ "verifyContractVersion": VERIFY_RUN_KIND_CONTRACT_VERSION });
     let verify_spec_json = verify_spec.to_string();
     let graph_state_digest = durable_graph_state_digest(conn, PROJECT_ID)?;
-    let verify_outcome = json!({
+    let mut verify_outcome = json!({
         "verifyContractVersion": VERIFY_RUN_KIND_CONTRACT_VERSION,
         "semanticEpochId": EPOCH_ID,
         "graphStateDigest": graph_state_digest.clone(),
         "reportDigest": format!("sha256:{}", digest_plan(&report)),
         "report": report,
-        "checkCoverage": check_coverage,
+        "checkCoverage": production_verify_check_coverage(),
     });
+    verify_outcome["outcomeDigest"] = json!(canonical_verify_outcome_digest(&verify_outcome)?);
     conn.execute(
         "INSERT INTO narrative_extraction_runs
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -790,8 +891,8 @@ fn seed_cutover_ready_application_with_freshness_state(
     conn.execute_batch("RELEASE seed_skip_evidence")?;
 
     let summary = json!({
-        "consumersEvaluated": 1,
-        "edgesEvaluated": 1,
+        "consumersEvaluated": 2,
+        "edgesEvaluated": 2,
         "consumersSkippedUnresolvableScope": 0,
         "edgesSkippedUnresolvableScope": 0,
     });
@@ -833,38 +934,6 @@ fn seed_cutover_ready_application_with_freshness_state(
         REBUILD_AT,
     )?;
 
-    let incremental_outcome = json!({
-        "projectId": PROJECT_ID,
-        "runId": BASELINE_FRESHNESS_RUN_ID,
-        "fromSequenceExclusive": 0,
-        "throughSequenceInclusive": 0,
-        "affectedEdgeCount": 0,
-        "affectedConsumerCount": 0,
-        "hasMore": false,
-    });
-    conn.execute(
-        "INSERT INTO narrative_change_cursors
-            (project_id, consumer_id, acknowledged_through_sequence, updated_at)
-         VALUES (?1, 'narrative-incremental-freshness/v1', 0, ?2)",
-        params![PROJECT_ID, NOW],
-    )?;
-    conn.execute(
-        "INSERT INTO narrative_extraction_runs
-            (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-             status, coverage_json, outcome_summary_json, created_at, completed_at,
-             started_at, run_kind, semantic_epoch_id, work_key, consumer_id)
-         VALUES (?1, ?2, 'maintenance', '{}', '{}', 'freshness-c2zc', 'completed',
-                 '{}', ?3, ?4, ?4, ?4, 'freshness-evaluation', ?5, ?6,
-                 'narrative-incremental-freshness/v1')",
-        params![
-            BASELINE_FRESHNESS_RUN_ID,
-            PROJECT_ID,
-            incremental_outcome.to_string(),
-            NOW,
-            EPOCH_ID,
-            format!("incremental-freshness:{EPOCH_ID}:0:0:baseline")
-        ],
-    )?;
     Ok(())
 }
 

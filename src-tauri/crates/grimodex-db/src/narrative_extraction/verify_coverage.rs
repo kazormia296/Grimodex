@@ -10,29 +10,40 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, SecondsFormat};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
 use super::c2z_preparation::inspect_legacy_generic_freshness_parity;
 use super::consumer_identity::APPLICATION_CONSUMER_KIND;
-use super::declaration_storage::{
-    read_active_dependency_declaration_set_in_tx, ActiveDependencyDeclarationSetRead,
-};
 use super::dependency_edges::{canonical_source_object_identity, PROPOSAL_REVISION_CONSUMER_KIND};
-use super::semantic_index_diagnostics::{compute_dependency_set_digest, SemanticIndexMetadata};
 use super::source_revision::resolve_source_revision;
 use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
+
+const RESERVED_SEMANTIC_INDEX_OBSERVED_COUNT_KEYS: [&str; 4] = [
+    "metadataRows",
+    "activeD1HeadRows",
+    "v1EdgeRows",
+    "consumerFreshnessRows",
+];
 
 /// The typed evidence for one of the six Verify checks that was previously
 /// outside the production report.  `incomplete` means the database did not
 /// contain enough trustworthy rows to perform the check; `issues` means the
 /// check completed and found a concrete inconsistency.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyCoverageCheck {
     pub completed: bool,
     pub passed: bool,
     pub issues: Vec<String>,
     pub incomplete: Vec<String>,
+    /// Read-only diagnostics for the reserved Semantic Index authority
+    /// footprint.  The map is populated only by the two Semantic checks;
+    /// keeping it optional on the shared check shape lets older persisted
+    /// reports deserialize without inventing observations for unrelated
+    /// checks.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub observed_counts: BTreeMap<String, usize>,
 }
 
 impl VerifyCoverageCheck {
@@ -42,12 +53,67 @@ impl VerifyCoverageCheck {
         self
     }
 
+    fn truth_table_is_valid(&self) -> bool {
+        match (self.incomplete.is_empty(), self.issues.is_empty()) {
+            // Missing evidence is never a completed or passing check.
+            (false, _) => !self.completed && !self.passed,
+            // A completed check with a concrete finding is not passing.
+            (true, false) => self.completed && !self.passed,
+            // Only a complete, issue-free check may be marked passing.
+            (true, true) => self.completed && self.passed,
+        }
+    }
+
     pub(crate) fn is_consistent(&self) -> bool {
-        self.issues.is_empty()
+        self.truth_table_is_valid() && self.passed && self.issues.is_empty()
     }
 
     pub(crate) fn is_complete(&self) -> bool {
-        self.incomplete.is_empty()
+        self.truth_table_is_valid() && self.completed && self.incomplete.is_empty()
+    }
+
+    /// Reserved Semantic Index checks are only complete when the production
+    /// reader recorded every one of its four authoritative surface counts.
+    /// A missing or extra key is not an empty footprint: it is missing
+    /// evidence and must fail closed when a persisted report is re-read.
+    pub(crate) fn has_reserved_footprint_observation(&self) -> bool {
+        self.observed_counts.len() == RESERVED_SEMANTIC_INDEX_OBSERVED_COUNT_KEYS.len()
+            && RESERVED_SEMANTIC_INDEX_OBSERVED_COUNT_KEYS
+                .iter()
+                .all(|key| self.observed_counts.contains_key(*key))
+    }
+}
+
+impl<'de> Deserialize<'de> for VerifyCoverageCheck {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire {
+            completed: bool,
+            passed: bool,
+            issues: Vec<String>,
+            incomplete: Vec<String>,
+            #[serde(default)]
+            observed_counts: BTreeMap<String, usize>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let check = Self {
+            completed: wire.completed,
+            passed: wire.passed,
+            issues: wire.issues,
+            incomplete: wire.incomplete,
+            observed_counts: wire.observed_counts,
+        };
+        if !check.truth_table_is_valid() {
+            return Err(de::Error::custom(
+                "VerifyCoverageCheck completed/passed flags do not match issues/incomplete evidence",
+            ));
+        }
+        Ok(check)
     }
 }
 
@@ -64,15 +130,15 @@ pub(crate) fn verify_application_revision_artifact_references(
     let mut check = VerifyCoverageCheck::default();
     let mut applications = Vec::new();
     let mut statement = conn.prepare(
-        "SELECT a.id, a.proposal_id, a.revision_id, r.origin_kind,
+        "SELECT a.id, a.commit_id, a.proposal_id, a.revision_id, r.origin_kind,
                 r.proposal_id, p.proposal_set_id, c.proposal_set_id,
-                ps.project_id
+                ps.project_id, c.project_id
            FROM narrative_proposal_applications a
-           JOIN narrative_apply_commits c ON c.id = a.commit_id
+           LEFT JOIN narrative_apply_commits c ON c.id = a.commit_id
            LEFT JOIN narrative_proposals p ON p.id = a.proposal_id
            LEFT JOIN narrative_proposal_sets ps ON ps.id = p.proposal_set_id
            LEFT JOIN narrative_proposal_revisions r ON r.id = a.revision_id
-          WHERE c.project_id = ?1
+          WHERE c.project_id = ?1 OR c.id IS NULL
           ORDER BY a.id ASC",
     )?;
     let rows = statement.query_map(params![project_id], |row| {
@@ -80,16 +146,19 @@ pub(crate) fn verify_application_revision_artifact_references(
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
-            row.get::<_, Option<String>>(3)?,
+            row.get::<_, String>(3)?,
             row.get::<_, Option<String>>(4)?,
             row.get::<_, Option<String>>(5)?,
             row.get::<_, Option<String>>(6)?,
             row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
         ))
     })?;
     for row in rows {
         let (
             application_id,
+            commit_id,
             proposal_id,
             revision_id,
             origin_kind,
@@ -97,7 +166,14 @@ pub(crate) fn verify_application_revision_artifact_references(
             proposal_set_id,
             commit_proposal_set_id,
             proposal_set_project_id,
+            commit_project_id,
         ) = row?;
+        if commit_project_id.is_none() {
+            check.incomplete.push(format!(
+                "application:{application_id}:commit:{commit_id}:missing"
+            ));
+            continue;
+        }
         match (proposal_set_id.as_deref(), proposal_set_project_id.as_deref()) {
             (None, _) => check.incomplete.push(format!(
                 "application:{application_id}:proposal:{proposal_id}:proposal-set-missing"
@@ -136,6 +212,17 @@ pub(crate) fn verify_application_revision_artifact_references(
         if !matches!(origin_kind.as_str(), "enveloped" | "legacy-unbound") {
             check.issues.push(format!(
                 "application:{application_id}:revision:{revision_id}:origin-kind-invalid:{origin_kind}"
+            ));
+        }
+        if origin_kind == "legacy-unbound" {
+            // An applied Revision that still carries the legacy-unbound
+            // origin has no durable envelope proving the source set that was
+            // actually committed.  Treat it as an evidence hole even when a
+            // caller happened to add a basis row later; the legacy origin is
+            // itself the production writer's admission that the binding was
+            // not sealed.
+            check.incomplete.push(format!(
+                "application:{application_id}:revision:{revision_id}:legacy-unbound-applied"
             ));
         }
         applications.push((application_id, revision_id, origin_kind));
@@ -292,235 +379,85 @@ pub(crate) fn verify_application_revision_artifact_references(
     Ok(check.finish())
 }
 
-/// Run both Semantic Index halves of the Verify contract.  V1 Edge identities
-/// are the current digest input until a sealed D1 head is active.  Once a D1
-/// head is active, ADR 010 makes that V2 set authoritative and V1 is only a
-/// comparison surface; the legacy metadata digest must not be silently
-/// compared to the differently-defined V2 declaration digest.  Generation
-/// correspondence is only claimed when the active D1 head provides an
-/// explicit producer generation; no Semantic Epoch or content generation is
-/// guessed from `built_at`.
+/// Run both Semantic Index halves of the Verify contract while the Semantic
+/// Index producer remains reserved.  C2-ZC does not add a metadata writer,
+/// D1 declaration owner, migration, or activation path, so it must not infer
+/// a generation or digest from scene/codex/event/chat chunks.  Instead, both
+/// checks inspect the four authoritative surfaces that would constitute a
+/// reserved-consumer footprint.  A completely empty footprint is the only
+/// passing result; any row is explicit incomplete evidence and remains a
+/// manual/terminal repair condition (never a Rebuild-derived condition).
+///
+/// If a later NIR-1 owner is approved, its binding contract is explicit: the
+/// metadata `index_key` must equal the D1 `consumer_key` and freshness
+/// `consumer_key`; metadata `generation` must equal the active sealed D1
+/// head's `producer_generation`; and metadata `dependency_set_digest` must
+/// equal the active sealed D1 declaration set's digest.  This function does
+/// not create or validate that future binding because the producer remains
+/// reserved in C2-ZC.
 pub(crate) fn verify_semantic_index_checks(
     conn: &Connection,
     project_id: &str,
 ) -> anyhow::Result<(VerifyCoverageCheck, VerifyCoverageCheck)> {
-    let mut digest_check = VerifyCoverageCheck::default();
-    let mut generation_check = VerifyCoverageCheck::default();
-    let mut metadata_by_key = std::collections::BTreeMap::new();
-    let mut statement = conn.prepare(
-        "SELECT index_key, generation, built_at, source_digest,
-                dependency_set_digest, dirty_cache_flag
-           FROM narrative_semantic_index_metadata
-          WHERE project_id = ?1
-          ORDER BY index_key ASC",
-    )?;
-    let metadata_rows = statement
-        .query_map(params![project_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, i64>(5)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut index_keys = metadata_rows
-        .iter()
-        .map(|row| row.0.clone())
-        .collect::<BTreeSet<_>>();
-    for (index_key, generation, built_at, source_digest, dependency_set_digest, dirty_flag) in
-        metadata_rows
-    {
-        metadata_by_key.insert(
-            index_key,
-            (
-                generation,
-                built_at,
-                source_digest,
-                dependency_set_digest,
-                dirty_flag,
-            ),
+    let mut observed_counts = BTreeMap::new();
+    let reserved_surfaces = [
+        (
+            "metadataRows",
+            "SELECT COUNT(*) FROM narrative_semantic_index_metadata
+              WHERE project_id = ?1",
+        ),
+        (
+            "activeD1HeadRows",
+            "SELECT COUNT(*) FROM narrative_dependency_declaration_heads
+              WHERE project_id = ?1 AND consumer_kind = 'semantic-index'",
+        ),
+        (
+            "v1EdgeRows",
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE project_id = ?1 AND consumer_kind = 'semantic-index'",
+        ),
+        (
+            "consumerFreshnessRows",
+            "SELECT COUNT(*) FROM narrative_consumer_freshness
+              WHERE project_id = ?1 AND consumer_kind = 'semantic-index'",
+        ),
+    ];
+    for (surface, query) in reserved_surfaces {
+        let raw_count = conn.query_row(query, params![project_id], |row| row.get::<_, i64>(0))?;
+        anyhow::ensure!(
+            raw_count >= 0,
+            "reserved Semantic Index footprint count cannot be negative: {surface}={raw_count}"
         );
-    }
-    {
-        let mut edge_keys = conn.prepare(
-            "SELECT DISTINCT consumer_key
-               FROM narrative_dependency_edges
-              WHERE project_id = ?1 AND consumer_kind = 'semantic-index'",
-        )?;
-        for key in edge_keys.query_map(params![project_id], |row| row.get::<_, String>(0))? {
-            index_keys.insert(key?);
-        }
-    }
-    {
-        // D1 is not the V1 Semantic Index authority, but an active D1 head is
-        // still an explicit producer/generation claim. Include it in the
-        // expected-key set so a metadata row cannot disappear while its
-        // generation binding remains apparently healthy.
-        let mut head_keys = conn.prepare(
-            "SELECT consumer_key
-               FROM narrative_dependency_declaration_heads
-              WHERE project_id = ?1 AND consumer_kind = 'semantic-index'",
-        )?;
-        for key in head_keys.query_map(params![project_id], |row| row.get::<_, String>(0))? {
-            index_keys.insert(key?);
-        }
-    }
-
-    for index_key in index_keys {
-        let index_label = format!("semantic-index:{index_key}");
-        let Some((generation, built_at, source_digest, dependency_set_digest, dirty_flag)) =
-            metadata_by_key.remove(&index_key)
-        else {
-            digest_check
-                .incomplete
-                .push(format!("{index_label}:metadata-missing"));
-            generation_check
-                .incomplete
-                .push(format!("{index_label}:generation-cache-missing"));
-            continue;
-        };
-        if generation < 0 {
-            generation_check
-                .issues
-                .push(format!("{index_label}:generation-negative:{generation}"));
-        }
-        if !is_canonical_instant(&built_at) {
-            digest_check
-                .issues
-                .push(format!("{index_label}:built-at-invalid:{built_at}"));
-        }
-        if source_digest.trim().is_empty() || dependency_set_digest.trim().is_empty() {
-            digest_check
-                .incomplete
-                .push(format!("{index_label}:metadata-digest-missing"));
-        }
-        if dirty_flag != 0 && dirty_flag != 1 {
-            digest_check.issues.push(format!(
-                "{index_label}:dirty-cache-flag-invalid:{dirty_flag}"
-            ));
-        }
-
-        let metadata = SemanticIndexMetadata {
-            generation,
-            built_at,
-            source_digest,
-            dependency_set_digest,
-            dirty_cache_flag: dirty_flag == 1,
-        };
-
-        let mut edge_identities = Vec::new();
-        let mut edge_statement = conn.prepare(
-            "SELECT source_object_identity
-               FROM narrative_dependency_edges
-              WHERE project_id = ?1
-                AND consumer_kind = 'semantic-index'
-                AND consumer_key = ?2
-              ORDER BY source_object_identity ASC",
-        )?;
-        let edge_rows = edge_statement.query_map(params![project_id, index_key], |row| {
-            row.get::<_, String>(0)
+        let count = usize::try_from(raw_count).map_err(|_| {
+            anyhow::anyhow!(
+                "reserved Semantic Index footprint count cannot fit usize: {surface}={raw_count}"
+            )
         })?;
-        for edge_row in edge_rows {
-            edge_identities.push(edge_row?);
-        }
+        observed_counts.insert(surface.to_string(), count);
+    }
 
-        let d1 = read_active_dependency_declaration_set_in_tx(
-            conn,
-            project_id,
-            "semantic-index",
-            &index_key,
-        )?;
-        let active_v2 = matches!(&d1, ActiveDependencyDeclarationSetRead::Active(_));
-        let (declared_generation, declaration_identities) = match d1 {
-            ActiveDependencyDeclarationSetRead::Active(active) => (
-                Some(active.producer_generation),
-                active
-                    .entries
-                    .into_iter()
-                    .map(|entry| entry.source_object_identity)
-                    .collect::<Vec<_>>(),
-            ),
-            ActiveDependencyDeclarationSetRead::Missing => {
-                generation_check
-                    .incomplete
-                    .push(format!("{index_label}:generation-binding-missing"));
-                (None, Vec::new())
-            }
-            ActiveDependencyDeclarationSetRead::Corrupt => {
-                generation_check
-                    .incomplete
-                    .push(format!("{index_label}:generation-binding-corrupt"));
-                digest_check
-                    .incomplete
-                    .push(format!("{index_label}:dependency-declaration-corrupt"));
-                (None, Vec::new())
-            }
-        };
-
-        if let Some(current_generation) = declared_generation {
-            if metadata.generation != current_generation {
-                generation_check.issues.push(format!(
-                    "{index_label}:generation-mismatch:metadata={}:current={current_generation}",
-                    metadata.generation
-                ));
-            }
-        }
-
-        if metadata.dirty_cache_flag {
-            digest_check
-                .issues
-                .push(format!("{index_label}:dirty-cache-flag-set"));
-        }
-
-        if active_v2 {
-            // ADR 010 §14: an active V2 head selects only its sealed set;
-            // V1 is retained for comparison and may not become the hidden
-            // source of truth.  The Semantic Index metadata table predates
-            // that cutover and stores the V1 identity-set digest, while D1's
-            // digest includes dependency key and selector digest.  There is
-            // no writer/migration binding those two meanings yet, so the
-            // check remains explicitly incomplete instead of comparing
-            // unlike values or treating equality as proof.
-            if !edge_identities.is_empty() {
-                let mut declaration_identities = declaration_identities.clone();
-                let mut edge_identities = edge_identities.clone();
-                declaration_identities.sort();
-                edge_identities.sort();
-                declaration_identities.dedup();
-                edge_identities.dedup();
-                if declaration_identities != edge_identities {
-                    digest_check
-                        .issues
-                        .push(format!("{index_label}:v1-v2-dependency-set-mismatch"));
-                }
-            }
-            let binding_missing =
-                format!("{index_label}:v2-semantic-index-metadata-binding-missing");
-            // The metadata row may happen to contain the same numeric
-            // generation as the D1 head, but without a production Index
-            // writer that equality is not an owned binding. Keep both
-            // halves incomplete until one transaction records the cache
-            // generation and the declaration digest together.
-            digest_check.incomplete.push(binding_missing.clone());
-            generation_check.incomplete.push(binding_missing);
-            continue;
-        }
-
-        // An empty V1 Edge set is still a known set: the canonical digest
-        // helper defines a stable digest for zero identities.  Do not turn a
-        // valid empty index into an evidence hole; the missing production
-        // Index owner is represented by the static two-check coverage gap
-        // and, when a D1 head exists, the explicit binding diagnostic above.
-        let current_digest = compute_dependency_set_digest(&edge_identities);
-        if metadata.dependency_set_digest != current_digest {
-            digest_check.issues.push(format!(
-                "{index_label}:dependency-set-digest-mismatch:metadata={}:current={current_digest}",
-                metadata.dependency_set_digest
-            ));
-        }
+    let footprint_is_empty = observed_counts.values().all(|count| *count == 0);
+    let mut digest_check = VerifyCoverageCheck {
+        observed_counts: observed_counts.clone(),
+        ..VerifyCoverageCheck::default()
+    };
+    let mut generation_check = VerifyCoverageCheck {
+        observed_counts,
+        ..VerifyCoverageCheck::default()
+    };
+    if !footprint_is_empty {
+        let summary = format!(
+            "reserved-consumer-kind-footprint:metadataRows={}:activeD1HeadRows={}:v1EdgeRows={}:consumerFreshnessRows={}",
+            digest_check.observed_counts["metadataRows"],
+            digest_check.observed_counts["activeD1HeadRows"],
+            digest_check.observed_counts["v1EdgeRows"],
+            digest_check.observed_counts["consumerFreshnessRows"],
+        );
+        // No current Rebuild writer owns these reserved surfaces.  Keep the
+        // finding incomplete (rather than `issues`) so downstream repair
+        // classification remains ManualRepair/TerminalIncomplete.
+        digest_check.incomplete.push(summary.clone());
+        generation_check.incomplete.push(summary);
     }
 
     Ok((digest_check.finish(), generation_check.finish()))
@@ -1108,4 +1045,82 @@ fn is_canonical_instant(value: &str) -> bool {
         return false;
     };
     parsed.to_rfc3339_opts(SecondsFormat::Millis, true) == value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VerifyCoverageCheck;
+    use serde_json::json;
+
+    #[test]
+    fn coverage_check_truth_table_is_fail_closed() {
+        let cases = [
+            (
+                json!({
+                    "completed": false,
+                    "passed": false,
+                    "issues": [],
+                    "incomplete": ["metadata-missing"]
+                }),
+                false,
+                false,
+            ),
+            (
+                json!({
+                    "completed": true,
+                    "passed": false,
+                    "issues": ["digest-mismatch"],
+                    "incomplete": []
+                }),
+                false,
+                true,
+            ),
+            (
+                json!({
+                    "completed": true,
+                    "passed": true,
+                    "issues": [],
+                    "incomplete": []
+                }),
+                true,
+                true,
+            ),
+        ];
+
+        for (value, expected_consistent, expected_complete) in cases {
+            let check: VerifyCoverageCheck =
+                serde_json::from_value(value).expect("canonical coverage truth-table row");
+            assert_eq!(check.is_consistent(), expected_consistent);
+            assert_eq!(check.is_complete(), expected_complete);
+        }
+    }
+
+    #[test]
+    fn coverage_check_rejects_serialized_flag_mismatches() {
+        for value in [
+            json!({
+                "completed": true,
+                "passed": true,
+                "issues": [],
+                "incomplete": ["metadata-missing"]
+            }),
+            json!({
+                "completed": false,
+                "passed": false,
+                "issues": ["digest-mismatch"],
+                "incomplete": []
+            }),
+            json!({
+                "completed": false,
+                "passed": true,
+                "issues": [],
+                "incomplete": []
+            }),
+        ] {
+            assert!(
+                serde_json::from_value::<VerifyCoverageCheck>(value).is_err(),
+                "serialized coverage flags must agree with evidence"
+            );
+        }
+    }
 }

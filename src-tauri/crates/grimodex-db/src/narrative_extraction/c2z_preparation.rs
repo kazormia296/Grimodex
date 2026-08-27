@@ -28,7 +28,8 @@ use super::maintenance_runtime::{
     select_latest_relevant_run_for_readiness, validate_phase_success_outcome,
 };
 use super::restore_rebuild::{
-    validate_graph_state_digest, DependencyGraphVerifyReport, REBUILD_CONTRACT_VERSION,
+    validate_canonical_verify_outcome_digest, validate_graph_state_digest,
+    validate_verify_check_coverage, DependencyGraphVerifyReport, REBUILD_CONTRACT_VERSION,
     VERIFY_CONTRACT_VERSION,
 };
 use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
@@ -1298,6 +1299,19 @@ fn inspect_verify_gate(
         result.reasons = vec!["verify-report-digest-mismatch".to_string()];
         return Ok(result);
     }
+    if validate_canonical_verify_outcome_digest(&outcome).is_err() {
+        result.state = ReadinessState::Blocked;
+        result.reasons = vec!["verify-outcome-digest-mismatch".to_string()];
+        return Ok(result);
+    }
+    result.check_coverage_complete = match validate_verify_check_coverage(&outcome) {
+        Ok(complete) => complete,
+        Err(_) => {
+            result.state = ReadinessState::Incomplete;
+            result.reasons = vec!["verify-check-coverage-invalid".to_string()];
+            return Ok(result);
+        }
+    };
     if load_completed_maintenance_run_in_tx(conn, &run.run_id).is_err() {
         result.state = ReadinessState::Blocked;
         result.reasons = vec!["verify-lifecycle-invalid".to_string()];
@@ -1329,7 +1343,6 @@ fn inspect_verify_gate(
         return Ok(result);
     }
     result.report_clean = report.is_clean();
-    result.check_coverage_complete = has_full_verify_coverage(&outcome);
     if !result.report_clean {
         result.state = ReadinessState::Blocked;
         result.reasons = vec!["verify-report-not-clean".to_string()];
@@ -1342,36 +1355,6 @@ fn inspect_verify_gate(
         result.reasons.clear();
     }
     Ok(result)
-}
-
-fn has_full_verify_coverage(outcome: &Value) -> bool {
-    let Some(coverage) = outcome.get("checkCoverage").and_then(Value::as_object) else {
-        return false;
-    };
-    if coverage.get("complete").and_then(Value::as_bool) != Some(true) {
-        return false;
-    }
-    let Some(required) = coverage.get("required").and_then(Value::as_array) else {
-        return false;
-    };
-    let Some(covered) = coverage.get("covered").and_then(Value::as_array) else {
-        return false;
-    };
-    let required_set = required
-        .iter()
-        .filter_map(Value::as_str)
-        .collect::<BTreeSet<_>>();
-    let covered_set = covered
-        .iter()
-        .filter_map(Value::as_str)
-        .collect::<BTreeSet<_>>();
-    let expected_set = REQUIRED_VERIFY_CHECKS.into_iter().collect::<BTreeSet<_>>();
-    required_set == expected_set
-        && expected_set.iter().all(|check| covered_set.contains(check))
-        && coverage
-            .get("missing")
-            .and_then(Value::as_array)
-            .is_some_and(Vec::is_empty)
 }
 
 fn inspect_rebuild_gate(

@@ -40,9 +40,10 @@
 //! `narrative-run-kind-policy.json`'s `allowedRepairs` names six
 //! categories. Only one is implemented end-to-end here --
 //! `deactivate-duplicate-edge`. The `dependency-verify` report now inspects
-//! all 13 policy checks; its two Semantic Index checks remain explicit
-//! production-coverage blockers until an Index writer exists. The other five
-//! repair categories still need their own durable repair derivation and
+//! all 13 policy checks. Its two Semantic Index checks are production-owned
+//! reserved-authority footprint scans: an observed reserved row is a
+//! ManualRepair/TerminalIncomplete finding, not a Rebuild candidate. The
+//! other five repair categories still need their own durable repair derivation and
 //! mutation contracts:
 //! `edge-fully-reconstructible-from-durable-ledger`,
 //! `artifact-with-explicit-dependency-manifest`,
@@ -72,8 +73,9 @@ use super::repository::{
 };
 use super::restore_rebuild::{
     duplicate_edge_ids_to_deactivate, is_canonical_graph_state_digest,
-    rebuild_repair_dependency_edges_in_tx, validate_graph_state_digest,
-    DependencyGraphVerifyReport, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
+    rebuild_repair_dependency_edges_in_tx, validate_canonical_verify_outcome_digest,
+    validate_graph_state_digest, validate_verify_check_coverage, DependencyGraphVerifyReport,
+    VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
 use super::semantic_epoch::get_current_epoch;
 use super::task_leases::with_immediate_transaction;
@@ -734,6 +736,17 @@ fn load_sealable_verify_result(
          version-'{contract_version}' result; this build seals only version \
          '{VERIFY_CONTRACT_VERSION}'"
     );
+
+    validate_canonical_verify_outcome_digest(&outcome).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_REPAIR_VERIFY_RESULT_OUTCOME_DIGEST_MISMATCH: Verify Run '{verify_run_id}' has an invalid whole-outcome digest: {error}"
+        )
+    })?;
+    validate_verify_check_coverage(&outcome).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_REPAIR_VERIFY_RESULT_COVERAGE_INVALID: Verify Run '{verify_run_id}' has invalid check coverage: {error}"
+        )
+    })?;
 
     let report_value = outcome.get("report").ok_or_else(|| {
         anyhow::anyhow!(
