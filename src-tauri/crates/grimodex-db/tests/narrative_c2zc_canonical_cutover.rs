@@ -5,25 +5,31 @@
 //! runtime-owned cutover after all durable workspace evidence and an explicit
 //! scheduler-liveness proof are present.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
+use grimodex_core::{LAST_PUBLIC_RELEASE_SCHEMA_VERSION, SCHEMA_VERSION};
+use grimodex_db::migration_supervisor::{self, WorkspaceOpenDbOutcome};
 use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::narrative_extraction::maintenance_skip_evidence::{
     durable_graph_state_digest, persist_completed_run_skip_evidence_in_tx, CompletedRunSkipEvidence,
 };
 use grimodex_db::narrative_extraction::{
-    canonical_application_freshness, canonical_verify_outcome_digest,
-    current_maintenance_coordinates, cut_over_workspace_freshness, digest_plan, ensure_test_schema,
-    inspect_workspace_cutover_readiness_with_liveness, narrative_extraction_append_human_decision,
-    narrative_extraction_apply_commit, narrative_extraction_create_run,
-    narrative_extraction_prepare_commit, narrative_extraction_save_proposal_set,
-    production_verify_check_coverage, record_live_scheduler_heartbeat,
-    run_incremental_freshness_cycle, verify_narrative_dependency_graph_for_project,
-    AppendDecisionPayload, ApplyCommitPayload, CanonicalFreshnessAuthority, CommitApplicationRef,
-    CommitOperation, CreateRunPayload, CreateTaskSeed, DependencyGraphVerifyReport,
-    PrepareCommitPayload, ProposalSeed, ReadinessState, SaveProposalSetPayload,
-    SchedulerLivenessEvidence, C2_ZC_CUTOVER_MIGRATION_ID, REBUILD_DERIVED_WORK_KEY,
+    bootstrap_legacy_dependency_backfill_for_project, canonical_application_freshness,
+    canonical_verify_outcome_digest, current_maintenance_coordinates, cut_over_workspace_freshness,
+    digest_plan, ensure_test_schema, inspect_workspace_cutover_readiness_with_liveness,
+    narrative_extraction_append_human_decision, narrative_extraction_apply_commit,
+    narrative_extraction_create_run, narrative_extraction_prepare_commit,
+    narrative_extraction_save_proposal_set, production_verify_check_coverage,
+    rebuild_narrative_derived_state_for_project, record_live_scheduler_heartbeat,
+    run_dependency_verify_for_project, run_incremental_freshness_cycle,
+    run_incremental_freshness_cycle_with_liveness_capability,
+    verify_narrative_dependency_graph_for_project, AppendDecisionPayload, ApplyCommitPayload,
+    CanonicalFreshnessAuthority, CommitApplicationRef, CommitOperation, CreateRunPayload,
+    CreateTaskSeed, DependencyGraphVerifyReport, PrepareCommitPayload, ProposalSeed,
+    ReadinessState, SaveProposalSetPayload, SchedulerLivenessEvidence,
+    C2_ZC_CUTOVER_CONTRACT_VERSION, C2_ZC_CUTOVER_MIGRATION_ID, REBUILD_DERIVED_WORK_KEY,
     VERIFY_RUN_KIND_CONTRACT_VERSION, VERIFY_WORK_KEY_PREFIX,
 };
 use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
@@ -34,6 +40,9 @@ use grimodex_db::{
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+
+#[path = "support/release_schema_fixture.rs"]
+mod release_schema_fixture;
 
 const PROJECT_ID: &str = "project-c2zc";
 const EPOCH_ID: &str = "epoch-c2zc";
@@ -1349,16 +1358,31 @@ fn enable_manual_apply(db: &Database) {
     .expect("enable manual apply");
 }
 
-fn prepared_event_payload() -> Value {
+fn enable_manual_apply_preserving_flags(db: &Database) {
+    let before = load_narrative_runtime_policy_from_db(db).expect("load runtime policy");
+    set_narrative_runtime_policy(
+        db,
+        SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "manual-apply".to_string(),
+            maintenance_enabled: before.maintenance_enabled,
+            generic_import_enabled: before.generic_import_enabled,
+            background_ai_enabled: before.background_ai_enabled,
+        },
+    )
+    .expect("enable manual apply without changing other policy flags");
+}
+
+fn prepared_event_payload_for(event_id: &str, scene_id: &str, title: &str) -> Value {
     json!({
-        "eventId": "event-c2zc-prepared",
-        "title": "C2-ZC prepared event",
+        "eventId": event_id,
+        "title": title,
         "note": null,
         "kind": "generic",
         "precision": "unknown",
         "placement": { "mode": "append-tail", "afterOrdinal": null },
         "secret": false,
-        "revealSceneId": "scene-c2zc",
+        "revealSceneId": scene_id,
         "detail": null,
         "primaryCodexId": null,
         "locationCodexId": null,
@@ -1370,10 +1394,18 @@ fn prepared_event_payload() -> Value {
     })
 }
 
-fn prepared_envelope(run_id: &str, task_id: &str) -> Value {
-    let revision_token = format!("v0@{NOW}");
+fn prepared_event_payload() -> Value {
+    prepared_event_payload_for("event-c2zc-prepared", "scene-c2zc", "C2-ZC prepared event")
+}
+
+fn prepared_envelope_for(
+    source_identity: &str,
+    revision_token: &str,
+    run_id: &str,
+    task_id: &str,
+) -> Value {
     let read_set = json!([{
-        "inputRef": SOURCE_IDENTITY,
+        "inputRef": source_identity,
         "kind": "snapshot-document",
         "sourceKind": "scene-body",
         "revisionToken": revision_token,
@@ -1388,19 +1420,18 @@ fn prepared_envelope(run_id: &str, task_id: &str) -> Value {
         "proposalSchemaVersion": "1",
         "sourceBasis": [{
             "sourceKind": "scene-body",
-            "sourceKey": SOURCE_IDENTITY,
-            "revisionToken": format!("v0@{NOW}"),
+            "sourceKey": source_identity,
+            "revisionToken": revision_token,
         }],
         "evidenceSet": [],
         "readSet": read_set,
-        "readSetDigest": format!("sha256:{}", digest_plan(&json!([{
-            "inputRef": SOURCE_IDENTITY,
-            "kind": "snapshot-document",
-            "sourceKind": "scene-body",
-            "revisionToken": format!("v0@{NOW}"),
-        }]))),
+        "readSetDigest": format!("sha256:{}", digest_plan(&read_set)),
         "changeKind": "add"
     })
+}
+
+fn prepared_envelope(run_id: &str, task_id: &str) -> Value {
+    prepared_envelope_for(SOURCE_IDENTITY, &format!("v0@{NOW}"), run_id, task_id)
 }
 
 fn seed_prepared_application(db: &Database) -> (String, String, String, String) {
@@ -1475,6 +1506,301 @@ fn seed_prepared_application(db: &Database) -> (String, String, String, String) 
         saved_proposal_id,
         revision_id,
     )
+}
+
+fn seed_previous_release_application(
+    db: &Database,
+    project_id: &str,
+    scene_id: &str,
+    source_identity: &str,
+    revision_token: &str,
+) -> (String, String, String, String, String) {
+    let run_id = "run-c2zc-previous-release";
+    let task_id = "task-c2zc-previous-release";
+    let set_id = "set-c2zc-previous-release";
+    let proposal_id = "proposal-c2zc-previous-release";
+    let event_id = "event-c2zc-previous-release";
+    narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: project_id.to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "chronicle" }),
+            spec_digest: "spec-c2zc-previous-release".to_string(),
+            snapshot_digest: Some(revision_token.to_string()),
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(task_id.to_string()),
+                task_kind: "chronicle.plan-proposals".to_string(),
+                input_json: None,
+                priority: None,
+            }],
+        },
+    )
+    .expect("create previous-release application source run");
+    let saved = narrative_extraction_save_proposal_set(
+        db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
+            proposal_set_id: Some(set_id.to_string()),
+            set_kind: "chronicle.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(proposal_id.to_string()),
+                proposal_key: "key-c2zc-previous-release".to_string(),
+                kind: "chronicle.event.create".to_string(),
+                payload_json: prepared_event_payload_for(
+                    event_id,
+                    scene_id,
+                    "C2-ZC previous-release event",
+                ),
+                reconciliation_envelope: Some(prepared_envelope_for(
+                    source_identity,
+                    revision_token,
+                    run_id,
+                    task_id,
+                )),
+            }],
+        },
+    )
+    .expect("save previous-release application proposal");
+    let saved_proposal_id = saved["proposals"][0]["proposalId"]
+        .as_str()
+        .expect("saved previous-release proposal id")
+        .to_string();
+    let revision_id = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .expect("saved previous-release revision id")
+        .to_string();
+    narrative_extraction_append_human_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
+            proposal_id: saved_proposal_id.clone(),
+            revision_id: revision_id.clone(),
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("c2zc-upgrade-test".to_string()),
+        },
+    )
+    .expect("approve previous-release application proposal");
+    (
+        run_id.to_string(),
+        set_id.to_string(),
+        saved_proposal_id,
+        revision_id,
+        event_id.to_string(),
+    )
+}
+
+fn apply_previous_release_application(
+    db: &Database,
+    project_id: &str,
+    scene_id: &str,
+    run_id: &str,
+    set_id: &str,
+    proposal_id: &str,
+    revision_id: &str,
+    event_id: &str,
+) -> String {
+    let prepared = narrative_extraction_prepare_commit(
+        db,
+        PrepareCommitPayload {
+            project_id: project_id.to_string(),
+            run_id: run_id.to_string(),
+            proposal_set_id: set_id.to_string(),
+            request_id: "request-c2zc-previous-release".to_string(),
+            plan_digest: "client-digest-ignored".to_string(),
+            session_id: "session-c2zc-previous-release".to_string(),
+            surface: Some("narrative-extraction".to_string()),
+            operations: vec![CommitOperation {
+                kind: "chronicle.event.create".to_string(),
+                payload: prepared_event_payload_for(
+                    event_id,
+                    scene_id,
+                    "C2-ZC previous-release event",
+                ),
+                proposal_id: proposal_id.to_string(),
+                revision_id: revision_id.to_string(),
+            }],
+            applications: vec![CommitApplicationRef {
+                proposal_id: proposal_id.to_string(),
+                revision_id: revision_id.to_string(),
+            }],
+            expected_tail_ordinal: Some("a0".to_string()),
+            entity_bindings: vec![],
+            expected_calendar_version: None,
+        },
+    )
+    .expect("prepare previous-release application commit");
+    let applied = narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: project_id.to_string(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .expect("previous-release prepared commit id")
+                .to_string(),
+            request_id: "request-c2zc-previous-release".to_string(),
+            session_id: "session-c2zc-previous-release".to_string(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect("apply previous-release application commit");
+    assert_eq!(applied["status"], "applied");
+    application_id_for_commit(db, &applied)
+}
+
+fn current_scene_revision_token(db: &Database, project_id: &str, scene_id: &str) -> String {
+    db.with_conn(|conn| {
+        let (version, updated_at): (i64, String) = conn.query_row(
+            "SELECT version, updated_at
+               FROM tree_nodes
+              WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+            params![scene_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(format!("v{version}@{updated_at}"))
+    })
+    .expect("read migrated scene revision token")
+}
+
+fn drain_incremental_freshness_until_idle(db: &Database, label: &str) {
+    for attempt in 0..32 {
+        let outcome = run_incremental_freshness_cycle(db).unwrap_or_else(|error| {
+            panic!("{label}: incremental cycle {attempt} failed: {error:#}")
+        });
+        match outcome {
+            grimodex_db::narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => return,
+            grimodex_db::narrative_extraction::IncrementalFreshnessCycleOutcome::Processed(
+                summary,
+            ) => {
+                assert!(
+                    !summary.run_id.trim().is_empty(),
+                    "{label}: processed cycle ID missing"
+                );
+                assert!(
+                    summary.through_sequence_inclusive >= summary.from_sequence_exclusive,
+                    "{label}: processed cycle sequence range is invalid: {summary:?}"
+                );
+            }
+        }
+    }
+    panic!("{label}: bounded incremental drain did not reach Idle");
+}
+
+fn expected_reserved_semantic_index_counts() -> BTreeMap<String, usize> {
+    BTreeMap::from([
+        ("metadataRows".to_string(), 0),
+        ("activeD1HeadRows".to_string(), 0),
+        ("v1EdgeRows".to_string(), 0),
+        ("consumerFreshnessRows".to_string(), 0),
+    ])
+}
+
+fn assert_clean_verify_evidence(
+    db: &Database,
+    outcome: &grimodex_db::narrative_extraction::VerifyRunOutcome,
+    expected_epoch_id: &str,
+) {
+    assert!(
+        !outcome.run_id.trim().is_empty(),
+        "Verify Run ID must be present"
+    );
+    assert_eq!(outcome.semantic_epoch_id, expected_epoch_id);
+    assert!(
+        outcome.report.is_consistent(),
+        "Verify report is inconsistent: {outcome:?}"
+    );
+    assert!(
+        outcome.report.is_complete(),
+        "Verify report is incomplete: {outcome:?}"
+    );
+    assert!(
+        outcome.report.is_clean(),
+        "Verify report is not clean: {outcome:?}"
+    );
+    assert!(!outcome.report.requires_rebuild());
+    assert!(outcome
+        .report
+        .finding_observation_ids_outside_current_epoch
+        .is_empty());
+
+    let coverage = production_verify_check_coverage();
+    assert_eq!(coverage["complete"], true);
+    assert_eq!(coverage["required"].as_array().map(Vec::len), Some(13));
+    assert_eq!(coverage["covered"].as_array().map(Vec::len), Some(13));
+    assert_eq!(coverage["missing"], json!([]));
+
+    let expected_reserved = expected_reserved_semantic_index_counts();
+    assert_eq!(
+        outcome
+            .report
+            .semantic_index_dependency_set_digest
+            .observed_counts,
+        expected_reserved
+    );
+    assert_eq!(
+        outcome
+            .report
+            .semantic_index_generation_correspondence
+            .observed_counts,
+        expected_reserved
+    );
+
+    let stored = db
+        .with_conn(|conn| {
+            let raw: String = conn.query_row(
+                "SELECT outcome_summary_json
+                   FROM narrative_extraction_runs
+                  WHERE id = ?1",
+                [outcome.run_id.as_str()],
+                |row| row.get(0),
+            )?;
+            Ok::<_, anyhow::Error>(serde_json::from_str::<Value>(&raw)?)
+        })
+        .expect("read persisted Verify evidence");
+    assert_eq!(stored["semanticEpochId"], expected_epoch_id);
+    assert_eq!(stored["reportDigest"], outcome.report_digest);
+    assert_eq!(stored["graphStateDigest"], outcome.graph_state_digest);
+    assert_eq!(
+        stored["report"],
+        serde_json::to_value(&outcome.report).expect("serialize Verify report")
+    );
+    assert_eq!(stored["checkCoverage"], coverage);
+    assert_eq!(
+        stored["outcomeDigest"],
+        canonical_verify_outcome_digest(&stored).expect("recompute Verify outcome digest")
+    );
+}
+
+fn read_c2zc_persistence_counts(db: &Database) -> (i64, i64, i64) {
+    db.with_conn(|conn| {
+        Ok::<_, anyhow::Error>((
+            conn.query_row(
+                "SELECT COUNT(*) FROM schema_data_migrations WHERE migration_id = ?1",
+                [C2_ZC_CUTOVER_MIGRATION_ID],
+                |row| row.get(0),
+            )?,
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_semantic_epochs",
+                [],
+                |row| row.get(0),
+            )?,
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_consumer_freshness",
+                [],
+                |row| row.get(0),
+            )?,
+        ))
+    })
+    .expect("read C2-ZC persistence counts")
 }
 
 fn prepared_commit_payload(
@@ -1670,6 +1996,520 @@ fn application_id_for_commit(db: &Database, commit: &Value) -> String {
         )?)
     })
     .expect("read temporal Application id")
+}
+
+#[test]
+fn previous_release_database_composes_into_c2zc_acceptance() {
+    let _test_guard = serialize_liveness_test();
+    let workspace = release_schema_fixture::temp_workspace("c2zc-upgrade-acceptance");
+    let db_path = release_schema_fixture::seed_previous_release_workspace(&workspace);
+    release_schema_fixture::assert_previous_release_fixture_shape(&db_path);
+
+    let outcome = migration_supervisor::open_or_migrate_workspace_db(&workspace)
+        .expect("previous-release database must open through migration supervisor");
+    let opened = match outcome {
+        WorkspaceOpenDbOutcome::Migrated {
+            opened,
+            from_schema,
+            to_schema,
+            receipt_path,
+        } => {
+            assert_eq!(from_schema, LAST_PUBLIC_RELEASE_SCHEMA_VERSION);
+            assert_eq!(to_schema, SCHEMA_VERSION);
+            assert!(receipt_path.is_file(), "migration receipt must exist");
+            opened
+        }
+        other => panic!("expected a real previous-release migration, got {other:?}"),
+    };
+    release_schema_fixture::assert_release_fixture_rows(&db_path);
+
+    let project_ids = opened
+        .database
+        .with_conn(|conn| {
+            Ok::<_, anyhow::Error>(
+                conn.prepare("SELECT id FROM projects ORDER BY id")?
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            )
+        })
+        .expect("list migrated projects");
+    assert!(
+        project_ids.contains(&release_schema_fixture::PROJECT_ID.to_string()),
+        "migrated release project must remain present"
+    );
+
+    // The previous release has no current C2-ZC Application Graph. Create one
+    // through the public proposal/review/apply path while the legacy mirror is
+    // still authoritative; the real Backfill below then imports that legacy
+    // dependency into the current Graph.
+    enable_manual_apply_preserving_flags(&opened.database);
+    let source_identity = format!("project:scene:{}", release_schema_fixture::SCENE_ID);
+    let revision_token = current_scene_revision_token(
+        &opened.database,
+        release_schema_fixture::PROJECT_ID,
+        release_schema_fixture::SCENE_ID,
+    );
+    let (application_source_run_id, application_set_id, proposal_id, revision_id, event_id) =
+        seed_previous_release_application(
+            &opened.database,
+            release_schema_fixture::PROJECT_ID,
+            release_schema_fixture::SCENE_ID,
+            &source_identity,
+            &revision_token,
+        );
+    let application_id = apply_previous_release_application(
+        &opened.database,
+        release_schema_fixture::PROJECT_ID,
+        release_schema_fixture::SCENE_ID,
+        &application_source_run_id,
+        &application_set_id,
+        &proposal_id,
+        &revision_id,
+        &event_id,
+    );
+    assert!(
+        !application_id.trim().is_empty(),
+        "Application ID must be returned"
+    );
+
+    // Backfill is the production release-boundary operation. It must consume
+    // the legacy Application dependency rather than a test-inserted Edge.
+    let mut backfill_run_ids = BTreeMap::new();
+    for project_id in &project_ids {
+        let backfill =
+            bootstrap_legacy_dependency_backfill_for_project(&opened.database, project_id)
+                .expect("run production legacy dependency backfill");
+        let run_id = match backfill {
+            grimodex_db::narrative_extraction::LegacyBackfillBootstrapOutcome::Ran {
+                run_id,
+                ..
+            }
+            | grimodex_db::narrative_extraction::LegacyBackfillBootstrapOutcome::AlreadyRun {
+                run_id,
+            } => run_id,
+        };
+        assert!(
+            !run_id.trim().is_empty(),
+            "Backfill Run ID must be returned"
+        );
+        backfill_run_ids.insert(project_id.clone(), run_id);
+    }
+    let migrated_edge_count = opened
+        .database
+        .with_conn(|conn| {
+            Ok::<_, anyhow::Error>(conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_dependency_edges
+                  WHERE project_id = ?1 AND consumer_kind = 'application'
+                    AND consumer_key = ?2",
+                params![release_schema_fixture::PROJECT_ID, application_id],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .expect("count Backfill-produced Application Edges");
+    assert_eq!(
+        migrated_edge_count, 1,
+        "Backfill must import the legacy dependency exactly once"
+    );
+
+    // Drain the real Change Feed before the first Verify so its cursor/feed
+    // check has complete current evidence for every migrated project.
+    drain_incremental_freshness_until_idle(&opened.database, "after-previous-release-backfill");
+
+    let epoch_rows: Vec<(String, String, i64)> = opened
+        .database
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT project_id, id, epoch_number
+                   FROM narrative_semantic_epochs
+                  ORDER BY project_id ASC, epoch_number ASC, id ASC",
+            )?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok::<_, anyhow::Error>(rows)
+        })
+        .expect("read migrated current Semantic Epochs");
+    assert_eq!(
+        epoch_rows.len(),
+        project_ids.len(),
+        "one current Epoch per migrated project"
+    );
+    let epoch_by_project: BTreeMap<String, String> = epoch_rows
+        .iter()
+        .map(|(project_id, epoch_id, epoch_number)| {
+            assert_eq!(
+                *epoch_number, 0,
+                "previous-release upgrade starts at Epoch zero"
+            );
+            (project_id.clone(), epoch_id.clone())
+        })
+        .collect();
+    for project_id in &project_ids {
+        assert!(
+            epoch_by_project.contains_key(project_id),
+            "current Epoch binding missing for project {project_id}"
+        );
+    }
+
+    // First Verify is a real current-Epoch diagnostic. Rebuild is still
+    // deliberately absent at this point, so durable readiness must remain
+    // incomplete rather than treating migration/backfill as cutover proof.
+    let mut initial_verify_run_ids = BTreeMap::new();
+    for project_id in &project_ids {
+        let verify = run_dependency_verify_for_project(&opened.database, project_id)
+            .expect("run production initial current-Epoch Verify");
+        assert_eq!(
+            verify.semantic_epoch_id, epoch_by_project[project_id],
+            "initial Verify must bind to the project's current Epoch"
+        );
+        initial_verify_run_ids.insert(project_id.clone(), verify.run_id);
+    }
+    let pre_rebuild_readiness = opened
+        .database
+        .with_conn(|conn| inspect_workspace_cutover_readiness_with_liveness(conn, None))
+        .expect("read readiness before production Rebuild");
+    assert!(!pre_rebuild_readiness.durable.ready);
+    assert!(
+        pre_rebuild_readiness
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("derived-state-rebuild")),
+        "migration plus Verify must still require Rebuild: {pre_rebuild_readiness:?}"
+    );
+
+    let mut rebuild_run_ids = BTreeMap::new();
+    for project_id in &project_ids {
+        let rebuild = rebuild_narrative_derived_state_for_project(&opened.database, project_id)
+            .expect("run production current-Epoch Rebuild");
+        let run_id = match rebuild {
+            grimodex_db::narrative_extraction::RebuildDerivedStateOutcome::Ran {
+                run_id, ..
+            } => run_id,
+            grimodex_db::narrative_extraction::RebuildDerivedStateOutcome::AlreadyRunning {
+                run_id,
+            } => panic!("unexpected active Rebuild Run during acceptance: {run_id}"),
+        };
+        assert!(!run_id.trim().is_empty(), "Rebuild Run ID must be returned");
+        rebuild_run_ids.insert(project_id.clone(), run_id);
+    }
+
+    let mut confirmation_verify_run_ids = BTreeMap::new();
+    let mut confirmation_verify_outcomes = BTreeMap::new();
+    for project_id in &project_ids {
+        let verify = run_dependency_verify_for_project(&opened.database, project_id)
+            .expect("run production confirmation current-Epoch Verify");
+        assert_clean_verify_evidence(&opened.database, &verify, &epoch_by_project[project_id]);
+        confirmation_verify_run_ids.insert(project_id.clone(), verify.run_id.clone());
+        confirmation_verify_outcomes.insert(project_id.clone(), verify);
+    }
+
+    // Mint liveness only from a successful shared-Rust cycle at the Feed head;
+    // the test never constructs SchedulerLivenessEvidence as a bypass.
+    let mut last_successful_cycle = None;
+    let mut reached_idle = false;
+    for attempt in 0..32 {
+        let (cycle, successful_cycle) =
+            run_incremental_freshness_cycle_with_liveness_capability(&opened.database)
+                .unwrap_or_else(|error| panic!("final liveness cycle {attempt} failed: {error:#}"));
+        last_successful_cycle = Some(successful_cycle);
+        if matches!(
+            cycle,
+            grimodex_db::narrative_extraction::IncrementalFreshnessCycleOutcome::Idle
+        ) {
+            reached_idle = true;
+            break;
+        }
+    }
+    assert!(reached_idle, "bounded final liveness drain must reach Idle");
+    let evidence = record_live_scheduler_heartbeat(
+        &opened.database,
+        "c2zc-upgrade-acceptance",
+        1,
+        last_successful_cycle.expect("successful final liveness cycle"),
+    )
+    .expect("register production scheduler liveness receipt");
+
+    let readiness = opened
+        .database
+        .with_conn(|conn| inspect_workspace_cutover_readiness_with_liveness(conn, Some(&evidence)))
+        .expect("read final C2-ZC readiness");
+    assert_eq!(readiness.state, ReadinessState::Passed);
+    assert!(readiness.ready, "final readiness must pass: {readiness:?}");
+    assert_eq!(readiness.durable.projects.len(), project_ids.len());
+    for project in &readiness.durable.projects {
+        assert!(
+            project.ready
+                || (project.incremental_runtime.reasons.len() == 1
+                    && project.incremental_runtime.reasons[0]
+                        == "incremental-freshness-scheduler-liveness-evidence-unavailable"),
+            "project readiness must pass or expose only the external liveness bridge: {project:?}"
+        );
+        assert_eq!(project.legacy_backfill.state, ReadinessState::Passed);
+        assert_eq!(project.verify.state, ReadinessState::Passed);
+        assert_eq!(project.derived_state_rebuild.state, ReadinessState::Passed);
+        assert_eq!(project.parity.state, ReadinessState::Passed);
+        assert_eq!(
+            project.no_active_backfill_or_repair.state,
+            ReadinessState::Passed
+        );
+        assert_eq!(project.phase_lifecycle.state, ReadinessState::Passed);
+        assert!(
+            project.incremental_runtime.state == ReadinessState::Passed
+                || (project.incremental_runtime.state == ReadinessState::Incomplete
+                    && project.incremental_runtime.reasons.len() == 1
+                    && project.incremental_runtime.reasons[0]
+                        == "incremental-freshness-scheduler-liveness-evidence-unavailable"),
+            "incremental runtime must either pass or expose only its documented external liveness bridge: {project:?}"
+        );
+        assert_eq!(
+            project.verify.run_id.as_deref(),
+            confirmation_verify_run_ids
+                .get(&project.project_id)
+                .map(String::as_str)
+        );
+    }
+
+    let (first_cutover, second_cutover) = opened
+        .database
+        .with_conn(|conn| {
+            let first = cut_over_workspace_freshness(conn, &evidence)?;
+            let second = cut_over_workspace_freshness(conn, &evidence)?;
+            Ok::<_, anyhow::Error>((first, second))
+        })
+        .expect("activate Generic authority through production cutover API");
+    assert_eq!(
+        first_cutover, second_cutover,
+        "cutover marker must be idempotent"
+    );
+    assert_eq!(first_cutover.migration_id, C2_ZC_CUTOVER_MIGRATION_ID);
+    assert_eq!(
+        first_cutover.contract_version,
+        C2_ZC_CUTOVER_CONTRACT_VERSION
+    );
+    assert_eq!(
+        first_cutover.authority,
+        CanonicalFreshnessAuthority::GenericConsumerFreshness
+    );
+
+    let canonical_before = opened
+        .database
+        .with_conn(|conn| {
+            canonical_application_freshness(
+                conn,
+                release_schema_fixture::PROJECT_ID,
+                &application_id,
+            )
+        })
+        .expect("read Generic canonical Application Freshness after cutover")
+        .expect("migrated Application must have Generic Freshness");
+    assert_eq!(
+        canonical_before.authority,
+        CanonicalFreshnessAuthority::GenericConsumerFreshness
+    );
+    assert_eq!(
+        canonical_before.semantic_epoch_id,
+        epoch_by_project[release_schema_fixture::PROJECT_ID]
+    );
+    assert_eq!(canonical_before.evidence_freshness, "fresh");
+    assert_eq!(canonical_before.build_action, "none");
+    assert_eq!(
+        canonical_before.last_evaluated_run_id.as_deref(),
+        Some(rebuild_run_ids[release_schema_fixture::PROJECT_ID].as_str())
+    );
+
+    let persistence_before_reopen = read_c2zc_persistence_counts(&opened.database);
+    assert_eq!(
+        persistence_before_reopen.0, 1,
+        "exactly one C2-ZC marker is allowed"
+    );
+
+    // Corrupt only the compatibility projection after cutover. The canonical
+    // reread must continue to return the Generic row, proving no legacy
+    // fallback or authority weakening.
+    let canonical_after_legacy_mutation = opened
+        .database
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_projection_freshness
+                    SET status = 'source-missing'
+                  WHERE application_id = ?1",
+                [&application_id],
+            )?;
+            canonical_application_freshness(
+                conn,
+                release_schema_fixture::PROJECT_ID,
+                &application_id,
+            )
+        })
+        .expect("read canonical Generic row after legacy compatibility mutation")
+        .expect("Generic canonical row must remain available");
+    assert_eq!(canonical_after_legacy_mutation, canonical_before);
+
+    let (finding_count, automatic_repair_run_count): (i64, i64) = opened
+        .database
+        .with_conn(|conn| {
+            Ok::<_, anyhow::Error>((
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_maintenance_finding_observations",
+                    [],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_extraction_runs
+                      WHERE run_kind = 'dependency-repair'",
+                    [],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("count final Findings and automatic Repair Runs");
+    assert_eq!(
+        finding_count, 0,
+        "clean upgrade must not create unresolved Findings"
+    );
+    assert_eq!(
+        automatic_repair_run_count, 0,
+        "clean upgrade must not launch an automatic Repair"
+    );
+
+    // Every production phase Run must retain the current Epoch selected by
+    // Native; no caller-supplied Epoch or synthetic Generic row is accepted.
+    opened
+        .database
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT project_id, run_kind, semantic_epoch_id
+                   FROM narrative_extraction_runs
+                  WHERE run_kind IN ('backfill', 'semantic-index-rebuild', 'dependency-verify')
+                  ORDER BY project_id ASC, run_kind ASC, created_at ASC, id ASC",
+            )?;
+            for row in statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })? {
+                let (project_id, run_kind, semantic_epoch_id) = row?;
+                assert_eq!(
+                    semantic_epoch_id.as_deref(),
+                    epoch_by_project.get(&project_id).map(String::as_str),
+                    "{run_kind} Run must bind to its project's current Epoch"
+                );
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("verify production phase Epoch bindings");
+
+    release_schema_fixture::assert_release_fixture_rows(&db_path);
+
+    // Release the supervisor lease and the authoritative connection before a
+    // real supervisor reopen. The reopened authority must observe the same
+    // marker, Epoch cardinality, Generic row cardinality, and canonical value.
+    let migration_supervisor::OpenedWorkspaceDb { database, lease } = opened;
+    drop(database);
+    drop(lease);
+    let reopened = migration_supervisor::open_or_migrate_workspace_db(&workspace)
+        .expect("reopen migrated workspace through migration supervisor");
+    let reopened = match reopened {
+        WorkspaceOpenDbOutcome::Ready { opened, .. } => opened,
+        other => panic!("reopen must be Ready without another migration: {other:?}"),
+    };
+    let persistence_after_reopen = read_c2zc_persistence_counts(&reopened.database);
+    assert_eq!(persistence_after_reopen, persistence_before_reopen);
+    let canonical_after_reopen = reopened
+        .database
+        .with_conn(|conn| {
+            canonical_application_freshness(
+                conn,
+                release_schema_fixture::PROJECT_ID,
+                &application_id,
+            )
+        })
+        .expect("read canonical Generic row after supervisor reopen")
+        .expect("Generic canonical row must survive supervisor reopen");
+    assert_eq!(canonical_after_reopen, canonical_before);
+    release_schema_fixture::assert_release_fixture_rows(&db_path);
+
+    let epoch_counts_unchanged = persistence_after_reopen.1 == persistence_before_reopen.1;
+    let authority_counts_unchanged = persistence_after_reopen.2 == persistence_before_reopen.2;
+    assert!(epoch_counts_unchanged);
+    assert!(authority_counts_unchanged);
+    let receipt = json!({
+        "sourceSchema": LAST_PUBLIC_RELEASE_SCHEMA_VERSION,
+        "targetSchema": SCHEMA_VERSION,
+        "projects": project_ids,
+        "epochs": epoch_rows
+            .iter()
+            .map(|(project_id, epoch_id, epoch_number)| json!({
+                "projectId": project_id,
+                "epochId": epoch_id,
+                "epochNumber": epoch_number,
+            }))
+            .collect::<Vec<_>>(),
+        "legacyRowsExact": true,
+        "phases": {
+            "backfillRunIds": backfill_run_ids,
+            "initialVerifyRunIds": initial_verify_run_ids,
+            "rebuildRunIds": rebuild_run_ids,
+            "confirmationVerifyRunIds": confirmation_verify_run_ids,
+        },
+        "verify": {
+            "coverage": {
+                "complete": true,
+                "requiredCount": 13,
+                "coveredCount": 13,
+                "missing": [],
+            },
+            "reservedSemanticIndex": expected_reserved_semantic_index_counts(),
+            "reportClean": confirmation_verify_outcomes.values().all(|outcome| outcome.report.is_clean()),
+            "rebuildRequired": confirmation_verify_outcomes.values().any(|outcome| outcome.report.requires_rebuild()),
+            "findingCount": finding_count,
+            "automaticRepairRunCount": automatic_repair_run_count,
+        },
+        "readiness": {
+            "state": "Passed",
+            "ready": readiness.ready,
+            "allProjectGatesPassed": readiness.ready,
+        },
+        "cutover": {
+            "migrationId": first_cutover.migration_id,
+            "contractVersion": first_cutover.contract_version,
+            "markerCount": persistence_after_reopen.0,
+            "secondCallSameReceipt": first_cutover == second_cutover,
+        },
+        "canonical": {
+            "authority": canonical_after_reopen.authority,
+            "applicationId": application_id,
+            "semanticEpochId": canonical_after_reopen.semantic_epoch_id,
+            "legacyMutationIgnored": canonical_after_legacy_mutation == canonical_before
+                && canonical_after_reopen == canonical_before,
+            "lastEvaluatedRunId": canonical_after_reopen.last_evaluated_run_id,
+        },
+        "reopen": {
+            "markerCount": persistence_after_reopen.0,
+            "epochCountsUnchanged": epoch_counts_unchanged,
+            "authorityCountsUnchanged": authority_counts_unchanged,
+        },
+    });
+    assert_eq!(receipt["verify"]["coverage"]["requiredCount"], 13);
+    assert_eq!(receipt["verify"]["coverage"]["coveredCount"], 13);
+    assert_eq!(receipt["verify"]["coverage"]["missing"], json!([]));
+    assert_eq!(
+        receipt["verify"]["reservedSemanticIndex"],
+        json!(expected_reserved_semantic_index_counts())
+    );
+    println!(
+        "C2ZC_UPGRADE_ACCEPTANCE_RECEIPT={}",
+        serde_json::to_string_pretty(&receipt).expect("serialize acceptance receipt")
+    );
+    let migration_supervisor::OpenedWorkspaceDb {
+        database: reopened_database,
+        lease: reopened_lease,
+    } = reopened;
+    drop(reopened_database);
+    drop(reopened_lease);
 }
 
 #[test]
