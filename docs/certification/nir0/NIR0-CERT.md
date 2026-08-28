@@ -150,8 +150,9 @@ The following remain outside this certificate:
 - the consumed retrieval holdout and other unrelated blocked Heavy evidence;
 - Windows NSIS final compilation, retained as release-only/manual coverage;
 - D2 full V2 authority cutover and replacement of the existing V1
-  Source-grained semantic path (distinct from the focused-green C2-ZC
-  candidate; its final acceptance is still pending);
+  Source-grained semantic path (distinct from the C2-ZC final acceptance
+  candidate; it remains outside this certificate and requires its own accepted
+  contract evidence);
 - Scope Disclosure production admission and Retrieval connection;
 - Chronicle `revise`, `retract`, `merge`, and `split`;
 - human Assertion Core edits without an `author-declaration` Source;
@@ -160,24 +161,44 @@ The following remain outside this certificate:
 - the diagnostic-only motif fixture work in PR #554 and future Evaluation
   Contract v2/content-aware alignment work.
 
-## Post-certification C2-ZC candidate closeout
+## Post-certification C2-ZC final acceptance candidate
 
 NIR0-CERT remains a bounded certificate for the Chronicle `scene-event@1`
 `add` pilot and does not retroactively include later authority changes. The
-separate C2-ZC work produced a focused-green candidate: the main/N-API
+separate C2-ZC work produced a final acceptance candidate: the main/N-API
 Freshness wake is intended to activate Generic Consumer Freshness only after
 current-Epoch Verify/Rebuild/parity/no-active-maintenance/liveness gates pass.
-The product journey, clean Full CI plus receipt verification, and Sol final
-are still pending, so the durable marker and canonical no-fallback behavior
-are not an accepted cutover. The candidate evidence is recorded in the
-[C2-ZC impact matrix](../plans/narrative-c2zc-canonical-cutover-impact-matrix.md)
-and its focused Rust/N-API contract tests.
+The candidate implementation HEAD is
+`3010e13e4a91da99eae16cb9f8bd773177c2ac58`, based on
+`78732ff5635da220396bd606010dd53f4d0350a9`. Its standalone real Electron
+journey passed clean in `19621ms` with renderer/page errors `0`, one raw main
+error covered by the exact scoped restore Skia allowance, and
+`unallowedMainErrors = []`, `mainCleanPass = true`, and `cleanPass = true` in
+`.artifacts/product-journeys-c2zc-3010e13e-final-1/results.json`.
+
+The pre-closeout candidate-bound Quick and immediate Quick receipt verification
+also passed for that implementation candidate. The Quick receipt is
+`.artifacts/local-ci/quick-precloseout-3010e13e-20260828.json` (SHA-256
+`0236ab55100528bb0844624536efd8c50adfe80f7ceb67b0ab4273c38fd40efe`), and
+the selected-impact receipt is
+`.artifacts/local-ci/impact-precloseout-3010e13e-20260828.json` (SHA-256
+`292ba86ae1014c2563c05955b08a0fca47d2b557154c261c098af1203f7372d2`).
+These are pre-closeout facts; at candidate-preparation time, Full CI and Full
+receipt verification had not been run on the final documentation candidate.
+The candidate is accepted if and only if that exact clean documentation
+candidate passes Quick → verify → Full from stage 1 → verify and the Sol final.
+Until that receipt exists, the durable marker and canonical no-fallback
+behavior are not an accepted cutover, and NIR-1 remains blocked. The candidate
+evidence is also recorded in the [C2-ZC impact
+matrix](../plans/narrative-c2zc-canonical-cutover-impact-matrix.md) and its
+focused Rust/N-API contract tests.
 
 ## Certification verdict
 
 The tested and integrated implementation satisfies NIR-0 for the bounded
 Chronicle `scene-event@1` `add` pilot. NIR-0 is therefore **PASS** when this
-closeout record lands. C2-ZC is a separate focused-green candidate, not an
-accepted post-certification authority boundary; its final product journey,
-Full/receipt, and Sol evidence remain pending, so NIR-1 is blocked and is not
-silently activated by this certificate.
+closeout record lands. This NIR0 certificate itself does not accept or expand
+to C2-ZC. The separate post-certification C2-ZC candidate becomes an accepted
+authority boundary if and only if its exact complete clean Quick/verify, Full
+from stage 1/verify gate receipt and Sol final exist. Until that receipt
+exists, NIR-1 remains blocked; this certificate does not silently activate it.
