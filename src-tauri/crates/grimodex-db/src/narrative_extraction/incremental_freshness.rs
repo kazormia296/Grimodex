@@ -45,7 +45,8 @@ use super::evaluator::{
     evaluate_edge, unknown_edge_observation, EdgeComparisonInput, EdgeObservation,
 };
 use super::execution_state::{
-    supersede_run_in_tx, transition_run_status_in_tx, NarrativeRunStatus,
+    next_run_lifecycle_timestamp_in_tx, parse_run_lifecycle_instant, supersede_run_in_tx,
+    transition_run_status_in_tx, NarrativeRunStatus,
 };
 use super::models::ClaimTaskPayload;
 use super::publish_runtime::{
@@ -1278,7 +1279,11 @@ fn ensure_idle_checkpoint_task_in_tx(
     task_input: &Value,
 ) -> anyhow::Result<()> {
     let task_id = format!("{run_id}:batch");
-    let created_at = now_string();
+    // Task/Attempt timestamps are part of the idle checkpoint's readiness
+    // envelope.  Use the project-scoped Run lifecycle allocator rather than
+    // wall-clock time so an imported/future Run cannot make its own producer
+    // evidence appear causally inverted.
+    let created_at = idle_checkpoint_lifecycle_timestamp_in_tx(conn, run_id)?;
     conn.execute(
         "INSERT INTO narrative_extraction_tasks
             (id, run_id, task_kind, status, input_json, priority,
@@ -1293,6 +1298,68 @@ fn ensure_idle_checkpoint_task_in_tx(
         ],
     )?;
     Ok(())
+}
+
+/// Return a canonical lifecycle instant for an idle checkpoint entity.
+///
+/// Automatic system Runs use a project-wide lifecycle allocator because an
+/// imported workspace may legitimately contain future-dated Run evidence.
+/// Idle Task/Attempt rows must share that authority: a wall-clock timestamp
+/// is not a valid lower bound when the owning Run starts in the future.  Include
+/// existing idle Task/Attempt timestamps as well so retries and recovery never
+/// move the envelope backwards, while leaving ordinary Feed timestamps on
+/// their existing path.
+fn idle_checkpoint_lifecycle_timestamp_in_tx(
+    conn: &Connection,
+    run_id: &str,
+) -> anyhow::Result<String> {
+    let project_id: String = conn.query_row(
+        "SELECT project_id FROM narrative_extraction_runs WHERE id = ?1",
+        [run_id],
+        |row| row.get(0),
+    )?;
+    let allocator_timestamp = next_run_lifecycle_timestamp_in_tx(conn, &project_id)?;
+    let mut latest = parse_run_lifecycle_instant(&allocator_timestamp)?;
+
+    let mut task_statement = conn.prepare(
+        "SELECT created_at, started_at, completed_at
+           FROM narrative_extraction_tasks
+          WHERE run_id = ?1",
+    )?;
+    let tasks = task_statement.query_map([run_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    for task in tasks {
+        let (created_at, started_at, completed_at) = task?;
+        for value in [Some(created_at), started_at, completed_at]
+            .into_iter()
+            .flatten()
+        {
+            latest = latest.max(parse_run_lifecycle_instant(&value)?);
+        }
+    }
+
+    let mut attempt_statement = conn.prepare(
+        "SELECT attempt.started_at, attempt.completed_at
+           FROM narrative_extraction_attempts attempt
+           JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+          WHERE task.run_id = ?1",
+    )?;
+    let attempts = attempt_statement.query_map([run_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+    for attempt in attempts {
+        let (started_at, completed_at) = attempt?;
+        for value in [Some(started_at), completed_at].into_iter().flatten() {
+            latest = latest.max(parse_run_lifecycle_instant(&value)?);
+        }
+    }
+
+    Ok(latest.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
 }
 
 fn current_feed_head(conn: &Connection, project_id: &str) -> anyhow::Result<i64> {
@@ -1384,6 +1451,7 @@ fn resume_active_batch_in_tx(
     semantic_epoch_id: &str,
     active: ActiveReservation,
 ) -> anyhow::Result<ReservationOutcome> {
+    let idle_checkpoint = idle_checkpoint_intent_in_tx(conn, &active, semantic_epoch_id)?;
     let exhausted_interrupted_task: Option<String> = conn
         .query_row(
             "SELECT id
@@ -1399,24 +1467,46 @@ fn resume_active_batch_in_tx(
         .optional()?;
     if let Some(task_id) = exhausted_interrupted_task {
         let message = "incremental Freshness worker was interrupted and exhausted its retry budget";
-        conn.execute(
-            "UPDATE narrative_extraction_attempts
-                SET status = 'failed', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                    error_message = ?1,
-                    failure_code = 'NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED',
-                    retry_disposition = 'terminal', policy_version = ?2,
-                    next_attempt_at = NULL
-              WHERE status = 'running' AND task_id = ?3",
-            params![message, FAILURE_POLICY_VERSION, task_id],
-        )?;
-        let task_updated = conn.execute(
-            "UPDATE narrative_extraction_tasks
-                SET status = 'failed', error_message = ?1,
-                    lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
-                    completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), version = version + 1
-              WHERE id = ?2 AND run_id = ?3 AND status = 'running'",
-            params![message, task_id, active.run_id],
-        )?;
+        let task_updated = if idle_checkpoint {
+            let lifecycle_at = idle_checkpoint_lifecycle_timestamp_in_tx(conn, &active.run_id)?;
+            conn.execute(
+                "UPDATE narrative_extraction_attempts
+                    SET status = 'failed', completed_at = ?1,
+                        error_message = ?2,
+                        failure_code = 'NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED',
+                        retry_disposition = 'terminal', policy_version = ?3,
+                        next_attempt_at = NULL
+                  WHERE status = 'running' AND task_id = ?4",
+                params![lifecycle_at, message, FAILURE_POLICY_VERSION, task_id],
+            )?;
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET status = 'failed', error_message = ?1,
+                        lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+                        completed_at = ?2, version = version + 1
+                  WHERE id = ?3 AND run_id = ?4 AND status = 'running'",
+                params![message, lifecycle_at, task_id, active.run_id],
+            )?
+        } else {
+            conn.execute(
+                "UPDATE narrative_extraction_attempts
+                    SET status = 'failed', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                        error_message = ?1,
+                        failure_code = 'NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED',
+                        retry_disposition = 'terminal', policy_version = ?2,
+                        next_attempt_at = NULL
+                  WHERE status = 'running' AND task_id = ?3",
+                params![message, FAILURE_POLICY_VERSION, task_id],
+            )?;
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET status = 'failed', error_message = ?1,
+                        lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+                        completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), version = version + 1
+                  WHERE id = ?2 AND run_id = ?3 AND status = 'running'",
+                params![message, task_id, active.run_id],
+            )?
+        };
         anyhow::ensure!(
             task_updated == 1,
             "NEX_INCREMENTAL_FRESHNESS_LEASE_LOST: exhausted interrupted Task changed owner"
@@ -1454,24 +1544,43 @@ fn resume_active_batch_in_tx(
     // claim_next_task can reclaim an expired Task but does not terminalize
     // the displaced Attempt.  Close it first so recovery never leaves two
     // durable `running` Attempts for one Task.
-    conn.execute(
-        "UPDATE narrative_extraction_attempts
-            SET status = 'failed', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                error_message = 'incremental Freshness worker was interrupted',
-                failure_code = 'NEX_INCREMENTAL_FRESHNESS_INTERRUPTED',
-                retry_disposition = 'retryable', policy_version = ?1,
-                next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-          WHERE status = 'running'
-            AND task_id IN (
-              SELECT id FROM narrative_extraction_tasks
-               WHERE run_id = ?2 AND status = 'running'
-                 AND lease_expires_at IS NOT NULL
-                 AND julianday(lease_expires_at) < julianday('now')
-            )",
-        params![FAILURE_POLICY_VERSION, active.run_id],
-    )?;
+    if idle_checkpoint {
+        let lifecycle_at = idle_checkpoint_lifecycle_timestamp_in_tx(conn, &active.run_id)?;
+        conn.execute(
+            "UPDATE narrative_extraction_attempts
+                SET status = 'failed', completed_at = ?1,
+                    error_message = 'incremental Freshness worker was interrupted',
+                    failure_code = 'NEX_INCREMENTAL_FRESHNESS_INTERRUPTED',
+                    retry_disposition = 'retryable', policy_version = ?2,
+                    next_attempt_at = ?1
+              WHERE status = 'running'
+                AND task_id IN (
+                  SELECT id FROM narrative_extraction_tasks
+                   WHERE run_id = ?3 AND status = 'running'
+                     AND lease_expires_at IS NOT NULL
+                     AND julianday(lease_expires_at) < julianday('now')
+                )",
+            params![lifecycle_at, FAILURE_POLICY_VERSION, active.run_id],
+        )?;
+    } else {
+        conn.execute(
+            "UPDATE narrative_extraction_attempts
+                SET status = 'failed', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    error_message = 'incremental Freshness worker was interrupted',
+                    failure_code = 'NEX_INCREMENTAL_FRESHNESS_INTERRUPTED',
+                    retry_disposition = 'retryable', policy_version = ?1,
+                    next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+              WHERE status = 'running'
+                AND task_id IN (
+                  SELECT id FROM narrative_extraction_tasks
+                   WHERE run_id = ?2 AND status = 'running'
+                     AND lease_expires_at IS NOT NULL
+                     AND julianday(lease_expires_at) < julianday('now')
+                )",
+            params![FAILURE_POLICY_VERSION, active.run_id],
+        )?;
+    }
 
-    let idle_checkpoint = idle_checkpoint_intent_in_tx(conn, &active, semantic_epoch_id)?;
     if idle_checkpoint {
         anyhow::ensure!(
             active.acknowledged_through_sequence == active.through_sequence,
@@ -1551,6 +1660,25 @@ fn claim_reserved_batch_in_tx(
     else {
         return Ok(ReservationOutcome::Idle);
     };
+    let idle_checkpoint = from_sequence_exclusive == through_sequence_inclusive
+        || task_input_has_idle_checkpoint_tag(&claimed.input_json);
+    if idle_checkpoint {
+        let lifecycle_at = idle_checkpoint_lifecycle_timestamp_in_tx(conn, run_id)?;
+        if claimed.attempt_number == 1 {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET started_at = ?1
+                  WHERE id = ?2 AND run_id = ?3 AND status = 'running'",
+                params![lifecycle_at, claimed.task_id, run_id],
+            )?;
+        }
+        conn.execute(
+            "UPDATE narrative_extraction_attempts
+                SET started_at = ?1
+              WHERE id = ?2 AND task_id = ?3 AND status = 'running'",
+            params![lifecycle_at, claimed.attempt_id, claimed.task_id],
+        )?;
+    }
     let updated = conn.execute(
         "UPDATE narrative_change_cursors
             SET lease_owner = ?1, lease_expires_at = ?2, last_error = NULL,
@@ -1585,8 +1713,7 @@ fn claim_reserved_batch_in_tx(
         events,
         preparation_error,
         has_more,
-        idle_checkpoint: from_sequence_exclusive == through_sequence_inclusive
-            || task_input_has_idle_checkpoint_tag(&claimed.input_json),
+        idle_checkpoint,
     })))
 }
 
@@ -2637,12 +2764,13 @@ fn publish_idle_checkpoint_in_tx(conn: &Connection, batch: &ClaimedBatch) -> any
         "hasMore": false,
     });
     let output_json = serde_json::to_string(&output)?;
+    let completed_at = idle_checkpoint_lifecycle_timestamp_in_tx(conn, &batch.run_id)?;
     let attempt_updated = conn.execute(
         "UPDATE narrative_extraction_attempts
             SET status = 'completed', completed_at = ?1, output_json = ?2,
                 error_message = NULL
           WHERE id = ?3 AND task_id = ?4 AND status = 'running'",
-        params![now_string(), output_json, batch.attempt_id, batch.task_id],
+        params![completed_at, output_json, batch.attempt_id, batch.task_id],
     )?;
     anyhow::ensure!(
         attempt_updated == 1,
@@ -2657,7 +2785,7 @@ fn publish_idle_checkpoint_in_tx(conn: &Connection, batch: &ClaimedBatch) -> any
             AND lease_owner = ?5",
         params![
             output_json,
-            now_string(),
+            completed_at,
             batch.task_id,
             batch.run_id,
             batch.lease_owner
@@ -2830,42 +2958,88 @@ fn requeue_after_failure(
                 "NEX_INCREMENTAL_FRESHNESS_RETRYABLE"
             };
             let retry_disposition = if terminal { "terminal" } else { "retryable" };
-            let attempt_updated = conn.execute(
-                "UPDATE narrative_extraction_attempts
-                    SET status = 'failed', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), error_message = ?1,
-                        failure_code = ?2, retry_disposition = ?3, policy_version = ?4,
-                        next_attempt_at = CASE
-                          WHEN ?3 = 'retryable' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END
-                  WHERE id = ?5 AND task_id = ?6 AND status = 'running'",
-                params![
-                    message,
-                    failure_code,
-                    retry_disposition,
-                    FAILURE_POLICY_VERSION,
-                    batch.attempt_id,
-                    batch.task_id
-                ],
-            )?;
+            let lifecycle_at = if batch.idle_checkpoint {
+                Some(idle_checkpoint_lifecycle_timestamp_in_tx(conn, &batch.run_id)?)
+            } else {
+                None
+            };
+            let attempt_updated = if let Some(lifecycle_at) = lifecycle_at.as_deref() {
+                let next_attempt_at = (!terminal).then(|| lifecycle_at.to_owned());
+                conn.execute(
+                    "UPDATE narrative_extraction_attempts
+                        SET status = 'failed', completed_at = ?1, error_message = ?2,
+                            failure_code = ?3, retry_disposition = ?4, policy_version = ?5,
+                            next_attempt_at = ?6
+                      WHERE id = ?7 AND task_id = ?8 AND status = 'running'",
+                    params![
+                        lifecycle_at,
+                        message,
+                        failure_code,
+                        retry_disposition,
+                        FAILURE_POLICY_VERSION,
+                        next_attempt_at,
+                        batch.attempt_id,
+                        batch.task_id
+                    ],
+                )?
+            } else {
+                conn.execute(
+                    "UPDATE narrative_extraction_attempts
+                        SET status = 'failed', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), error_message = ?1,
+                            failure_code = ?2, retry_disposition = ?3, policy_version = ?4,
+                            next_attempt_at = CASE
+                              WHEN ?3 = 'retryable' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END
+                      WHERE id = ?5 AND task_id = ?6 AND status = 'running'",
+                    params![
+                        message,
+                        failure_code,
+                        retry_disposition,
+                        FAILURE_POLICY_VERSION,
+                        batch.attempt_id,
+                        batch.task_id
+                    ],
+                )?
+            };
             if attempt_updated == 0 {
                 return Ok(());
             }
             let task_status = if terminal { "failed" } else { "queued" };
-            let task_updated = conn.execute(
-                "UPDATE narrative_extraction_tasks
-                    SET status = ?1, error_message = ?2,
-                        lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
-                        completed_at = CASE WHEN ?1 = 'failed' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END,
-                        version = version + 1
-                  WHERE id = ?3 AND run_id = ?4 AND status = 'running'
-                    AND lease_owner = ?5",
-                params![
-                    task_status,
-                    message,
-                    batch.task_id,
-                    batch.run_id,
-                    batch.lease_owner
-                ],
-            )?;
+            let task_updated = if let Some(lifecycle_at) = lifecycle_at.as_deref() {
+                let completed_at = terminal.then(|| lifecycle_at.to_owned());
+                conn.execute(
+                    "UPDATE narrative_extraction_tasks
+                        SET status = ?1, error_message = ?2,
+                            lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+                            completed_at = ?3, version = version + 1
+                      WHERE id = ?4 AND run_id = ?5 AND status = 'running'
+                        AND lease_owner = ?6",
+                    params![
+                        task_status,
+                        message,
+                        completed_at,
+                        batch.task_id,
+                        batch.run_id,
+                        batch.lease_owner
+                    ],
+                )?
+            } else {
+                conn.execute(
+                    "UPDATE narrative_extraction_tasks
+                        SET status = ?1, error_message = ?2,
+                            lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+                            completed_at = CASE WHEN ?1 = 'failed' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END,
+                            version = version + 1
+                      WHERE id = ?3 AND run_id = ?4 AND status = 'running'
+                        AND lease_owner = ?5",
+                    params![
+                        task_status,
+                        message,
+                        batch.task_id,
+                        batch.run_id,
+                        batch.lease_owner
+                    ],
+                )?
+            };
             anyhow::ensure!(
                 task_updated == 1,
                 "NEX_INCREMENTAL_FRESHNESS_LEASE_LOST: failed Attempt lost its Task lease"
@@ -3997,6 +4171,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn idle_checkpoint_readiness_accepts_producer_after_future_imported_run_lifecycle() {
+        let db = rotated_idle_checkpoint_db();
+        seed_future_imported_run_lifecycle(&db);
+
+        let outcome = run_incremental_freshness_cycle(&db)
+            .expect("idle checkpoint producer should continue future lifecycle");
+        assert!(matches!(
+            outcome,
+            IncrementalFreshnessCycleOutcome::Processed(_)
+        ));
+
+        let readiness = db
+            .with_conn(|conn| inspect_project_cutover_readiness(conn, PROJECT_ID))
+            .expect("inspect current-Epoch readiness after future lifecycle checkpoint");
+        assert_eq!(
+            readiness.incremental_runtime.state,
+            ReadinessState::Incomplete,
+            "unexpected readiness: {readiness:?}"
+        );
+        assert_eq!(
+            readiness.incremental_runtime.reasons,
+            vec!["incremental-freshness-scheduler-liveness-evidence-unavailable"],
+            "a producer-created idle checkpoint must follow imported Run lifecycle authority"
+        );
+    }
+
+    fn seed_future_imported_run_lifecycle(db: &Database) {
+        db.with_conn(|conn| {
+            // Imported projects may carry a lifecycle authority ahead of the
+            // wall clock. Every recovery branch must continue that authority
+            // for its Attempt, Task, and Run timestamps.
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, created_at, started_at, completed_at,
+                     run_kind, semantic_epoch_id)
+                 VALUES ('imported-future-lifecycle-variants', ?1, 'imported', '{}', '{}',
+                         'sha256:future-import-variants', 'completed', '{}',
+                         '2099-01-01T00:00:00.000Z',
+                         '2099-01-01T00:00:00.001Z',
+                         '2099-01-01T00:00:00.002Z',
+                         'interpretation', ?2)",
+                params![PROJECT_ID, EPOCH_ID],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed future imported Run lifecycle variant");
+    }
+
     fn reserve_claimed_idle_checkpoint(db: &Database) -> ClaimedBatch {
         let reservation = db
             .with_conn(|conn| with_immediate_transaction(conn, reserve_or_resume_batch_in_tx))
@@ -4081,6 +4305,44 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })
         .expect("inspect resumed idle checkpoint lifecycle");
+    }
+
+    #[test]
+    fn future_imported_idle_checkpoint_recovery_resumes_to_success_and_only_lacks_scheduler_liveness(
+    ) {
+        let db = rotated_idle_checkpoint_db();
+        seed_future_imported_run_lifecycle(&db);
+        let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+
+        let resumed = run_incremental_freshness_cycle(&db)
+            .expect("future imported idle checkpoint should resume successfully");
+        assert!(matches!(
+            resumed,
+            IncrementalFreshnessCycleOutcome::Processed(summary)
+                if summary.run_id == run_id
+                    && summary.from_sequence_exclusive == 1
+                    && summary.through_sequence_inclusive == 1
+        ));
+
+        db.with_conn(|conn| {
+            let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
+            assert_eq!(
+                readiness.incremental_runtime.reasons,
+                vec!["incremental-freshness-scheduler-liveness-evidence-unavailable"]
+            );
+            let statuses: (i64, i64) = conn.query_row(
+                "SELECT
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)
+                   FROM narrative_extraction_attempts
+                  WHERE task_id = ?1",
+                [task_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(statuses, (1, 1));
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect future imported recovery readiness");
     }
 
     #[test]
@@ -4176,6 +4438,92 @@ mod tests {
     }
 
     #[test]
+    fn future_imported_idle_checkpoint_retry_repair_has_monotonic_failed_attempts_and_readiness() {
+        let db = rotated_idle_checkpoint_db();
+        seed_future_imported_run_lifecycle(&db);
+        let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = 'corrupted-idle-checkpoint-kind'
+                  WHERE id = ?1 AND run_id = ?2",
+                params![task_id, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("corrupt future imported idle task kind");
+
+        let first_error = run_incremental_freshness_cycle(&db)
+            .expect_err("future imported malformed idle retry must fail closed");
+        assert!(first_error
+            .to_string()
+            .contains("NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_TASK_KIND_INVALID"));
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = ?1
+                  WHERE id = ?2 AND run_id = ?3",
+                params![TASK_KIND, task_id, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("repair future imported idle task kind");
+
+        assert!(matches!(
+            run_incremental_freshness_cycle(&db)
+                .expect("future imported malformed idle retry should repair to success"),
+            IncrementalFreshnessCycleOutcome::Processed(_)
+        ));
+
+        db.with_conn(|conn| {
+            let mut rows = conn.prepare(
+                "SELECT attempt_number, status, started_at, completed_at, next_attempt_at
+                   FROM narrative_extraction_attempts
+                  WHERE task_id = ?1
+                  ORDER BY attempt_number",
+            )?;
+            let attempts = rows
+                .query_map([task_id.as_str()], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(attempts.len(), 3);
+            for pair in attempts.windows(2) {
+                assert!(
+                    pair[0].3 <= pair[1].2,
+                    "attempt timestamps must be monotonic: previous={:?}, next={:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            for attempt in &attempts[..2] {
+                let next_attempt_at = attempt
+                    .4
+                    .as_deref()
+                    .expect("failed Attempt must have next_attempt_at");
+                assert!(
+                    attempt.2.as_str() <= attempt.3.as_str()
+                        && attempt.3.as_str() <= next_attempt_at,
+                    "failed Attempt timestamps must be monotonic: {attempt:?}"
+                );
+            }
+            let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
+            assert_eq!(
+                readiness.incremental_runtime.reasons,
+                vec!["incremental-freshness-scheduler-liveness-evidence-unavailable"]
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect future imported retry timestamps and readiness");
+    }
+
+    #[test]
     fn corrupted_idle_task_kind_at_retry_limit_terminalizes_without_fourth_attempt() {
         let db = rotated_idle_checkpoint_db();
         let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
@@ -4219,6 +4567,91 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })
         .expect("inspect exhausted corrupted idle reservation");
+    }
+
+    #[test]
+    fn future_imported_idle_checkpoint_exhaustion_has_no_fourth_attempt_and_monotonic_lifecycle() {
+        let db = rotated_idle_checkpoint_db();
+        seed_future_imported_run_lifecycle(&db);
+        let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = 'corrupted-idle-checkpoint-kind', attempt_count = ?1
+                  WHERE id = ?2 AND run_id = ?3",
+                params![MAX_ATTEMPTS_PER_BATCH, task_id, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("corrupt future imported idle task at retry limit");
+
+        assert_eq!(
+            run_incremental_freshness_cycle(&db)
+                .expect("future imported exhausted idle checkpoint should terminalize"),
+            IncrementalFreshnessCycleOutcome::Idle
+        );
+        db.with_conn(|conn| {
+            let (
+                run_created_at,
+                run_started_at,
+                run_completed_at,
+                task_created_at,
+                task_started_at,
+                task_completed_at,
+                attempt_count,
+                attempts,
+            ): (String, String, String, String, String, String, i64, i64) = conn.query_row(
+                "SELECT run.created_at, run.started_at, run.completed_at,
+                        task.created_at, task.started_at, task.completed_at,
+                        task.attempt_count,
+                        (SELECT COUNT(*) FROM narrative_extraction_attempts
+                          WHERE task_id = task.id)
+                   FROM narrative_extraction_tasks task
+                   JOIN narrative_extraction_runs run ON run.id = task.run_id
+                  WHERE task.id = ?1 AND run.id = ?2",
+                params![task_id, run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )?;
+            let (attempt_started_at, attempt_completed_at): (String, String) = conn.query_row(
+                "SELECT started_at, completed_at
+                   FROM narrative_extraction_attempts
+                  WHERE task_id = ?1
+                  ORDER BY attempt_number",
+                [task_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let timestamps = [
+                run_created_at,
+                run_started_at,
+                task_created_at,
+                task_started_at,
+                attempt_started_at,
+                attempt_completed_at,
+                task_completed_at,
+                run_completed_at,
+            ];
+            for pair in timestamps.windows(2) {
+                assert!(
+                    pair[0] <= pair[1],
+                    "future imported lifecycle timestamps must be nondecreasing: {pair:?}"
+                );
+            }
+            assert_eq!(attempt_count, MAX_ATTEMPTS_PER_BATCH);
+            assert_eq!(attempts, 1, "exhaustion must not claim a fourth Attempt");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect future imported exhaustion lifecycle");
     }
 
     #[test]
