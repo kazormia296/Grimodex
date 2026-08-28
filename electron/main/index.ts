@@ -64,6 +64,7 @@ import {
 } from "./productJourneyAi.js";
 import {
   configureNarrativeMaintenanceCiSeam,
+  shouldDisableNarrativeFreshnessForLaunch,
   type NarrativeMaintenanceCiBackend,
 } from "./narrativeMaintenanceCiSeam.js";
 
@@ -424,7 +425,9 @@ if (!gotSingleInstanceLock) {
     } = bootstrapNarrativeMaintenance(backend, narrativeMaintenanceCiSeam);
     narrativeMaintenanceTriggers = coordinator;
     licenseValidation.start();
-    narrativeFreshness.start();
+    if (!shouldDisableNarrativeFreshnessForLaunch(narrativeMaintenanceCiSeam)) {
+      narrativeFreshness.start();
+    }
     app.on("will-quit", () => {
       // close veto を通過して終了が確定してから同期 KILL する。before-quit で
       // dispose すると、未保存確認で終了を取り消した後も全 handler が死ぬ。

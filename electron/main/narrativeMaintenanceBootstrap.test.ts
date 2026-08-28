@@ -19,6 +19,7 @@ function activeSeam(
     fault: null,
     trigger: null,
     setup: null,
+    freshness: null,
     productJourneyBarrierId: null,
     correlation: null,
     ...overrides,

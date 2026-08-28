@@ -79,6 +79,7 @@ const activeNarrativeMaintenanceCiSeam: NarrativeMaintenanceCiSeam = {
   fault: null,
   trigger: "foreground-workspace-wake",
   setup: null,
+  freshness: null,
   productJourneyBarrierId: "barrier-test",
   correlation: "correlation-test",
 };

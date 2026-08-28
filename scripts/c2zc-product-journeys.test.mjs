@@ -77,6 +77,11 @@ test("C2-ZC runner reaches the marker only through main scheduler and N-API", as
   assert.match(runner, /setup:\s*"disabled"/);
   assert.match(
     runner,
+    /freshness:\s*"disabled"/,
+    "the restore launch must disable only the freshness scheduler before a pre-cutover restore",
+  );
+  assert.match(
+    runner,
     /onRestore:[\s\S]*readAuthoritySnapshot\([\s\S]*marker: observed\.marker/,
     "restore isolation must inspect the persisted marker rather than hard-code null",
   );
@@ -91,6 +96,7 @@ test("C2-ZC runner reaches the marker only through main scheduler and N-API", as
     "C2-ZC runner must not write the marker SQL directly",
   );
   assert.match(main, /createNarrativeFreshnessScheduler\(backend,\s*\{/);
+  assert.match(main, /shouldDisableNarrativeFreshnessForLaunch/);
   assert.match(main, /onCutoverNotReady/);
   assert.match(main, /requestBeforeCutoverPreparation/);
   assert.match(main, /narrativeFreshness\.start\(\)/);

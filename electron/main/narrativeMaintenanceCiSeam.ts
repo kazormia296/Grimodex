@@ -13,6 +13,9 @@ export const NARRATIVE_MAINTENANCE_TRIGGER_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER";
 export const NARRATIVE_MAINTENANCE_SETUP_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_SETUP";
+/** Main-only restore launch seam; never forwarded to the native boundary. */
+export const NARRATIVE_FRESHNESS_DISABLE_ENV =
+  "GRIMODEX_PRODUCT_JOURNEY_NARRATIVE_FRESHNESS";
 export const NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN";
 export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV =
@@ -45,6 +48,7 @@ export interface NarrativeMaintenanceCiConfig {
   readonly fault: NarrativeMaintenanceCiFault | null;
   readonly trigger: NarrativeMaintenanceCiTrigger | null;
   readonly setup: "disabled" | null;
+  readonly freshness: "disabled" | null;
   readonly productJourneyBarrierId: string | null;
   readonly correlation: string | null;
 }
@@ -62,6 +66,19 @@ export function shouldDisableNarrativeMaintenanceForLaunch(
   seam: NarrativeMaintenanceCiSeam,
 ): boolean {
   return seam.active && seam.setup === "disabled";
+}
+
+/**
+ * Freshness is disabled only for the owner-gated restore launch. This remains
+ * a main-process policy: the value is intentionally absent from the native
+ * seam payload, and ordinary/fixture launches keep the scheduler enabled.
+ */
+export function shouldDisableNarrativeFreshnessForLaunch(
+  seam: NarrativeMaintenanceCiSeam,
+): boolean {
+  return (
+    seam.active && seam.setup === "disabled" && seam.freshness === "disabled"
+  );
 }
 
 export interface NarrativeMaintenanceCiEnvironment {
@@ -154,6 +171,17 @@ export function parseNarrativeMaintenanceCiSeam(
       `${NARRATIVE_MAINTENANCE_SETUP_ENV} has unsupported value '${setupRaw}'`,
     );
   }
+  const freshnessRaw = env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  if (hasValue(freshnessRaw) && freshnessRaw !== "disabled") {
+    throw new Error(
+      `${NARRATIVE_FRESHNESS_DISABLE_ENV} has unsupported value '${freshnessRaw}'`,
+    );
+  }
+  if (freshnessRaw === "disabled" && setupRaw !== "disabled") {
+    throw new Error(
+      `${NARRATIVE_FRESHNESS_DISABLE_ENV} requires ${NARRATIVE_MAINTENANCE_SETUP_ENV}=disabled`,
+    );
+  }
   const productJourneyBarrierId = optionalIdentifier(
     env,
     NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
@@ -175,6 +203,7 @@ export function parseNarrativeMaintenanceCiSeam(
     fault,
     trigger,
     setup: setupRaw === "disabled" ? "disabled" : null,
+    freshness: freshnessRaw === "disabled" ? "disabled" : null,
     productJourneyBarrierId,
     correlation,
   };

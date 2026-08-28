@@ -525,7 +525,10 @@ export async function runC2ZcCanonicalAuthorityJourney(
       restorePhase: "restore",
       openPhase: "open",
       restartPhase: "restart",
-      restoreEnvironment: { setup: "disabled" },
+      restoreEnvironment: {
+        setup: "disabled",
+        freshness: "disabled",
+      },
       restoreThroughSettingsUi: restoreBackupThroughSettingsUi,
       onFixture: ({ fixtureEvidence }) => {
         assertC2ZcRestoreBackupFixture(fixtureEvidence.backupContract);

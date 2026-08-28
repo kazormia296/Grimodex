@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+  NARRATIVE_FRESHNESS_DISABLE_ENV,
   configureNarrativeMaintenanceCiSeam,
   parseNarrativeMaintenanceCiSeam,
+  shouldDisableNarrativeFreshnessForLaunch,
   shouldDisableNarrativeMaintenanceForLaunch,
 } from "./narrativeMaintenanceCiSeam.js";
 
@@ -58,6 +60,7 @@ describe("C2-5B main-only CI seam", () => {
       fault: "transient-io",
       trigger: "foreground-workspace-wake",
       setup: "disabled",
+      freshness: null,
       productJourneyBarrierId: "barrier-1",
       correlation: "correlation-1",
     });
@@ -89,6 +92,47 @@ describe("C2-5B main-only CI seam", () => {
         { isPackaged: true },
       ),
     ).toEqual({ active: false });
+    expect(() =>
+      parseNarrativeMaintenanceCiSeam(
+        {
+          ...baseEnv,
+          [NARRATIVE_FRESHNESS_DISABLE_ENV]: "enabled",
+        },
+        { isPackaged: false },
+      ),
+    ).toThrow(/NARRATIVE_FRESHNESS/);
+    expect(() =>
+      parseNarrativeMaintenanceCiSeam(
+        {
+          ...baseEnv,
+          [NARRATIVE_FRESHNESS_DISABLE_ENV]: "disabled",
+        },
+        { isPackaged: false },
+      ),
+    ).toThrow(/requires.*SETUP.*disabled/i);
+    for (const environment of [{ isPackaged: true }, { isPackaged: false }]) {
+      const env =
+        environment.isPackaged === true
+          ? { ...baseEnv, [NARRATIVE_FRESHNESS_DISABLE_ENV]: "enabled" }
+          : {
+              ...baseEnv,
+              CI: "false",
+              [NARRATIVE_FRESHNESS_DISABLE_ENV]: "enabled",
+            };
+      expect(parseNarrativeMaintenanceCiSeam(env, environment)).toEqual({
+        active: false,
+      });
+    }
+    expect(
+      parseNarrativeMaintenanceCiSeam(
+        {
+          ...baseEnv,
+          [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]: "other-owner",
+          [NARRATIVE_FRESHNESS_DISABLE_ENV]: "enabled",
+        },
+        { isPackaged: false },
+      ),
+    ).toEqual({ active: false });
   });
 
   it("configures native exactly once after activation and never exposes an IPC bridge", async () => {
@@ -99,11 +143,13 @@ describe("C2-5B main-only CI seam", () => {
       isPackaged: false,
       env: {
         ...baseEnv,
+        GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_SETUP: "disabled",
         GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER: "dependency-gap",
+        [NARRATIVE_FRESHNESS_DISABLE_ENV]: "disabled",
       },
     });
 
-    expect(result.active).toBe(true);
+    expect(result).toMatchObject({ active: true, freshness: "disabled" });
     expect(configure).toHaveBeenCalledOnce();
     expect(configure).toHaveBeenCalledWith({
       isPackaged: false,
@@ -111,7 +157,7 @@ describe("C2-5B main-only CI seam", () => {
       ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
       fault: null,
       trigger: "dependency-gap",
-      setup: null,
+      setup: "disabled",
       productJourneyBarrierId: null,
       correlation: null,
     });
@@ -125,6 +171,7 @@ describe("C2-5B main-only CI seam", () => {
         fault: null,
         trigger: null,
         setup: "disabled",
+        freshness: null,
         productJourneyBarrierId: null,
         correlation: null,
       }),
@@ -136,6 +183,7 @@ describe("C2-5B main-only CI seam", () => {
         fault: null,
         trigger: null,
         setup: null,
+        freshness: null,
         productJourneyBarrierId: null,
         correlation: null,
       }),
@@ -143,5 +191,46 @@ describe("C2-5B main-only CI seam", () => {
     expect(shouldDisableNarrativeMaintenanceForLaunch({ active: false })).toBe(
       false,
     );
+  });
+
+  it("disables freshness only for the exact owner-gated restore launch seam", () => {
+    const restoreSeam = parseNarrativeMaintenanceCiSeam(
+      {
+        ...baseEnv,
+        GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_SETUP: "disabled",
+        [NARRATIVE_FRESHNESS_DISABLE_ENV]: "disabled",
+      },
+      { isPackaged: false },
+    );
+    expect(shouldDisableNarrativeFreshnessForLaunch(restoreSeam)).toBe(true);
+    expect(
+      shouldDisableNarrativeFreshnessForLaunch({
+        active: true,
+        ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+        fault: null,
+        trigger: null,
+        setup: "disabled",
+        freshness: null,
+        productJourneyBarrierId: null,
+        correlation: null,
+      }),
+    ).toBe(false);
+    expect(
+      shouldDisableNarrativeFreshnessForLaunch(
+        parseNarrativeMaintenanceCiSeam(baseEnv, { isPackaged: false }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldDisableNarrativeFreshnessForLaunch(
+        parseNarrativeMaintenanceCiSeam(
+          {
+            ...baseEnv,
+            CI: "false",
+            [NARRATIVE_FRESHNESS_DISABLE_ENV]: "disabled",
+          },
+          { isPackaged: false },
+        ),
+      ),
+    ).toBe(false);
   });
 });

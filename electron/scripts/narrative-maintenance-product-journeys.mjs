@@ -28,6 +28,8 @@ export const NARRATIVE_MAINTENANCE_TRIGGER_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER";
 export const NARRATIVE_MAINTENANCE_SETUP_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_SETUP";
+export const NARRATIVE_FRESHNESS_DISABLE_ENV =
+  "GRIMODEX_PRODUCT_JOURNEY_NARRATIVE_FRESHNESS";
 export const NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN";
 export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV =
@@ -86,10 +88,12 @@ export const NARRATIVE_MAINTENANCE_SEAM_CONTRACT = Object.freeze({
   }),
   setupEnv: NARRATIVE_MAINTENANCE_SETUP_ENV,
   setupDisabledValue: "disabled",
+  freshnessDisableEnv: NARRATIVE_FRESHNESS_DISABLE_ENV,
+  freshnessDisabledValue: "disabled",
   faultEnv: NARRATIVE_MAINTENANCE_FAULT_ENV,
   triggerEnv: NARRATIVE_MAINTENANCE_TRIGGER_ENV,
   packagedPolicy:
-    "packaged launches and non-CI launches must ignore fault/trigger/setup seams; only an unpackaged CI product-journey launch with the exact owner token may consume them",
+    "packaged launches and non-CI launches must ignore fault/trigger/setup/freshness seams; only an unpackaged CI product-journey launch with the exact owner token may consume them",
   ciEnv: "CI",
   ciValue: "true",
   jsDigestAuthority: "durable native outcome skipEvidence fields",
@@ -1532,6 +1536,7 @@ async function withLaunchEnvironment(
     fault = null,
     trigger = null,
     setup = null,
+    freshness = null,
     ownerToken = null,
     barrierId = null,
     correlation = null,
@@ -1542,6 +1547,7 @@ async function withLaunchEnvironment(
     !fault &&
     !trigger &&
     !setup &&
+    !freshness &&
     !ownerToken &&
     !barrierId &&
     !correlation
@@ -1551,6 +1557,7 @@ async function withLaunchEnvironment(
   const previousFault = process.env[NARRATIVE_MAINTENANCE_FAULT_ENV];
   const previousTrigger = process.env[NARRATIVE_MAINTENANCE_TRIGGER_ENV];
   const previousSetup = process.env[NARRATIVE_MAINTENANCE_SETUP_ENV];
+  const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
   const previousOwnerToken = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
   const previousBarrierId =
     process.env[NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV];
@@ -1562,6 +1569,8 @@ async function withLaunchEnvironment(
   else delete process.env[NARRATIVE_MAINTENANCE_TRIGGER_ENV];
   if (setup) process.env[NARRATIVE_MAINTENANCE_SETUP_ENV] = setup;
   else delete process.env[NARRATIVE_MAINTENANCE_SETUP_ENV];
+  if (freshness) process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = freshness;
+  else delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
   if (ownerToken) {
     process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = ownerToken;
   } else {
@@ -1595,6 +1604,11 @@ async function withLaunchEnvironment(
       delete process.env[NARRATIVE_MAINTENANCE_SETUP_ENV];
     } else {
       process.env[NARRATIVE_MAINTENANCE_SETUP_ENV] = previousSetup;
+    }
+    if (previousFreshness === undefined) {
+      delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+    } else {
+      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = previousFreshness;
     }
     if (previousOwnerToken === undefined) {
       delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];

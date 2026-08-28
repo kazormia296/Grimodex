@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createNarrativeMaintenanceProductJourneys,
+  NARRATIVE_FRESHNESS_DISABLE_ENV,
   NARRATIVE_MAINTENANCE_FAULT_ENV,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
@@ -194,6 +195,14 @@ test("maintenance fault and setup seams require the exact owner contract", async
   );
   assert.equal(
     NARRATIVE_MAINTENANCE_SEAM_CONTRACT.setupDisabledValue,
+    "disabled",
+  );
+  assert.equal(
+    NARRATIVE_MAINTENANCE_SEAM_CONTRACT.freshnessDisableEnv,
+    NARRATIVE_FRESHNESS_DISABLE_ENV,
+  );
+  assert.equal(
+    NARRATIVE_MAINTENANCE_SEAM_CONTRACT.freshnessDisabledValue,
     "disabled",
   );
 
