@@ -1604,6 +1604,28 @@ fn inspect_phase_lifecycle_gate(
     let Some(epoch_id) = epoch_id else {
         return Ok(ReadinessGate::incomplete("current-semantic-epoch-missing"));
     };
+    let current_epoch_created_at: String = match conn
+        .query_row(
+            "SELECT created_at
+               FROM narrative_semantic_epochs
+              WHERE project_id = ?1 AND id = ?2",
+            params![project_id, epoch_id],
+            |row| row.get(0),
+        )
+        .optional()?
+    {
+        Some(created_at) => created_at,
+        None => return Ok(ReadinessGate::blocked("current-semantic-epoch-missing")),
+    };
+    let current_epoch_created_at =
+        match super::legacy_backfill::parse_maintenance_instant(&current_epoch_created_at) {
+            Ok(created_at) => created_at,
+            Err(_) => {
+                return Ok(ReadinessGate::blocked(
+                    "current-semantic-epoch-created-at-invalid",
+                ))
+            }
+        };
 
     // Each individual readiness gate already resolves its phase through the
     // lifecycle-aware `select_latest_relevant_run_for_readiness` helper. Do
@@ -1775,7 +1797,9 @@ fn inspect_phase_lifecycle_gate(
     // phase could observe its predecessor. `created_at` only allocates a Run
     // and says nothing about the order in which work executed. Equality is
     // deliberately rejected: it cannot establish a causal boundary.
-    if !(backfill.completed_at < rebuild.task_started_at
+    if !(current_epoch_created_at <= rebuild.task_started_at
+        && current_epoch_created_at <= verify.task_started_at
+        && backfill.completed_at < rebuild.task_started_at
         && rebuild.completed_at < verify.task_started_at)
     {
         return Ok(ReadinessGate::blocked("phase-causality-unproven"));
@@ -2562,6 +2586,41 @@ mod tests {
                 ReadinessState::Passed,
                 "Backfill -> current Rebuild -> current confirmation Verify is valid"
             );
+
+            // A current-Epoch Rebuild and confirmation Verify cannot establish
+            // readiness if their lifecycle starts before the current Epoch was
+            // minted, even when their Run IDs and phase ordering look valid.
+            conn.execute(
+                "UPDATE narrative_semantic_epochs
+                    SET created_at = '2026-08-20T00:00:09.000Z'
+                  WHERE id = ?1",
+                params![EPOCH_ID],
+            )?;
+            assert_eq!(
+                inspect_phase_lifecycle_gate(conn, PROJECT_ID, Some(EPOCH_ID))?.state,
+                ReadinessState::Blocked,
+                "current Rebuild/Verify task starts before the current Epoch must block phase lifecycle"
+            );
+            let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
+            assert_eq!(
+                readiness.phase_lifecycle.state,
+                ReadinessState::Blocked,
+                "current Rebuild/Verify task starts before the current Epoch must block readiness lifecycle"
+            );
+            assert_eq!(
+                readiness.state,
+                ReadinessState::Blocked,
+                "current Rebuild/Verify task starts before the current Epoch must block readiness"
+            );
+
+            // Restore the valid current-Epoch boundary before checking the
+            // independent historical Backfill causality rule below.
+            conn.execute(
+                "UPDATE narrative_semantic_epochs
+                    SET created_at = '2026-08-20T00:00:02.000Z'
+                  WHERE id = ?1",
+                params![EPOCH_ID],
+            )?;
 
             // The historical marker must also be causally after the Epoch it
             // names. Moving that Epoch past the marker is fail-closed even
