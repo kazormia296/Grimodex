@@ -1963,6 +1963,15 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
                 }
                 return Ok(None);
             }
+            if report.is_incomplete_only() {
+                // Missing evidence is transient at this boundary. In
+                // particular, a new project's feed may exist before the
+                // Freshness cursor is published. Wait for that durable
+                // producer anchor so a later wake can rediscover and
+                // re-Verify; do not turn incomplete evidence into a manual
+                // graph-repair Finding.
+                return Ok(None);
+            }
             // Non-clean and not rebuildable: duplicate Edges, cross-project
             // consumer scope, or other defects that only a manual Repair can
             // fix. Automatic maintenance halts here on every wake, so the
@@ -4071,6 +4080,8 @@ fn retry_not_before(db: &Database, work: &WorkKey) -> anyhow::Result<RetryEviden
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::narrative_extraction::build_maintenance_inbox;
+    use crate::narrative_extraction::dependency_edges::consumer_dependency_set_digest;
     use crate::narrative_extraction::execution_state::{
         transition_run_status_in_tx, NarrativeRunStatus,
     };
@@ -4078,6 +4089,7 @@ mod tests {
     use crate::narrative_extraction::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
     use crate::narrative_extraction::restore_rebuild::DependencyGraphVerifyReport;
     use crate::narrative_extraction::run_dependency_verify_for_project;
+    use crate::narrative_extraction::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
     use crate::Database;
     use rusqlite::params;
     use serde_json::json;
@@ -4193,6 +4205,445 @@ mod tests {
             )?;
         }
         Ok(())
+    }
+
+    fn seed_graph_repair_verify_fixture(db: &Database) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, content)
+                 VALUES ('scene-live', 'project-1', 'scene', 'Scene',
+                         '{\"type\":\"doc\",\"content\":[]}')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            let backfill_spec =
+                json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
+            let backfill_outcome = json!({
+                "maintenancePhase": "backfill-complete",
+                "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+                "semanticEpochId": "epoch-1",
+                "summary": {
+                    "epoch_created": true,
+                    "contributions_created": 0,
+                    "edges_created": 0,
+                    "applications_without_run_id": 0
+                }
+            });
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json,
+                     spec_digest, status, coverage_json, outcome_summary_json,
+                     created_at, completed_at, run_kind, semantic_epoch_id,
+                     work_key)
+                 VALUES ('backfill-complete', 'project-1', 'maintenance', '{}',
+                         ?1, 'sha256:backfill', 'completed', '{}', ?2,
+                         '2026-01-01T00:00:00.000Z',
+                         '2026-01-01T00:00:00.000Z', 'backfill', 'epoch-1', ?3)",
+                params![
+                    backfill_spec.to_string(),
+                    backfill_outcome.to_string(),
+                    LEGACY_BACKFILL_WORK_KEY,
+                ],
+            )?;
+            // This is a durable row written around the Producer writer. The
+            // declared graph has current derived rows, so Verify can isolate
+            // the unsupported Consumer as a non-rebuildable graph defect.
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-repair', 'project-1', 'unsupported-consumer',
+                         'consumer-1', 'project:scene:scene-live', '[]',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_dependency_edge_states
+                    (edge_id, project_id, evidence_freshness, reason_code,
+                     build_action, evaluated_at_epoch_id, evaluated_at)
+                 VALUES ('edge-repair', 'project-1', 'unknown', NULL, 'manual',
+                         'epoch-1', '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            let dependency_set_digest = consumer_dependency_set_digest(
+                conn,
+                "project-1",
+                "unsupported-consumer",
+                "consumer-1",
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness,
+                     build_action, semantic_epoch_id, dependency_set_digest,
+                     updated_at)
+                 VALUES ('project-1', 'unsupported-consumer', 'consumer-1',
+                         'unknown', 'manual', 'epoch-1', ?1,
+                         '2026-01-01T00:00:00.000Z')",
+                params![dependency_set_digest],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed graph-repair Verify fixture");
+    }
+
+    fn seed_project_feed_event_without_cursor(db: &Database) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, content)
+                 VALUES ('scene-live', 'project-1', 'scene', 'Scene',
+                         '{\"type\":\"doc\",\"content\":[]}')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            let backfill_spec =
+                json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
+            let backfill_outcome = json!({
+                "maintenancePhase": "backfill-complete",
+                "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+                "semanticEpochId": "epoch-1",
+                "summary": {
+                    "epoch_created": true,
+                    "contributions_created": 0,
+                    "edges_created": 0,
+                    "applications_without_run_id": 0
+                }
+            });
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json,
+                     spec_digest, status, coverage_json, outcome_summary_json,
+                     created_at, completed_at, run_kind, semantic_epoch_id,
+                     work_key)
+                 VALUES ('backfill-complete', 'project-1', 'maintenance', '{}',
+                         ?1, 'sha256:backfill', 'completed', '{}', ?2,
+                         '2026-01-01T00:00:00.000Z',
+                         '2026-01-01T00:00:00.000Z', 'backfill', 'epoch-1', ?3)",
+                params![
+                    backfill_spec.to_string(),
+                    backfill_outcome.to_string(),
+                    LEGACY_BACKFILL_WORK_KEY,
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO change_events
+                    (event_uid, project_id, scene_id, domain, op_type,
+                     entity_type, entity_id, payload, session_id, sequence,
+                     timestamp, prev_hash, hash)
+                 VALUES ('feed-event-1', 'project-1', 'scene-live',
+                         'scene.update', 'scene.update', 'scene', 'scene-live',
+                         '{}', 'feed-test', 1, 1767225600000, 'prev', 'hash')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_transactions
+                    (id, project_id, request_id, source_domain,
+                     source_change_event_uid, source_change_event_sequence,
+                     cause_kind, origin, application_ids_json, payload_digest,
+                     created_at)
+                 VALUES ('feed-transaction-1', 'project-1', 'feed-request-1',
+                         'scene.update', 'feed-event-1', 1, 'forward', 'human',
+                         '[]', 'sha256:feed-payload',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_events
+                    (id, project_id, transaction_id, canonical_change_event_uid,
+                     canonical_sequence, event_ordinal, object_key_json,
+                     change_kind, mutation_kind, before_version, before_digest,
+                     after_version, after_digest, changed_paths_json,
+                     text_impact_json, structural_impact_json, occurred_at)
+                 VALUES ('feed-event-row-1', 'project-1', 'feed-transaction-1',
+                         'feed-event-1', 1, 0,
+                         '{\"kind\":\"scene\",\"sceneId\":\"scene-live\"}',
+                         'content', 'update', 1, 'sha256:before', 2,
+                         'sha256:after', '[\"/content\"]', NULL, NULL,
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed new-project feed event without cursor");
+    }
+
+    #[test]
+    fn graph_repair_finding_resolves_from_sealed_verify_outcome_after_defect_removed() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        seed_graph_repair_verify_fixture(&db);
+
+        let first = run_dependency_verify_for_project(&db, "project-1")
+            .expect("defective Verify should complete");
+        assert!(!first.report.is_clean());
+        assert!(!first.report.requires_rebuild());
+        assert_eq!(
+            first.report.edge_ids_with_unresolvable_consumer_scope,
+            vec!["edge-repair".to_string()]
+        );
+        let graph_repair_discovery =
+            discover_durable_maintenance_work(&db, "project-1", "durable-wake")
+                .expect("discover graph-repair finding");
+        assert!(
+            graph_repair_discovery.is_none(),
+            "graph defect should halt with a Finding, got {graph_repair_discovery:?}"
+        );
+
+        let finding_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1'
+                        AND id LIKE 'terminal-failure:v1:NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR:%'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count graph-repair finding");
+        assert_eq!(finding_count, 1);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_dependency_edges
+                  WHERE id = 'edge-repair' AND project_id = 'project-1'",
+                [],
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_consumer_freshness
+                  WHERE project_id = 'project-1'
+                    AND consumer_kind = 'unsupported-consumer'
+                    AND consumer_key = 'consumer-1'",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("remove graph defect");
+
+        let clean = run_dependency_verify_for_project(&db, "project-1")
+            .expect("clean confirmation Verify should resolve the finding");
+        assert!(clean.report.is_clean());
+
+        let inbox = db
+            .with_conn(|conn| {
+                build_maintenance_inbox(conn, "project-1", "2026-01-02T00:00:00.000Z")
+            })
+            .expect("build maintenance inbox");
+        assert!(
+            inbox.is_empty(),
+            "resolved graph finding must leave the inbox"
+        );
+        let lifecycle_state: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT lifecycle_state
+                       FROM narrative_maintenance_finding_lifecycle
+                      WHERE project_id = 'project-1'
+                      ORDER BY julianday(observed_at) DESC
+                      LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read graph finding lifecycle");
+        assert_eq!(lifecycle_state, "resolved");
+
+        let work = WorkKey::new_for_epoch(
+            "project-1",
+            AutomaticRunKind::Verify,
+            "dependency-verify:epoch-1",
+            "epoch-1",
+        )
+        .expect("Verify work key");
+        assert!(matches!(
+            retry_not_before(&db, &work).expect("read Verify retry evidence"),
+            RetryEvidence::NoFailedAttempt
+        ));
+    }
+
+    #[test]
+    fn corrupt_graph_repair_verify_anchor_stays_fail_closed_on_clean_confirmation() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        seed_graph_repair_verify_fixture(&db);
+        let first = run_dependency_verify_for_project(&db, "project-1")
+            .expect("defective Verify should complete");
+        discover_durable_maintenance_work(&db, "project-1", "durable-wake")
+            .expect("discover graph-repair finding");
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET outcome_summary_json = json_set(outcome_summary_json,
+                        '$.reportDigest', 'sha256:corrupted-report')
+                  WHERE id = ?1",
+                params![first.run_id],
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_dependency_edges
+                  WHERE id = 'edge-repair' AND project_id = 'project-1'",
+                [],
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_consumer_freshness
+                  WHERE project_id = 'project-1'
+                    AND consumer_kind = 'unsupported-consumer'
+                    AND consumer_key = 'consumer-1'",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("corrupt sealed Verify anchor and remove defect");
+
+        let error = run_dependency_verify_for_project(&db, "project-1")
+            .expect_err("corrupt sealed Verify anchor must block resolution");
+        assert!(
+            error.to_string().contains("Verify outcome")
+                || error.to_string().contains("NEX_FINDING"),
+            "unexpected fail-closed error: {error:#}"
+        );
+        let resolved_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_lifecycle
+                      WHERE project_id = 'project-1' AND lifecycle_state = 'resolved'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count resolved findings");
+        assert_eq!(resolved_count, 0);
+    }
+
+    #[test]
+    fn non_rebuildable_verify_issue_still_projects_manual_finding() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        seed_graph_repair_verify_fixture(&db);
+
+        let report = run_dependency_verify_for_project(&db, "project-1")
+            .expect("defective Verify should complete")
+            .report;
+        assert!(report.has_consistency_issues());
+        assert!(!report.is_incomplete_only());
+        assert!(!report.requires_rebuild());
+        discover_durable_maintenance_work(&db, "project-1", "durable-wake")
+            .expect("discover non-rebuildable Verify");
+
+        let finding_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1'
+                        AND id LIKE 'terminal-failure:v1:NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR:%'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count manual graph finding");
+        assert_eq!(finding_count, 1);
+    }
+
+    #[test]
+    fn new_project_feed_without_cursor_waits_for_freshness_before_manual_finding() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        seed_project_feed_event_without_cursor(&db);
+
+        let incomplete = run_dependency_verify_for_project(&db, "project-1")
+            .expect("incomplete Verify should complete with a report");
+        assert!(
+            !incomplete.report.is_consistent(),
+            "missing cursor must not claim a clean consistency result"
+        );
+        assert!(incomplete.report.is_incomplete_only());
+        assert!(!incomplete.report.is_complete());
+        assert!(incomplete
+            .report
+            .cursor_and_feed_head_consistency
+            .incomplete
+            .iter()
+            .any(|item| item == "incremental-cursor-missing-with-feed-events"));
+        discover_durable_maintenance_work(&db, "project-1", "durable-wake")
+            .expect("discover incomplete Verify");
+        let finding_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count incomplete Verify findings");
+        assert_eq!(finding_count, 0);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_change_cursors
+                    (project_id, consumer_id, acknowledged_through_sequence,
+                     updated_at)
+                 VALUES ('project-1', ?1, 0, '2026-01-02T00:00:00.000Z')",
+                params![INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("publish the Freshness cursor");
+
+        let rediscovered = discover_durable_maintenance_work(&db, "project-1", "freshness-wake")
+            .expect("rediscover after Freshness cursor appears")
+            .expect("cursor coordinate change must request Verify");
+        assert_eq!(rediscovered.run_kind, AutomaticRunKind::Verify);
+        let clean = run_dependency_verify_for_project(&db, "project-1")
+            .expect("cursor-complete Verify should finish cleanly");
+        assert!(clean.report.is_clean());
+        assert!(
+            discover_durable_maintenance_work(&db, "project-1", "cutover-wake")
+                .expect("discover post-cursor clean state")
+                .is_none()
+        );
+        let finding_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count post-cursor findings");
+        assert_eq!(finding_count, 0);
     }
 
     fn recovery_shape(

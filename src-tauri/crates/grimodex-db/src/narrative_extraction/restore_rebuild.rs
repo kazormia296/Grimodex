@@ -1640,6 +1640,46 @@ impl DependencyGraphVerifyReport {
         self.is_consistent() && self.is_complete() && !self.rebuild_required
     }
 
+    /// Whether a completed Verify check found a concrete inconsistency. An
+    /// incomplete check is intentionally not an inconsistency: its evidence
+    /// is insufficient to claim either a clean graph or a manual defect.
+    pub fn has_consistency_issues(&self) -> bool {
+        !self.edge_ids_with_missing_source.is_empty()
+            || !self.duplicate_edge_keys.is_empty()
+            || !self.edge_ids_with_cross_project_consumer.is_empty()
+            || !self.edge_ids_with_malformed_keys.is_empty()
+            || !self.edge_state_ids_outside_current_epoch.is_empty()
+            || !self.duplicate_edge_ids_to_deactivate.is_empty()
+            || !self.edge_ids_with_unresolvable_consumer_scope.is_empty()
+            || !self
+                .consumer_keys_with_stale_dependency_set_digest
+                .is_empty()
+            || !self.orphaned_attention_finding_keys.is_empty()
+            || !self.orphaned_attention_rehome_ambiguities.is_empty()
+            || !self
+                .application_revision_artifact_references
+                .issues
+                .is_empty()
+            || !self.semantic_index_dependency_set_digest.issues.is_empty()
+            || !self
+                .contribution_to_application_commit_correspondence
+                .issues
+                .is_empty()
+            || !self.legacy_mirror_migration_parity.issues.is_empty()
+            || !self.cursor_and_feed_head_consistency.issues.is_empty()
+            || !self
+                .semantic_index_generation_correspondence
+                .issues
+                .is_empty()
+    }
+
+    /// Whether this report has no concrete issue and is waiting only for
+    /// missing evidence. Such a report must wait for its producer/freshness
+    /// anchor instead of becoming a manual graph-repair Finding.
+    pub fn is_incomplete_only(&self) -> bool {
+        !self.has_consistency_issues() && !self.is_complete()
+    }
+
     /// Whether this Verify result requires the conditional Rebuild phase.
     pub fn requires_rebuild(&self) -> bool {
         self.rebuild_required
