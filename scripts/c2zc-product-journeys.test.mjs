@@ -23,6 +23,7 @@ import {
   assertC2ZcRestoreStageIsolation,
   assertC2ZcRestartInvariants,
   C2ZC_PRODUCT_JOURNEY_PHASES,
+  createProjectAfterCutover,
 } from "../electron/scripts/c2zc-canonical-product-journey.mjs";
 import {
   NARRATIVE_FRESHNESS_DISABLE_ENV,
@@ -1565,4 +1566,66 @@ test("C2-ZC restart wiring carries the open pre-run baseline into its invariant 
     "onRestart must use the persisted open baseline",
   );
   assert.doesNotMatch(restartCallback ?? "", /openResult\.beforeRuns/);
+});
+
+test("C2-ZC post-marker project creation opens the scenario workspace first", async () => {
+  const runner = await read(
+    "electron/scripts/c2zc-canonical-product-journey.mjs",
+  );
+  const postMarkerCall = runner.match(
+    /const newProjectId = await createProjectAfterCutover\([\s\S]*?\n\s*\);/,
+  )?.[0];
+  assert.match(
+    postMarkerCall ?? "",
+    /scenario\.workspace/,
+    "new-project must open the workspace used by the completed scenario",
+  );
+
+  const calls = [];
+  const workspace = "/tmp/c2-zc-post-marker-workspace";
+  const harness = {
+    async invokeOk(_page, command, payload) {
+      calls.push({ command, payload });
+      return command === "project_create"
+        ? { projectId: payload.payload.projectId }
+        : { status: "ready", path: payload.path };
+    },
+  };
+  const projectId = await createProjectAfterCutover(harness, {}, workspace);
+  assert.equal(typeof projectId, "string");
+  assert.deepEqual(
+    calls.map(({ command }) => command),
+    ["open_workspace", "project_create"],
+  );
+  assert.deepEqual(calls[0], {
+    command: "open_workspace",
+    payload: { path: workspace },
+  });
+  assert.equal(calls[1].payload.payload.projectId, projectId);
+
+  for (const [label, openResult] of [
+    ["safe-mode", { status: "safe-mode" }],
+    ["recovery", new Error("workspace recovery required")],
+  ]) {
+    const failedCalls = [];
+    const failedHarness = {
+      async invokeOk(_page, command, payload) {
+        failedCalls.push({ command, payload });
+        if (command === "open_workspace" && openResult instanceof Error) {
+          throw openResult;
+        }
+        return openResult;
+      },
+    };
+    await assert.rejects(
+      () => createProjectAfterCutover(failedHarness, {}, workspace),
+      /workspace open did not reach ready|workspace recovery required/,
+      label,
+    );
+    assert.deepEqual(
+      failedCalls.map(({ command }) => command),
+      ["open_workspace"],
+      `${label} must not call project_create`,
+    );
+  }
 });

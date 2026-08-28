@@ -124,7 +124,18 @@ export async function readC2ZcRunLedger(harness, page, projectId, runs) {
   }));
 }
 
-async function createProjectAfterCutover(harness, page) {
+export async function createProjectAfterCutover(harness, page, workspace) {
+  if (typeof workspace !== "string" || workspace.trim() === "") {
+    throw new Error("C2-ZC post-marker project requires an open workspace path");
+  }
+  const opened = await harness.invokeOk(page, "open_workspace", {
+    path: workspace,
+  });
+  if (opened?.status !== "ready") {
+    throw new Error(
+      `C2-ZC post-marker workspace open did not reach ready: ${String(opened?.status)}`,
+    );
+  }
   const projectId = `c2-zc-journey-project-${randomUUID()}`;
   const now = new Date().toISOString();
   await harness.invokeOk(page, "project_create", {
@@ -1363,7 +1374,11 @@ export async function runC2ZcCanonicalAuthorityJourney(
 
   const launched = await harness.launch(`${C2ZC_PRODUCT_JOURNEY_ID}/new-project`);
   try {
-    const newProjectId = await createProjectAfterCutover(harness, launched.page);
+    const newProjectId = await createProjectAfterCutover(
+      harness,
+      launched.page,
+      scenario.workspace,
+    );
     const snapshot = await harness.waitUntil(
       async () => {
         const value = await readAuthoritySnapshot(harness, launched.page, newProjectId);
