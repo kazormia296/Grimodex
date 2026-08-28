@@ -375,11 +375,12 @@ export async function configureWorkspace(
     await harness.close(launched.app, launched.page, "configure");
     closed = true;
     if (Object.keys(appSettings).length > 0) {
-      await harness.executeFixtureDml(
+      await harness.executeFixtureOperations(
         workspace,
         Object.entries(appSettings).map(([key, value]) => ({
-          sql: "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
-          params: [key, String(value)],
+          kind: "app-settings-upsert",
+          key,
+          value: String(value),
         })),
       );
     }
@@ -496,13 +497,13 @@ async function prepareSecondProject(
     );
     closed = true;
     if (Object.keys(projectSettings).length > 0) {
-      await harness.executeFixtureDml(
+      await harness.executeFixtureOperations(
         workspace,
         Object.entries(projectSettings).map(([key, value]) => ({
-          sql: `INSERT OR REPLACE INTO project_settings
-            (project_id, key, value)
-            VALUES (?, ?, ?)`,
-          params: [projectA.id, key, String(value)],
+          kind: "project-settings-upsert",
+          projectId: projectA.id,
+          key,
+          value: String(value),
         })),
       );
     }
@@ -537,13 +538,13 @@ async function prepareProjectSettings(harness, phase, workspace, settings) {
     );
     closed = true;
     if (Object.keys(settings).length > 0) {
-      await harness.executeFixtureDml(
+      await harness.executeFixtureOperations(
         workspace,
         Object.entries(settings).map(([key, value]) => ({
-          sql: `INSERT OR REPLACE INTO project_settings
-            (project_id, key, value)
-            VALUES (?, ?, ?)`,
-          params: [project.id, key, String(value)],
+          kind: "project-settings-upsert",
+          projectId: project.id,
+          key,
+          value: String(value),
         })),
       );
     }
@@ -2388,20 +2389,29 @@ export async function runProductJourneys({
     const startedAt = clock();
     let durationMs = null;
     let harness = null;
+    let journeyResultIndex = -1;
     try {
       harness = factory();
-      await journey.run(harness);
+      const journeyResult = await journey.run(harness);
       durationMs = elapsedMilliseconds(clock, startedAt);
       const diagnostics = normalizeProductJourneyDiagnostics(
         await harness.finalizeDiagnostics?.(),
       );
-      await harness.dispose({ success: true, name: journey.id });
-      report.journeys.push({
+      const passedResult = {
         id: journey.id,
         status: "passed",
         durationMs,
         ...diagnostics,
-      });
+        ...(journeyResult === undefined ? {} : { result: journeyResult }),
+      };
+      report.journeys.push(passedResult);
+      journeyResultIndex = report.journeys.length - 1;
+      // A journey result can contain the launch attestation and other
+      // evidence that cleanup removes (for example the nonce receipt tree).
+      // Persist it before disposing the harness so a successful return cannot
+      // be lost merely because its temporary filesystem evidence is consumed.
+      await writeResults(outputPath, report);
+      await harness.dispose({ success: true, name: journey.id });
       log(`${journey.id}: PASS`);
     } catch (error) {
       durationMs ??= elapsedMilliseconds(clock, startedAt);
@@ -2420,7 +2430,11 @@ export async function runProductJourneys({
         // because the renderer itself emitted no errors.
         cleanPass: false,
       };
-      report.journeys.push(failedResult);
+      if (journeyResultIndex >= 0) {
+        report.journeys[journeyResultIndex] = failedResult;
+      } else {
+        report.journeys.push(failedResult);
+      }
       report.journeys.push(
         ...notRunResults(
           journeys.slice(index + 1),

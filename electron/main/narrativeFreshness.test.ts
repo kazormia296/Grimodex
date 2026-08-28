@@ -40,10 +40,14 @@ describe("createNarrativeFreshnessScheduler", () => {
     vi.restoreAllMocks();
   });
 
-  function createScheduler(backend: unknown, warn = vi.fn()) {
+  function createScheduler(
+    backend: unknown,
+    warn = vi.fn(),
+    options: Record<string, unknown> = {},
+  ) {
     const scheduler = createNarrativeFreshnessScheduler(
       backend as Parameters<typeof createNarrativeFreshnessScheduler>[0],
-      { warn },
+      { warn, ...options },
     );
     schedulers.push(scheduler);
     return { scheduler, warn };
@@ -94,9 +98,11 @@ describe("createNarrativeFreshnessScheduler", () => {
   });
 
   it("C2-ZCのexpected NOT_READYだけをactivation ownerへ通知する", async () => {
-    const runNarrativeFreshnessCycle = vi.fn().mockResolvedValue(
-      JSON.stringify({ hasMore: false, cutoverNotReady: true }),
-    );
+    const runNarrativeFreshnessCycle = vi
+      .fn()
+      .mockResolvedValue(
+        JSON.stringify({ hasMore: false, cutoverNotReady: true }),
+      );
     const onCutoverNotReady = vi.fn();
     const scheduler = createNarrativeFreshnessScheduler(
       { runNarrativeFreshnessCycle },
@@ -128,6 +134,39 @@ describe("createNarrativeFreshnessScheduler", () => {
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
     expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it("cycle完了後かつin-flight解放後にだけmain observationを通知する", async () => {
+    const first = deferred<string | null>();
+    const runNarrativeFreshnessCycle = vi.fn().mockReturnValue(first.promise);
+    const onCycleCompleted = vi.fn();
+    const { scheduler } = createScheduler(
+      { runNarrativeFreshnessCycle },
+      vi.fn(),
+      { onCycleCompleted },
+    );
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(onCycleCompleted).not.toHaveBeenCalled();
+
+    first.resolve(summary(false));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onCycleCompleted).toHaveBeenCalledOnce();
+    expect(onCycleCompleted).toHaveBeenCalledWith({
+      cycleGeneration: 1,
+      observedAtMs: expect.any(Number),
+      inFlight: false,
+      hasMore: false,
+      noWrite: false,
+      heldProjectId: null,
+      cutoverNotReady: false,
+      wakePending: false,
+      timerScheduled: true,
+      nextCycleGuardStateDigest: null,
+      quiescenceState: undefined,
+    });
   });
 
   it("cycle失敗をwarnして有界retryを継続する", async () => {

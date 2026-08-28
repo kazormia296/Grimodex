@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -20,6 +23,23 @@ import yaml from "js-yaml";
 import { PRODUCT_JOURNEY_CATALOG } from "../electron/scripts/product-journey-catalog.mjs";
 import {
   createProductJourneyHarness,
+  NARRATIVE_MAINTENANCE_NONCE_ENV,
+  NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+  NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+  NARRATIVE_MAINTENANCE_FRESHNESS_HOLD_PROJECT_ENV,
+  NARRATIVE_MAINTENANCE_RECEIPT_EVENT,
+  NARRATIVE_MAINTENANCE_RECEIPT_MAX_BYTES,
+  NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+  NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+  NARRATIVE_MAINTENANCE_QUIESCENCE_MAX_BYTES,
+  NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE,
+  NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE,
+  NARRATIVE_MAINTENANCE_QUIESCENCE_TYPE,
+  assertNarrativeMaintenanceCiReceipt,
+  assertNarrativeMaintenanceCiQuiescenceReceipt,
+  expectedNarrativeMaintenanceCiReceipt,
+  readNarrativeMaintenanceCiQuiescence,
+  narrativeMaintenanceReceiptRoot,
   MAIN_PROCESS_NOISE_ALLOWLIST,
 } from "../electron/scripts/product-journey-harness.mjs";
 import {
@@ -56,6 +76,1040 @@ test("package.json exposes the runner and canonical product journey contracts", 
       .includes("scripts/product-journey-mcp-client.test.mjs"),
     "canonical product journey contracts must include the MCP client tests",
   );
+});
+
+const RECEIPT_NONCE = "00000000-0000-4000-8000-000000000001";
+const RECEIPT_STALE_NONCE = "00000000-0000-4000-8000-000000000002";
+const QUIESCENCE_REQUEST_NONCE = "00000000-0000-4000-8000-000000000003";
+
+function canonicalReceiptText(value) {
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(value).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    ),
+  );
+}
+
+function canonicalValueText(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => canonicalValueText(entry)).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalValueText(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function quiescenceReceipt(
+  sequence = 1,
+  nonce = RECEIPT_NONCE,
+  requestNonce = QUIESCENCE_REQUEST_NONCE,
+  phase = "quiescence-file",
+  requestedAt = "1970-01-01T00:00:00.000Z",
+  observedAt = requestedAt,
+  freshnessHoldProjectId = null,
+) {
+  const state = {
+    authorityId: "authority-1",
+    generation: 1,
+    freshnessHoldProjectId,
+    heldProjectId: freshnessHoldProjectId,
+    projects: [],
+    marker: null,
+  };
+  const stateDigest = `sha256:${createHash("sha256")
+    .update(canonicalValueText(state), "utf8")
+    .digest("hex")}`;
+  return {
+    version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+    type: NARRATIVE_MAINTENANCE_QUIESCENCE_TYPE,
+    nonce,
+    requestNonce,
+    phase,
+    requestedAt,
+    sequence,
+    observedAt,
+    monotonicObservedAtMs: sequence,
+    workspaceBinding: { authorityId: "authority-1", generation: 1 },
+    discovery: {
+      discoveryGeneration: 1,
+      empty: true,
+      inFlight: false,
+      timerScheduled: false,
+      pendingRetry: false,
+      pendingEvent: false,
+      wakeAckPending: false,
+      wakeOutboxDrainInFlight: false,
+      wakeOutboxDrainSucceeded: true,
+      wakeOutboxDrainFailed: false,
+      wakeOutboxPendingRows: false,
+      queueIdle: true,
+    },
+    freshness: {
+      cycleGeneration: sequence,
+      inFlight: false,
+      hasMore: false,
+      noWrite: true,
+      heldProjectId: freshnessHoldProjectId,
+      cutoverNotReady: freshnessHoldProjectId !== null,
+      wakePending: false,
+      timerScheduled: false,
+      nextCycleGuardStateDigest: null,
+    },
+    state: { ...state, stateDigest },
+    stateDigest,
+  };
+}
+
+test("maintenance receipt contract is nonce-bound and exact", () => {
+  const env = {
+    CI: "true",
+    [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+    [NARRATIVE_MAINTENANCE_NONCE_ENV]: RECEIPT_NONCE,
+  };
+  const expected = expectedNarrativeMaintenanceCiReceipt(env);
+  assert.deepEqual(expected, {
+    version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+    type: NARRATIVE_MAINTENANCE_RECEIPT_EVENT,
+    nonce: RECEIPT_NONCE,
+    active: true,
+    setup: null,
+    freshness: null,
+    freshnessHoldProjectId: null,
+    fault: null,
+    trigger: null,
+    isPackaged: false,
+    nativeAck: true,
+  });
+  assert.deepEqual(
+    assertNarrativeMaintenanceCiReceipt(expected, expected),
+    expected,
+  );
+  const heldExpected = expectedNarrativeMaintenanceCiReceipt({
+    ...env,
+    [NARRATIVE_MAINTENANCE_FRESHNESS_HOLD_PROJECT_ENV]: "project-hold",
+  });
+  assert.equal(heldExpected.freshnessHoldProjectId, "project-hold");
+  assert.equal(Object.hasOwn(heldExpected, "ownerToken"), false);
+
+  for (const [label, candidate] of [
+    ["missing", null],
+    ["wrong nonce", { ...expected, nonce: RECEIPT_STALE_NONCE }],
+    ["mismatch", { ...expected, trigger: "dependency-gap" }],
+    ["owner token leak", { ...expected, ownerToken: "secret" }],
+  ]) {
+    assert.throws(
+      () => assertNarrativeMaintenanceCiReceipt(candidate, expected),
+      new RegExp(
+        label === "missing"
+          ? "receipt"
+          : label === "wrong nonce"
+            ? "nonce"
+            : label === "owner token leak"
+              ? "owner.*token"
+              : label.replace(" ", ".*"),
+        "i",
+      ),
+    );
+  }
+});
+
+test("production env does not require an active maintenance receipt", () => {
+  const expected = expectedNarrativeMaintenanceCiReceipt({ CI: "true" });
+  assert.equal(expected, null);
+  assert.throws(
+    () =>
+      assertNarrativeMaintenanceCiReceipt(
+        {
+          version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+          type: NARRATIVE_MAINTENANCE_RECEIPT_EVENT,
+          nonce: RECEIPT_NONCE,
+          active: true,
+          setup: null,
+          freshness: null,
+          fault: null,
+          trigger: null,
+          isPackaged: false,
+          nativeAck: true,
+        },
+        expected,
+      ),
+    /unexpected/i,
+  );
+});
+
+test("quiescence receipt is exact, digest-bound, nonce-bound, and size-bounded", () => {
+  const receipt = quiescenceReceipt();
+  assert.deepEqual(
+    assertNarrativeMaintenanceCiQuiescenceReceipt(receipt, RECEIPT_NONCE, 1),
+    receipt,
+  );
+  assert.ok(
+    Buffer.byteLength(canonicalValueText(receipt), "utf8") <=
+      NARRATIVE_MAINTENANCE_QUIESCENCE_MAX_BYTES,
+  );
+  for (const [label, candidate] of [
+    ["wrong nonce", { ...receipt, nonce: RECEIPT_STALE_NONCE }],
+    ["sequence gap", { ...receipt, sequence: 2 }],
+    ["extra field", { ...receipt, path: "/tmp/secret" }],
+    [
+      "unguarded timer",
+      {
+        ...receipt,
+        freshness: { ...receipt.freshness, timerScheduled: true },
+      },
+    ],
+  ]) {
+    assert.throws(
+      () =>
+        assertNarrativeMaintenanceCiQuiescenceReceipt(
+          candidate,
+          RECEIPT_NONCE,
+          1,
+        ),
+      label === "wrong nonce"
+        ? /header|nonce/i
+        : label === "sequence gap"
+          ? /sequence.*contiguous|gap/i
+          : label === "extra field"
+            ? /unexpected|extra/i
+            : label === "unguarded timer"
+              ? /freshness|timer|unguarded/i
+              : new RegExp(label.replace(" ", ".*"), "i"),
+    );
+  }
+  const heldReceipt = quiescenceReceipt(
+    1,
+    RECEIPT_NONCE,
+    QUIESCENCE_REQUEST_NONCE,
+    "quiescence-held",
+    "1970-01-01T00:00:00.000Z",
+    "1970-01-01T00:00:00.000Z",
+    "project-hold",
+  );
+  assert.equal(
+    assertNarrativeMaintenanceCiQuiescenceReceipt(heldReceipt, RECEIPT_NONCE, 1)
+      .freshness.heldProjectId,
+    "project-hold",
+  );
+  assert.throws(
+    () =>
+      assertNarrativeMaintenanceCiQuiescenceReceipt(
+        {
+          ...heldReceipt,
+          freshness: { ...heldReceipt.freshness, cutoverNotReady: false },
+        },
+        RECEIPT_NONCE,
+        1,
+      ),
+    /freshness/i,
+  );
+});
+
+test("harness accepts a file quiescence sequence independently of stdout", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = RECEIPT_NONCE;
+  const page = {
+    on: () => undefined,
+    evaluate: async () => [],
+    waitForFunction: async () => undefined,
+    isClosed: () => false,
+  };
+  const app = {
+    context: () => null,
+    firstWindow: async () => page,
+    process: () => ({ stdout: new EventEmitter(), stderr: null }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    launchTimeoutMs: 100,
+    electronLauncher: {
+      launch: async ({ env }) => {
+        const expected = expectedNarrativeMaintenanceCiReceipt(env);
+        const nonceDir = path.join(
+          env.GRIMODEX_USER_DATA_DIR,
+          NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+          expected.nonce,
+        );
+        await mkdir(nonceDir, { recursive: true });
+        await writeFile(
+          path.join(nonceDir, "receipt.json"),
+          canonicalReceiptText(expected),
+          { mode: 0o600 },
+        );
+        await writeFile(
+          path.join(nonceDir, NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE),
+          canonicalValueText({
+            version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+            type: NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE,
+            nonce: expected.nonce,
+            requestNonce: QUIESCENCE_REQUEST_NONCE,
+            phase: "quiescence-file",
+            requestedAt: "1970-01-01T00:00:00.000Z",
+          }),
+          { mode: 0o600 },
+        );
+        await writeFile(
+          path.join(nonceDir, "quiescence-0000000001.json"),
+          canonicalValueText(quiescenceReceipt()),
+          { mode: 0o600 },
+        );
+        return app;
+      },
+    },
+    closeApp: async () => undefined,
+  });
+  t.after(async () => {
+    await harness.dispose({ success: true, name: "quiescence-file" });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    }
+    if (previousNonce === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+    }
+  });
+  const launched = await harness.launch("quiescence-file");
+  assert.equal(launched.quiescenceArtifact.receipt.sequence, 1);
+  await assert.rejects(
+    harness.awaitQuiescence(
+      launched.app,
+      "quiescence-file/missing-request-nonce",
+      {
+        previousSequence: 1,
+        authorityId: "authority-1",
+        generation: 1,
+      },
+    ),
+    /caller-generated request nonce/i,
+  );
+  await assert.rejects(
+    harness.awaitQuiescence(
+      launched.app,
+      "quiescence-file/missing-previous-sequence",
+      {
+        requestNonce: QUIESCENCE_REQUEST_NONCE,
+        authorityId: "authority-1",
+        generation: 1,
+      },
+    ),
+    /previousSequence/i,
+  );
+  const secondReceipt = (async () => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const request = JSON.parse(
+      await readFile(
+        path.join(
+          harness.receiptRoot,
+          RECEIPT_NONCE,
+          NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE,
+        ),
+        "utf8",
+      ),
+    );
+    await writeFile(
+      path.join(
+        harness.receiptRoot,
+        RECEIPT_NONCE,
+        "quiescence-0000000002.json",
+      ),
+      canonicalValueText(
+        quiescenceReceipt(
+          2,
+          RECEIPT_NONCE,
+          request.requestNonce,
+          request.phase,
+          request.requestedAt,
+          new Date().toISOString(),
+        ),
+      ),
+      { mode: 0o600 },
+    );
+  })();
+  const fresh = await harness.awaitQuiescence(
+    launched.app,
+    "quiescence-file/fresh",
+    {
+      previousSequence: 1,
+      requestNonce: QUIESCENCE_REQUEST_NONCE,
+      authorityId: "authority-1",
+      generation: 1,
+    },
+  );
+  await secondReceipt;
+  assert.equal(fresh.receipt.sequence, 2);
+  assert.equal(
+    (
+      await harness.readQuiescence(launched.app, "quiescence-file/fresh", {
+        previousSequence: 1,
+        requestNonce: QUIESCENCE_REQUEST_NONCE,
+        authorityId: "authority-1",
+        generation: 1,
+      })
+    ).receipt.sequence,
+    2,
+  );
+  assert.equal(
+    (
+      await readNarrativeMaintenanceCiQuiescence(
+        harness.receiptRoot,
+        expectedNarrativeMaintenanceCiReceipt(process.env),
+        "quiescence-file/fresh",
+        {
+          previousSequence: 1,
+          requestNonce: QUIESCENCE_REQUEST_NONCE,
+          authorityId: "authority-1",
+          generation: 1,
+        },
+      )
+    ).receipt.sequence,
+    2,
+  );
+  const requestPath = path.join(
+    harness.receiptRoot,
+    RECEIPT_NONCE,
+    NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE,
+  );
+  const request = JSON.parse(await readFile(requestPath, "utf8"));
+  await writeFile(
+    requestPath,
+    canonicalValueText({
+      ...request,
+      requestedAt: "1970-01-01T00:00:01.000Z",
+    }),
+    { mode: 0o600 },
+  );
+  await assert.rejects(
+    readNarrativeMaintenanceCiQuiescence(
+      harness.receiptRoot,
+      expectedNarrativeMaintenanceCiReceipt(process.env),
+      "quiescence-file/fresh",
+      {
+        previousSequence: 1,
+        requestNonce: QUIESCENCE_REQUEST_NONCE,
+        authorityId: "authority-1",
+        generation: 1,
+      },
+    ),
+    /stale request|binding/i,
+  );
+  await harness.close(launched.app, launched.page, "quiescence-file");
+  assert.deepEqual(await readdir(harness.receiptRoot), []);
+});
+
+test("harness tolerates the current quiescence temp until atomic rename", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = RECEIPT_NONCE;
+  const page = {
+    on: () => undefined,
+    evaluate: async () => [],
+    waitForFunction: async () => undefined,
+    isClosed: () => false,
+  };
+  const app = {
+    context: () => null,
+    firstWindow: async () => page,
+    process: () => ({ stdout: new EventEmitter(), stderr: null }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    launchTimeoutMs: 120,
+    electronLauncher: {
+      launch: async ({ env }) => {
+        const expected = expectedNarrativeMaintenanceCiReceipt(env);
+        const nonceDir = path.join(
+          env.GRIMODEX_USER_DATA_DIR,
+          NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+          expected.nonce,
+        );
+        await mkdir(nonceDir, { recursive: true });
+        await writeFile(
+          path.join(nonceDir, "receipt.json"),
+          canonicalReceiptText(expected),
+          { mode: 0o600 },
+        );
+        const request = {
+          version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+          type: NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE,
+          nonce: expected.nonce,
+          requestNonce: QUIESCENCE_REQUEST_NONCE,
+          phase: "quiescence-temp",
+          requestedAt: "1970-01-01T00:00:00.000Z",
+        };
+        await writeFile(
+          path.join(nonceDir, NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE),
+          canonicalValueText(request),
+          { mode: 0o600 },
+        );
+        const temporaryPath = path.join(
+          nonceDir,
+          "quiescence-0000000001.json.tmp",
+        );
+        const finalPath = temporaryPath.slice(0, -4);
+        await writeFile(
+          temporaryPath,
+          canonicalValueText(
+            quiescenceReceipt(
+              1,
+              expected.nonce,
+              request.requestNonce,
+              request.phase,
+              request.requestedAt,
+            ),
+          ),
+          { mode: 0o600 },
+        );
+        setTimeout(() => {
+          void rename(temporaryPath, finalPath);
+        }, 25);
+        return app;
+      },
+    },
+    closeApp: async () => undefined,
+  });
+  t.after(async () => {
+    await harness.dispose({ success: true, name: "quiescence-temp" });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    }
+    if (previousNonce === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+    }
+  });
+
+  const launched = await harness.launch("quiescence-temp");
+  assert.equal(launched.quiescenceArtifact.receipt.sequence, 1);
+  await harness.close(launched.app, launched.page, "quiescence-temp");
+});
+
+test("harness retries only the current quiescence temp and reports a stuck temp", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = RECEIPT_NONCE;
+  const page = {
+    on: () => undefined,
+    evaluate: async () => [],
+    waitForFunction: async () => undefined,
+    isClosed: () => false,
+  };
+  const app = {
+    context: () => null,
+    firstWindow: async () => page,
+    process: () => ({ stdout: new EventEmitter(), stderr: null }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    launchTimeoutMs: 100,
+    electronLauncher: {
+      launch: async ({ env }) => {
+        const expected = expectedNarrativeMaintenanceCiReceipt(env);
+        const nonceDir = path.join(
+          env.GRIMODEX_USER_DATA_DIR,
+          NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+          expected.nonce,
+        );
+        await mkdir(nonceDir, { recursive: true });
+        await writeFile(
+          path.join(nonceDir, "receipt.json"),
+          canonicalReceiptText(expected),
+          { mode: 0o600 },
+        );
+        await writeFile(
+          path.join(nonceDir, NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE),
+          canonicalValueText({
+            version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+            type: NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE,
+            nonce: expected.nonce,
+            requestNonce: QUIESCENCE_REQUEST_NONCE,
+            phase: "quiescence-retry",
+            requestedAt: "1970-01-01T00:00:00.000Z",
+          }),
+          { mode: 0o600 },
+        );
+        await writeFile(
+          path.join(nonceDir, "quiescence-0000000001.json"),
+          canonicalValueText(quiescenceReceipt()),
+          { mode: 0o600 },
+        );
+        return app;
+      },
+    },
+    closeApp: async () => undefined,
+  });
+  t.after(async () => {
+    await harness.dispose({ success: true, name: "quiescence-retry" });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    }
+    if (previousNonce === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+    }
+  });
+
+  const launched = await harness.launch("quiescence-retry");
+  const nextRequestNonce = "00000000-0000-4000-8000-000000000004";
+  const transientWrite = (async () => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const nonceDir = path.join(harness.receiptRoot, RECEIPT_NONCE);
+    const request = JSON.parse(
+      await readFile(
+        path.join(nonceDir, NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE),
+        "utf8",
+      ),
+    );
+    const temporaryPath = path.join(nonceDir, "quiescence-0000000002.json.tmp");
+    await writeFile(
+      temporaryPath,
+      canonicalValueText(
+        quiescenceReceipt(
+          2,
+          RECEIPT_NONCE,
+          nextRequestNonce,
+          request.phase,
+          request.requestedAt,
+          request.requestedAt,
+        ),
+      ),
+      { mode: 0o600 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await rename(temporaryPath, temporaryPath.slice(0, -4));
+  })();
+  const fresh = await harness.awaitQuiescence(
+    launched.app,
+    "quiescence-retry",
+    {
+      previousSequence: 1,
+      requestNonce: nextRequestNonce,
+      authorityId: "authority-1",
+      generation: 1,
+    },
+  );
+  await transientWrite;
+  assert.equal(fresh.receipt.sequence, 2);
+
+  const stuckRequestNonce = "00000000-0000-4000-8000-000000000005";
+  const stuckTempPath = path.join(
+    harness.receiptRoot,
+    RECEIPT_NONCE,
+    "quiescence-0000000003.json.tmp",
+  );
+  const stuckWrite = (async () => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const nonceDir = path.dirname(stuckTempPath);
+    const request = JSON.parse(
+      await readFile(
+        path.join(nonceDir, NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE),
+        "utf8",
+      ),
+    );
+    await writeFile(
+      stuckTempPath,
+      canonicalValueText(
+        quiescenceReceipt(
+          3,
+          RECEIPT_NONCE,
+          stuckRequestNonce,
+          request.phase,
+          request.requestedAt,
+          request.requestedAt,
+        ),
+      ),
+      { mode: 0o600 },
+    );
+  })();
+  await assert.rejects(
+    harness.awaitQuiescence(launched.app, "quiescence-retry/stuck", {
+      previousSequence: 2,
+      requestNonce: stuckRequestNonce,
+      authorityId: "authority-1",
+      generation: 1,
+    }),
+    /partial\/stuck/i,
+  );
+  await stuckWrite;
+  await rm(stuckTempPath, { force: true });
+  await harness.close(launched.app, launched.page, "quiescence-retry");
+  assert.deepEqual(await readdir(harness.receiptRoot), []);
+});
+
+test("file receipt is accepted even when Playwright consumed stdout before launch resolved", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = RECEIPT_NONCE;
+  try {
+    const expected = expectedNarrativeMaintenanceCiReceipt(process.env);
+    const stdout = new EventEmitter();
+    const page = {
+      on: () => undefined,
+      evaluate: async () => [],
+      waitForFunction: async () => undefined,
+      isClosed: () => false,
+    };
+    const app = {
+      context: () => null,
+      firstWindow: async () => page,
+      process: () => ({ stdout, stderr: null }),
+    };
+    const harness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      launchTimeoutMs: 100,
+      electronLauncher: {
+        launch: async ({ env }) => {
+          // Simulate Playwright consuming the old stdout event before launch
+          // returns.  The file artifact remains independently observable.
+          stdout.emit("data", `${canonicalReceiptText(expected)}\n`);
+          const nonceDir = path.join(
+            env.GRIMODEX_USER_DATA_DIR,
+            NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+            expected.nonce,
+          );
+          await mkdir(nonceDir, { recursive: true });
+          await writeFile(
+            path.join(nonceDir, "receipt.json"),
+            canonicalReceiptText(expected),
+            { mode: 0o600 },
+          );
+          return app;
+        },
+      },
+      closeApp: async () => undefined,
+    });
+    t.after(() => harness.dispose({ success: true, name: "file-receipt" }));
+    const launched = await harness.launch("file-receipt");
+    assert.match(launched.launchId, /^launch-[0-9a-f-]{36}$/u);
+    assert.equal(launched.launchReceipt.launchId, launched.launchId);
+    assert.equal(launched.launchReceipt.receipt.nonce, RECEIPT_NONCE);
+    assert.equal(
+      launched.launchReceipt.sha256,
+      launched.receiptArtifact.sha256,
+    );
+    assert.equal(launched.receiptArtifact.receipt.nonce, RECEIPT_NONCE);
+    assert.match(launched.receiptArtifact.sha256, /^sha256:[0-9a-f]{64}$/);
+    await harness.close(launched.app, launched.page, "file-receipt");
+    assert.deepEqual(await readdir(harness.receiptRoot), []);
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    }
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  }
+});
+
+test("receipt root rejects stale, wrong, partial, symlink, and duplicate artifacts", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = RECEIPT_NONCE;
+  try {
+    const expected = expectedNarrativeMaintenanceCiReceipt(process.env);
+    const cases = [
+      {
+        name: "wrong-nonce",
+        write: async (root) => {
+          const nonceDir = path.join(root, RECEIPT_STALE_NONCE);
+          await mkdir(nonceDir);
+        },
+        pattern: /nonce|root entries|clean/i,
+      },
+      {
+        name: "mismatch",
+        writeAfterLaunch: true,
+        write: async (root) => {
+          const nonceDir = path.join(root, expected.nonce);
+          await mkdir(nonceDir);
+          await writeFile(
+            path.join(nonceDir, "receipt.json"),
+            canonicalReceiptText({ ...expected, trigger: "dependency-gap" }),
+          );
+        },
+        pattern: /mismatch|trigger/i,
+      },
+      {
+        name: "missing",
+        writeAfterLaunch: true,
+        write: async () => undefined,
+        pattern: /missing|receipt/i,
+      },
+      {
+        name: "partial",
+        writeAfterLaunch: true,
+        write: async (root) => {
+          const nonceDir = path.join(root, expected.nonce);
+          await mkdir(nonceDir);
+          await writeFile(path.join(nonceDir, "receipt.tmp"), "partial");
+        },
+        pattern: /partial|missing|receipt/i,
+      },
+      {
+        name: "extra-file",
+        writeAfterLaunch: true,
+        write: async (root) => {
+          const nonceDir = path.join(root, expected.nonce);
+          await mkdir(nonceDir);
+          await writeFile(
+            path.join(nonceDir, "receipt.json"),
+            canonicalReceiptText(expected),
+          );
+          await writeFile(path.join(nonceDir, "unexpected"), "x");
+        },
+        pattern: /unexpected|entries/i,
+      },
+      {
+        name: "duplicate-existing-dir",
+        write: async (root) => {
+          await mkdir(path.join(root, expected.nonce));
+        },
+        pattern: /clean/i,
+      },
+      {
+        name: "symlink",
+        writeAfterLaunch: true,
+        write: async (root, harness) => {
+          const target = path.join(
+            harness?.tmpRoot ?? path.dirname(path.dirname(root)),
+            "receipt-target",
+          );
+          await mkdir(target);
+          await symlink(target, path.join(root, expected.nonce));
+        },
+        pattern: /symlink|entries|regular/i,
+      },
+      {
+        name: "duplicate-same-content",
+        writeAfterLaunch: true,
+        write: async (root) => {
+          const nonceDir = path.join(root, expected.nonce);
+          await mkdir(nonceDir);
+          await writeFile(
+            path.join(nonceDir, "receipt.json"),
+            canonicalReceiptText(expected),
+          );
+          await writeFile(
+            path.join(nonceDir, "receipt-copy.json"),
+            canonicalReceiptText(expected),
+          );
+        },
+        pattern: /unexpected|entries|duplicate/i,
+      },
+      {
+        name: "duplicate-different-content",
+        writeAfterLaunch: true,
+        write: async (root) => {
+          const nonceDir = path.join(root, expected.nonce);
+          await mkdir(nonceDir);
+          await writeFile(
+            path.join(nonceDir, "receipt.json"),
+            canonicalReceiptText(expected),
+          );
+          await mkdir(path.join(root, RECEIPT_STALE_NONCE));
+        },
+        pattern: /entries|nonce|duplicate/i,
+      },
+    ];
+    for (const testCase of cases) {
+      const harness = createProductJourneyHarness({
+        mainCjs: "/tmp/fake-main.cjs",
+        electronBin: "/tmp/fake-electron",
+        launchTimeoutMs: 20,
+        electronLauncher: {
+          launch: async ({ env }) => {
+            if (testCase.writeAfterLaunch) {
+              await testCase.write(
+                path.join(
+                  env.GRIMODEX_USER_DATA_DIR,
+                  NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+                ),
+              );
+            }
+            return {
+              context: () => null,
+              firstWindow: async () => ({
+                on: () => undefined,
+                evaluate: async () => [],
+                waitForFunction: async () => undefined,
+                isClosed: () => false,
+              }),
+              process: () => ({ stdout: new EventEmitter(), stderr: null }),
+            };
+          },
+        },
+        closeApp: async () => undefined,
+      });
+      await mkdir(harness.receiptRoot, { recursive: true });
+      if (!testCase.writeAfterLaunch) {
+        await testCase.write(harness.receiptRoot, harness);
+      }
+      await assert.rejects(harness.launch(testCase.name), testCase.pattern);
+      await harness.dispose({ success: false, name: testCase.name });
+    }
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    }
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  }
+});
+
+test("production launch ignores consumed stdout but rejects any receipt file", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  delete process.env.CI;
+  try {
+    const stdout = new EventEmitter();
+    const page = {
+      on: () => undefined,
+      evaluate: async () => [],
+      waitForFunction: async () => undefined,
+      isClosed: () => false,
+    };
+    const app = {
+      context: () => null,
+      firstWindow: async () => page,
+      process: () => ({ stdout, stderr: null }),
+    };
+    const harness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      launchTimeoutMs: 30,
+      electronLauncher: {
+        launch: async () => {
+          stdout.emit(
+            "data",
+            `${canonicalReceiptText({
+              version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+              type: NARRATIVE_MAINTENANCE_RECEIPT_EVENT,
+              nonce: RECEIPT_NONCE,
+              active: true,
+              setup: null,
+              freshness: null,
+              fault: null,
+              trigger: null,
+              isPackaged: false,
+              nativeAck: true,
+            })}\n`,
+          );
+          return app;
+        },
+      },
+      closeApp: async () => undefined,
+    });
+    t.after(() => harness.dispose({ success: true, name: "production-file" }));
+    const launched = await harness.launch("production-file");
+    await harness.close(launched.app, launched.page, "production-file");
+
+    const failingHarness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      launchTimeoutMs: 30,
+      electronLauncher: {
+        launch: async ({ env }) => {
+          const nonceDir = path.join(
+            env.GRIMODEX_USER_DATA_DIR,
+            NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+            RECEIPT_NONCE,
+          );
+          await mkdir(nonceDir, { recursive: true });
+          await writeFile(
+            path.join(nonceDir, "receipt.json"),
+            canonicalReceiptText({
+              version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+              type: NARRATIVE_MAINTENANCE_RECEIPT_EVENT,
+              nonce: RECEIPT_NONCE,
+              active: true,
+              setup: null,
+              freshness: null,
+              fault: null,
+              trigger: null,
+              isPackaged: false,
+              nativeAck: true,
+            }),
+          );
+          return app;
+        },
+      },
+      closeApp: async () => undefined,
+    });
+    await assert.rejects(
+      failingHarness.launch("production-unexpected-file"),
+      /unexpected|receipt/i,
+    );
+    await failingHarness.dispose({
+      success: false,
+      name: "production-unexpected-file",
+    });
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  }
 });
 
 test("CI has a dedicated product-journeys gate with native Electron and SQLite", async () => {
@@ -246,6 +1300,117 @@ test("catalog and runner implementation IDs match in deterministic order", () =>
   );
 });
 
+test("receipt is reverified after bridge readiness and after process close", async () => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = RECEIPT_NONCE;
+  try {
+    const expected = expectedNarrativeMaintenanceCiReceipt(process.env);
+    let bridgeReceiptPath;
+    const bridgePage = {
+      on: () => undefined,
+      evaluate: async () => [],
+      waitForFunction: async () => {
+        await writeFile(
+          bridgeReceiptPath,
+          canonicalReceiptText({ ...expected, trigger: "dependency-gap" }),
+        );
+      },
+      isClosed: () => false,
+    };
+    const bridgeApp = {
+      context: () => null,
+      firstWindow: async () => bridgePage,
+      process: () => ({ stdout: new EventEmitter(), stderr: null }),
+    };
+    const bridgeHarness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      launchTimeoutMs: 50,
+      electronLauncher: {
+        launch: async ({ env }) => {
+          bridgeReceiptPath = path.join(
+            env.GRIMODEX_USER_DATA_DIR,
+            NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+            expected.nonce,
+            "receipt.json",
+          );
+          await mkdir(path.dirname(bridgeReceiptPath), { recursive: true });
+          await writeFile(bridgeReceiptPath, canonicalReceiptText(expected));
+          return bridgeApp;
+        },
+      },
+      closeApp: async () => undefined,
+    });
+    await assert.rejects(
+      bridgeHarness.launch("receipt-bridge-reverify"),
+      /mismatch|trigger|receipt/i,
+    );
+    await bridgeHarness.dispose({
+      success: false,
+      name: "receipt-bridge-reverify",
+    });
+
+    let closeReceiptPath;
+    const closePage = {
+      on: () => undefined,
+      evaluate: async () => [],
+      waitForFunction: async () => undefined,
+      isClosed: () => false,
+    };
+    const closeApp = {
+      context: () => null,
+      firstWindow: async () => closePage,
+      process: () => ({ stdout: new EventEmitter(), stderr: null }),
+    };
+    const closeHarness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      launchTimeoutMs: 50,
+      electronLauncher: {
+        launch: async ({ env }) => {
+          closeReceiptPath = path.join(
+            env.GRIMODEX_USER_DATA_DIR,
+            NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+            expected.nonce,
+            "receipt.json",
+          );
+          await mkdir(path.dirname(closeReceiptPath), { recursive: true });
+          await writeFile(closeReceiptPath, canonicalReceiptText(expected));
+          return closeApp;
+        },
+      },
+      closeApp: async () => undefined,
+    });
+    const launched = await closeHarness.launch("receipt-close-reverify");
+    await writeFile(
+      closeReceiptPath,
+      canonicalReceiptText({ ...expected, trigger: "dependency-gap" }),
+    );
+    await assert.rejects(
+      closeHarness.close(launched.app, launched.page, "receipt-close-reverify"),
+      /mismatch|trigger|changed|receipt/i,
+    );
+    await closeHarness.dispose({
+      success: false,
+      name: "receipt-close-reverify",
+    });
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  }
+});
+
 test("workspace pairs are created in one cold configure session before startup auto-open", async (t) => {
   const temporaryRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-product-workspace-pair-"),
@@ -275,8 +1440,8 @@ test("workspace pairs are created in one cold configure session before startup a
     async close(closedApp, closedPage, phase) {
       calls.push({ kind: "close", closedApp, closedPage, phase });
     },
-    async executeFixtureDml(workspace, statements) {
-      calls.push({ kind: "fixture-dml", workspace, statements });
+    async executeFixtureOperations(workspace, operations) {
+      calls.push({ kind: "fixture-operations", workspace, operations });
     },
   };
 
@@ -310,22 +1475,23 @@ test("workspace pairs are created in one cold configure session before startup a
   assert.equal(savedSettings.args.settings.showLauncherOnStartup, false);
   const closeIndex = calls.findIndex((call) => call.kind === "close");
   const fixtureDmlIndex = calls.findIndex(
-    (call) => call.kind === "fixture-dml",
+    (call) => call.kind === "fixture-operations",
   );
   assert.ok(closeIndex >= 0 && closeIndex < fixtureDmlIndex);
   assert.deepEqual(calls[fixtureDmlIndex], {
-    kind: "fixture-dml",
+    kind: "fixture-operations",
     workspace: workspaceA,
-    statements: [
+    operations: [
       {
-        sql: "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
-        params: ["editor.autoSaveDelay", "60000"],
+        kind: "app-settings-upsert",
+        key: "editor.autoSaveDelay",
+        value: "60000",
       },
     ],
   });
 });
 
-test("CI fixture DML is exact-workspace, renderer-fenced, and fail-closed", async (t) => {
+test("CI fixture operations are typed, exact-workspace, renderer-fenced, and fail-closed", async (t) => {
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
@@ -350,96 +1516,171 @@ test("CI fixture DML is exact-workspace, renderer-fenced, and fail-closed", asyn
     () => harness.workspacePath(".."),
     /invalid product journey workspace/,
   );
-  const workspace = harness.workspacePath("fixture-dml");
+  const workspace = harness.workspacePath("fixture-operations");
   await mkdir(workspace, { recursive: true });
   const databasePath = path.join(workspace, "grimodex.db");
   await execFile("sqlite3", [
     databasePath,
-    `CREATE TABLE fixture_values (
-       text_value TEXT,
-       null_value TEXT,
-       number_value REAL,
-       blob_value BLOB
-     );`,
+    `PRAGMA foreign_keys = ON;
+     CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+     CREATE TABLE projects (id TEXT PRIMARY KEY);
+     CREATE TABLE project_settings (project_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (project_id, key));
+     CREATE TABLE tree_nodes (id TEXT PRIMARY KEY, project_id TEXT NOT NULL);
+     CREATE TABLE content_versions (id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, content TEXT NOT NULL, version_number INTEGER NOT NULL, snapshot_type TEXT NOT NULL, created_at TEXT NOT NULL);
+     CREATE TABLE narrative_extraction_runs (id TEXT PRIMARY KEY, project_id TEXT NOT NULL);
+     CREATE TABLE narrative_dependency_edges (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, consumer_kind TEXT NOT NULL, consumer_key TEXT NOT NULL, source_object_identity TEXT NOT NULL, read_set_json TEXT NOT NULL, generated_by_transaction_id TEXT, created_at TEXT NOT NULL, owning_run_id TEXT);
+     CREATE TABLE narrative_dependency_edge_states (edge_id TEXT NOT NULL, project_id TEXT NOT NULL);
+     CREATE TABLE narrative_consumer_freshness (project_id TEXT NOT NULL, consumer_kind TEXT NOT NULL, consumer_key TEXT NOT NULL);
+     INSERT INTO projects VALUES ('project-1');
+     INSERT INTO tree_nodes VALUES ('scene-1', 'project-1');
+     INSERT INTO narrative_extraction_runs VALUES ('run-1', 'project-1');`,
   ]);
 
-  const launched = await harness.launch("fixture-dml-active");
+  const launched = await harness.launch("fixture-operations-active");
   await assert.rejects(
-    harness.executeFixtureDml(workspace, [
+    harness.executeFixtureOperations(workspace, [
       {
-        sql: "INSERT INTO fixture_values (text_value) VALUES (?)",
-        params: ["must-not-run"],
+        kind: "app-settings-upsert",
+        key: "blocked",
+        value: "must-not-run",
       },
     ]),
     /requires the renderer to be closed/,
   );
-  await harness.close(launched.app, launched.page, "fixture-dml-active");
+  await harness.close(launched.app, launched.page, "fixture-operations-active");
 
-  const launchPending = harness.launch("fixture-dml-launch-race");
+  const launchPending = harness.launch("fixture-operations-launch-race");
   await assert.rejects(
-    harness.executeFixtureDml(workspace, [
+    harness.executeFixtureOperations(workspace, [
       {
-        sql: "INSERT INTO fixture_values (text_value) VALUES (?)",
-        params: ["launch-race"],
+        kind: "app-settings-upsert",
+        key: "blocked",
+        value: "launch-race",
       },
     ]),
-    /requires the renderer to be closed and no renderer launch to be in progress/,
+    /requires the renderer to be closed/,
   );
   const launchRace = await launchPending;
   await harness.close(
     launchRace.app,
     launchRace.page,
-    "fixture-dml-launch-race",
+    "fixture-operations-launch-race",
   );
 
-  const pending = harness.executeFixtureDml(workspace, [
+  const receipt = await harness.executeFixtureOperations(workspace, [
     {
-      sql: "INSERT INTO fixture_values (text_value) VALUES (?)",
-      params: ["in-flight"],
+      kind: "app-settings-upsert",
+      key: "editor.autoSaveDelay",
+      value: "O'Reilly'); DELETE FROM app_settings; --",
+    },
+    {
+      kind: "project-settings-upsert",
+      projectId: "project-1",
+      key: "fixture.key",
+      value: "fixture.value",
+    },
+    {
+      kind: "content-version-insert",
+      id: "version-1",
+      entityId: "scene-1",
+      content: "fixture content",
+      createdAt: "2026-08-28T00:00:00.000Z",
     },
   ]);
-  await assert.rejects(
-    harness.launch("fixture-dml-during-write"),
-    /blocks renderer launch while fixture DML is running/,
+  assert.equal(receipt.operationCount, 3);
+  assert.match(receipt.operationDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(receipt.beforeCounts, [
+    { rows: 0 },
+    { rows: 0 },
+    { rows: 0 },
+  ]);
+  assert.deepEqual(receipt.afterCounts, [
+    { rows: 1 },
+    { rows: 1 },
+    { rows: 1 },
+  ]);
+  assert.deepEqual(
+    receipt.operations.map(({ operation }) => operation),
+    [
+      {
+        kind: "app-settings-upsert",
+        key: "editor.autoSaveDelay",
+        value: "O'Reilly'); DELETE FROM app_settings; --",
+      },
+      {
+        kind: "project-settings-upsert",
+        projectId: "project-1",
+        key: "fixture.key",
+        value: "fixture.value",
+      },
+      {
+        kind: "content-version-insert",
+        id: "version-1",
+        entityId: "scene-1",
+        content: "fixture content",
+        createdAt: "2026-08-28T00:00:00.000Z",
+      },
+    ],
   );
-  await pending;
-
-  await harness.executeFixtureDml(workspace, [
-    {
-      sql: "INSERT INTO fixture_values (text_value, null_value, number_value, blob_value) VALUES (?, ?, ?, ?)",
-      params: [
-        "O'Reilly'); DELETE FROM fixture_values; --",
-        null,
-        42.5,
-        Buffer.from([0, 255]),
-      ],
-    },
-  ]);
   const { stdout } = await execFile("sqlite3", [
     "-json",
     databasePath,
-    "SELECT text_value AS textValue, null_value AS nullValue, number_value AS numberValue, hex(blob_value) AS blobHex FROM fixture_values ORDER BY rowid;",
+    "SELECT key, value FROM app_settings WHERE key = 'editor.autoSaveDelay';",
   ]);
   assert.deepEqual(JSON.parse(String(stdout)), [
     {
-      textValue: "in-flight",
-      nullValue: null,
-      numberValue: null,
-      blobHex: "",
-    },
-    {
-      textValue: "O'Reilly'); DELETE FROM fixture_values; --",
-      nullValue: null,
-      numberValue: 42.5,
-      blobHex: "00FF",
+      key: "editor.autoSaveDelay",
+      value: "O'Reilly'); DELETE FROM app_settings; --",
     },
   ]);
 
+  const edgeReceipt = await harness.executeFixtureOperations(workspace, [
+    {
+      kind: "dependency-edge-insert",
+      id: "edge-1",
+      projectId: "project-1",
+      consumerKind: "narrative-extraction-run",
+      consumerKey: "run-1",
+      sourceObjectIdentity: "project:scene:scene-1",
+      readSetJson: '["v1@2026-08-28T00:00:00.000Z"]',
+      generatedByTransactionId: null,
+      createdAt: "2026-08-28T00:00:01.000Z",
+      owningRunId: "run-1",
+    },
+  ]);
+  assert.deepEqual(edgeReceipt.beforeCounts, [{ rows: 0 }]);
+  assert.deepEqual(edgeReceipt.afterCounts, [{ rows: 1 }]);
+  await execFile("sqlite3", [
+    databasePath,
+    "INSERT INTO narrative_dependency_edge_states VALUES ('edge-1', 'project-1'); INSERT INTO narrative_consumer_freshness VALUES ('project-1', 'narrative-extraction-run', 'run-1');",
+  ]);
+  const gapReceipt = await harness.executeFixtureOperations(workspace, [
+    {
+      kind: "dependency-derived-state-gap-delete",
+      projectId: "project-1",
+      edgeId: "edge-1",
+      consumerKind: "narrative-extraction-run",
+      consumerKey: "run-1",
+    },
+  ]);
+  assert.deepEqual(gapReceipt.beforeCounts, [
+    { edgeStateRows: 1, freshnessRows: 1 },
+  ]);
+  assert.deepEqual(gapReceipt.afterCounts, [
+    { edgeStateRows: 0, freshnessRows: 0 },
+  ]);
+
   await assert.rejects(
-    harness.executeFixtureDml(path.join(harness.tmpRoot, "other"), []),
+    harness.executeFixtureOperations(path.join(harness.tmpRoot, "other"), [
+      {
+        kind: "app-settings-upsert",
+        key: "key",
+        value: "value",
+      },
+    ]),
     /exact harness-owned workspace path/,
   );
-  const symlinkWorkspace = harness.workspacePath("fixture-dml-symlink");
+  const symlinkWorkspace = harness.workspacePath("fixture-operations-symlink");
   await mkdir(symlinkWorkspace, { recursive: true });
   const symlinkTarget = path.join(symlinkWorkspace, "target.db");
   await execFile("sqlite3", [
@@ -448,41 +1689,58 @@ test("CI fixture DML is exact-workspace, renderer-fenced, and fail-closed", asyn
   ]);
   await symlink(symlinkTarget, path.join(symlinkWorkspace, "grimodex.db"));
   await assert.rejects(
-    harness.executeFixtureDml(symlinkWorkspace, [
+    harness.executeFixtureOperations(symlinkWorkspace, [
       {
-        sql: "INSERT INTO fixture_values (text_value) VALUES (?)",
-        params: ["symlink"],
+        kind: "app-settings-upsert",
+        key: "symlink",
+        value: "rejected",
       },
     ]),
     /non-directory workspace or non-regular database/,
   );
-  for (const [sql, params, error] of [
-    [
-      "INSERT INTO fixture_values (text_value) VALUES (?)",
-      [undefined],
-      /unsupported SQL param type/,
-    ],
-    [
-      "INSERT INTO fixture_values (number_value) VALUES (?)",
-      [Number.NaN],
-      /non-finite numeric params/,
-    ],
-    [
-      "INSERT INTO fixture_values (text_value) VALUES (?); DELETE FROM fixture_values",
-      ["multiple"],
-      /multiple SQL statements/,
-    ],
-    [
-      "SELECT text_value FROM fixture_values",
-      [],
-      /accepts only one INSERT\/UPDATE\/DELETE\/REPLACE statement/,
-    ],
-  ]) {
-    await assert.rejects(
-      harness.executeFixtureDml(workspace, [{ sql, params }]),
-      error,
-    );
-  }
+  await assert.rejects(
+    harness.executeFixtureOperations(workspace, [
+      {
+        kind: "arbitrary-sql",
+        sql: "DELETE FROM narrative_extraction_runs",
+      },
+    ]),
+    /unsupported fixture operation kind/,
+  );
+  await assert.rejects(
+    harness.executeFixtureOperations(workspace, [
+      {
+        kind: "app-settings-upsert",
+        key: "extra",
+        value: "value",
+        sql: "DELETE FROM app_settings",
+      },
+    ]),
+    /extra or missing fields/,
+  );
+  await assert.rejects(
+    harness.executeFixtureOperations(workspace, [
+      {
+        kind: "project-settings-upsert",
+        projectId: "unowned-project",
+        key: "key",
+        value: "value",
+      },
+    ]),
+    /unowned project ID/,
+  );
+  await assert.rejects(
+    harness.executeFixtureOperations(workspace, [
+      {
+        kind: "dependency-derived-state-gap-delete",
+        projectId: "project-1",
+        edgeId: "unowned-edge",
+        consumerKind: "narrative-extraction-run",
+        consumerKey: "run-1",
+      },
+    ]),
+    /unowned dependency gap/,
+  );
 });
 
 test("fixture DML seam stays outside production bundle and preload entrypoints", async () => {
@@ -499,7 +1757,7 @@ test("fixture DML seam stays outside production bundle and preload entrypoints",
     read("electron/preload/index.ts"),
     read("electron/shared/ipcContract.ts"),
   ]);
-  assert.match(harnessSource, /executeFixtureDml/);
+  assert.match(harnessSource, /executeFixtureOperations/);
   assert.match(harnessSource, /ci-product-journey-harness-v1/);
   for (const source of [
     buildSource,
@@ -507,8 +1765,20 @@ test("fixture DML seam stays outside production bundle and preload entrypoints",
     preloadSource,
     contractSource,
   ]) {
+    assert.doesNotMatch(source, /executeFixtureOperations/);
     assert.doesNotMatch(source, /executeFixtureDml/);
   }
+});
+
+test("fixture seam exposes only typed allowlisted operations", async () => {
+  const source = await read("electron/scripts/product-journey-harness.mjs");
+  assert.match(source, /executeFixtureOperations/);
+  assert.doesNotMatch(source, /executeFixtureDml/);
+  assert.match(source, /app-settings-upsert/);
+  assert.match(source, /project-settings-upsert/);
+  assert.match(source, /content-version-insert/);
+  assert.match(source, /dependency-edge-insert/);
+  assert.match(source, /dependency-derived-state-gap-delete/);
 });
 
 test("product runner keeps the real boundary assertions", async () => {
@@ -608,9 +1878,9 @@ test("product journey fixture mutations use the harness-owned non-renderer seam"
       "fixture DML must not cross the renderer db_execute boundary",
     );
   }
-  assert.match(sources[0], /harness\.executeFixtureDml/);
-  assert.match(sources[1], /relaunchAfterFixtureDml/);
-  assert.match(sources[2], /harness\.executeFixtureDml/);
+  assert.match(sources[0], /harness\.executeFixtureOperations/);
+  assert.match(sources[1], /relaunchAfterFixtureOperations/);
+  assert.match(sources[2], /harness\.executeFixtureOperations/);
 });
 
 test("product harness enables only the deterministic main-boundary AI provider", async () => {

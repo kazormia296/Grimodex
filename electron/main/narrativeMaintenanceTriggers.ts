@@ -54,11 +54,41 @@ export interface NarrativeMaintenanceTriggerCoordinator {
    * machine is the crash backstop after an ACK.
    */
   drainWakeOutbox(): Promise<void>;
+  /** Main-only synchronous state recheck for the CI quiescence writer. */
+  getQuiescenceState?(): {
+    mutationRevision: number;
+    workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null;
+    discoveryInFlight: boolean;
+    timerScheduled: boolean;
+    pendingRetry: boolean;
+    pendingEvent: boolean;
+    wakeAckPending: boolean;
+    wakeOutboxDrainInFlight?: boolean;
+    wakeOutboxDrainSucceeded?: boolean;
+    wakeOutboxDrainFailed?: boolean;
+    wakeOutboxPendingRows?: boolean;
+  };
   dispose(): void;
 }
 
 export interface NarrativeMaintenanceTriggerCoordinatorOptions {
   warn?: (...args: unknown[]) => void;
+  /** Publish main-owned coordinator state to the CI quiescence writer. */
+  onDiscoverySettled?: (observation: {
+    discoveryGeneration: number;
+    observedAtMs: number;
+    workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null;
+    discoveryEmpty: boolean;
+    discoveryInFlight: boolean;
+    timerScheduled: boolean;
+    pendingRetry: boolean;
+    pendingEvent: boolean;
+    wakeAckPending: boolean;
+    wakeOutboxDrainInFlight: boolean;
+    wakeOutboxDrainSucceeded: boolean;
+    wakeOutboxDrainFailed: boolean;
+    wakeOutboxPendingRows: boolean;
+  }) => void | Promise<void>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -226,7 +256,9 @@ function normalizeDiscoveryResponse(
 function wakeOutboxAckAccepted(raw: unknown): boolean {
   const value = parseJsonWire(raw);
   if (!isRecord(value)) {
-    throw new Error("native wake outbox acknowledgement returned invalid status");
+    throw new Error(
+      "native wake outbox acknowledgement returned invalid status",
+    );
   }
   if (
     value.status === "accepted" &&
@@ -275,6 +307,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   let pendingRetryDelayMs: number | null = null;
   let lastWakeReason: NarrativeMaintenanceWakeReason | null = null;
   let chainGeneration = 0;
+  let mutationRevision = 0;
   let rediscoveryAttempts = 0;
   let lastDiscoveryFingerprint: string | null = null;
   let pendingWakeOutboxAck: {
@@ -282,9 +315,45 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     workspaceBinding: NarrativeMaintenanceWorkspaceBinding;
     generation: number;
   } | null = null;
+  let wakeOutboxDrainInFlight = false;
+  let wakeOutboxDrainSucceeded = false;
+  let wakeOutboxDrainFailed = false;
+  let wakeOutboxPendingRows = false;
+  let wakeOutboxDrainPromise: Promise<void> | null = null;
+  let lastSettledDiscovery: {
+    generation: number;
+    response: NarrativeMaintenanceDiscoveryResult;
+    workspaceBinding: NarrativeMaintenanceWorkspaceBinding;
+  } | null = null;
+
+  const setWakeOutboxState = (next: {
+    inFlight: boolean;
+    succeeded: boolean;
+    failed: boolean;
+    pendingRows: boolean;
+  }): void => {
+    if (
+      wakeOutboxDrainInFlight === next.inFlight &&
+      wakeOutboxDrainSucceeded === next.succeeded &&
+      wakeOutboxDrainFailed === next.failed &&
+      wakeOutboxPendingRows === next.pendingRows
+    ) {
+      return;
+    }
+    wakeOutboxDrainInFlight = next.inFlight;
+    wakeOutboxDrainSucceeded = next.succeeded;
+    wakeOutboxDrainFailed = next.failed;
+    wakeOutboxPendingRows = next.pendingRows;
+    noteMutation();
+  };
+
+  const noteMutation = (): void => {
+    mutationRevision += 1;
+  };
 
   const clearTimer = (): void => {
     if (timer === null) return;
+    noteMutation();
     clearTimeout(timer);
     timer = null;
     scheduledReason = null;
@@ -293,6 +362,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   };
 
   const queueRetry = (delayMs: number): void => {
+    noteMutation();
     pendingRetryDelayMs =
       pendingRetryDelayMs === null
         ? delayMs
@@ -314,8 +384,10 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     scheduledReason = reason;
     scheduledGeneration = generation;
     scheduledDelayMs = delayMs;
+    noteMutation();
     const timerGeneration = generation;
     timer = setTimeout(() => {
+      noteMutation();
       const nextReason = scheduledReason ?? reason;
       const nextGeneration = scheduledGeneration ?? timerGeneration;
       timer = null;
@@ -344,7 +416,9 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       return;
     }
     discoveryInFlight = true;
+    noteMutation();
     const discoveryGeneration = generation;
+    let completedResponse: NarrativeMaintenanceDiscoveryResult | null = null;
     void (async () => {
       try {
         const response = normalizeDiscoveryResponse(
@@ -355,6 +429,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           requestRediscovery();
           return;
         }
+        completedResponse = response;
         // A durable wake belongs to the authority that listed it.  Verify
         // the discovery response and the live binding *before* scheduler
         // registration: otherwise a replacement workspace response could
@@ -375,7 +450,9 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           } else {
             let currentBinding: NarrativeMaintenanceWorkspaceBinding | null;
             try {
-              currentBinding = normalizeOptionalBinding(getBinding.call(backend));
+              currentBinding = normalizeOptionalBinding(
+                getBinding.call(backend),
+              );
             } catch (error) {
               warn(
                 "[narrative-maintenance] wake outbox binding recheck failed:",
@@ -418,13 +495,31 @@ export function createNarrativeMaintenanceTriggerCoordinator(
               warn(
                 "[narrative-maintenance] wake outbox acknowledgement was not accepted",
               );
+              setWakeOutboxState({
+                inFlight: false,
+                succeeded: false,
+                failed: true,
+                pendingRows: true,
+              });
             } else if (pendingWakeOutboxAck === pendingAck) {
               pendingWakeOutboxAck = null;
+              setWakeOutboxState({
+                inFlight: false,
+                succeeded: true,
+                failed: false,
+                pendingRows: false,
+              });
             }
           } catch (error) {
             // Leaving the rows pending is safe: the next drain replays the
             // exact durable trigger after a successful registration.
             warn("[narrative-maintenance] wake outbox ack failed:", error);
+            setWakeOutboxState({
+              inFlight: false,
+              succeeded: false,
+              failed: true,
+              pendingRows: true,
+            });
           }
         }
         if (response.work.length === 0) {
@@ -458,7 +553,29 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           requestRediscovery();
         }
       } finally {
+        if (
+          pendingWakeOutboxAck?.generation === discoveryGeneration &&
+          pendingWakeOutboxAck !== null
+        ) {
+          setWakeOutboxState({
+            inFlight: false,
+            succeeded: false,
+            failed: true,
+            pendingRows: true,
+          });
+        }
+        if (
+          completedResponse !== null &&
+          discoveryGeneration === chainGeneration
+        ) {
+          lastSettledDiscovery = {
+            generation: discoveryGeneration,
+            response: completedResponse,
+            workspaceBinding: completedResponse.workspaceBinding,
+          };
+        }
         discoveryInFlight = false;
+        noteMutation();
         if (!disposed && pendingEvent !== null) {
           const nextEvent = pendingEvent;
           pendingEvent = null;
@@ -474,6 +591,53 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           pendingRetryDelayMs = null;
           armTimer(lastWakeReason, nextDelay, discoveryGeneration);
         }
+        if (
+          discoveryGeneration === chainGeneration &&
+          !disposed &&
+          typeof options.onDiscoverySettled === "function"
+        ) {
+          let currentBinding: NarrativeMaintenanceWorkspaceBinding | null =
+            completedResponse?.workspaceBinding ?? null;
+          if (currentBinding === null) {
+            try {
+              currentBinding = normalizeOptionalBinding(
+                backend?.getNarrativeMaintenanceWorkspaceBinding?.call(backend),
+              );
+            } catch {
+              currentBinding = null;
+            }
+          }
+          try {
+            const observation = options.onDiscoverySettled({
+              discoveryGeneration,
+              observedAtMs: Date.now(),
+              workspaceBinding: currentBinding,
+              discoveryEmpty: completedResponse?.work.length === 0,
+              discoveryInFlight: false,
+              timerScheduled: timer !== null,
+              pendingRetry: pendingRetryDelayMs !== null,
+              pendingEvent: pendingEvent !== null,
+              wakeAckPending: pendingWakeOutboxAck !== null,
+              wakeOutboxDrainInFlight,
+              wakeOutboxDrainSucceeded,
+              wakeOutboxDrainFailed,
+              wakeOutboxPendingRows,
+            });
+            void Promise.resolve(observation).catch(
+              (callbackError: unknown) => {
+                warn(
+                  "[narrative-maintenance] quiescence observation callback failed:",
+                  callbackError,
+                );
+              },
+            );
+          } catch (callbackError) {
+            warn(
+              "[narrative-maintenance] quiescence observation callback failed:",
+              callbackError,
+            );
+          }
+        }
       }
     })();
   };
@@ -484,6 +648,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       return;
     }
     rediscoveryAttempts += 1;
+    noteMutation();
     if (discoveryInFlight) {
       queueRetry(NARRATIVE_MAINTENANCE_REDISCOVERY_DELAY_MS);
       return;
@@ -495,64 +660,170 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     );
   };
 
-  const drainWakeOutbox = async (): Promise<void> => {
-    if (disposed) return;
+  const emitDiscoveryObservation = (
+    discoveryGeneration: number,
+    discoveryEmpty: boolean,
+    workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null,
+  ): void => {
+    if (disposed || typeof options.onDiscoverySettled !== "function") {
+      return;
+    }
+    try {
+      const observation = options.onDiscoverySettled({
+        discoveryGeneration,
+        observedAtMs: Date.now(),
+        workspaceBinding,
+        discoveryEmpty,
+        discoveryInFlight,
+        timerScheduled: timer !== null,
+        pendingRetry: pendingRetryDelayMs !== null,
+        pendingEvent: pendingEvent !== null,
+        wakeAckPending: pendingWakeOutboxAck !== null,
+        wakeOutboxDrainInFlight,
+        wakeOutboxDrainSucceeded,
+        wakeOutboxDrainFailed,
+        wakeOutboxPendingRows,
+      });
+      void Promise.resolve(observation).catch((callbackError: unknown) => {
+        warn(
+          "[narrative-maintenance] quiescence observation callback failed:",
+          callbackError,
+        );
+      });
+    } catch (callbackError) {
+      warn(
+        "[narrative-maintenance] quiescence observation callback failed:",
+        callbackError,
+      );
+    }
+  };
+
+  const drainWakeOutbox = (): Promise<void> => {
+    if (disposed) return Promise.resolve();
+    if (wakeOutboxDrainPromise) return wakeOutboxDrainPromise;
+    // Do not start a duplicate drain while the current list has been
+    // validated and its rows are waiting for discovery/ACK. A rejected ACK
+    // marks the state failed, which deliberately re-opens this path.
+    if (pendingWakeOutboxAck !== null && !wakeOutboxDrainFailed) {
+      return Promise.resolve();
+    }
     const list = backend?.listNarrativeMaintenanceWakeOutbox;
     const ack = backend?.ackNarrativeMaintenanceWakeOutbox;
     const getBinding = backend?.getNarrativeMaintenanceWorkspaceBinding;
-    if (
-      typeof list !== "function" ||
-      typeof ack !== "function" ||
-      typeof getBinding !== "function"
-    ) {
-      return;
-    }
-    let ids: string[];
-    let workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null = null;
-    try {
-      workspaceBinding = normalizeOptionalBinding(getBinding.call(backend));
-      if (workspaceBinding === null) return;
-      const raw = parseJsonWire(await list.call(backend));
-      if (!Array.isArray(raw)) {
-        throw new Error("native wake outbox returned an invalid list");
+    setWakeOutboxState({
+      inFlight: true,
+      succeeded: false,
+      failed: false,
+      pendingRows: false,
+    });
+    emitDiscoveryObservation(chainGeneration, false, null);
+    const operation = (async (): Promise<void> => {
+      if (
+        typeof list !== "function" ||
+        typeof ack !== "function" ||
+        typeof getBinding !== "function"
+      ) {
+        setWakeOutboxState({
+          inFlight: false,
+          succeeded: false,
+          failed: true,
+          pendingRows: false,
+        });
+        warn(
+          "[narrative-maintenance] wake outbox drain unavailable: native methods are missing",
+        );
+        emitDiscoveryObservation(chainGeneration, false, null);
+        return;
       }
-      ids = raw.map((row) => {
-        if (!isRecord(row) || typeof row.id !== "string") {
-          throw new Error("native wake outbox returned an invalid row");
+      let ids: string[];
+      let workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null = null;
+      try {
+        workspaceBinding = normalizeOptionalBinding(getBinding.call(backend));
+        if (workspaceBinding === null) {
+          setWakeOutboxState({
+            inFlight: false,
+            succeeded: false,
+            failed: true,
+            pendingRows: false,
+          });
+          emitDiscoveryObservation(chainGeneration, false, null);
+          return;
         }
-        return row.id;
+        const raw = parseJsonWire(await list.call(backend));
+        if (!Array.isArray(raw)) {
+          throw new Error("native wake outbox returned an invalid list");
+        }
+        ids = raw.map((row) => {
+          if (!isRecord(row) || typeof row.id !== "string") {
+            throw new Error("native wake outbox returned an invalid row");
+          }
+          return row.id;
+        });
+      } catch (error) {
+        warn("[narrative-maintenance] wake outbox listing failed:", error);
+        setWakeOutboxState({
+          inFlight: false,
+          succeeded: false,
+          failed: true,
+          pendingRows: false,
+        });
+        emitDiscoveryObservation(chainGeneration, false, workspaceBinding);
+        return;
+      }
+      setWakeOutboxState({
+        inFlight: false,
+        succeeded: ids.length === 0,
+        failed: false,
+        pendingRows: ids.length > 0,
       });
-    } catch (error) {
-      warn("[narrative-maintenance] wake outbox listing failed:", error);
-      return;
-    }
-    if (disposed || ids.length === 0 || workspaceBinding === null) return;
-    // The wake payload is only "this workspace has a rotated Epoch"; the
-    // discovery planner reads the durable state machine, so one discovery
-    // chain covers every pending row.
-    const generation = ++chainGeneration;
-    rediscoveryAttempts = 0;
-    lastDiscoveryFingerprint = null;
-    lastWakeReason = "semantic-epoch-rotated";
-    clearTimer();
-    pendingRetryDelayMs = null;
-    pendingWakeOutboxAck = {
-      ids,
-      workspaceBinding,
-      generation,
-    };
-    if (discoveryInFlight) {
-      pendingEvent = { reason: "semantic-epoch-rotated", generation };
-    } else {
-      pendingEvent = null;
-      armTimer("semantic-epoch-rotated", 0, generation);
-    }
+      if (disposed || ids.length === 0 || workspaceBinding === null) {
+        const sameDiscovery =
+          lastSettledDiscovery?.generation === chainGeneration;
+        emitDiscoveryObservation(
+          chainGeneration,
+          sameDiscovery
+            ? lastSettledDiscovery?.response.work.length === 0
+            : false,
+          sameDiscovery
+            ? (lastSettledDiscovery?.workspaceBinding ?? workspaceBinding)
+            : workspaceBinding,
+        );
+        return;
+      }
+      // The wake payload is only "this workspace has a rotated Epoch"; the
+      // discovery planner reads the durable state machine, so one discovery
+      // chain covers every pending row.
+      const generation = ++chainGeneration;
+      rediscoveryAttempts = 0;
+      lastDiscoveryFingerprint = null;
+      lastWakeReason = "semantic-epoch-rotated";
+      clearTimer();
+      pendingRetryDelayMs = null;
+      pendingWakeOutboxAck = {
+        ids,
+        workspaceBinding,
+        generation,
+      };
+      noteMutation();
+      emitDiscoveryObservation(generation, false, workspaceBinding);
+      if (discoveryInFlight) {
+        pendingEvent = { reason: "semantic-epoch-rotated", generation };
+      } else {
+        pendingEvent = null;
+        armTimer("semantic-epoch-rotated", 0, generation);
+      }
+    })();
+    wakeOutboxDrainPromise = operation.finally(() => {
+      wakeOutboxDrainPromise = null;
+    });
+    return wakeOutboxDrainPromise;
   };
 
   return {
     requestBeforeCutoverPreparation(): void {
       if (disposed) return;
       const generation = ++chainGeneration;
+      noteMutation();
       rediscoveryAttempts = 0;
       lastDiscoveryFingerprint = null;
       lastWakeReason = "before-cutover";
@@ -601,6 +872,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
         }
       }
       const generation = ++chainGeneration;
+      noteMutation();
       rediscoveryAttempts = 0;
       const reason =
         channel === "narrative-maintenance:epoch-rotated"
@@ -615,9 +887,11 @@ export function createNarrativeMaintenanceTriggerCoordinator(
         // the newest event; an old in-flight completion is observationally
         // stale and must not enqueue its binding or mutate retry state.
         pendingEvent = { reason, generation };
+        noteMutation();
         return;
       }
       pendingEvent = null;
+      noteMutation();
       armTimer(reason, 0, generation);
       // Both trigger channels double as outbox drain points: a wake row
       // whose live event was lost is re-delivered here, and a row whose
@@ -626,9 +900,33 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     },
     requestRediscovery,
     drainWakeOutbox,
+    getQuiescenceState() {
+      let workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null = null;
+      try {
+        workspaceBinding = normalizeOptionalBinding(
+          backend?.getNarrativeMaintenanceWorkspaceBinding?.call(backend),
+        );
+      } catch {
+        workspaceBinding = null;
+      }
+      return {
+        mutationRevision,
+        workspaceBinding,
+        discoveryInFlight,
+        timerScheduled: timer !== null,
+        pendingRetry: pendingRetryDelayMs !== null,
+        pendingEvent: pendingEvent !== null,
+        wakeAckPending: pendingWakeOutboxAck !== null,
+        wakeOutboxDrainInFlight,
+        wakeOutboxDrainSucceeded,
+        wakeOutboxDrainFailed,
+        wakeOutboxPendingRows,
+      };
+    },
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      noteMutation();
       clearTimer();
       pendingEvent = null;
       pendingRetryDelayMs = null;

@@ -36,10 +36,17 @@ export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_BARRIER_ID";
 export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_CORRELATION";
+export const NARRATIVE_MAINTENANCE_FRESHNESS_HOLD_PROJECT_ENV =
+  "GRIMODEX_PRODUCT_JOURNEY_NARRATIVE_FRESHNESS_HOLD_PROJECT_ID";
+export const NARRATIVE_MAINTENANCE_NONCE_ENV =
+  "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE";
+export const NARRATIVE_MAINTENANCE_RECEIPT_EVENT =
+  "grimodex:narrative-maintenance-ci-receipt";
 export const NARRATIVE_MAINTENANCE_OWNER_TOKEN =
   "c2-5b-product-journey-owner-v1";
-export const NARRATIVE_MAINTENANCE_TRANSIENT_CODE =
-  "NEX_MAINTENANCE_TRANSIENT";
+const NARRATIVE_MAINTENANCE_UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+export const NARRATIVE_MAINTENANCE_TRANSIENT_CODE = "NEX_MAINTENANCE_TRANSIENT";
 export const NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE =
   "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION";
 export const NARRATIVE_MAINTENANCE_INTERRUPTED_CODE =
@@ -54,16 +61,15 @@ const RESTORE_AUTOMATIC_PHASE_RUN_KINDS = new Set([
   "dependency-repair",
 ]);
 export const NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER = "workspace-opened";
-export const NARRATIVE_MAINTENANCE_FOREGROUND_SYSTEM_WORK_MARKER = Object.freeze(
-  [
+export const NARRATIVE_MAINTENANCE_FOREGROUND_SYSTEM_WORK_MARKER =
+  Object.freeze([
     "trigger",
     "canonicalWorkKey",
     "authorityId",
     "generation",
     "productJourneyBarrierId",
     "correlation",
-  ],
-);
+  ]);
 export const NARRATIVE_MAINTENANCE_FAULTS = Object.freeze([
   "transient-io",
   "contract-violation",
@@ -82,6 +88,9 @@ export const NARRATIVE_MAINTENANCE_SEAM_CONTRACT = Object.freeze({
   productJourneyBarrierEnv: NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
   productJourneyCorrelationEnv:
     NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV,
+  freshnessHoldProjectEnv: NARRATIVE_MAINTENANCE_FRESHNESS_HOLD_PROJECT_ENV,
+  nonceEnv: NARRATIVE_MAINTENANCE_NONCE_ENV,
+  receiptEvent: NARRATIVE_MAINTENANCE_RECEIPT_EVENT,
   foregroundMarker: Object.freeze({
     trigger: NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER,
     fields: NARRATIVE_MAINTENANCE_FOREGROUND_SYSTEM_WORK_MARKER,
@@ -224,9 +233,14 @@ export function assertForegroundLifecycle(
   label = "foreground lifecycle",
 ) {
   if (!new Set(["running", "completed", "failed"]).has(expectedStatus)) {
-    throw new Error(`${label} has unsupported expected lifecycle status ${expectedStatus}`);
+    throw new Error(
+      `${label} has unsupported expected lifecycle status ${expectedStatus}`,
+    );
   }
-  if (Number(run?.taskCount ?? 0) !== 1 || Number(run?.attemptCount ?? 0) !== 1) {
+  if (
+    Number(run?.taskCount ?? 0) !== 1 ||
+    Number(run?.attemptCount ?? 0) !== 1
+  ) {
     throw new Error(
       `${label} must own exactly one Task and Attempt: ${JSON.stringify({
         runId: run?.id,
@@ -235,7 +249,10 @@ export function assertForegroundLifecycle(
       })}`,
     );
   }
-  if (run.taskStatus !== expectedStatus || run.lastAttemptStatus !== expectedStatus) {
+  if (
+    run.taskStatus !== expectedStatus ||
+    run.lastAttemptStatus !== expectedStatus
+  ) {
     throw new Error(
       `${label} lifecycle status mismatch: ${JSON.stringify({
         runId: run?.id,
@@ -261,28 +278,41 @@ export function assertForegroundLifecycle(
       })}`,
     );
   }
-  if (Number(run.taskAttemptCount ?? 0) !== 1 || Number(run.lastAttemptNumber ?? 0) !== 1) {
+  if (
+    Number(run.taskAttemptCount ?? 0) !== 1 ||
+    Number(run.lastAttemptNumber ?? 0) !== 1
+  ) {
     throw new Error(
-      `${label} must retain exactly one Task attempt and Attempt #1: ${JSON.stringify({
-        runId: run?.id,
-        taskAttemptCount: run?.taskAttemptCount,
-        lastAttemptNumber: run?.lastAttemptNumber,
-      })}`,
+      `${label} must retain exactly one Task attempt and Attempt #1: ${JSON.stringify(
+        {
+          runId: run?.id,
+          taskAttemptCount: run?.taskAttemptCount,
+          lastAttemptNumber: run?.lastAttemptNumber,
+        },
+      )}`,
     );
   }
   if (typeof run.specJson !== "string" || run.taskInputJson !== run.specJson) {
     throw new Error(
-      `${label} Task input did not preserve the full Run spec: ${JSON.stringify({
-        runId: run?.id,
-        specJson: run?.specJson,
-        taskInputJson: run?.taskInputJson,
-      })}`,
+      `${label} Task input did not preserve the full Run spec: ${JSON.stringify(
+        {
+          runId: run?.id,
+          specJson: run?.specJson,
+          taskInputJson: run?.taskInputJson,
+        },
+      )}`,
     );
   }
   const runCreatedAt = parseInstant(run.createdAt, `${label} Run createdAt`);
   const runStartedAt = parseInstant(run.startedAt, `${label} Run startedAt`);
-  const taskCreatedAt = parseInstant(run.taskCreatedAt, `${label} Task createdAt`);
-  const taskStartedAt = parseInstant(run.taskStartedAt, `${label} Task startedAt`);
+  const taskCreatedAt = parseInstant(
+    run.taskCreatedAt,
+    `${label} Task createdAt`,
+  );
+  const taskStartedAt = parseInstant(
+    run.taskStartedAt,
+    `${label} Task startedAt`,
+  );
   const attemptStartedAt = parseInstant(
     run.lastAttemptStartedAt,
     `${label} Attempt startedAt`,
@@ -304,10 +334,12 @@ export function assertForegroundLifecycle(
   }
   if (compareInstantValues(taskStartedAt, attemptStartedAt) !== 0) {
     throw new Error(
-      `${label} taskStartedAt and lastAttemptStartedAt must share one lifecycle instant: ${JSON.stringify({
-        taskStartedAt: run?.taskStartedAt,
-        lastAttemptStartedAt: run?.lastAttemptStartedAt,
-      })}`,
+      `${label} taskStartedAt and lastAttemptStartedAt must share one lifecycle instant: ${JSON.stringify(
+        {
+          taskStartedAt: run?.taskStartedAt,
+          lastAttemptStartedAt: run?.lastAttemptStartedAt,
+        },
+      )}`,
     );
   }
   if (expectedStatus === "completed" || expectedStatus === "failed") {
@@ -329,15 +361,20 @@ export function assertForegroundLifecycle(
       ) !== 0
     ) {
       throw new Error(
-        `${label} Run, Task, and Attempt did not share one terminal timestamp: ${JSON.stringify({
-          runId: run?.id,
-          runCompletedAt: run?.completedAt,
-          taskCompletedAt: run?.taskCompletedAt,
-          attemptCompletedAt: run?.lastAttemptCompletedAt,
-        })}`,
+        `${label} Run, Task, and Attempt did not share one terminal timestamp: ${JSON.stringify(
+          {
+            runId: run?.id,
+            runCompletedAt: run?.completedAt,
+            taskCompletedAt: run?.taskCompletedAt,
+            attemptCompletedAt: run?.lastAttemptCompletedAt,
+          },
+        )}`,
       );
     }
-    const terminalAt = parseInstant(run.completedAt, `${label} terminal completedAt`);
+    const terminalAt = parseInstant(
+      run.completedAt,
+      `${label} terminal completedAt`,
+    );
     for (const [field, value] of [
       ["Run.createdAt", run.createdAt],
       ["Run.startedAt", run.startedAt],
@@ -352,19 +389,23 @@ export function assertForegroundLifecycle(
           parseInstant(value, `${label} ${field}`),
         ) <= 0
       ) {
-        throw new Error(
-          `${label} terminal completedAt must be after ${field}`,
-        );
+        throw new Error(`${label} terminal completedAt must be after ${field}`);
       }
     }
-  } else if (run.completedAt || run.taskCompletedAt || run.lastAttemptCompletedAt) {
+  } else if (
+    run.completedAt ||
+    run.taskCompletedAt ||
+    run.lastAttemptCompletedAt
+  ) {
     throw new Error(
-      `${label} running lifecycle unexpectedly has a terminal timestamp: ${JSON.stringify({
-        runId: run?.id,
-        runCompletedAt: run?.completedAt,
-        taskCompletedAt: run?.taskCompletedAt,
-        attemptCompletedAt: run?.lastAttemptCompletedAt,
-      })}`,
+      `${label} running lifecycle unexpectedly has a terminal timestamp: ${JSON.stringify(
+        {
+          runId: run?.id,
+          runCompletedAt: run?.completedAt,
+          taskCompletedAt: run?.taskCompletedAt,
+          attemptCompletedAt: run?.lastAttemptCompletedAt,
+        },
+      )}`,
     );
   }
 }
@@ -463,7 +504,12 @@ function coerceInstant(value, label) {
   return isParsedInstant(value) ? value : parseInstant(value, label);
 }
 
-export function compareInstants(left, right, leftLabel = "left", rightLabel = "right") {
+export function compareInstants(
+  left,
+  right,
+  leftLabel = "left",
+  rightLabel = "right",
+) {
   return compareInstantValues(
     coerceInstant(left, leftLabel),
     coerceInstant(right, rightLabel),
@@ -525,20 +571,26 @@ export function assertWallClockIntervalContains(
     compareInstantValues(wallClockStart, instantStart) < 0 ||
     compareInstantValues(wallClockEnd, instantEnd) > 0
   ) {
-    throw new Error(`${label} wall-clock interval did not overlap the Run interval`);
+    throw new Error(
+      `${label} wall-clock interval did not overlap the Run interval`,
+    );
   }
   return { start: wallClockStart, end: wallClockEnd };
 }
 
 export function parseInstant(value, label = "timestamp") {
   const text = typeof value === "string" ? value : "";
-  const rfc3339 = /^(\d{4})-(\d{2})-(\d{2})([Tt ])(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|z|[+\-−]\d{2}:\d{2})$/.exec(text);
+  const rfc3339 =
+    /^(\d{4})-(\d{2})-(\d{2})([Tt ])(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|z|[+\-−]\d{2}:\d{2})$/.exec(
+      text,
+    );
   // Chrono's `%Y` parser accepts one to four unsigned digits, or a leading
   // sign followed by one or more digits, across its signed proleptic range.
   // RFC3339 intentionally remains the stricter four-unsigned-digit grammar.
-  const legacyNaive = /^([+\-]?\d+)-(\d{2})-(\d{2})( )(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/.exec(
-    text,
-  );
+  const legacyNaive =
+    /^([+\-]?\d+)-(\d{2})-(\d{2})( )(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/.exec(
+      text,
+    );
   const match = rfc3339 ?? legacyNaive;
   const isLegacyNaive = !rfc3339 && Boolean(legacyNaive);
   if (!match) {
@@ -578,7 +630,9 @@ export function parseInstant(value, label = "timestamp") {
   const second = Number(secondText);
   const daysInMonth =
     month === 2
-      ? (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28)
+      ? year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+        ? 29
+        : 28
       : [4, 6, 9, 11].includes(month)
         ? 30
         : 31;
@@ -685,7 +739,9 @@ function canonicalWorkKeyForRun(run, label = "Run") {
     (typeof run.semanticEpochId !== "string" ||
       run.semanticEpochId.trim() === "")
   ) {
-    throw new Error(`${label} is missing the epoch-bound canonical work identity`);
+    throw new Error(
+      `${label} is missing the epoch-bound canonical work identity`,
+    );
   }
   return run.semanticEpochId ? `${base}/epoch/${run.semanticEpochId}` : base;
 }
@@ -701,7 +757,11 @@ function foregroundSystemWorkMarker(run, label = "foreground Run") {
 
 export function assertForegroundRunMarker(
   run,
-  { barrierId, correlation, trigger = NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER },
+  {
+    barrierId,
+    correlation,
+    trigger = NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER,
+  },
 ) {
   const marker = foregroundSystemWorkMarker(run);
   if (!marker) {
@@ -744,12 +804,7 @@ export function assertForegroundRunMarker(
   };
 }
 
-function assertImmutableForegroundMarker(
-  run,
-  expected,
-  originalMarker,
-  label,
-) {
+function assertImmutableForegroundMarker(run, expected, originalMarker, label) {
   const { marker } = assertForegroundRunMarker(run, expected);
   for (const field of NARRATIVE_MAINTENANCE_FOREGROUND_SYSTEM_WORK_MARKER) {
     if (marker[field] !== originalMarker[field]) {
@@ -763,11 +818,7 @@ function assertImmutableForegroundMarker(
   return marker;
 }
 
-export function foregroundMarkedRuns(
-  rows,
-  baselineRows,
-  expected,
-) {
+export function foregroundMarkedRuns(rows, baselineRows, expected) {
   const fresh = rowsAfter(rows, baselineRows);
   return fresh.filter((run) => {
     const marker = foregroundSystemWorkMarker(run);
@@ -804,11 +855,7 @@ export function assertForegroundTargetBaseline(
  * The baseline check and exact-one check stay together so a page or SQLite
  * observation cannot silently reuse an old-authority Run.
  */
-export function selectForegroundTargetMarker(
-  rows,
-  baselineRows,
-  expected,
-) {
+export function selectForegroundTargetMarker(rows, baselineRows, expected) {
   assertForegroundTargetBaseline(baselineRows, expected);
   const candidates = foregroundMarkedRuns(rows, baselineRows, expected);
   if (candidates.length !== 1) {
@@ -881,7 +928,9 @@ function assertTransientCompletedEvidence(run, label) {
 
 export function assertTransientRunSequence(runs, label = "transient retry") {
   if (!Array.isArray(runs) || runs.length < 2 || runs.length > 3) {
-    throw new Error(`${label} must contain at least two and at most three distinct same-work Runs`);
+    throw new Error(
+      `${label} must contain at least two and at most three distinct same-work Runs`,
+    );
   }
   const first = runs[0];
   const expectedIdentity = {
@@ -902,36 +951,51 @@ export function assertTransientRunSequence(runs, label = "transient retry") {
     ids.add(run.id);
     for (const [field, expected] of Object.entries(expectedIdentity)) {
       if (run?.[field] !== expected) {
-        throw new Error(`${label} Run ${run?.id} changed same-work identity field ${field}`);
+        throw new Error(
+          `${label} Run ${run?.id} changed same-work identity field ${field}`,
+        );
       }
     }
-    const createdAt = parseInstant(run.createdAt, `${label} Run ${run.id} createdAt`);
+    const createdAt = parseInstant(
+      run.createdAt,
+      `${label} Run ${run.id} createdAt`,
+    );
     if (
       previousCreatedAt !== null &&
       compareInstantValues(createdAt, previousCreatedAt) <= 0
     ) {
-      throw new Error(`${label} same-work Runs must have strictly increasing createdAt instants`);
+      throw new Error(
+        `${label} same-work Runs must have strictly increasing createdAt instants`,
+      );
     }
     previousCreatedAt = createdAt;
     if (!new Set(["failed", "completed"]).has(run.status)) {
-      throw new Error(`${label} Run ${run.id} has unsupported terminal status ${run.status}`);
+      throw new Error(
+        `${label} Run ${run.id} has unsupported terminal status ${run.status}`,
+      );
     }
     assertForegroundLifecycle(run, run.status, `${label} Run ${run.id}`);
     if (run.status === "failed") {
       if (run.terminalReasonCode !== NARRATIVE_MAINTENANCE_TRANSIENT_CODE) {
-        throw new Error(`${label} failed Run ${run.id} has the wrong transient terminal evidence`);
+        throw new Error(
+          `${label} failed Run ${run.id} has the wrong transient terminal evidence`,
+        );
       }
       assertTransientAttemptEvidence(run);
     } else {
       if (completedIndex >= 0) {
-        throw new Error(`${label} completed Run must be final in the ordered retry sequence`);
+        throw new Error(
+          `${label} completed Run must be final in the ordered retry sequence`,
+        );
       }
       completedIndex = index;
       assertTransientCompletedEvidence(run, `${label} Run ${run.id}`);
     }
   }
   if (completedIndex !== runs.length - 1) {
-    throw new Error(`${label} completed Run must be final in the ordered retry sequence`);
+    throw new Error(
+      `${label} completed Run must be final in the ordered retry sequence`,
+    );
   }
   return runs;
 }
@@ -952,7 +1016,9 @@ export function assertTerminalFailureEvidence(run) {
   }
   parseInstant(run.completedAt, "terminal failed Run completedAt");
   assertForegroundLifecycle(run, "failed", "terminal failure");
-  if (run.lastAttemptFailureCode !== NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE) {
+  if (
+    run.lastAttemptFailureCode !== NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE
+  ) {
     throw new Error(
       "terminal failure lastAttemptFailureCode did not persist the exact failed Attempt failure code",
     );
@@ -1122,7 +1188,7 @@ export function assertRestoreVerifyRebuildVerifyCausality(
     ) {
       throw new Error(
         `${label}: phase creation timestamps are not strictly monotonic; ` +
-        `observed=${JSON.stringify({ sequence: summarizeRuns(sequence) })}`,
+          `observed=${JSON.stringify({ sequence: summarizeRuns(sequence) })}`,
       );
     }
     if (
@@ -1314,9 +1380,7 @@ export function assertRestoreFixturePreGapReadiness(
     );
   }
   if (!isSettledFreshnessCursor(cursor)) {
-    throw new Error(
-      `${label}: Freshness cursor is not a released cursor`,
-    );
+    throw new Error(`${label}: Freshness cursor is not a released cursor`);
   }
   return readiness;
 }
@@ -1537,95 +1601,80 @@ async function withLaunchEnvironment(
     trigger = null,
     setup = null,
     freshness = null,
+    freshnessHoldProjectId = null,
     ownerToken = null,
     barrierId = null,
     correlation = null,
+    nonce = null,
   } = {},
   callback,
 ) {
+  if (typeof callback !== "function") {
+    throw new TypeError("withLaunchEnvironment requires a callback");
+  }
+  const seamRequested = [
+    fault,
+    trigger,
+    setup,
+    freshness,
+    freshnessHoldProjectId,
+    ownerToken,
+    barrierId,
+    correlation,
+    nonce,
+  ].some((value) => value !== null && value !== undefined && value !== "");
+  // A seam transaction is test-only and must never execute from a non-CI
+  // process. Check before touching any environment value or invoking user
+  // code, so failed callers cannot observe a partially activated seam.
+  if (seamRequested && process.env.CI !== "true") {
+    throw new Error("withLaunchEnvironment requires CI=true");
+  }
+
+  const names = [
+    NARRATIVE_MAINTENANCE_FAULT_ENV,
+    NARRATIVE_MAINTENANCE_TRIGGER_ENV,
+    NARRATIVE_MAINTENANCE_SETUP_ENV,
+    NARRATIVE_FRESHNESS_DISABLE_ENV,
+    NARRATIVE_MAINTENANCE_FRESHNESS_HOLD_PROJECT_ENV,
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+    NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
+    NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV,
+    NARRATIVE_MAINTENANCE_NONCE_ENV,
+  ];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  const launchNonce = seamRequested ? nonce || randomUUID() : null;
   if (
-    !fault &&
-    !trigger &&
-    !setup &&
-    !freshness &&
-    !ownerToken &&
-    !barrierId &&
-    !correlation
+    launchNonce !== null &&
+    !NARRATIVE_MAINTENANCE_UUID_V4.test(launchNonce)
   ) {
-    return callback();
+    throw new Error("withLaunchEnvironment requires a UUIDv4 nonce");
   }
-  const previousFault = process.env[NARRATIVE_MAINTENANCE_FAULT_ENV];
-  const previousTrigger = process.env[NARRATIVE_MAINTENANCE_TRIGGER_ENV];
-  const previousSetup = process.env[NARRATIVE_MAINTENANCE_SETUP_ENV];
-  const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
-  const previousOwnerToken = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
-  const previousBarrierId =
-    process.env[NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV];
-  const previousCorrelation =
-    process.env[NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV];
-  if (fault) process.env[NARRATIVE_MAINTENANCE_FAULT_ENV] = fault;
-  else delete process.env[NARRATIVE_MAINTENANCE_FAULT_ENV];
-  if (trigger) process.env[NARRATIVE_MAINTENANCE_TRIGGER_ENV] = trigger;
-  else delete process.env[NARRATIVE_MAINTENANCE_TRIGGER_ENV];
-  if (setup) process.env[NARRATIVE_MAINTENANCE_SETUP_ENV] = setup;
-  else delete process.env[NARRATIVE_MAINTENANCE_SETUP_ENV];
-  if (freshness) process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = freshness;
-  else delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
-  if (ownerToken) {
-    process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = ownerToken;
-  } else {
-    delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
-  }
-  if (barrierId) {
-    process.env[NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV] = barrierId;
-  } else {
-    delete process.env[NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV];
-  }
-  if (correlation) {
-    process.env[NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV] =
-      correlation;
-  } else {
-    delete process.env[NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV];
+  const requestedValues = new Map([
+    [NARRATIVE_MAINTENANCE_FAULT_ENV, fault],
+    [NARRATIVE_MAINTENANCE_TRIGGER_ENV, trigger],
+    [NARRATIVE_MAINTENANCE_SETUP_ENV, setup],
+    [NARRATIVE_FRESHNESS_DISABLE_ENV, freshness],
+    [NARRATIVE_MAINTENANCE_FRESHNESS_HOLD_PROJECT_ENV, freshnessHoldProjectId],
+    [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV, ownerToken],
+    [NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV, barrierId],
+    [NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV, correlation],
+    [NARRATIVE_MAINTENANCE_NONCE_ENV, launchNonce],
+  ]);
+  // Even a production launch with no requested seam values gets a transaction:
+  // inherited test variables are masked for the child and restored afterwards.
+  for (const [name, value] of requestedValues) {
+    if (value === null || value === undefined || value === "") {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
   }
   try {
     return await callback();
   } finally {
-    if (previousFault === undefined) {
-      delete process.env[NARRATIVE_MAINTENANCE_FAULT_ENV];
-    } else {
-      process.env[NARRATIVE_MAINTENANCE_FAULT_ENV] = previousFault;
-    }
-    if (previousTrigger === undefined) {
-      delete process.env[NARRATIVE_MAINTENANCE_TRIGGER_ENV];
-    } else {
-      process.env[NARRATIVE_MAINTENANCE_TRIGGER_ENV] = previousTrigger;
-    }
-    if (previousSetup === undefined) {
-      delete process.env[NARRATIVE_MAINTENANCE_SETUP_ENV];
-    } else {
-      process.env[NARRATIVE_MAINTENANCE_SETUP_ENV] = previousSetup;
-    }
-    if (previousFreshness === undefined) {
-      delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
-    } else {
-      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = previousFreshness;
-    }
-    if (previousOwnerToken === undefined) {
-      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
-    } else {
-      process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwnerToken;
-    }
-    if (previousBarrierId === undefined) {
-      delete process.env[NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV];
-    } else {
-      process.env[NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV] =
-        previousBarrierId;
-    }
-    if (previousCorrelation === undefined) {
-      delete process.env[NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV];
-    } else {
-      process.env[NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV] =
-        previousCorrelation;
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
     }
   }
 }
@@ -1636,6 +1685,17 @@ async function withLaunchEnvironment(
  * runtime launch API by accident.
  */
 export const withLaunchEnvironmentForTest = withLaunchEnvironment;
+
+function launchEnvironmentForScenario(environment = {}) {
+  const hasSeamValue = Object.values(environment).some(
+    (value) => value !== null && value !== undefined && value !== "",
+  );
+  if (!hasSeamValue) return environment;
+  return {
+    ...environment,
+    ownerToken: environment.ownerToken ?? NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+  };
+}
 
 async function configureJourneyWorkspace(
   harness,
@@ -1814,9 +1874,7 @@ async function createForegroundSceneThroughUi(context, marker) {
     "SELECT id FROM tree_nodes WHERE project_id = ? AND node_type = 'scene'",
     [context.projectId],
   );
-  const existingSceneIds = new Set(
-    before.map((row) => String(row.id)),
-  );
+  const existingSceneIds = new Set(before.map((row) => String(row.id)));
   await header.locator('button[title="新規作成"]').click();
   await context.page
     .getByRole("menuitem", { name: "New scene", exact: true })
@@ -1834,19 +1892,22 @@ async function createForegroundSceneThroughUi(context, marker) {
     await context.page.keyboard.press("Enter");
   }
 
-  const created = await context.harness.waitUntil(async () => {
-    const rows = await context.query(
-      `SELECT id, project_id AS projectId, version,
+  const created = await context.harness.waitUntil(
+    async () => {
+      const rows = await context.query(
+        `SELECT id, project_id AS projectId, version,
               updated_at AS updatedAt, content, title
          FROM tree_nodes
         WHERE project_id = ? AND node_type = 'scene'
         ORDER BY created_at DESC, id DESC`,
-      [context.projectId],
-    );
-    return (
-      rows.find((row) => !existingSceneIds.has(String(row.id))) ?? null
-    );
-  }, `${marker} UI scene persistence`, 30_000, 100);
+        [context.projectId],
+      );
+      return rows.find((row) => !existingSceneIds.has(String(row.id))) ?? null;
+    },
+    `${marker} UI scene persistence`,
+    30_000,
+    100,
+  );
 
   if (String(created.projectId) !== String(context.projectId)) {
     throw new Error(
@@ -1860,7 +1921,9 @@ async function createForegroundSceneThroughUi(context, marker) {
     created.title !== "シーン 1" &&
     !/^シーン \d+$/.test(String(created.title))
   ) {
-    throw new Error(`unexpected foreground UI scene title: ${String(created.title)}`);
+    throw new Error(
+      `unexpected foreground UI scene title: ${String(created.title)}`,
+    );
   }
 
   const editorSurface = context.page
@@ -1975,10 +2038,7 @@ export function assertRestoreFixtureEvidence(
     );
   }
   parseInstant(edge.createdAt, "restore fixture dependency Edge createdAt");
-  if (
-    typeof readSetToken !== "string" ||
-    !/^v[0-9]+@.+$/.test(readSetToken)
-  ) {
+  if (typeof readSetToken !== "string" || !/^v[0-9]+@.+$/.test(readSetToken)) {
     throw new Error(
       `restore fixture read_set token is not a canonical scene revision token: ${JSON.stringify(readSetToken)}`,
     );
@@ -2011,7 +2071,7 @@ export function assertRestoreFixtureEvidence(
  * renderer-facing Edge writer exists; its owner Run and every persisted field
  * are validated immediately after a renderer relaunch.
  */
-export async function seedRestoreFixtureEvidence(harness, workspace, id) {
+async function seedRestoreFixtureEvidence(harness, workspace, id) {
   let fixtureLaunch = await withLaunchEnvironment(
     {
       setup: "disabled",
@@ -2039,11 +2099,13 @@ export async function seedRestoreFixtureEvidence(harness, workspace, id) {
     const readSetToken = `v${scene.version}@${scene.updatedAt}`;
     if (!/^v[0-9]+@.+$/.test(readSetToken)) {
       throw new Error(
-        `restore fixture scene did not expose a canonical revision token: ${JSON.stringify({
-          sceneId: scene.id,
-          version: scene.version,
-          updatedAt: scene.updatedAt,
-        })}`,
+        `restore fixture scene did not expose a canonical revision token: ${JSON.stringify(
+          {
+            sceneId: scene.id,
+            version: scene.version,
+            updatedAt: scene.updatedAt,
+          },
+        )}`,
       );
     }
     // Establish the same durable legacy boundary that a real workspace has
@@ -2115,11 +2177,13 @@ export async function seedRestoreFixtureEvidence(harness, workspace, id) {
       backfillRun.semanticEpochId !== initialEpoch.id
     ) {
       throw new Error(
-        `restore fixture legacy Backfill boundary is not canonical: ${JSON.stringify({
-          outcome: backfillOutcome,
-          backfillRun,
-          initialEpoch,
-        })}`,
+        `restore fixture legacy Backfill boundary is not canonical: ${JSON.stringify(
+          {
+            outcome: backfillOutcome,
+            backfillRun,
+            initialEpoch,
+          },
+        )}`,
       );
     }
     for (const [field, value] of [
@@ -2184,26 +2248,23 @@ export async function seedRestoreFixtureEvidence(harness, workspace, id) {
     const consumerKey = runId;
     const sourceObjectIdentity = `project:scene:${scene.id}`;
     await closeFixtureLaunch();
-    await harness.executeFixtureDml(workspace, [
-      {
-        sql: `INSERT INTO narrative_dependency_edges
-                (id, project_id, consumer_kind, consumer_key,
-                 source_object_identity, read_set_json,
-                 generated_by_transaction_id, created_at, owning_run_id)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        params: [
-          edgeId,
-          context.projectId,
-          RESTORE_FIXTURE_CONSUMER_KIND,
+    const edgeInsertOperation = await harness.executeFixtureOperations(
+      workspace,
+      [
+        {
+          kind: "dependency-edge-insert",
+          id: edgeId,
+          projectId: context.projectId,
+          consumerKind: RESTORE_FIXTURE_CONSUMER_KIND,
           consumerKey,
           sourceObjectIdentity,
-          JSON.stringify([readSetToken]),
-          null,
-          new Date().toISOString(),
-          runId,
-        ],
-      },
-    ]);
+          readSetJson: JSON.stringify([readSetToken]),
+          generatedByTransactionId: null,
+          createdAt: new Date().toISOString(),
+          owningRunId: runId,
+        },
+      ],
+    );
     fixtureLaunch = await withLaunchEnvironment(
       {
         setup: "disabled",
@@ -2295,25 +2356,26 @@ export async function seedRestoreFixtureEvidence(harness, workspace, id) {
         ]);
         return rows.some(
           (row) => row.runKind === "backfill" && row.status === "completed",
-        ) && !rows.some(
-          (row) =>
-            maintenanceKinds.has(row.runKind) &&
-            (row.status === "pending" || row.status === "running"),
-        )
+        ) &&
+          !rows.some(
+            (row) =>
+              maintenanceKinds.has(row.runKind) &&
+              (row.status === "pending" || row.status === "running"),
+          )
           ? rows
           : null;
       },
       "restore fixture pre-gap maintenance settled",
     );
     const postSceneFeedAndCursor = await context.feedAndCursor();
-    if (
-      postSceneFeedAndCursor.feedHead <= preSceneFeedAndCursor.feedHead
-    ) {
+    if (postSceneFeedAndCursor.feedHead <= preSceneFeedAndCursor.feedHead) {
       throw new Error(
-        `restore fixture scene did not append a new Change Feed event: ${JSON.stringify({
-          before: preSceneFeedAndCursor,
-          after: postSceneFeedAndCursor,
-        })}`,
+        `restore fixture scene did not append a new Change Feed event: ${JSON.stringify(
+          {
+            before: preSceneFeedAndCursor,
+            after: postSceneFeedAndCursor,
+          },
+        )}`,
       );
     }
     const preGapReadiness = await waitForReadiness(
@@ -2344,10 +2406,13 @@ export async function seedRestoreFixtureEvidence(harness, workspace, id) {
     // ordinary launch can settle the live workspace, so the later restore
     // necessarily replays Verify -> Rebuild -> confirmation Verify.
     await closeFixtureLaunch();
-    await createRestoreFixtureDerivedStateGap(context, {
-      edgeId,
-      consumerKey,
-    });
+    const gapDeleteOperation = await createRestoreFixtureDerivedStateGap(
+      context,
+      {
+        edgeId,
+        consumerKey,
+      },
+    );
     const backupName = await createRestoreBackupFixture(workspace);
     const backupReadiness = await readRestoreFixtureBackupReadiness(
       workspace,
@@ -2359,7 +2424,14 @@ export async function seedRestoreFixtureEvidence(harness, workspace, id) {
       workspace,
       backupName,
       context.projectId,
-      { edgeId, consumerKey },
+      {
+        edgeId,
+        consumerKey,
+        fixtureOperations: {
+          edgeInsert: edgeInsertOperation,
+          gapDelete: gapDeleteOperation,
+        },
+      },
     );
     return {
       edgeId,
@@ -2370,6 +2442,10 @@ export async function seedRestoreFixtureEvidence(harness, workspace, id) {
       sceneId: scene.id,
       backupName,
       backupContract,
+      fixtureOperations: {
+        edgeInsert: edgeInsertOperation,
+        gapDelete: gapDeleteOperation,
+      },
     };
   } finally {
     await closeFixtureLaunch();
@@ -2384,24 +2460,18 @@ export async function seedRestoreFixtureEvidence(harness, workspace, id) {
  * these deletes cannot affect another journey's graph.
  */
 async function createRestoreFixtureDerivedStateGap(context, evidence) {
-  await context.harness.executeFixtureDml(context.workspace, [
-    {
-      sql: `DELETE FROM narrative_dependency_edge_states
-             WHERE project_id = ? AND edge_id = ?`,
-      params: [context.projectId, evidence.edgeId],
-    },
-    {
-      sql: `DELETE FROM narrative_consumer_freshness
-             WHERE project_id = ?
-               AND consumer_kind = ?
-               AND consumer_key = ?`,
-      params: [
-        context.projectId,
-        RESTORE_FIXTURE_CONSUMER_KIND,
-        evidence.consumerKey,
-      ],
-    },
-  ]);
+  const operationReceipt = await context.harness.executeFixtureOperations(
+    context.workspace,
+    [
+      {
+        kind: "dependency-derived-state-gap-delete",
+        projectId: context.projectId,
+        edgeId: evidence.edgeId,
+        consumerKind: RESTORE_FIXTURE_CONSUMER_KIND,
+        consumerKey: evidence.consumerKey,
+      },
+    ],
+  );
   const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
   const remaining = await readRunSnapshotQuery(
     context.workspace,
@@ -2427,7 +2497,11 @@ async function createRestoreFixtureDerivedStateGap(context, evidence) {
   context.record("restore-fixture-derived-state-gap-created", {
     edgeId: evidence.edgeId,
     consumerKey: evidence.consumerKey,
+    operationDigest: operationReceipt.operationDigest,
+    beforeCounts: operationReceipt.beforeCounts,
+    afterCounts: operationReceipt.afterCounts,
   });
+  return operationReceipt;
 }
 
 async function prepareLegacySchemaMarker(workspace) {
@@ -2572,7 +2646,11 @@ export async function readRestoreFixtureBackupReadiness(
           AND consumer_id = 'narrative-incremental-freshness/v1'
         LIMIT 1) AS lastError;`;
   try {
-    const { stdout } = await execFile("sqlite3", ["-json", databasePath, query]);
+    const { stdout } = await execFile("sqlite3", [
+      "-json",
+      databasePath,
+      query,
+    ]);
     const row = JSON.parse(String(stdout).trim() || "[]")[0] ?? {};
     return {
       epoch: { id: row.epochId },
@@ -2610,7 +2688,7 @@ export async function readRestoreFixtureBackupContract(
   workspace,
   backupName,
   projectId,
-  { edgeId, consumerKey } = {},
+  { edgeId, consumerKey, fixtureOperations = null } = {},
 ) {
   const quotedProjectId = projectId.replaceAll("'", "''");
   const quotedEdgeId = String(edgeId ?? "").replaceAll("'", "''");
@@ -2709,6 +2787,7 @@ export async function readRestoreFixtureBackupContract(
         edgeStateCount: Number(derivedState.edgeStateCount ?? 0),
         freshnessCount: Number(derivedState.freshnessCount ?? 0),
       },
+      fixtureOperations,
     };
   } catch (error) {
     throw new Error(
@@ -2932,36 +3011,28 @@ export async function restoreBackupThroughSettingsUi(context, backupName) {
     .getByRole("button", { name: "Data", exact: true })
     .click();
 
-  // The component consumes the same Rust list_backups ordering. Re-read it
-  // after Data mounted and pin the exact sequence before selecting a row;
-  // filenames are intentionally not rendered by the settings UI.
+  // Re-read the native list after Data mounted and bind the click to the
+  // stable backup identity.  Selecting by nth(index) would silently restore a
+  // different image if the filesystem order changes between these reads.
   const uiBackups = await harness.invokeOk(page, "list_backups");
   if (
     !Array.isArray(uiBackups) ||
-    uiBackups.length !== backups.length ||
-    uiBackups.some(
-      (backup, index) => backup?.fileName !== backups[index]?.fileName,
-    )
+    uiBackups.filter((backup) => backup?.fileName === backupName).length !== 1
   ) {
     throw new Error(
-      `restore UI backup ordering changed while mounting Data: ${JSON.stringify({
-        before: backups,
-        after: uiBackups,
-      })}`,
+      `restore UI fixture backup identity changed while mounting Data: ${JSON.stringify(
+        { backupName, before: backups, after: uiBackups },
+      )}`,
     );
   }
-  const backupIndex = uiBackups.findIndex(
-    (backup) => backup?.fileName === backupName,
+  const stableBackupButton = settingsDialog.getByTestId(
+    `backup-restore-${encodeURIComponent(backupName)}`,
   );
-  if (backupIndex < 0) {
-    throw new Error(`restore UI fixture backup disappeared: ${backupName}`);
-  }
-
-  const restoreButtons = settingsDialog.getByRole("button", {
-    name: /^(?:Restore|復元)$/,
-  });
-  await restoreButtons.nth(backupIndex).waitFor({ state: "visible" });
-  await restoreButtons.nth(backupIndex).click();
+  const restoreButton = settingsDialog
+    .getByRole("button", { name: /^(?:Restore|復元)$/ })
+    .and(stableBackupButton);
+  await restoreButton.waitFor({ state: "visible" });
+  await restoreButton.click();
   const confirmButton = settingsDialog.getByRole("button", {
     name: /^(?:Replace & restore|全体を置換して復元)$/,
   });
@@ -2995,7 +3066,7 @@ export async function restoreBackupThroughSettingsUi(context, backupName) {
   await page
     .getByTestId("workspace-menu-trigger")
     .waitFor({ state: "visible", timeout: 60_000 });
-  return { backupIndex };
+  return { backupName };
 }
 
 /**
@@ -3041,10 +3112,7 @@ export async function runRestoreVerifyRebuildVerifyScenario(
   });
   const preLaunchRuns = await readRunSnapshot(workspace);
   const restoreLaunch = await withLaunchEnvironment(
-    {
-      ...restoreEnvironment,
-      ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
-    },
+    launchEnvironmentForScenario(restoreEnvironment),
     () => harness.launch(`${id}/${restorePhase}`),
   );
   let restoreResult;
@@ -3096,7 +3164,9 @@ export async function runRestoreVerifyRebuildVerifyScenario(
     );
     if (authorityMismatch) throw authorityMismatch;
     if (!restoredContext) {
-      throw new Error("restore reload did not rebind a hydrated project context");
+      throw new Error(
+        "restore reload did not rebind a hydrated project context",
+      );
     }
     const restoredRuns = await restoredContext.runs();
     const restoredEpochs = await restoredContext.epochs();
@@ -3159,11 +3229,12 @@ export async function runRestoreVerifyRebuildVerifyScenario(
     );
   }
 
+  const resolvedOpenEnvironment =
+    typeof openEnvironment === "function"
+      ? await openEnvironment(restoreResult)
+      : openEnvironment;
   const openLaunch = await withLaunchEnvironment(
-    {
-      ...openEnvironment,
-      ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
-    },
+    launchEnvironmentForScenario(resolvedOpenEnvironment),
     () => harness.launch(`${id}/${openPhase}`),
   );
   let openResult;
@@ -3186,29 +3257,22 @@ export async function runRestoreVerifyRebuildVerifyScenario(
       workspace,
       fixtureEvidence,
       context,
-      setup: openEnvironment.setup ?? null,
+      setup: resolvedOpenEnvironment.setup ?? null,
       beforeRuns: restoreResult.runs,
       beforeEpochs: restoreResult.epochs,
       phaseRuns,
       runs,
       epochs,
     };
-    await onOpen?.(openResult);
+    await onOpen?.({ ...openResult, openLaunch });
   } finally {
-    await harness.close(
-      openLaunch.app,
-      openLaunch.page,
-      `${id}/${openPhase}`,
-    );
+    await harness.close(openLaunch.app, openLaunch.page, `${id}/${openPhase}`);
   }
 
   let restartResult = null;
   if (restartPhase !== null) {
     const restartLaunch = await withLaunchEnvironment(
-      {
-        ...restartEnvironment,
-        ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
-      },
+      launchEnvironmentForScenario(restartEnvironment),
       () => harness.launch(`${id}/${restartPhase}`),
     );
     try {
@@ -3230,7 +3294,7 @@ export async function runRestoreVerifyRebuildVerifyScenario(
         runs: await context.runs(),
         epochs: await context.epochs(),
       };
-      await onRestart?.(restartResult);
+      await onRestart?.({ ...restartResult, restartLaunch });
     } finally {
       await harness.close(
         restartLaunch.app,
@@ -3422,7 +3486,10 @@ async function runTransientRetry(harness, configureWorkspace) {
               row.workKey === failed.workKey &&
               row.status === "completed" &&
               compareInstantValues(
-                parseInstant(row.createdAt, "transient completed Run createdAt"),
+                parseInstant(
+                  row.createdAt,
+                  "transient completed Run createdAt",
+                ),
                 failedCreatedAt,
               ) > 0,
           );
@@ -3556,8 +3623,7 @@ async function runTerminalFailureInbox(harness, configureWorkspace) {
       (row) =>
         row.runKind === "backfill" &&
         row.status === "failed" &&
-        row.terminalReasonCode ===
-          NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
+        row.terminalReasonCode === NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
     );
     assertForegroundLifecycle(failed, "failed", "terminal failed Run");
     assertTerminalFailureEvidence(failed);
@@ -3607,10 +3673,12 @@ async function runTerminalFailureInbox(harness, configureWorkspace) {
       repeatedObservation?.findingIdentity;
     if (!repeatedInboxEntry || firstIdentity !== repeatedIdentity) {
       throw new Error(
-        `terminal production Inbox identity was not stable across reads: ${JSON.stringify({
-          firstIdentity,
-          repeatedIdentity,
-        })}`,
+        `terminal production Inbox identity was not stable across reads: ${JSON.stringify(
+          {
+            firstIdentity,
+            repeatedIdentity,
+          },
+        )}`,
       );
     }
     context.record("terminal-failure-inbox-projected", {
@@ -3649,8 +3717,7 @@ async function runTerminalFailureInbox(harness, configureWorkspace) {
       reopenedEntry.latest_observation ?? reopenedEntry.latestObservation;
     const findingIdentity =
       observation?.finding_identity ?? observation?.findingIdentity;
-    const reopenedRunId =
-      observation?.run_id ?? observation?.runId ?? null;
+    const reopenedRunId = observation?.run_id ?? observation?.runId ?? null;
     const reopenedFailureCode =
       observation?.failure_code ?? observation?.failureCode ?? null;
     const reopenedConsumerKey =
@@ -3664,20 +3731,22 @@ async function runTerminalFailureInbox(harness, configureWorkspace) {
       reopenedConsumerKey !== `${failed.runKind}:${failed.workKey}`
     ) {
       throw new Error(
-        `terminal production Inbox changed durable identity after reopen: ${JSON.stringify({
-          expected: {
-            runId: failed.id,
-            consumerKey: `${failed.runKind}:${failed.workKey}`,
-            failureCode: failed.terminalReasonCode,
-            findingIdentity: originalFindingIdentity,
+        `terminal production Inbox changed durable identity after reopen: ${JSON.stringify(
+          {
+            expected: {
+              runId: failed.id,
+              consumerKey: `${failed.runKind}:${failed.workKey}`,
+              failureCode: failed.terminalReasonCode,
+              findingIdentity: originalFindingIdentity,
+            },
+            actual: {
+              reopenedRunId,
+              reopenedConsumerKey,
+              reopenedFailureCode,
+              findingIdentity,
+            },
           },
-          actual: {
-            reopenedRunId,
-            reopenedConsumerKey,
-            reopenedFailureCode,
-            findingIdentity,
-          },
-        })}`,
+        )}`,
       );
     }
     context.record("terminal-failure-inbox-persisted-after-reopen", {
@@ -3794,7 +3863,10 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
             row.semanticEpochId === stale.semanticEpochId &&
             row.status === "completed" &&
             compareInstantValues(
-              parseInstant(row.createdAt, "interruption recovery Run createdAt"),
+              parseInstant(
+                row.createdAt,
+                "interruption recovery Run createdAt",
+              ),
               staleCompletedAt,
             ) > 0,
         );
@@ -3807,9 +3879,7 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
       postExitRuns,
       "process interruption durable recovery settled",
     );
-    const {
-      stale: staleRun,
-    } = recoveryEvidence;
+    const { stale: staleRun } = recoveryEvidence;
     const recoveryRun = selectInterruptedRecoveryFromStableLedger(
       stableRows,
       postExitRuns,
@@ -4062,10 +4132,12 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
     );
     if (selectedTargetRun.id !== schedulerRun.id) {
       throw new Error(
-        `foreground target marker selection changed Run identity: ${JSON.stringify({
-          selectedTargetRun: selectedTargetRun.id,
-          schedulerRun: schedulerRun.id,
-        })}`,
+        `foreground target marker selection changed Run identity: ${JSON.stringify(
+          {
+            selectedTargetRun: selectedTargetRun.id,
+            schedulerRun: schedulerRun.id,
+          },
+        )}`,
       );
     }
     const originalMarker = assertForegroundRunMarker(
@@ -4157,13 +4229,15 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       );
     } catch (error) {
       throw new Error(
-        `foreground writer did not overlap the exact wake Run interval: ${JSON.stringify({
-          schedulerRunId: schedulerRun.id,
-          schedulerStartedAt: completedSchedulerRun.startedAt,
-          foregroundPatchStartedAt,
-          foregroundPatchCompletedAt,
-          schedulerCompletedAt: completedSchedulerRun.completedAt,
-        })}`,
+        `foreground writer did not overlap the exact wake Run interval: ${JSON.stringify(
+          {
+            schedulerRunId: schedulerRun.id,
+            schedulerStartedAt: completedSchedulerRun.startedAt,
+            foregroundPatchStartedAt,
+            foregroundPatchCompletedAt,
+            schedulerCompletedAt: completedSchedulerRun.completedAt,
+          },
+        )}`,
         { cause: error },
       );
     }
@@ -4324,15 +4398,14 @@ async function runIncrementalLiveness(harness, configureWorkspace) {
         `incremental restart changed the durable current epoch unexpectedly: ${beforeReadiness.epoch.id} -> ${afterReadiness.epoch.id}`,
       );
     }
-    if (
-      afterReadiness.feedAndCursor.feedHead <=
-      restartBaselineFeed.feedHead
-    ) {
+    if (afterReadiness.feedAndCursor.feedHead <= restartBaselineFeed.feedHead) {
       throw new Error(
-        `incremental restart mutation did not append a new durable change-feed head: ${JSON.stringify({
-          before: restartBaselineFeed.feedHead,
-          after: afterReadiness.feedAndCursor.feedHead,
-        })}`,
+        `incremental restart mutation did not append a new durable change-feed head: ${JSON.stringify(
+          {
+            before: restartBaselineFeed.feedHead,
+            after: afterReadiness.feedAndCursor.feedHead,
+          },
+        )}`,
       );
     }
     if (

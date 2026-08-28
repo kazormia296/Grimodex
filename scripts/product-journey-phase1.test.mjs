@@ -128,6 +128,17 @@ function createJourneys() {
   });
 }
 
+async function withCi(callback) {
+  const previousCi = process.env.CI;
+  process.env.CI = "true";
+  try {
+    return await callback();
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+  }
+}
+
 test("C2-5B catalog exposes the eleven stable acceptance journey IDs", () => {
   const journeys = createJourneys();
   assert.deepEqual(
@@ -144,7 +155,7 @@ test("schema marker journey executes live observations and requires automatic Ba
   const harness = createObservationHarness({ ledgerRows });
   const [journey] = createJourneys();
 
-  await assert.doesNotReject(() => journey.run(harness));
+  await assert.doesNotReject(() => withCi(() => journey.run(harness)));
   assert.ok(
     harness.calls.some(
       (call) =>
@@ -164,7 +175,7 @@ test("schema marker journey rejects an empty durable Run ledger", async () => {
   const [journey] = createJourneys();
 
   await assert.rejects(
-    () => journey.run(harness),
+    () => withCi(() => journey.run(harness)),
     /schema-marker\/open durable Run sequence.*never reached|required state/i,
   );
 });
@@ -173,7 +184,7 @@ test("maintenance journeys never use a renderer maintenance command to make the 
   const harness = createObservationHarness();
   const [journey] = createJourneys();
 
-  await assert.rejects(() => journey.run(harness));
+  await assert.rejects(() => withCi(() => journey.run(harness)));
   assert.equal(
     harness.calls.some((call) =>
       [
@@ -214,7 +225,7 @@ test("maintenance fault and setup seams require the exact owner contract", async
   );
   const harness = createObservationHarness({ ledgerRows });
   const [journey] = createJourneys();
-  await journey.run(harness);
+  await withCi(() => journey.run(harness));
 
   const configure = harness.calls.find(
     (call) => call.command === "configureWorkspace",
@@ -235,25 +246,23 @@ test("maintenance fault and setup seams require the exact owner contract", async
 });
 
 test("withLaunchEnvironment restores pre-existing freshness after success", async () => {
+  const previousCi = process.env.CI;
   const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  process.env.CI = "true";
   process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = "pre-existing";
   try {
     const result = await withLaunchEnvironmentForTest(
       { freshness: "disabled" },
       () => {
-        assert.equal(
-          process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
-          "disabled",
-        );
+        assert.equal(process.env[NARRATIVE_FRESHNESS_DISABLE_ENV], "disabled");
         return "callback-result";
       },
     );
     assert.equal(result, "callback-result");
-    assert.equal(
-      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
-      "pre-existing",
-    );
+    assert.equal(process.env[NARRATIVE_FRESHNESS_DISABLE_ENV], "pre-existing");
   } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
     if (previousFreshness === undefined) {
       delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
     } else {
@@ -263,28 +272,26 @@ test("withLaunchEnvironment restores pre-existing freshness after success", asyn
 });
 
 test("withLaunchEnvironment restores pre-existing freshness after callback throws", async () => {
+  const previousCi = process.env.CI;
   const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  process.env.CI = "true";
   process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = "pre-existing";
   try {
     await assert.rejects(
       () =>
-        withLaunchEnvironmentForTest(
-          { freshness: "disabled" },
-          () => {
-            assert.equal(
-              process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
-              "disabled",
-            );
-            throw new Error("callback failure");
-          },
-        ),
+        withLaunchEnvironmentForTest({ freshness: "disabled" }, () => {
+          assert.equal(
+            process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+            "disabled",
+          );
+          throw new Error("callback failure");
+        }),
       /callback failure/,
     );
-    assert.equal(
-      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
-      "pre-existing",
-    );
+    assert.equal(process.env[NARRATIVE_FRESHNESS_DISABLE_ENV], "pre-existing");
   } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
     if (previousFreshness === undefined) {
       delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
     } else {
@@ -294,22 +301,23 @@ test("withLaunchEnvironment restores pre-existing freshness after callback throw
 });
 
 test("withLaunchEnvironment restores absent freshness after success", async () => {
+  const previousCi = process.env.CI;
   const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  process.env.CI = "true";
   delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
   try {
     const result = await withLaunchEnvironmentForTest(
       { freshness: "disabled" },
       () => {
-        assert.equal(
-          process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
-          "disabled",
-        );
+        assert.equal(process.env[NARRATIVE_FRESHNESS_DISABLE_ENV], "disabled");
         return "callback-result";
       },
     );
     assert.equal(result, "callback-result");
     assert.equal(process.env[NARRATIVE_FRESHNESS_DISABLE_ENV], undefined);
   } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
     if (previousFreshness === undefined) {
       delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
     } else {
@@ -319,25 +327,26 @@ test("withLaunchEnvironment restores absent freshness after success", async () =
 });
 
 test("withLaunchEnvironment restores absent freshness after callback throws", async () => {
+  const previousCi = process.env.CI;
   const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  process.env.CI = "true";
   delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
   try {
     await assert.rejects(
       () =>
-        withLaunchEnvironmentForTest(
-          { freshness: "disabled" },
-          () => {
-            assert.equal(
-              process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
-              "disabled",
-            );
-            throw new Error("callback failure");
-          },
-        ),
+        withLaunchEnvironmentForTest({ freshness: "disabled" }, () => {
+          assert.equal(
+            process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+            "disabled",
+          );
+          throw new Error("callback failure");
+        }),
       /callback failure/,
     );
     assert.equal(process.env[NARRATIVE_FRESHNESS_DISABLE_ENV], undefined);
   } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
     if (previousFreshness === undefined) {
       delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
     } else {

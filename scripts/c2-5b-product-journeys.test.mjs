@@ -58,10 +58,7 @@ import {
   resolveProductJourneyImpactCatalog,
   selectProductJourneys,
 } from "../electron/scripts/product-journey-impact.mjs";
-import {
-  parseImpactMap,
-  selectImpact,
-} from "./quality/impact-map.mjs";
+import { parseImpactMap, selectImpact } from "./quality/impact-map.mjs";
 
 const execFile = promisify(execFileCallback);
 
@@ -150,14 +147,14 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
     "INSERT INTO narrative_extraction_runs (id, project_id, created_at) VALUES (?, ?, ?)",
     ["run-2", "project-1", "2026-08-23T00:00:01.000Z"],
   );
-  insert(
-    "INSERT INTO narrative_extraction_tasks (id, run_id) VALUES (?, ?)",
-    ["task-1", "run-1"],
-  );
-  insert(
-    "INSERT INTO narrative_extraction_tasks (id, run_id) VALUES (?, ?)",
-    ["task-2", "run-2"],
-  );
+  insert("INSERT INTO narrative_extraction_tasks (id, run_id) VALUES (?, ?)", [
+    "task-1",
+    "run-1",
+  ]);
+  insert("INSERT INTO narrative_extraction_tasks (id, run_id) VALUES (?, ?)", [
+    "task-2",
+    "run-2",
+  ]);
   insert(
     "INSERT INTO narrative_extraction_attempts (id, task_id, attempt_number, status, started_at, failure_code) VALUES (?, ?, ?, ?, ?, ?)",
     [
@@ -257,8 +254,8 @@ test("foreground lifecycle proof rejects wrong child identity and non-monotonic 
     maxAttemptNumber: 1,
     taskStatus: "completed",
     lastAttemptStatus: "completed",
-    specJson: "{\"backfillAlgorithmVersion\":\"3\"}",
-    taskInputJson: "{\"backfillAlgorithmVersion\":\"3\"}",
+    specJson: '{"backfillAlgorithmVersion":"3"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"3"}',
     createdAt: "2026-08-23T00:00:00.000Z",
     startedAt: "2026-08-23T00:00:00.000Z",
     taskCreatedAt: "2026-08-23T00:00:00.000Z",
@@ -281,7 +278,8 @@ test("foreground lifecycle proof rejects wrong child identity and non-monotonic 
   ]) {
     const corrupted = { ...valid, [field]: value };
     assert.throws(
-      () => assertForegroundLifecycle(corrupted, "completed", `corrupt ${field}`),
+      () =>
+        assertForegroundLifecycle(corrupted, "completed", `corrupt ${field}`),
       new RegExp(field),
     );
   }
@@ -342,8 +340,8 @@ test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
     lastAttemptNumber: 1,
     taskStatus: "running",
     lastAttemptStatus: "running",
-    specJson: "{\"backfillAlgorithmVersion\":\"3\"}",
-    taskInputJson: "{\"backfillAlgorithmVersion\":\"3\"}",
+    specJson: '{"backfillAlgorithmVersion":"3"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"3"}',
     createdAt: "2026-08-23T00:00:00.000Z",
     startedAt: "2026-08-23T00:00:00.000Z",
     taskCreatedAt: "2026-08-23T00:00:00.000Z",
@@ -351,7 +349,11 @@ test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
     lastAttemptStartedAt: "2026-08-23T00:00:00.000Z",
   };
   assert.doesNotThrow(() =>
-    assertForegroundLifecycle(valid, "running", "canonical timestamp lifecycle"),
+    assertForegroundLifecycle(
+      valid,
+      "running",
+      "canonical timestamp lifecycle",
+    ),
   );
   assert.doesNotThrow(() =>
     assertForegroundLifecycle(
@@ -413,10 +415,8 @@ test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
 });
 
 test("wall-clock bounds and overlap use the exact instant representation", () => {
-  const {
-    assertWallClockIntervalContains,
-    assertWallClockLowerBound,
-  } = narrativeMaintenanceProductJourneys;
+  const { assertWallClockIntervalContains, assertWallClockLowerBound } =
+    narrativeMaintenanceProductJourneys;
   assert.equal(typeof assertWallClockLowerBound, "function");
   assert.equal(typeof assertWallClockIntervalContains, "function");
 
@@ -523,10 +523,7 @@ test("legacy naive timestamps preserve Chrono signed proleptic years", () => {
   assert.doesNotThrow(() => parseInstant("-0001-01-01 00:00:00"));
   assert.doesNotThrow(() => parseInstant("+10000-01-01 00:00:00"));
   assert.equal(
-    compareInstants(
-      "-0001-01-01 00:00:00",
-      "+10000-01-01 00:00:00",
-    ),
+    compareInstants("-0001-01-01 00:00:00", "+10000-01-01 00:00:00"),
     -1,
   );
   assert.doesNotThrow(() => parseInstant("-262143-01-01 00:00:00"));
@@ -623,11 +620,7 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
   };
   assert.doesNotThrow(() => sequenceValidator([failed, completed]));
   assert.throws(
-    () =>
-      sequenceValidator([
-        failed,
-        { ...completed, taskKind: "wrong-kind" },
-      ]),
+    () => sequenceValidator([failed, { ...completed, taskKind: "wrong-kind" }]),
     /Task kind/,
   );
   assert.throws(
@@ -663,7 +656,13 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
     /strictly increasing/,
   );
   assert.throws(
-    () => sequenceValidator([failed, completed, { ...completed, id: "third-completed" }, { ...completed, id: "fourth-completed" }]),
+    () =>
+      sequenceValidator([
+        failed,
+        completed,
+        { ...completed, id: "third-completed" },
+        { ...completed, id: "fourth-completed" },
+      ]),
     /at most three/,
   );
   assert.throws(
@@ -713,7 +712,10 @@ test("C2-5B fault and trigger seams are closed enums", () => {
 });
 
 test("C2-5B journey seam constants keep exact durable failure contracts", () => {
-  assert.equal(NARRATIVE_MAINTENANCE_TRANSIENT_CODE, "NEX_MAINTENANCE_TRANSIENT");
+  assert.equal(
+    NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+    "NEX_MAINTENANCE_TRANSIENT",
+  );
   assert.equal(
     NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
     "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
@@ -809,15 +811,17 @@ test("restore fixture captures the derived-state gap before the normal launch se
   )?.[0];
   assert.ok(seedBody, "restore fixture seeding helper must remain inspectable");
   assert.ok(
-    seedBody.indexOf("createRestoreFixtureDerivedStateGap(context") >= 0,
+    /createRestoreFixtureDerivedStateGap\(\s*context/.test(seedBody),
     "restore fixture must create a real derived-state gap before backup",
   );
   assert.ok(
-    seedBody.indexOf("createRestoreFixtureDerivedStateGap(context") <
+    seedBody.search(/createRestoreFixtureDerivedStateGap\(\s*context/) <
       seedBody.indexOf("createRestoreBackupFixture(workspace)"),
     "the gap must be captured in the WAL-safe backup",
   );
-  const gapAt = seedBody.indexOf("createRestoreFixtureDerivedStateGap(context");
+  const gapAt = seedBody.search(
+    /createRestoreFixtureDerivedStateGap\(\s*context/,
+  );
   const readinessMatch = seedBody.match(
     /waitForReadiness\(\s*context,\s*"restore fixture pre-gap freshness settled",[\s\S]*?\n\s*\);/,
   );
@@ -899,7 +903,9 @@ test("restore fixture readiness requires a current completed Freshness and relea
     return readiness;
   };
 
-  assert.doesNotThrow(() => assertRestoreFixturePreGapReadiness(makeReadiness()));
+  assert.doesNotThrow(() =>
+    assertRestoreFixturePreGapReadiness(makeReadiness()),
+  );
   assert.doesNotThrow(() => {
     const zeroHead = makeReadiness();
     zeroHead.feedAndCursor.feedHead = 0;
@@ -933,7 +939,9 @@ test("restore fixture readiness requires a current completed Freshness and relea
     ],
     [
       "stale Freshness epoch",
-      mutate((readiness) => (readiness.freshness.semanticEpochId = "epoch-old")),
+      mutate(
+        (readiness) => (readiness.freshness.semanticEpochId = "epoch-old"),
+      ),
     ],
     [
       "missing feed head",
@@ -967,11 +975,16 @@ test("restore fixture readiness requires a current completed Freshness and relea
     ],
     [
       "fractional acknowledged head",
-      mutate((readiness) => (readiness.feedAndCursor.cursor.acknowledgedThrough = 2.5)),
+      mutate(
+        (readiness) =>
+          (readiness.feedAndCursor.cursor.acknowledgedThrough = 2.5),
+      ),
     ],
     [
       "unequal acknowledged head",
-      mutate((readiness) => (readiness.feedAndCursor.cursor.acknowledgedThrough = 2)),
+      mutate(
+        (readiness) => (readiness.feedAndCursor.cursor.acknowledgedThrough = 2),
+      ),
     ],
     [
       "missing cursor",
@@ -979,11 +992,15 @@ test("restore fixture readiness requires a current completed Freshness and relea
     ],
     [
       "reserved cursor",
-      mutate((readiness) => (readiness.feedAndCursor.cursor.reservedThrough = 4)),
+      mutate(
+        (readiness) => (readiness.feedAndCursor.cursor.reservedThrough = 4),
+      ),
     ],
     [
       "active cursor Run",
-      mutate((readiness) => (readiness.feedAndCursor.cursor.activeRunId = "run-1")),
+      mutate(
+        (readiness) => (readiness.feedAndCursor.cursor.activeRunId = "run-1"),
+      ),
     ],
     [
       "cursor epoch",
@@ -1166,13 +1183,11 @@ test("restore fixture requires a typed completed legacy Backfill boundary", asyn
     /async function seedRestoreFixtureEvidence\([\s\S]*?\n}\n\n\/\*\*/,
   )?.[0];
   assert.ok(seedBody, "restore fixture seeding helper must remain inspectable");
-  const backfillRouteAt = seedBody.indexOf(
-    '"retry_narrative_legacy_backfill"',
+  const backfillRouteAt = seedBody.indexOf('"retry_narrative_legacy_backfill"');
+  const ownerRunAt = seedBody.indexOf('"narrative_extraction_create_run"');
+  const gapAt = seedBody.search(
+    /createRestoreFixtureDerivedStateGap\(\s*context/,
   );
-  const ownerRunAt = seedBody.indexOf(
-    '"narrative_extraction_create_run"',
-  );
-  const gapAt = seedBody.indexOf("createRestoreFixtureDerivedStateGap(context");
   const backupAt = seedBody.indexOf("createRestoreBackupFixture(workspace)");
   assert.ok(
     backfillRouteAt >= 0,
@@ -1267,7 +1282,10 @@ test("restore journey must exercise the Settings backup UI and rebind after relo
   )?.[0];
   assert.ok(helperBody, "restore UI helper must remain inspectable");
   assert.ok(journeyBody, "restore journey helper must remain inspectable");
-  assert.ok(scenarioBody, "shared restore scenario helper must remain inspectable");
+  assert.ok(
+    scenarioBody,
+    "shared restore scenario helper must remain inspectable",
+  );
   assert.match(
     scenarioBody,
     /restoreThroughSettingsUi\(context, fixtureEvidence\.backupName\)/,
@@ -1292,6 +1310,16 @@ test("restore journey must exercise the Settings backup UI and rebind after relo
     helperBody,
     /name: \/\^\(\?:Restore\|復元\)\$\//,
     "restore helper must perform the first restore click",
+  );
+  assert.match(
+    helperBody,
+    /getByTestId\(\s*`backup-restore-\$\{encodeURIComponent\(backupName\)\}`\s*,?\s*\)/,
+    "restore helper must select the backup by stable identity, not row order",
+  );
+  assert.doesNotMatch(
+    helperBody,
+    /\.nth\(/,
+    "restore helper must not select a backup by an unstable list index",
   );
   assert.match(
     helperBody,
@@ -1389,12 +1417,7 @@ test("restore sequence binds Verify/Rebuild/confirmation to the new restore Epoc
         [
           phase("verify-1", "dependency-verify", restoreEpoch.id, 1),
           {
-            ...phase(
-              "rebuild-1",
-              "semantic-index-rebuild",
-              restoreEpoch.id,
-              2,
-            ),
+            ...phase("rebuild-1", "semantic-index-rebuild", restoreEpoch.id, 2),
             createdAt: "2026-08-23T00:00:00.500Z",
           },
           phase("verify-2", "dependency-verify", restoreEpoch.id, 3),
@@ -1523,10 +1546,7 @@ test("interrupted snapshot selection is page-independent and rejects a pre-exist
   assert.throws(
     () =>
       selectInterruptedRunFromExitSnapshot(
-        [
-          ...baseline,
-          { ...interrupted, id: "old-running" },
-        ],
+        [...baseline, { ...interrupted, id: "old-running" }],
         [],
       ),
     /exactly one new running Backfill Run/,
@@ -1654,9 +1674,7 @@ test("stable no-automatic-repair assertion rejects a delayed Repair Run", () => 
     /human-only Repair Run kind/,
     "a Repair Run arriving after Verify/Rebuild must fail the settled ledger assertion",
   );
-  assert.doesNotThrow(() =>
-    assertNoAutomaticRepair(stableRows.slice(0, 2)),
-  );
+  assert.doesNotThrow(() => assertNoAutomaticRepair(stableRows.slice(0, 2)));
 });
 
 test("foreground target setup rejects an old marked authority and requires one fresh target marker", () => {
@@ -1730,7 +1748,12 @@ test("settled freshness cursor requires the canonical released reservation shape
     }),
     true,
   );
-  for (const field of ["reservedThrough", "activeRunId", "semanticEpochId", "lastError"]) {
+  for (const field of [
+    "reservedThrough",
+    "activeRunId",
+    "semanticEpochId",
+    "lastError",
+  ]) {
     assert.equal(
       isSettledFreshnessCursor({
         acknowledgedThrough: 2,
@@ -1785,7 +1808,10 @@ test("foreground marker selects one native Run by immutable barrier, not row ord
     [],
     expected,
   );
-  assert.deepEqual(selected.map((run) => run.id), ["marked-run"]);
+  assert.deepEqual(
+    selected.map((run) => run.id),
+    ["marked-run"],
+  );
   assert.equal(
     assertForegroundRunMarker(markedRun, expected).marker.authorityId,
     "authority-1",
@@ -1862,7 +1888,11 @@ test("foreground marker canonical keys follow native Backfill and epoch-bound ph
   assert.throws(
     () =>
       assertForegroundRunMarker(
-        makeRun("backfill", "legacy-dependency-backfill:v3", `${backfillKey}/epoch/epoch-1`),
+        makeRun(
+          "backfill",
+          "legacy-dependency-backfill:v3",
+          `${backfillKey}/epoch/epoch-1`,
+        ),
         expected,
       ),
     /canonicalWorkKey/,
@@ -1882,7 +1912,11 @@ test("foreground marker canonical keys follow native Backfill and epoch-bound ph
     "narrative-maintenance:v1/semantic-index-rebuild/project-1/dependency-rebuild-derived/epoch/epoch-1";
   assert.equal(
     assertForegroundRunMarker(
-      makeRun("semantic-index-rebuild", "dependency-rebuild-derived", rebuildKey),
+      makeRun(
+        "semantic-index-rebuild",
+        "dependency-rebuild-derived",
+        rebuildKey,
+      ),
       expected,
     ).canonicalWorkKey,
     rebuildKey,
@@ -1924,7 +1958,9 @@ test("transient and terminal validators reject fallback and same-millisecond fal
     lastAttemptStatus: "failed",
     lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
   };
-  assert.doesNotThrow(() => assertTransientAttemptEvidence(oneAttemptTransient));
+  assert.doesNotThrow(() =>
+    assertTransientAttemptEvidence(oneAttemptTransient),
+  );
   assert.throws(
     () =>
       assertTransientAttemptEvidence({
@@ -2002,13 +2038,19 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
   const fixtureHelperBody = source.match(
     /async function seedRestoreFixtureEvidence\([\s\S]*?\n}\n\n\/\*\*/,
   )?.[0];
-  assert.ok(fixtureHelperBody, "restore fixture helper must remain inspectable");
+  assert.ok(
+    fixtureHelperBody,
+    "restore fixture helper must remain inspectable",
+  );
   assert.match(
     fixtureHelperBody,
     /harness\.launch\(`\$\{id\}\/restore-fixture`\)/,
     "restore fixture helper must launch its exact registered restore-fixture phase",
   );
-  assert.ok(restoreJourneyBody, "restore journey caller must remain inspectable");
+  assert.ok(
+    restoreJourneyBody,
+    "restore journey caller must remain inspectable",
+  );
   assert.match(
     restoreJourneyBody,
     /id = "c2-5b-restore-verify-rebuild-verify",/,
@@ -2325,7 +2367,10 @@ test("current C2-5B scheduler owner tests route directly to product and quality 
 
 test("future narrativeMaintenance files route directly without safe-all fallback", async () => {
   const impactMap = parseImpactMap(
-    await readFile(new URL("../evals/impact-map.yaml", import.meta.url), "utf8"),
+    await readFile(
+      new URL("../evals/impact-map.yaml", import.meta.url),
+      "utf8",
+    ),
   );
   const changedPath =
     "electron/main/narrativeMaintenance.futureRegression.test.ts";
@@ -2356,9 +2401,7 @@ test("future narrativeMaintenance files route directly without safe-all fallback
     qualitySelection.matchedRuleIds.includes("narrative-semantic-contract"),
   );
   assert.ok(qualitySelection.suiteIds.includes("narrative-runtime"));
-  assert.ok(
-    qualitySelection.suiteIds.includes("narrative-semantic-contract"),
-  );
+  assert.ok(qualitySelection.suiteIds.includes("narrative-semantic-contract"));
   assert.ok(
     PRODUCT_DOMAIN_RULES.find(
       (rule) => rule.id === "narrative-maintenance-product-journeys",

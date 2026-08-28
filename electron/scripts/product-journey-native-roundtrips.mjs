@@ -84,10 +84,10 @@ async function runNativeRoundTrip(
         page: writing.page,
         projectId,
         workspace,
-        relaunchAfterFixtureDml: async (statements) => {
+        relaunchAfterFixtureOperations: async (operations) => {
           await harness.close(writing.app, writing.page, `${id}/write`);
           writing = null;
-          await harness.executeFixtureDml(workspace, statements);
+          await harness.executeFixtureOperations(workspace, operations);
           writing = await harness.launch(`${id}/write`);
           return writing.page;
         },
@@ -179,47 +179,43 @@ function chronicleJourney(configureWorkspace, log) {
               `${id}: Chronicle create did not acknowledge version 1`,
             );
           }
-          const result = await current.invokeOk(
-            page,
-            "chronicle_bulk_mutate",
-            {
-              payload: {
-                requestId,
-                eventUid: `native-chronicle-bulk-event-${randomUUID()}`,
-                origin: "human",
-                authorityRoute: "human-direct",
-                caller: "manual-wrapper",
-                controls: [
-                  "runtime-policy",
-                  "actor-context",
-                  "typed-writer",
-                  "occ",
-                  "change-event",
-                  "change-feed",
-                ],
-                provenance: null,
-                writesAuthorityProtectedField: false,
-                originalTransactionId: null,
-                undoJournalId: null,
-                projectId,
-                sessionId: `native-session-${randomUUID()}`,
-                surface: "manual",
-                operations: [
-                  {
-                    kind: "eventSetDate",
-                    eventId,
-                    baseVersion: created.version,
-                    startTime: CHRONICLE_START_TIME,
-                    startMinute: null,
-                    startGranularity: "day",
-                    endTime: null,
-                    endMinute: null,
-                    endGranularity: "none",
-                  },
-                ],
-              },
+          const result = await current.invokeOk(page, "chronicle_bulk_mutate", {
+            payload: {
+              requestId,
+              eventUid: `native-chronicle-bulk-event-${randomUUID()}`,
+              origin: "human",
+              authorityRoute: "human-direct",
+              caller: "manual-wrapper",
+              controls: [
+                "runtime-policy",
+                "actor-context",
+                "typed-writer",
+                "occ",
+                "change-event",
+                "change-feed",
+              ],
+              provenance: null,
+              writesAuthorityProtectedField: false,
+              originalTransactionId: null,
+              undoJournalId: null,
+              projectId,
+              sessionId: `native-session-${randomUUID()}`,
+              surface: "manual",
+              operations: [
+                {
+                  kind: "eventSetDate",
+                  eventId,
+                  baseVersion: created.version,
+                  startTime: CHRONICLE_START_TIME,
+                  startMinute: null,
+                  startGranularity: "day",
+                  endTime: null,
+                  endMinute: null,
+                  endGranularity: "none",
+                },
+              ],
             },
-          );
+          });
           const eventResult = result?.eventResults?.find(
             (entry) => entry?.eventId === eventId,
           );
@@ -526,7 +522,7 @@ function snapshotJourney(configureWorkspace, log) {
           harness: current,
           page,
           projectId,
-          relaunchAfterFixtureDml,
+          relaunchAfterFixtureOperations,
         }) => {
           const sceneId = `native-snapshot-scene-${randomUUID()}`;
           const versionId = `native-snapshot-version-${randomUUID()}`;
@@ -558,13 +554,13 @@ function snapshotJourney(configureWorkspace, log) {
           ) {
             throw new Error(`${id}: typed scene seed was not persisted`);
           }
-          const fixturePage = await relaunchAfterFixtureDml([
+          const fixturePage = await relaunchAfterFixtureOperations([
             {
-              sql: `INSERT INTO content_versions
-                (id, entity_type, entity_id, content, version_number,
-                 snapshot_type, created_at)
-                VALUES (?, 'scene', ?, ?, 1, 'manual', ?)`,
-              params: [versionId, sceneId, SNAPSHOT_CONTENT, now],
+              kind: "content-version-insert",
+              id: versionId,
+              entityId: sceneId,
+              content: SNAPSHOT_CONTENT,
+              createdAt: now,
             },
           ]);
           await current.invokeOk(fixturePage, "project_snapshot_create", {

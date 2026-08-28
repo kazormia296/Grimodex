@@ -172,10 +172,13 @@ pub(crate) use c2zc_canonical_cutover::{
 };
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
 pub use incremental_freshness::{
-    run_incremental_freshness_cycle, run_incremental_freshness_cycle_with_liveness_capability,
+    run_incremental_freshness_cycle, run_incremental_freshness_cycle_with_hold,
+    run_incremental_freshness_cycle_with_liveness_capability,
+    run_incremental_freshness_cycle_with_liveness_capability_and_hold,
     IncrementalFreshnessBatchSummary, IncrementalFreshnessCycleOutcome,
-    IncrementalFreshnessShadowConsumerSummary, IncrementalFreshnessShadowSummary,
-    SuccessfulIncrementalFreshnessCycle, NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
+    IncrementalFreshnessHeldSummary, IncrementalFreshnessShadowConsumerSummary,
+    IncrementalFreshnessShadowSummary, SuccessfulIncrementalFreshnessCycle,
+    NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
 };
 pub use maintenance_route_registry::{
     route_descriptor_by_id, route_descriptor_for_run_kind, route_descriptors,
@@ -185,8 +188,8 @@ pub use maintenance_route_registry::{
 pub use maintenance_runtime::{
     canonical_work_key, canonical_work_key_for_epoch, classify_failure, coalesce_desired_work,
     decide_execution, decide_run_recovery, decide_run_recovery_for_epoch,
-    discover_before_cutover_maintenance_work_with_coordinates,
-    discover_durable_maintenance_work, discover_durable_maintenance_work_with_config,
+    discover_before_cutover_maintenance_work_with_coordinates, discover_durable_maintenance_work,
+    discover_durable_maintenance_work_with_config,
     discover_durable_maintenance_work_with_coordinates, effective_maintenance_coordinates,
     plan_maintenance_trigger, preflight_maintenance_cycle_request, read_run_ledger,
     read_run_ledger_for_epoch, recovery_canonical_key, retry_backoff_ms,

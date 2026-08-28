@@ -16,10 +16,12 @@ function activeSeam(
   return {
     active: true,
     ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+    nonce: "test-nonce",
     fault: null,
     trigger: null,
     setup: null,
     freshness: null,
+    freshnessHoldProjectId: null,
     productJourneyBarrierId: null,
     correlation: null,
     ...overrides,

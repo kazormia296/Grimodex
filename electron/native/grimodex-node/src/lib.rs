@@ -32,6 +32,7 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::ThreadSafeCallContext;
 use napi::JsFunction;
 use napi_derive::napi;
+use rusqlite::OptionalExtension;
 
 use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
 use grimodex_db::agent_writes;
@@ -133,6 +134,169 @@ fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
 
 fn is_expected_c2zc_cutover_not_ready(error: &anyhow::Error) -> bool {
     error.to_string().starts_with("NEX_C2ZC_CUTOVER_NOT_READY:")
+}
+
+fn require_held_cutover_not_ready(cutover_not_ready: bool) -> Result<(), AppError> {
+    if cutover_not_ready {
+        Ok(())
+    } else {
+        Err(AppError::Anyhow(anyhow::anyhow!(
+            "NEX_MAINTENANCE_CI_FRESHNESS_HOLD_CUTOVER_READY: held Freshness candidate unexpectedly passed the canonical cutover gate"
+        )))
+    }
+}
+
+/// Return the post-cycle state that a CI product journey may use to bind a
+/// main-process quiescence receipt.  This deliberately lives beside the
+/// existing freshness scheduler call instead of becoming a read/N-API
+/// command: the values are read from the same pinned Database after the
+/// successful cycle has been revalidated.
+fn narrative_ci_quiescence_state(
+    db: &Database,
+    binding: &MaintenanceWorkspaceBinding,
+    freshness_hold_project_id: Option<&str>,
+    held_project_id: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
+    binding.validate()?;
+    if let Some(held_project_id) = held_project_id {
+        anyhow::ensure!(
+            freshness_hold_project_id == Some(held_project_id),
+            "NEX_MAINTENANCE_CI_FRESHNESS_HOLD_RESULT_MISMATCH: held project does not match the effective CI hold"
+        );
+    }
+    db.with_conn(|conn| {
+        let project_ids: Vec<String> = {
+            let mut statement = conn.prepare("SELECT id FROM projects ORDER BY id ASC")?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let mut projects = Vec::with_capacity(project_ids.len());
+        for project_id in project_ids {
+            let (
+                current_epoch_id,
+                feed_head,
+                acknowledged_through,
+                reserved_through,
+                active_run_id,
+                cursor_epoch_id,
+                last_error,
+            ): (
+                Option<String>,
+                i64,
+                Option<i64>,
+                Option<i64>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ) = conn.query_row(
+                "SELECT
+                    (SELECT id
+                       FROM narrative_semantic_epochs
+                      WHERE project_id = ?1
+                      ORDER BY epoch_number DESC, id DESC
+                      LIMIT 1),
+                    COALESCE((SELECT MAX(canonical_sequence)
+                                FROM narrative_change_events
+                               WHERE project_id = ?1), 0),
+                    (SELECT acknowledged_through_sequence
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1
+                        AND consumer_id = 'narrative-incremental-freshness/v1'
+                      LIMIT 1),
+                    (SELECT reserved_through_sequence
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1
+                        AND consumer_id = 'narrative-incremental-freshness/v1'
+                      LIMIT 1),
+                    (SELECT active_run_id
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1
+                        AND consumer_id = 'narrative-incremental-freshness/v1'
+                      LIMIT 1),
+                    (SELECT semantic_epoch_id
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1
+                        AND consumer_id = 'narrative-incremental-freshness/v1'
+                      LIMIT 1),
+                    (SELECT last_error
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1
+                        AND consumer_id = 'narrative-incremental-freshness/v1'
+                      LIMIT 1)",
+                [project_id.as_str()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )?;
+            projects.push(serde_json::json!({
+                "projectId": project_id,
+                "currentEpochId": current_epoch_id,
+                "feedHead": feed_head,
+                "cursor": {
+                    "acknowledgedThrough": acknowledged_through,
+                    "reservedThrough": reserved_through,
+                    "activeRunId": active_run_id,
+                    "semanticEpochId": cursor_epoch_id,
+                    "lastError": last_error,
+                },
+            }));
+        }
+
+        let (marker_migration_id, marker_contract_version, marker_applied_at): (
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        ) = conn.query_row(
+            "SELECT
+                (SELECT migration_id
+                   FROM schema_data_migrations
+                  WHERE migration_id = ?1
+                  ORDER BY applied_at DESC
+                  LIMIT 1),
+                (SELECT contract_version
+                   FROM schema_data_migrations
+                  WHERE migration_id = ?1
+                  ORDER BY applied_at DESC
+                  LIMIT 1),
+                (SELECT applied_at
+                   FROM schema_data_migrations
+                  WHERE migration_id = ?1
+                  ORDER BY applied_at DESC
+                  LIMIT 1)",
+            [grimodex_db::narrative_extraction::C2_ZC_CUTOVER_MIGRATION_ID],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let marker = marker_migration_id.map(|migration_id| {
+            serde_json::json!({
+                "migrationId": migration_id,
+                "contractVersion": marker_contract_version,
+                "appliedAt": marker_applied_at,
+            })
+        });
+        let mut state = serde_json::json!({
+            "authorityId": binding.authority_id.clone(),
+            "generation": binding.generation,
+            "freshnessHoldProjectId": freshness_hold_project_id,
+            "heldProjectId": held_project_id,
+            "projects": projects,
+            "marker": marker,
+        });
+        let digest = format!(
+            "sha256:{}",
+            grimodex_db::narrative_extraction::digest_plan(&state)
+        );
+        state["stateDigest"] = serde_json::Value::String(digest);
+        Ok(state)
+    })
 }
 
 #[cfg(test)]
@@ -703,6 +867,21 @@ mod narrative_freshness_restore_lock_tests {
         drop(state);
         drop(cleanup);
         assert!(!root.exists(), "fixture must clean up");
+    }
+}
+
+#[cfg(test)]
+mod narrative_freshness_result_contract_tests {
+    use super::*;
+
+    #[test]
+    fn held_result_uses_app_error_for_unexpected_cutover_ready() {
+        require_held_cutover_not_ready(true).expect("held NOT_READY evidence is accepted");
+        let error = require_held_cutover_not_ready(false)
+            .expect_err("held result must fail when cutover unexpectedly succeeds");
+        assert!(error
+            .to_string()
+            .starts_with("NEX_MAINTENANCE_CI_FRESHNESS_HOLD_CUTOVER_READY:"));
     }
 }
 
@@ -2297,6 +2476,7 @@ fn run_narrative_freshness_cycle_inner(
     state: &AppState,
     after_cycle: impl FnOnce(),
 ) -> std::result::Result<Option<String>, AppError> {
+    let ci_config = state.narrative_maintenance_ci_seam.config();
     let authority = match active_database(&state.ws) {
         Ok(authority) => authority,
         Err(AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive) => {
@@ -2306,13 +2486,41 @@ fn run_narrative_freshness_cycle_inner(
     };
     let binding = narrative_maintenance_binding_for_authority(state, &authority);
     binding.validate()?;
+    if let Some(config) = ci_config.as_ref() {
+        state
+            .narrative_maintenance_ci_seam
+            .validate_freshness_hold_binding(&binding)
+            .map_err(AppError::Anyhow)?;
+        if let Some(hold_project_id) = config.freshness_hold_project_id.as_deref() {
+            let hold_exists = authority.db().with_conn(|conn| {
+                Ok::<_, anyhow::Error>(
+                    conn.query_row(
+                        "SELECT 1 FROM projects WHERE id = ?1 LIMIT 1",
+                        [hold_project_id],
+                        |_row| Ok(()),
+                    )
+                    .optional()?
+                    .is_some(),
+                )
+            })?;
+            if !hold_exists {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_CI_FRESHNESS_HOLD_PROJECT_NOT_FOUND: effective hold project '{}' is not in the active workspace",
+                    hold_project_id
+                )));
+            }
+        }
+    }
     // Liveness is minted only after the bounded cycle has returned
     // successfully. A failed graph evaluation, cursor reservation,
     // or publication therefore cannot attest a live scheduler or
     // activate the canonical authority.
     let (cycle_outcome, successful_cycle) =
-        narrative_extraction::run_incremental_freshness_cycle_with_liveness_capability(
+        narrative_extraction::run_incremental_freshness_cycle_with_liveness_capability_and_hold(
             authority.db(),
+            ci_config
+                .as_ref()
+                .and_then(|config| config.freshness_hold_project_id.as_deref()),
         )?;
     // A workspace swap may complete while the bounded cycle is
     // evaluating its pinned old authority. Re-resolve the active
@@ -2351,9 +2559,56 @@ fn run_narrative_freshness_cycle_inner(
         cutover_not_ready = true;
     }
 
+    // The quiescence state is an acceptance-only extension of the existing
+    // freshness result. Production launches keep the historical lightweight
+    // result and therefore pay no extra workspace-wide read cost.
+    let held_project_id = match &cycle_outcome {
+        narrative_extraction::IncrementalFreshnessCycleOutcome::Held(summary) => {
+            Some(summary.project_id.as_str())
+        }
+        _ => None,
+    };
+    let ci_quiescence_state = if ci_config.is_some() {
+        Some(
+            narrative_ci_quiescence_state(
+                current_workspace.authority.db(),
+                &binding,
+                ci_config
+                    .as_ref()
+                    .and_then(|config| config.freshness_hold_project_id.as_deref()),
+                held_project_id,
+            )
+            .map_err(AppError::Anyhow)?,
+        )
+    } else {
+        None
+    };
+
     match cycle_outcome {
+        narrative_extraction::IncrementalFreshnessCycleOutcome::Held(summary) => {
+            require_held_cutover_not_ready(cutover_not_ready)?;
+            let result = serde_json::json!({
+                "hasMore": false,
+                "noWrite": true,
+                "held": true,
+                "heldProjectId": summary.project_id,
+                "cutoverNotReady": true,
+                "quiescenceState": ci_quiescence_state,
+            });
+            Ok(Some(result.to_string()))
+        }
         narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => {
-            if cutover_not_ready {
+            if let Some(state) = ci_quiescence_state {
+                let mut result = serde_json::json!({
+                    "hasMore": false,
+                    "noWrite": true,
+                    "quiescenceState": state,
+                });
+                if cutover_not_ready {
+                    result["cutoverNotReady"] = serde_json::json!(true);
+                }
+                Ok(Some(result.to_string()))
+            } else if cutover_not_ready {
                 Ok(Some(
                     serde_json::json!({
                         "hasMore": false,
@@ -2382,6 +2637,13 @@ fn run_narrative_freshness_cycle_inner(
                 "hasMore": summary.has_more,
                 "v2Shadow": v2_shadow,
             });
+            if let Some(state) = ci_quiescence_state {
+                // A processed batch necessarily crossed a durable cursor/run
+                // boundary. The following idle/no-write cycle is the only
+                // state eligible to publish a quiescence receipt.
+                result["noWrite"] = serde_json::json!(false);
+                result["quiescenceState"] = state;
+            }
             if cutover_not_ready {
                 result["cutoverNotReady"] = serde_json::json!(true);
             }
@@ -9539,6 +9801,7 @@ mod narrative_maintenance_fault_red_tests {
                 fault: Some(NarrativeMaintenanceCiFault::ContractViolation),
                 trigger: None,
                 setup: None,
+                freshness_hold_project_id: None,
                 product_journey_barrier_id: None,
                 correlation: None,
             })
@@ -9718,6 +9981,7 @@ mod narrative_maintenance_foreground_release_tests {
                 fault: None,
                 trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
                 setup: None,
+                freshness_hold_project_id: None,
                 product_journey_barrier_id: Some("barrier-test".to_string()),
                 correlation: Some("correlation-test".to_string()),
             })

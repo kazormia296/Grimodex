@@ -288,6 +288,10 @@ pub struct NarrativeMaintenanceCiConfig {
     pub fault: Option<NarrativeMaintenanceCiFault>,
     pub trigger: Option<NarrativeMaintenanceCiTrigger>,
     pub setup: Option<NarrativeMaintenanceCiSetup>,
+    /// Acceptance-only Freshness hold. The main/N-API seam may select one
+    /// existing project for a deterministic two-project cursor gate; normal
+    /// and production callers leave this unset.
+    pub freshness_hold_project_id: Option<String>,
     pub product_journey_barrier_id: Option<String>,
     pub correlation: Option<String>,
 }
@@ -302,6 +306,9 @@ impl NarrativeMaintenanceCiConfig {
             self.owner_token == NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN,
             "NEX_MAINTENANCE_CI_SEAM_OWNER_MISMATCH: product journey owner token is not canonical"
         );
+        if let Some(project_id) = self.freshness_hold_project_id.as_deref() {
+            validate_ci_identifier(project_id, "freshnessHoldProjectId")?;
+        }
         match (
             self.product_journey_barrier_id.as_deref(),
             self.correlation.as_deref(),
@@ -4865,6 +4872,7 @@ mod tests {
             fault: None,
             trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
             setup: None,
+            freshness_hold_project_id: None,
             product_journey_barrier_id: Some("barrier-1".to_string()),
             correlation: Some("correlation-1".to_string()),
         };
@@ -4947,6 +4955,7 @@ mod tests {
             fault: None,
             trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
             setup: None,
+            freshness_hold_project_id: None,
             product_journey_barrier_id: Some("barrier-expected".to_string()),
             correlation: Some("correlation-expected".to_string()),
         };
@@ -5230,6 +5239,7 @@ mod tests {
             fault: None,
             trigger: Some(trigger),
             setup: None,
+            freshness_hold_project_id: None,
             product_journey_barrier_id: None,
             correlation: None,
         }

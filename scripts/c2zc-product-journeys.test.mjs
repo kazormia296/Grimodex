@@ -15,6 +15,23 @@ import {
   PRODUCT_JOURNEYS,
 } from "../electron/scripts/product-journeys.mjs";
 import {
+  C2ZC_CANONICAL_FRESHNESS_CONTRACT,
+  C2ZC_SEMANTIC_INDEX_ZERO_COUNTS,
+  C2ZC_VERIFY_CHECK_NAMES,
+  assertC2ZcCanonicalFreshnessEvidence,
+  assertC2ZcFixtureOperationReceipt,
+  assertC2ZcFindingInboxEmpty,
+  assertC2ZcGenericRowsComplete,
+  assertC2ZcLegacyProjectionStable,
+  assertC2ZcMarkerExactlyOnce,
+  assertC2ZcPostMarkerProjectSettled,
+  assertC2ZcPostMarkerRestartInvariants,
+  assertC2ZcCausalHoldEvidence,
+  assertC2ZcSecondaryMaintenanceReadiness,
+  assertC2ZcNonIdleFreshnessProducer,
+  assertC2ZcTwoProjectConvergenceGate,
+  assertC2ZcSemanticIndexZero,
+  assertC2ZcVerifyCoverage,
   assertC2ZcOpenPhaseTimeline,
   assertC2ZcOpenTotalOrder,
   assertC2ZcPostMarkerProjectBirth,
@@ -27,7 +44,15 @@ import {
 } from "../electron/scripts/c2zc-canonical-product-journey.mjs";
 import {
   NARRATIVE_FRESHNESS_DISABLE_ENV,
+  NARRATIVE_MAINTENANCE_FAULT_ENV,
+  NARRATIVE_MAINTENANCE_FRESHNESS_HOLD_PROJECT_ENV,
+  NARRATIVE_MAINTENANCE_NONCE_ENV,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+  NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV,
+  NARRATIVE_MAINTENANCE_SETUP_ENV,
+  NARRATIVE_MAINTENANCE_TRIGGER_ENV,
   withLaunchEnvironmentForTest,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import { PRODUCT_JOURNEY_ELECTRON_PHASES } from "../electron/scripts/product-journey-harness.mjs";
@@ -43,10 +68,10 @@ test("C2-ZC is registered as a distinct product journey and contract boundary", 
     NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
     ["c2-zc-canonical-authority-cutover"],
   );
-  assert.deepEqual(
-    NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[0].contracts,
-    ["c2-zc:canonical-authority-cutover", "c2-zc:post-marker-lifecycle"],
-  );
+  assert.deepEqual(NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[0].contracts, [
+    "c2-zc:canonical-authority-cutover",
+    "c2-zc:post-marker-lifecycle",
+  ]);
   assert.ok(
     PRODUCT_JOURNEY_CATALOG.some(
       (journey) => journey.id === "c2-zc-canonical-authority-cutover",
@@ -68,6 +93,12 @@ test("C2-ZC is registered as a distinct product journey and contract boundary", 
 });
 
 test("C2-ZC journey launch phases are registered for clean Electron diagnostics", () => {
+  assert.deepEqual(
+    PRODUCT_JOURNEY_ELECTRON_PHASES.filter((phase) =>
+      phase.startsWith(`${C2ZC_PRODUCT_JOURNEY_PHASES[0].split("/")[0]}/`),
+    ),
+    C2ZC_PRODUCT_JOURNEY_PHASES,
+  );
   for (const phase of C2ZC_PRODUCT_JOURNEY_PHASES) {
     assert.ok(PRODUCT_JOURNEY_ELECTRON_PHASES.includes(phase), phase);
   }
@@ -94,11 +125,26 @@ test("C2-ZC runner reaches the marker only through main scheduler and N-API", as
     /onRestore:[\s\S]*readAuthoritySnapshot\([\s\S]*marker: observed\.marker/,
     "restore isolation must inspect the persisted marker rather than hard-code null",
   );
-  assert.match(runner, /harness\.launch\(`\$\{C2ZC_PRODUCT_JOURNEY_ID\}\/new-project`\)/);
+  assert.match(
+    runner,
+    /const postMarkerPhase = `\$\{C2ZC_PRODUCT_JOURNEY_ID\}\/new-project`[\s\S]*harness\.launch\(postMarkerPhase\)/,
+  );
   assert.match(runner, /harness\.invokeOk\(page, "project_create"/);
   assert.match(runner, /schema_data_migrations/);
-  assert.match(runner, /activationOwner: "electron-main:narrativeFreshness->napi"/);
-  assert.doesNotMatch(runner, /cut_over_workspace_freshness|record_c2zc_cutover_marker/);
+  assert.doesNotMatch(
+    runner,
+    /activationOwner:\s*"electron-main:narrativeFreshness->napi"/,
+    "runtime journey records must not treat a hard-coded activation owner as causal evidence",
+  );
+  assert.match(
+    runner,
+    /C2ZC_CANONICAL_FRESHNESS_CONTRACT|canonical_application_freshness/,
+    "the journey must record the bounded canonical Rust contract instead of an invented runtime owner",
+  );
+  assert.doesNotMatch(
+    runner,
+    /cut_over_workspace_freshness|record_c2zc_cutover_marker/,
+  );
   assert.doesNotMatch(
     runner,
     /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+schema_data_migrations/i,
@@ -109,7 +155,10 @@ test("C2-ZC runner reaches the marker only through main scheduler and N-API", as
   assert.match(main, /onCutoverNotReady/);
   assert.match(main, /requestBeforeCutoverPreparation/);
   assert.match(main, /narrativeFreshness\.start\(\)/);
-  assert.match(napi, /run_incremental_freshness_cycle_with_liveness_capability/);
+  assert.match(
+    napi,
+    /run_incremental_freshness_cycle_with_liveness_capability/,
+  );
   assert.match(napi, /record_live_scheduler_heartbeat/);
   assert.match(napi, /cut_over_workspace_freshness/);
   assert.match(napi, /NEX_C2ZC_CUTOVER_NOT_READY:/);
@@ -165,47 +214,134 @@ test("launch-time freshness disable is isolated to C2-ZC restore", async () => {
       { ...options, ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
       () => harness.launch(phase),
     );
-
-  await launch(C2ZC_PRODUCT_JOURNEY_PHASES[0]);
-  await launch(C2ZC_PRODUCT_JOURNEY_PHASES[1], {
-    setup: "disabled",
-    freshness: "disabled",
-  });
-  await launch(C2ZC_PRODUCT_JOURNEY_PHASES[2]);
-  await launch(C2ZC_PRODUCT_JOURNEY_PHASES[3]);
-  await launch(C2ZC_PRODUCT_JOURNEY_PHASES[4]);
-  await launch("c2-5b-restore-verify-rebuild-verify/restore");
-
-  assert.deepEqual(observed, [
-    {
-      phase: C2ZC_PRODUCT_JOURNEY_PHASES[0],
-      freshness: undefined,
-    },
-    {
-      phase: C2ZC_PRODUCT_JOURNEY_PHASES[1],
+  const previousCi = process.env.CI;
+  process.env.CI = "true";
+  try {
+    await launch(C2ZC_PRODUCT_JOURNEY_PHASES[0]);
+    await launch(C2ZC_PRODUCT_JOURNEY_PHASES[1], {
+      setup: "disabled",
       freshness: "disabled",
-    },
-    {
-      phase: C2ZC_PRODUCT_JOURNEY_PHASES[2],
-      freshness: undefined,
-    },
-    {
-      phase: C2ZC_PRODUCT_JOURNEY_PHASES[3],
-      freshness: undefined,
-    },
-    {
-      phase: C2ZC_PRODUCT_JOURNEY_PHASES[4],
-      freshness: undefined,
-    },
-    {
-      phase: "c2-5b-restore-verify-rebuild-verify/restore",
-      freshness: undefined,
-    },
-  ]);
+    });
+    await launch(C2ZC_PRODUCT_JOURNEY_PHASES[2]);
+    await launch(C2ZC_PRODUCT_JOURNEY_PHASES[3]);
+    await launch(C2ZC_PRODUCT_JOURNEY_PHASES[4]);
+    await launch(C2ZC_PRODUCT_JOURNEY_PHASES[5]);
+    await launch("c2-5b-restore-verify-rebuild-verify/restore");
+
+    assert.deepEqual(observed, [
+      {
+        phase: C2ZC_PRODUCT_JOURNEY_PHASES[0],
+        freshness: undefined,
+      },
+      {
+        phase: C2ZC_PRODUCT_JOURNEY_PHASES[1],
+        freshness: "disabled",
+      },
+      {
+        phase: C2ZC_PRODUCT_JOURNEY_PHASES[2],
+        freshness: undefined,
+      },
+      {
+        phase: C2ZC_PRODUCT_JOURNEY_PHASES[3],
+        freshness: undefined,
+      },
+      {
+        phase: C2ZC_PRODUCT_JOURNEY_PHASES[4],
+        freshness: undefined,
+      },
+      {
+        phase: C2ZC_PRODUCT_JOURNEY_PHASES[5],
+        freshness: undefined,
+      },
+      {
+        phase: "c2-5b-restore-verify-rebuild-verify/restore",
+        freshness: undefined,
+      },
+    ]);
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+  }
+});
+
+test("seam launch transaction fails before callback unless CI is exactly true", async () => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  let callbackCalled = false;
+  process.env.CI = "false";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = "stale-owner";
+  try {
+    await assert.rejects(
+      withLaunchEnvironmentForTest(
+        { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
+        () => {
+          callbackCalled = true;
+        },
+      ),
+      /CI.*true/i,
+    );
+    assert.equal(callbackCalled, false);
+    assert.equal(
+      process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV],
+      "stale-owner",
+    );
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    }
+  }
+});
+
+test("empty production launch transaction masks inherited seam variables and restores them", async () => {
+  const seamEnvironmentNames = [
+    NARRATIVE_MAINTENANCE_FAULT_ENV,
+    NARRATIVE_MAINTENANCE_TRIGGER_ENV,
+    NARRATIVE_MAINTENANCE_SETUP_ENV,
+    NARRATIVE_FRESHNESS_DISABLE_ENV,
+    NARRATIVE_MAINTENANCE_FRESHNESS_HOLD_PROJECT_ENV,
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+    NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
+    NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV,
+    NARRATIVE_MAINTENANCE_NONCE_ENV,
+  ];
+  const previousCi = process.env.CI;
+  const previousValues = new Map(
+    seamEnvironmentNames.map((name) => [name, process.env[name]]),
+  );
+  process.env.CI = "true";
+  for (const name of seamEnvironmentNames) process.env[name] = `stale-${name}`;
+  try {
+    await withLaunchEnvironmentForTest({}, () => {
+      for (const name of seamEnvironmentNames) {
+        assert.equal(
+          process.env[name],
+          undefined,
+          `production launch inherited ${name}`,
+        );
+      }
+    });
+    for (const name of seamEnvironmentNames) {
+      assert.equal(process.env[name], `stale-${name}`);
+    }
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    for (const name of seamEnvironmentNames) {
+      const previous = previousValues.get(name);
+      if (previous === undefined) delete process.env[name];
+      else process.env[name] = previous;
+    }
+  }
 });
 
 test("direct C2-ZC new-project launch sees restored freshness", async () => {
+  const previousCi = process.env.CI;
   const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  process.env.CI = "true";
   delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
   const observed = [];
   const harness = {
@@ -226,18 +362,20 @@ test("direct C2-ZC new-project launch sees restored freshness", async () => {
       },
       () => harness.launch(C2ZC_PRODUCT_JOURNEY_PHASES[1]),
     );
-    await harness.launch(C2ZC_PRODUCT_JOURNEY_PHASES[4]);
+    await harness.launch(C2ZC_PRODUCT_JOURNEY_PHASES[5]);
     assert.deepEqual(observed, [
       {
         phase: C2ZC_PRODUCT_JOURNEY_PHASES[1],
         freshness: "disabled",
       },
       {
-        phase: C2ZC_PRODUCT_JOURNEY_PHASES[4],
+        phase: C2ZC_PRODUCT_JOURNEY_PHASES[5],
         freshness: undefined,
       },
     ]);
   } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
     if (previousFreshness === undefined) {
       delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
     } else {
@@ -246,34 +384,22 @@ test("direct C2-ZC new-project launch sees restored freshness", async () => {
   }
 });
 
-test("C2-ZC evidence packet maps failure, swap/stale, restore/import, and birth tests", async () => {
-  const [cutover, liveness, importCommit, backupRestore, domainWrites] =
-    await Promise.all([
-      read("src-tauri/crates/grimodex-db/tests/narrative_c2zc_canonical_cutover.rs"),
-      read("src-tauri/crates/grimodex-db/tests/narrative_c2zc_liveness_binding.rs"),
-      read("src-tauri/crates/grimodex-db/tests/import_session_commit.rs"),
-      read("src-tauri/crates/grimodex-db/src/backup_restore.rs"),
-      read("src-tauri/crates/grimodex-db/src/domain_writes.rs"),
-    ]);
-
-  for (const testName of [
-    "cutover_refuses_incomplete_workspace_before_any_authority_marker",
-    "cutover_rejects_evaluated_freshness_without_a_publisher_run",
-    "canonical_read_rejects_non_incremental_or_stale_evaluation_run_reference",
-    "canonical_read_has_no_legacy_fallback_after_generic_cutover",
-  ]) {
-    assert.match(cutover, new RegExp(`fn ${testName}`), testName);
-  }
-  for (const testName of [
-    "completed_cycle_capability_cannot_cross_database_authority",
-    "completed_cycle_capability_expires_before_a_late_heartbeat",
-    "authority_generation_replacement_rejects_the_previous_receipt",
-  ]) {
-    assert.match(liveness, new RegExp(`fn ${testName}`), testName);
-  }
-  assert.match(importCommit, /post_marker_import_binds_one_initial_epoch/);
-  assert.match(backupRestore, /ensure_restore_c2zc_authority_not_downgraded/);
-  assert.match(domainWrites, /project_create_mints_one_event_bound_initial_epoch_after_c2zc_marker/);
+test("C2-ZC Electron evidence is scoped and shared-Rust receipts compose separately", async () => {
+  const [runner, mainSeam, nativeSeam, harness] = await Promise.all([
+    read("electron/scripts/c2zc-canonical-product-journey.mjs"),
+    read("electron/main/narrativeMaintenanceCiSeam.ts"),
+    read("electron/native/grimodex-node/src/narrative_maintenance.rs"),
+    read("electron/scripts/product-journey-harness.mjs"),
+  ]);
+  assert.match(runner, /electronEvidenceScope/);
+  assert.match(runner, /rustReceiptComposition/);
+  assert.match(runner, /composed later by the shared Rust receipt/);
+  assert.doesNotMatch(runner, /rustComponentTests/);
+  assert.match(runner, /readAuthoritySnapshot/);
+  assert.match(runner, /assertC2ZcGenericFreshnessStorage/);
+  assert.match(mainSeam, /writeNarrativeMaintenanceCiQuiescence/);
+  assert.match(nativeSeam, /run_incremental_freshness_cycle/);
+  assert.match(harness, /main-maintenance-receipt/);
 });
 
 test("C2-ZC journey is named in the quality impact manifest", async () => {
@@ -282,7 +408,10 @@ test("C2-ZC journey is named in the quality impact manifest", async () => {
     manifest,
     /C2-ZC canonical-authority candidate journey and final acceptance gates/,
   );
-  assert.match(manifest, /electron\/scripts\/c2zc-canonical-product-journey\.mjs/);
+  assert.match(
+    manifest,
+    /electron\/scripts\/c2zc-canonical-product-journey\.mjs/,
+  );
   assert.match(manifest, /scripts\/c2zc-product-journeys\.test\.mjs/);
 });
 
@@ -320,21 +449,64 @@ function c2zcFixture() {
     taskCompletedAt: "2026-08-28T00:00:02.000Z",
     lastAttemptCompletedAt: "2026-08-28T00:00:02.000Z",
   };
+  const edge = {
+    id: "edge-b0",
+    projectId: "project-1",
+    consumerKind: "narrative-extraction-run",
+    consumerKey: b0.id,
+    sourceObjectIdentity: "project:scene:scene-b0",
+    readSetJson: JSON.stringify(["v1@2026-08-28T00:00:00.000Z"]),
+    generatedByTransactionId: null,
+    createdAt: "2026-08-28T00:00:00.500Z",
+    owningRunId: b0.id,
+    readSetToken: "v1@2026-08-28T00:00:00.000Z",
+  };
+  const edgeInsert = {
+    kind: "dependency-edge-insert",
+    id: edge.id,
+    projectId: edge.projectId,
+    consumerKind: edge.consumerKind,
+    consumerKey: edge.consumerKey,
+    sourceObjectIdentity: edge.sourceObjectIdentity,
+    readSetJson: edge.readSetJson,
+    generatedByTransactionId: null,
+    createdAt: edge.createdAt,
+    owningRunId: edge.owningRunId,
+  };
+  const gapDelete = {
+    kind: "dependency-derived-state-gap-delete",
+    projectId: edge.projectId,
+    edgeId: edge.id,
+    consumerKind: edge.consumerKind,
+    consumerKey: edge.consumerKey,
+  };
+  const operationReceipt = (operation, beforeCounts, afterCounts) => ({
+    operationCount: 1,
+    operationDigest: sha256Canonical([operation]),
+    operations: [
+      {
+        operation,
+        kind: operation.kind,
+        operationDigest: sha256Canonical(operation),
+        beforeCounts,
+        afterCounts,
+      },
+    ],
+    beforeCounts: [beforeCounts],
+    afterCounts: [afterCounts],
+  });
   return {
     marker: null,
     epochs: [e0],
     backfill: b0,
-    edge: {
-      id: "edge-b0",
-      projectId: "project-1",
-      consumerKind: "narrative-extraction-run",
-      consumerKey: b0.id,
-      sourceObjectIdentity: "project:scene:scene-b0",
-      readSetJson: JSON.stringify(["v1@2026-08-28T00:00:00.000Z"]),
-      generatedByTransactionId: null,
-      createdAt: "2026-08-28T00:00:00.500Z",
-      owningRunId: b0.id,
-      readSetToken: "v1@2026-08-28T00:00:00.000Z",
+    edge,
+    fixtureOperations: {
+      edgeInsert: operationReceipt(edgeInsert, { rows: 0 }, { rows: 1 }),
+      gapDelete: operationReceipt(
+        gapDelete,
+        { edgeStateRows: 1, freshnessRows: 1 },
+        { edgeStateRows: 0, freshnessRows: 0 },
+      ),
     },
     derivedState: {
       edgeCount: 1,
@@ -482,7 +654,9 @@ function idleRunWithAttempts(baseRun, attempts) {
   run.attemptCount = attempts.length;
   run.taskAttemptCount = attempts.length;
   run.lastAttemptNumber = attempts.at(-1).attemptNumber;
-  run.maxAttemptNumber = Math.max(...attempts.map((attempt) => attempt.attemptNumber));
+  run.maxAttemptNumber = Math.max(
+    ...attempts.map((attempt) => attempt.attemptNumber),
+  );
   run.lastAttemptStatus = attempts.at(-1).status;
   run.lastAttemptStartedAt = attempts.at(-1).startedAt;
   run.lastAttemptCompletedAt = attempts.at(-1).completedAt;
@@ -543,6 +717,1184 @@ function c2zcOpenContractFixture() {
     restoreEpochId: e1.id,
   };
 }
+
+function c2zcVerifyOutcome() {
+  const emptyCheck = () => ({
+    completed: true,
+    passed: true,
+    issues: [],
+    incomplete: [],
+  });
+  const semanticCheck = () => ({
+    ...emptyCheck(),
+    observedCounts: { ...C2ZC_SEMANTIC_INDEX_ZERO_COUNTS },
+  });
+  const report = {
+    totalEdges: 1,
+    edgeIdsWithMissingSource: [],
+    duplicateEdgeKeys: [],
+    edgeIdsWithCrossProjectConsumer: [],
+    edgeIdsWithMalformedKeys: [],
+    edgeStateIdsOutsideCurrentEpoch: [],
+    edgeIdsWithoutCurrentEpochState: [],
+    findingObservationIdsOutsideCurrentEpoch: [],
+    consumerKeysWithoutCurrentEpochFreshness: [],
+    duplicateEdgeIdsToDeactivate: [],
+    edgeIdsWithUnresolvableConsumerScope: [],
+    consumerKeysWithStaleDependencySetDigest: [],
+    consumerKeysWithUncomputedDependencySetDigest: [],
+    orphanedAttentionFindingKeys: [],
+    orphanedAttentionRehomeAmbiguities: [],
+    applicationRevisionArtifactReferences: emptyCheck(),
+    semanticIndexDependencySetDigest: semanticCheck(),
+    contributionToApplicationCommitCorrespondence: emptyCheck(),
+    legacyMirrorMigrationParity: emptyCheck(),
+    cursorAndFeedHeadConsistency: emptyCheck(),
+    semanticIndexGenerationCorrespondence: semanticCheck(),
+    rebuildRequired: false,
+  };
+  return {
+    verifyContractVersion: "9",
+    semanticEpochId: "epoch-e1",
+    report,
+    checkCoverage: {
+      complete: true,
+      required: [...C2ZC_VERIFY_CHECK_NAMES],
+      covered: [...C2ZC_VERIFY_CHECK_NAMES],
+      missing: [],
+    },
+  };
+}
+
+test("C2-ZC Verify acceptance requires the exact production 13-check coverage", () => {
+  const outcome = c2zcVerifyOutcome();
+  assert.doesNotThrow(() =>
+    assertC2ZcVerifyCoverage({
+      status: "completed",
+      outcomeSummaryJson: JSON.stringify(outcome),
+    }),
+  );
+  assert.equal(C2ZC_VERIFY_CHECK_NAMES.length, 13);
+  for (const [label, mutate] of [
+    ["missing check", (value) => value.checkCoverage.required.pop()],
+    [
+      "covered drift",
+      (value) => (value.checkCoverage.covered[0] = "fixture-only"),
+    ],
+    [
+      "missing evidence",
+      (value) => value.checkCoverage.missing.push("missing"),
+    ],
+    [
+      "incomplete typed check",
+      (value) => {
+        value.report.cursorAndFeedHeadConsistency.completed = false;
+      },
+    ],
+    [
+      "failed typed check",
+      (value) => {
+        value.report.cursorAndFeedHeadConsistency.passed = false;
+      },
+    ],
+  ]) {
+    const broken = clone(outcome);
+    mutate(broken);
+    assert.throws(
+      () => assertC2ZcVerifyCoverage({ outcomeSummaryJson: broken }),
+      /13-check|coverage|complete|passed|missing|canonical/,
+      label,
+    );
+  }
+});
+
+test("C2-ZC Verify acceptance proves every reserved Semantic Index surface is zero", () => {
+  const outcome = c2zcVerifyOutcome();
+  assert.doesNotThrow(() => assertC2ZcSemanticIndexZero(outcome));
+  for (const [label, mutate] of [
+    [
+      "metadata rows",
+      (value) => {
+        value.report.semanticIndexDependencySetDigest.observedCounts.metadataRows = 1;
+      },
+    ],
+    [
+      "missing surface",
+      (value) => {
+        delete value.report.semanticIndexGenerationCorrespondence.observedCounts
+          .v1EdgeRows;
+      },
+    ],
+    [
+      "extra surface",
+      (value) => {
+        value.report.semanticIndexDependencySetDigest.observedCounts.extraRows = 0;
+      },
+    ],
+    [
+      "failed semantic check",
+      (value) => {
+        value.report.semanticIndexGenerationCorrespondence.issues.push(
+          "reserved-surface-present",
+        );
+      },
+    ],
+  ]) {
+    const broken = clone(outcome);
+    mutate(broken);
+    assert.throws(
+      () => assertC2ZcSemanticIndexZero(broken),
+      /Semantic Index|zero|observedCounts|surface/,
+      label,
+    );
+  }
+});
+
+test("C2-ZC marker, findings/inbox, and Legacy projection contracts are exact", () => {
+  const marker = {
+    migrationId: "narrative-c2-canonical-freshness-v1",
+    contractVersion: 1,
+    appliedAt: "2026-08-28T00:00:17.000Z",
+  };
+  assert.doesNotThrow(() =>
+    assertC2ZcMarkerExactlyOnce({
+      marker,
+      markerRows: [marker],
+    }),
+  );
+  assert.throws(
+    () => assertC2ZcMarkerExactlyOnce({ marker, markerRows: [marker, marker] }),
+    /exactly one|marker/,
+  );
+  assert.doesNotThrow(() =>
+    assertC2ZcFindingInboxEmpty({
+      unresolvedFindings: [],
+      inboxEntries: [
+        {
+          entryKind: "consumer-freshness",
+          latestObservation: null,
+        },
+      ],
+    }),
+  );
+  assert.throws(
+    () =>
+      assertC2ZcFindingInboxEmpty({
+        unresolvedFindings: [{ lifecycleState: "new" }],
+        inboxEntries: [],
+      }),
+    /Finding|inbox|unresolved/,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcFindingInboxEmpty({
+        epochs: [{ id: "epoch-current" }],
+        findingLifecycle: [
+          {
+            id: "finding-1",
+            findingIdentity: "finding-identity",
+            lifecycleState: "new",
+            semanticEpochId: "epoch-current",
+            observedAt: "2026-08-28T00:00:01.000Z",
+          },
+        ],
+        unresolvedFindings: [],
+        inboxEntries: [],
+      }),
+    /unresolved Finding/,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcFindingInboxEmpty({
+        epochs: [{ id: "epoch-current" }],
+        findingLifecycle: [
+          {
+            id: "finding-1",
+            findingIdentity: "finding-identity",
+            findingKey: "finding-key",
+            ruleId: "rule-id",
+            ruleVersion: 1,
+            lifecycleState: "resolved",
+            materialBasisDigest: "sha256:material",
+            semanticEpochId: "epoch-current",
+            observedAt: "2026-08-28T00:00:02.000Z",
+          },
+        ],
+        findingObservations: [],
+        inboxEntries: [],
+      }),
+    /causally anchored/,
+  );
+  const legacy = {
+    freshness: [
+      {
+        applicationId: "app-1",
+        status: "fresh",
+        reasonJson: null,
+        version: 0,
+        updatedAt: "2026-08-28T00:00:01.000Z",
+      },
+    ],
+    dependencies: [
+      {
+        applicationId: "app-1",
+        sourceKind: "snapshot-document",
+        sourceKey: "snapshot:run-1",
+        observedRevisionToken: "sha256:fixture",
+        propagation: "freshness-only",
+      },
+    ],
+  };
+  assert.doesNotThrow(() =>
+    assertC2ZcLegacyProjectionStable(legacy, clone(legacy)),
+  );
+  const changed = clone(legacy);
+  changed.freshness[0].status = "stale";
+  assert.throws(
+    () => assertC2ZcLegacyProjectionStable(legacy, changed),
+    /Legacy|projection|changed|exact/,
+  );
+});
+
+test("C2-ZC two-project gate keeps the marker absent until every cursor converges", () => {
+  const epoch = {
+    id: "epoch-e0",
+    epochNumber: 0,
+    reason: "initial",
+    createdAt: "2026-08-28T00:00:00.000Z",
+  };
+  const marker = {
+    migrationId: "narrative-c2-canonical-freshness-v1",
+    contractVersion: 1,
+    appliedAt: "2026-08-28T00:00:17.000Z",
+  };
+  const settledCursor = (feedHead) => ({
+    feedHead,
+    cursor: {
+      acknowledgedThrough: feedHead,
+      activeRunId: null,
+      reservedThrough: null,
+      semanticEpochId: null,
+      lastError: null,
+    },
+  });
+  const primary = {
+    epochs: [epoch],
+    feedAndCursor: settledCursor(2),
+    markerRows: [],
+    marker: null,
+  };
+  const secondary = {
+    epochs: [epoch],
+    feedAndCursor: {
+      feedHead: 2,
+      cursor: {
+        acknowledgedThrough: 1,
+        activeRunId: "run-secondary",
+        reservedThrough: 2,
+        semanticEpochId: epoch.id,
+        lastError: null,
+      },
+    },
+    markerRows: [],
+    marker: null,
+  };
+  assert.deepEqual(
+    assertC2ZcTwoProjectConvergenceGate({
+      primarySettled: primary,
+      secondaryIncomplete: secondary,
+      markerRowsWhileIncomplete: [],
+    }),
+    { primary, secondary },
+  );
+  assert.throws(
+    () =>
+      assertC2ZcTwoProjectConvergenceGate({
+        primarySettled: primary,
+        secondaryIncomplete: secondary,
+        markerRowsWhileIncomplete: [marker],
+      }),
+    /marker.*incomplete/i,
+  );
+
+  const convergedPrimary = {
+    ...primary,
+    marker,
+    markerRows: [marker],
+    feedAndCursor: settledCursor(2),
+  };
+  const convergedSecondary = {
+    ...secondary,
+    marker,
+    markerRows: [marker],
+    feedAndCursor: settledCursor(2),
+  };
+  assert.deepEqual(
+    assertC2ZcTwoProjectConvergenceGate({
+      primarySettled: primary,
+      secondaryIncomplete: secondary,
+      markerRowsWhileIncomplete: [],
+      convergedPrimary,
+      convergedSecondary,
+    }),
+    { primary: convergedPrimary, secondary: convergedSecondary },
+  );
+  assert.throws(
+    () =>
+      assertC2ZcTwoProjectConvergenceGate({
+        primarySettled: primary,
+        secondaryIncomplete: secondary,
+        markerRowsWhileIncomplete: [],
+        convergedPrimary,
+        convergedSecondary: {
+          ...convergedSecondary,
+          markerRows: [
+            marker,
+            { ...marker, appliedAt: "2026-08-28T00:00:18.000Z" },
+          ],
+        },
+      }),
+    /exactly one|marker/i,
+  );
+});
+
+test("C2-ZC secondary project transitions from epochless create to held maintenance readiness", () => {
+  const projectId = "project-secondary";
+  const epoch = {
+    id: "secondary-epoch-0",
+    epochNumber: 0,
+    reason: "initial",
+    createdAt: "2026-08-28T00:00:00.000Z",
+  };
+  const slugs = ["character", "location", "item", "lore"];
+  const projectCreateEvents = slugs.map((slug, eventOrdinal) => ({
+    eventId: `secondary-event-${eventOrdinal}`,
+    canonicalSequence: eventOrdinal + 1,
+    eventOrdinal,
+    transactionId: "secondary-project-create-transaction",
+    requestId: `c2-zc-journey-project-create:${projectId}`,
+    sourceDomain: "project.create",
+    objectKeyJson: JSON.stringify({
+      kind: "component",
+      componentId: `codex-type:${projectId}-${slug}`,
+    }),
+    changeKind: "catalog",
+    mutationKind: "create",
+    applicationIdsJson: "[]",
+  }));
+  const emptyCursor = {
+    feedHead: 4,
+    cursor: {
+      acknowledgedThrough: null,
+      reservedThrough: null,
+      activeRunId: null,
+      semanticEpochId: null,
+      lastError: null,
+    },
+    cursorPresent: false,
+  };
+  const postCreate = {
+    projectId,
+    marker: null,
+    markerRows: [],
+    epochs: [],
+    runs: [],
+    genericRows: [],
+    dependencyEdges: [],
+    legacyProjection: { freshness: [], dependencies: [] },
+    findingLifecycle: [],
+    findingObservations: [],
+    inboxEntries: [],
+    inboxFindings: [],
+    pendingRuns: [],
+    feedAndCursor: emptyCursor,
+    feedEvents: projectCreateEvents,
+    changeSets: [],
+    projectSettled: true,
+  };
+  const maintenanceRun = (id, runKind, taskKind, createdAt, completedAt) => {
+    const taskId = `${id}-task`;
+    const attemptId = `${id}-attempt`;
+    const verify = runKind === "dependency-verify";
+    const outcome = verify ? c2zcVerifyOutcome() : {};
+    if (verify) outcome.semanticEpochId = epoch.id;
+    const outputJson = JSON.stringify(outcome);
+    return {
+      id,
+      projectId,
+      runKind,
+      workKey: `${runKind}:${epoch.id}:${id}`,
+      semanticEpochId: epoch.id,
+      status: "completed",
+      taskId,
+      taskKind,
+      taskStatus: "completed",
+      taskCount: 1,
+      attemptCount: 1,
+      taskAttemptCount: 1,
+      lastAttemptNumber: 1,
+      maxAttemptNumber: 1,
+      lastAttemptStatus: "completed",
+      createdAt,
+      startedAt: createdAt,
+      taskCreatedAt: createdAt,
+      taskStartedAt: createdAt,
+      lastAttemptStartedAt: createdAt,
+      completedAt,
+      taskCompletedAt: completedAt,
+      lastAttemptCompletedAt: completedAt,
+      specJson: "{}",
+      taskInputJson: "{}",
+      outcomeSummaryJson: outputJson,
+      tasks: [
+        {
+          id: taskId,
+          runId: id,
+          taskKind,
+          status: "completed",
+          attemptCount: 1,
+          createdAt,
+          startedAt: createdAt,
+          completedAt,
+          inputJson: "{}",
+          outputJson,
+          attempts: [
+            {
+              id: attemptId,
+              taskId,
+              attemptNumber: 1,
+              status: "completed",
+              startedAt: createdAt,
+              completedAt,
+              outputJson,
+              failureCode: null,
+              retryDisposition: null,
+              policyVersion: null,
+              nextAttemptAt: null,
+            },
+          ],
+        },
+      ],
+    };
+  };
+  const held = {
+    ...postCreate,
+    epochs: [epoch],
+    runs: [
+      maintenanceRun(
+        "secondary-backfill",
+        "backfill",
+        "maintenance-backfill",
+        "2026-08-28T00:00:01.000Z",
+        "2026-08-28T00:00:02.000Z",
+      ),
+      maintenanceRun(
+        "secondary-verify-1",
+        "dependency-verify",
+        "maintenance-dependency-verify",
+        "2026-08-28T00:00:03.000Z",
+        "2026-08-28T00:00:04.000Z",
+      ),
+      maintenanceRun(
+        "secondary-rebuild",
+        "semantic-index-rebuild",
+        "maintenance-semantic-index-rebuild",
+        "2026-08-28T00:00:05.000Z",
+        "2026-08-28T00:00:06.000Z",
+      ),
+      maintenanceRun(
+        "secondary-verify-2",
+        "dependency-verify",
+        "maintenance-dependency-verify",
+        "2026-08-28T00:00:07.000Z",
+        "2026-08-28T00:00:08.000Z",
+      ),
+    ],
+  };
+
+  assert.throws(
+    () =>
+      assertC2ZcSecondaryMaintenanceReadiness({
+        projectId,
+        afterCreate: postCreate,
+        atHold: postCreate,
+        label: "C2-ZC epochless secondary RED",
+      }),
+    /initial epoch|Backfill|maintenance/i,
+  );
+  assert.doesNotThrow(() =>
+    assertC2ZcSecondaryMaintenanceReadiness({
+      projectId,
+      afterCreate: postCreate,
+      atHold: held,
+      label: "C2-ZC secondary Backfill transition GREEN",
+    }),
+  );
+  const changedFeed = structuredClone(held);
+  changedFeed.feedEvents[0].canonicalSequence = 99;
+  assert.throws(
+    () =>
+      assertC2ZcSecondaryMaintenanceReadiness({
+        projectId,
+        afterCreate: postCreate,
+        atHold: changedFeed,
+        label: "C2-ZC secondary Feed identity RED",
+      }),
+    /Feed identities|project_create|protected/i,
+  );
+});
+
+test("C2-ZC post-marker evidence binds Generic freshness to a current producer Run and settles", () => {
+  const projectId = "project-1";
+  const epochId = "epoch-e1";
+  const applicationId = "app-1";
+  const eventIds = ["event-1"];
+  const sourceObjectIdentity = "project:scene:scene-1";
+  const spec = {
+    projectId,
+    fromSequenceExclusive: 0,
+    throughSequenceInclusive: 1,
+    eventIds,
+    affectedObjects: [sourceObjectIdentity],
+    feedPageDigest: `sha256:${"b".repeat(64)}`,
+  };
+  const specDigest = `sha256:${createHash("sha256")
+    .update(JSON.stringify(spec), "utf8")
+    .digest("hex")}`;
+  const outcome = {
+    projectId,
+    runId: "run-freshness-1",
+    fromSequenceExclusive: 0,
+    throughSequenceInclusive: 1,
+    affectedEdgeCount: 1,
+    affectedConsumerCount: 1,
+    hasMore: false,
+  };
+  const attempt = {
+    id: "attempt-freshness-1",
+    taskId: "task-freshness-1",
+    attemptNumber: 1,
+    status: "completed",
+    startedAt: "2026-08-28T00:00:22.000Z",
+    completedAt: "2026-08-28T00:00:23.000Z",
+    errorMessage: null,
+    outputJson: JSON.stringify(outcome),
+    failureCode: null,
+    retryDisposition: null,
+    policyVersion: null,
+    nextAttemptAt: null,
+  };
+  const snapshot = {
+    epochs: [{ id: epochId, epochNumber: 1, reason: "restore" }],
+    runs: [
+      {
+        id: outcome.runId,
+        runKind: "freshness-evaluation",
+        status: "completed",
+        projectId,
+        semanticEpochId: epochId,
+        consumerId: "narrative-incremental-freshness/v1",
+        createdAt: "2026-08-28T00:00:20.000Z",
+        startedAt: "2026-08-28T00:00:21.000Z",
+        completedAt: "2026-08-28T00:00:24.000Z",
+        specJson: JSON.stringify(spec),
+        specDigest,
+        workKey: `incremental-freshness:${epochId}:0:1:${specDigest.slice("sha256:".length)}`,
+        outcomeSummaryJson: JSON.stringify(outcome),
+        tasks: [
+          {
+            id: "task-freshness-1",
+            taskKind: "incremental-freshness-batch",
+            status: "completed",
+            attemptCount: 1,
+            inputJson: JSON.stringify({
+              changeSetId: "change-set-1",
+              fromSequenceExclusive: 0,
+              throughSequenceInclusive: 1,
+            }),
+            outputJson: JSON.stringify(outcome),
+            createdAt: "2026-08-28T00:00:21.000Z",
+            startedAt: "2026-08-28T00:00:22.000Z",
+            completedAt: "2026-08-28T00:00:23.000Z",
+            attempts: [attempt],
+          },
+        ],
+      },
+    ],
+    genericRows: [
+      {
+        projectId,
+        consumerKind: "application",
+        consumerKey: applicationId,
+        evidenceFreshness: "fresh",
+        buildAction: "none",
+        semanticEpochId: epochId,
+        lastEvaluatedRunId: outcome.runId,
+        dependencySetDigest: `sha256:${createHash("sha256")
+          .update(
+            `${Buffer.byteLength(sourceObjectIdentity, "utf8")}:${sourceObjectIdentity}\n`,
+            "utf8",
+          )
+          .digest("hex")}`,
+        updatedAt: "2026-08-28T00:00:21.000Z",
+      },
+    ],
+    feedEvents: [
+      {
+        eventId: "event-1",
+        canonicalSequence: 1,
+        eventOrdinal: 0,
+        objectKeyJson: JSON.stringify({ kind: "scene", sceneId: "scene-1" }),
+        changeKind: "content",
+        mutationKind: "update",
+        applicationIdsJson: "[]",
+      },
+    ],
+    changeSets: [
+      {
+        changeSetId: "change-set-1",
+        projectId,
+        fromSequenceExclusive: 0,
+        throughSequenceInclusive: 1,
+        eventIdsJson: JSON.stringify(eventIds),
+        affectedObjectsJson: JSON.stringify([sourceObjectIdentity]),
+        digest: specDigest,
+      },
+    ],
+    dependencyEdges: [
+      {
+        projectId,
+        consumerKind: "application",
+        consumerKey: applicationId,
+        sourceObjectIdentity,
+      },
+    ],
+    pendingRuns: [],
+    unresolvedFindings: [],
+    inboxEntries: [],
+  };
+  assert.doesNotThrow(() =>
+    assertC2ZcCanonicalFreshnessEvidence(snapshot, {
+      projectId,
+      applicationId,
+      epochId,
+    }),
+  );
+  assert.doesNotThrow(() => assertC2ZcPostMarkerProjectSettled(snapshot));
+  const broken = clone(snapshot);
+  broken.runs[0].semanticEpochId = "epoch-e0";
+  assert.throws(
+    () =>
+      assertC2ZcCanonicalFreshnessEvidence(broken, {
+        projectId: "project-1",
+        applicationId: "app-1",
+        epochId: "epoch-e1",
+      }),
+    /producer|epoch|current|Generic/,
+  );
+  const malformedDigest = clone(snapshot);
+  malformedDigest.runs[0].specDigest = `sha256:${"c".repeat(64)}`;
+  assert.throws(
+    () =>
+      assertC2ZcCanonicalFreshnessEvidence(malformedDigest, {
+        projectId,
+        applicationId,
+        epochId,
+      }),
+    /descriptor|digest|Feed-bound/,
+  );
+  const missingConsumer = clone(snapshot);
+  missingConsumer.runs[0].consumerId = null;
+  assert.throws(
+    () =>
+      assertC2ZcCanonicalFreshnessEvidence(missingConsumer, {
+        projectId,
+        applicationId,
+        epochId,
+      }),
+    /producer|current|Generic/,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcNonIdleFreshnessProducer(
+        { ...snapshot, runs: [] },
+        { projectId, epochId, eventId: eventIds[0] },
+        "C2-ZC missing current A Freshness",
+      ),
+    /no valid current-Epoch non-idle publisher|Freshness/i,
+  );
+  const idleOutcome = clone(snapshot);
+  const idle = JSON.parse(idleOutcome.runs[0].outcomeSummaryJson);
+  idle.affectedEdgeCount = 0;
+  idleOutcome.runs[0].outcomeSummaryJson = JSON.stringify(idle);
+  assert.throws(
+    () =>
+      assertC2ZcCanonicalFreshnessEvidence(idleOutcome, {
+        projectId,
+        applicationId,
+        epochId,
+      }),
+    /idle|malformed|outcome/,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcPostMarkerProjectSettled({
+        ...snapshot,
+        pendingRuns: ["run-pending"],
+      }),
+    /settled|pending|running/,
+  );
+  const rebuildSummary = {
+    consumersEvaluated: 1,
+    consumersSkippedUnresolvableScope: 0,
+    edgesEvaluated: 1,
+    edgesSkippedUnresolvableScope: 0,
+  };
+  const rebuildOutcome = {
+    rebuildContractVersion: "1",
+    semanticEpochId: epochId,
+    summaryDigest: `sha256:${createHash("sha256")
+      .update(JSON.stringify(rebuildSummary), "utf8")
+      .digest("hex")}`,
+    summary: rebuildSummary,
+  };
+  const rebuildRun = {
+    id: "rebuild-run-1",
+    projectId,
+    runKind: "semantic-index-rebuild",
+    workKey: "dependency-rebuild-derived",
+    status: "completed",
+    semanticEpochId: epochId,
+    consumerId: null,
+    specJson: "{}",
+    specDigest: `sha256:${createHash("sha256")
+      .update("{}", "utf8")
+      .digest("hex")}`,
+    outcomeSummaryJson: JSON.stringify(rebuildOutcome),
+    createdAt: "2026-08-28T00:00:20.000Z",
+    startedAt: "2026-08-28T00:00:21.000Z",
+    completedAt: "2026-08-28T00:00:23.000Z",
+    tasks: [
+      {
+        id: "rebuild-task-1",
+        taskKind: "maintenance-semantic-index-rebuild",
+        status: "completed",
+        attemptCount: 1,
+        inputJson: "{}",
+        outputJson: JSON.stringify(rebuildOutcome),
+        createdAt: "2026-08-28T00:00:20.000Z",
+        startedAt: "2026-08-28T00:00:21.000Z",
+        completedAt: "2026-08-28T00:00:23.000Z",
+        attempts: [
+          {
+            id: "rebuild-attempt-1",
+            taskId: "rebuild-task-1",
+            attemptNumber: 1,
+            status: "completed",
+            startedAt: "2026-08-28T00:00:21.000Z",
+            completedAt: "2026-08-28T00:00:23.000Z",
+            outputJson: JSON.stringify(rebuildOutcome),
+            failureCode: null,
+            retryDisposition: null,
+            policyVersion: null,
+            nextAttemptAt: null,
+          },
+        ],
+      },
+    ],
+  };
+  const rebuildSnapshot = {
+    ...snapshot,
+    runs: [rebuildRun],
+    genericRows: [
+      {
+        ...snapshot.genericRows[0],
+        lastEvaluatedRunId: rebuildRun.id,
+      },
+    ],
+    feedEvents: [],
+    changeSets: [],
+  };
+  assert.doesNotThrow(() =>
+    assertC2ZcGenericRowsComplete(rebuildSnapshot, "C2-ZC Rebuild Generic"),
+  );
+  const malformedRebuild = structuredClone(rebuildSnapshot);
+  malformedRebuild.runs[0].consumerId = "unexpected-consumer";
+  assert.throws(
+    () => assertC2ZcGenericRowsComplete(malformedRebuild),
+    /Rebuild publisher identity|invalid producer/,
+  );
+});
+
+test("C2-ZC post-marker typed Application keeps marker, epoch, Generic, and Legacy snapshots across restart", () => {
+  const marker = {
+    migrationId: "narrative-c2-canonical-freshness-v1",
+    contractVersion: 1,
+    appliedAt: "2026-08-28T00:00:17.000Z",
+  };
+  const epoch = {
+    id: "new-e0",
+    projectId: "project-new",
+    epochNumber: 0,
+    reason: "initial",
+    createdAt: "2026-08-28T00:00:20.000Z",
+  };
+  const typedRun = {
+    id: "typed-run",
+    runKind: null,
+    status: "completed",
+    tasks: [
+      {
+        id: "typed-task",
+        status: "completed",
+        attempts: [{ id: "typed-attempt", status: "completed" }],
+      },
+    ],
+  };
+  const producerRun = {
+    id: "freshness-run",
+    projectId: epoch.projectId,
+    runKind: "freshness-evaluation",
+    status: "completed",
+    semanticEpochId: epoch.id,
+    consumerId: "narrative-incremental-freshness/v1",
+    createdAt: "2026-08-28T00:00:20.000Z",
+    startedAt: "2026-08-28T00:00:21.000Z",
+    completedAt: "2026-08-28T00:00:24.000Z",
+    scopeJson: JSON.stringify({ projectId: epoch.projectId, scope: "full" }),
+    specJson: JSON.stringify({
+      projectId: epoch.projectId,
+      fromSequenceExclusive: 0,
+      throughSequenceInclusive: 1,
+      eventIds: ["event-typed"],
+      affectedObjects: ["project:scene:scene-typed"],
+      feedPageDigest: `sha256:${"b".repeat(64)}`,
+    }),
+    specDigest: "",
+    snapshotDigest: `sha256:${"c".repeat(64)}`,
+    coverageJson: JSON.stringify({ complete: true, covered: ["feed"] }),
+    version: 7,
+    supersededByRunId: null,
+    requestId: "typed-producer-request",
+    idempotencyDomain: "c2-zc-product-journey",
+    requestPayloadDigest: `sha256:${"e".repeat(64)}`,
+    actorId: "c2-zc-product-journey",
+    workKey: "",
+    outcomeSummaryJson: "",
+    tasks: [],
+  };
+  const producerSpec = JSON.parse(producerRun.specJson);
+  producerRun.specDigest = `sha256:${createHash("sha256")
+    .update(JSON.stringify(producerSpec), "utf8")
+    .digest("hex")}`;
+  producerRun.workKey = `incremental-freshness:${epoch.id}:0:1:${producerRun.specDigest.slice("sha256:".length)}`;
+  const producerOutcome = {
+    projectId: epoch.projectId,
+    runId: producerRun.id,
+    fromSequenceExclusive: 0,
+    throughSequenceInclusive: 1,
+    affectedEdgeCount: 1,
+    affectedConsumerCount: 1,
+    hasMore: false,
+  };
+  producerRun.outcomeSummaryJson = JSON.stringify(producerOutcome);
+  producerRun.tasks = [
+    {
+      id: "freshness-task",
+      taskKind: "incremental-freshness-batch",
+      status: "completed",
+      attemptCount: 1,
+      inputJson: JSON.stringify({
+        changeSetId: "change-set-typed",
+        fromSequenceExclusive: 0,
+        throughSequenceInclusive: 1,
+      }),
+      outputJson: JSON.stringify(producerOutcome),
+      createdAt: "2026-08-28T00:00:21.000Z",
+      startedAt: "2026-08-28T00:00:22.000Z",
+      completedAt: "2026-08-28T00:00:23.000Z",
+      attempts: [
+        {
+          id: "freshness-attempt",
+          taskId: "freshness-task",
+          attemptNumber: 1,
+          status: "completed",
+          startedAt: "2026-08-28T00:00:22.000Z",
+          completedAt: "2026-08-28T00:00:23.000Z",
+          outputJson: JSON.stringify(producerOutcome),
+          failureCode: null,
+          retryDisposition: null,
+          policyVersion: null,
+          nextAttemptAt: null,
+        },
+      ],
+    },
+  ];
+  const genericRows = [
+    {
+      projectId: "project-new",
+      consumerKind: "application",
+      consumerKey: "app-typed",
+      evidenceFreshness: "fresh",
+      buildAction: "none",
+      semanticEpochId: epoch.id,
+      lastEvaluatedRunId: producerRun.id,
+      dependencySetDigest: `sha256:${createHash("sha256")
+        .update("25:project:scene:scene-typed\n", "utf8")
+        .digest("hex")}`,
+      updatedAt: "2026-08-28T00:00:21.000Z",
+    },
+  ];
+  const typedApplication = {
+    projectId: "project-new",
+    runId: "typed-run",
+    taskId: "typed-task",
+    attemptId: "typed-attempt",
+    proposalSetId: "typed-proposal-set",
+    proposalId: "typed-proposal",
+    revisionId: "typed-revision",
+    entryId: "typed-entry",
+    commitId: "typed-commit",
+    applicationId: "app-typed",
+  };
+  const typedArtifacts = {
+    proposalSets: [
+      {
+        proposalSetId: typedApplication.proposalSetId,
+        runId: typedApplication.runId,
+        projectId: typedApplication.projectId,
+        setKind: "c2-zc.post-marker.review@1",
+        status: "draft",
+        summaryJson: JSON.stringify({
+          kind: "c2-zc-post-marker-application@1",
+        }),
+      },
+    ],
+    proposals: [
+      {
+        proposalId: typedApplication.proposalId,
+        proposalSetId: typedApplication.proposalSetId,
+        kind: "codex.entry.create",
+        status: "approved",
+        currentRevisionId: typedApplication.revisionId,
+      },
+    ],
+    proposalRevisions: [
+      {
+        revisionId: typedApplication.revisionId,
+        proposalId: typedApplication.proposalId,
+        revisionNumber: 1,
+        originKind: "enveloped",
+        createdBy: "system",
+        reconciliationEnvelopeDigest: `sha256:${"1".repeat(64)}`,
+      },
+    ],
+    proposalDecisions: [
+      {
+        decisionId: "typed-decision",
+        proposalId: typedApplication.proposalId,
+        revisionId: typedApplication.revisionId,
+        decision: "approved",
+        createdBy: "c2-zc-product-journey",
+        actorKind: "human",
+      },
+    ],
+    applyCommits: [
+      {
+        commitId: typedApplication.commitId,
+        projectId: typedApplication.projectId,
+        runId: typedApplication.runId,
+        proposalSetId: typedApplication.proposalSetId,
+        requestId: `${typedApplication.runId}-apply-request`,
+        status: "applied",
+        planDigest: `sha256:${"2".repeat(64)}`,
+        preparedPlanJson: { operations: [] },
+        preparedPolicyVersion: "v1",
+        authorityDigest: `sha256:${"3".repeat(64)}`,
+        sessionId: "c2-zc-canonical-authority-cutover",
+      },
+    ],
+    applyOperations: [
+      {
+        operationId: "typed-operation",
+        commitId: typedApplication.commitId,
+        operationIndex: 0,
+        operationKind: "codex.entry.create",
+        resultEntityKind: "codex_entry",
+        resultEntityId: typedApplication.entryId,
+        status: "applied",
+      },
+    ],
+    applications: [
+      {
+        applicationId: typedApplication.applicationId,
+        commitId: typedApplication.commitId,
+        proposalId: typedApplication.proposalId,
+        revisionId: typedApplication.revisionId,
+        appliedEntityKind: "codex_entry",
+        appliedEntityId: typedApplication.entryId,
+        applicationKind: "normal",
+        compensatesApplicationId: null,
+      },
+    ],
+    commitJournals: [
+      {
+        journalId: "typed-journal",
+        commitId: typedApplication.commitId,
+        projectId: typedApplication.projectId,
+        beforeJson: null,
+        afterJson: { entryId: typedApplication.entryId },
+      },
+    ],
+    codexEntries: [
+      {
+        entryId: typedApplication.entryId,
+        projectId: typedApplication.projectId,
+        name: "Typed restart entry",
+        content: "typed content",
+      },
+    ],
+  };
+  const settled = (runs, generic = genericRows) => ({
+    marker,
+    markerRows: [marker],
+    epochs: [epoch],
+    runs,
+    genericRows: generic,
+    dependencyEdges: [
+      {
+        projectId: epoch.projectId,
+        consumerKind: "application",
+        consumerKey: "app-typed",
+        sourceObjectIdentity: "project:scene:scene-typed",
+      },
+    ],
+    legacyProjection: {
+      freshness: [
+        {
+          applicationId: "app-typed",
+          status: "fresh",
+          reasonJson: null,
+          version: 0,
+          updatedAt: "2026-08-28T00:00:21.000Z",
+        },
+      ],
+      dependencies: [
+        {
+          applicationId: "app-typed",
+          sourceKind: "snapshot-document",
+          sourceKey: "snapshot:typed-run",
+          observedRevisionToken: "sha256:source",
+          propagation: "freshness-only",
+        },
+      ],
+    },
+    pendingRuns: [],
+    unresolvedFindings: [],
+    inboxEntries: [],
+    inboxFindings: [],
+    typedArtifacts,
+    feedAndCursor: {
+      feedHead: 1,
+      cursor: {
+        acknowledgedThrough: 1,
+        reservedThrough: null,
+        activeRunId: null,
+        semanticEpochId: null,
+        lastError: null,
+      },
+    },
+    feedEvents: [
+      {
+        eventId: "event-typed",
+        canonicalSequence: 1,
+        eventOrdinal: 0,
+        objectKeyJson: JSON.stringify({
+          kind: "scene",
+          sceneId: "scene-typed",
+        }),
+        changeKind: "content",
+        mutationKind: "update",
+        applicationIdsJson: JSON.stringify([typedApplication.applicationId]),
+      },
+    ],
+    changeSets: [
+      {
+        changeSetId: "change-set-typed",
+        projectId: epoch.projectId,
+        fromSequenceExclusive: 0,
+        throughSequenceInclusive: 1,
+        eventIdsJson: JSON.stringify(["event-typed"]),
+        affectedObjectsJson: JSON.stringify(["project:scene:scene-typed"]),
+        digest: producerRun.specDigest,
+      },
+    ],
+    projectSettled: true,
+  });
+  const beforeMutation = settled([], []);
+  const afterMutation = settled([typedRun, producerRun]);
+  const restart = settled([typedRun, producerRun]);
+  assert.doesNotThrow(() =>
+    assertC2ZcPostMarkerRestartInvariants({
+      beforeMutation,
+      afterMutation,
+      restart,
+      application: typedApplication,
+    }),
+  );
+  const changedLegacy = structuredClone(restart);
+  changedLegacy.legacyProjection.dependencies[0].observedRevisionToken =
+    "sha256:changed";
+  assert.throws(
+    () =>
+      assertC2ZcPostMarkerRestartInvariants({
+        beforeMutation,
+        afterMutation,
+        restart: changedLegacy,
+        application: typedApplication,
+      }),
+    /Legacy|changed/,
+  );
+  const corruptedLedger = structuredClone(restart);
+  corruptedLedger.typedArtifacts.applyCommits[0].preparedPlanJson = {
+    operations: [{ kind: "unexpected" }],
+  };
+  assert.throws(
+    () =>
+      assertC2ZcPostMarkerRestartInvariants({
+        beforeMutation,
+        afterMutation,
+        restart: corruptedLedger,
+        application: typedApplication,
+      }),
+    /normalized durable ledger|prepared\/applied Commit/,
+  );
+  for (const [field, value] of [
+    ["scopeJson", JSON.stringify({ projectId: "changed", scope: "full" })],
+    ["snapshotDigest", `sha256:${"d".repeat(64)}`],
+    ["coverageJson", JSON.stringify({ complete: false, covered: [] })],
+    ["version", 8],
+    ["requestId", "changed-request"],
+    ["idempotencyDomain", "changed-domain"],
+    ["requestPayloadDigest", `sha256:${"f".repeat(64)}`],
+    ["actorId", "changed-actor"],
+  ]) {
+    const mutatedRunLedger = structuredClone(restart);
+    mutatedRunLedger.runs.find((run) => run.id === producerRun.id)[field] =
+      value;
+    assert.throws(
+      () =>
+        assertC2ZcPostMarkerRestartInvariants({
+          beforeMutation,
+          afterMutation,
+          restart: mutatedRunLedger,
+          application: typedApplication,
+        }),
+      /normalized durable ledger|Run contract/,
+      `Run ledger mutation of ${field} must be rejected`,
+    );
+  }
+});
 
 test("C2-ZC backup fixture contract proves pre-cutover E0/B0 and a derived gap", () => {
   const fixture = c2zcFixture();
@@ -923,14 +2275,20 @@ test("C2-ZC idle Task and final Attempt output must match the Run outcome", () =
   const base = c2zcOpenContractFixture();
   const outcome = JSON.parse(base.idleRun.outcomeSummaryJson);
   for (const [label, mutate] of [
-    ["Task output", (run) => {
-      const tampered = { ...outcome, affectedEdgeCount: 1 };
-      run.tasks[0].outputJson = JSON.stringify(tampered);
-    }],
-    ["Attempt output", (run) => {
-      const tampered = { ...outcome, hasMore: true };
-      run.tasks[0].attempts[0].outputJson = JSON.stringify(tampered);
-    }],
+    [
+      "Task output",
+      (run) => {
+        const tampered = { ...outcome, affectedEdgeCount: 1 };
+        run.tasks[0].outputJson = JSON.stringify(tampered);
+      },
+    ],
+    [
+      "Attempt output",
+      (run) => {
+        const tampered = { ...outcome, hasMore: true };
+        run.tasks[0].attempts[0].outputJson = JSON.stringify(tampered);
+      },
+    ],
   ]) {
     const idleRun = clone(base.idleRun);
     mutate(idleRun);
@@ -1215,76 +2573,100 @@ test("C2-ZC idle checkpoint rejects malformed retry topology and metadata", () =
     },
   ];
   const cases = [
-    ["attempt count mismatch", (run) => {
-      run.tasks[0].attemptCount = 1;
-      run.attemptCount = 1;
-      run.taskAttemptCount = 1;
-    }],
-    ["attempt numbering gap", (run) => {
-      run.tasks[0].attempts[1].attemptNumber = 3;
-    }],
-    ["completed attempt before failed retry", (run) => {
-      run.tasks[0].attempts[0].status = "completed";
-      run.tasks[0].attempts[0].failureCode = null;
-      run.tasks[0].attempts[0].retryDisposition = null;
-      run.tasks[0].attempts[0].policyVersion = null;
-      run.tasks[0].attempts[0].nextAttemptAt = null;
-      run.tasks[0].attempts[1].status = "failed";
-      run.tasks[0].attempts[1].failureCode = "NEX_LATE_RETRY";
-      run.tasks[0].attempts[1].retryDisposition = "retryable";
-      run.tasks[0].attempts[1].policyVersion = "v1";
-      run.tasks[0].attempts[1].nextAttemptAt = "2026-08-28T00:00:16.210Z";
-    }],
-    ["running attempt", (run) => {
-      run.tasks[0].attempts[1].status = "running";
-    }],
-    ["retry cap", (run) => {
-      run.tasks[0].attempts.push(
-        {
-          ...run.tasks[0].attempts[1],
-          id: "idle-e1-attempt-3",
-          attemptNumber: 3,
-          startedAt: "2026-08-28T00:00:16.210Z",
-          completedAt: "2026-08-28T00:00:16.220Z",
-        },
-        {
-          ...run.tasks[0].attempts[1],
-          id: "idle-e1-attempt-4",
-          attemptNumber: 4,
-          startedAt: "2026-08-28T00:00:16.230Z",
-          completedAt: "2026-08-28T00:00:16.240Z",
-        },
-      );
-      run.tasks[0].attempts[2].status = "failed";
-      run.tasks[0].attempts[2].failureCode = "NEX_RETRY_3";
-      run.tasks[0].attempts[2].retryDisposition = "retryable";
-      run.tasks[0].attempts[2].policyVersion = "v1";
-      run.tasks[0].attempts[2].nextAttemptAt = "2026-08-28T00:00:16.225Z";
-      run.tasks[0].attempts[3].status = "completed";
-      run.tasks[0].attempts[3].failureCode = null;
-      run.tasks[0].attempts[3].retryDisposition = null;
-      run.tasks[0].attempts[3].policyVersion = null;
-      run.tasks[0].attempts[3].nextAttemptAt = null;
-      run.tasks[0].attemptCount = 4;
-      run.attemptCount = 4;
-      run.taskAttemptCount = 4;
-      run.lastAttemptNumber = 4;
-      run.maxAttemptNumber = 4;
-      run.lastAttemptStatus = "completed";
-      run.lastAttemptStartedAt = "2026-08-28T00:00:16.230Z";
-      run.lastAttemptCompletedAt = "2026-08-28T00:00:16.240Z";
-      run.taskCompletedAt = "2026-08-28T00:00:16.240Z";
-      run.completedAt = "2026-08-28T00:00:16.240Z";
-    }],
-    ["failed retry metadata", (run) => {
-      run.tasks[0].attempts[0].retryDisposition = "terminal";
-    }],
-    ["completed attempt metadata", (run) => {
-      run.tasks[0].attempts[1].failureCode = "NEX_FORGED";
-    }],
-    ["attempt temporal inversion", (run) => {
-      run.tasks[0].attempts[1].startedAt = "2026-08-28T00:00:16.110Z";
-    }],
+    [
+      "attempt count mismatch",
+      (run) => {
+        run.tasks[0].attemptCount = 1;
+        run.attemptCount = 1;
+        run.taskAttemptCount = 1;
+      },
+    ],
+    [
+      "attempt numbering gap",
+      (run) => {
+        run.tasks[0].attempts[1].attemptNumber = 3;
+      },
+    ],
+    [
+      "completed attempt before failed retry",
+      (run) => {
+        run.tasks[0].attempts[0].status = "completed";
+        run.tasks[0].attempts[0].failureCode = null;
+        run.tasks[0].attempts[0].retryDisposition = null;
+        run.tasks[0].attempts[0].policyVersion = null;
+        run.tasks[0].attempts[0].nextAttemptAt = null;
+        run.tasks[0].attempts[1].status = "failed";
+        run.tasks[0].attempts[1].failureCode = "NEX_LATE_RETRY";
+        run.tasks[0].attempts[1].retryDisposition = "retryable";
+        run.tasks[0].attempts[1].policyVersion = "v1";
+        run.tasks[0].attempts[1].nextAttemptAt = "2026-08-28T00:00:16.210Z";
+      },
+    ],
+    [
+      "running attempt",
+      (run) => {
+        run.tasks[0].attempts[1].status = "running";
+      },
+    ],
+    [
+      "retry cap",
+      (run) => {
+        run.tasks[0].attempts.push(
+          {
+            ...run.tasks[0].attempts[1],
+            id: "idle-e1-attempt-3",
+            attemptNumber: 3,
+            startedAt: "2026-08-28T00:00:16.210Z",
+            completedAt: "2026-08-28T00:00:16.220Z",
+          },
+          {
+            ...run.tasks[0].attempts[1],
+            id: "idle-e1-attempt-4",
+            attemptNumber: 4,
+            startedAt: "2026-08-28T00:00:16.230Z",
+            completedAt: "2026-08-28T00:00:16.240Z",
+          },
+        );
+        run.tasks[0].attempts[2].status = "failed";
+        run.tasks[0].attempts[2].failureCode = "NEX_RETRY_3";
+        run.tasks[0].attempts[2].retryDisposition = "retryable";
+        run.tasks[0].attempts[2].policyVersion = "v1";
+        run.tasks[0].attempts[2].nextAttemptAt = "2026-08-28T00:00:16.225Z";
+        run.tasks[0].attempts[3].status = "completed";
+        run.tasks[0].attempts[3].failureCode = null;
+        run.tasks[0].attempts[3].retryDisposition = null;
+        run.tasks[0].attempts[3].policyVersion = null;
+        run.tasks[0].attempts[3].nextAttemptAt = null;
+        run.tasks[0].attemptCount = 4;
+        run.attemptCount = 4;
+        run.taskAttemptCount = 4;
+        run.lastAttemptNumber = 4;
+        run.maxAttemptNumber = 4;
+        run.lastAttemptStatus = "completed";
+        run.lastAttemptStartedAt = "2026-08-28T00:00:16.230Z";
+        run.lastAttemptCompletedAt = "2026-08-28T00:00:16.240Z";
+        run.taskCompletedAt = "2026-08-28T00:00:16.240Z";
+        run.completedAt = "2026-08-28T00:00:16.240Z";
+      },
+    ],
+    [
+      "failed retry metadata",
+      (run) => {
+        run.tasks[0].attempts[0].retryDisposition = "terminal";
+      },
+    ],
+    [
+      "completed attempt metadata",
+      (run) => {
+        run.tasks[0].attempts[1].failureCode = "NEX_FORGED";
+      },
+    ],
+    [
+      "attempt temporal inversion",
+      (run) => {
+        run.tasks[0].attempts[1].startedAt = "2026-08-28T00:00:16.110Z";
+      },
+    ],
   ];
   for (const [label, mutate] of cases) {
     const idleRun = idleRunWithAttempts(base.idleRun, validAttempts);
@@ -1326,9 +2708,27 @@ test("C2-ZC restart preserves marker, E0/E1, and phase Run identity", () => {
     appliedAt: "2026-08-28T00:00:17.000Z",
   };
   const phaseRuns = [
-    c2zcPhase("verify-e1", "dependency-verify", e1.id, "2026-08-28T00:00:11.000Z", "2026-08-28T00:00:12.000Z"),
-    c2zcPhase("rebuild-e1", "semantic-index-rebuild", e1.id, "2026-08-28T00:00:13.000Z", "2026-08-28T00:00:14.000Z"),
-    c2zcPhase("confirm-e1", "dependency-verify", e1.id, "2026-08-28T00:00:15.000Z", "2026-08-28T00:00:16.000Z"),
+    c2zcPhase(
+      "verify-e1",
+      "dependency-verify",
+      e1.id,
+      "2026-08-28T00:00:11.000Z",
+      "2026-08-28T00:00:12.000Z",
+    ),
+    c2zcPhase(
+      "rebuild-e1",
+      "semantic-index-rebuild",
+      e1.id,
+      "2026-08-28T00:00:13.000Z",
+      "2026-08-28T00:00:14.000Z",
+    ),
+    c2zcPhase(
+      "confirm-e1",
+      "dependency-verify",
+      e1.id,
+      "2026-08-28T00:00:15.000Z",
+      "2026-08-28T00:00:16.000Z",
+    ),
   ];
   const idleRun = c2zcIdleCheckpoint(
     "idle-e1",
@@ -1357,19 +2757,19 @@ test("C2-ZC restart preserves marker, E0/E1, and phase Run identity", () => {
     () =>
       assertC2ZcRestartInvariants({
         open: {
-        marker,
-        epochs: [...fixture.epochs, e1],
-        runs: [fixture.backfill, ...phaseRuns, idleRun],
-      },
-      restart: {
-        marker: { ...marker, appliedAt: "2026-08-28T00:00:18.000Z" },
-        epochs: [...fixture.epochs, e1],
-        runs: [fixture.backfill, ...phaseRuns, idleRun],
-      },
-      phaseRunIds: phaseRuns.map((run) => run.id),
-      idleRunId: idleRun.id,
-      baselineRuns: [fixture.backfill],
-    }),
+          marker,
+          epochs: [...fixture.epochs, e1],
+          runs: [fixture.backfill, ...phaseRuns, idleRun],
+        },
+        restart: {
+          marker: { ...marker, appliedAt: "2026-08-28T00:00:18.000Z" },
+          epochs: [...fixture.epochs, e1],
+          runs: [fixture.backfill, ...phaseRuns, idleRun],
+        },
+        phaseRunIds: phaseRuns.map((run) => run.id),
+        idleRunId: idleRun.id,
+        baselineRuns: [fixture.backfill],
+      }),
     /changed marker appliedAt/,
   );
 });
@@ -1382,47 +2782,72 @@ test("C2-ZC restart rejects mutations to phase and idle Run contract fields", ()
     runs: base.afterRuns,
   };
   for (const [label, mutate] of [
-    ["phase status", (runs) => {
-      runs.find((run) => run.id === base.phaseRuns[0].id).status = "failed";
-    }],
-    ["phase work key", (runs) => {
-      runs.find((run) => run.id === base.phaseRuns[1].id).workKey = "forged-work-key";
-    }],
-    ["idle spec", (runs) => {
-      const idle = runs.find((run) => run.id === base.idleRun.id);
-      idle.specJson = JSON.stringify({
-        kind: "incremental-freshness-idle-checkpoint@1",
-        inputDigest: "sha256:" + "d".repeat(64),
-      });
-    }],
-    ["idle outcome", (runs) => {
-      const idle = runs.find((run) => run.id === base.idleRun.id);
-      const outcome = JSON.parse(idle.outcomeSummaryJson);
-      outcome.affectedEdgeCount = 1;
-      idle.outcomeSummaryJson = JSON.stringify(outcome);
-    }],
-    ["idle task input", (runs) => {
-      const idle = runs.find((run) => run.id === base.idleRun.id);
-      const input = JSON.parse(idle.taskInputJson);
-      input.feedHead = 2;
-      idle.taskInputJson = JSON.stringify(input);
-    }],
-    ["idle attempt", (runs) => {
-      const idle = runs.find((run) => run.id === base.idleRun.id);
-      idle.tasks[0].attempts[0].status = "running";
-    }],
-    ["idle task output", (runs) => {
-      const idle = runs.find((run) => run.id === base.idleRun.id);
-      const outcome = JSON.parse(idle.outcomeSummaryJson);
-      outcome.affectedEdgeCount = 1;
-      idle.tasks[0].outputJson = JSON.stringify(outcome);
-    }],
-    ["idle attempt output", (runs) => {
-      const idle = runs.find((run) => run.id === base.idleRun.id);
-      const outcome = JSON.parse(idle.outcomeSummaryJson);
-      outcome.hasMore = true;
-      idle.tasks[0].attempts[0].outputJson = JSON.stringify(outcome);
-    }],
+    [
+      "phase status",
+      (runs) => {
+        runs.find((run) => run.id === base.phaseRuns[0].id).status = "failed";
+      },
+    ],
+    [
+      "phase work key",
+      (runs) => {
+        runs.find((run) => run.id === base.phaseRuns[1].id).workKey =
+          "forged-work-key";
+      },
+    ],
+    [
+      "idle spec",
+      (runs) => {
+        const idle = runs.find((run) => run.id === base.idleRun.id);
+        idle.specJson = JSON.stringify({
+          kind: "incremental-freshness-idle-checkpoint@1",
+          inputDigest: "sha256:" + "d".repeat(64),
+        });
+      },
+    ],
+    [
+      "idle outcome",
+      (runs) => {
+        const idle = runs.find((run) => run.id === base.idleRun.id);
+        const outcome = JSON.parse(idle.outcomeSummaryJson);
+        outcome.affectedEdgeCount = 1;
+        idle.outcomeSummaryJson = JSON.stringify(outcome);
+      },
+    ],
+    [
+      "idle task input",
+      (runs) => {
+        const idle = runs.find((run) => run.id === base.idleRun.id);
+        const input = JSON.parse(idle.taskInputJson);
+        input.feedHead = 2;
+        idle.taskInputJson = JSON.stringify(input);
+      },
+    ],
+    [
+      "idle attempt",
+      (runs) => {
+        const idle = runs.find((run) => run.id === base.idleRun.id);
+        idle.tasks[0].attempts[0].status = "running";
+      },
+    ],
+    [
+      "idle task output",
+      (runs) => {
+        const idle = runs.find((run) => run.id === base.idleRun.id);
+        const outcome = JSON.parse(idle.outcomeSummaryJson);
+        outcome.affectedEdgeCount = 1;
+        idle.tasks[0].outputJson = JSON.stringify(outcome);
+      },
+    ],
+    [
+      "idle attempt output",
+      (runs) => {
+        const idle = runs.find((run) => run.id === base.idleRun.id);
+        const outcome = JSON.parse(idle.outcomeSummaryJson);
+        outcome.hasMore = true;
+        idle.tasks[0].attempts[0].outputJson = JSON.stringify(outcome);
+      },
+    ],
   ]) {
     const restartRuns = clone(base.afterRuns);
     mutate(restartRuns);
@@ -1485,23 +2910,24 @@ test("C2-ZC runner uses the shared restore scenario and explicit phase separatio
   assert.match(runner, /runRestoreVerifyRebuildVerifyScenario/);
   assert.match(runner, /restoreBackupThroughSettingsUi/);
   assert.match(runner, /setup:\s*"disabled"/);
-  assert.match(runner, /dependency-verify[\s\S]*semantic-index-rebuild[\s\S]*dependency-verify/);
+  assert.match(
+    runner,
+    /dependency-verify[\s\S]*semantic-index-rebuild[\s\S]*dependency-verify/,
+  );
   assert.match(runner, /assertC2ZcOpenTotalOrder/);
   assert.match(runner, /idleRunId/);
   assert.match(runner, /appliedAt[\s\S]*completedAt/);
   assert.match(runner, /createProjectAfterCutover/);
   assert.match(maintenance, /runRestoreVerifyRebuildVerifyScenario/);
   assert.match(maintenance, /runRestoreVerifyRebuildVerifyScenario\([\s\S]*id/);
-  assert.deepEqual(
-    C2ZC_PRODUCT_JOURNEY_PHASES,
-    [
-      "c2-zc-canonical-authority-cutover/restore-fixture",
-      "c2-zc-canonical-authority-cutover/restore",
-      "c2-zc-canonical-authority-cutover/open",
-      "c2-zc-canonical-authority-cutover/restart",
-      "c2-zc-canonical-authority-cutover/new-project",
-    ],
-  );
+  assert.deepEqual(C2ZC_PRODUCT_JOURNEY_PHASES, [
+    "c2-zc-canonical-authority-cutover/restore-fixture",
+    "c2-zc-canonical-authority-cutover/restore",
+    "c2-zc-canonical-authority-cutover/open",
+    "c2-zc-canonical-authority-cutover/restart",
+    "c2-zc-canonical-authority-cutover/restart-persistence",
+    "c2-zc-canonical-authority-cutover/new-project",
+  ]);
   for (const phase of C2ZC_PRODUCT_JOURNEY_PHASES) {
     assert.ok(PRODUCT_JOURNEY_ELECTRON_PHASES.includes(phase), phase);
   }
@@ -1532,7 +2958,7 @@ test("C2-ZC ledger enrichment preserves the supplied Run rows", async () => {
             taskKind: "incremental-freshness-batch",
             status: "completed",
             attemptCount: 1,
-            outputJson: "{\"kind\":\"fixture-output\"}",
+            outputJson: '{"kind":"fixture-output"}',
           },
         ],
       };
@@ -1542,15 +2968,14 @@ test("C2-ZC ledger enrichment preserves the supplied Run rows", async () => {
   assert.equal(enriched.length, 1);
   assert.equal(enriched[0].id, "run-1");
   assert.equal(enriched[0].tasks.length, 1);
-  assert.equal(
-    enriched[0].tasks[0].outputJson,
-    '{"kind":"fixture-output"}',
-  );
+  assert.equal(enriched[0].tasks[0].outputJson, '{"kind":"fixture-output"}');
   assert.equal(enriched[0].tasks[0].attempts[0].id, "attempt-1");
 });
 
 test("C2-ZC restart wiring carries the open pre-run baseline into its invariant check", async () => {
-  const runner = await read("electron/scripts/c2zc-canonical-product-journey.mjs");
+  const runner = await read(
+    "electron/scripts/c2zc-canonical-product-journey.mjs",
+  );
   const openSnapshot = runner.match(/openSnapshot = \{[\s\S]*?\n\s*\};/)?.[0];
   assert.match(
     openSnapshot ?? "",
@@ -1558,7 +2983,7 @@ test("C2-ZC restart wiring carries the open pre-run baseline into its invariant 
     "onOpen must persist its pre-open Run baseline for the restart phase",
   );
   const restartCallback = runner.match(
-    /onRestart: async \(\{ context \}\) => \{[\s\S]*?\n\s*\},/,
+    /onRestart: async \(\{ context \}\) => \{[\s\S]*?baselineRuns: openSnapshot\.beforeRuns,/,
   )?.[0];
   assert.match(
     restartCallback ?? "",
@@ -1733,11 +3158,11 @@ test("C2-ZC project_create errors propagate without retry after settlement", asy
       workspaceOpenRevision: 0,
       projectId: "default-project",
     },
-      to: {
-        workspacePath: workspace,
-        workspaceOpenRevision: sequence < 2 ? null : 1,
-        projectId: sequence < 2 ? null : "default-project",
-      },
+    to: {
+      workspacePath: workspace,
+      workspaceOpenRevision: sequence < 2 ? null : 1,
+      projectId: sequence < 2 ? null : "default-project",
+    },
   }));
   const harness = {
     async invokeOk(_page, command, payload) {

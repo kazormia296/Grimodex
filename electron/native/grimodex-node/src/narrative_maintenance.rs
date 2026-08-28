@@ -299,6 +299,7 @@ mod tests {
             fault: None,
             trigger: Some(NarrativeMaintenanceCiTrigger::GraphContractDigestChanged),
             setup: None,
+            freshness_hold_project_id: None,
             product_journey_barrier_id: None,
             correlation: None,
         };

@@ -119,9 +119,19 @@ pub struct IncrementalFreshnessShadowConsumerSummary {
     pub compatibility_primary_action: String,
 }
 
+/// A CI-only deterministic hold stops one selected project before any
+/// reservation is created. It is intentionally distinct from `Idle`: the
+/// scheduler must be able to prove that a real candidate was held and that
+/// the normal cutover attempt therefore returned NOT_READY.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct IncrementalFreshnessHeldSummary {
+    pub project_id: String,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IncrementalFreshnessCycleOutcome {
     Idle,
+    Held(IncrementalFreshnessHeldSummary),
     Processed(IncrementalFreshnessBatchSummary),
 }
 
@@ -186,6 +196,7 @@ struct PreparedChangeEvents {
 #[derive(Debug)]
 enum ReservationOutcome {
     Idle,
+    Held(String),
     Claimed(Box<ClaimedBatch>),
 }
 
@@ -257,11 +268,22 @@ enum V2ShadowSelectionScope {
 pub fn run_incremental_freshness_cycle(
     db: &Database,
 ) -> anyhow::Result<IncrementalFreshnessCycleOutcome> {
+    run_incremental_freshness_cycle_with_hold(db, None)
+}
+
+/// Run one bounded automatic Freshness cycle with an optional CI-only project
+/// hold. The hold is checked against the selected candidate before the
+/// reservation path creates or resumes a Run/cursor lease, so a held cycle is
+/// provably no-write. Production callers use the public no-argument wrapper.
+pub fn run_incremental_freshness_cycle_with_hold(
+    db: &Database,
+    freshness_hold_project_id: Option<&str>,
+) -> anyhow::Result<IncrementalFreshnessCycleOutcome> {
     let _cycle_guard = CYCLE_SERIALIZER.lock().map_err(|error| {
         anyhow::anyhow!("NEX_INCREMENTAL_FRESHNESS_SERIALIZER_POISONED: {error}")
     })?;
 
-    db.with_background_connection_priority(|| run_serialized_cycle(db))
+    db.with_background_connection_priority(|| run_serialized_cycle(db, freshness_hold_project_id))
 }
 
 /// Run a bounded Freshness cycle and return the one-use liveness capability
@@ -274,7 +296,21 @@ pub fn run_incremental_freshness_cycle_with_liveness_capability(
     IncrementalFreshnessCycleOutcome,
     SuccessfulIncrementalFreshnessCycle,
 )> {
-    let outcome = run_incremental_freshness_cycle(db)?;
+    run_incremental_freshness_cycle_with_liveness_capability_and_hold(db, None)
+}
+
+/// CI/main wrapper that forwards the effective native seam hold without
+/// making it a renderer or IPC surface. The liveness capability is retained
+/// for a held cycle so the normal cutover attempt can run and fail closed on
+/// its durable readiness gate.
+pub fn run_incremental_freshness_cycle_with_liveness_capability_and_hold(
+    db: &Database,
+    freshness_hold_project_id: Option<&str>,
+) -> anyhow::Result<(
+    IncrementalFreshnessCycleOutcome,
+    SuccessfulIncrementalFreshnessCycle,
+)> {
+    let outcome = run_incremental_freshness_cycle_with_hold(db, freshness_hold_project_id)?;
     let completed_at = Instant::now();
     // The capability must belong to the same live SQLite authority that will
     // mint the scheduler receipt.  Capturing its connection epoch here keeps
@@ -331,12 +367,23 @@ pub(crate) fn initialize_application_freshness_in_tx(
     )
 }
 
-fn run_serialized_cycle(db: &Database) -> anyhow::Result<IncrementalFreshnessCycleOutcome> {
-    let reservation =
-        db.with_conn(|conn| with_immediate_transaction(conn, reserve_or_resume_batch_in_tx))?;
+fn run_serialized_cycle(
+    db: &Database,
+    freshness_hold_project_id: Option<&str>,
+) -> anyhow::Result<IncrementalFreshnessCycleOutcome> {
+    let reservation = db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            reserve_or_resume_batch_in_tx(conn, freshness_hold_project_id)
+        })
+    })?;
 
     let batch = match reservation {
         ReservationOutcome::Idle => return Ok(IncrementalFreshnessCycleOutcome::Idle),
+        ReservationOutcome::Held(project_id) => {
+            return Ok(IncrementalFreshnessCycleOutcome::Held(
+                IncrementalFreshnessHeldSummary { project_id },
+            ))
+        }
         ReservationOutcome::Claimed(batch) => batch,
     };
 
@@ -394,11 +441,27 @@ fn run_serialized_cycle(db: &Database) -> anyhow::Result<IncrementalFreshnessCyc
     ))
 }
 
-fn reserve_or_resume_batch_in_tx(conn: &Connection) -> anyhow::Result<ReservationOutcome> {
-    let Some(project_id) = select_next_project(conn)? else {
-        let Some((project_id, semantic_epoch_id, feed_head)) =
-            select_idle_checkpoint_project(conn)?
-        else {
+fn reserve_or_resume_batch_in_tx(
+    conn: &Connection,
+    freshness_hold_project_id: Option<&str>,
+) -> anyhow::Result<ReservationOutcome> {
+    let next_project = match freshness_hold_project_id {
+        Some(held_project_id) => select_next_project_excluding(conn, held_project_id)?,
+        None => select_next_project(conn)?,
+    };
+    let Some(project_id) = next_project else {
+        let idle_project = match freshness_hold_project_id {
+            Some(held_project_id) => {
+                select_idle_checkpoint_project_excluding(conn, held_project_id)?
+            }
+            None => select_idle_checkpoint_project(conn)?,
+        };
+        let Some((project_id, semantic_epoch_id, feed_head)) = idle_project else {
+            if let Some(held_project_id) = freshness_hold_project_id {
+                if held_project_is_next_candidate(conn, held_project_id)? {
+                    return Ok(ReservationOutcome::Held(held_project_id.to_owned()));
+                }
+            }
             return Ok(ReservationOutcome::Idle);
         };
         return create_and_claim_idle_checkpoint_in_tx(
@@ -582,6 +645,83 @@ fn select_next_project(conn: &Connection) -> anyhow::Result<Option<String>> {
     .map_err(Into::into)
 }
 
+/// Select the next candidate while a CI-only hold is active. The production
+/// selector above remains unchanged; this copy excludes the held project at
+/// both the active-reservation and pending-Feed branches so another project
+/// can make progress before the held candidate is reported.
+fn select_next_project_excluding(
+    conn: &Connection,
+    excluded_project_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let active: Option<String> = conn
+        .query_row(
+            "SELECT cursor.project_id
+               FROM narrative_change_cursors cursor
+               LEFT JOIN narrative_extraction_runs run ON run.id = cursor.active_run_id
+               JOIN narrative_semantic_epochs epoch
+                 ON epoch.id = (
+                   SELECT current.id FROM narrative_semantic_epochs current
+                    WHERE current.project_id = cursor.project_id
+                    ORDER BY current.epoch_number DESC LIMIT 1
+                 )
+              WHERE cursor.consumer_id = ?1
+                AND cursor.project_id <> ?2
+                AND cursor.active_run_id IS NOT NULL
+                AND (
+                  cursor.semantic_epoch_id IS NULL
+                  OR cursor.semantic_epoch_id <> epoch.id
+                  OR run.status IS NULL
+                  OR run.status <> 'failed'
+                  OR COALESCE(run.terminal_reason_code, '') <>
+                     'NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED'
+                )
+              ORDER BY cursor.updated_at ASC, cursor.project_id ASC
+              LIMIT 1",
+            params![CURSOR_CONSUMER_ID, excluded_project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if active.is_some() {
+        return Ok(active);
+    }
+
+    conn.query_row(
+        "SELECT event.project_id
+           FROM narrative_change_events event
+           LEFT JOIN narrative_change_cursors cursor
+             ON cursor.project_id = event.project_id
+            AND cursor.consumer_id = ?1
+          WHERE event.project_id <> ?2
+            AND event.canonical_sequence >
+                COALESCE(cursor.acknowledged_through_sequence, 0)
+            AND cursor.active_run_id IS NULL
+            AND EXISTS (
+              SELECT 1 FROM narrative_semantic_epochs epoch
+               WHERE epoch.project_id = event.project_id
+            )
+          GROUP BY event.project_id
+          ORDER BY MIN(event.canonical_sequence) ASC, event.project_id ASC
+          LIMIT 1",
+        params![CURSOR_CONSUMER_ID, excluded_project_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn held_project_is_next_candidate(
+    conn: &Connection,
+    held_project_id: &str,
+) -> anyhow::Result<bool> {
+    if select_next_project(conn)?.as_deref() == Some(held_project_id) {
+        return Ok(true);
+    }
+    Ok(select_idle_checkpoint_project(conn)?
+        .map(|(project_id, _, _)| project_id)
+        .as_deref()
+        == Some(held_project_id))
+}
+
 /// Find one project whose current Epoch has no Feed work left but still lacks
 /// a current-Epoch Freshness Run. The zero-width checkpoint is intentionally
 /// conservative: a missing cursor is valid only for an empty Feed, while an
@@ -648,6 +788,69 @@ fn select_idle_checkpoint_project(
         })
         .optional()?;
     Ok(row)
+}
+
+fn select_idle_checkpoint_project_excluding(
+    conn: &Connection,
+    excluded_project_id: &str,
+) -> anyhow::Result<Option<(String, String, i64)>> {
+    let mut statement = conn.prepare(
+        "SELECT project.id, epoch.id,
+                COALESCE((SELECT MAX(event.canonical_sequence)
+                            FROM narrative_change_events event
+                           WHERE event.project_id = project.id), 0)
+           FROM projects project
+           JOIN narrative_semantic_epochs epoch
+             ON epoch.project_id = project.id
+            AND epoch.epoch_number = (
+                SELECT MAX(current.epoch_number)
+                  FROM narrative_semantic_epochs current
+                 WHERE current.project_id = project.id
+            )
+           LEFT JOIN narrative_change_cursors cursor
+             ON cursor.project_id = project.id
+            AND cursor.consumer_id = ?1
+          WHERE project.id <> ?2
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM narrative_extraction_runs run
+                 WHERE run.project_id = project.id
+                   AND run.run_kind = 'freshness-evaluation'
+                   AND run.semantic_epoch_id = epoch.id
+            )
+            AND (
+              (
+                cursor.project_id IS NULL
+                AND COALESCE((SELECT MAX(event.canonical_sequence)
+                                FROM narrative_change_events event
+                               WHERE event.project_id = project.id), 0) = 0
+              )
+              OR (
+                cursor.acknowledged_through_sequence =
+                  COALESCE((SELECT MAX(event.canonical_sequence)
+                              FROM narrative_change_events event
+                             WHERE event.project_id = project.id), 0)
+                AND COALESCE(cursor.last_error, '') = ''
+                AND cursor.lease_owner IS NULL
+                AND cursor.lease_expires_at IS NULL
+                AND cursor.active_run_id IS NULL
+                AND cursor.reserved_through_sequence IS NULL
+                AND cursor.semantic_epoch_id IS NULL
+              )
+            )
+          ORDER BY project.id ASC
+          LIMIT 1",
+    )?;
+    statement
+        .query_row(params![CURSOR_CONSUMER_ID, excluded_project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .optional()
+        .map_err(Into::into)
 }
 
 fn load_change_batch_envelope(
@@ -3746,6 +3949,11 @@ mod tests {
     const SCENE_ID: &str = "scene-c2-1-phase-cas";
     const EDGE_ID: &str = "edge-c2-1-phase-cas";
     const CONSUMER_RUN_ID: &str = "consumer-run-c2-1-phase-cas";
+    const HELD_PROJECT_ID: &str = "a-project-c2-1-held";
+    const HELD_EPOCH_ID: &str = "epoch-c2-1-held";
+    const HELD_SCENE_ID: &str = "scene-c2-1-held";
+    const HELD_IDLE_PROJECT_ID: &str = "a-project-c2-1-held-idle";
+    const HELD_IDLE_EPOCH_ID: &str = "epoch-c2-1-held-idle";
     const OCCURRED_AT: &str = "2026-08-19T00:00:00.000Z";
     const SOURCE_UPDATED_AT: &str = "2026-08-19T00:00:02.000Z";
 
@@ -3961,6 +4169,228 @@ mod tests {
         })
         .expect("seed rotated idle-checkpoint fixture");
         db
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct HeldProjectDurableSnapshot {
+        run_count: i64,
+        task_count: i64,
+        attempt_count: i64,
+        feed_event_count: i64,
+        cursor: Option<(
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )>,
+    }
+
+    fn held_project_fixture_db() -> Database {
+        let db = fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES (?1, 'Held project')",
+                [HELD_PROJECT_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES (?1, ?2, 0, 'initial', ?3)",
+                params![HELD_EPOCH_ID, HELD_PROJECT_ID, OCCURRED_AT],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, content, version, updated_at)
+                 VALUES (?1, ?2, 'scene', 'Held scene', '{}', 2, ?3)",
+                params![HELD_SCENE_ID, HELD_PROJECT_ID, SOURCE_UPDATED_AT],
+            )?;
+            conn.execute(
+                "INSERT INTO change_events
+                    (event_uid, project_id, scene_id, domain, op_type, entity_type, entity_id,
+                     payload, session_id, sequence, timestamp, prev_hash, hash)
+                 VALUES ('canonical-c2-1-held', ?1, ?2, 'scene', 'scene.update', 'scene', ?2,
+                         '{}', 'c2-1-held', 1, 1787078400001,
+                         'fixture-prev-held', 'fixture-hash-held')",
+                params![HELD_PROJECT_ID, HELD_SCENE_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_transactions
+                    (id, project_id, request_id, source_domain, source_change_event_uid,
+                     source_change_event_sequence, cause_kind, origin, application_ids_json,
+                     payload_digest, created_at)
+                 VALUES ('transaction-c2-1-held', ?1, 'request-c2-1-held', 'scene.update',
+                         'canonical-c2-1-held', 1, 'forward', 'human', '[]',
+                         'sha256:c2-1-held-payload', ?2)",
+                params![HELD_PROJECT_ID, OCCURRED_AT],
+            )?;
+            for (ordinal, slug) in ["character", "location", "item", "lore"]
+                .into_iter()
+                .enumerate()
+            {
+                conn.execute(
+                    r#"INSERT INTO narrative_change_events
+                        (id, project_id, transaction_id, canonical_change_event_uid,
+                         canonical_sequence, event_ordinal, object_key_json, change_kind,
+                         mutation_kind, before_version, before_digest, after_version,
+                             after_digest, changed_paths_json, text_impact_json,
+                             structural_impact_json, occurred_at)
+                     VALUES (?1, ?2, 'transaction-c2-1-held',
+                             'canonical-c2-1-held', 1, ?3, ?4, 'catalog', 'create',
+                             NULL, NULL, NULL, ?5, '["/"]', NULL,
+                             '{"changedPaths":["/"]}', ?6)"#,
+                    params![
+                        format!("event-c2-1-held-{slug}"),
+                        HELD_PROJECT_ID,
+                        i64::try_from(ordinal)?,
+                        format!(
+                            r#"{{"kind":"component","componentId":"codex-type:{HELD_PROJECT_ID}-{slug}"}}"#
+                        ),
+                        format!("sha256:held-{slug}-after"),
+                        OCCURRED_AT,
+                    ],
+                )?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed held-project fixture");
+        db
+    }
+
+    fn empty_held_project_fixture_db() -> Database {
+        let db = fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES (?1, 'Held idle project')",
+                [HELD_IDLE_PROJECT_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES (?1, ?2, 0, 'initial', ?3)",
+                params![HELD_IDLE_EPOCH_ID, HELD_IDLE_PROJECT_ID, OCCURRED_AT],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed held idle-project fixture");
+        db
+    }
+
+    fn held_project_durable_snapshot_for(
+        db: &Database,
+        project_id: &str,
+    ) -> HeldProjectDurableSnapshot {
+        db.with_conn(|conn| {
+            let run_count = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            let task_count = conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_extraction_tasks task
+                   JOIN narrative_extraction_runs run ON run.id = task.run_id
+                  WHERE run.project_id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            let attempt_count = conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_extraction_attempts attempt
+                   JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+                   JOIN narrative_extraction_runs run ON run.id = task.run_id
+                  WHERE run.project_id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            let feed_event_count = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_events WHERE project_id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            let cursor = conn
+                .query_row(
+                    "SELECT acknowledged_through_sequence,
+                            reserved_through_sequence,
+                            active_run_id,
+                            semantic_epoch_id,
+                            last_error
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1
+                        AND consumer_id = ?2",
+                    params![project_id, CURSOR_CONSUMER_ID],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            Ok(HeldProjectDurableSnapshot {
+                run_count,
+                task_count,
+                attempt_count,
+                feed_event_count,
+                cursor,
+            })
+        })
+        .expect("read held-project durable snapshot")
+    }
+
+    fn held_project_durable_snapshot(db: &Database) -> HeldProjectDurableSnapshot {
+        held_project_durable_snapshot_for(db, HELD_PROJECT_ID)
+    }
+
+    #[test]
+    fn held_candidate_returns_no_write_before_reservation_or_ack() {
+        let db = held_project_fixture_db();
+        let first = run_incremental_freshness_cycle_with_hold(&db, Some(HELD_PROJECT_ID))
+            .expect("non-held primary project should process before the held candidate");
+        assert!(matches!(
+            first,
+            IncrementalFreshnessCycleOutcome::Processed(summary)
+                if summary.project_id == PROJECT_ID
+        ));
+        let before = held_project_durable_snapshot(&db);
+        assert_eq!(before.feed_event_count, 4);
+        let held = run_incremental_freshness_cycle_with_hold(&db, Some(HELD_PROJECT_ID))
+            .expect("held candidate should return an explicit outcome");
+        assert_eq!(
+            held,
+            IncrementalFreshnessCycleOutcome::Held(IncrementalFreshnessHeldSummary {
+                project_id: HELD_PROJECT_ID.to_owned(),
+            })
+        );
+        assert_eq!(before, held_project_durable_snapshot(&db));
+    }
+
+    #[test]
+    fn held_empty_feed_checkpoint_returns_no_write_before_zero_width_claim() {
+        let db = empty_held_project_fixture_db();
+        let first = run_incremental_freshness_cycle_with_hold(&db, Some(HELD_IDLE_PROJECT_ID))
+            .expect("non-held primary project should process before the held idle checkpoint");
+        assert!(matches!(
+            first,
+            IncrementalFreshnessCycleOutcome::Processed(summary)
+                if summary.project_id == PROJECT_ID
+        ));
+        let before = held_project_durable_snapshot_for(&db, HELD_IDLE_PROJECT_ID);
+        let held = run_incremental_freshness_cycle_with_hold(&db, Some(HELD_IDLE_PROJECT_ID))
+            .expect("held idle candidate should return an explicit outcome");
+        assert_eq!(
+            held,
+            IncrementalFreshnessCycleOutcome::Held(IncrementalFreshnessHeldSummary {
+                project_id: HELD_IDLE_PROJECT_ID.to_owned(),
+            })
+        );
+        assert_eq!(
+            before,
+            held_project_durable_snapshot_for(&db, HELD_IDLE_PROJECT_ID)
+        );
     }
 
     const IDLE_SURFACE_TABLES: &[&str] = &[
@@ -4223,7 +4653,9 @@ mod tests {
 
     fn reserve_claimed_idle_checkpoint(db: &Database) -> ClaimedBatch {
         let reservation = db
-            .with_conn(|conn| with_immediate_transaction(conn, reserve_or_resume_batch_in_tx))
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| reserve_or_resume_batch_in_tx(conn, None))
+            })
             .expect("reserve idle checkpoint for recovery fixture");
         let ReservationOutcome::Claimed(batch) = reservation else {
             panic!("fixture must produce an idle checkpoint reservation");
@@ -5210,7 +5642,9 @@ mod tests {
 
     fn reserve_and_evaluate_batch(db: &Database) -> (ClaimedBatch, EvaluationPlan) {
         let reservation = db
-            .with_conn(|conn| with_immediate_transaction(conn, reserve_or_resume_batch_in_tx))
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| reserve_or_resume_batch_in_tx(conn, None))
+            })
             .expect("reserve deterministic Feed range");
         let ReservationOutcome::Claimed(batch) = reservation else {
             panic!("fixture must produce a claimed batch");

@@ -6,9 +6,7 @@ import StarterKit from "@tiptap/starter-kit";
 
 import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 import { IPC } from "../shared/ipcContract.js";
-import {
-  NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS,
-} from "./narrativeMaintenance.js";
+import { NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS } from "./narrativeMaintenance.js";
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
 
 const mocks = vi.hoisted(() => ({
@@ -73,13 +71,18 @@ function invokeHandler(): (
   return handler;
 }
 
-const activeNarrativeMaintenanceCiSeam: NarrativeMaintenanceCiSeam = {
+const activeNarrativeMaintenanceCiSeam: Extract<
+  NarrativeMaintenanceCiSeam,
+  { active: true }
+> = {
   active: true,
   ownerToken: "c2-5b-product-journey-owner-v1",
+  nonce: "test-nonce",
   fault: null,
   trigger: "foreground-workspace-wake",
   setup: null,
   freshness: null,
+  freshnessHoldProjectId: null,
   productJourneyBarrierId: "barrier-test",
   correlation: "correlation-test",
 };
@@ -1062,9 +1065,9 @@ describe("registerIpcRouter fail-soft logging", () => {
       },
       716,
     );
-    expect(
-      (bound.payload as { authorityRoute?: string }).authorityRoute,
-    ).toBe("interactive-agent-command");
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "interactive-agent-command",
+    );
 
     const content = JSON.parse(
       String((bound.payload as { content?: unknown }).content),
@@ -1325,9 +1328,9 @@ describe("registerIpcRouter fail-soft logging", () => {
       { payload: { ...payload, journalId: "journal-issued" } },
       740,
     );
-    expect((allowed.payload as { authorityRoute?: string }).authorityRoute).toBe(
-      "history-replay",
-    );
+    expect(
+      (allowed.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("history-replay");
   });
 
   it("requires a Main-issued journal for AI tree undo and redo", () => {
@@ -1799,7 +1802,10 @@ describe("registerIpcRouter fail-soft logging", () => {
     const release = vi.fn();
     const treeNodePatch = vi.fn(async () => '{"patched":true}');
     registerIpcRouter(
-      { treeNodePatch, releaseNarrativeMaintenanceForegroundBarrier: release } as unknown as NapiBackendLike,
+      {
+        treeNodePatch,
+        releaseNarrativeMaintenanceForegroundBarrier: release,
+      } as unknown as NapiBackendLike,
       {},
       undefined,
       undefined,
@@ -1834,7 +1840,10 @@ describe("registerIpcRouter fail-soft logging", () => {
       throw new Error("patch failed");
     });
     registerIpcRouter(
-      { treeNodePatch: failedPatch, releaseNarrativeMaintenanceForegroundBarrier: release } as unknown as NapiBackendLike,
+      {
+        treeNodePatch: failedPatch,
+        releaseNarrativeMaintenanceForegroundBarrier: release,
+      } as unknown as NapiBackendLike,
       {},
       undefined,
       undefined,
@@ -1867,7 +1876,10 @@ describe("registerIpcRouter fail-soft logging", () => {
     const release = vi.fn();
     const treeNodePatch = vi.fn(async () => '{"patched":true}');
     registerIpcRouter(
-      { treeNodePatch, releaseNarrativeMaintenanceForegroundBarrier: release } as unknown as NapiBackendLike,
+      {
+        treeNodePatch,
+        releaseNarrativeMaintenanceForegroundBarrier: release,
+      } as unknown as NapiBackendLike,
       {},
       undefined,
       undefined,

@@ -73,6 +73,7 @@ fn foreground_config() -> NarrativeMaintenanceCiConfig {
         fault: None,
         trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
         setup: None,
+        freshness_hold_project_id: None,
         product_journey_barrier_id: Some("barrier-c2-5b-lifecycle".to_string()),
         correlation: Some("correlation-c2-5b-lifecycle".to_string()),
     }
