@@ -32,7 +32,6 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::ThreadSafeCallContext;
 use napi::JsFunction;
 use napi_derive::napi;
-use rusqlite::OptionalExtension;
 
 use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
 use grimodex_db::agent_writes;
@@ -136,7 +135,7 @@ fn is_expected_c2zc_cutover_not_ready(error: &anyhow::Error) -> bool {
     error.to_string().starts_with("NEX_C2ZC_CUTOVER_NOT_READY:")
 }
 
-fn require_held_cutover_not_ready(cutover_not_ready: bool) -> Result<(), AppError> {
+fn require_held_cutover_not_ready(cutover_not_ready: bool) -> std::result::Result<(), AppError> {
     if cutover_not_ready {
         Ok(())
     } else {
@@ -167,9 +166,10 @@ fn narrative_ci_quiescence_state(
     db.with_conn(|conn| {
         let project_ids: Vec<String> = {
             let mut statement = conn.prepare("SELECT id FROM projects ORDER BY id ASC")?;
-            statement
+            let project_ids = statement
                 .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            project_ids
         };
         let mut projects = Vec::with_capacity(project_ids.len());
         for project_id in project_ids {
@@ -2493,15 +2493,12 @@ fn run_narrative_freshness_cycle_inner(
             .map_err(AppError::Anyhow)?;
         if let Some(hold_project_id) = config.freshness_hold_project_id.as_deref() {
             let hold_exists = authority.db().with_conn(|conn| {
-                Ok::<_, anyhow::Error>(
-                    conn.query_row(
-                        "SELECT 1 FROM projects WHERE id = ?1 LIMIT 1",
-                        [hold_project_id],
-                        |_row| Ok(()),
-                    )
-                    .optional()?
-                    .is_some(),
-                )
+                let project_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM projects WHERE id = ?1",
+                    [hold_project_id],
+                    |row| row.get(0),
+                )?;
+                Ok::<_, anyhow::Error>(project_count == 1)
             })?;
             if !hold_exists {
                 return Err(AppError::Anyhow(anyhow::anyhow!(
