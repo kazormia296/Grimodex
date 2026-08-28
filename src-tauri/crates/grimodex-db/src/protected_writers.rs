@@ -205,6 +205,18 @@ pub fn classify_insert_columns(sql: &str) -> Option<Vec<String>> {
 mod tests {
     use super::*;
 
+    const C2ZC_NATIVE_OWNED_TABLES: [&str; 9] = [
+        "narrative_semantic_epochs",
+        "narrative_extraction_runs",
+        "narrative_dependency_edges",
+        "narrative_dependency_edge_states",
+        "narrative_consumer_freshness",
+        "narrative_semantic_index_metadata",
+        "narrative_maintenance_finding_lifecycle",
+        "narrative_maintenance_finding_observations",
+        "narrative_maintenance_repair_leases",
+    ];
+
     #[test]
     fn bundled_registry_includes_active_domain_and_active_fixtures() {
         let registry = bundled_protected_writer_registry();
@@ -218,6 +230,18 @@ mod tests {
             .get("narrative_protected_fixture")
             .expect("fixture");
         assert_eq!(fixture.enforcement, WriterEnforcement::Active);
+    }
+
+    #[test]
+    fn bundled_registry_covers_c2zc_native_owned_authority_finding_and_repair_tables() {
+        let registry = bundled_protected_writer_registry();
+        for table in C2ZC_NATIVE_OWNED_TABLES {
+            let entry = registry
+                .get(table)
+                .unwrap_or_else(|| panic!("missing C2-ZC protected writer: {table}"));
+            assert_eq!(entry.enforcement, WriterEnforcement::Active, "{table}");
+            assert_eq!(entry.protection, WriterProtection::Table, "{table}");
+        }
     }
 
     #[test]

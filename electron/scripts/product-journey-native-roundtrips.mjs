@@ -73,7 +73,7 @@ async function runNativeRoundTrip(
   const workspace = harness.workspacePath(id);
   await configureWorkspace(harness, workspace);
 
-  const writing = await harness.launch(`${id}/write`);
+  let writing = await harness.launch(`${id}/write`);
   let state;
   try {
     const projectId = await projectIdFor(harness, writing.page);
@@ -84,6 +84,13 @@ async function runNativeRoundTrip(
         page: writing.page,
         projectId,
         workspace,
+        relaunchAfterFixtureDml: async (statements) => {
+          await harness.close(writing.app, writing.page, `${id}/write`);
+          writing = null;
+          await harness.executeFixtureDml(workspace, statements);
+          writing = await harness.launch(`${id}/write`);
+          return writing.page;
+        },
       })),
     };
     await verify({
@@ -93,7 +100,7 @@ async function runNativeRoundTrip(
       phase: "write",
     });
   } finally {
-    await harness.close(writing.app, writing.page, `${id}/write`);
+    if (writing) await harness.close(writing.app, writing.page, `${id}/write`);
   }
 
   const restart = await harness.launch(`${id}/restart`);
@@ -515,7 +522,12 @@ function snapshotJourney(configureWorkspace, log) {
         restoredMarker: "snapshot-native-roundtrip-restored",
         configureWorkspace,
         log,
-        write: async ({ harness: current, page, projectId }) => {
+        write: async ({
+          harness: current,
+          page,
+          projectId,
+          relaunchAfterFixtureDml,
+        }) => {
           const sceneId = `native-snapshot-scene-${randomUUID()}`;
           const versionId = `native-snapshot-version-${randomUUID()}`;
           const snapshotId = `native-snapshot-${randomUUID()}`;
@@ -546,15 +558,16 @@ function snapshotJourney(configureWorkspace, log) {
           ) {
             throw new Error(`${id}: typed scene seed was not persisted`);
           }
-          await current.invokeOk(page, "db_execute", {
-            sql: `INSERT INTO content_versions
-              (id, entity_type, entity_id, content, version_number,
-               snapshot_type, created_at)
-              VALUES (?, 'scene', ?, ?, 1, 'manual', ?)`,
-            params: [versionId, sceneId, SNAPSHOT_CONTENT, now],
-            method: "run",
-          });
-          await current.invokeOk(page, "project_snapshot_create", {
+          const fixturePage = await relaunchAfterFixtureDml([
+            {
+              sql: `INSERT INTO content_versions
+                (id, entity_type, entity_id, content, version_number,
+                 snapshot_type, created_at)
+                VALUES (?, 'scene', ?, ?, 1, 'manual', ?)`,
+              params: [versionId, sceneId, SNAPSHOT_CONTENT, now],
+            },
+          ]);
+          await current.invokeOk(fixturePage, "project_snapshot_create", {
             payload: {
               projectId,
               snapshotId,

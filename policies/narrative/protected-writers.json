@@ -418,6 +418,69 @@
     "enforcement": "active"
   },
   {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_semantic_epochs",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_extraction_runs",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_dependency_edges",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_dependency_edge_states",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_consumer_freshness",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_semantic_index_metadata",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-finding",
+    "table": "narrative_maintenance_finding_lifecycle",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-finding",
+    "table": "narrative_maintenance_finding_observations",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-repair",
+    "table": "narrative_maintenance_repair_leases",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "narrative-dependency-declaration",
     "table": "narrative_dependency_declaration_sets",
     "protection": "table",

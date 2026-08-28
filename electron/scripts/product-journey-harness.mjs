@@ -1,17 +1,21 @@
-import { copyFile, cp, mkdir, rm, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { copyFile, cp, lstat, mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { promisify } from "node:util";
 
 import { _electron } from "playwright";
 
 import { closeElectronAppWithDiagnostics } from "./close-electron-app.mjs";
 
 const require = createRequire(import.meta.url);
+const execFile = promisify(execFileCallback);
 const PRODUCT_JOURNEY_AI_ENV = "GRIMODEX_PRODUCT_JOURNEY_FAKE_AI";
 const PRODUCT_JOURNEY_AI_VERSION = "deterministic-v1";
+const PRODUCT_JOURNEY_FIXTURE_DML_OWNER = "ci-product-journey-harness-v1";
 const MAX_DIAGNOSTIC_TEXT_LENGTH = 4_000;
 const LIFECYCLE_TRACE_OPT_IN_KEY =
   "__GRIMODEX_PRODUCT_JOURNEY_LIFECYCLE_TRACE__";
@@ -22,6 +26,156 @@ const LIFECYCLE_TRACE_LISTENER_KEY =
   "__GRIMODEX_PRODUCT_JOURNEY_LIFECYCLE_LISTENER__";
 const MAX_LIFECYCLE_TRACE_EVENTS = 256;
 const MAIN_PROCESS_DRAIN_TIMEOUT_MS = 2_000;
+
+function fixtureSqlLiteral(value) {
+  if (value === null) return "NULL";
+  if (typeof value === "string") return `'${value.replaceAll("'", "''")}'`;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error(
+        `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} rejects non-finite numeric params`,
+      );
+    }
+    return String(value);
+  }
+
+  let bytes;
+  if (Buffer.isBuffer(value)) {
+    bytes = value;
+  } else if (value instanceof Uint8Array || value instanceof DataView) {
+    bytes = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  } else if (value instanceof ArrayBuffer) {
+    bytes = Buffer.from(value);
+  }
+  if (bytes) return `X'${Buffer.from(bytes).toString("hex")}'`;
+
+  throw new Error(
+    `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} rejects unsupported SQL param type: ${typeof value}`,
+  );
+}
+
+function literalizeFixtureSql(sql, params, statementIndex) {
+  if (typeof sql !== "string" || sql.trim() === "") {
+    throw new Error(
+      `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} requires non-empty SQL at statement ${statementIndex}`,
+    );
+  }
+  if (!Array.isArray(params)) {
+    throw new Error(
+      `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} requires params[] at statement ${statementIndex}`,
+    );
+  }
+  if (
+    !/^\s*(?:INSERT(?:\s+OR\s+(?:ROLLBACK|ABORT|REPLACE|FAIL|IGNORE))?|UPDATE|DELETE|REPLACE)\b/i.test(
+      sql,
+    )
+  ) {
+    throw new Error(
+      `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} accepts only one INSERT/UPDATE/DELETE/REPLACE statement at ${statementIndex}`,
+    );
+  }
+
+  let result = "";
+  let parameterIndex = 0;
+  let state = "code";
+  for (let index = 0; index < sql.length; index += 1) {
+    const character = sql[index];
+    const next = sql[index + 1];
+    if (state === "single" || state === "double" || state === "backtick") {
+      result += character;
+      const quoteCharacter =
+        state === "single" ? "'" : state === "double" ? '"' : "`";
+      if (character === quoteCharacter) {
+        if (next === character) {
+          result += next;
+          index += 1;
+        } else {
+          state = "code";
+        }
+      }
+      continue;
+    }
+    if (state === "bracket") {
+      result += character;
+      if (character === "]") state = "code";
+      continue;
+    }
+    if (state === "line-comment") {
+      result += character;
+      if (character === "\n") state = "code";
+      continue;
+    }
+    if (state === "block-comment") {
+      result += character;
+      if (character === "*" && next === "/") {
+        result += next;
+        index += 1;
+        state = "code";
+      }
+      continue;
+    }
+
+    if (character === "'") {
+      result += character;
+      state = "single";
+    } else if (character === '"') {
+      result += character;
+      state = "double";
+    } else if (character === "`") {
+      result += character;
+      state = "backtick";
+    } else if (character === "[") {
+      result += character;
+      state = "bracket";
+    } else if (character === "-" && next === "-") {
+      result += "--";
+      index += 1;
+      state = "line-comment";
+    } else if (character === "/" && next === "*") {
+      result += "/*";
+      index += 1;
+      state = "block-comment";
+    } else if (character === ";") {
+      throw new Error(
+        `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} rejects multiple SQL statements at ${statementIndex}`,
+      );
+    } else if (character === "?") {
+      if (/\d/.test(next ?? "")) {
+        throw new Error(
+          `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} rejects numbered SQL params at ${statementIndex}`,
+        );
+      }
+      if (parameterIndex >= params.length) {
+        throw new Error(
+          `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} has an unbound SQL param at ${statementIndex}`,
+        );
+      }
+      result += fixtureSqlLiteral(params[parameterIndex]);
+      parameterIndex += 1;
+    } else if (
+      [":", "$", "@"].includes(character) &&
+      /[A-Za-z_]/.test(next ?? "")
+    ) {
+      throw new Error(
+        `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} rejects named SQL params at ${statementIndex}`,
+      );
+    } else {
+      result += character;
+    }
+  }
+
+  if (state !== "code" && state !== "line-comment") {
+    throw new Error(
+      `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} rejects unterminated SQL quoting at ${statementIndex}`,
+    );
+  }
+  if (parameterIndex !== params.length) {
+    throw new Error(
+      `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} has ${params.length - parameterIndex} unused SQL param(s) at ${statementIndex}`,
+    );
+  }
+  return result;
+}
 
 /**
  * Renderer failures are never allowlisted. This schema exists only for
@@ -346,6 +500,9 @@ export function createProductJourneyHarness({
   const mainDiagnosticTrackers = new Map();
   const authorityTimeline = [];
   const recordedLifecycleEvents = new Set();
+  const ownedWorkspaces = new Set();
+  let fixtureDmlInFlight = false;
+  let launchInFlight = false;
   const lastResources = {
     app: null,
     page: null,
@@ -577,10 +734,92 @@ export function createProductJourneyHarness({
   }
 
   function workspacePath(name) {
-    if (!name || name.includes("/") || name.includes("\\")) {
+    if (
+      typeof name !== "string" ||
+      name.trim() === "" ||
+      name === "." ||
+      name === ".." ||
+      name.includes("/") ||
+      name.includes("\\") ||
+      name.includes("\u0000")
+    ) {
       throw new Error(`invalid product journey workspace name: ${name}`);
     }
-    return path.join(tmpRoot, name);
+    const workspace = path.join(tmpRoot, name);
+    if (path.dirname(workspace) !== tmpRoot) {
+      throw new Error(`invalid product journey workspace name: ${name}`);
+    }
+    ownedWorkspaces.add(workspace);
+    return workspace;
+  }
+
+  async function executeFixtureDml(workspace, statements) {
+    if (fixtureDmlInFlight) {
+      throw new Error(
+        `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} serializes fixture DML operations`,
+      );
+    }
+    fixtureDmlInFlight = true;
+    try {
+      if (
+        typeof workspace !== "string" ||
+        path.resolve(workspace) !== workspace ||
+        !ownedWorkspaces.has(workspace)
+      ) {
+        throw new Error(
+          `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} requires an exact harness-owned workspace path`,
+        );
+      }
+      if (lastResources.app || launchInFlight) {
+        throw new Error(
+          `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} requires the renderer to be closed and no renderer launch to be in progress before fixture DML`,
+        );
+      }
+      if (!Array.isArray(statements) || statements.length === 0) {
+        throw new Error(
+          `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} requires a non-empty statements[]`,
+        );
+      }
+      const databasePath = path.join(workspace, "grimodex.db");
+      let workspaceStat;
+      let databaseStat;
+      try {
+        workspaceStat = await lstat(workspace);
+        databaseStat = await lstat(databasePath);
+      } catch (error) {
+        throw new Error(
+          `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} requires an existing workspace directory and database file`,
+          { cause: error },
+        );
+      }
+      if (!workspaceStat.isDirectory() || !databaseStat.isFile()) {
+        throw new Error(
+          `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} rejects non-directory workspace or non-regular database`,
+        );
+      }
+      const renderedStatements = statements.map((statement, index) => {
+        if (
+          !statement ||
+          typeof statement !== "object" ||
+          Array.isArray(statement)
+        ) {
+          throw new Error(
+            `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} requires statement objects at ${index}`,
+          );
+        }
+        return literalizeFixtureSql(statement.sql, statement.params, index);
+      });
+      const script = [
+        "PRAGMA busy_timeout = 5000;",
+        "BEGIN IMMEDIATE;",
+        ...renderedStatements.map((statement) => `${statement};`),
+        "COMMIT;",
+      ].join("\n");
+      await execFile("sqlite3", ["-bail", databasePath, script]);
+      return { statementCount: renderedStatements.length };
+    } finally {
+      fixtureDmlInFlight = false;
+    }
   }
 
   function mergeLifecycleTraceEvents(events) {
@@ -611,6 +850,23 @@ export function createProductJourneyHarness({
   }
 
   async function launch(phase) {
+    if (fixtureDmlInFlight) {
+      throw new Error(
+        `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} blocks renderer launch while fixture DML is running`,
+      );
+    }
+    if (launchInFlight) {
+      throw new Error("product journey renderer launch is already in progress");
+    }
+    launchInFlight = true;
+    try {
+      return await launchRenderer(phase);
+    } finally {
+      launchInFlight = false;
+    }
+  }
+
+  async function launchRenderer(phase) {
     await rm(retainedRendererPath, { force: true });
     recordTimeline("launch-requested", { phase });
     const env = { ...process.env };
@@ -825,6 +1081,7 @@ export function createProductJourneyHarness({
     tmpRoot,
     userDataDir,
     workspacePath,
+    executeFixtureDml,
     launch,
     close,
     invokeOk,

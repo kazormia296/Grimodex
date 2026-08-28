@@ -2006,20 +2006,27 @@ export function assertRestoreFixtureEvidence(
 
 /**
  * Seed a real scene Source and a fully shaped Dependency Edge through the
- * product's typed APIs before the scheduler launch.  Only the final Edge
- * declaration uses db_execute because no renderer-facing Edge writer exists;
- * its owner Run and every persisted field are validated immediately.
+ * product's typed APIs before the scheduler launch.  The final Edge
+ * declaration uses the harness-owned fixture DML seam because no
+ * renderer-facing Edge writer exists; its owner Run and every persisted field
+ * are validated immediately after a renderer relaunch.
  */
 export async function seedRestoreFixtureEvidence(harness, workspace, id) {
-  const fixtureLaunch = await withLaunchEnvironment(
+  let fixtureLaunch = await withLaunchEnvironment(
     {
       setup: "disabled",
       ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
     },
     () => harness.launch(`${id}/restore-fixture`),
   );
+  const closeFixtureLaunch = async () => {
+    const launched = fixtureLaunch;
+    if (!launched) return;
+    fixtureLaunch = null;
+    await harness.close(launched.app, launched.page, `${id}/restore-fixture`);
+  };
   try {
-    const context = await contextForLaunch(
+    let context = await contextForLaunch(
       harness,
       fixtureLaunch,
       workspace,
@@ -2176,25 +2183,41 @@ export async function seedRestoreFixtureEvidence(harness, workspace, id) {
     const edgeId = `c2-5b-restore-fixture-edge-${randomUUID()}`;
     const consumerKey = runId;
     const sourceObjectIdentity = `project:scene:${scene.id}`;
-    await context.harness.invokeOk(context.page, "db_execute", {
-      sql: `INSERT INTO narrative_dependency_edges
-              (id, project_id, consumer_kind, consumer_key,
-               source_object_identity, read_set_json,
-               generated_by_transaction_id, created_at, owning_run_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      params: [
-        edgeId,
-        context.projectId,
-        RESTORE_FIXTURE_CONSUMER_KIND,
-        consumerKey,
-        sourceObjectIdentity,
-        JSON.stringify([readSetToken]),
-        null,
-        new Date().toISOString(),
-        runId,
-      ],
-      method: "run",
-    });
+    await closeFixtureLaunch();
+    await harness.executeFixtureDml(workspace, [
+      {
+        sql: `INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key,
+                 source_object_identity, read_set_json,
+                 generated_by_transaction_id, created_at, owning_run_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        params: [
+          edgeId,
+          context.projectId,
+          RESTORE_FIXTURE_CONSUMER_KIND,
+          consumerKey,
+          sourceObjectIdentity,
+          JSON.stringify([readSetToken]),
+          null,
+          new Date().toISOString(),
+          runId,
+        ],
+      },
+    ]);
+    fixtureLaunch = await withLaunchEnvironment(
+      {
+        setup: "disabled",
+        ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+      },
+      () => harness.launch(`${id}/restore-fixture`),
+    );
+    context = await contextForLaunch(
+      harness,
+      fixtureLaunch,
+      workspace,
+      id,
+      preSceneRuns,
+    );
     const edgeRows = await context.query(
       `SELECT id,
               project_id AS projectId,
@@ -2320,6 +2343,7 @@ export async function seedRestoreFixtureEvidence(harness, workspace, id) {
     // state is genuinely absent.  Capture that WAL-safe image before any
     // ordinary launch can settle the live workspace, so the later restore
     // necessarily replays Verify -> Rebuild -> confirmation Verify.
+    await closeFixtureLaunch();
     await createRestoreFixtureDerivedStateGap(context, {
       edgeId,
       consumerKey,
@@ -2348,11 +2372,7 @@ export async function seedRestoreFixtureEvidence(harness, workspace, id) {
       backupContract,
     };
   } finally {
-    await harness.close(
-      fixtureLaunch.app,
-      fixtureLaunch.page,
-      `${id}/restore-fixture`,
-    );
+    await closeFixtureLaunch();
   }
 }
 
@@ -2364,45 +2384,37 @@ export async function seedRestoreFixtureEvidence(harness, workspace, id) {
  * these deletes cannot affect another journey's graph.
  */
 async function createRestoreFixtureDerivedStateGap(context, evidence) {
-  await context.harness.invokeOk(context.page, "db_execute_batch", {
-    statements: [
-      {
-        sql: `DELETE FROM narrative_dependency_edge_states
-               WHERE project_id = ? AND edge_id = ?`,
-        params: [context.projectId, evidence.edgeId],
-        method: "run",
-      },
-      {
-        sql: `DELETE FROM narrative_consumer_freshness
-               WHERE project_id = ?
-                 AND consumer_kind = ?
-                 AND consumer_key = ?`,
-        params: [
-          context.projectId,
-          RESTORE_FIXTURE_CONSUMER_KIND,
-          evidence.consumerKey,
-        ],
-        method: "run",
-      },
-    ],
-  });
-  const remaining = await context.query(
+  await context.harness.executeFixtureDml(context.workspace, [
+    {
+      sql: `DELETE FROM narrative_dependency_edge_states
+             WHERE project_id = ? AND edge_id = ?`,
+      params: [context.projectId, evidence.edgeId],
+    },
+    {
+      sql: `DELETE FROM narrative_consumer_freshness
+             WHERE project_id = ?
+               AND consumer_kind = ?
+               AND consumer_key = ?`,
+      params: [
+        context.projectId,
+        RESTORE_FIXTURE_CONSUMER_KIND,
+        evidence.consumerKey,
+      ],
+    },
+  ]);
+  const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
+  const remaining = await readRunSnapshotQuery(
+    context.workspace,
     `SELECT
        (SELECT COUNT(*)
           FROM narrative_dependency_edge_states
-         WHERE project_id = ? AND edge_id = ?) AS edgeStateCount,
+         WHERE project_id = ${quote(context.projectId)}
+           AND edge_id = ${quote(evidence.edgeId)}) AS edgeStateCount,
        (SELECT COUNT(*)
           FROM narrative_consumer_freshness
-         WHERE project_id = ?
-           AND consumer_kind = ?
-           AND consumer_key = ?) AS freshnessCount`,
-    [
-      context.projectId,
-      evidence.edgeId,
-      context.projectId,
-      RESTORE_FIXTURE_CONSUMER_KIND,
-      evidence.consumerKey,
-    ],
+         WHERE project_id = ${quote(context.projectId)}
+           AND consumer_kind = ${quote(RESTORE_FIXTURE_CONSUMER_KIND)}
+           AND consumer_key = ${quote(evidence.consumerKey)}) AS freshnessCount`,
   );
   if (
     Number(remaining[0]?.edgeStateCount ?? -1) !== 0 ||

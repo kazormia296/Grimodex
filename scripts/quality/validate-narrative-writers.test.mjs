@@ -40,6 +40,18 @@ const C2A_DRIZZLE_TABLES = [
   ["narrative_extraction_stage_receipts", "narrativeExtractionStageReceipts"],
 ];
 
+const C2ZC_NATIVE_OWNED_TABLES = [
+  "narrative_semantic_epochs",
+  "narrative_extraction_runs",
+  "narrative_dependency_edges",
+  "narrative_dependency_edge_states",
+  "narrative_consumer_freshness",
+  "narrative_semantic_index_metadata",
+  "narrative_maintenance_finding_lifecycle",
+  "narrative_maintenance_finding_observations",
+  "narrative_maintenance_repair_leases",
+];
+
 function writeActiveFixtureRegistry(root) {
   const policiesDir = path.join(root, "policies/narrative");
   mkdirSync(policiesDir, { recursive: true });
@@ -127,6 +139,21 @@ describe("validate-narrative-writers", () => {
       false,
       "the ephemeral stage-provenance closure must not become a table",
     );
+  });
+
+  it("keeps the nine C2-ZC authority, finding, and repair tables registered", () => {
+    const registry = JSON.parse(readFileSync(REGISTRY_PATH, "utf8"));
+    const entries = registry.filter((entry) =>
+      C2ZC_NATIVE_OWNED_TABLES.includes(entry.table),
+    );
+
+    assert.deepEqual(
+      entries.map((entry) => entry.table).sort(),
+      [...C2ZC_NATIVE_OWNED_TABLES].sort(),
+    );
+    assert.equal(entries.length, C2ZC_NATIVE_OWNED_TABLES.length);
+    assert.ok(entries.every((entry) => entry.enforcement === "active"));
+    assert.ok(entries.every((entry) => entry.protection === "table"));
   });
 
   it("maps existing C2A Drizzle exports to active protected tables", () => {

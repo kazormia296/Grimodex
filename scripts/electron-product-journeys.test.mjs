@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
@@ -22,6 +31,7 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
+const execFile = promisify(execFileCallback);
 
 async function read(relativePath) {
   return readFile(path.join(repoRoot, relativePath), "utf8");
@@ -245,6 +255,9 @@ test("workspace pairs are created in one cold configure session before startup a
     async close(closedApp, closedPage, phase) {
       calls.push({ kind: "close", closedApp, closedPage, phase });
     },
+    async executeFixtureDml(workspace, statements) {
+      calls.push({ kind: "fixture-dml", workspace, statements });
+    },
   };
 
   await configureWorkspace(harness, workspaceA, {
@@ -275,6 +288,207 @@ test("workspace pairs are created in one cold configure session before startup a
   ]);
   assert.equal(savedSettings.args.settings.lastActiveWorkspace, workspaceA);
   assert.equal(savedSettings.args.settings.showLauncherOnStartup, false);
+  const closeIndex = calls.findIndex((call) => call.kind === "close");
+  const fixtureDmlIndex = calls.findIndex(
+    (call) => call.kind === "fixture-dml",
+  );
+  assert.ok(closeIndex >= 0 && closeIndex < fixtureDmlIndex);
+  assert.deepEqual(calls[fixtureDmlIndex], {
+    kind: "fixture-dml",
+    workspace: workspaceA,
+    statements: [
+      {
+        sql: "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+        params: ["editor.autoSaveDelay", "60000"],
+      },
+    ],
+  });
+});
+
+test("CI fixture DML is exact-workspace, renderer-fenced, and fail-closed", async (t) => {
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => ({
+        firstWindow: async () => ({
+          on: () => undefined,
+          waitForFunction: async () => undefined,
+        }),
+        process: () => ({ stdout: null, stderr: null }),
+      }),
+    },
+    closeApp: async () => undefined,
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  assert.throws(
+    () => harness.workspacePath("."),
+    /invalid product journey workspace/,
+  );
+  assert.throws(
+    () => harness.workspacePath(".."),
+    /invalid product journey workspace/,
+  );
+  const workspace = harness.workspacePath("fixture-dml");
+  await mkdir(workspace, { recursive: true });
+  const databasePath = path.join(workspace, "grimodex.db");
+  await execFile("sqlite3", [
+    databasePath,
+    `CREATE TABLE fixture_values (
+       text_value TEXT,
+       null_value TEXT,
+       number_value REAL,
+       blob_value BLOB
+     );`,
+  ]);
+
+  const launched = await harness.launch("fixture-dml-active");
+  await assert.rejects(
+    harness.executeFixtureDml(workspace, [
+      {
+        sql: "INSERT INTO fixture_values (text_value) VALUES (?)",
+        params: ["must-not-run"],
+      },
+    ]),
+    /requires the renderer to be closed/,
+  );
+  await harness.close(launched.app, launched.page, "fixture-dml-active");
+
+  const launchPending = harness.launch("fixture-dml-launch-race");
+  await assert.rejects(
+    harness.executeFixtureDml(workspace, [
+      {
+        sql: "INSERT INTO fixture_values (text_value) VALUES (?)",
+        params: ["launch-race"],
+      },
+    ]),
+    /requires the renderer to be closed and no renderer launch to be in progress/,
+  );
+  const launchRace = await launchPending;
+  await harness.close(
+    launchRace.app,
+    launchRace.page,
+    "fixture-dml-launch-race",
+  );
+
+  const pending = harness.executeFixtureDml(workspace, [
+    {
+      sql: "INSERT INTO fixture_values (text_value) VALUES (?)",
+      params: ["in-flight"],
+    },
+  ]);
+  await assert.rejects(
+    harness.launch("fixture-dml-during-write"),
+    /blocks renderer launch while fixture DML is running/,
+  );
+  await pending;
+
+  await harness.executeFixtureDml(workspace, [
+    {
+      sql: "INSERT INTO fixture_values (text_value, null_value, number_value, blob_value) VALUES (?, ?, ?, ?)",
+      params: [
+        "O'Reilly'); DELETE FROM fixture_values; --",
+        null,
+        42.5,
+        Buffer.from([0, 255]),
+      ],
+    },
+  ]);
+  const { stdout } = await execFile("sqlite3", [
+    "-json",
+    databasePath,
+    "SELECT text_value AS textValue, null_value AS nullValue, number_value AS numberValue, hex(blob_value) AS blobHex FROM fixture_values ORDER BY rowid;",
+  ]);
+  assert.deepEqual(JSON.parse(String(stdout)), [
+    {
+      textValue: "in-flight",
+      nullValue: null,
+      numberValue: null,
+      blobHex: "",
+    },
+    {
+      textValue: "O'Reilly'); DELETE FROM fixture_values; --",
+      nullValue: null,
+      numberValue: 42.5,
+      blobHex: "00FF",
+    },
+  ]);
+
+  await assert.rejects(
+    harness.executeFixtureDml(path.join(harness.tmpRoot, "other"), []),
+    /exact harness-owned workspace path/,
+  );
+  const symlinkWorkspace = harness.workspacePath("fixture-dml-symlink");
+  await mkdir(symlinkWorkspace, { recursive: true });
+  const symlinkTarget = path.join(symlinkWorkspace, "target.db");
+  await execFile("sqlite3", [
+    symlinkTarget,
+    "CREATE TABLE fixture_values (text_value TEXT);",
+  ]);
+  await symlink(symlinkTarget, path.join(symlinkWorkspace, "grimodex.db"));
+  await assert.rejects(
+    harness.executeFixtureDml(symlinkWorkspace, [
+      {
+        sql: "INSERT INTO fixture_values (text_value) VALUES (?)",
+        params: ["symlink"],
+      },
+    ]),
+    /non-directory workspace or non-regular database/,
+  );
+  for (const [sql, params, error] of [
+    [
+      "INSERT INTO fixture_values (text_value) VALUES (?)",
+      [undefined],
+      /unsupported SQL param type/,
+    ],
+    [
+      "INSERT INTO fixture_values (number_value) VALUES (?)",
+      [Number.NaN],
+      /non-finite numeric params/,
+    ],
+    [
+      "INSERT INTO fixture_values (text_value) VALUES (?); DELETE FROM fixture_values",
+      ["multiple"],
+      /multiple SQL statements/,
+    ],
+    [
+      "SELECT text_value FROM fixture_values",
+      [],
+      /accepts only one INSERT\/UPDATE\/DELETE\/REPLACE statement/,
+    ],
+  ]) {
+    await assert.rejects(
+      harness.executeFixtureDml(workspace, [{ sql, params }]),
+      error,
+    );
+  }
+});
+
+test("fixture DML seam stays outside production bundle and preload entrypoints", async () => {
+  const [
+    harnessSource,
+    buildSource,
+    mainSource,
+    preloadSource,
+    contractSource,
+  ] = await Promise.all([
+    read("electron/scripts/product-journey-harness.mjs"),
+    read("electron/scripts/build.mjs"),
+    read("electron/main/index.ts"),
+    read("electron/preload/index.ts"),
+    read("electron/shared/ipcContract.ts"),
+  ]);
+  assert.match(harnessSource, /executeFixtureDml/);
+  assert.match(harnessSource, /ci-product-journey-harness-v1/);
+  for (const source of [
+    buildSource,
+    mainSource,
+    preloadSource,
+    contractSource,
+  ]) {
+    assert.doesNotMatch(source, /executeFixtureDml/);
+  }
 });
 
 test("product runner keeps the real boundary assertions", async () => {
@@ -359,6 +573,24 @@ test("native round-trip fixtures route protected narrative seeds through typed w
     [],
     "product fixtures must not seed active protected tables through generic SQL",
   );
+});
+
+test("product journey fixture mutations use the harness-owned non-renderer seam", async () => {
+  const sources = await Promise.all([
+    read("electron/scripts/product-journeys.mjs"),
+    read("electron/scripts/product-journey-native-roundtrips.mjs"),
+    read("electron/scripts/narrative-maintenance-product-journeys.mjs"),
+  ]);
+  for (const source of sources) {
+    assert.doesNotMatch(
+      source,
+      /["`]db_execute(?:_batch)?["`]\s*,\s*\{[\s\S]{0,300}\b(?:INSERT|UPDATE|DELETE|REPLACE)\b/i,
+      "fixture DML must not cross the renderer db_execute boundary",
+    );
+  }
+  assert.match(sources[0], /harness\.executeFixtureDml/);
+  assert.match(sources[1], /relaunchAfterFixtureDml/);
+  assert.match(sources[2], /harness\.executeFixtureDml/);
 });
 
 test("product harness enables only the deterministic main-boundary AI provider", async () => {

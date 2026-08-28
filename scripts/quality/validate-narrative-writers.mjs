@@ -109,6 +109,19 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
     "narrativeExtractionStageModelBindings",
   ],
   narrative_extraction_stage_receipts: ["narrativeExtractionStageReceipts"],
+  narrative_semantic_epochs: ["narrativeSemanticEpochs"],
+  narrative_extraction_runs: ["narrativeExtractionRuns"],
+  narrative_dependency_edges: ["narrativeDependencyEdges"],
+  narrative_dependency_edge_states: ["narrativeDependencyEdgeStates"],
+  narrative_consumer_freshness: ["narrativeConsumerFreshness"],
+  narrative_semantic_index_metadata: ["narrativeSemanticIndexMetadata"],
+  narrative_maintenance_finding_lifecycle: [
+    "narrativeMaintenanceFindingLifecycle",
+  ],
+  narrative_maintenance_finding_observations: [
+    "narrativeMaintenanceFindingObservations",
+  ],
+  narrative_maintenance_repair_leases: ["narrativeMaintenanceRepairLeases"],
 };
 
 // These tables are Native-only authority/provenance state. Keep the list
@@ -132,6 +145,15 @@ const NARRATIVE_AUTHORITY_TABLES = [
   "narrative_extraction_artifacts",
   "narrative_extraction_stage_model_bindings",
   "narrative_extraction_stage_receipts",
+  "narrative_semantic_epochs",
+  "narrative_extraction_runs",
+  "narrative_dependency_edges",
+  "narrative_dependency_edge_states",
+  "narrative_consumer_freshness",
+  "narrative_semantic_index_metadata",
+  "narrative_maintenance_finding_lifecycle",
+  "narrative_maintenance_finding_observations",
+  "narrative_maintenance_repair_leases",
 ];
 
 const MUTATION_METHODS = new Set(["insert", "update", "delete"]);
@@ -402,7 +424,7 @@ function findRawSqlMutations(sourceFile, tableNames) {
   if (!tableAlternation) return [];
 
   const dmlPattern = new RegExp(
-    `\\b(?:INSERT\\s+INTO|UPDATE|DELETE\\s+FROM)\\s+(?:["'\`])?(${tableAlternation})\\b`,
+    `\\b(?:INSERT(?:\\s+OR\\s+\\w+)?\\s+INTO|REPLACE\\s+INTO|UPDATE|DELETE\\s+FROM)\\s+(?:["'\`])?(${tableAlternation})\\b`,
     "i",
   );
 

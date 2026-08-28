@@ -1675,4 +1675,118 @@ mod tests {
             .expect("read trusted seed");
         assert_eq!(rows[0]["title"], Value::from("Before"));
     }
+
+    #[test]
+    fn c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes() {
+        let db = test_db();
+        let tables = [
+            "narrative_semantic_epochs",
+            "narrative_extraction_runs",
+            "narrative_dependency_edges",
+            "narrative_dependency_edge_states",
+            "narrative_consumer_freshness",
+            "narrative_semantic_index_metadata",
+            "narrative_maintenance_finding_lifecycle",
+            "narrative_maintenance_finding_observations",
+            "narrative_maintenance_repair_leases",
+        ];
+
+        for table in tables {
+            db.execute(
+                &format!("CREATE TABLE {table} (id TEXT PRIMARY KEY, value TEXT NOT NULL)"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("create {table}: {error}"));
+            db.execute(
+                &format!("INSERT INTO {table} (id, value) VALUES ('trusted-seed', 'before')"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted insert {table}: {error}"));
+
+            for origin in [SqlOrigin::Renderer, SqlOrigin::McpGeneric] {
+                let rows = db
+                    .execute_untrusted(
+                        origin,
+                        &format!("SELECT value FROM {table} WHERE id = 'trusted-seed'"),
+                        &[],
+                        "get",
+                    )
+                    .unwrap_or_else(|error| panic!("{origin:?} SELECT {table}: {error}"));
+                assert_eq!(
+                    rows[0]["value"],
+                    Value::from("before"),
+                    "{origin:?} {table}"
+                );
+
+                for (operation, sql) in [
+                    (
+                        "insert",
+                        format!(
+                            "INSERT INTO {table} (id, value) VALUES ('untrusted-insert', 'forged')"
+                        ),
+                    ),
+                    (
+                        "update",
+                        format!("UPDATE {table} SET value = 'forged' WHERE id = 'trusted-seed'"),
+                    ),
+                    (
+                        "delete",
+                        format!("DELETE FROM {table} WHERE id = 'trusted-seed'"),
+                    ),
+                    (
+                        "replace",
+                        format!(
+                            "REPLACE INTO {table} (id, value) VALUES ('trusted-seed', 'forged')"
+                        ),
+                    ),
+                ] {
+                    let error = db
+                        .execute_untrusted(origin, &sql, &[], "run")
+                        .expect_err("untrusted C2-ZC DML must be rejected");
+                    assert!(
+                        error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                        "{origin:?} {operation} {table} was not protected: {error}"
+                    );
+                }
+            }
+
+            db.execute(
+                &format!("UPDATE {table} SET value = 'trusted-update' WHERE id = 'trusted-seed'"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted update {table}: {error}"));
+            db.execute(
+                &format!("INSERT INTO {table} (id, value) VALUES ('trusted-insert', 'trusted')"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted second insert {table}: {error}"));
+            db.execute(
+                &format!(
+                    "REPLACE INTO {table} (id, value) VALUES ('trusted-seed', 'trusted-replace')"
+                ),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted replace {table}: {error}"));
+            db.execute(
+                &format!("DELETE FROM {table} WHERE id = 'trusted-insert'"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted delete {table}: {error}"));
+
+            let rows = db
+                .execute(
+                    &format!("SELECT value FROM {table} WHERE id = 'trusted-seed'"),
+                    &[],
+                    "get",
+                )
+                .unwrap_or_else(|error| panic!("trusted SELECT {table}: {error}"));
+            assert_eq!(rows[0]["value"], Value::from("trusted-replace"), "{table}");
+        }
+    }
 }

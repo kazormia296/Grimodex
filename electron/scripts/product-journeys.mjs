@@ -205,17 +205,11 @@ export async function configureWorkspace(
     ),
   );
   const launched = await harness.launch("configure");
+  let closed = false;
   try {
     await harness.invokeOk(launched.page, "open_workspace", {
       path: workspace,
     });
-    for (const [key, value] of Object.entries(appSettings)) {
-      await harness.invokeOk(launched.page, "db_execute", {
-        sql: "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
-        params: [key, String(value)],
-        method: "run",
-      });
-    }
     if (deterministicAi) {
       const aiSettings = await harness.invokeOk(
         launched.page,
@@ -258,8 +252,19 @@ export async function configureWorkspace(
         lastSeenReleaseNotesVersion: appVersion(),
       },
     });
-  } finally {
     await harness.close(launched.app, launched.page, "configure");
+    closed = true;
+    if (Object.keys(appSettings).length > 0) {
+      await harness.executeFixtureDml(
+        workspace,
+        Object.entries(appSettings).map(([key, value]) => ({
+          sql: "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+          params: [key, String(value)],
+        })),
+      );
+    }
+  } finally {
+    if (!closed) await harness.close(launched.app, launched.page, "configure");
   }
 }
 
@@ -317,9 +322,10 @@ async function currentProjectRow(harness, page) {
 
 async function prepareSecondProject(
   harness,
-  { phase, id, title, projectSettings = {} },
+  { phase, id, title, workspace, projectSettings = {} },
 ) {
   const prepared = await harness.launch(`${phase}/prepare-projects`);
+  let closed = false;
   try {
     await prepared.page
       .getByTestId("project-menu-trigger")
@@ -356,57 +362,80 @@ async function prepareSecondProject(
         },
       });
     }
-    for (const [key, value] of Object.entries(projectSettings)) {
-      await harness.invokeOk(prepared.page, "db_execute", {
-        sql: `INSERT OR REPLACE INTO project_settings
-          (project_id, key, value)
-          VALUES (?, ?, ?)`,
-        params: [projectA.id, key, String(value)],
-        method: "run",
-      });
-    }
-    return {
+    const result = {
       projectA: {
         id: String(projectA.id),
         title: String(projectA.title),
       },
       projectB: { id, title },
     };
-  } finally {
     await harness.close(
       prepared.app,
       prepared.page,
       `${phase}/prepare-projects`,
     );
+    closed = true;
+    if (Object.keys(projectSettings).length > 0) {
+      await harness.executeFixtureDml(
+        workspace,
+        Object.entries(projectSettings).map(([key, value]) => ({
+          sql: `INSERT OR REPLACE INTO project_settings
+            (project_id, key, value)
+            VALUES (?, ?, ?)`,
+          params: [projectA.id, key, String(value)],
+        })),
+      );
+    }
+    return result;
+  } finally {
+    if (!closed) {
+      await harness.close(
+        prepared.app,
+        prepared.page,
+        `${phase}/prepare-projects`,
+      );
+    }
   }
 }
 
-async function prepareProjectSettings(harness, phase, settings) {
+async function prepareProjectSettings(harness, phase, workspace, settings) {
   const prepared = await harness.launch(`${phase}/prepare-settings`);
+  let closed = false;
   try {
     await prepared.page
       .getByTestId("project-menu-trigger")
       .waitFor({ state: "visible", timeout: 30_000 });
     const project = await currentProjectRow(harness, prepared.page);
-    for (const [key, value] of Object.entries(settings)) {
-      await harness.invokeOk(prepared.page, "db_execute", {
-        sql: `INSERT OR REPLACE INTO project_settings
-          (project_id, key, value)
-          VALUES (?, ?, ?)`,
-        params: [project.id, key, String(value)],
-        method: "run",
-      });
-    }
-    return {
+    const result = {
       id: String(project.id),
       title: String(project.title),
     };
-  } finally {
     await harness.close(
       prepared.app,
       prepared.page,
       `${phase}/prepare-settings`,
     );
+    closed = true;
+    if (Object.keys(settings).length > 0) {
+      await harness.executeFixtureDml(
+        workspace,
+        Object.entries(settings).map(([key, value]) => ({
+          sql: `INSERT OR REPLACE INTO project_settings
+            (project_id, key, value)
+            VALUES (?, ?, ?)`,
+          params: [project.id, key, String(value)],
+        })),
+      );
+    }
+    return result;
+  } finally {
+    if (!closed) {
+      await harness.close(
+        prepared.app,
+        prepared.page,
+        `${phase}/prepare-settings`,
+      );
+    }
   }
 }
 
@@ -1067,6 +1096,7 @@ async function runChatStreamProjectSwitchJourney(harness) {
   });
   const projects = await prepareSecondProject(harness, {
     phase: "chat-stream-project-switch",
+    workspace,
     id: `product-chat-project-b-${Date.now()}`,
     title: "Product Chat Project B",
   });
@@ -1306,6 +1336,7 @@ async function runEditorPendingProjectSwitchJourney(harness) {
   });
   const projects = await prepareSecondProject(harness, {
     phase: "editor-pending-project-switch",
+    workspace,
     id: `product-editor-project-b-${Date.now()}`,
     title: "Product Editor Project B",
   });
@@ -1544,6 +1575,7 @@ async function runMcpExternalWriteConflictJourney(harness) {
   const preparedProject = await prepareProjectSettings(
     harness,
     "mcp-external-write-conflict",
+    workspace,
     {
       "ai.autoAcceptBodyProposals": true,
     },
