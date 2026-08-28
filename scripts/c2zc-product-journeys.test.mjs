@@ -200,6 +200,48 @@ test("launch-time freshness disable is isolated to C2-ZC restore", async () => {
   ]);
 });
 
+test("direct C2-ZC new-project launch sees restored freshness", async () => {
+  const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  const observed = [];
+  const harness = {
+    async launch(phase) {
+      observed.push({
+        phase,
+        freshness: process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+      });
+      return { phase };
+    },
+  };
+  try {
+    await withLaunchEnvironmentForTest(
+      {
+        setup: "disabled",
+        freshness: "disabled",
+        ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+      },
+      () => harness.launch(C2ZC_PRODUCT_JOURNEY_PHASES[1]),
+    );
+    await harness.launch(C2ZC_PRODUCT_JOURNEY_PHASES[4]);
+    assert.deepEqual(observed, [
+      {
+        phase: C2ZC_PRODUCT_JOURNEY_PHASES[1],
+        freshness: "disabled",
+      },
+      {
+        phase: C2ZC_PRODUCT_JOURNEY_PHASES[4],
+        freshness: undefined,
+      },
+    ]);
+  } finally {
+    if (previousFreshness === undefined) {
+      delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+    } else {
+      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = previousFreshness;
+    }
+  }
+});
+
 test("C2-ZC evidence packet maps failure, swap/stale, restore/import, and birth tests", async () => {
   const [cutover, liveness, importCommit, backupRestore, domainWrites] =
     await Promise.all([

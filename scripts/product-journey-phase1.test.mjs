@@ -292,3 +292,56 @@ test("withLaunchEnvironment restores pre-existing freshness after callback throw
     }
   }
 });
+
+test("withLaunchEnvironment restores absent freshness after success", async () => {
+  const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  try {
+    const result = await withLaunchEnvironmentForTest(
+      { freshness: "disabled" },
+      () => {
+        assert.equal(
+          process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+          "disabled",
+        );
+        return "callback-result";
+      },
+    );
+    assert.equal(result, "callback-result");
+    assert.equal(process.env[NARRATIVE_FRESHNESS_DISABLE_ENV], undefined);
+  } finally {
+    if (previousFreshness === undefined) {
+      delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+    } else {
+      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = previousFreshness;
+    }
+  }
+});
+
+test("withLaunchEnvironment restores absent freshness after callback throws", async () => {
+  const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  try {
+    await assert.rejects(
+      () =>
+        withLaunchEnvironmentForTest(
+          { freshness: "disabled" },
+          () => {
+            assert.equal(
+              process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+              "disabled",
+            );
+            throw new Error("callback failure");
+          },
+        ),
+      /callback failure/,
+    );
+    assert.equal(process.env[NARRATIVE_FRESHNESS_DISABLE_ENV], undefined);
+  } finally {
+    if (previousFreshness === undefined) {
+      delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+    } else {
+      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = previousFreshness;
+    }
+  }
+});
