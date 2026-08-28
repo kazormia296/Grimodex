@@ -59,6 +59,103 @@ function validateFixture(policy = bundledPolicy()) {
   }
 }
 
+const EXPECTED_IDLE_CHECKPOINT = {
+  kind: "current-epoch-idle-checkpoint",
+  version: 1,
+  specKind: "incremental-freshness-idle-checkpoint@1",
+  runKind: "freshness-evaluation",
+  taskKind: "incremental-freshness-batch",
+  zeroWidthRange: {
+    fromSequenceExclusive: "feedHead",
+    throughSequenceInclusive: "feedHead",
+    feedHead: "feedHead",
+  },
+  epochBinding: "current-semantic-epoch",
+  cursor: {
+    acknowledgedThroughSequence: "feedHead",
+    requiresClean: true,
+    missingAllowedOnlyAtFeedHead: 0,
+  },
+  projectSelection: {
+    projectsPerWake: 1,
+    order: "project-id-ascending",
+  },
+  suppression: {
+    existingCurrentEpochFreshnessRunAnyStatus: true,
+  },
+  descriptorBinding: {
+    digestAlgorithm: "sha256-canonical-json",
+    inputDigestBinding: "task-input-to-spec-and-work-key",
+    taskInput: {
+      exactKeys: [
+        "kind",
+        "version",
+        "projectId",
+        "semanticEpochId",
+        "fromSequenceExclusive",
+        "throughSequenceInclusive",
+        "feedHead",
+        "inputDigest",
+      ],
+      kind: "current-epoch-idle-checkpoint",
+      version: 1,
+      digestField: "inputDigest",
+      digestInput: "canonical-payload-without-inputDigest",
+    },
+    spec: {
+      exactKeys: ["kind", "inputDigest"],
+      kind: "incremental-freshness-idle-checkpoint@1",
+      inputDigest: "same-as-task-input",
+      digestField: "specDigest",
+      digestInput: "canonical-spec-object",
+    },
+    workKey: {
+      format:
+        "incremental-freshness:{semanticEpochId}:{fromSequenceExclusive}:{throughSequenceInclusive}:{inputDigestHex}",
+      digestInput: "task-input-inputDigest-without-sha256-prefix",
+    },
+  },
+  lifecycle: {
+    taskCount: 1,
+    completedTaskCount: 1,
+    taskStatus: "completed",
+    taskAttemptCountEqualsAttemptRows: true,
+    attemptNumbering: "1..N-contiguous",
+    attemptStatuses: ["failed", "completed"],
+    completedAttemptCount: 1,
+    runningAttemptCount: 0,
+    activeAttemptCount: 0,
+    noActiveAttempt: true,
+    failedRetryHistoryAllowed: true,
+    failedRetryHistoryOrder: "failed-before-completed-only",
+    completedAttemptMustBeLast: true,
+    retryCap: {
+      maxAttemptsPerTask: 3,
+      corruptedTaskKindCannotBypass: true,
+    },
+  },
+  nextWake: {
+    noChurn: true,
+  },
+  databaseEvidence: {
+    schedulerLiveness: "not-proven",
+    canonicalCutover: "not-proven",
+  },
+  writesAllowed: ["run-task-attempt-state", "freshness-evaluator-cursor"],
+  forbiddenWrites: [
+    "narrative-change-set",
+    "consumer-freshness",
+    "dependency-edge-state",
+    "finding-observation",
+    "attention",
+    "domain-state",
+    "d2-declarations",
+    "d2-shadow",
+    "semantic-index",
+  ],
+  forbiddenPublishers: ["generic-consumer-freshness"],
+};
+
 describe("validate-run-kind-policy", () => {
   it("accepts the bundled policy and keeps the public export", () => {
     assert.deepEqual(validateRunKindPolicy({ repoRoot: REPO_ROOT }).errors, []);
@@ -456,6 +553,136 @@ describe("validate-run-kind-policy", () => {
     assert.ok(
       result.errors.some((error) =>
         error.includes("maxCanonicalSequencesPerBatch"),
+      ),
+    );
+  });
+
+  it("pins the current-Epoch idle checkpoint to the existing Freshness Run Kind", () => {
+    const policy = bundledPolicy();
+    const runKinds = policy.runKinds.map((entry) => entry.runKind);
+    assert.deepEqual(runKinds, [
+      "dependency-backfill",
+      "dependency-verify",
+      "dependency-rebuild-derived",
+      "incremental-freshness",
+      "dependency-repair",
+    ]);
+    assert.deepEqual(
+      runKind(policy, "incremental-freshness").idleCheckpoint,
+      EXPECTED_IDLE_CHECKPOINT,
+    );
+    assert.deepEqual(validateFixture(policy).errors, []);
+  });
+
+  it("rejects every idle checkpoint contract mutation", () => {
+    const mutations = [
+      ["kind", "wrong-kind"],
+      ["version", 2],
+      ["specKind", "incremental-freshness-batch@1"],
+      ["runKind", "incremental-freshness"],
+      ["taskKind", "unexpected-task"],
+      ["zeroWidthRange.fromSequenceExclusive", "acknowledged"],
+      ["zeroWidthRange.throughSequenceInclusive", "acknowledged"],
+      ["zeroWidthRange.feedHead", "throughSequenceInclusive"],
+      ["epochBinding", "run-epoch"],
+      ["cursor.acknowledgedThroughSequence", "throughSequenceInclusive"],
+      ["cursor.requiresClean", false],
+      ["cursor.missingAllowedOnlyAtFeedHead", 1],
+      ["projectSelection.projectsPerWake", 2],
+      ["projectSelection.order", "created-at"],
+      ["suppression.existingCurrentEpochFreshnessRunAnyStatus", false],
+      ["descriptorBinding.digestAlgorithm", "sha256-json"],
+      ["descriptorBinding.inputDigestBinding", "task-input-only"],
+      ["descriptorBinding.taskInput.exactKeys", ["kind"]],
+      ["descriptorBinding.taskInput.kind", "incremental-freshness"],
+      ["descriptorBinding.taskInput.version", 2],
+      ["descriptorBinding.taskInput.digestField", "digest"],
+      ["descriptorBinding.taskInput.digestInput", "payload-with-inputDigest"],
+      ["descriptorBinding.spec.exactKeys", ["kind"]],
+      ["descriptorBinding.spec.kind", "incremental-freshness"],
+      ["descriptorBinding.spec.inputDigest", "different-from-task-input"],
+      ["descriptorBinding.spec.digestField", "inputDigest"],
+      ["descriptorBinding.spec.digestInput", "raw-spec"],
+      ["descriptorBinding.workKey.format", "run-id"],
+      ["descriptorBinding.workKey.digestInput", "task-id"],
+      ["lifecycle.taskCount", 2],
+      ["lifecycle.completedTaskCount", 0],
+      ["lifecycle.taskStatus", "failed"],
+      ["lifecycle.taskAttemptCountEqualsAttemptRows", false],
+      ["lifecycle.attemptNumbering", "attempts-may-have-gaps"],
+      ["lifecycle.attemptStatuses", ["running", "completed"]],
+      ["lifecycle.completedAttemptCount", 2],
+      ["lifecycle.runningAttemptCount", 1],
+      ["lifecycle.activeAttemptCount", 1],
+      ["lifecycle.noActiveAttempt", false],
+      ["lifecycle.failedRetryHistoryAllowed", false],
+      ["lifecycle.failedRetryHistoryOrder", "failed-after-completed"],
+      ["lifecycle.completedAttemptMustBeLast", false],
+      ["lifecycle.retryCap.maxAttemptsPerTask", 4],
+      ["lifecycle.retryCap.corruptedTaskKindCannotBypass", false],
+      ["nextWake.noChurn", false],
+      ["databaseEvidence.schedulerLiveness", "proven"],
+      ["databaseEvidence.canonicalCutover", "proven"],
+      ["writesAllowed", ["run-task-attempt-state", "consumer-freshness"]],
+      [
+        "forbiddenWrites",
+        [
+          "narrative-change-set",
+          "consumer-freshness",
+          "dependency-edge-state",
+          "finding-observation",
+          "attention",
+          "domain-state",
+          "d2-declarations",
+          "d2-shadow",
+        ],
+      ],
+      ["forbiddenPublishers", ["generic-consumer-freshness-publisher"]],
+    ];
+
+    for (const [pathExpression, value] of mutations) {
+      const policy = bundledPolicy();
+      const idleCheckpoint = runKind(
+        policy,
+        "incremental-freshness",
+      ).idleCheckpoint;
+      const pathParts = pathExpression.split(".");
+      const leaf = pathParts.pop();
+      assert.ok(leaf);
+      const target = pathParts.reduce(
+        (object, key) => object[key],
+        idleCheckpoint,
+      );
+      target[leaf] = value;
+
+      const result = validateFixture(policy);
+      assert.ok(
+        result.errors.some((error) =>
+          error.includes(
+            `incremental-freshness.idleCheckpoint.${pathExpression}`,
+          ),
+        ),
+        `expected idle checkpoint mutation ${pathExpression} to fail: ${JSON.stringify(result.errors)}`,
+      );
+    }
+  });
+
+  it("requires an exact idle checkpoint object on incremental freshness", () => {
+    const missing = bundledPolicy();
+    delete runKind(missing, "incremental-freshness").idleCheckpoint;
+    const missingResult = validateFixture(missing);
+    assert.ok(
+      missingResult.errors.some((error) =>
+        error.includes("incremental-freshness.idleCheckpoint"),
+      ),
+    );
+
+    const extra = bundledPolicy();
+    runKind(extra, "incremental-freshness").idleCheckpoint.unexpected = true;
+    const extraResult = validateFixture(extra);
+    assert.ok(
+      extraResult.errors.some((error) =>
+        error.includes("incremental-freshness.idleCheckpoint.unexpected"),
       ),
     );
   });

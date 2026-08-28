@@ -203,6 +203,25 @@ Narrative Change Feed event
 - **Complete** — Source deletion, anchor mismatch, exact relocation, read-set drift, normalizer incompatibility, and component-schema compatibility changes have explicit deterministic comparison paths.
 - **Complete** — Expired Attempts are terminalized before a replacement claim; interrupted Runs, Tasks, Attempts, stale-Epoch reservations, and retryable failures retain or recover the same bounded range without skipping it. Retry exhaustion fails the Task and Run after three Attempts, keeps the range reserved without a lease, and waits for a canonical Epoch rotation to release and reprocess it under a new Run.
 
+The existing `incremental-freshness` Run Kind also owns an
+`idleCheckpoint` contract for the no-backlog case; it does not add a new Run
+Kind. The checkpoint is an exact tagged, zero-width current-Epoch
+`freshness-evaluation` Run with one `incremental-freshness-batch` Task, a
+clean cursor acknowledged at `feedHead`, and deterministic one-project-per-
+wake selection. Missing cursors are accepted only at head 0, and any
+current-Epoch Freshness Run in any status suppresses minting. The exact Task
+input, spec, and Work Key share the canonical JSON SHA-256 input digest. Its
+terminal shape is one completed Task and one completed Attempt with no active
+Attempt; the Task is `completed`, its `attempt_count` equals the Attempt row
+count, Attempt numbers are contiguous `1..N`, only failed/completed Attempts
+are allowed with the completed Attempt last, failed retry history precedes
+completion, and malformed `task_kind` values cannot evade the retry cap. Idle writes are limited to
+Run/Task/Attempt state and the Freshness cursor; no Change Set, Generic
+Consumer Freshness, Edge State, Finding, Attention/Domain, D2 declaration or
+shadow, or Semantic Index write is permitted. A completed checkpoint avoids
+next-wake churn, but database state alone does not prove scheduler liveness or
+C2-ZC cutover, and the normal Feed-backed path remains unchanged.
+
 ### Implementation evidence
 
 - Shared runtime: [`src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs`](../../src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs)
@@ -334,6 +353,10 @@ the marker can be treated as an accepted canonical cutover.
   metadata rows, active sealed D1 heads, V1 semantic-index Edges, and
   semantic-index Consumer Freshness. Only an all-zero result passes; any
   non-zero footprint is manual/terminal evidence and is not a Rebuild target.
+- The incremental Freshness idle checkpoint, when present, is only durable
+  current-Epoch Run/Task/Attempt and cursor evidence. It cannot be a Generic
+  Consumer Freshness publisher, and its database checkpoint does not replace
+  scheduler-liveness or cutover evidence.
 
 ### Exit criteria
 

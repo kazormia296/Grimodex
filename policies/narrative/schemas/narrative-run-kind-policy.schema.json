@@ -122,6 +122,248 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "idleCheckpointPolicy": {
+      "type": "object",
+      "required": [
+        "kind",
+        "version",
+        "specKind",
+        "runKind",
+        "taskKind",
+        "zeroWidthRange",
+        "epochBinding",
+        "cursor",
+        "projectSelection",
+        "suppression",
+        "descriptorBinding",
+        "lifecycle",
+        "nextWake",
+        "databaseEvidence",
+        "writesAllowed",
+        "forbiddenWrites",
+        "forbiddenPublishers"
+      ],
+      "properties": {
+        "kind": { "const": "current-epoch-idle-checkpoint" },
+        "version": { "const": 1 },
+        "specKind": {
+          "const": "incremental-freshness-idle-checkpoint@1"
+        },
+        "runKind": { "const": "freshness-evaluation" },
+        "taskKind": { "const": "incremental-freshness-batch" },
+        "zeroWidthRange": {
+          "type": "object",
+          "required": [
+            "fromSequenceExclusive",
+            "throughSequenceInclusive",
+            "feedHead"
+          ],
+          "properties": {
+            "fromSequenceExclusive": { "const": "feedHead" },
+            "throughSequenceInclusive": { "const": "feedHead" },
+            "feedHead": { "const": "feedHead" }
+          },
+          "additionalProperties": false
+        },
+        "epochBinding": { "const": "current-semantic-epoch" },
+        "cursor": {
+          "type": "object",
+          "required": [
+            "acknowledgedThroughSequence",
+            "requiresClean",
+            "missingAllowedOnlyAtFeedHead"
+          ],
+          "properties": {
+            "acknowledgedThroughSequence": { "const": "feedHead" },
+            "requiresClean": { "const": true },
+            "missingAllowedOnlyAtFeedHead": { "const": 0 }
+          },
+          "additionalProperties": false
+        },
+        "projectSelection": {
+          "type": "object",
+          "required": ["projectsPerWake", "order"],
+          "properties": {
+            "projectsPerWake": { "const": 1 },
+            "order": { "const": "project-id-ascending" }
+          },
+          "additionalProperties": false
+        },
+        "suppression": {
+          "type": "object",
+          "required": ["existingCurrentEpochFreshnessRunAnyStatus"],
+          "properties": {
+            "existingCurrentEpochFreshnessRunAnyStatus": { "const": true }
+          },
+          "additionalProperties": false
+        },
+        "descriptorBinding": {
+          "type": "object",
+          "required": [
+            "digestAlgorithm",
+            "inputDigestBinding",
+            "taskInput",
+            "spec",
+            "workKey"
+          ],
+          "properties": {
+            "digestAlgorithm": { "const": "sha256-canonical-json" },
+            "inputDigestBinding": {
+              "const": "task-input-to-spec-and-work-key"
+            },
+            "taskInput": {
+              "type": "object",
+              "required": [
+                "exactKeys",
+                "kind",
+                "version",
+                "digestField",
+                "digestInput"
+              ],
+              "properties": {
+                "exactKeys": {
+                  "const": [
+                    "kind",
+                    "version",
+                    "projectId",
+                    "semanticEpochId",
+                    "fromSequenceExclusive",
+                    "throughSequenceInclusive",
+                    "feedHead",
+                    "inputDigest"
+                  ]
+                },
+                "kind": { "const": "current-epoch-idle-checkpoint" },
+                "version": { "const": 1 },
+                "digestField": { "const": "inputDigest" },
+                "digestInput": {
+                  "const": "canonical-payload-without-inputDigest"
+                }
+              },
+              "additionalProperties": false
+            },
+            "spec": {
+              "type": "object",
+              "required": [
+                "exactKeys",
+                "kind",
+                "inputDigest",
+                "digestField",
+                "digestInput"
+              ],
+              "properties": {
+                "exactKeys": { "const": ["kind", "inputDigest"] },
+                "kind": {
+                  "const": "incremental-freshness-idle-checkpoint@1"
+                },
+                "inputDigest": { "const": "same-as-task-input" },
+                "digestField": { "const": "specDigest" },
+                "digestInput": { "const": "canonical-spec-object" }
+              },
+              "additionalProperties": false
+            },
+            "workKey": {
+              "type": "object",
+              "required": ["format", "digestInput"],
+              "properties": {
+                "format": {
+                  "const": "incremental-freshness:{semanticEpochId}:{fromSequenceExclusive}:{throughSequenceInclusive}:{inputDigestHex}"
+                },
+                "digestInput": {
+                  "const": "task-input-inputDigest-without-sha256-prefix"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "lifecycle": {
+          "type": "object",
+          "required": [
+            "taskCount",
+            "completedTaskCount",
+            "taskStatus",
+            "taskAttemptCountEqualsAttemptRows",
+            "attemptNumbering",
+            "attemptStatuses",
+            "completedAttemptCount",
+            "runningAttemptCount",
+            "activeAttemptCount",
+            "noActiveAttempt",
+            "failedRetryHistoryAllowed",
+            "failedRetryHistoryOrder",
+            "completedAttemptMustBeLast",
+            "retryCap"
+          ],
+          "properties": {
+            "taskCount": { "const": 1 },
+            "completedTaskCount": { "const": 1 },
+            "taskStatus": { "const": "completed" },
+            "taskAttemptCountEqualsAttemptRows": { "const": true },
+            "attemptNumbering": { "const": "1..N-contiguous" },
+            "attemptStatuses": { "const": ["failed", "completed"] },
+            "completedAttemptCount": { "const": 1 },
+            "runningAttemptCount": { "const": 0 },
+            "activeAttemptCount": { "const": 0 },
+            "noActiveAttempt": { "const": true },
+            "failedRetryHistoryAllowed": { "const": true },
+            "failedRetryHistoryOrder": {
+              "const": "failed-before-completed-only"
+            },
+            "completedAttemptMustBeLast": { "const": true },
+            "retryCap": {
+              "type": "object",
+              "required": [
+                "maxAttemptsPerTask",
+                "corruptedTaskKindCannotBypass"
+              ],
+              "properties": {
+                "maxAttemptsPerTask": { "const": 3 },
+                "corruptedTaskKindCannotBypass": { "const": true }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "nextWake": {
+          "type": "object",
+          "required": ["noChurn"],
+          "properties": { "noChurn": { "const": true } },
+          "additionalProperties": false
+        },
+        "databaseEvidence": {
+          "type": "object",
+          "required": ["schedulerLiveness", "canonicalCutover"],
+          "properties": {
+            "schedulerLiveness": { "const": "not-proven" },
+            "canonicalCutover": { "const": "not-proven" }
+          },
+          "additionalProperties": false
+        },
+        "writesAllowed": {
+          "const": ["run-task-attempt-state", "freshness-evaluator-cursor"]
+        },
+        "forbiddenWrites": {
+          "const": [
+            "narrative-change-set",
+            "consumer-freshness",
+            "dependency-edge-state",
+            "finding-observation",
+            "attention",
+            "domain-state",
+            "d2-declarations",
+            "d2-shadow",
+            "semantic-index"
+          ]
+        },
+        "forbiddenPublishers": {
+          "const": ["generic-consumer-freshness"]
+        }
+      },
+      "additionalProperties": false
+    },
     "runKindPolicy": {
       "type": "object",
       "required": [
@@ -199,6 +441,7 @@
         "missingSemanticEpochBehavior": {
           "enum": ["wait-for-canonical-epoch-authority"]
         },
+        "idleCheckpoint": { "$ref": "#/$defs/idleCheckpointPolicy" },
         "retryPolicy": {
           "type": "object",
           "required": [
@@ -694,6 +937,7 @@
               "maxCanonicalSequencesPerBatch",
               "executionAuthority",
               "missingSemanticEpochBehavior",
+              "idleCheckpoint",
               "retryPolicy",
               "resumeSemantics",
               "completedWithUnackedRangeInvariant",
@@ -713,6 +957,9 @@
               },
               "missingSemanticEpochBehavior": {
                 "const": "wait-for-canonical-epoch-authority"
+              },
+              "idleCheckpoint": {
+                "$ref": "#/$defs/idleCheckpointPolicy"
               },
               "retryPolicy": {
                 "const": {

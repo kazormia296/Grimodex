@@ -226,6 +226,31 @@ completed Run cannot acknowledge an unacknowledged range, and bounded
 Run/Task/Attempt recovery stops after three failed Attempts until a canonical
 Epoch rotation releases the held range for a new runtime-owned Run.
 
+The same `incremental-freshness` Run Kind also declares the machine-readable
+`idleCheckpoint` contract for a Feed that is already at its head. It is a
+zero-width, current-Epoch `freshness-evaluation` Run with one
+`incremental-freshness-batch` Task: `fromSequenceExclusive`,
+`throughSequenceInclusive`, and `feedHead` are the same value, and a missing
+cursor is valid only when that value is zero. The cursor must otherwise be
+clean and acknowledged at the head. A wake selects at most one project in
+ascending project-id order, and any current-Epoch Freshness Run, regardless of
+status, suppresses minting another checkpoint.
+
+The checkpoint binds the exact tagged Task input, Run spec, and Work Key using
+the same `sha256-canonical-json` input digest (with the Work Key carrying its
+hex form). Its successful lifecycle is exactly one completed Task and one
+completed Attempt with no active Attempt; `attempt_count` equals the total
+Attempt rows, Attempt numbers are contiguous `1..N`, only failed/completed
+Attempt states are allowed with the completed Attempt last, failed retry
+history is allowed only before completion, and a malformed Task kind cannot
+bypass the three-Attempt retry cap. The checkpoint may write only Run/Task/Attempt state
+and the Freshness cursor. It cannot write a Change Set, Generic Consumer
+Freshness, Edge State, Findings, Attention or Domain state, D2 declarations or
+shadow state, or Semantic Index data, and it is never a Generic Consumer
+Freshness publisher. A completed checkpoint causes no next-wake churn, but its
+database evidence alone proves neither scheduler liveness nor C2-ZC cutover;
+the normal Feed-backed allowlist and behavior remain unchanged.
+
 `electron/native/grimodex-node/src/lib.rs` exposes this as a main-only Native
 cycle. `electron/main/narrativeFreshness.ts` owns the single-flight scheduler
 and bounded backlog pacing; it deliberately adds no renderer IPC or preload
@@ -602,7 +627,10 @@ covered by the five named operations), requires the stable
 `narrative-maintenance-route/v1` metadata for the three automatic maintenance
 Run Kinds, and requires the C2-ZC cutover condition to be owned by the
 main-only scheduler wake rather than a renderer or the retired manual
-obligation.
+obligation. For the existing `incremental-freshness` Run Kind it also pins the
+exact current-Epoch idle-checkpoint payload/spec/Work-Key, lifecycle and
+write-forbidden boundaries; this nested contract does not create a sixth Run
+Kind or a second Freshness route.
 `triggerEvents` names
 semantic database/runtime discovery conditions, not literal emitter names.
 The validator is intentionally JSON-only: it does not parse TypeScript, Rust,

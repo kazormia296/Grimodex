@@ -164,6 +164,103 @@ const INCREMENTAL_FRESHNESS_WRITES_ALLOWED = [
 const INCREMENTAL_FRESHNESS_COMPLETED_UNACKED_INVARIANT =
   "never-reuse-completed-run-and-reprocess-under-new-runtime-owned-run";
 
+const INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT = {
+  kind: "current-epoch-idle-checkpoint",
+  version: 1,
+  specKind: "incremental-freshness-idle-checkpoint@1",
+  runKind: "freshness-evaluation",
+  taskKind: "incremental-freshness-batch",
+  zeroWidthRange: {
+    fromSequenceExclusive: "feedHead",
+    throughSequenceInclusive: "feedHead",
+    feedHead: "feedHead",
+  },
+  epochBinding: "current-semantic-epoch",
+  cursor: {
+    acknowledgedThroughSequence: "feedHead",
+    requiresClean: true,
+    missingAllowedOnlyAtFeedHead: 0,
+  },
+  projectSelection: {
+    projectsPerWake: 1,
+    order: "project-id-ascending",
+  },
+  suppression: {
+    existingCurrentEpochFreshnessRunAnyStatus: true,
+  },
+  descriptorBinding: {
+    digestAlgorithm: "sha256-canonical-json",
+    inputDigestBinding: "task-input-to-spec-and-work-key",
+    taskInput: {
+      exactKeys: [
+        "kind",
+        "version",
+        "projectId",
+        "semanticEpochId",
+        "fromSequenceExclusive",
+        "throughSequenceInclusive",
+        "feedHead",
+        "inputDigest",
+      ],
+      kind: "current-epoch-idle-checkpoint",
+      version: 1,
+      digestField: "inputDigest",
+      digestInput: "canonical-payload-without-inputDigest",
+    },
+    spec: {
+      exactKeys: ["kind", "inputDigest"],
+      kind: "incremental-freshness-idle-checkpoint@1",
+      inputDigest: "same-as-task-input",
+      digestField: "specDigest",
+      digestInput: "canonical-spec-object",
+    },
+    workKey: {
+      format:
+        "incremental-freshness:{semanticEpochId}:{fromSequenceExclusive}:{throughSequenceInclusive}:{inputDigestHex}",
+      digestInput: "task-input-inputDigest-without-sha256-prefix",
+    },
+  },
+  lifecycle: {
+    taskCount: 1,
+    completedTaskCount: 1,
+    taskStatus: "completed",
+    taskAttemptCountEqualsAttemptRows: true,
+    attemptNumbering: "1..N-contiguous",
+    attemptStatuses: ["failed", "completed"],
+    completedAttemptCount: 1,
+    runningAttemptCount: 0,
+    activeAttemptCount: 0,
+    noActiveAttempt: true,
+    failedRetryHistoryAllowed: true,
+    failedRetryHistoryOrder: "failed-before-completed-only",
+    completedAttemptMustBeLast: true,
+    retryCap: {
+      maxAttemptsPerTask: 3,
+      corruptedTaskKindCannotBypass: true,
+    },
+  },
+  nextWake: {
+    noChurn: true,
+  },
+  databaseEvidence: {
+    schedulerLiveness: "not-proven",
+    canonicalCutover: "not-proven",
+  },
+  writesAllowed: ["run-task-attempt-state", "freshness-evaluator-cursor"],
+  forbiddenWrites: [
+    "narrative-change-set",
+    "consumer-freshness",
+    "dependency-edge-state",
+    "finding-observation",
+    "attention",
+    "domain-state",
+    "d2-declarations",
+    "d2-shadow",
+    "semantic-index",
+  ],
+  forbiddenPublishers: ["generic-consumer-freshness"],
+};
+
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -178,6 +275,44 @@ function sameStringArray(actual, expected) {
     actual.length === expected.length &&
     actual.every((value, index) => value === expected[index])
   );
+}
+
+function validateExactContract(actual, expected, fieldPath, errors) {
+  if (Array.isArray(expected)) {
+    if (
+      !Array.isArray(actual) ||
+      actual.length !== expected.length ||
+      actual.some((value, index) => value !== expected[index])
+    ) {
+      errors.push(`${fieldPath} must be exactly ${JSON.stringify(expected)}`);
+    }
+    return;
+  }
+
+  if (isObject(expected)) {
+    if (!isObject(actual)) {
+      errors.push(`${fieldPath} must be an exact object contract`);
+      return;
+    }
+    for (const [key, expectedValue] of Object.entries(expected)) {
+      validateExactContract(
+        actual[key],
+        expectedValue,
+        `${fieldPath}.${key}`,
+        errors,
+      );
+    }
+    for (const key of Object.keys(actual)) {
+      if (!Object.hasOwn(expected, key)) {
+        errors.push(`${fieldPath}.${key} is not part of the exact contract`);
+      }
+    }
+    return;
+  }
+
+  if (actual !== expected) {
+    errors.push(`${fieldPath} must be exactly ${JSON.stringify(expected)}`);
+  }
 }
 
 function readJson(repoRoot, relativePath, errors, label) {
@@ -307,6 +442,15 @@ function validateRetiredC2ZcTriggerDeclarations(entry, errors) {
   }
 }
 
+function validateIdleCheckpoint(entry, errors) {
+  validateExactContract(
+    entry.idleCheckpoint,
+    INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT,
+    "incremental-freshness.idleCheckpoint",
+    errors,
+  );
+}
+
 function validateIncrementalFreshness(entry, errors) {
   if (entry.runKind !== "incremental-freshness") return;
 
@@ -337,6 +481,7 @@ function validateIncrementalFreshness(entry, errors) {
       );
     }
   }
+  validateIdleCheckpoint(entry, errors);
   if (
     !sameStringArray(
       entry.resumeSemantics,
