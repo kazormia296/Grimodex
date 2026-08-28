@@ -1262,15 +1262,19 @@ test("restore journey must exercise the Settings backup UI and rebind after relo
   const journeyBody = source.match(
     /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
   )?.[0];
+  const scenarioBody = source.match(
+    /export async function runRestoreVerifyRebuildVerifyScenario\([\s\S]*?\n}\n\nasync function runRestoreVerifyRebuildVerify/,
+  )?.[0];
   assert.ok(helperBody, "restore UI helper must remain inspectable");
   assert.ok(journeyBody, "restore journey helper must remain inspectable");
+  assert.ok(scenarioBody, "shared restore scenario helper must remain inspectable");
   assert.match(
-    journeyBody,
-    /restoreBackupThroughSettingsUi\(context, fixtureEvidence\.backupName\)/,
+    scenarioBody,
+    /restoreThroughSettingsUi\(context, fixtureEvidence\.backupName\)/,
     "restore must call the production Settings UI helper",
   );
   assert.doesNotMatch(
-    journeyBody,
+    scenarioBody,
     /invokeOk\(context\.page,\s*"restore_backup"/,
     "restore journey must not bypass the production UI with raw restore_backup IPC",
   );
@@ -1300,12 +1304,12 @@ test("restore journey must exercise the Settings backup UI and rebind after relo
     "restore helper must observe the main-frame reload",
   );
   assert.match(
-    journeyBody,
+    scenarioBody,
     /contextForLaunch\([\s\S]*beforeRestoreRuns[\s\S]*restore\/reload project hydration/,
     "restore journey must rebind context and wait for post-reload hydration",
   );
   assert.match(
-    journeyBody,
+    scenarioBody,
     /candidate\.projectId !== context\.projectId/,
     "restore journey must prove project authority is unchanged after reload",
   );
@@ -1993,7 +1997,7 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
     "utf8",
   );
   const restoreJourneyBody = source.match(
-    /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
+    /export async function runRestoreVerifyRebuildVerifyScenario\([\s\S]*?\n}\n\nasync function runRestoreVerifyRebuildVerify/,
   )?.[0];
   const fixtureHelperBody = source.match(
     /async function seedRestoreFixtureEvidence\([\s\S]*?\n}\n\n\/\*\*/,
@@ -2007,7 +2011,7 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
   assert.ok(restoreJourneyBody, "restore journey caller must remain inspectable");
   assert.match(
     restoreJourneyBody,
-    /const id = "c2-5b-restore-verify-rebuild-verify";/,
+    /id = "c2-5b-restore-verify-rebuild-verify",/,
     "restore journey must bind its fixture to its own journey id",
   );
   assert.match(
@@ -2017,8 +2021,13 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
   );
   assert.match(
     restoreJourneyBody,
-    /harness\.launch\(`\$\{id\}\/open`\)/,
-    "restore journey must launch its own open phase after fixture setup",
+    /restorePhase = "open"/,
+    "shared restore journey must retain the C2-5B open default",
+  );
+  assert.match(
+    restoreJourneyBody,
+    /harness\.launch\(`\$\{id\}\/\$\{restorePhase\}`\)/,
+    "shared restore journey must launch its configured restore phase",
   );
 
   const noRepairJourneyBody = source.match(

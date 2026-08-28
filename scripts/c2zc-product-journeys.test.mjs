@@ -72,12 +72,24 @@ test("C2-ZC runner reaches the marker only through main scheduler and N-API", as
     read("electron/scripts/product-journey-harness.mjs"),
   ]);
 
-  assert.match(runner, /harness\.launch\(`\$\{C2ZC_PRODUCT_JOURNEY_ID\}\/open`\)/);
-  assert.match(runner, /harness\.launch\(`\$\{C2ZC_PRODUCT_JOURNEY_ID\}\/restart`\)/);
+  assert.match(runner, /runRestoreVerifyRebuildVerifyScenario/);
+  assert.match(runner, /restoreBackupThroughSettingsUi/);
+  assert.match(runner, /setup:\s*"disabled"/);
+  assert.match(
+    runner,
+    /onRestore:[\s\S]*readAuthoritySnapshot\([\s\S]*marker: observed\.marker/,
+    "restore isolation must inspect the persisted marker rather than hard-code null",
+  );
+  assert.match(runner, /harness\.launch\(`\$\{C2ZC_PRODUCT_JOURNEY_ID\}\/new-project`\)/);
   assert.match(runner, /harness\.invokeOk\(page, "project_create"/);
   assert.match(runner, /schema_data_migrations/);
   assert.match(runner, /activationOwner: "electron-main:narrativeFreshness->napi"/);
   assert.doesNotMatch(runner, /cut_over_workspace_freshness|record_c2zc_cutover_marker/);
+  assert.doesNotMatch(
+    runner,
+    /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+schema_data_migrations/i,
+    "C2-ZC runner must not write the marker SQL directly",
+  );
   assert.match(main, /createNarrativeFreshnessScheduler\(backend,\s*\{/);
   assert.match(main, /onCutoverNotReady/);
   assert.match(main, /requestBeforeCutoverPreparation/);
@@ -173,6 +185,10 @@ function c2zcFixture() {
       projectId: "project-1",
       consumerKind: "narrative-extraction-run",
       consumerKey: b0.id,
+      sourceObjectIdentity: "project:scene:scene-b0",
+      readSetJson: JSON.stringify(["v1@2026-08-28T00:00:00.000Z"]),
+      generatedByTransactionId: null,
+      createdAt: "2026-08-28T00:00:00.500Z",
       owningRunId: b0.id,
       readSetToken: "v1@2026-08-28T00:00:00.000Z",
     },
@@ -248,6 +264,22 @@ test("C2-ZC restore stage is isolated from maintenance and mints exactly E1", ()
       beforeRuns: [fixture.backfill],
       afterRuns: [fixture.backfill],
     }),
+  );
+  assert.throws(
+    () =>
+      assertC2ZcRestoreStageIsolation({
+        setup: "disabled",
+        marker: {
+          migrationId: "narrative-c2-canonical-freshness-v1",
+          contractVersion: 1,
+          appliedAt: "2026-08-28T00:00:09.000Z",
+        },
+        beforeEpochs: fixture.epochs,
+        afterEpochs: [...fixture.epochs, e1],
+        beforeRuns: [fixture.backfill],
+        afterRuns: [fixture.backfill],
+      }),
+    /must not apply the C2-ZC marker/,
   );
   assert.throws(
     () =>
@@ -454,9 +486,11 @@ test("C2-ZC runner uses the shared restore scenario and explicit phase separatio
   assert.deepEqual(
     C2ZC_PRODUCT_JOURNEY_PHASES,
     [
+      "c2-zc-canonical-authority-cutover/restore-fixture",
       "c2-zc-canonical-authority-cutover/restore",
       "c2-zc-canonical-authority-cutover/open",
       "c2-zc-canonical-authority-cutover/restart",
+      "c2-zc-canonical-authority-cutover/new-project",
     ],
   );
   for (const phase of C2ZC_PRODUCT_JOURNEY_PHASES) {

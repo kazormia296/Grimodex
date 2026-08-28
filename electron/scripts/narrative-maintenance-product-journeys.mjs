@@ -1989,7 +1989,7 @@ export function assertRestoreFixtureEvidence(
  * declaration uses db_execute because no renderer-facing Edge writer exists;
  * its owner Run and every persisted field are validated immediately.
  */
-async function seedRestoreFixtureEvidence(harness, workspace, id) {
+export async function seedRestoreFixtureEvidence(harness, workspace, id) {
   const fixtureLaunch = await withLaunchEnvironment(
     {
       setup: "disabled",
@@ -2310,6 +2310,12 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       context.projectId,
     );
     assertRestoreFixturePreGapReadiness(backupReadiness);
+    const backupContract = await readRestoreFixtureBackupContract(
+      workspace,
+      backupName,
+      context.projectId,
+      { edgeId, consumerKey },
+    );
     return {
       edgeId,
       consumerKey,
@@ -2318,6 +2324,7 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       readSetToken,
       sceneId: scene.id,
       backupName,
+      backupContract,
     };
   } finally {
     await harness.close(
@@ -2453,8 +2460,11 @@ async function prepareLegacySchemaMarker(workspace) {
   }
 }
 
-async function readRunSnapshotQuery(workspace, query) {
-  const databasePath = path.join(workspace, "grimodex.db");
+async function readRunSnapshotQuery(
+  workspace,
+  query,
+  databasePath = path.join(workspace, "grimodex.db"),
+) {
   try {
     const { stdout } = await execFile("sqlite3", [
       "-json",
@@ -2551,6 +2561,125 @@ export async function readRestoreFixtureBackupReadiness(
   } catch (error) {
     throw new Error(
       `restore fixture backup readiness requires sqlite3: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * Read the complete pre-cutover restore boundary from the WAL-safe backup.
+ * This is deliberately separate from `readRestoreFixtureBackupReadiness`:
+ * C2-5B only needs the settled cursor proof, while C2-ZC must additionally
+ * prove that the image has no Generic marker, retains the canonical E0/B0
+ * lifecycle, and contains a real derived-state gap.
+ */
+export async function readRestoreFixtureBackupContract(
+  workspace,
+  backupName,
+  projectId,
+  { edgeId, consumerKey } = {},
+) {
+  const quotedProjectId = projectId.replaceAll("'", "''");
+  const quotedEdgeId = String(edgeId ?? "").replaceAll("'", "''");
+  const quotedConsumerKey = String(consumerKey ?? "").replaceAll("'", "''");
+  const databasePath = path.join(workspace, "backups", backupName);
+  try {
+    const [markerRows, epochs, backfillRuns, edgeRows, derivedStateRows] =
+      await Promise.all([
+        readRunSnapshotQuery(
+          path.dirname(databasePath),
+          `SELECT migration_id AS migrationId,
+                  contract_version AS contractVersion,
+                  applied_at AS appliedAt
+             FROM schema_data_migrations
+            WHERE migration_id = 'narrative-c2-canonical-freshness-v1'`,
+          databasePath,
+        ),
+        readRunSnapshotQuery(
+          path.dirname(databasePath),
+          `SELECT id,
+                  project_id AS projectId,
+                  epoch_number AS epochNumber,
+                  reason,
+                  created_at AS createdAt
+             FROM narrative_semantic_epochs
+            WHERE project_id = '${quotedProjectId}'
+            ORDER BY epoch_number, id`,
+          databasePath,
+        ),
+        readRunSnapshotQuery(
+          path.dirname(databasePath),
+          `SELECT ${RUN_COLUMNS},
+                  (SELECT t.id
+                     FROM narrative_extraction_tasks t
+                    WHERE t.run_id = r.id
+                    ORDER BY t.created_at ASC, t.id ASC
+                    LIMIT 1) AS taskId,
+                  (SELECT a.id
+                     FROM narrative_extraction_attempts a
+                     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+                    WHERE t.run_id = r.id
+                    ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
+                    LIMIT 1) AS attemptId
+             FROM narrative_extraction_runs r
+            WHERE r.project_id = '${quotedProjectId}'
+              AND r.run_kind = 'backfill'
+            ORDER BY r.created_at, r.id`,
+          databasePath,
+        ),
+        readRunSnapshotQuery(
+          path.dirname(databasePath),
+          `SELECT id,
+                  project_id AS projectId,
+                  consumer_kind AS consumerKind,
+                  consumer_key AS consumerKey,
+                  source_object_identity AS sourceObjectIdentity,
+                  read_set_json AS readSetJson,
+                  generated_by_transaction_id AS generatedByTransactionId,
+                  created_at AS createdAt,
+                  owning_run_id AS owningRunId
+             FROM narrative_dependency_edges
+            WHERE project_id = '${quotedProjectId}'
+              AND id = '${quotedEdgeId}'
+            ORDER BY created_at, id`,
+          databasePath,
+        ),
+        readRunSnapshotQuery(
+          path.dirname(databasePath),
+          `SELECT
+              (SELECT COUNT(*)
+                 FROM narrative_dependency_edges
+                WHERE project_id = '${quotedProjectId}'
+                  AND id = '${quotedEdgeId}') AS edgeCount,
+              (SELECT COUNT(*)
+                 FROM narrative_dependency_edge_states
+                WHERE project_id = '${quotedProjectId}'
+                  AND edge_id = '${quotedEdgeId}') AS edgeStateCount,
+              (SELECT COUNT(*)
+                 FROM narrative_consumer_freshness
+                WHERE project_id = '${quotedProjectId}'
+                  AND consumer_kind = 'narrative-extraction-run'
+                  AND consumer_key = '${quotedConsumerKey}') AS freshnessCount`,
+          databasePath,
+        ),
+      ]);
+    const derivedState = derivedStateRows[0] ?? {};
+    return {
+      projectId,
+      marker: markerRows[0] ?? null,
+      epochs,
+      backfillRuns,
+      backfill: backfillRuns[0] ?? null,
+      edge: edgeRows[0] ?? null,
+      derivedState: {
+        edgeCount: Number(derivedState.edgeCount ?? 0),
+        edgeStateCount: Number(derivedState.edgeStateCount ?? 0),
+        freshnessCount: Number(derivedState.freshnessCount ?? 0),
+      },
+    };
+  } catch (error) {
+    throw new Error(
+      `restore fixture backup contract requires sqlite3: ${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
     );
   }
@@ -2746,7 +2875,7 @@ async function runSchemaBackfillVerify(
   );
 }
 
-async function restoreBackupThroughSettingsUi(context, backupName) {
+export async function restoreBackupThroughSettingsUi(context, backupName) {
   const { page, harness } = context;
   const backups = await harness.invokeOk(page, "list_backups");
   const matchingBackups = Array.isArray(backups)
@@ -2836,8 +2965,35 @@ async function restoreBackupThroughSettingsUi(context, backupName) {
   return { backupIndex };
 }
 
-async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
-  const id = "c2-5b-restore-verify-rebuild-verify";
+/**
+ * Shared restore scenario used by the C2-5B maintenance journey and the
+ * C2-ZC authority-cutover journey.  The default remains C2-5B's single
+ * restore/open phase.  C2-ZC opts into separate setup-disabled restore,
+ * normal scheduler open, and restart phases so the authority marker cannot
+ * be mistaken for a restore side effect.
+ */
+export async function runRestoreVerifyRebuildVerifyScenario(
+  harness,
+  configureWorkspace,
+  {
+    id = "c2-5b-restore-verify-rebuild-verify",
+    restorePhase = "open",
+    openPhase = null,
+    restartPhase = null,
+    restoreEnvironment = {},
+    openEnvironment = {},
+    restartEnvironment = {},
+    requirePreRestoreMaintenanceSettled = true,
+    restoreThroughSettingsUi = restoreBackupThroughSettingsUi,
+    onFixture = null,
+    onRestore = null,
+    onOpen = null,
+    onRestart = null,
+  } = {},
+) {
+  if (typeof configureWorkspace !== "function") {
+    throw new Error("restore scenario requires configureWorkspace");
+  }
   const workspace = harness.workspacePath(id);
   await configureJourneyWorkspace(harness, configureWorkspace, workspace);
   const fixtureEvidence = await seedRestoreFixtureEvidence(
@@ -2845,29 +3001,38 @@ async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
     workspace,
     id,
   );
+  await onFixture?.({
+    id,
+    workspace,
+    fixtureEvidence,
+  });
   const preLaunchRuns = await readRunSnapshot(workspace);
-  const launched = await withLaunchEnvironment(
-    { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
-    () => harness.launch(`${id}/open`),
+  const restoreLaunch = await withLaunchEnvironment(
+    {
+      ...restoreEnvironment,
+      ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+    },
+    () => harness.launch(`${id}/${restorePhase}`),
   );
+  let restoreResult;
   try {
     const context = await contextForLaunch(
       harness,
-      launched,
+      restoreLaunch,
       workspace,
       id,
       preLaunchRuns,
     );
     // The first real launch starts the Project background Timelapse and the
-    // maintenance scheduler concurrently.  Restore must not detach the live
+    // maintenance scheduler concurrently. Restore must not detach the live
     // DB while either still owns a scoped mutation; wait on their durable
     // completion/cursor contract instead of sleeping for an arbitrary delay.
     await waitForReadiness(context, "restore/pre-restore settled", {
-      requireMaintenanceSettled: true,
+      requireMaintenanceSettled: requirePreRestoreMaintenanceSettled,
     });
     const beforeRestoreRuns = await context.runs();
     const beforeEpochs = await context.epochs();
-    await restoreBackupThroughSettingsUi(context, fixtureEvidence.backupName);
+    await restoreThroughSettingsUi(context, fixtureEvidence.backupName);
     let restoredContext;
     let authorityMismatch;
     await harness.waitUntil(
@@ -2875,7 +3040,7 @@ async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
         try {
           const candidate = await contextForLaunch(
             harness,
-            launched,
+            restoreLaunch,
             workspace,
             id,
             beforeRestoreRuns,
@@ -2900,31 +3065,178 @@ async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
     if (!restoredContext) {
       throw new Error("restore reload did not rebind a hydrated project context");
     }
-    // The restored fixture intentionally has no post-restore Freshness Run:
-    // the automatic restore chain is Verify -> Rebuild -> Verify.  The
-    // Settings UI helper and contextForLaunch above already prove renderer /
-    // workspace hydration; waitForRestorePhaseRows below is the durable
-    // settled boundary for this restored database.
-    context.record("restore-epoch-trigger-observed", {
-      backupName: fixtureEvidence.backupName,
-    });
-    const sequence = await waitForRestorePhaseRows(
-      restoredContext,
-      beforeRestoreRuns,
-    );
-    const epochs = await restoredContext.epochs();
-    const restoreEpoch = assertRestoreVerifyRebuildVerifyCausality(
-      sequence,
+    const restoredRuns = await restoredContext.runs();
+    const restoredEpochs = await restoredContext.epochs();
+    restoreResult = {
+      id,
+      workspace,
+      fixtureEvidence,
+      context: restoredContext,
+      setup: restoreEnvironment.setup ?? null,
+      beforeRuns: beforeRestoreRuns,
       beforeEpochs,
-      epochs,
-    );
-    context.record("restore-epoch-verify-rebuild-verify-complete", {
-      epochs: [restoreEpoch.id],
-      runIds: sequence.map((run) => run.id),
-    });
+      runs: restoredRuns,
+      epochs: restoredEpochs,
+    };
+    await onRestore?.(restoreResult);
+    // Capture any non-maintenance freshness observation that may settle while
+    // the setup-disabled restore document is still open. The next normal
+    // launch must diff against the complete durable ledger, not a stale
+    // pre-callback sample.
+    restoreResult.runs = await restoredContext.runs();
+    restoreResult.epochs = await restoredContext.epochs();
+
+    if (openPhase === null) {
+      // C2-5B's combined phase intentionally observes the automatic chain
+      // after the Settings UI reload. C2-ZC takes the split branch below so
+      // setup-disabled restore remains free of maintenance Runs.
+      const sequence = await waitForRestorePhaseRows(
+        restoredContext,
+        beforeRestoreRuns,
+      );
+      const epochs = await restoredContext.epochs();
+      await onOpen?.({
+        ...restoreResult,
+        context: restoredContext,
+        beforeRuns: beforeRestoreRuns,
+        beforeEpochs,
+        phaseRuns: sequence,
+        runs: await restoredContext.runs(),
+        epochs,
+      });
+      return {
+        workspace,
+        fixtureEvidence,
+        restore: restoreResult,
+        open: {
+          context: restoredContext,
+          beforeRuns: beforeRestoreRuns,
+          beforeEpochs,
+          phaseRuns: sequence,
+          runs: await restoredContext.runs(),
+          epochs,
+        },
+      };
+    }
   } finally {
-    await harness.close(launched.app, launched.page, `${id}/open`);
+    await harness.close(
+      restoreLaunch.app,
+      restoreLaunch.page,
+      `${id}/${restorePhase}`,
+    );
   }
+
+  const openLaunch = await withLaunchEnvironment(
+    {
+      ...openEnvironment,
+      ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+    },
+    () => harness.launch(`${id}/${openPhase}`),
+  );
+  let openResult;
+  try {
+    const context = await contextForLaunch(
+      harness,
+      openLaunch,
+      workspace,
+      id,
+      restoreResult.runs,
+    );
+    const phaseRuns = await waitForRestorePhaseRows(
+      context,
+      restoreResult.runs,
+    );
+    const runs = await context.runs();
+    const epochs = await context.epochs();
+    openResult = {
+      id,
+      workspace,
+      fixtureEvidence,
+      context,
+      setup: openEnvironment.setup ?? null,
+      beforeRuns: restoreResult.runs,
+      beforeEpochs: restoreResult.epochs,
+      phaseRuns,
+      runs,
+      epochs,
+    };
+    await onOpen?.(openResult);
+  } finally {
+    await harness.close(
+      openLaunch.app,
+      openLaunch.page,
+      `${id}/${openPhase}`,
+    );
+  }
+
+  let restartResult = null;
+  if (restartPhase !== null) {
+    const restartLaunch = await withLaunchEnvironment(
+      {
+        ...restartEnvironment,
+        ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+      },
+      () => harness.launch(`${id}/${restartPhase}`),
+    );
+    try {
+      const context = await contextForLaunch(
+        harness,
+        restartLaunch,
+        workspace,
+        id,
+        openResult.runs,
+      );
+      restartResult = {
+        id,
+        workspace,
+        fixtureEvidence,
+        context,
+        setup: restartEnvironment.setup ?? null,
+        beforeRuns: openResult.runs,
+        beforeEpochs: openResult.epochs,
+        runs: await context.runs(),
+        epochs: await context.epochs(),
+      };
+      await onRestart?.(restartResult);
+    } finally {
+      await harness.close(
+        restartLaunch.app,
+        restartLaunch.page,
+        `${id}/${restartPhase}`,
+      );
+    }
+  }
+
+  return {
+    workspace,
+    fixtureEvidence,
+    restore: restoreResult,
+    open: openResult,
+    restart: restartResult,
+  };
+}
+
+async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
+  const id = "c2-5b-restore-verify-rebuild-verify";
+  return runRestoreVerifyRebuildVerifyScenario(harness, configureWorkspace, {
+    id,
+    onRestore: ({ context, fixtureEvidence }) => {
+      context.record("restore-epoch-trigger-observed", {
+        backupName: fixtureEvidence.backupName,
+      });
+    },
+    onOpen: ({ context, phaseRuns, beforeEpochs, epochs }) => {
+      const restoreEpoch = assertRestoreVerifyRebuildVerifyCausality(
+        phaseRuns,
+        beforeEpochs,
+        epochs,
+      );
+      context.record("restore-epoch-verify-rebuild-verify-complete", {
+        epochs: [restoreEpoch.id],
+        runIds: phaseRuns.map((run) => run.id),
+      });
+    },
+  });
 }
 
 async function runDigestChangeJourney(
