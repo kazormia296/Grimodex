@@ -66,7 +66,7 @@ async function read(relativePath) {
 test("C2-ZC is registered as a distinct product journey and contract boundary", () => {
   assert.deepEqual(
     NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
-    ["c2-zc-canonical-authority-cutover"],
+    ["c2-zc-canonical-authority-cutover", "c2-zc-renderer-mcp-dml-denial"],
   );
   assert.deepEqual(NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[0].contracts, [
     "c2-zc:canonical-authority-cutover",
@@ -79,17 +79,17 @@ test("C2-ZC is registered as a distinct product journey and contract boundary", 
   );
   assert.deepEqual(
     resolveProductJourneySet("c2-zc").map((journey) => journey.id),
-    ["c2-zc-canonical-authority-cutover"],
+    ["c2-zc-canonical-authority-cutover", "c2-zc-renderer-mcp-dml-denial"],
   );
   assert.deepEqual(
     resolveProductJourneyImpactCatalog("c2-zc").map((journey) => journey.id),
-    ["c2-zc-canonical-authority-cutover"],
+    ["c2-zc-canonical-authority-cutover", "c2-zc-renderer-mcp-dml-denial"],
   );
   assert.deepEqual(
     PRODUCT_JOURNEYS.map((journey) => journey.id),
     PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
   );
-  assert.equal(NARRATIVE_C2ZC_PRODUCT_JOURNEYS.length, 1);
+  assert.equal(NARRATIVE_C2ZC_PRODUCT_JOURNEYS.length, 2);
 });
 
 test("C2-ZC journey launch phases are registered for clean Electron diagnostics", () => {

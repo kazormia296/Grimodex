@@ -21,6 +21,7 @@ import {
   C2ZC_PRODUCT_JOURNEY_ID,
   runC2ZcCanonicalAuthorityJourney,
 } from "./c2zc-canonical-product-journey.mjs";
+import { runC2ZcRendererMcpDmlDenialJourney } from "./c2zc-renderer-mcp-dml-denial-product-journey.mjs";
 
 const mainCjs = path.join(rootDir, "dist-electron", "main.cjs");
 const DEFAULT_SCENE_TITLE = "シーン 1";
@@ -404,6 +405,10 @@ export const NARRATIVE_C2ZC_PRODUCT_JOURNEYS = [
     id: C2ZC_PRODUCT_JOURNEY_ID,
     run: (harness) =>
       runC2ZcCanonicalAuthorityJourney(harness, configureWorkspace),
+  },
+  {
+    id: "c2-zc-renderer-mcp-dml-denial",
+    run: runC2ZcRendererMcpDmlDenialJourney,
   },
 ];
 

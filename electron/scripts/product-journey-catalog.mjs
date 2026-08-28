@@ -1,19 +1,25 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-const freezeEntries = (entries) =>
-  Object.freeze(
-    entries.map((entry) =>
-      Object.freeze(
-        Object.fromEntries(
-          Object.entries(entry).map(([key, value]) => [
-            key,
-            Array.isArray(value) ? Object.freeze([...value]) : value,
-          ]),
-        ),
+const cloneAndFreeze = (value) => {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map(cloneAndFreeze));
+  }
+  if (value && typeof value === "object") {
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(value).map(([key, nestedValue]) => [
+          key,
+          cloneAndFreeze(nestedValue),
+        ]),
       ),
-    ),
-  );
+    );
+  }
+  return value;
+};
+
+const freezeEntries = (entries) =>
+  Object.freeze(entries.map((entry) => cloneAndFreeze(entry)));
 
 export const PRODUCT_JOURNEY_CAPABILITY_ORDER = Object.freeze([
   "electron",
@@ -103,6 +109,31 @@ export const NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG = freezeEntries([
     capabilities: ["electron", "napi"],
     description:
       "main scheduler -> N-API freshness cycle -> Generic authority cutover -> restart/new-project continuity",
+  },
+  {
+    id: "c2-zc-renderer-mcp-dml-denial",
+    domains: ["narrative-maintenance", "sqlite"],
+    interactions: ["narrative-maintenance->sqlite"],
+    contracts: [
+      "c2-zc:renderer-dml-denial",
+      "c2-zc:mcp-generic-rust-dml-denial",
+    ],
+    capabilities: ["electron", "napi"],
+    description:
+      "renderer db_execute zero-row DML denial across C2-ZC tables; McpGeneric remains Rust-only",
+    phases: [
+      "c2-zc-renderer-mcp-dml-denial/open",
+      "c2-zc-renderer-mcp-dml-denial/restart",
+    ],
+    mcpGeneric: {
+      productionToolName: null,
+      productionRoute: null,
+      status: "not-exposed",
+      canonicalRustSource: "src-tauri/crates/grimodex-db/src/execute.rs",
+      canonicalRustTest:
+        "c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes",
+      origin: "SqlOrigin::McpGeneric",
+    },
   },
 ]);
 
@@ -387,9 +418,11 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
     paths: [
       "electron/scripts/narrative-maintenance-product-journeys.mjs",
       "electron/scripts/c2zc-canonical-product-journey.mjs",
+      "electron/scripts/c2zc-renderer-mcp-dml-denial-product-journey.mjs",
       "electron/scripts/product-journeys.mjs",
       "scripts/c2-5b-product-journeys.test.mjs",
       "scripts/c2zc-product-journeys.test.mjs",
+      "scripts/c2zc-renderer-mcp-dml-denial.test.mjs",
       "scripts/product-journey-phase1.test.mjs",
       "electron/main/narrativeFreshness.ts",
       "electron/main/narrativeFreshness.test.ts",
@@ -397,6 +430,7 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
       NARRATIVE_MAINTENANCE_FOREGROUND_OWNER_GLOB,
       ...NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
       "electron/native/grimodex-node/**",
+      "src-tauri/crates/grimodex-db/src/execute.rs",
       "src-tauri/crates/grimodex-db/src/migrate.rs",
       "src-tauri/crates/grimodex-db/src/backup_restore.rs",
       "src-tauri/crates/grimodex-core/src/workspace_schema.rs",

@@ -245,6 +245,80 @@ test("product runner records deterministic results while preserving serial fresh
   assert.match(manifest.results.sha256, /^sha256:[0-9a-f]{64}$/);
 });
 
+test("product runner persists a journey evidence result and binds results path/hash in manifest", async (t) => {
+  const outputRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-evidence-results-"),
+  );
+  const resultsPath = path.join(outputRoot, "results.json");
+  t.after(() => rm(outputRoot, { recursive: true, force: true }));
+
+  const evidence = {
+    receiptVersion: 2,
+    probeCount: 36,
+    probes: Array.from({ length: 36 }, (_, index) => ({ index: index + 1 })),
+    terminalLedger: { ready: true, obligations: [] },
+  };
+  const quiescenceArtifacts = {
+    before: {
+      receipt: {
+        type: "grimodex:narrative-maintenance-ci-quiescence",
+        sequence: 1,
+      },
+      path: "/tmp/receipt/quiescence-0000000001.json",
+      realPath: "/tmp/receipt/quiescence-0000000001.json",
+      sha256: `sha256:${"a".repeat(64)}`,
+      byteLength: 321,
+    },
+    after: {
+      receipt: {
+        type: "grimodex:narrative-maintenance-ci-quiescence",
+        sequence: 2,
+      },
+      path: "/tmp/receipt/quiescence-0000000002.json",
+      realPath: "/tmp/receipt/quiescence-0000000002.json",
+      sha256: `sha256:${"b".repeat(64)}`,
+      byteLength: 654,
+    },
+  };
+  await runProductJourneys({
+    journeys: [
+      {
+        id: "dml-evidence",
+        run: async () => ({
+          settledEvidence: evidence,
+          quiescenceArtifacts,
+        }),
+      },
+    ],
+    assertArtifacts: () => undefined,
+    createHarness: () => ({
+      finalizeDiagnostics: async () => ({ cleanPass: true }),
+      dispose: async () => undefined,
+    }),
+    clock: deterministicClock([100, 125]),
+    resultsPath,
+  });
+
+  const report = await readJson(resultsPath);
+  assert.deepEqual(report.journeys[0].result, {
+    settledEvidence: evidence,
+    quiescenceArtifacts,
+  });
+  assert.deepEqual(
+    report.journeys[0].result.quiescenceArtifacts,
+    quiescenceArtifacts,
+    "the result must persist core quiescence receipt identity before artifact disposal",
+  );
+  const manifest = await readJson(path.join(outputRoot, "manifest.json"));
+  assert.equal(manifest.results.realPath, await realpath(resultsPath));
+  assert.equal(
+    manifest.results.sha256,
+    `sha256:${createHash("sha256")
+      .update(await readFile(resultsPath))
+      .digest("hex")}`,
+  );
+});
+
 test("product runner writes the failed and fail-fast results before rethrowing", async (t) => {
   const outputRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-product-results-"),

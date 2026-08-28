@@ -322,6 +322,7 @@ rules:
     paths:
       - electron/scripts/narrative-maintenance-product-journeys.mjs
       - electron/scripts/c2zc-canonical-product-journey.mjs
+      - electron/scripts/c2zc-renderer-mcp-dml-denial-product-journey.mjs
       - electron/scripts/product-journeys.mjs
       - electron/main/narrativeFreshness.ts
       - electron/main/narrativeFreshness.test.ts
@@ -333,6 +334,7 @@ rules:
       - policies/narrative/narrative-failure-policy.json
       - scripts/c2-5b-product-journeys.test.mjs
       - scripts/c2zc-product-journeys.test.mjs
+      - scripts/c2zc-renderer-mcp-dml-denial.test.mjs
       - scripts/product-journey-phase1.test.mjs
     requirements:
       - GDX-POLICY-001

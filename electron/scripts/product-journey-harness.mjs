@@ -24,6 +24,7 @@ import { promisify } from "node:util";
 import { _electron } from "playwright";
 
 import { closeElectronAppWithDiagnostics } from "./close-electron-app.mjs";
+import { C2ZC_RENDERER_DML_PHASE_ALLOWLIST } from "./c2zc-renderer-mcp-dml-denial-product-journey.mjs";
 
 const require = createRequire(import.meta.url);
 const execFile = promisify(execFileCallback);
@@ -1479,6 +1480,7 @@ export const PRODUCT_JOURNEY_ELECTRON_PHASES = Object.freeze([
   "c2-zc-canonical-authority-cutover/restart",
   "c2-zc-canonical-authority-cutover/restart-persistence",
   "c2-zc-canonical-authority-cutover/new-project",
+  ...C2ZC_RENDERER_DML_PHASE_ALLOWLIST,
 ]);
 
 export const MAIN_PROCESS_NOISE_ALLOWLIST = Object.freeze([
