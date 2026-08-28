@@ -140,10 +140,65 @@ mod tests {
     use super::*;
     use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
     use grimodex_db::narrative_extraction::{
-        run_dependency_verify_for_project, run_system_work_cycle, AutomaticRunKind,
-        MaintenanceCycleRequest, NarrativeMaintenanceCiTrigger, RecoveryMode,
+        run_dependency_verify_for_project, run_incremental_freshness_cycle, run_system_work_cycle,
+        AutomaticRunKind, IncrementalFreshnessCycleOutcome, MaintenanceCycleRequest,
+        NarrativeMaintenanceCiTrigger, RecoveryMode,
     };
     use serde_json::json;
+
+    fn before_cutover_test_database(seed_freshness_cursor: bool) -> Database {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        let backfill_spec = json!({ "backfillAlgorithmVersion": "3" }).to_string();
+        let backfill_outcome = json!({
+            "maintenancePhase": "backfill-complete",
+            "backfillAlgorithmVersion": "3",
+            "semanticEpochId": "epoch-1",
+            "summary": {
+                "epoch_created": true,
+                "contributions_created": 0,
+                "edges_created": 0,
+                "applications_without_run_id": 0
+            }
+        })
+        .to_string();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'default-project', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, outcome_summary_json, created_at, completed_at,
+                     run_kind, semantic_epoch_id, work_key)
+                 VALUES ('backfill-complete', 'default-project', 'maintenance', ?1, ?1,
+                         'sha256:backfill', 'completed', '{}', ?2,
+                         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
+                         'backfill', 'epoch-1', 'legacy-dependency-backfill:v3')",
+                [backfill_spec.as_str(), backfill_outcome.as_str()],
+            )?;
+            if seed_freshness_cursor {
+                // An existing released cursor at the empty Feed head means
+                // the idle checkpoint updates only bookkeeping. Omitting the
+                // row intentionally exercises cursor creation as a semantic
+                // Verify input in the companion regression below.
+                conn.execute(
+                    "INSERT INTO narrative_change_cursors
+                        (project_id, consumer_id, acknowledged_through_sequence, updated_at)
+                     VALUES ('default-project', 'narrative-incremental-freshness/v1', 0,
+                             '2026-01-01T00:00:00.000Z')",
+                    [],
+                )?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed completed backfill boundary");
+        db
+    }
 
     #[test]
     fn wake_reason_is_closed_and_does_not_accept_renderer_phase_names() {
@@ -266,43 +321,7 @@ mod tests {
 
     #[test]
     fn before_cutover_discovery_starts_with_verify_after_a_reusable_verify() {
-        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
-        let backfill_spec = json!({ "backfillAlgorithmVersion": "3" }).to_string();
-        let backfill_outcome = json!({
-            "maintenancePhase": "backfill-complete",
-            "backfillAlgorithmVersion": "3",
-            "semanticEpochId": "epoch-1",
-            "summary": {
-                "epoch_created": true,
-                "contributions_created": 0,
-                "edges_created": 0,
-                "applications_without_run_id": 0
-            }
-        })
-        .to_string();
-        db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO narrative_semantic_epochs
-                    (id, project_id, epoch_number, reason, created_at)
-                 VALUES ('epoch-1', 'default-project', 0, 'initial',
-                         '2026-01-01T00:00:00.000Z')",
-                [],
-            )?;
-            conn.execute(
-                "INSERT INTO narrative_extraction_runs
-                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-                     status, coverage_json, outcome_summary_json, created_at, completed_at,
-                     run_kind, semantic_epoch_id, work_key)
-                 VALUES ('backfill-complete', 'default-project', 'maintenance', ?1, ?1,
-                         'sha256:backfill', 'completed', '{}', ?2,
-                         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
-                         'backfill', 'epoch-1', 'legacy-dependency-backfill:v3')",
-                [backfill_spec.as_str(), backfill_outcome.as_str()],
-            )?;
-            Ok::<_, anyhow::Error>(())
-        })
-        .expect("seed completed backfill boundary");
+        let db = before_cutover_test_database(true);
 
         run_dependency_verify_for_project(&db, "default-project")
             .expect("baseline Verify must persist durable evidence");
@@ -385,5 +404,95 @@ mod tests {
             repeated.pages.is_empty(),
             "a completed current-Epoch chain must be idempotent"
         );
+
+        // Renderer layout persistence uses the legacy change log but is not a
+        // canonical Narrative Feed transaction.  It is therefore outside the
+        // Verify cursor/feed read closure and must not invalidate sealed
+        // Verify evidence when it arrives after the chain completed.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO change_events
+                    (event_uid, project_id, scene_id, domain, op_type,
+                     entity_type, entity_id, payload, session_id, sequence,
+                     timestamp, prev_hash, hash)
+                 VALUES ('c2-zc-layout-snapshot-after-chain', 'default-project',
+                         NULL, 'layout', 'layout.snapshot', 'workspace',
+                         'default-project', '{}', 'c2-zc-test', 1,
+                         1787893741387, 'layout-prev', 'layout-after-chain')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("insert unrelated legacy layout event");
+
+        // The main freshness scheduler emits a zero-width checkpoint once
+        // the current Epoch is at the Feed head.  That checkpoint updates
+        // only cursor bookkeeping; it must not make the already confirmed
+        // BeforeCutover Verify evidence look stale and mint another Verify
+        // on the next readiness wake.
+        let idle = run_incremental_freshness_cycle(&db)
+            .expect("current-Epoch idle checkpoint should complete");
+        assert!(matches!(
+            idle,
+            IncrementalFreshnessCycleOutcome::Processed(summary)
+                if summary.from_sequence_exclusive == summary.through_sequence_inclusive
+                    && !summary.has_more
+        ));
+        let repeated_after_idle = discover_all(
+            &db,
+            MaintenanceWorkspaceBinding {
+                authority_id: "authority:test".to_string(),
+                generation: 1,
+            },
+            WakeReason::BeforeCutover,
+            None,
+        )
+        .expect("repeat BeforeCutover discovery after idle checkpoint");
+        assert!(
+            repeated_after_idle.pages.is_empty(),
+            "idle cursor bookkeeping must not invalidate completed current-Epoch Verify evidence"
+        );
+    }
+
+    #[test]
+    fn idle_cursor_creation_remains_a_verify_input_without_a_preexisting_cursor() {
+        let db = before_cutover_test_database(false);
+        run_dependency_verify_for_project(&db, "default-project")
+            .expect("baseline Verify must persist durable skip evidence");
+
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority:test".to_string(),
+            generation: 1,
+        };
+        let baseline = discover_all(&db, binding.clone(), WakeReason::WorkspaceOpened, None)
+            .expect("discover baseline before idle checkpoint");
+        assert!(
+            baseline.pages.is_empty(),
+            "pre-idle Verify evidence should be reusable even without a cursor row"
+        );
+
+        let idle = run_incremental_freshness_cycle(&db)
+            .expect("missing empty-feed cursor should be created by idle checkpoint");
+        assert!(matches!(
+            idle,
+            IncrementalFreshnessCycleOutcome::Processed(summary)
+                if summary.from_sequence_exclusive == summary.through_sequence_inclusive
+                    && !summary.has_more
+        ));
+
+        let after_idle = discover_all(&db, binding, WakeReason::WorkspaceOpened, None)
+            .expect("discover after semantic cursor creation");
+        let work = after_idle
+            .pages
+            .iter()
+            .flat_map(|page| page.work.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            work.len(),
+            1,
+            "creating the previously absent cursor must invalidate old Verify evidence"
+        );
+        assert_eq!(work[0].run_kind, AutomaticRunKind::Verify);
+        assert_eq!(work[0].semantic_epoch_id.as_deref(), Some("epoch-1"));
     }
 }

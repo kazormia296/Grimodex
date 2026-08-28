@@ -2758,7 +2758,9 @@ mod tests {
     use serde_json::json;
     use std::path::Path;
 
-    use super::super::restore_rebuild::rebuild_narrative_derived_state_for_project;
+    use super::super::restore_rebuild::{
+        durable_graph_state_digest, rebuild_narrative_derived_state_for_project,
+    };
 
     const PROJECT_ID: &str = "project-c2z";
     const EPOCH_ID: &str = "epoch-c2z";
@@ -3993,6 +3995,59 @@ mod tests {
             Ok(())
         })
         .expect("readiness report");
+    }
+
+    #[test]
+    fn incremental_runtime_blocks_cursor_error_without_binding_it_to_graph_cas() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_change_cursors
+                    (project_id, consumer_id, acknowledged_through_sequence,
+                     last_error, updated_at)
+                 VALUES (?1, ?2, 0, NULL, '2026-08-20T00:00:00.000Z')",
+                params![PROJECT_ID, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+            )?;
+            Ok(())
+        })
+        .expect("seed clean incremental cursor");
+
+        let baseline_digest = db
+            .with_conn(|conn| durable_graph_state_digest(conn, PROJECT_ID))
+            .expect("digest before cursor error");
+        let baseline_gate = db
+            .with_conn(|conn| inspect_incremental_runtime_gate(conn, PROJECT_ID, Some(EPOCH_ID)))
+            .expect("inspect clean incremental runtime gate");
+        assert_ne!(baseline_gate.state, ReadinessState::Blocked);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_change_cursors
+                    SET last_error = 'transient cursor failure',
+                        updated_at = '2026-08-20T00:00:01.000Z'
+                  WHERE project_id = ?1
+                    AND consumer_id = ?2",
+                params![PROJECT_ID, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+            )?;
+            Ok(())
+        })
+        .expect("seed cursor error");
+
+        let after_error_digest = db
+            .with_conn(|conn| durable_graph_state_digest(conn, PROJECT_ID))
+            .expect("digest after cursor error");
+        assert_eq!(
+            baseline_digest, after_error_digest,
+            "cursor error and timestamp are readiness/bookkeeping inputs, not Verify graph inputs"
+        );
+        let blocked_gate = db
+            .with_conn(|conn| inspect_incremental_runtime_gate(conn, PROJECT_ID, Some(EPOCH_ID)))
+            .expect("inspect cursor-error incremental runtime gate");
+        assert_eq!(blocked_gate.state, ReadinessState::Blocked);
+        assert_eq!(
+            blocked_gate.reasons,
+            vec!["incremental-freshness-cursor-error".to_string()]
+        );
     }
 
     #[test]

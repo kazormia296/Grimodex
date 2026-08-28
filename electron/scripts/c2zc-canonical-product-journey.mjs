@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   assertRestoreFixtureEvidence,
@@ -17,6 +17,12 @@ const C2ZC_PHASE_RUN_KINDS = Object.freeze([
   "semantic-index-rebuild",
   "dependency-verify",
 ]);
+const C2ZC_IDLE_RUN_KIND = "freshness-evaluation";
+const C2ZC_IDLE_TASK_KIND = "incremental-freshness-batch";
+const C2ZC_IDLE_TASK_INPUT_KIND = "current-epoch-idle-checkpoint";
+const C2ZC_IDLE_SPEC_KIND = "incremental-freshness-idle-checkpoint@1";
+const C2ZC_IDLE_HEX_DIGEST = /^sha256:[0-9a-f]{64}$/;
+const C2ZC_MAX_IDLE_ATTEMPTS = 3;
 const C2ZC_AUTOMATIC_RUN_KINDS = new Set([
   "backfill",
   "dependency-verify",
@@ -45,6 +51,77 @@ async function queryRows(harness, page, sql, params = []) {
       method: "all",
     }),
   );
+}
+
+export async function readC2ZcRunLedger(harness, page, projectId, runs) {
+  const [taskRows, attemptRows] = await Promise.all([
+    queryRows(
+      harness,
+      page,
+      `SELECT t.id,
+              t.run_id AS runId,
+              t.task_kind AS taskKind,
+              t.status,
+              t.attempt_count AS attemptCount,
+              t.priority,
+              t.lease_owner AS leaseOwner,
+              t.lease_expires_at AS leaseExpiresAt,
+              t.heartbeat_at AS heartbeatAt,
+              t.error_message AS errorMessage,
+              t.input_json AS inputJson,
+              t.output_json AS outputJson,
+              t.created_at AS createdAt,
+              t.started_at AS startedAt,
+              t.completed_at AS completedAt,
+              t.version
+         FROM narrative_extraction_tasks t
+         JOIN narrative_extraction_runs r ON r.id = t.run_id
+        WHERE r.project_id = ?
+        ORDER BY t.run_id, t.created_at, t.id`,
+      [projectId],
+    ),
+    queryRows(
+      harness,
+      page,
+      `SELECT a.id,
+              a.task_id AS taskId,
+              a.attempt_number AS attemptNumber,
+              a.status,
+              a.started_at AS startedAt,
+              a.completed_at AS completedAt,
+              a.error_message AS errorMessage,
+              a.output_json AS outputJson,
+              a.failure_code AS failureCode,
+              a.retry_disposition AS retryDisposition,
+              a.policy_version AS policyVersion,
+              a.next_attempt_at AS nextAttemptAt
+         FROM narrative_extraction_attempts a
+         JOIN narrative_extraction_tasks t ON t.id = a.task_id
+         JOIN narrative_extraction_runs r ON r.id = t.run_id
+        WHERE r.project_id = ?
+        ORDER BY t.run_id, a.attempt_number, a.id`,
+      [projectId],
+    ),
+  ]);
+  const attemptsByTaskId = new Map();
+  for (const attempt of attemptRows) {
+    const taskAttempts = attemptsByTaskId.get(attempt.taskId) ?? [];
+    taskAttempts.push(attempt);
+    attemptsByTaskId.set(attempt.taskId, taskAttempts);
+  }
+  const tasksByRunId = new Map();
+  for (const task of taskRows) {
+    const runTasks = tasksByRunId.get(task.runId) ?? [];
+    runTasks.push({
+      ...task,
+      attempts: attemptsByTaskId.get(task.id) ?? [],
+    });
+    tasksByRunId.set(task.runId, runTasks);
+  }
+  return rows(runs, "C2-ZC Run ledger").map((run) => ({
+    ...run,
+    tasks: tasksByRunId.get(run.id) ?? [],
+  }));
 }
 
 async function createProjectAfterCutover(harness, page) {
@@ -327,6 +404,12 @@ export function assertC2ZcRestoreStageIsolation({
   const priorRuns = rows(beforeRuns, `${label} before Runs`);
   const currentRuns = rows(afterRuns, `${label} after Runs`);
   const priorIds = new Set(priorRuns.map((run) => run.id));
+  const freshFreshness = currentRuns.filter(
+    (run) => !priorIds.has(run.id) && run.runKind === C2ZC_IDLE_RUN_KIND,
+  );
+  if (freshFreshness.length > 0) {
+    throw new Error(`${label} must not run Freshness Runs during restore`);
+  }
   const fresh = currentRuns.filter(
     (run) => !priorIds.has(run.id) && C2ZC_AUTOMATIC_RUN_KINDS.has(run.runKind),
   );
@@ -341,6 +424,442 @@ export function assertC2ZcRestoreStageIsolation({
     throw new Error(`${label} must retain the canonical B0 under E0`);
   }
   return after[1];
+}
+
+function parseObject(value, label) {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch (error) {
+      throw new Error(`${label} is not canonical JSON`, { cause: error });
+    }
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${label} must be a JSON object`);
+  }
+  return parsed;
+}
+
+// This is the JS counterpart of the shared Rust digest_plan seam: object keys
+// are sorted recursively, arrays retain their order, and the UTF-8 JSON bytes
+// are hashed with SHA-256. The idle descriptor contains only JSON-safe integer,
+// boolean, and string values, so JSON.stringify has the same number spelling as
+// serde_json for this contract.
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256Canonical(value) {
+  return `sha256:${createHash("sha256")
+    .update(canonicalJson(value), "utf8")
+    .digest("hex")}`;
+}
+
+function assertExactKeys(value, expected, label) {
+  const actual = Object.keys(value).sort();
+  const keys = [...expected].sort();
+  if (actual.length !== keys.length || actual.some((key, index) => key !== keys[index])) {
+    throw new Error(`${label} has unexpected keys`);
+  }
+}
+
+function assertOutputMatchesRunOutcome(outputJson, outcome, label) {
+  let output;
+  try {
+    output = parseObject(outputJson, `${label} outputJson`);
+  } catch (error) {
+    throw new Error(`${label} output JSON does not match Run outcome`, {
+      cause: error,
+    });
+  }
+  if (canonicalJson(output) !== canonicalJson(outcome)) {
+    throw new Error(`${label} output JSON does not match Run outcome`);
+  }
+}
+
+function parseCanonicalLifecycleInstant(value, label) {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+  ) {
+    throw new Error(`${label} must be canonical RFC3339 milliseconds`);
+  }
+  return parseInstant(value, label);
+}
+
+function assertC2ZcIdleCheckpointRun(run, restoreEpochId, label) {
+  if (
+    run?.runKind !== C2ZC_IDLE_RUN_KIND ||
+    run.status !== "completed" ||
+    run.semanticEpochId !== restoreEpochId ||
+    typeof run.id !== "string" ||
+    run.id.trim() === ""
+  ) {
+    throw new Error(`${label} must be a completed current-E1 Freshness Run`);
+  }
+  if (run.projectId !== undefined && typeof run.projectId !== "string") {
+    throw new Error(`${label} project binding is invalid`);
+  }
+  if (run.consumerId !== "narrative-incremental-freshness/v1") {
+    throw new Error(`${label} consumerId must be narrative-incremental-freshness/v1`);
+  }
+
+  const taskRows = Array.isArray(run.tasks) ? run.tasks : [];
+  const task = taskRows[0];
+  const attempts = Array.isArray(task?.attempts) ? task.attempts : [];
+  const taskAttemptCount = Number(task?.attemptCount);
+  if (
+    taskRows.length !== 1 ||
+    !task ||
+    typeof task.id !== "string" ||
+    task.id.trim() === "" ||
+    (task.runId !== undefined && task.runId !== run.id) ||
+    task.taskKind !== C2ZC_IDLE_TASK_KIND ||
+    task.status !== "completed" ||
+    run.taskKind !== task.taskKind ||
+    run.taskStatus !== task.status ||
+    Number(run.taskCount) !== taskRows.length ||
+    Number(run.attemptCount) !== attempts.length ||
+    Number(run.taskAttemptCount) !== taskAttemptCount ||
+    !Number.isInteger(taskAttemptCount) ||
+    taskAttemptCount < 1 ||
+    taskAttemptCount > C2ZC_MAX_IDLE_ATTEMPTS ||
+    taskAttemptCount !== attempts.length
+  ) {
+    throw new Error(`${label} Task/Attempt retry topology is invalid`);
+  }
+  if (task.inputJson !== undefined && task.inputJson !== run.taskInputJson) {
+    throw new Error(`${label} Task/Attempt retry topology is invalid`);
+  }
+
+  const taskInput = parseObject(run.taskInputJson, `${label} Task input`);
+  assertExactKeys(taskInput, [
+    "kind",
+    "version",
+    "projectId",
+    "semanticEpochId",
+    "fromSequenceExclusive",
+    "throughSequenceInclusive",
+    "feedHead",
+    "inputDigest",
+  ], `${label} Task input`);
+  if (
+    taskInput.kind !== C2ZC_IDLE_TASK_INPUT_KIND ||
+    taskInput.version !== 1 ||
+    taskInput.semanticEpochId !== restoreEpochId ||
+    (run.projectId !== undefined && taskInput.projectId !== run.projectId) ||
+    !Number.isSafeInteger(taskInput.feedHead) ||
+    taskInput.feedHead < 0 ||
+    taskInput.fromSequenceExclusive !== taskInput.feedHead ||
+    taskInput.throughSequenceInclusive !== taskInput.feedHead ||
+    !C2ZC_IDLE_HEX_DIGEST.test(taskInput.inputDigest)
+  ) {
+    throw new Error(`${label} Task input is not a tagged zero-width current-E1 checkpoint`);
+  }
+  const taskInputPayload = { ...taskInput };
+  delete taskInputPayload.inputDigest;
+  if (sha256Canonical(taskInputPayload) !== taskInput.inputDigest) {
+    throw new Error(`${label} Task input digest does not match its canonical payload`);
+  }
+
+  const spec = parseObject(run.specJson, `${label} Run spec`);
+  assertExactKeys(spec, ["kind", "inputDigest"], `${label} Run spec`);
+  if (spec.kind !== C2ZC_IDLE_SPEC_KIND || spec.inputDigest !== taskInput.inputDigest) {
+    throw new Error(`${label} Run spec is not bound to the idle Task input`);
+  }
+  if (!C2ZC_IDLE_HEX_DIGEST.test(run.specDigest ?? "")) {
+    throw new Error(`${label} Run specDigest is not a canonical sha256 digest`);
+  }
+  if (sha256Canonical(spec) !== run.specDigest) {
+    throw new Error(`${label} specDigest does not match its canonical spec`);
+  }
+  const expectedWorkKey =
+    `incremental-freshness:${restoreEpochId}:${taskInput.fromSequenceExclusive}:` +
+    `${taskInput.throughSequenceInclusive}:${taskInput.inputDigest.slice("sha256:".length)}`;
+  if (run.workKey !== expectedWorkKey) {
+    throw new Error(`${label} work_key is not bound to the idle Task input`);
+  }
+
+  const outcome = parseObject(run.outcomeSummaryJson, `${label} Run outcome`);
+  assertExactKeys(outcome, [
+    "kind",
+    "version",
+    "projectId",
+    "runId",
+    "fromSequenceExclusive",
+    "throughSequenceInclusive",
+    "affectedEdgeCount",
+    "affectedConsumerCount",
+    "hasMore",
+  ], `${label} Run outcome`);
+  if (
+    outcome.kind !== C2ZC_IDLE_TASK_INPUT_KIND ||
+    outcome.version !== 1 ||
+    outcome.projectId !== taskInput.projectId ||
+    outcome.runId !== run.id ||
+    outcome.fromSequenceExclusive !== taskInput.fromSequenceExclusive ||
+    outcome.throughSequenceInclusive !== taskInput.throughSequenceInclusive ||
+    outcome.affectedEdgeCount !== 0 ||
+    outcome.affectedConsumerCount !== 0 ||
+    outcome.hasMore !== false
+  ) {
+    throw new Error(`${label} outcome is not a zero-width idle checkpoint`);
+  }
+  assertOutputMatchesRunOutcome(task.outputJson, outcome, `${label} Task`);
+
+  let lifecycle;
+  try {
+    lifecycle = {
+      runCreatedAt: parseCanonicalLifecycleInstant(run.createdAt, `${label} Run.createdAt`),
+      runStartedAt: parseCanonicalLifecycleInstant(run.startedAt, `${label} Run.startedAt`),
+      taskCreatedAt: parseCanonicalLifecycleInstant(run.taskCreatedAt, `${label} Task.createdAt`),
+      taskStartedAt: parseCanonicalLifecycleInstant(run.taskStartedAt, `${label} Task.startedAt`),
+      attemptStartedAt: parseCanonicalLifecycleInstant(
+        run.lastAttemptStartedAt,
+        `${label} Attempt.startedAt`,
+      ),
+      attemptCompletedAt: parseCanonicalLifecycleInstant(
+        run.lastAttemptCompletedAt,
+        `${label} Attempt.completedAt`,
+      ),
+      taskCompletedAt: parseCanonicalLifecycleInstant(
+        run.taskCompletedAt,
+        `${label} Task.completedAt`,
+      ),
+      runCompletedAt: parseCanonicalLifecycleInstant(run.completedAt, `${label} Run.completedAt`),
+      taskDetailCreatedAt: parseCanonicalLifecycleInstant(
+        task.createdAt,
+        `${label} Task.createdAt detail`,
+      ),
+      taskDetailStartedAt: parseCanonicalLifecycleInstant(
+        task.startedAt,
+        `${label} Task.startedAt detail`,
+      ),
+      taskDetailCompletedAt: parseCanonicalLifecycleInstant(
+        task.completedAt,
+        `${label} Task.completedAt detail`,
+      ),
+    };
+  } catch (error) {
+    throw new Error(`${label} Task/Attempt lifecycle temporal envelope is invalid`, {
+      cause: error,
+    });
+  }
+  if (
+    compareInstants(lifecycle.taskCreatedAt, lifecycle.taskDetailCreatedAt) !== 0 ||
+    compareInstants(lifecycle.taskStartedAt, lifecycle.taskDetailStartedAt) !== 0 ||
+    compareInstants(lifecycle.taskCompletedAt, lifecycle.taskDetailCompletedAt) !== 0
+  ) {
+    throw new Error(`${label} Task/Attempt lifecycle temporal envelope is invalid`);
+  }
+  const orderedLifecycle = [
+    ["Run.createdAt", lifecycle.runCreatedAt],
+    ["Run.startedAt", lifecycle.runStartedAt],
+    ["Task.createdAt", lifecycle.taskCreatedAt],
+    ["Task.startedAt", lifecycle.taskStartedAt],
+    ["Attempt.startedAt", lifecycle.attemptStartedAt],
+    ["Attempt.completedAt", lifecycle.attemptCompletedAt],
+    ["Task.completedAt", lifecycle.taskCompletedAt],
+    ["Run.completedAt", lifecycle.runCompletedAt],
+  ];
+  for (let index = 1; index < orderedLifecycle.length; index += 1) {
+    if (compareInstants(orderedLifecycle[index - 1][1], orderedLifecycle[index][1]) > 0) {
+      throw new Error(`${label} Task/Attempt lifecycle temporal envelope is invalid`);
+    }
+  }
+
+  const attemptIds = new Set();
+  let previousStartedAt = lifecycle.taskStartedAt;
+  let previousCompletedAt = null;
+  let completedAttemptIndex = -1;
+  for (const [index, attempt] of attempts.entries()) {
+    if (
+      typeof attempt?.id !== "string" ||
+      attempt.id.trim() === "" ||
+      attemptIds.has(attempt.id) ||
+      (attempt.taskId !== undefined && attempt.taskId !== task.id) ||
+      Number(attempt.attemptNumber) !== index + 1 ||
+      !["failed", "completed"].includes(attempt.status)
+    ) {
+      throw new Error(`${label} Task/Attempt retry topology is invalid`);
+    }
+    attemptIds.add(attempt.id);
+    let startedAt;
+    let completedAt;
+    try {
+      startedAt = parseCanonicalLifecycleInstant(
+        attempt.startedAt,
+        `${label} Attempt ${index + 1}.startedAt`,
+      );
+      completedAt = parseCanonicalLifecycleInstant(
+        attempt.completedAt,
+        `${label} Attempt ${index + 1}.completedAt`,
+      );
+    } catch (error) {
+      throw new Error(`${label} Task/Attempt lifecycle temporal envelope is invalid`, {
+        cause: error,
+      });
+    }
+    if (
+      compareInstants(startedAt, previousStartedAt) < 0 ||
+      (previousCompletedAt && compareInstants(startedAt, previousCompletedAt) < 0) ||
+      compareInstants(completedAt, startedAt) < 0
+    ) {
+      throw new Error(`${label} Task/Attempt retry topology is invalid`);
+    }
+    if (attempt.status === "failed") {
+      if (attempt.outputJson !== null) {
+        throw new Error(
+          `${label} Task/Attempt retry topology is invalid: failed Attempt outputJson must be NULL`,
+        );
+      }
+      let nextAttemptAt;
+      try {
+        nextAttemptAt = parseCanonicalLifecycleInstant(
+          attempt.nextAttemptAt,
+          `${label} Attempt ${index + 1}.nextAttemptAt`,
+        );
+      } catch (error) {
+        throw new Error(`${label} Task/Attempt retry topology is invalid`, {
+          cause: error,
+        });
+      }
+      if (
+        typeof attempt.failureCode !== "string" ||
+        !attempt.failureCode.startsWith("NEX_") ||
+        attempt.retryDisposition !== "retryable" ||
+        attempt.policyVersion !== "v1" ||
+        compareInstants(nextAttemptAt, completedAt) < 0
+      ) {
+        throw new Error(`${label} Task/Attempt retry topology is invalid`);
+      }
+      if (completedAttemptIndex >= 0) {
+        throw new Error(`${label} Task/Attempt retry topology is invalid`);
+      }
+    } else {
+      if (
+        attempt.failureCode != null ||
+        attempt.retryDisposition != null ||
+        attempt.policyVersion != null ||
+        attempt.nextAttemptAt != null
+      ) {
+        throw new Error(`${label} Task/Attempt retry topology is invalid`);
+      }
+      if (completedAttemptIndex >= 0) {
+        throw new Error(`${label} Task/Attempt retry topology is invalid`);
+      }
+      completedAttemptIndex = index;
+    }
+    previousStartedAt = startedAt;
+    previousCompletedAt = completedAt;
+  }
+  if (
+    completedAttemptIndex !== attempts.length - 1 ||
+    compareInstants(lifecycle.taskCompletedAt, previousCompletedAt) < 0
+  ) {
+    throw new Error(`${label} Task/Attempt retry topology is invalid`);
+  }
+  const finalAttempt = attempts.at(-1);
+  assertOutputMatchesRunOutcome(
+    finalAttempt.outputJson,
+    outcome,
+    `${label} final Attempt`,
+  );
+  if (
+    Number(run.lastAttemptNumber) !== finalAttempt.attemptNumber ||
+    Number(run.maxAttemptNumber) !== finalAttempt.attemptNumber ||
+    run.lastAttemptStatus !== finalAttempt.status ||
+    compareInstants(run.lastAttemptStartedAt, finalAttempt.startedAt) !== 0 ||
+    compareInstants(run.lastAttemptCompletedAt, finalAttempt.completedAt) !== 0
+  ) {
+    throw new Error(`${label} Task/Attempt retry topology is invalid`);
+  }
+  return run;
+}
+
+/** Validate the exact V/R/V -> one current-E1 idle Freshness -> marker order. */
+export function assertC2ZcOpenTotalOrder({
+  markerBefore,
+  markerAfter,
+  beforeEpochs,
+  afterEpochs,
+  beforeRuns,
+  afterRuns,
+  phaseRuns,
+  idleRun,
+  restoreEpochId,
+  label = "C2-ZC normal open",
+}) {
+  const phases = assertC2ZcOpenPhaseTimeline({
+    markerBefore,
+    markerAfter,
+    beforeEpochs,
+    afterEpochs,
+    beforeRuns,
+    afterRuns,
+    phaseRuns,
+    restoreEpochId,
+    label,
+  });
+  const priorIds = new Set(rows(beforeRuns, `${label} before Runs`).map((run) => run.id));
+  const current = rows(afterRuns, `${label} after Runs`).filter(
+    (run) => !priorIds.has(run.id),
+  );
+  const freshnessRuns = current.filter(
+    (run) => run.runKind === C2ZC_IDLE_RUN_KIND,
+  );
+  if (freshnessRuns.length !== 1) {
+    throw new Error(`${label} must contain exactly one post-baseline Freshness Run`);
+  }
+  const observedIdle = freshnessRuns[0];
+  if (observedIdle.semanticEpochId !== restoreEpochId) {
+    throw new Error(`${label} sole post-baseline Freshness Run must be bound to current E1`);
+  }
+  if (idleRun && observedIdle.id !== idleRun.id) {
+    throw new Error(`${label} idle Freshness identity does not match the observed Run`);
+  }
+  const validatedIdle = assertC2ZcIdleCheckpointRun(observedIdle, restoreEpochId, `${label} idle Freshness`);
+  if (phases.length !== C2ZC_PHASE_RUN_KINDS.length) {
+    throw new Error(`${label} maintenance phase rows must remain exactly Verify -> Rebuild -> Verify`);
+  }
+  if (compareInstants(phases[2].completedAt, validatedIdle.createdAt) >= 0) {
+    throw new Error(`${label} idle Freshness must start after confirmation Verify completedAt`);
+  }
+  const markerAppliedAt = parseInstant(markerAfter.appliedAt, `${label} marker appliedAt`);
+  const idleLifecycleFields = [
+    "createdAt",
+    "startedAt",
+    "taskCreatedAt",
+    "taskStartedAt",
+    "lastAttemptStartedAt",
+    "lastAttemptCompletedAt",
+    "taskCompletedAt",
+    "completedAt",
+  ];
+  for (const field of idleLifecycleFields) {
+    if (
+      compareInstants(
+        markerAppliedAt,
+        parseInstant(validatedIdle[field], `${label} idle Freshness ${field}`),
+      ) < 0
+    ) {
+      throw new Error(`${label} marker must be after idle Task/Attempt lifecycle`);
+    }
+  }
+  if (compareInstants(markerAppliedAt, validatedIdle.completedAt) < 0) {
+    throw new Error(`${label} marker must be applied after idle Freshness completedAt`);
+  }
+  return { phaseRuns: phases, idleRun: validatedIdle };
 }
 
 /** Validate exact current-E1 Verify -> Rebuild -> confirmation Verify. */
@@ -437,11 +956,128 @@ export function assertC2ZcOpenPhaseTimeline({
   return phases;
 }
 
+function assertC2ZcRestartPhaseRows(phaseRuns, restoreEpoch, label) {
+  const phases = rows(phaseRuns, `${label} phase Runs`);
+  if (phases.length !== C2ZC_PHASE_RUN_KINDS.length) {
+    throw new Error(`${label} must preserve exactly Verify -> Rebuild -> Verify`);
+  }
+  const epochCreatedAt = parseInstant(restoreEpoch.createdAt, `${label} E1 createdAt`);
+  const ids = new Set();
+  let previousCreatedAt = null;
+  let previousCompletedAt = null;
+  for (const [index, run] of phases.entries()) {
+    if (
+      run.runKind !== C2ZC_PHASE_RUN_KINDS[index] ||
+      typeof run.id !== "string" ||
+      run.id.trim() === "" ||
+      ids.has(run.id) ||
+      run.status !== "completed" ||
+      run.semanticEpochId !== restoreEpoch.id ||
+      typeof run.workKey !== "string" ||
+      run.workKey.trim() === ""
+    ) {
+      throw new Error(`${label} persisted phase Run contract is invalid`);
+    }
+    ids.add(run.id);
+    const createdAt = parseInstant(run.createdAt, `${label} phase ${index + 1} createdAt`);
+    const completedAt = parseInstant(run.completedAt, `${label} phase ${index + 1} completedAt`);
+    if (
+      compareInstants(createdAt, epochCreatedAt) < 0 ||
+      compareInstants(createdAt, completedAt) >= 0 ||
+      (previousCreatedAt &&
+        (compareInstants(createdAt, previousCreatedAt) <= 0 ||
+          compareInstants(createdAt, previousCompletedAt) <= 0 ||
+          compareInstants(completedAt, previousCompletedAt) <= 0))
+    ) {
+      throw new Error(`${label} persisted phase Run timestamps are invalid`);
+    }
+    previousCreatedAt = createdAt;
+    previousCompletedAt = completedAt;
+  }
+  return phases;
+}
+
+function normalizeC2ZcRunContract(run) {
+  const fields = [
+    "runKind",
+    "projectId",
+    "workKey",
+    "status",
+    "semanticEpochId",
+    "consumerId",
+    "createdAt",
+    "startedAt",
+    "completedAt",
+    "specJson",
+    "specDigest",
+    "outcomeSummaryJson",
+    "terminalReasonCode",
+    "catalogDigest",
+    "registryDigest",
+    "taskKind",
+    "taskStatus",
+    "taskCount",
+    "attemptCount",
+    "taskAttemptCount",
+    "lastAttemptStatus",
+    "lastAttemptNumber",
+    "maxAttemptNumber",
+    "taskInputJson",
+    "taskCreatedAt",
+    "taskStartedAt",
+    "taskCompletedAt",
+    "lastAttemptStartedAt",
+    "lastAttemptCompletedAt",
+  ];
+  const normalized = Object.fromEntries(
+    fields.map((field) => [field, run?.[field] ?? null]),
+  );
+  normalized.tasks = Array.isArray(run?.tasks)
+    ? run.tasks.map((task) => ({
+        id: task?.id ?? null,
+        runId: task?.runId ?? null,
+        taskKind: task?.taskKind ?? null,
+        status: task?.status ?? null,
+        attemptCount: task?.attemptCount ?? null,
+        priority: task?.priority ?? null,
+        leaseOwner: task?.leaseOwner ?? null,
+        leaseExpiresAt: task?.leaseExpiresAt ?? null,
+        heartbeatAt: task?.heartbeatAt ?? null,
+        errorMessage: task?.errorMessage ?? null,
+        inputJson: task?.inputJson ?? null,
+        outputJson: task?.outputJson ?? null,
+        createdAt: task?.createdAt ?? null,
+        startedAt: task?.startedAt ?? null,
+        completedAt: task?.completedAt ?? null,
+        version: task?.version ?? null,
+        attempts: Array.isArray(task?.attempts)
+          ? task.attempts.map((attempt) => ({
+              id: attempt?.id ?? null,
+              taskId: attempt?.taskId ?? null,
+              attemptNumber: attempt?.attemptNumber ?? null,
+              status: attempt?.status ?? null,
+              startedAt: attempt?.startedAt ?? null,
+              completedAt: attempt?.completedAt ?? null,
+              errorMessage: attempt?.errorMessage ?? null,
+              outputJson: attempt?.outputJson ?? null,
+              failureCode: attempt?.failureCode ?? null,
+              retryDisposition: attempt?.retryDisposition ?? null,
+              policyVersion: attempt?.policyVersion ?? null,
+              nextAttemptAt: attempt?.nextAttemptAt ?? null,
+            }))
+          : null,
+      }))
+    : null;
+  return normalized;
+}
+
 /** Validate marker, epoch, and phase Run identity across restart. */
 export function assertC2ZcRestartInvariants({
   open,
   restart,
   phaseRunIds,
+  idleRunId,
+  baselineRuns = [],
   label = "C2-ZC restart",
 }) {
   const left = open?.marker;
@@ -482,6 +1118,94 @@ export function assertC2ZcRestartInvariants({
     ids.some((id) => !openIds.has(id) || !restartIds.has(id))
   ) {
     throw new Error(`${label} did not preserve phase Run IDs without rerunning them`);
+  }
+  const baselineIds = new Set(rows(baselineRuns, `${label} baseline Runs`).map((run) => run.id));
+  const openFreshnessIds = new Set(
+    openRuns
+      .filter(
+        (run) =>
+          run.runKind === C2ZC_IDLE_RUN_KIND && !baselineIds.has(run.id),
+      )
+      .map((run) => run.id),
+  );
+  const restartFreshnessIds = new Set(
+    restartRuns
+      .filter(
+        (run) =>
+          run.runKind === C2ZC_IDLE_RUN_KIND && !baselineIds.has(run.id),
+      )
+      .map((run) => run.id),
+  );
+  if (
+    openFreshnessIds.size !== 1 ||
+    restartFreshnessIds.size !== 1 ||
+    [...openFreshnessIds].some((id) => !restartFreshnessIds.has(id))
+  ) {
+    throw new Error(`${label} post-baseline Freshness Run identities changed across restart`);
+  }
+  if (typeof idleRunId !== "string" || idleRunId.trim() === "") {
+    throw new Error(`${label} requires the current-E1 idle Freshness Run ID`);
+  }
+  const openIdle = openRuns.filter((run) => run.id === idleRunId);
+  const restartIdle = restartRuns.filter((run) => run.id === idleRunId);
+  if (
+    openIdle.length !== 1 ||
+    restartIdle.length !== 1 ||
+    openIdle[0]?.runKind !== C2ZC_IDLE_RUN_KIND ||
+    restartIdle[0]?.runKind !== C2ZC_IDLE_RUN_KIND ||
+    openIdle[0]?.semanticEpochId !== restartEpochs[1]?.id ||
+    restartIdle[0]?.semanticEpochId !== restartEpochs[1]?.id
+  ) {
+    throw new Error(`${label} did not preserve the current-E1 idle Freshness Run ID`);
+  }
+  const openIdleIds = new Set(
+    openRuns
+      .filter(
+        (run) =>
+          run.runKind === C2ZC_IDLE_RUN_KIND &&
+          run.semanticEpochId === restartEpochs[1]?.id,
+      )
+      .map((run) => run.id),
+  );
+  const restartIdleIds = new Set(
+    restartRuns
+      .filter(
+        (run) =>
+          run.runKind === C2ZC_IDLE_RUN_KIND &&
+          run.semanticEpochId === restartEpochs[1]?.id,
+      )
+      .map((run) => run.id),
+  );
+  if (
+    openIdleIds.size !== 1 ||
+    restartIdleIds.size !== 1 ||
+    [...openIdleIds].some((id) => !restartIdleIds.has(id))
+  ) {
+    throw new Error(`${label} reran or minted a second current-E1 idle Freshness Run`);
+  }
+  const restartPhaseRuns = ids.map((id) => restartRuns.find((run) => run.id === id));
+  assertC2ZcRestartPhaseRows(
+    restartPhaseRuns,
+    restartEpochs[1],
+    `${label} restart`,
+  );
+  const restartIdleRun = restartIdle[0];
+  assertC2ZcIdleCheckpointRun(
+    restartIdleRun,
+    restartEpochs[1].id,
+    `${label} restart idle Freshness`,
+  );
+  for (const id of [...ids, idleRunId]) {
+    const openRun = openRuns.find((run) => run.id === id);
+    const restartRun = restartRuns.find((run) => run.id === id);
+    if (
+      !openRun ||
+      !restartRun ||
+      canonicalJson(normalizeC2ZcRunContract(openRun)) !==
+        canonicalJson(normalizeC2ZcRunContract(restartRun))
+    ) {
+      throw new Error(`${label} persisted Run contract changed across restart for ${id}`);
+    }
   }
   if (restartRuns.some((run) => run.runKind === "backfill" && run.semanticEpochId === restartEpochs[1].id)) {
     throw new Error(`${label} minted an E1 Backfill during restart`);
@@ -570,12 +1294,17 @@ export async function runC2ZcCanonicalAuthorityJourney(
       },
       onOpen: async ({ context, beforeRuns, beforeEpochs, phaseRuns }) => {
         const markerSnapshot = await waitForMarker(harness, context.page, context.projectId);
-        const runs = await context.runs();
+        const runs = await readC2ZcRunLedger(
+          harness,
+          context.page,
+          context.projectId,
+          await context.runs(),
+        );
         const epochs = await context.epochs();
         if (markerSnapshot.genericCount < 0 || markerSnapshot.legacyCount < 0) {
           throw new Error("C2-ZC authority counts must be non-negative");
         }
-        assertC2ZcOpenPhaseTimeline({
+        const totalOrder = assertC2ZcOpenTotalOrder({
           markerBefore: restoreSnapshot.marker,
           markerAfter: markerSnapshot.marker,
           beforeEpochs,
@@ -585,11 +1314,19 @@ export async function runC2ZcCanonicalAuthorityJourney(
           phaseRuns,
           restoreEpochId: restoreSnapshot.epochs[1].id,
         });
-        openSnapshot = { marker: markerSnapshot.marker, epochs, runs, phaseRuns };
+        openSnapshot = {
+          marker: markerSnapshot.marker,
+          epochs,
+          runs,
+          beforeRuns,
+          phaseRuns: totalOrder.phaseRuns,
+          idleRun: totalOrder.idleRun,
+        };
         context.record("c2-zc-canonical-authority-activated", {
           marker: markerSnapshot.marker,
           epochIds: epochs.map((epoch) => epoch.id),
-          phaseRunIds: phaseRuns.map((run) => run.id),
+          phaseRunIds: totalOrder.phaseRuns.map((run) => run.id),
+          idleRunId: totalOrder.idleRun.id,
           genericCount: markerSnapshot.genericCount,
           legacyCount: markerSnapshot.legacyCount,
           activationOwner: "electron-main:narrativeFreshness->napi",
@@ -597,17 +1334,25 @@ export async function runC2ZcCanonicalAuthorityJourney(
       },
       onRestart: async ({ context }) => {
         const markerSnapshot = await waitForMarker(harness, context.page, context.projectId);
-        const runs = await context.runs();
+        const runs = await readC2ZcRunLedger(
+          harness,
+          context.page,
+          context.projectId,
+          await context.runs(),
+        );
         const epochs = await context.epochs();
         assertC2ZcRestartInvariants({
           open: openSnapshot,
           restart: { marker: markerSnapshot.marker, epochs, runs },
           phaseRunIds: openSnapshot.phaseRuns.map((run) => run.id),
+          idleRunId: openSnapshot.idleRun.id,
+          baselineRuns: openSnapshot.beforeRuns,
         });
         context.record("c2-zc-canonical-authority-restarted", {
           marker: markerSnapshot.marker,
           epochIds: epochs.map((epoch) => epoch.id),
           phaseRunIds: openSnapshot.phaseRuns.map((run) => run.id),
+          idleRunId: openSnapshot.idleRun.id,
         });
       },
     },

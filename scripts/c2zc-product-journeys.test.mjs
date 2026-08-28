@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -15,7 +16,9 @@ import {
 } from "../electron/scripts/product-journeys.mjs";
 import {
   assertC2ZcOpenPhaseTimeline,
+  assertC2ZcOpenTotalOrder,
   assertC2ZcPostMarkerProjectBirth,
+  readC2ZcRunLedger,
   assertC2ZcRestoreBackupFixture,
   assertC2ZcRestoreStageIsolation,
   assertC2ZcRestartInvariants,
@@ -354,6 +357,192 @@ function c2zcPhase(id, runKind, epochId, createdAt, completedAt) {
   };
 }
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256Canonical(value) {
+  return `sha256:${createHash("sha256")
+    .update(canonicalJson(value), "utf8")
+    .digest("hex")}`;
+}
+
+function c2zcIdleCheckpoint(id, epochId, createdAt, completedAt) {
+  const inputPayload = {
+    kind: "current-epoch-idle-checkpoint",
+    version: 1,
+    projectId: "project-1",
+    semanticEpochId: epochId,
+    fromSequenceExclusive: 1,
+    throughSequenceInclusive: 1,
+    feedHead: 1,
+  };
+  const inputDigest = sha256Canonical(inputPayload);
+  const taskInput = { ...inputPayload, inputDigest };
+  const outcome = {
+    kind: "current-epoch-idle-checkpoint",
+    version: 1,
+    projectId: "project-1",
+    runId: id,
+    fromSequenceExclusive: 1,
+    throughSequenceInclusive: 1,
+    affectedEdgeCount: 0,
+    affectedConsumerCount: 0,
+    hasMore: false,
+  };
+  const outputJson = JSON.stringify(outcome);
+  const spec = {
+    kind: "incremental-freshness-idle-checkpoint@1",
+    inputDigest,
+  };
+  const taskId = `${id}-task`;
+  const attemptId = `${id}-attempt-1`;
+  const attempt = {
+    id: attemptId,
+    taskId,
+    attemptNumber: 1,
+    status: "completed",
+    startedAt: createdAt,
+    completedAt,
+    failureCode: null,
+    retryDisposition: null,
+    policyVersion: null,
+    nextAttemptAt: null,
+    outputJson,
+  };
+  return {
+    id,
+    projectId: "project-1",
+    runKind: "freshness-evaluation",
+    workKey: `incremental-freshness:${epochId}:1:1:${inputDigest.slice("sha256:".length)}`,
+    semanticEpochId: epochId,
+    status: "completed",
+    createdAt,
+    startedAt: createdAt,
+    completedAt,
+    consumerId: "narrative-incremental-freshness/v1",
+    specJson: JSON.stringify(spec),
+    specDigest: sha256Canonical(spec),
+    outcomeSummaryJson: outputJson,
+    taskKind: "incremental-freshness-batch",
+    taskStatus: "completed",
+    taskCount: 1,
+    attemptCount: 1,
+    taskAttemptCount: 1,
+    lastAttemptStatus: "completed",
+    lastAttemptNumber: 1,
+    maxAttemptNumber: 1,
+    taskInputJson: JSON.stringify(taskInput),
+    taskCreatedAt: createdAt,
+    taskStartedAt: createdAt,
+    taskCompletedAt: completedAt,
+    lastAttemptStartedAt: createdAt,
+    lastAttemptCompletedAt: completedAt,
+    tasks: [
+      {
+        id: taskId,
+        runId: id,
+        taskKind: "incremental-freshness-batch",
+        status: "completed",
+        attemptCount: 1,
+        outputJson,
+        createdAt,
+        startedAt: createdAt,
+        completedAt,
+        attempts: [attempt],
+      },
+    ],
+  };
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function idleRunWithAttempts(baseRun, attempts) {
+  const run = clone(baseRun);
+  const task = run.tasks[0];
+  task.attemptCount = attempts.length;
+  task.attempts = clone(attempts).map((attempt) => ({
+    ...attempt,
+    outputJson:
+      attempt.outputJson ??
+      (attempt.status === "failed" ? null : run.outcomeSummaryJson),
+  }));
+  run.attemptCount = attempts.length;
+  run.taskAttemptCount = attempts.length;
+  run.lastAttemptNumber = attempts.at(-1).attemptNumber;
+  run.maxAttemptNumber = Math.max(...attempts.map((attempt) => attempt.attemptNumber));
+  run.lastAttemptStatus = attempts.at(-1).status;
+  run.lastAttemptStartedAt = attempts.at(-1).startedAt;
+  run.lastAttemptCompletedAt = attempts.at(-1).completedAt;
+  run.taskCompletedAt = task.completedAt;
+  return run;
+}
+
+function c2zcOpenContractFixture() {
+  const fixture = c2zcFixture();
+  const e1 = {
+    id: "epoch-e1",
+    epochNumber: 1,
+    reason: "restore",
+    createdAt: "2026-08-28T00:00:10.000Z",
+  };
+  const phaseRuns = [
+    c2zcPhase(
+      "verify-e1",
+      "dependency-verify",
+      e1.id,
+      "2026-08-28T00:00:11.000Z",
+      "2026-08-28T00:00:12.000Z",
+    ),
+    c2zcPhase(
+      "rebuild-e1",
+      "semantic-index-rebuild",
+      e1.id,
+      "2026-08-28T00:00:13.000Z",
+      "2026-08-28T00:00:14.000Z",
+    ),
+    c2zcPhase(
+      "confirm-e1",
+      "dependency-verify",
+      e1.id,
+      "2026-08-28T00:00:15.000Z",
+      "2026-08-28T00:00:16.000Z",
+    ),
+  ];
+  const idleRun = c2zcIdleCheckpoint(
+    "idle-e1",
+    e1.id,
+    "2026-08-28T00:00:16.100Z",
+    "2026-08-28T00:00:16.200Z",
+  );
+  return {
+    markerBefore: null,
+    markerAfter: {
+      migrationId: "narrative-c2-canonical-freshness-v1",
+      contractVersion: 1,
+      appliedAt: "2026-08-28T00:00:17.000Z",
+    },
+    beforeEpochs: [...fixture.epochs, e1],
+    afterEpochs: [...fixture.epochs, e1],
+    beforeRuns: [fixture.backfill],
+    afterRuns: [fixture.backfill, ...phaseRuns, idleRun],
+    phaseRuns,
+    idleRun,
+    restoreEpochId: e1.id,
+  };
+}
+
 test("C2-ZC backup fixture contract proves pre-cutover E0/B0 and a derived gap", () => {
   const fixture = c2zcFixture();
   assert.doesNotThrow(() => assertC2ZcRestoreBackupFixture(fixture));
@@ -444,6 +633,43 @@ test("C2-ZC restore stage is isolated from maintenance and mints exactly E1", ()
   );
 });
 
+test("C2-ZC disabled restore rejects every new Freshness Run regardless of epoch binding", () => {
+  const fixture = c2zcFixture();
+  const e1 = {
+    id: "epoch-e1",
+    epochNumber: 1,
+    reason: "restore",
+    createdAt: "2026-08-28T00:00:10.000Z",
+  };
+  for (const [label, epochId] of [
+    ["E0 Freshness", "epoch-e0"],
+    ["E1 Freshness", e1.id],
+    ["NULL-epoch Freshness", null],
+  ]) {
+    assert.throws(
+      () =>
+        assertC2ZcRestoreStageIsolation({
+          setup: "disabled",
+          marker: null,
+          beforeEpochs: fixture.epochs,
+          afterEpochs: [...fixture.epochs, e1],
+          beforeRuns: [fixture.backfill],
+          afterRuns: [
+            fixture.backfill,
+            c2zcIdleCheckpoint(
+              `restore-${label}`,
+              epochId,
+              "2026-08-28T00:00:11.000Z",
+              "2026-08-28T00:00:12.000Z",
+            ),
+          ],
+        }),
+      /must not run Freshness Runs during restore/,
+      label,
+    );
+  }
+});
+
 test("C2-ZC open proves exact E1 Verify/Rebuild/confirmation and late marker", () => {
   const fixture = c2zcFixture();
   const e1 = {
@@ -526,6 +752,565 @@ test("C2-ZC open proves exact E1 Verify/Rebuild/confirmation and late marker", (
   );
 });
 
+test("C2-ZC open total order includes one idle E1 Freshness before the marker", () => {
+  const fixture = c2zcFixture();
+  const e1 = {
+    id: "epoch-e1",
+    epochNumber: 1,
+    reason: "restore",
+    createdAt: "2026-08-28T00:00:10.000Z",
+  };
+  const phaseRuns = [
+    c2zcPhase(
+      "verify-e1",
+      "dependency-verify",
+      e1.id,
+      "2026-08-28T00:00:11.000Z",
+      "2026-08-28T00:00:12.000Z",
+    ),
+    c2zcPhase(
+      "rebuild-e1",
+      "semantic-index-rebuild",
+      e1.id,
+      "2026-08-28T00:00:13.000Z",
+      "2026-08-28T00:00:14.000Z",
+    ),
+    c2zcPhase(
+      "confirm-e1",
+      "dependency-verify",
+      e1.id,
+      "2026-08-28T00:00:15.000Z",
+      "2026-08-28T00:00:16.000Z",
+    ),
+  ];
+  const idleRun = c2zcIdleCheckpoint(
+    "idle-e1",
+    e1.id,
+    "2026-08-28T00:00:16.100Z",
+    "2026-08-28T00:00:16.200Z",
+  );
+  const marker = {
+    migrationId: "narrative-c2-canonical-freshness-v1",
+    contractVersion: 1,
+    appliedAt: "2026-08-28T00:00:17.000Z",
+  };
+  assert.doesNotThrow(() =>
+    assertC2ZcOpenTotalOrder({
+      markerBefore: null,
+      markerAfter: marker,
+      beforeEpochs: [...fixture.epochs, e1],
+      afterEpochs: [...fixture.epochs, e1],
+      beforeRuns: [fixture.backfill],
+      afterRuns: [fixture.backfill, ...phaseRuns, idleRun],
+      phaseRuns,
+      idleRun,
+      restoreEpochId: e1.id,
+    }),
+  );
+  assert.throws(
+    () =>
+      assertC2ZcOpenTotalOrder({
+        markerBefore: null,
+        markerAfter: {
+          ...marker,
+          appliedAt: "2026-08-28T00:00:16.150Z",
+        },
+        beforeEpochs: [...fixture.epochs, e1],
+        afterEpochs: [...fixture.epochs, e1],
+        beforeRuns: [fixture.backfill],
+        afterRuns: [fixture.backfill, ...phaseRuns, idleRun],
+        phaseRuns,
+        idleRun,
+        restoreEpochId: e1.id,
+      }),
+    /after idle Task\/Attempt lifecycle/,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcOpenTotalOrder({
+        markerBefore: null,
+        markerAfter: marker,
+        beforeEpochs: [...fixture.epochs, e1],
+        afterEpochs: [...fixture.epochs, e1],
+        beforeRuns: [fixture.backfill],
+        afterRuns: [
+          fixture.backfill,
+          ...phaseRuns,
+          idleRun,
+          c2zcPhase(
+            "verify-after-idle",
+            "dependency-verify",
+            e1.id,
+            "2026-08-28T00:00:16.300Z",
+            "2026-08-28T00:00:16.400Z",
+          ),
+        ],
+        phaseRuns,
+        idleRun,
+        restoreEpochId: e1.id,
+      }),
+    /exactly the three current-E1 phase Runs/,
+  );
+});
+
+test("C2-ZC idle checkpoint recomputes the canonical Task input digest", () => {
+  const base = c2zcOpenContractFixture();
+  const taskInput = JSON.parse(base.idleRun.taskInputJson);
+  const outcome = JSON.parse(base.idleRun.outcomeSummaryJson);
+  const tamperedTaskInput = {
+    ...taskInput,
+    fromSequenceExclusive: 2,
+    throughSequenceInclusive: 2,
+    feedHead: 2,
+  };
+  const tamperedIdle = {
+    ...base.idleRun,
+    workKey: `incremental-freshness:${base.restoreEpochId}:2:2:${taskInput.inputDigest.slice("sha256:".length)}`,
+    taskInputJson: JSON.stringify(tamperedTaskInput),
+    outcomeSummaryJson: JSON.stringify({
+      ...outcome,
+      fromSequenceExclusive: 2,
+      throughSequenceInclusive: 2,
+    }),
+  };
+  assert.throws(
+    () =>
+      assertC2ZcOpenTotalOrder({
+        ...base,
+        afterRuns: [...base.beforeRuns, ...base.phaseRuns, tamperedIdle],
+        idleRun: tamperedIdle,
+      }),
+    /Task input digest does not match its canonical payload/,
+  );
+});
+
+test("C2-ZC idle checkpoint recomputes the canonical Run spec digest", () => {
+  const base = c2zcOpenContractFixture();
+  const tamperedIdle = {
+    ...base.idleRun,
+    specDigest: sha256Canonical({
+      kind: "incremental-freshness-idle-checkpoint@1",
+      inputDigest: "sha256:" + "c".repeat(64),
+    }),
+  };
+  assert.throws(
+    () =>
+      assertC2ZcOpenTotalOrder({
+        ...base,
+        afterRuns: [...base.beforeRuns, ...base.phaseRuns, tamperedIdle],
+        idleRun: tamperedIdle,
+      }),
+    /specDigest does not match its canonical spec/,
+  );
+});
+
+test("C2-ZC idle checkpoint requires the exact incremental freshness consumer", () => {
+  const base = c2zcOpenContractFixture();
+  const tamperedIdle = { ...base.idleRun, consumerId: "other-consumer/v1" };
+  assert.throws(
+    () =>
+      assertC2ZcOpenTotalOrder({
+        ...base,
+        afterRuns: [...base.beforeRuns, ...base.phaseRuns, tamperedIdle],
+        idleRun: tamperedIdle,
+      }),
+    /consumerId must be narrative-incremental-freshness\/v1/,
+  );
+});
+
+test("C2-ZC idle Task and final Attempt output must match the Run outcome", () => {
+  const base = c2zcOpenContractFixture();
+  const outcome = JSON.parse(base.idleRun.outcomeSummaryJson);
+  for (const [label, mutate] of [
+    ["Task output", (run) => {
+      const tampered = { ...outcome, affectedEdgeCount: 1 };
+      run.tasks[0].outputJson = JSON.stringify(tampered);
+    }],
+    ["Attempt output", (run) => {
+      const tampered = { ...outcome, hasMore: true };
+      run.tasks[0].attempts[0].outputJson = JSON.stringify(tampered);
+    }],
+  ]) {
+    const idleRun = clone(base.idleRun);
+    mutate(idleRun);
+    assert.throws(
+      () =>
+        assertC2ZcOpenTotalOrder({
+          ...base,
+          afterRuns: [...base.beforeRuns, ...base.phaseRuns, idleRun],
+          idleRun,
+        }),
+      /output JSON does not match Run outcome/,
+      label,
+    );
+  }
+
+  const failedRetry = idleRunWithAttempts(base.idleRun, [
+    {
+      id: "idle-e1-attempt-1",
+      taskId: base.idleRun.tasks[0].id,
+      attemptNumber: 1,
+      status: "failed",
+      startedAt: "2026-08-28T00:00:16.100Z",
+      completedAt: "2026-08-28T00:00:16.120Z",
+      failureCode: "NEX_TEST_RETRY",
+      retryDisposition: "retryable",
+      policyVersion: "v1",
+      nextAttemptAt: "2026-08-28T00:00:16.130Z",
+    },
+    {
+      id: "idle-e1-attempt-2",
+      taskId: base.idleRun.tasks[0].id,
+      attemptNumber: 2,
+      status: "completed",
+      startedAt: "2026-08-28T00:00:16.140Z",
+      completedAt: "2026-08-28T00:00:16.200Z",
+      failureCode: null,
+      retryDisposition: null,
+      policyVersion: null,
+      nextAttemptAt: null,
+    },
+  ]);
+  failedRetry.tasks[0].attempts[0].outputJson = JSON.stringify(outcome);
+  assert.throws(
+    () =>
+      assertC2ZcOpenTotalOrder({
+        ...base,
+        afterRuns: [...base.beforeRuns, ...base.phaseRuns, failedRetry],
+        idleRun: failedRetry,
+      }),
+    /output JSON does not match Run outcome|failed Attempt outputJson must be NULL/,
+    "failed Attempt output must be NULL",
+  );
+
+  const finalMismatch = idleRunWithAttempts(base.idleRun, [
+    {
+      id: "idle-e1-attempt-1",
+      taskId: base.idleRun.tasks[0].id,
+      attemptNumber: 1,
+      status: "completed",
+      startedAt: "2026-08-28T00:00:16.100Z",
+      completedAt: "2026-08-28T00:00:16.200Z",
+      failureCode: null,
+      retryDisposition: null,
+      policyVersion: null,
+      nextAttemptAt: null,
+    },
+  ]);
+  finalMismatch.tasks[0].attempts[0].outputJson = JSON.stringify({
+    ...outcome,
+    affectedConsumerCount: 1,
+  });
+  assert.throws(
+    () =>
+      assertC2ZcOpenTotalOrder({
+        ...base,
+        afterRuns: [...base.beforeRuns, ...base.phaseRuns, finalMismatch],
+        idleRun: finalMismatch,
+      }),
+    /output JSON does not match Run outcome/,
+    "final completed Attempt output must match the Run outcome",
+  );
+
+  const reordered = clone(base.idleRun);
+  const reorderedOutcome = Object.fromEntries(
+    Object.entries(outcome).reverse(),
+  );
+  reordered.tasks[0].outputJson = JSON.stringify(reorderedOutcome);
+  reordered.tasks[0].attempts[0].outputJson = JSON.stringify(reorderedOutcome);
+  assert.doesNotThrow(() =>
+    assertC2ZcOpenTotalOrder({
+      ...base,
+      afterRuns: [...base.beforeRuns, ...base.phaseRuns, reordered],
+      idleRun: reordered,
+    }),
+  );
+});
+
+test("C2-ZC open rejects every extra post-baseline Freshness Run", () => {
+  const base = c2zcOpenContractFixture();
+  for (const [label, extra] of [
+    [
+      "E0",
+      c2zcIdleCheckpoint(
+        "idle-e0",
+        "epoch-e0",
+        "2026-08-28T00:00:16.300Z",
+        "2026-08-28T00:00:16.400Z",
+      ),
+    ],
+    [
+      "NULL epoch",
+      c2zcIdleCheckpoint(
+        "idle-null",
+        null,
+        "2026-08-28T00:00:16.300Z",
+        "2026-08-28T00:00:16.400Z",
+      ),
+    ],
+  ]) {
+    assert.throws(
+      () =>
+        assertC2ZcOpenTotalOrder({
+          ...base,
+          afterRuns: [...base.afterRuns, extra],
+        }),
+      /exactly one post-baseline Freshness Run/,
+      label,
+    );
+  }
+});
+
+test("C2-ZC restart rejects an extra E0 or NULL-epoch Freshness Run", () => {
+  const base = c2zcOpenContractFixture();
+  const open = {
+    marker: base.markerAfter,
+    epochs: base.afterEpochs,
+    runs: base.afterRuns,
+  };
+  for (const [label, extra] of [
+    [
+      "E0",
+      c2zcIdleCheckpoint(
+        "restart-idle-e0",
+        "epoch-e0",
+        "2026-08-28T00:00:18.000Z",
+        "2026-08-28T00:00:18.100Z",
+      ),
+    ],
+    [
+      "NULL epoch",
+      c2zcIdleCheckpoint(
+        "restart-idle-null",
+        null,
+        "2026-08-28T00:00:18.000Z",
+        "2026-08-28T00:00:18.100Z",
+      ),
+    ],
+  ]) {
+    assert.throws(
+      () =>
+        assertC2ZcRestartInvariants({
+          open,
+          restart: {
+            marker: { ...base.markerAfter },
+            epochs: base.afterEpochs,
+            runs: [...base.afterRuns, extra],
+          },
+          phaseRunIds: base.phaseRuns.map((run) => run.id),
+          idleRunId: base.idleRun.id,
+          baselineRuns: base.beforeRuns,
+        }),
+      /Freshness Run identities changed across restart/,
+      label,
+    );
+  }
+});
+
+test("C2-ZC idle checkpoint requires a complete Task and Attempt temporal envelope", () => {
+  const base = c2zcOpenContractFixture();
+  for (const [label, changes] of [
+    ["missing task completion", { taskCompletedAt: null }],
+    [
+      "attempt starts before task",
+      { lastAttemptStartedAt: "2026-08-28T00:00:16.050Z" },
+    ],
+    [
+      "task completes after Run",
+      { taskCompletedAt: "2026-08-28T00:00:16.300Z" },
+    ],
+  ]) {
+    const tamperedIdle = { ...base.idleRun, ...changes };
+    assert.throws(
+      () =>
+        assertC2ZcOpenTotalOrder({
+          ...base,
+          afterRuns: [...base.beforeRuns, ...base.phaseRuns, tamperedIdle],
+          idleRun: tamperedIdle,
+        }),
+      /Task\/Attempt lifecycle temporal envelope is invalid/,
+      label,
+    );
+  }
+});
+
+test("C2-ZC idle checkpoint accepts a zero-duration completed Attempt", () => {
+  const base = c2zcOpenContractFixture();
+  const idleRun = clone(base.idleRun);
+  idleRun.lastAttemptCompletedAt = idleRun.lastAttemptStartedAt;
+  idleRun.tasks[0].attempts[0].completedAt = idleRun.lastAttemptStartedAt;
+  assert.doesNotThrow(() =>
+    assertC2ZcOpenTotalOrder({
+      ...base,
+      afterRuns: [...base.beforeRuns, ...base.phaseRuns, idleRun],
+      idleRun,
+    }),
+  );
+});
+
+test("C2-ZC idle checkpoint accepts bounded failed-retry history before final completion", () => {
+  const base = c2zcOpenContractFixture();
+  const idleRun = idleRunWithAttempts(base.idleRun, [
+    {
+      id: "idle-e1-attempt-1",
+      taskId: base.idleRun.tasks[0].id,
+      attemptNumber: 1,
+      status: "failed",
+      startedAt: "2026-08-28T00:00:16.100Z",
+      completedAt: "2026-08-28T00:00:16.120Z",
+      failureCode: "NEX_TEST_RETRY",
+      retryDisposition: "retryable",
+      policyVersion: "v1",
+      nextAttemptAt: "2026-08-28T00:00:16.130Z",
+    },
+    {
+      id: "idle-e1-attempt-2",
+      taskId: base.idleRun.tasks[0].id,
+      attemptNumber: 2,
+      status: "completed",
+      startedAt: "2026-08-28T00:00:16.140Z",
+      completedAt: "2026-08-28T00:00:16.200Z",
+      failureCode: null,
+      retryDisposition: null,
+      policyVersion: null,
+      nextAttemptAt: null,
+    },
+  ]);
+  assert.doesNotThrow(() =>
+    assertC2ZcOpenTotalOrder({
+      ...base,
+      afterRuns: [...base.beforeRuns, ...base.phaseRuns, idleRun],
+      idleRun,
+    }),
+  );
+});
+
+test("C2-ZC idle checkpoint rejects malformed retry topology and metadata", () => {
+  const base = c2zcOpenContractFixture();
+  const validAttempts = [
+    {
+      id: "idle-e1-attempt-1",
+      taskId: base.idleRun.tasks[0].id,
+      attemptNumber: 1,
+      status: "failed",
+      startedAt: "2026-08-28T00:00:16.100Z",
+      completedAt: "2026-08-28T00:00:16.120Z",
+      failureCode: "NEX_TEST_RETRY",
+      retryDisposition: "retryable",
+      policyVersion: "v1",
+      nextAttemptAt: "2026-08-28T00:00:16.130Z",
+    },
+    {
+      id: "idle-e1-attempt-2",
+      taskId: base.idleRun.tasks[0].id,
+      attemptNumber: 2,
+      status: "completed",
+      startedAt: "2026-08-28T00:00:16.140Z",
+      completedAt: "2026-08-28T00:00:16.200Z",
+      failureCode: null,
+      retryDisposition: null,
+      policyVersion: null,
+      nextAttemptAt: null,
+    },
+  ];
+  const cases = [
+    ["attempt count mismatch", (run) => {
+      run.tasks[0].attemptCount = 1;
+      run.attemptCount = 1;
+      run.taskAttemptCount = 1;
+    }],
+    ["attempt numbering gap", (run) => {
+      run.tasks[0].attempts[1].attemptNumber = 3;
+    }],
+    ["completed attempt before failed retry", (run) => {
+      run.tasks[0].attempts[0].status = "completed";
+      run.tasks[0].attempts[0].failureCode = null;
+      run.tasks[0].attempts[0].retryDisposition = null;
+      run.tasks[0].attempts[0].policyVersion = null;
+      run.tasks[0].attempts[0].nextAttemptAt = null;
+      run.tasks[0].attempts[1].status = "failed";
+      run.tasks[0].attempts[1].failureCode = "NEX_LATE_RETRY";
+      run.tasks[0].attempts[1].retryDisposition = "retryable";
+      run.tasks[0].attempts[1].policyVersion = "v1";
+      run.tasks[0].attempts[1].nextAttemptAt = "2026-08-28T00:00:16.210Z";
+    }],
+    ["running attempt", (run) => {
+      run.tasks[0].attempts[1].status = "running";
+    }],
+    ["retry cap", (run) => {
+      run.tasks[0].attempts.push(
+        {
+          ...run.tasks[0].attempts[1],
+          id: "idle-e1-attempt-3",
+          attemptNumber: 3,
+          startedAt: "2026-08-28T00:00:16.210Z",
+          completedAt: "2026-08-28T00:00:16.220Z",
+        },
+        {
+          ...run.tasks[0].attempts[1],
+          id: "idle-e1-attempt-4",
+          attemptNumber: 4,
+          startedAt: "2026-08-28T00:00:16.230Z",
+          completedAt: "2026-08-28T00:00:16.240Z",
+        },
+      );
+      run.tasks[0].attempts[2].status = "failed";
+      run.tasks[0].attempts[2].failureCode = "NEX_RETRY_3";
+      run.tasks[0].attempts[2].retryDisposition = "retryable";
+      run.tasks[0].attempts[2].policyVersion = "v1";
+      run.tasks[0].attempts[2].nextAttemptAt = "2026-08-28T00:00:16.225Z";
+      run.tasks[0].attempts[3].status = "completed";
+      run.tasks[0].attempts[3].failureCode = null;
+      run.tasks[0].attempts[3].retryDisposition = null;
+      run.tasks[0].attempts[3].policyVersion = null;
+      run.tasks[0].attempts[3].nextAttemptAt = null;
+      run.tasks[0].attemptCount = 4;
+      run.attemptCount = 4;
+      run.taskAttemptCount = 4;
+      run.lastAttemptNumber = 4;
+      run.maxAttemptNumber = 4;
+      run.lastAttemptStatus = "completed";
+      run.lastAttemptStartedAt = "2026-08-28T00:00:16.230Z";
+      run.lastAttemptCompletedAt = "2026-08-28T00:00:16.240Z";
+      run.taskCompletedAt = "2026-08-28T00:00:16.240Z";
+      run.completedAt = "2026-08-28T00:00:16.240Z";
+    }],
+    ["failed retry metadata", (run) => {
+      run.tasks[0].attempts[0].retryDisposition = "terminal";
+    }],
+    ["completed attempt metadata", (run) => {
+      run.tasks[0].attempts[1].failureCode = "NEX_FORGED";
+    }],
+    ["attempt temporal inversion", (run) => {
+      run.tasks[0].attempts[1].startedAt = "2026-08-28T00:00:16.110Z";
+    }],
+  ];
+  for (const [label, mutate] of cases) {
+    const idleRun = idleRunWithAttempts(base.idleRun, validAttempts);
+    mutate(idleRun);
+    assert.throws(
+      () =>
+        assertC2ZcOpenTotalOrder({
+          ...base,
+          afterRuns: [...base.beforeRuns, ...base.phaseRuns, idleRun],
+          idleRun,
+        }),
+      /Task\/Attempt retry topology is invalid/,
+      label,
+    );
+  }
+});
+
+test("C2-ZC permits marker appliedAt equal to idle completion at millisecond precision", () => {
+  const base = c2zcOpenContractFixture();
+  assert.doesNotThrow(() =>
+    assertC2ZcOpenTotalOrder({
+      ...base,
+      markerAfter: { ...base.markerAfter, appliedAt: base.idleRun.completedAt },
+    }),
+  );
+});
+
 test("C2-ZC restart preserves marker, E0/E1, and phase Run identity", () => {
   const fixture = c2zcFixture();
   const e1 = {
@@ -544,38 +1329,119 @@ test("C2-ZC restart preserves marker, E0/E1, and phase Run identity", () => {
     c2zcPhase("rebuild-e1", "semantic-index-rebuild", e1.id, "2026-08-28T00:00:13.000Z", "2026-08-28T00:00:14.000Z"),
     c2zcPhase("confirm-e1", "dependency-verify", e1.id, "2026-08-28T00:00:15.000Z", "2026-08-28T00:00:16.000Z"),
   ];
+  const idleRun = c2zcIdleCheckpoint(
+    "idle-e1",
+    e1.id,
+    "2026-08-28T00:00:16.100Z",
+    "2026-08-28T00:00:16.200Z",
+  );
   assert.doesNotThrow(() =>
     assertC2ZcRestartInvariants({
       open: {
         marker,
         epochs: [...fixture.epochs, e1],
-        runs: [fixture.backfill, ...phaseRuns],
+        runs: [fixture.backfill, ...phaseRuns, idleRun],
       },
       restart: {
         marker: { ...marker },
         epochs: [...fixture.epochs, e1],
-        runs: [fixture.backfill, ...phaseRuns],
+        runs: [fixture.backfill, ...phaseRuns, idleRun],
       },
       phaseRunIds: phaseRuns.map((run) => run.id),
+      idleRunId: idleRun.id,
+      baselineRuns: [fixture.backfill],
     }),
   );
   assert.throws(
     () =>
       assertC2ZcRestartInvariants({
         open: {
-          marker,
-          epochs: [...fixture.epochs, e1],
-          runs: [fixture.backfill, ...phaseRuns],
-        },
-        restart: {
-          marker: { ...marker, appliedAt: "2026-08-28T00:00:18.000Z" },
-          epochs: [...fixture.epochs, e1],
-          runs: [fixture.backfill, ...phaseRuns],
-        },
-        phaseRunIds: phaseRuns.map((run) => run.id),
-      }),
+        marker,
+        epochs: [...fixture.epochs, e1],
+        runs: [fixture.backfill, ...phaseRuns, idleRun],
+      },
+      restart: {
+        marker: { ...marker, appliedAt: "2026-08-28T00:00:18.000Z" },
+        epochs: [...fixture.epochs, e1],
+        runs: [fixture.backfill, ...phaseRuns, idleRun],
+      },
+      phaseRunIds: phaseRuns.map((run) => run.id),
+      idleRunId: idleRun.id,
+      baselineRuns: [fixture.backfill],
+    }),
     /changed marker appliedAt/,
   );
+});
+
+test("C2-ZC restart rejects mutations to phase and idle Run contract fields", () => {
+  const base = c2zcOpenContractFixture();
+  const open = {
+    marker: base.markerAfter,
+    epochs: base.afterEpochs,
+    runs: base.afterRuns,
+  };
+  for (const [label, mutate] of [
+    ["phase status", (runs) => {
+      runs.find((run) => run.id === base.phaseRuns[0].id).status = "failed";
+    }],
+    ["phase work key", (runs) => {
+      runs.find((run) => run.id === base.phaseRuns[1].id).workKey = "forged-work-key";
+    }],
+    ["idle spec", (runs) => {
+      const idle = runs.find((run) => run.id === base.idleRun.id);
+      idle.specJson = JSON.stringify({
+        kind: "incremental-freshness-idle-checkpoint@1",
+        inputDigest: "sha256:" + "d".repeat(64),
+      });
+    }],
+    ["idle outcome", (runs) => {
+      const idle = runs.find((run) => run.id === base.idleRun.id);
+      const outcome = JSON.parse(idle.outcomeSummaryJson);
+      outcome.affectedEdgeCount = 1;
+      idle.outcomeSummaryJson = JSON.stringify(outcome);
+    }],
+    ["idle task input", (runs) => {
+      const idle = runs.find((run) => run.id === base.idleRun.id);
+      const input = JSON.parse(idle.taskInputJson);
+      input.feedHead = 2;
+      idle.taskInputJson = JSON.stringify(input);
+    }],
+    ["idle attempt", (runs) => {
+      const idle = runs.find((run) => run.id === base.idleRun.id);
+      idle.tasks[0].attempts[0].status = "running";
+    }],
+    ["idle task output", (runs) => {
+      const idle = runs.find((run) => run.id === base.idleRun.id);
+      const outcome = JSON.parse(idle.outcomeSummaryJson);
+      outcome.affectedEdgeCount = 1;
+      idle.tasks[0].outputJson = JSON.stringify(outcome);
+    }],
+    ["idle attempt output", (runs) => {
+      const idle = runs.find((run) => run.id === base.idleRun.id);
+      const outcome = JSON.parse(idle.outcomeSummaryJson);
+      outcome.hasMore = true;
+      idle.tasks[0].attempts[0].outputJson = JSON.stringify(outcome);
+    }],
+  ]) {
+    const restartRuns = clone(base.afterRuns);
+    mutate(restartRuns);
+    assert.throws(
+      () =>
+        assertC2ZcRestartInvariants({
+          open,
+          restart: {
+            marker: { ...base.markerAfter },
+            epochs: base.afterEpochs,
+            runs: restartRuns,
+          },
+          phaseRunIds: base.phaseRuns.map((run) => run.id),
+          idleRunId: base.idleRun.id,
+          baselineRuns: base.beforeRuns,
+        }),
+      /persisted|Run spec|Task input|specDigest|outcome|retry topology/,
+      label,
+    );
+  }
 });
 
 test("C2-ZC post-marker project birth is exactly one initial epoch", () => {
@@ -619,6 +1485,8 @@ test("C2-ZC runner uses the shared restore scenario and explicit phase separatio
   assert.match(runner, /restoreBackupThroughSettingsUi/);
   assert.match(runner, /setup:\s*"disabled"/);
   assert.match(runner, /dependency-verify[\s\S]*semantic-index-rebuild[\s\S]*dependency-verify/);
+  assert.match(runner, /assertC2ZcOpenTotalOrder/);
+  assert.match(runner, /idleRunId/);
   assert.match(runner, /appliedAt[\s\S]*completedAt/);
   assert.match(runner, /createProjectAfterCutover/);
   assert.match(maintenance, /runRestoreVerifyRebuildVerifyScenario/);
@@ -637,4 +1505,64 @@ test("C2-ZC runner uses the shared restore scenario and explicit phase separatio
     assert.ok(PRODUCT_JOURNEY_ELECTRON_PHASES.includes(phase), phase);
   }
   assert.match(harness, /PRODUCT_JOURNEY_ELECTRON_PHASES/);
+});
+
+test("C2-ZC ledger enrichment preserves the supplied Run rows", async () => {
+  const runs = [{ id: "run-1", runKind: "freshness-evaluation" }];
+  const harness = {
+    async invokeOk(_page, _command, { sql }) {
+      if (sql.includes("narrative_extraction_attempts a")) {
+        return {
+          rows: [
+            {
+              id: "attempt-1",
+              taskId: "task-1",
+              attemptNumber: 1,
+              status: "completed",
+            },
+          ],
+        };
+      }
+      return {
+        rows: [
+          {
+            id: "task-1",
+            runId: "run-1",
+            taskKind: "incremental-freshness-batch",
+            status: "completed",
+            attemptCount: 1,
+            outputJson: "{\"kind\":\"fixture-output\"}",
+          },
+        ],
+      };
+    },
+  };
+  const enriched = await readC2ZcRunLedger(harness, {}, "project-1", runs);
+  assert.equal(enriched.length, 1);
+  assert.equal(enriched[0].id, "run-1");
+  assert.equal(enriched[0].tasks.length, 1);
+  assert.equal(
+    enriched[0].tasks[0].outputJson,
+    '{"kind":"fixture-output"}',
+  );
+  assert.equal(enriched[0].tasks[0].attempts[0].id, "attempt-1");
+});
+
+test("C2-ZC restart wiring carries the open pre-run baseline into its invariant check", async () => {
+  const runner = await read("electron/scripts/c2zc-canonical-product-journey.mjs");
+  const openSnapshot = runner.match(/openSnapshot = \{[\s\S]*?\n\s*\};/)?.[0];
+  assert.match(
+    openSnapshot ?? "",
+    /beforeRuns,/,
+    "onOpen must persist its pre-open Run baseline for the restart phase",
+  );
+  const restartCallback = runner.match(
+    /onRestart: async \(\{ context \}\) => \{[\s\S]*?\n\s*\},/,
+  )?.[0];
+  assert.match(
+    restartCallback ?? "",
+    /baselineRuns: openSnapshot\.beforeRuns,/,
+    "onRestart must use the persisted open baseline",
+  );
+  assert.doesNotMatch(restartCallback ?? "", /openResult\.beforeRuns/);
 });

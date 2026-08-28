@@ -2059,28 +2059,32 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
     };
     let canonical_change_events = {
         let mut statement = conn.prepare(
-            "SELECT event_uid, scene_id, domain, op_type, entity_type,
-                    entity_id, payload, session_id, sequence, timestamp,
-                    prev_hash, hash
-               FROM change_events
-              WHERE project_id = ?1
-              ORDER BY sequence ASC, event_uid ASC",
+            "SELECT transaction_row.id,
+                    transaction_row.source_change_event_uid,
+                    transaction_row.source_change_event_sequence,
+                    event.event_uid, event.sequence, event.op_type
+               FROM narrative_change_transactions transaction_row
+               LEFT JOIN change_events event
+                 ON event.project_id = transaction_row.project_id
+                AND event.event_uid = transaction_row.source_change_event_uid
+              WHERE transaction_row.project_id = ?1
+              ORDER BY transaction_row.id ASC",
         )?;
         let rows = statement
             .query_map(params![project_id], |row| {
                 Ok(json!({
-                    "eventUid": row.get::<_, Option<String>>(0)?,
-                    "sceneId": row.get::<_, Option<String>>(1)?,
-                    "domain": row.get::<_, String>(2)?,
-                    "opType": row.get::<_, String>(3)?,
-                    "entityType": row.get::<_, Option<String>>(4)?,
-                    "entityId": row.get::<_, Option<String>>(5)?,
-                    "payload": row.get::<_, String>(6)?,
-                    "sessionId": row.get::<_, String>(7)?,
-                    "sequence": row.get::<_, i64>(8)?,
-                    "timestamp": row.get::<_, i64>(9)?,
-                    "prevHash": row.get::<_, String>(10)?,
-                    "hash": row.get::<_, String>(11)?,
+                    // Keep the expected transaction-side identity alongside
+                    // the optional joined event.  Verify's LEFT JOIN treats
+                    // a missing referenced legacy event as a concrete
+                    // malformed-input result; retaining both sides here
+                    // prevents absence from hashing like a different valid
+                    // event or disappearing from the CAS domain.
+                    "transactionId": row.get::<_, String>(0)?,
+                    "expectedEventUid": row.get::<_, String>(1)?,
+                    "expectedSequence": row.get::<_, i64>(2)?,
+                    "eventUid": row.get::<_, Option<String>>(3)?,
+                    "sequence": row.get::<_, Option<i64>>(4)?,
+                    "opType": row.get::<_, Option<String>>(5)?,
                 }))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2124,11 +2128,11 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
     let change_cursors = {
         let mut statement = conn.prepare(
             "SELECT cursor.consumer_id, cursor.acknowledged_through_sequence,
-                    cursor.lease_owner, cursor.lease_expires_at, cursor.last_error,
-                    cursor.updated_at, cursor.semantic_epoch_id,
-                    cursor.reserved_through_sequence, cursor.active_run_id,
-                    active_run.project_id, active_run.semantic_epoch_id,
-                    active_run.run_kind, active_run.status, active_run.work_key
+                    cursor.lease_owner, cursor.lease_expires_at,
+                    cursor.semantic_epoch_id, cursor.reserved_through_sequence,
+                    cursor.active_run_id, active_run.project_id,
+                    active_run.semantic_epoch_id, active_run.run_kind,
+                    active_run.status
                FROM narrative_change_cursors cursor
                LEFT JOIN narrative_extraction_runs active_run
                  ON active_run.id = cursor.active_run_id
@@ -2142,16 +2146,13 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
                     "acknowledgedThroughSequence": row.get::<_, i64>(1)?,
                     "leaseOwner": row.get::<_, Option<String>>(2)?,
                     "leaseExpiresAt": row.get::<_, Option<String>>(3)?,
-                    "lastError": row.get::<_, Option<String>>(4)?,
-                    "updatedAt": row.get::<_, String>(5)?,
-                    "semanticEpochId": row.get::<_, Option<String>>(6)?,
-                    "reservedThroughSequence": row.get::<_, Option<i64>>(7)?,
-                    "activeRunId": row.get::<_, Option<String>>(8)?,
-                    "activeRunProjectId": row.get::<_, Option<String>>(9)?,
-                    "activeRunSemanticEpochId": row.get::<_, Option<String>>(10)?,
-                    "activeRunKind": row.get::<_, Option<String>>(11)?,
-                    "activeRunStatus": row.get::<_, Option<String>>(12)?,
-                    "activeRunWorkKey": row.get::<_, Option<String>>(13)?,
+                    "semanticEpochId": row.get::<_, Option<String>>(4)?,
+                    "reservedThroughSequence": row.get::<_, Option<i64>>(5)?,
+                    "activeRunId": row.get::<_, Option<String>>(6)?,
+                    "activeRunProjectId": row.get::<_, Option<String>>(7)?,
+                    "activeRunSemanticEpochId": row.get::<_, Option<String>>(8)?,
+                    "activeRunKind": row.get::<_, Option<String>>(9)?,
+                    "activeRunStatus": row.get::<_, Option<String>>(10)?,
                 }))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -8191,18 +8192,90 @@ mod tests {
             .with_conn(|conn| {
                 conn.execute(
                     "UPDATE narrative_extraction_runs
-                        SET status = 'running' WHERE id = 'cursor-closure-run'",
+                        SET project_id = 'project-2' WHERE id = 'cursor-closure-run'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("mutate active cursor Run project");
+        let cursor_after_project = cursor_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest cursor closure after Run project mutation");
+        assert_ne!(
+            cursor_before, cursor_after_project,
+            "cursor CAS must include the active Run project closure"
+        );
+        cursor_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET project_id = 'project-1', semantic_epoch_id = NULL
+                      WHERE id = 'cursor-closure-run'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("mutate active cursor Run semantic epoch");
+        let cursor_after_epoch = cursor_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest cursor closure after Run epoch mutation");
+        assert_ne!(
+            cursor_after_project, cursor_after_epoch,
+            "cursor CAS must include the active Run semantic epoch closure"
+        );
+        cursor_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET semantic_epoch_id = ?1, run_kind = 'dependency-verify'
+                      WHERE id = 'cursor-closure-run'",
+                    params![cursor_epoch],
+                )?;
+                Ok(())
+            })
+            .expect("mutate active cursor Run kind");
+        let cursor_after_kind = cursor_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest cursor closure after Run kind mutation");
+        assert_ne!(
+            cursor_after_epoch, cursor_after_kind,
+            "cursor CAS must include the active Run kind closure"
+        );
+        cursor_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET run_kind = 'freshness-evaluation', status = 'running'
+                      WHERE id = 'cursor-closure-run'",
                     [],
                 )?;
                 Ok(())
             })
             .expect("mutate active cursor Run status");
-        let cursor_after = cursor_db
+        let cursor_after_status = cursor_db
             .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
-            .expect("digest cursor closure after Run mutation");
+            .expect("digest cursor closure after Run status mutation");
         assert_ne!(
-            cursor_before, cursor_after,
-            "cursor CAS must include active Run project/epoch/kind/status closure"
+            cursor_after_kind, cursor_after_status,
+            "cursor CAS must include the active Run status closure"
+        );
+        cursor_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET work_key = 'cursor-closure-work-mutated'
+                      WHERE id = 'cursor-closure-run'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("mutate active cursor Run work key");
+        let cursor_after_work_key = cursor_db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest cursor closure after Run work-key mutation");
+        assert_eq!(
+            cursor_after_status, cursor_after_work_key,
+            "active Run work key is outside Verify's cursor/feed read closure"
         );
 
         let freshness_db = test_db();
@@ -8245,6 +8318,225 @@ mod tests {
         assert_ne!(
             freshness_before, freshness_after,
             "consumer Freshness dependency digest is a Verify input and must be CAS-bound"
+        );
+    }
+
+    #[test]
+    fn graph_state_cas_ignores_cursor_bookkeeping_but_binds_semantic_cursor_state() {
+        let db = test_db();
+        let epoch_id = db
+            .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
+            .expect("seed current epoch for cursor read closure");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_change_cursors
+                    (project_id, consumer_id, acknowledged_through_sequence,
+                     last_error, updated_at, semantic_epoch_id)
+                 VALUES ('project-1', 'cursor-read-closure', 0, NULL,
+                         '2026-08-15T00:00:00.000Z', ?1)",
+                params![epoch_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed cursor read closure");
+
+        let baseline = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest cursor read closure baseline");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_change_cursors
+                    SET last_error = 'transient idle note',
+                        updated_at = '2026-08-15T00:00:01.000Z'
+                  WHERE project_id = 'project-1'
+                    AND consumer_id = 'cursor-read-closure'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("mutate cursor bookkeeping fields");
+        let after_bookkeeping = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest cursor read closure after bookkeeping mutation");
+        assert_eq!(
+            baseline, after_bookkeeping,
+            "cursor updated_at/last_error are scheduler bookkeeping, not Verify inputs"
+        );
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_change_cursors
+                    SET acknowledged_through_sequence = 1
+                  WHERE project_id = 'project-1'
+                    AND consumer_id = 'cursor-read-closure'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("mutate semantic cursor acknowledgement");
+        let after_acknowledgement = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest cursor read closure after acknowledgement mutation");
+        assert_ne!(
+            baseline, after_acknowledgement,
+            "cursor acknowledgement is a Verify input and must invalidate the graph CAS"
+        );
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_change_cursors
+                    SET lease_owner = 'cursor-reader',
+                        lease_expires_at = '2026-08-15T00:00:10.000Z'
+                  WHERE project_id = 'project-1'
+                    AND consumer_id = 'cursor-read-closure'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("mutate semantic cursor lease fields");
+        let after_lease = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest cursor read closure after lease mutation");
+        assert_ne!(
+            after_acknowledgement, after_lease,
+            "cursor lease state is a Verify input and must invalidate the graph CAS"
+        );
+    }
+
+    #[test]
+    fn graph_state_cas_ignores_unreferenced_legacy_change_events() {
+        let db = test_db();
+        let baseline = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest baseline without legacy layout event");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO change_events
+                    (event_uid, project_id, scene_id, domain, op_type,
+                     entity_type, entity_id, payload, session_id, sequence,
+                     timestamp, prev_hash, hash)
+                 VALUES ('unreferenced-layout-event', 'project-1', NULL,
+                         'layout', 'layout.snapshot', 'workspace', 'project-1',
+                         '{}', 'layout-session', 1, 1787893741387,
+                         'layout-prev', 'layout-hash')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed an unreferenced legacy layout event");
+        let after_layout_event = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest after unreferenced legacy layout event");
+        assert_eq!(
+            baseline, after_layout_event,
+            "legacy events outside a Narrative transaction are outside Verify's read closure"
+        );
+    }
+
+    #[test]
+    fn graph_state_cas_tracks_referenced_canonical_event_mutations_and_absence() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO change_events
+                    (event_uid, project_id, scene_id, domain, op_type,
+                     entity_type, entity_id, payload, session_id, sequence,
+                     timestamp, prev_hash, hash)
+                 VALUES ('referenced-canonical-event', 'project-1', 'scene-live',
+                         'scene', 'update', 'scene', 'scene-live', '{}',
+                         'canonical-session', 1, 1787893741387,
+                         'canonical-prev', 'canonical-hash')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_transactions
+                    (id, project_id, request_id, source_domain,
+                     source_change_event_uid, source_change_event_sequence,
+                     cause_kind, origin, payload_digest, created_at)
+                 VALUES ('referenced-canonical-transaction', 'project-1',
+                         'canonical-request', 'update',
+                         'referenced-canonical-event', 1, 'forward', 'human',
+                         'sha256:canonical-transaction',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed referenced canonical event and transaction");
+
+        let baseline = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest referenced canonical event baseline");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE change_events
+                    SET op_type = 'delete'
+                  WHERE project_id = 'project-1'
+                    AND event_uid = 'referenced-canonical-event'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("mutate referenced canonical event operation");
+        let after_operation = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest after referenced canonical operation mutation");
+        assert_ne!(
+            baseline, after_operation,
+            "referenced canonical event operation is a Verify input"
+        );
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE change_events
+                    SET sequence = 2
+                  WHERE project_id = 'project-1'
+                    AND event_uid = 'referenced-canonical-event'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("mutate referenced canonical event sequence");
+        let after_sequence = db
+            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .expect("digest after referenced canonical sequence mutation");
+        assert_ne!(
+            after_operation, after_sequence,
+            "referenced canonical event sequence is a Verify input"
+        );
+
+        let after_deletion = db
+            .with_conn(|conn| {
+                // Production schema keeps this reference RESTRICTed. Disable
+                // FK enforcement only in this corruption fixture so the
+                // digest and Verify coverage can prove that a missing
+                // referenced event remains an explicit LEFT JOIN result.
+                conn.pragma_update(None, "foreign_keys", false)?;
+                conn.execute(
+                    "DELETE FROM change_events
+                      WHERE project_id = 'project-1'
+                        AND event_uid = 'referenced-canonical-event'",
+                    [],
+                )?;
+                conn.pragma_update(None, "foreign_keys", true)?;
+                durable_graph_state_digest(conn, "project-1")
+            })
+            .expect("digest after deleting referenced canonical event");
+        assert_ne!(
+            after_sequence, after_deletion,
+            "a missing referenced canonical event must invalidate the graph CAS"
+        );
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify missing referenced canonical event");
+        assert!(
+            report
+                .cursor_and_feed_head_consistency
+                .issues
+                .iter()
+                .any(|issue| issue.contains("source-event-missing:referenced-canonical-event")),
+            "Verify must fail closed when the LEFT JOIN cannot resolve a referenced event"
         );
     }
 
