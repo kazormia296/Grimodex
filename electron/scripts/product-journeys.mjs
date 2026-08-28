@@ -1,13 +1,18 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { constants, createReadStream, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { access, mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
 
 import { rootDir } from "./build.mjs";
-import { PRODUCT_JOURNEY_CATALOG } from "./product-journey-catalog.mjs";
+import {
+  digestProductJourneyCatalog,
+  PRODUCT_JOURNEY_CATALOG,
+  PRODUCT_JOURNEY_CATALOG_DIGEST,
+} from "./product-journey-catalog.mjs";
 import { createProductJourneyHarness } from "./product-journey-harness.mjs";
 import { launchProductJourneyMcpClient } from "./product-journey-mcp-client.mjs";
 import { createNativeRoundTripJourneys } from "./product-journey-native-roundtrips.mjs";
@@ -45,7 +50,8 @@ const AUTHORING_PROMPT = `AUTHORING-JOURNEY-${Date.now()}`;
 const AUTHORING_OUTPUT = "AUTHORING-AI-OUTPUT";
 const PRODUCT_JOURNEY_MODEL = "product-journey-model";
 const PENDING_SAVE_AUTOSAVE_DELAY_MS = 60_000;
-const PRODUCT_JOURNEY_RESULTS_VERSION = 3;
+const PRODUCT_JOURNEY_RESULTS_VERSION = 4;
+const PRODUCT_JOURNEY_AUDIT_MANIFEST_VERSION = 1;
 const REQUIRED_LIFECYCLE_TRANSITION_PHASES = [
   "switch-requested",
   "quiescence-started",
@@ -59,14 +65,6 @@ const DEFAULT_PRODUCT_JOURNEY_ARTIFACT_DIR = path.join(
   ".artifacts",
   "product-journeys",
 );
-const mcpBinary = path.join(
-  rootDir,
-  "src-tauri",
-  "target",
-  "debug",
-  process.platform === "win32" ? "grimodex-mcp.exe" : "grimodex-mcp",
-);
-
 function log(message) {
   console.log(`[electron:product] ${message}`);
 }
@@ -86,32 +84,154 @@ function appVersion() {
     .version;
 }
 
-function assertBuildArtifacts(journeys) {
+function hashFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const digest = createHash("sha256");
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => digest.update(chunk));
+    stream.once("error", reject);
+    stream.once("end", () => resolve(`sha256:${digest.digest("hex")}`));
+  });
+}
+
+function resolveConfiguredPath(
+  value,
+  { root = rootDir, label, pathApi = path },
+) {
+  if (value === undefined || value === "") return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a string`);
+  }
+  if (value.includes("\0")) {
+    throw new Error(`${label} must not contain NUL bytes`);
+  }
+  return pathApi.isAbsolute(value) ? value : pathApi.resolve(root, value);
+}
+
+export function resolveMcpArtifactPath({
+  root = rootDir,
+  overridePath = process.env.GRIMODEX_MCP_PATH,
+  cargoTargetDir = process.env.CARGO_TARGET_DIR,
+  platform = process.platform,
+} = {}) {
+  const pathApi = platform === "win32" ? path.win32 : path;
+  const executableName =
+    platform === "win32" ? "grimodex-mcp.exe" : "grimodex-mcp";
+  const override = resolveConfiguredPath(overridePath, {
+    root,
+    label: "GRIMODEX_MCP_PATH",
+    pathApi,
+  });
+  if (override !== undefined) {
+    if (!pathApi.isAbsolute(overridePath)) {
+      throw new Error("GRIMODEX_MCP_PATH must be an absolute path");
+    }
+    return override;
+  }
+  const configuredTarget = resolveConfiguredPath(cargoTargetDir, {
+    root,
+    label: "CARGO_TARGET_DIR",
+    pathApi,
+  });
+  const targetDir =
+    configuredTarget ?? pathApi.join(root, "src-tauri", "target");
+  return pathApi.join(targetDir, "debug", executableName);
+}
+
+export async function resolveProductJourneyArtifact(
+  requestedPath,
+  { executable = false } = {},
+) {
+  if (
+    typeof requestedPath !== "string" ||
+    requestedPath.length === 0 ||
+    requestedPath.includes("\0")
+  ) {
+    throw new Error(
+      "artifact path must be a non-empty string without NUL bytes",
+    );
+  }
+  const absoluteRequestedPath = path.resolve(requestedPath);
+  const canonicalPath = await realpath(absoluteRequestedPath);
+  const metadata = await stat(canonicalPath);
+  if (!metadata.isFile()) {
+    throw new Error(`artifact is not a regular file: ${absoluteRequestedPath}`);
+  }
+  if (executable && process.platform !== "win32") {
+    await access(canonicalPath, constants.X_OK);
+  }
+  return {
+    path: absoluteRequestedPath,
+    requestedPath: absoluteRequestedPath,
+    realPath: canonicalPath,
+    sha256: await hashFile(canonicalPath),
+  };
+}
+
+export async function resolveMcpArtifact(options = {}) {
+  const requestedPath = resolveMcpArtifactPath(options);
+  try {
+    return await resolveProductJourneyArtifact(requestedPath, {
+      executable: true,
+    });
+  } catch (error) {
+    throw new Error(`missing MCP product journey artifact: ${requestedPath}`, {
+      cause: error,
+    });
+  }
+}
+
+export async function assertBuildArtifacts(
+  journeys,
+  { catalog = PRODUCT_JOURNEY_CATALOG } = {},
+) {
   const selectedIds = new Set(journeys.map((journey) => journey.id));
-  const requiresMcp = PRODUCT_JOURNEY_CATALOG.some(
+  const requiresMcp = catalog.some(
     (journey) =>
       selectedIds.has(journey.id) && journey.capabilities.includes("mcp"),
   );
-  const artifacts = [
-    mainCjs,
-    path.join(rootDir, "dist", "index.html"),
-    process.env.GRIMODEX_NODE_PATH ??
-      path.join(
-        rootDir,
-        "electron",
-        "native",
-        "grimodex-node",
-        "grimodex-node.node",
-      ),
+  const requests = [
+    { name: "Electron main", path: mainCjs },
+    { name: "renderer", path: path.join(rootDir, "dist", "index.html") },
+    {
+      name: "N-API native module",
+      path:
+        resolveConfiguredPath(process.env.GRIMODEX_NODE_PATH, {
+          root: rootDir,
+          label: "GRIMODEX_NODE_PATH",
+        }) ??
+        path.join(
+          rootDir,
+          "electron",
+          "native",
+          "grimodex-node",
+          "grimodex-node.node",
+        ),
+    },
   ];
-  if (requiresMcp) artifacts.push(mcpBinary);
-  for (const artifact of artifacts) {
-    if (!existsSync(artifact)) {
+  if (requiresMcp) {
+    requests.push({
+      name: "MCP sidecar",
+      path: resolveMcpArtifactPath(),
+    });
+  }
+  const artifacts = [];
+  for (const request of requests) {
+    try {
+      artifacts.push({
+        name: request.name,
+        ...(await resolveProductJourneyArtifact(request.path, {
+          executable: request.name === "MCP sidecar",
+        })),
+      });
+    } catch (error) {
       throw new Error(
-        `missing Electron product journey artifact: ${artifact}\nRun the builds required by the selected journey capabilities first.`,
+        `missing Electron product journey artifact: ${request.path}\nRun the builds required by the selected journey capabilities first.`,
+        { cause: error },
       );
     }
   }
+  return { artifacts };
 }
 
 function scenesPanelHeader(page) {
@@ -1590,8 +1710,9 @@ async function runMcpExternalWriteConflictJourney(harness) {
     if (clean.projectId !== preparedProject.id) {
       throw new Error("MCP journey started under the wrong project");
     }
+    const mcpArtifact = await resolveMcpArtifact();
     mcpClient = await launchProductJourneyMcpClient({
-      binaryPath: mcpBinary,
+      binaryPath: mcpArtifact.path,
       workspacePath: workspace,
       projectId: clean.projectId,
       onStderr: (chunk) =>
@@ -2043,8 +2164,17 @@ export const PRODUCT_JOURNEYS = [
   ...NARRATIVE_C2ZC_PRODUCT_JOURNEYS,
 ];
 
-export function resolveSelectedProductJourneys(journeys, serializedIds) {
-  if (serializedIds === undefined) return journeys;
+export function resolveSelectedProductJourneys(
+  journeys,
+  serializedIds,
+  { requireAll = false } = {},
+) {
+  if (requireAll && serializedIds !== undefined && serializedIds !== "") {
+    throw new Error(
+      "GRIMODEX_PRODUCT_JOURNEY_IDS must not be set for Full product journey execution; subset execution is rejected",
+    );
+  }
+  if (serializedIds === undefined || serializedIds === "") return journeys;
 
   let requested;
   try {
@@ -2123,6 +2253,62 @@ async function writeResults(resultsPath, report) {
   await writeFile(resultsPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 }
 
+function normalizeArtifactEvidence(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object" && Array.isArray(value.artifacts)) {
+    return value.artifacts;
+  }
+  return [];
+}
+
+function refreshReportOutcome(report) {
+  report.allPassed =
+    report.status === "passed" &&
+    report.journeys.length === report.journeyIds.length &&
+    report.journeys.every((journey) => journey.status === "passed");
+  report.allClean =
+    report.allPassed &&
+    report.journeys.every((journey) => journey.cleanPass === true);
+}
+
+async function writeAuditManifest(outputPath, report, artifactEvidence) {
+  const results = await resolveProductJourneyArtifact(outputPath);
+  const manifestPath = path.join(path.dirname(outputPath), "manifest.json");
+  const manifest = {
+    version: PRODUCT_JOURNEY_AUDIT_MANIFEST_VERSION,
+    status: report.status,
+    catalogDigest: report.catalogDigest,
+    journeyIds: [...report.journeyIds],
+    allPassed: report.allPassed === true,
+    allClean: report.allClean === true,
+    results: {
+      path: path.basename(outputPath),
+      realPath: results.realPath,
+      sha256: results.sha256,
+    },
+    artifacts: normalizeArtifactEvidence(artifactEvidence),
+  };
+  await writeFile(
+    manifestPath,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf8",
+  );
+  return manifestPath;
+}
+
+async function writeFailureReport(outputPath, report, artifactEvidence) {
+  refreshReportOutcome(report);
+  await writeResults(outputPath, report);
+  try {
+    await writeAuditManifest(outputPath, report, artifactEvidence);
+  } catch (error) {
+    // Preserve the bounded journey diagnostics and the original failure. The
+    // manifest error is visible without replacing the useful failure record.
+    report.auditManifestError = serializeError(error);
+    await writeResults(outputPath, report);
+  }
+}
+
 function notRunResults(journeys, reason) {
   return journeys.map((journey) => ({
     id: journey.id,
@@ -2135,26 +2321,60 @@ function notRunResults(journeys, reason) {
 export async function runProductJourneys({
   createHarness,
   journeys = PRODUCT_JOURNEYS,
-  assertArtifacts = assertBuildArtifacts,
+  catalog = PRODUCT_JOURNEY_CATALOG,
+  assertArtifacts = null,
   clock = () => performance.now(),
+  expectedCatalogDigest = process.env.GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST,
+  requireAll = process.env.GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL === "true",
   resultsPath,
 } = {}) {
   const outputPath = resolveResultsPath(resultsPath);
+  const catalogDigest =
+    catalog === PRODUCT_JOURNEY_CATALOG
+      ? PRODUCT_JOURNEY_CATALOG_DIGEST
+      : digestProductJourneyCatalog(catalog);
   const report = {
     version: PRODUCT_JOURNEY_RESULTS_VERSION,
     status: "passed",
+    catalogDigest,
+    catalogJourneyIds: catalog.map((journey) => journey.id),
+    journeyIds: journeys.map((journey) => journey.id),
+    allPassed: false,
+    allClean: false,
     journeys: [],
   };
+  let artifactEvidence = [];
 
   try {
-    await assertArtifacts(journeys);
+    if (
+      requireAll &&
+      JSON.stringify(report.journeyIds) !==
+        JSON.stringify(report.catalogJourneyIds)
+    ) {
+      throw new Error(
+        "Full product journey execution requires all canonical product journey IDs in catalog order",
+      );
+    }
+    if (
+      expectedCatalogDigest !== undefined &&
+      expectedCatalogDigest !== catalogDigest
+    ) {
+      throw new Error(
+        `product journey catalog digest mismatch: expected ${expectedCatalogDigest}, observed ${catalogDigest}`,
+      );
+    }
+    const preflight =
+      assertArtifacts ??
+      ((selectedJourneys) =>
+        assertBuildArtifacts(selectedJourneys, { catalog }));
+    artifactEvidence = await preflight(journeys);
   } catch (error) {
     report.status = "failed";
     report.error = serializeError(error);
     report.journeys.push(
       ...notRunResults(journeys, "Artifact preflight failed."),
     );
-    await writeResults(outputPath, report);
+    await writeFailureReport(outputPath, report, artifactEvidence);
     throw error;
   }
 
@@ -2234,23 +2454,40 @@ export async function runProductJourneys({
           );
         }
       }
-      await writeResults(outputPath, report);
+      await writeFailureReport(outputPath, report, artifactEvidence);
       throw new Error(`${journey.id}: ${error?.stack ?? error}`, {
         cause: error,
       });
     }
   }
+  refreshReportOutcome(report);
   await writeResults(outputPath, report);
+  try {
+    await writeAuditManifest(outputPath, report, artifactEvidence);
+  } catch (error) {
+    report.status = "failed";
+    report.error = serializeError(error);
+    refreshReportOutcome(report);
+    await writeResults(outputPath, report);
+    throw error;
+  }
   return report;
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) {
+  const requireAll =
+    process.env.GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL === "true";
   const journeySet = resolveProductJourneySet();
   const selectedJourneys = resolveSelectedProductJourneys(
     journeySet,
     process.env.GRIMODEX_PRODUCT_JOURNEY_IDS,
+    { requireAll },
   );
-  runProductJourneys({ journeys: selectedJourneys }).then(
+  runProductJourneys({
+    catalog: PRODUCT_JOURNEY_CATALOG,
+    journeys: selectedJourneys,
+    requireAll,
+  }).then(
     () => log("PASS — product journeys completed"),
     (error) => {
       console.error(`[electron:product] FAIL: ${error?.stack ?? error}`);

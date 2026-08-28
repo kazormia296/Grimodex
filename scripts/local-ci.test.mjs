@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,7 +18,13 @@ import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 
 import {
+  PRODUCT_JOURNEY_CATALOG,
+  PRODUCT_JOURNEY_CATALOG_DIGEST,
+} from "../electron/scripts/product-journey-catalog.mjs";
+
+import {
   buildLocalCiPlan,
+  collectProductJourneyEvidence,
   parseLocalCiArgs,
   prepareLocalCiArtifacts,
   resolveLocalCiCandidate,
@@ -48,6 +64,28 @@ function completeCandidate(overrides = {}) {
   };
 }
 
+function completeProductJourneyEvidence(overrides = {}) {
+  const identity = {
+    path: ".artifacts/product-journeys/results.json",
+    realPath: "/repo/.artifacts/product-journeys/results.json",
+    sha256: `sha256:${"d".repeat(64)}`,
+  };
+  return {
+    catalogDigest: PRODUCT_JOURNEY_CATALOG_DIGEST,
+    journeyIds: PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
+    allPassed: true,
+    allClean: true,
+    results: identity,
+    manifest: {
+      ...identity,
+      path: ".artifacts/product-journeys/manifest.json",
+    },
+    artifacts: [identity],
+    artifactDigest: `sha256:${"e".repeat(64)}`,
+    ...overrides,
+  };
+}
+
 test("local CI registry accounts for every hosted Full CI job", async () => {
   const registry = await readRegistry();
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
@@ -76,6 +114,23 @@ test("quick and full profiles resolve deterministic command plans", async () => 
     registry.stages["electron-product-journeys"].env.CI,
     "true",
     "local product journeys must activate the same unpackaged CI seam as hosted CI",
+  );
+  assert.equal(
+    registry.stages["electron-product-journeys"].env
+      .GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL,
+    "true",
+  );
+  assert.equal(
+    registry.stages["electron-product-journeys"].env
+      .GRIMODEX_PRODUCT_JOURNEY_IDS,
+    "",
+    "local Full must mask inherited journey ID subsets",
+  );
+  assert.equal(
+    registry.stages["electron-product-journeys"].env
+      .GRIMODEX_PRODUCT_JOURNEY_SET,
+    "",
+    "local Full must mask inherited journey set subsets",
   );
   const quick = buildLocalCiPlan(registry, {
     profile: "quick",
@@ -146,6 +201,42 @@ test("quick and full profiles resolve deterministic command plans", async () => 
     "--report",
     ".artifacts/local-ci/impact.json",
   ]);
+});
+
+test("local Full product stage masks both inherited journey subset selectors", async () => {
+  const registry = await readRegistry();
+  const full = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const productStage = full.stages.find(
+    (stage) => stage.id === "electron-product-journeys",
+  );
+  const inherited = {
+    GRIMODEX_PRODUCT_JOURNEY_IDS: '["editor-persistence"]',
+    GRIMODEX_PRODUCT_JOURNEY_SET: "c2-zc",
+  };
+  const observed = [];
+
+  await runLocalCiPlan(
+    {
+      ...full,
+      stages: [productStage],
+    },
+    {
+      executeCommand: async (command) => {
+        observed.push({ ...inherited, ...command.env });
+        return { durationMs: 1, exitCode: 0, signal: null };
+      },
+    },
+  );
+
+  assert.equal(observed.length, productStage.commands.length);
+  for (const env of observed) {
+    assert.equal(env.GRIMODEX_PRODUCT_JOURNEY_IDS, "");
+    assert.equal(env.GRIMODEX_PRODUCT_JOURNEY_SET, "");
+  }
 });
 
 test("local CI argument parsing supports comparison, resume, and dry-run", () => {
@@ -219,9 +310,10 @@ test("local CI execution is fail-fast and records later stages as not run", asyn
   });
 
   assert.deepEqual(executed, ["pass", "fail"]);
-  assert.equal(result.version, 2);
+  assert.equal(result.version, 3);
   assert.equal(result.coverage.completeness, "complete");
   assert.equal(result.candidate.resolvedHeadSha, "b".repeat(40));
+  assert.equal(result.productJourneyEvidence, null);
   assert.equal(result.status, "failed");
   assert.equal(result.stages[0].status, "failed");
   assert.equal(result.stages[1].status, "not-run");
@@ -309,11 +401,12 @@ test("dirty candidate fingerprints change when file content changes", async () =
 test("only complete candidate-bound receipts satisfy merge and release gates", () => {
   const candidate = completeCandidate();
   const receipt = {
-    version: 2,
+    version: 3,
     profile: "full",
     coverage: { completeness: "complete", fromStage: null },
     candidate,
     status: "passed",
+    productJourneyEvidence: completeProductJourneyEvidence(),
   };
 
   assert.doesNotThrow(() =>
@@ -351,6 +444,219 @@ test("only complete candidate-bound receipts satisfy merge and release gates", (
         },
       }),
     /candidate/,
+  );
+});
+
+test("Full receipts require bound product journey results and artifact evidence", () => {
+  const candidate = completeCandidate();
+  const receipt = {
+    version: 3,
+    profile: "full",
+    coverage: { completeness: "complete", fromStage: null },
+    candidate,
+    status: "passed",
+  };
+
+  assert.throws(
+    () => verifyLocalCiReceipt(receipt, { profile: "full", candidate }),
+    /product journey evidence/i,
+  );
+});
+
+test("Full product journey evidence binds result and manifest bytes to the receipt", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-product-evidence-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const artifactRoot = path.join(
+    temporaryRoot,
+    ".artifacts",
+    "product-journeys",
+  );
+  const resultsPath = path.join(artifactRoot, "results.json");
+  const manifestPath = path.join(artifactRoot, "manifest.json");
+  const buildRoot = path.join(temporaryRoot, "build");
+  const mainPath = path.join(buildRoot, "main.cjs");
+  const rendererPath = path.join(buildRoot, "index.html");
+  const nativePath = path.join(buildRoot, "grimodex-node.node");
+  const mcpRequestedPath = path.join(buildRoot, "grimodex-mcp");
+  const mcpTargetA = path.join(buildRoot, "grimodex-mcp-a");
+  const mcpTargetB = path.join(buildRoot, "grimodex-mcp-b");
+  await mkdir(buildRoot, { recursive: true });
+  await Promise.all([
+    writeFile(mainPath, "electron main", "utf8"),
+    writeFile(rendererPath, "renderer", "utf8"),
+    writeFile(nativePath, "native module", "utf8"),
+    writeFile(mcpTargetA, "mcp sidecar A", "utf8"),
+    writeFile(mcpTargetB, "mcp sidecar B", "utf8"),
+  ]);
+  await symlink(path.basename(mcpTargetA), mcpRequestedPath);
+  await mkdir(artifactRoot, { recursive: true });
+  const journeyIds = PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id);
+  const results = {
+    version: 4,
+    status: "passed",
+    catalogDigest: PRODUCT_JOURNEY_CATALOG_DIGEST,
+    catalogJourneyIds: journeyIds,
+    journeyIds,
+    allPassed: true,
+    allClean: true,
+    journeys: journeyIds.map((id) => ({
+      id,
+      status: "passed",
+      cleanPass: true,
+    })),
+  };
+  const resultsText = `${JSON.stringify(results, null, 2)}\n`;
+  const resultsSha256 = `sha256:${createHash("sha256")
+    .update(resultsText)
+    .digest("hex")}`;
+  await writeFile(resultsPath, resultsText, "utf8");
+  const buildArtifact = async (name, requestedPath) => {
+    const realPath = await realpath(requestedPath);
+    const sha256 = `sha256:${createHash("sha256")
+      .update(await readFile(realPath))
+      .digest("hex")}`;
+    return { name, path: requestedPath, requestedPath, realPath, sha256 };
+  };
+  const buildArtifacts = await Promise.all([
+    buildArtifact("Electron main", mainPath),
+    buildArtifact("renderer", rendererPath),
+    buildArtifact("N-API native module", nativePath),
+    buildArtifact("MCP sidecar", mcpRequestedPath),
+  ]);
+  const manifestText = `${JSON.stringify(
+    {
+      version: 1,
+      status: "passed",
+      catalogDigest: PRODUCT_JOURNEY_CATALOG_DIGEST,
+      journeyIds,
+      allPassed: true,
+      allClean: true,
+      results: {
+        path: "results.json",
+        realPath: resultsPath,
+        sha256: resultsSha256,
+      },
+      artifacts: buildArtifacts,
+    },
+    null,
+    2,
+  )}\n`;
+  await writeFile(manifestPath, manifestText, "utf8");
+
+  const plan = {
+    stages: [
+      {
+        id: "electron-product-journeys",
+        commands: [
+          {
+            env: {
+              GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR:
+                ".artifacts/product-journeys",
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const evidence = await collectProductJourneyEvidence(plan, {
+    root: temporaryRoot,
+  });
+  assert.deepEqual(evidence.journeyIds, journeyIds);
+  assert.equal(evidence.results.sha256, resultsSha256);
+  assert.equal(evidence.artifacts.length, 6);
+  assert.equal(
+    evidence.manifest.path,
+    ".artifacts/product-journeys/manifest.json",
+  );
+  assert.match(evidence.artifactDigest, /^sha256:[0-9a-f]{64}$/);
+
+  const candidate = completeCandidate();
+  const receipt = {
+    version: 3,
+    profile: "full",
+    coverage: { completeness: "complete", fromStage: null },
+    candidate,
+    status: "passed",
+    productJourneyEvidence: evidence,
+  };
+  assert.doesNotThrow(() =>
+    verifyLocalCiReceipt(receipt, {
+      profile: "full",
+      candidate,
+      currentProductJourneyEvidence: evidence,
+    }),
+  );
+
+  const missingManifestArtifact = JSON.parse(manifestText);
+  missingManifestArtifact.artifacts.pop();
+  await writeFile(
+    manifestPath,
+    `${JSON.stringify(missingManifestArtifact, null, 2)}\n`,
+    "utf8",
+  );
+  await assert.rejects(
+    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    /exactly the canonical build artifacts/i,
+  );
+  await writeFile(manifestPath, manifestText, "utf8");
+
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(
+        {
+          ...receipt,
+          productJourneyEvidence: {
+            ...evidence,
+            results: {
+              ...evidence.results,
+              sha256: `sha256:${"f".repeat(64)}`,
+            },
+          },
+        },
+        {
+          profile: "full",
+          candidate,
+          currentProductJourneyEvidence: evidence,
+        },
+      ),
+    /does not match current artifacts/i,
+  );
+
+  const mismatchedRequestedPath = JSON.parse(manifestText);
+  mismatchedRequestedPath.artifacts[0].requestedPath = rendererPath;
+  await writeFile(
+    manifestPath,
+    `${JSON.stringify(mismatchedRequestedPath, null, 2)}\n`,
+    "utf8",
+  );
+  await assert.rejects(
+    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    /changed after preflight/i,
+  );
+  await writeFile(manifestPath, manifestText, "utf8");
+
+  await writeFile(mainPath, "electron main tampered", "utf8");
+  await assert.rejects(
+    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    /changed after preflight/i,
+  );
+  await writeFile(mainPath, "electron main", "utf8");
+
+  await rm(mcpRequestedPath);
+  await symlink(path.basename(mcpTargetB), mcpRequestedPath);
+  await assert.rejects(
+    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    /changed after preflight/i,
+  );
+  await rm(mcpRequestedPath);
+  await symlink(path.basename(mcpTargetA), mcpRequestedPath);
+
+  await rm(nativePath);
+  await assert.rejects(
+    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    /ENOENT|regular file|artifact/i,
   );
 });
 

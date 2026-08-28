@@ -182,13 +182,17 @@ test("CI pauses automatic triggers while preserving manual and reusable controls
     );
   }
   assert.equal(gate.if, shouldRunCondition);
-  assert.equal(
-    gate.env.GRIMODEX_PRODUCT_JOURNEY_IDS,
-    "${{ steps.product-journey-impact.outputs.execution_journey_ids }}",
+  assert.equal(gate.env.GRIMODEX_PRODUCT_JOURNEY_IDS, undefined);
+  assert.equal(gate.env.GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL, "true");
+  assert.match(
+    gate.env.GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST,
+    /steps\.product-journey-impact\.outputs\.catalog_digest/,
   );
-  assert.equal(
+  assert.match(gate.run, /GRIMODEX_PRODUCT_JOURNEY_IDS/);
+  assert.match(gate.run, /GRIMODEX_PRODUCT_JOURNEY_SET/);
+  assert.match(
     gate.run,
-    'xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:product-journeys',
+    /xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:product-journeys/,
   );
 
   const mcpBuild = job.steps.find(
@@ -198,6 +202,22 @@ test("CI pauses automatic triggers while preserving manual and reusable controls
   assert.equal(mcpBuild.run, "pnpm mcp:build");
   assert.match(mcpBuild.if, /should_run.*true/);
   assert.match(mcpBuild.if, /execution_capabilities.*mcp/);
+});
+
+test("Full CI product journey gate cannot receive a subset and binds the catalog", async () => {
+  const workflow = yaml.load(await read(".github/workflows/ci.yml"));
+  const gate = workflow.jobs["electron-product-journeys"].steps.find(
+    (step) => step.name === "Product journey gate",
+  );
+
+  assert.equal(gate.env.GRIMODEX_PRODUCT_JOURNEY_IDS, undefined);
+  assert.equal(gate.env.GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL, "true");
+  assert.match(
+    gate.env.GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST,
+    /steps\.product-journey-impact\.outputs\.catalog_digest/,
+  );
+  assert.match(gate.run, /GRIMODEX_PRODUCT_JOURNEY_IDS/);
+  assert.match(gate.run, /subset|must not be set/i);
 });
 
 test("paused CI keeps every product journey job definition available", async () => {

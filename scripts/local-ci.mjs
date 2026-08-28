@@ -2,12 +2,25 @@
 
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import {
+  PRODUCT_JOURNEY_CATALOG,
+  PRODUCT_JOURNEY_CATALOG_DIGEST,
+} from "../electron/scripts/product-journey-catalog.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -15,6 +28,15 @@ const repoRoot = path.resolve(
 );
 const registryPath = path.join(repoRoot, "scripts/local-ci-registry.json");
 const execFileAsync = promisify(execFile);
+const LOCAL_CI_RECEIPT_VERSION = 3;
+const PRODUCT_JOURNEY_RESULTS_VERSION = 4;
+const PRODUCT_JOURNEY_ARTIFACT_DIR = ".artifacts/product-journeys";
+const PRODUCT_JOURNEY_BUILD_ARTIFACT_NAMES = [
+  "Electron main",
+  "renderer",
+  "N-API native module",
+  "MCP sidecar",
+];
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -347,9 +369,361 @@ function verifyCandidateBinding(receiptCandidate, candidate) {
   }
 }
 
-export function verifyLocalCiReceipt(receipt, { profile, candidate }) {
-  if (!isPlainObject(receipt) || receipt.version !== 2) {
-    throw new Error("Local CI receipt version 2 is required.");
+function hashFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const digest = createHash("sha256");
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => digest.update(chunk));
+    stream.once("error", reject);
+    stream.once("end", () => resolve(`sha256:${digest.digest("hex")}`));
+  });
+}
+
+function digestJson(value) {
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(value))
+    .digest("hex")}`;
+}
+
+function relativePath(root, filePath) {
+  return path.relative(root, filePath).split(path.sep).join("/");
+}
+
+async function resolveArtifactEvidence(filePath, { root }) {
+  if (
+    typeof filePath !== "string" ||
+    filePath.length === 0 ||
+    filePath.includes("\0")
+  ) {
+    throw new Error(
+      "local CI artifact path must be a non-empty string without NUL bytes",
+    );
+  }
+  const requestedPath = path.resolve(root, filePath);
+  const realPath = await realpath(requestedPath);
+  const metadata = await stat(realPath);
+  if (!metadata.isFile()) {
+    throw new Error(
+      `local CI artifact is not a regular file: ${requestedPath}`,
+    );
+  }
+  return {
+    path: relativePath(root, requestedPath),
+    realPath,
+    sha256: await hashFile(realPath),
+  };
+}
+
+async function collectArtifactFiles(directory, { root }) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries.sort((left, right) =>
+    left.name.localeCompare(right.name),
+  )) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await collectArtifactFiles(entryPath, { root })));
+    } else if (entry.isFile() || entry.isSymbolicLink()) {
+      files.push(await resolveArtifactEvidence(entryPath, { root }));
+    }
+  }
+  return files;
+}
+
+function resolveProductJourneyArtifactDirectory(
+  plan,
+  { root = repoRoot } = {},
+) {
+  const stage = plan.stages.find(
+    (candidate) => candidate.id === "electron-product-journeys",
+  );
+  const configured = stage?.commands
+    .map((command) => command.env?.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR)
+    .find((value) => value !== undefined && value !== "");
+  return path.resolve(root, configured ?? PRODUCT_JOURNEY_ARTIFACT_DIR);
+}
+
+function assertStringArrayEqual(actual, expected, label) {
+  if (
+    !Array.isArray(actual) ||
+    JSON.stringify(actual) !== JSON.stringify(expected)
+  ) {
+    throw new Error(`${label} must match the canonical product journey IDs`);
+  }
+}
+
+function assertPassedProductJourneyResult(report) {
+  if (
+    !isPlainObject(report) ||
+    report.version !== PRODUCT_JOURNEY_RESULTS_VERSION
+  ) {
+    throw new Error("product journey results version 4 is required");
+  }
+  if (report.status !== "passed") {
+    throw new Error("product journey results must have passed status");
+  }
+  if (report.catalogDigest !== PRODUCT_JOURNEY_CATALOG_DIGEST) {
+    throw new Error("product journey results catalog digest is not canonical");
+  }
+  const expectedIds = PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id);
+  assertStringArrayEqual(
+    report.catalogJourneyIds,
+    expectedIds,
+    "product journey result catalog",
+  );
+  assertStringArrayEqual(
+    report.journeyIds,
+    expectedIds,
+    "product journey results",
+  );
+  if (report.allPassed !== true || report.allClean !== true) {
+    throw new Error(
+      "product journey results must record allPassed and allClean",
+    );
+  }
+  if (
+    !Array.isArray(report.journeys) ||
+    report.journeys.length !== expectedIds.length ||
+    report.journeys.some(
+      (journey, index) =>
+        journey?.id !== expectedIds[index] ||
+        journey.status !== "passed" ||
+        journey.cleanPass !== true,
+    )
+  ) {
+    throw new Error(
+      "product journey results must contain all passed clean journeys",
+    );
+  }
+  return expectedIds;
+}
+
+function assertPassedProductJourneyManifest(manifest, expectedIds) {
+  if (!isPlainObject(manifest) || manifest.version !== 1) {
+    throw new Error("product journey audit manifest version 1 is required");
+  }
+  if (
+    manifest.status !== "passed" ||
+    manifest.catalogDigest !== PRODUCT_JOURNEY_CATALOG_DIGEST ||
+    manifest.allPassed !== true ||
+    manifest.allClean !== true
+  ) {
+    throw new Error(
+      "product journey audit manifest is not a clean Full result",
+    );
+  }
+  assertStringArrayEqual(
+    manifest.journeyIds,
+    expectedIds,
+    "product journey manifest",
+  );
+  if (!isPlainObject(manifest.results) || !Array.isArray(manifest.artifacts)) {
+    throw new Error(
+      "product journey audit manifest is missing artifact entries",
+    );
+  }
+  const artifactNames = manifest.artifacts.map((artifact, index) => {
+    assertArtifactIdentity(
+      artifact,
+      `product journey manifest entry ${index}`,
+      { requireRequestedPath: true },
+    );
+    if (typeof artifact.name !== "string" || artifact.name.length === 0) {
+      throw new Error(
+        `product journey manifest entry ${index} must name its build artifact`,
+      );
+    }
+    return artifact.name;
+  });
+  if (
+    JSON.stringify([...artifactNames].sort()) !==
+    JSON.stringify([...PRODUCT_JOURNEY_BUILD_ARTIFACT_NAMES].sort())
+  ) {
+    throw new Error(
+      "product journey audit manifest must declare exactly the canonical build artifacts",
+    );
+  }
+}
+
+function assertArtifactIdentity(
+  identity,
+  label,
+  { requireRequestedPath = false } = {},
+) {
+  if (
+    !isPlainObject(identity) ||
+    typeof identity.path !== "string" ||
+    typeof identity.realPath !== "string" ||
+    identity.path.length === 0 ||
+    identity.realPath.length === 0 ||
+    identity.path.includes("\0") ||
+    identity.realPath.includes("\0") ||
+    !/^sha256:[0-9a-f]{64}$/u.test(identity.sha256 ?? "")
+  ) {
+    throw new Error(`${label} artifact identity is invalid`);
+  }
+  if (
+    requireRequestedPath &&
+    (typeof identity.requestedPath !== "string" ||
+      identity.requestedPath.length === 0 ||
+      identity.requestedPath.includes("\0"))
+  ) {
+    throw new Error(`${label} artifact requested path is invalid`);
+  }
+}
+
+/** Collect and validate the immutable product-journey evidence for a Full receipt. */
+export async function collectProductJourneyEvidence(
+  plan,
+  { root = repoRoot } = {},
+) {
+  const artifactRoot = resolveProductJourneyArtifactDirectory(plan, { root });
+  const resultsPath = path.join(artifactRoot, "results.json");
+  const manifestPath = path.join(artifactRoot, "manifest.json");
+  const files = await collectArtifactFiles(artifactRoot, { root });
+  const resultEvidence = files.find(
+    (entry) => entry.path === relativePath(root, resultsPath),
+  );
+  const manifestEvidence = files.find(
+    (entry) => entry.path === relativePath(root, manifestPath),
+  );
+  if (!resultEvidence || !manifestEvidence) {
+    throw new Error(
+      "Full product journey artifacts must include results.json and manifest.json",
+    );
+  }
+
+  const report = JSON.parse(await readFile(resultsPath, "utf8"));
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const journeyIds = assertPassedProductJourneyResult(report);
+  assertPassedProductJourneyManifest(manifest, journeyIds);
+  if (
+    manifest.results.path !== "results.json" ||
+    manifest.results.realPath !== resultEvidence.realPath ||
+    manifest.results.sha256 !== resultEvidence.sha256
+  ) {
+    throw new Error(
+      "product journey audit manifest does not bind results.json",
+    );
+  }
+
+  const buildArtifacts = [];
+  for (const [index, artifact] of manifest.artifacts.entries()) {
+    const label = `product journey manifest entry ${index}`;
+    assertArtifactIdentity(artifact, label, { requireRequestedPath: true });
+    const currentPath = await resolveArtifactEvidence(artifact.path, { root });
+    const currentRequestedPath = await resolveArtifactEvidence(
+      artifact.requestedPath,
+      { root },
+    );
+    if (
+      currentPath.realPath !== currentRequestedPath.realPath ||
+      currentPath.sha256 !== currentRequestedPath.sha256 ||
+      currentPath.realPath !== artifact.realPath ||
+      currentRequestedPath.realPath !== artifact.realPath ||
+      currentPath.sha256 !== artifact.sha256 ||
+      currentRequestedPath.sha256 !== artifact.sha256
+    ) {
+      throw new Error(
+        `product journey manifest artifact ${artifact.name ?? artifact.path} changed after preflight`,
+      );
+    }
+    buildArtifacts.push(currentPath);
+  }
+  const artifacts = [...files, ...buildArtifacts].sort((left, right) =>
+    left.path.localeCompare(right.path),
+  );
+
+  return {
+    catalogDigest: PRODUCT_JOURNEY_CATALOG_DIGEST,
+    journeyIds,
+    allPassed: true,
+    allClean: true,
+    results: resultEvidence,
+    manifest: manifestEvidence,
+    artifacts,
+    artifactDigest: digestJson(artifacts),
+  };
+}
+
+function verifyProductJourneyEvidence(receiptEvidence, currentEvidence) {
+  if (!isPlainObject(receiptEvidence)) {
+    throw new Error("Full receipt product journey evidence is required.");
+  }
+  if (receiptEvidence.catalogDigest !== PRODUCT_JOURNEY_CATALOG_DIGEST) {
+    throw new Error(
+      "Full receipt product journey catalog digest is not canonical.",
+    );
+  }
+  const expectedIds = PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id);
+  assertStringArrayEqual(
+    receiptEvidence.journeyIds,
+    expectedIds,
+    "Full receipt product journey evidence",
+  );
+  if (receiptEvidence.allPassed !== true || receiptEvidence.allClean !== true) {
+    throw new Error(
+      "Full receipt product journey evidence must be passed and clean.",
+    );
+  }
+  for (const field of ["results", "manifest"]) {
+    assertArtifactIdentity(
+      receiptEvidence[field],
+      `Full receipt product journey ${field}`,
+    );
+  }
+  if (
+    !Array.isArray(receiptEvidence.artifacts) ||
+    !/^sha256:[0-9a-f]{64}$/u.test(receiptEvidence.artifactDigest ?? "")
+  ) {
+    throw new Error(
+      "Full receipt product journey artifact evidence is invalid.",
+    );
+  }
+  for (const [index, artifact] of receiptEvidence.artifacts.entries()) {
+    assertArtifactIdentity(
+      artifact,
+      `Full receipt product journey artifact ${index}`,
+    );
+  }
+  if (currentEvidence) {
+    for (const field of [
+      "catalogDigest",
+      "journeyIds",
+      "allPassed",
+      "allClean",
+      "artifactDigest",
+    ]) {
+      if (
+        JSON.stringify(receiptEvidence[field]) !==
+        JSON.stringify(currentEvidence[field])
+      ) {
+        throw new Error(
+          `Full receipt product journey evidence does not match current artifacts: ${field}.`,
+        );
+      }
+    }
+    for (const field of ["results", "manifest", "artifacts"]) {
+      if (
+        JSON.stringify(receiptEvidence[field]) !==
+        JSON.stringify(currentEvidence[field])
+      ) {
+        throw new Error(
+          `Full receipt product journey evidence does not match current artifacts: ${field}.`,
+        );
+      }
+    }
+  }
+}
+
+export function verifyLocalCiReceipt(
+  receipt,
+  { profile, candidate, currentProductJourneyEvidence = null },
+) {
+  if (!isPlainObject(receipt) || receipt.version !== LOCAL_CI_RECEIPT_VERSION) {
+    throw new Error(
+      `Local CI receipt version ${LOCAL_CI_RECEIPT_VERSION} is required.`,
+    );
   }
   if (receipt.profile !== profile || receipt.status !== "passed") {
     throw new Error(`A passed ${profile} local CI receipt is required.`);
@@ -366,6 +740,12 @@ export function verifyLocalCiReceipt(receipt, { profile, candidate }) {
     throw new Error("A clean-worktree Full local CI receipt is required.");
   }
   verifyCandidateBinding(receipt.candidate, candidate);
+  if (profile === "full") {
+    verifyProductJourneyEvidence(
+      receipt.productJourneyEvidence,
+      currentProductJourneyEvidence,
+    );
+  }
   return receipt;
 }
 
@@ -463,6 +843,7 @@ export async function runLocalCiPlan(
     dryRun = false,
     executeCommand: execute = (entry) => executeCommand(entry),
     notify = () => {},
+    productJourneyEvidence = null,
   } = {},
 ) {
   const startedAt = new Date().toISOString();
@@ -544,7 +925,7 @@ export async function runLocalCiPlan(
   }
 
   return {
-    version: 2,
+    version: LOCAL_CI_RECEIPT_VERSION,
     profile: plan.profile,
     comparison: plan.comparison,
     coverage: plan.coverage,
@@ -553,6 +934,7 @@ export async function runLocalCiPlan(
     finishedAt: new Date().toISOString(),
     durationMs: Math.round(performance.now() - started),
     status: dryRun ? "planned" : failedStage ? "failed" : "passed",
+    productJourneyEvidence,
     releaseOnlyJobs: plan.releaseOnlyJobs,
     stages,
   };
@@ -646,7 +1028,15 @@ async function main() {
       throw new Error("--verify cannot be combined with --dry-run");
     }
     const receipt = JSON.parse(await readFile(reportPath, "utf8"));
-    verifyLocalCiReceipt(receipt, { profile: plan.profile, candidate });
+    const currentProductJourneyEvidence =
+      plan.profile === "full"
+        ? await collectProductJourneyEvidence(plan)
+        : null;
+    verifyLocalCiReceipt(receipt, {
+      profile: plan.profile,
+      candidate,
+      currentProductJourneyEvidence,
+    });
     process.stdout.write(`[local-ci] verified=${reportPath}\n`);
     return;
   }
@@ -675,6 +1065,15 @@ async function main() {
     );
     try {
       verifyCandidateBinding(result.candidate, finishedCandidate);
+      if (plan.profile === "full" && result.status === "passed") {
+        result.productJourneyEvidence =
+          await collectProductJourneyEvidence(plan);
+        verifyLocalCiReceipt(result, {
+          profile: plan.profile,
+          candidate: finishedCandidate,
+          currentProductJourneyEvidence: result.productJourneyEvidence,
+        });
+      }
     } catch (error) {
       result.status = "failed";
       result.receiptError =

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const freezeEntries = (entries) =>
@@ -237,6 +238,24 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
   ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
 ]);
+
+/**
+ * Bind acceptance evidence to the exact catalog that selected and executed
+ * the journeys. JSON.stringify is deterministic here because the catalog is
+ * source-defined and freezeEntries preserves entry and field order.
+ */
+export function digestProductJourneyCatalog(catalog) {
+  if (!Array.isArray(catalog) || catalog.length === 0) {
+    throw new Error("product journey catalog must be a non-empty array");
+  }
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(catalog))
+    .digest("hex")}`;
+}
+
+export const PRODUCT_JOURNEY_CATALOG_DIGEST = digestProductJourneyCatalog(
+  PRODUCT_JOURNEY_CATALOG,
+);
 
 /**
  * Known coverage gaps remain explicit. Entries move into

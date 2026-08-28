@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,6 +17,9 @@ import test from "node:test";
 import {
   PRODUCT_JOURNEYS,
   assertLifecycleTransitionOrder,
+  resolveMcpArtifact,
+  resolveMcpArtifactPath,
+  resolveProductJourneyArtifact,
   resolveSelectedProductJourneys,
   runProductJourneys,
 } from "../electron/scripts/product-journeys.mjs";
@@ -22,6 +35,119 @@ function deterministicClock(values) {
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
 }
+
+test("runner MCP artifact resolution honors override, CARGO_TARGET_DIR, and default with identity evidence", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-product-mcp-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const targetDir = path.join(root, "cargo-target");
+  const targetBinary = path.join(targetDir, "debug", "grimodex-mcp");
+  const defaultBinary = path.join(
+    root,
+    "src-tauri",
+    "target",
+    "debug",
+    "grimodex-mcp",
+  );
+  const canonicalBinary = path.join(root, "canonical-mcp");
+  const override = path.join(root, "override-mcp");
+  await writeFile(canonicalBinary, "runner mcp artifact");
+  await chmod(canonicalBinary, 0o755);
+  await symlink(canonicalBinary, override);
+  await mkdir(path.dirname(targetBinary), { recursive: true });
+  await mkdir(path.dirname(defaultBinary), { recursive: true });
+  await writeFile(targetBinary, "cargo mcp artifact");
+  await writeFile(defaultBinary, "default mcp artifact");
+  await chmod(targetBinary, 0o755);
+  await chmod(defaultBinary, 0o755);
+
+  assert.equal(
+    resolveMcpArtifactPath({
+      root,
+      overridePath: override,
+      cargoTargetDir: targetDir,
+      platform: "linux",
+    }),
+    override,
+  );
+  assert.equal(
+    resolveMcpArtifactPath({
+      root,
+      overridePath: "",
+      cargoTargetDir: "cargo-target",
+      platform: "linux",
+    }),
+    targetBinary,
+  );
+  assert.equal(
+    resolveMcpArtifactPath({
+      root,
+      overridePath: "",
+      cargoTargetDir: "",
+      platform: "linux",
+    }),
+    path.join(root, "src-tauri", "target", "debug", "grimodex-mcp"),
+  );
+  assert.equal(
+    resolveMcpArtifactPath({
+      root: "C:\\grimodex",
+      overridePath: "",
+      cargoTargetDir: "target",
+      platform: "win32",
+    }),
+    "C:\\grimodex\\target\\debug\\grimodex-mcp.exe",
+  );
+  assert.throws(
+    () =>
+      resolveMcpArtifactPath({
+        root,
+        overridePath: "relative-mcp",
+        cargoTargetDir: "",
+        platform: "linux",
+      }),
+    /absolute path/,
+  );
+
+  const cargoIdentity = await resolveMcpArtifact({
+    root,
+    overridePath: "",
+    cargoTargetDir: targetDir,
+    platform: "linux",
+  });
+  assert.equal(cargoIdentity.path, targetBinary);
+  assert.equal(cargoIdentity.requestedPath, targetBinary);
+  assert.equal(cargoIdentity.realPath, await realpath(targetBinary));
+  assert.equal(
+    cargoIdentity.sha256,
+    `sha256:${createHash("sha256").update("cargo mcp artifact").digest("hex")}`,
+  );
+
+  const defaultIdentity = await resolveMcpArtifact({
+    root,
+    overridePath: "",
+    cargoTargetDir: "",
+    platform: "linux",
+  });
+  assert.equal(defaultIdentity.path, defaultBinary);
+  assert.equal(defaultIdentity.requestedPath, defaultBinary);
+  assert.equal(defaultIdentity.realPath, await realpath(defaultBinary));
+  assert.equal(
+    defaultIdentity.sha256,
+    `sha256:${createHash("sha256")
+      .update("default mcp artifact")
+      .digest("hex")}`,
+  );
+
+  const identity = await resolveProductJourneyArtifact(override, {
+    executable: true,
+  });
+  assert.equal(identity.path, override);
+  assert.equal(identity.requestedPath, override);
+  assert.equal(identity.realPath, await realpath(canonicalBinary));
+  assert.equal(
+    identity.sha256,
+    `sha256:${createHash("sha256").update("runner mcp artifact").digest("hex")}`,
+  );
+});
 
 test("product runner records deterministic results while preserving serial fresh harnesses", async (t) => {
   const outputRoot = await mkdtemp(
@@ -80,8 +206,11 @@ test("product runner records deterministic results while preserving serial fresh
     "dispose:2:true:second",
   ]);
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 3);
+  assert.equal(report.version, 4);
   assert.equal(report.status, "passed");
+  assert.deepEqual(report.journeyIds, ["first", "second"]);
+  assert.equal(report.allPassed, true);
+  assert.equal(report.allClean, true);
   assert.deepEqual(report.journeys, [
     {
       id: "first",
@@ -106,6 +235,14 @@ test("product runner records deterministic results while preserving serial fresh
       cleanPass: true,
     },
   ]);
+  const manifest = await readJson(path.join(outputRoot, "manifest.json"));
+  assert.equal(manifest.version, 1);
+  assert.equal(manifest.status, "passed");
+  assert.deepEqual(manifest.journeyIds, ["first", "second"]);
+  assert.equal(manifest.allPassed, true);
+  assert.equal(manifest.allClean, true);
+  assert.equal(manifest.results.path, "results.json");
+  assert.match(manifest.results.sha256, /^sha256:[0-9a-f]{64}$/);
 });
 
 test("product runner writes the failed and fail-fast results before rethrowing", async (t) => {
@@ -166,7 +303,7 @@ test("product runner writes the failed and fail-fast results before rethrowing",
 
   assert.deepEqual(events, ["create", "run:broken", "dispose:false:broken"]);
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 3);
+  assert.equal(report.version, 4);
   assert.equal(report.status, "failed");
   assert.ok(
     report.journeys.every(
@@ -224,7 +361,7 @@ test("product runner still writes a versioned report when artifact preflight fai
   );
 
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 3);
+  assert.equal(report.version, 4);
   assert.equal(report.status, "failed");
   assert.deepEqual(report.error, {
     name: "Error",
@@ -285,7 +422,7 @@ test("product runner fails closed when renderer diagnostics are not clean", asyn
 
   assert.deepEqual(events, ["finalize", "dispose:false:renderer-broken"]);
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 3);
+  assert.equal(report.version, 4);
   assert.equal(report.status, "failed");
   assert.deepEqual(report.journeys, [
     {
@@ -422,5 +559,29 @@ test("runner selection rejects malformed, duplicate, empty, and unknown IDs", ()
   assert.equal(
     resolveSelectedProductJourneys(PRODUCT_JOURNEYS, undefined),
     PRODUCT_JOURNEYS,
+  );
+});
+
+test("Full product journey execution rejects a subset even when IDs are supplied", async (t) => {
+  const outputRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-results-full-"),
+  );
+  t.after(() => rm(outputRoot, { recursive: true, force: true }));
+
+  await assert.rejects(
+    runProductJourneys({
+      catalog: [
+        { id: "first", capabilities: [] },
+        { id: "second", capabilities: [] },
+      ],
+      journeys: [{ id: "first", run: async () => undefined }],
+      requireAll: true,
+      assertArtifacts: () => undefined,
+      createHarness: () => ({
+        dispose: async () => undefined,
+      }),
+      resultsPath: path.join(outputRoot, "results.json"),
+    }),
+    /all canonical product journey IDs/i,
   );
 });

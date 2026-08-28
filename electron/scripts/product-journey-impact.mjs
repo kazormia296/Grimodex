@@ -18,6 +18,7 @@ import {
   PRODUCT_DOMAIN_RULES,
   PRODUCT_JOURNEY_CAPABILITY_ORDER,
   PRODUCT_JOURNEY_CATALOG,
+  digestProductJourneyCatalog,
   PRODUCT_JOURNEY_ROLLOUT_MODE,
 } from "./product-journey-catalog.mjs";
 import { validateCurrentProductJourneyCoverage } from "./product-journey-coverage.mjs";
@@ -179,6 +180,7 @@ export function resolveProductJourneyExecution({ mode, catalog, selection }) {
     : catalog.filter((journey) => selection.journeyIds.includes(journey.id));
   const executionJourneyIds = executionCatalog.map((journey) => journey.id);
   return {
+    catalogDigest: digestProductJourneyCatalog(catalog),
     mode,
     shadow: mode === "shadow",
     selectedJourneyIds: [...selection.journeyIds],
@@ -313,13 +315,15 @@ function parseArgs(argv) {
 async function appendGithubOutputs(execution) {
   if (!process.env.GITHUB_OUTPUT) return;
   const values = {
+    catalog_digest: execution.catalogDigest,
     selected_journey_ids: execution.selectedJourneyIds,
     selected_capabilities: execution.selectedCapabilities,
     execution_journey_ids: execution.executionJourneyIds,
     execution_capabilities: execution.executionCapabilities,
   };
   const lines = Object.entries(values).map(
-    ([key, value]) => `${key}=${JSON.stringify(value)}`,
+    ([key, value]) =>
+      `${key}=${key === "catalog_digest" ? value : JSON.stringify(value)}`,
   );
   lines.push(`should_run=${execution.shouldRun ? "true" : "false"}`);
   lines.push(`shadow=${execution.shadow ? "true" : "false"}`);
@@ -372,6 +376,7 @@ async function main() {
   });
   const report = {
     version: 1,
+    catalogDigest: execution.catalogDigest,
     generatedAt: new Date().toISOString(),
     comparison: changed.comparison,
     environment: {
