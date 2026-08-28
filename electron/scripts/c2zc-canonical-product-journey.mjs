@@ -39,8 +39,121 @@ export const C2ZC_PRODUCT_JOURNEY_PHASES = Object.freeze([
   `${C2ZC_PRODUCT_JOURNEY_ID}/new-project`,
 ]);
 
+const C2ZC_WORKSPACE_LIFECYCLE_PHASES = Object.freeze([
+  "switch-requested",
+  "quiescence-started",
+  "authority-commit",
+  "new-scope-hydrated",
+]);
+
 function rowsOf(result) {
   return Array.isArray(result?.rows) ? result.rows : [];
+}
+
+function settledWorkspaceLifecycleTransition(events, workspace) {
+  if (!Array.isArray(events)) return null;
+  const grouped = new Map();
+  for (const event of events) {
+    if (
+      event?.schemaVersion !== 1 ||
+      event.kind !== "workspace" ||
+      typeof event.transitionId !== "string"
+    ) {
+      continue;
+    }
+    const group = grouped.get(event.transitionId) ?? [];
+    group.push(event);
+    grouped.set(event.transitionId, group);
+  }
+  const matching = [...grouped.values()]
+    .map((group) =>
+      [...group].sort((left, right) => left.sequence - right.sequence),
+    )
+    .filter(
+      (group) => {
+        if (
+          JSON.stringify(group.map((event) => event.phase)) !==
+          JSON.stringify(C2ZC_WORKSPACE_LIFECYCLE_PHASES)
+        ) {
+          return false;
+        }
+        if (
+          !group.every((event, index) => {
+            const from = event.from;
+            const to = event.to;
+            if (
+              event.sequence !== index ||
+              to?.workspacePath !== workspace ||
+              from?.workspacePath !== null ||
+              from?.workspaceOpenRevision !== 0 ||
+              typeof from?.projectId !== "string" ||
+              from.projectId.trim() === ""
+            ) {
+              return false;
+            }
+            if (index < 2) {
+              return to.workspaceOpenRevision === null && to.projectId === null;
+            }
+            return (
+              Number.isSafeInteger(to.workspaceOpenRevision) &&
+              to.workspaceOpenRevision > 0 &&
+              typeof to.projectId === "string" &&
+              to.projectId.trim() !== ""
+            );
+          })
+        ) {
+          return false;
+        }
+        const authority = group[2]?.to;
+        const hydrated = group[3]?.to;
+        return (
+          authority?.workspaceOpenRevision ===
+            hydrated?.workspaceOpenRevision &&
+          authority?.projectId === hydrated?.projectId
+        );
+      },
+    )
+    .findLast((group) => {
+      const settled = group.at(-1)?.to;
+      return (
+        settled?.workspacePath === workspace &&
+        Number.isSafeInteger(settled.workspaceOpenRevision) &&
+        settled.workspaceOpenRevision > 0 &&
+        typeof settled.projectId === "string" &&
+        settled.projectId.trim() !== ""
+      );
+    });
+  return matching ?? null;
+}
+
+async function waitForC2ZcWorkspaceAuthority(harness, page, workspace) {
+  if (typeof harness.readLifecycleTrace !== "function") {
+    throw new Error(
+      "C2-ZC post-marker project requires the lifecycle trace boundary",
+    );
+  }
+  if (typeof harness.waitUntil !== "function") {
+    throw new Error(
+      "C2-ZC post-marker project requires the lifecycle settling wait boundary",
+    );
+  }
+  return harness.waitUntil(
+    async () => {
+      const transition = settledWorkspaceLifecycleTransition(
+        await harness.readLifecycleTrace(page),
+        workspace,
+      );
+      if (!transition) {
+        throw new Error(
+          "C2-ZC post-marker workspace authority transition is not settled",
+        );
+      }
+      return transition;
+    },
+    "C2-ZC post-marker workspace authority settlement",
+    C2ZC_WAIT_MS,
+    100,
+  );
 }
 
 async function queryRows(harness, page, sql, params = []) {
@@ -126,16 +239,11 @@ export async function readC2ZcRunLedger(harness, page, projectId, runs) {
 
 export async function createProjectAfterCutover(harness, page, workspace) {
   if (typeof workspace !== "string" || workspace.trim() === "") {
-    throw new Error("C2-ZC post-marker project requires an open workspace path");
-  }
-  const opened = await harness.invokeOk(page, "open_workspace", {
-    path: workspace,
-  });
-  if (opened?.status !== "ready") {
     throw new Error(
-      `C2-ZC post-marker workspace open did not reach ready: ${String(opened?.status)}`,
+      "C2-ZC post-marker project requires an open workspace path",
     );
   }
+  await waitForC2ZcWorkspaceAuthority(harness, page, workspace);
   const projectId = `c2-zc-journey-project-${randomUUID()}`;
   const now = new Date().toISOString();
   await harness.invokeOk(page, "project_create", {

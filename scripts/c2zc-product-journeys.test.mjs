@@ -1568,64 +1568,201 @@ test("C2-ZC restart wiring carries the open pre-run baseline into its invariant 
   assert.doesNotMatch(restartCallback ?? "", /openResult\.beforeRuns/);
 });
 
-test("C2-ZC post-marker project creation opens the scenario workspace first", async () => {
+test("C2-ZC post-marker project creation waits for startup workspace authority", async () => {
   const runner = await read(
     "electron/scripts/c2zc-canonical-product-journey.mjs",
   );
+  const createProjectFunction = runner.match(
+    /export async function createProjectAfterCutover[\s\S]*?\n}\n\nasync function readAuthoritySnapshot/,
+  )?.[0];
   const postMarkerCall = runner.match(
     /const newProjectId = await createProjectAfterCutover\([\s\S]*?\n\s*\);/,
   )?.[0];
   assert.match(
     postMarkerCall ?? "",
     /scenario\.workspace/,
-    "new-project must open the workspace used by the completed scenario",
+    "new-project must settle the workspace used by the completed scenario",
+  );
+  assert.match(
+    createProjectFunction ?? "",
+    /waitForC2ZcWorkspaceAuthority\(harness, page, workspace\)/,
+    "new-project must await the startup workspace authority transition",
+  );
+  assert.doesNotMatch(
+    createProjectFunction ?? "",
+    /invokeOk\(page, "open_workspace"/,
+    "new-project must not race startup auto-open with a second raw open_workspace",
   );
 
-  const calls = [];
   const workspace = "/tmp/c2-zc-post-marker-workspace";
+  const lifecyclePhases = [
+    "switch-requested",
+    "quiescence-started",
+    "authority-commit",
+    "new-scope-hydrated",
+  ];
+  const makeLifecycleTrace = (
+    targetWorkspace = workspace,
+    targetRevision = 1,
+    targetProjectId = "default-project",
+    phases = lifecyclePhases,
+  ) =>
+    phases.map((phase, sequence) => ({
+      schemaVersion: 1,
+      transitionId: "workspace:c2-zc-post-marker",
+      sequence,
+      timestampMs: 1_000 + sequence,
+      kind: "workspace",
+      phase,
+      from: {
+        workspacePath: null,
+        workspaceOpenRevision: 0,
+        projectId: "default-project",
+      },
+      to: {
+        workspacePath: targetWorkspace,
+        workspaceOpenRevision: sequence < 2 ? null : targetRevision,
+        projectId: sequence < 2 ? null : targetProjectId,
+      },
+    }));
+  const foreignMidTransition = makeLifecycleTrace();
+  foreignMidTransition[2] = {
+    ...foreignMidTransition[2],
+    to: {
+      ...foreignMidTransition[2].to,
+      workspacePath: "/tmp/foreign-mid-transition-workspace",
+    },
+  };
+  const priorWorkspaceFromTransition = makeLifecycleTrace();
+  priorWorkspaceFromTransition[1] = {
+    ...priorWorkspaceFromTransition[1],
+    from: {
+      ...priorWorkspaceFromTransition[1].from,
+      workspacePath: "/tmp/prior-workspace",
+      workspaceOpenRevision: 7,
+    },
+  };
+  for (const [label, lifecycleTrace] of [
+    ["partial transition", makeLifecycleTrace().slice(0, 2)],
+    ["foreign workspace", makeLifecycleTrace("/tmp/foreign-workspace")],
+    ["foreign mid-transition workspace", foreignMidTransition],
+    ["prior workspace in from", priorWorkspaceFromTransition],
+    [
+      "wrong order",
+      makeLifecycleTrace(workspace, 1, "default-project", [
+        "switch-requested",
+        "quiescence-started",
+        "new-scope-hydrated",
+        "authority-commit",
+      ]),
+    ],
+    ["invalid revision", makeLifecycleTrace(workspace, "1")],
+    ["invalid project", makeLifecycleTrace(workspace, 1, null)],
+  ]) {
+    const calls = [];
+    const harness = {
+      async invokeOk(_page, command, payload) {
+        calls.push({ command, payload });
+        if (command === "open_workspace") {
+          throw new Error("raw open_workspace is forbidden in this phase");
+        }
+        return { projectId: payload.payload.projectId };
+      },
+      async readLifecycleTrace() {
+        return lifecycleTrace;
+      },
+      async waitUntil(fn) {
+        return fn();
+      },
+    };
+    await assert.rejects(
+      () => createProjectAfterCutover(harness, {}, workspace),
+      /workspace authority transition is not settled|raw open_workspace is forbidden/,
+      label,
+    );
+    assert.deepEqual(
+      calls.map(({ command }) => command),
+      [],
+      `${label} must not call project_create`,
+    );
+  }
+
+  const calls = [];
   const harness = {
     async invokeOk(_page, command, payload) {
       calls.push({ command, payload });
-      return command === "project_create"
-        ? { projectId: payload.payload.projectId }
-        : { status: "ready", path: payload.path };
+      if (command === "open_workspace") {
+        throw new Error("raw open_workspace is forbidden in this phase");
+      }
+      return { projectId: payload.payload.projectId };
+    },
+    async readLifecycleTrace() {
+      return makeLifecycleTrace();
+    },
+    async waitUntil(fn) {
+      return fn();
     },
   };
   const projectId = await createProjectAfterCutover(harness, {}, workspace);
   assert.equal(typeof projectId, "string");
   assert.deepEqual(
     calls.map(({ command }) => command),
-    ["open_workspace", "project_create"],
+    ["project_create"],
+    "a settled target transition permits exactly one project_create",
   );
-  assert.deepEqual(calls[0], {
-    command: "open_workspace",
-    payload: { path: workspace },
-  });
-  assert.equal(calls[1].payload.payload.projectId, projectId);
+});
 
-  for (const [label, openResult] of [
-    ["safe-mode", { status: "safe-mode" }],
-    ["recovery", new Error("workspace recovery required")],
-  ]) {
-    const failedCalls = [];
-    const failedHarness = {
-      async invokeOk(_page, command, payload) {
-        failedCalls.push({ command, payload });
-        if (command === "open_workspace" && openResult instanceof Error) {
-          throw openResult;
-        }
-        return openResult;
+test("C2-ZC project_create errors propagate without retry after settlement", async () => {
+  const calls = [];
+  const workspace = "/tmp/c2-zc-post-marker-error-workspace";
+  const lifecyclePhases = [
+    "switch-requested",
+    "quiescence-started",
+    "authority-commit",
+    "new-scope-hydrated",
+  ];
+  const lifecycleTrace = lifecyclePhases.map((phase, sequence) => ({
+    schemaVersion: 1,
+    transitionId: "workspace:c2-zc-post-marker",
+    sequence,
+    timestampMs: 1_000 + sequence,
+    kind: "workspace",
+    phase,
+    from: {
+      workspacePath: null,
+      workspaceOpenRevision: 0,
+      projectId: "default-project",
+    },
+      to: {
+        workspacePath: workspace,
+        workspaceOpenRevision: sequence < 2 ? null : 1,
+        projectId: sequence < 2 ? null : "default-project",
       },
-    };
-    await assert.rejects(
-      () => createProjectAfterCutover(failedHarness, {}, workspace),
-      /workspace open did not reach ready|workspace recovery required/,
-      label,
-    );
-    assert.deepEqual(
-      failedCalls.map(({ command }) => command),
-      ["open_workspace"],
-      `${label} must not call project_create`,
-    );
-  }
+  }));
+  const harness = {
+    async invokeOk(_page, command, payload) {
+      calls.push({ command, payload });
+      if (command === "project_create") {
+        throw new Error(
+          "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected",
+        );
+      }
+      throw new Error("raw open_workspace is forbidden in this phase");
+    },
+    async readLifecycleTrace() {
+      return lifecycleTrace;
+    },
+    async waitUntil(fn) {
+      return fn();
+    },
+  };
+
+  await assert.rejects(
+    () => createProjectAfterCutover(harness, {}, workspace),
+    /WORKSPACE_SWITCHING: workspace is switching/,
+  );
+  assert.deepEqual(
+    calls.map(({ command }) => command),
+    ["project_create"],
+  );
 });
