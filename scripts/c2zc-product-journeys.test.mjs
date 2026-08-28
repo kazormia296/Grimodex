@@ -13,7 +13,14 @@ import {
   resolveProductJourneySet,
   PRODUCT_JOURNEYS,
 } from "../electron/scripts/product-journeys.mjs";
-import { C2ZC_PRODUCT_JOURNEY_PHASES } from "../electron/scripts/c2zc-canonical-product-journey.mjs";
+import {
+  assertC2ZcOpenPhaseTimeline,
+  assertC2ZcPostMarkerProjectBirth,
+  assertC2ZcRestoreBackupFixture,
+  assertC2ZcRestoreStageIsolation,
+  assertC2ZcRestartInvariants,
+  C2ZC_PRODUCT_JOURNEY_PHASES,
+} from "../electron/scripts/c2zc-canonical-product-journey.mjs";
 import { PRODUCT_JOURNEY_ELECTRON_PHASES } from "../electron/scripts/product-journey-harness.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
@@ -121,4 +128,339 @@ test("C2-ZC journey is named in the quality impact manifest", async () => {
   );
   assert.match(manifest, /electron\/scripts\/c2zc-canonical-product-journey\.mjs/);
   assert.match(manifest, /scripts\/c2zc-product-journeys\.test\.mjs/);
+});
+
+function c2zcFixture() {
+  const e0 = {
+    id: "epoch-e0",
+    epochNumber: 0,
+    reason: "initial",
+    createdAt: "2026-08-28T00:00:00.000Z",
+  };
+  const b0 = {
+    id: "run-b0",
+    projectId: "project-1",
+    runKind: "backfill",
+    workKey: "legacy-dependency-backfill:v3",
+    semanticEpochId: e0.id,
+    status: "completed",
+    taskId: "task-b0",
+    taskKind: "maintenance-backfill",
+    taskStatus: "completed",
+    taskCount: 1,
+    attemptCount: 1,
+    taskAttemptCount: 1,
+    attemptId: "attempt-b0",
+    attemptNumber: 1,
+    lastAttemptNumber: 1,
+    maxAttemptNumber: 1,
+    lastAttemptStatus: "completed",
+    createdAt: "2026-08-28T00:00:01.000Z",
+    startedAt: "2026-08-28T00:00:01.100Z",
+    taskCreatedAt: "2026-08-28T00:00:01.100Z",
+    taskStartedAt: "2026-08-28T00:00:01.200Z",
+    lastAttemptStartedAt: "2026-08-28T00:00:01.200Z",
+    completedAt: "2026-08-28T00:00:02.000Z",
+    taskCompletedAt: "2026-08-28T00:00:02.000Z",
+    lastAttemptCompletedAt: "2026-08-28T00:00:02.000Z",
+  };
+  return {
+    marker: null,
+    epochs: [e0],
+    backfill: b0,
+    edge: {
+      id: "edge-b0",
+      projectId: "project-1",
+      consumerKind: "narrative-extraction-run",
+      consumerKey: b0.id,
+      owningRunId: b0.id,
+      readSetToken: "v1@2026-08-28T00:00:00.000Z",
+    },
+    derivedState: {
+      edgeCount: 1,
+      edgeStateCount: 0,
+      freshnessCount: 0,
+    },
+    setup: "disabled",
+  };
+}
+
+function c2zcPhase(id, runKind, epochId, createdAt, completedAt) {
+  return {
+    id,
+    projectId: "project-1",
+    runKind,
+    workKey: `${runKind}:${epochId}`,
+    semanticEpochId: epochId,
+    status: "completed",
+    createdAt,
+    completedAt,
+  };
+}
+
+test("C2-ZC backup fixture contract proves pre-cutover E0/B0 and a derived gap", () => {
+  const fixture = c2zcFixture();
+  assert.doesNotThrow(() => assertC2ZcRestoreBackupFixture(fixture));
+  assert.throws(
+    () =>
+      assertC2ZcRestoreBackupFixture({
+        ...fixture,
+        marker: {
+          migrationId: "narrative-c2-canonical-freshness-v1",
+          contractVersion: 1,
+          appliedAt: "2026-08-28T00:00:03.000Z",
+        },
+      }),
+    /pre-cutover backup must not contain the C2-ZC marker/,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcRestoreBackupFixture({
+        ...fixture,
+        backfill: { ...fixture.backfill, taskCount: 2 },
+      }),
+    /exactly one closed Task and Attempt/,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcRestoreBackupFixture({
+        ...fixture,
+        derivedState: { ...fixture.derivedState, edgeStateCount: 1 },
+      }),
+    /derived-state gap/,
+  );
+});
+
+test("C2-ZC restore stage is isolated from maintenance and mints exactly E1", () => {
+  const fixture = c2zcFixture();
+  const e1 = {
+    id: "epoch-e1",
+    epochNumber: 1,
+    reason: "restore",
+    createdAt: "2026-08-28T00:00:10.000Z",
+  };
+  assert.doesNotThrow(() =>
+    assertC2ZcRestoreStageIsolation({
+      setup: "disabled",
+      marker: null,
+      beforeEpochs: fixture.epochs,
+      afterEpochs: [...fixture.epochs, e1],
+      beforeRuns: [fixture.backfill],
+      afterRuns: [fixture.backfill],
+    }),
+  );
+  assert.throws(
+    () =>
+      assertC2ZcRestoreStageIsolation({
+        setup: "disabled",
+        marker: null,
+        beforeEpochs: fixture.epochs,
+        afterEpochs: [...fixture.epochs, e1],
+        beforeRuns: [fixture.backfill],
+        afterRuns: [
+          fixture.backfill,
+          c2zcPhase(
+            "verify-before-open",
+            "dependency-verify",
+            e1.id,
+            "2026-08-28T00:00:11.000Z",
+            "2026-08-28T00:00:12.000Z",
+          ),
+        ],
+      }),
+    /must not run maintenance phases/,
+  );
+});
+
+test("C2-ZC open proves exact E1 Verify/Rebuild/confirmation and late marker", () => {
+  const fixture = c2zcFixture();
+  const e1 = {
+    id: "epoch-e1",
+    epochNumber: 1,
+    reason: "restore",
+    createdAt: "2026-08-28T00:00:10.000Z",
+  };
+  const phaseRuns = [
+    c2zcPhase(
+      "verify-e1",
+      "dependency-verify",
+      e1.id,
+      "2026-08-28T00:00:11.000Z",
+      "2026-08-28T00:00:12.000Z",
+    ),
+    c2zcPhase(
+      "rebuild-e1",
+      "semantic-index-rebuild",
+      e1.id,
+      "2026-08-28T00:00:13.000Z",
+      "2026-08-28T00:00:14.000Z",
+    ),
+    c2zcPhase(
+      "confirm-e1",
+      "dependency-verify",
+      e1.id,
+      "2026-08-28T00:00:15.000Z",
+      "2026-08-28T00:00:16.000Z",
+    ),
+  ];
+  const marker = {
+    migrationId: "narrative-c2-canonical-freshness-v1",
+    contractVersion: 1,
+    appliedAt: "2026-08-28T00:00:17.000Z",
+  };
+  assert.doesNotThrow(() =>
+    assertC2ZcOpenPhaseTimeline({
+      markerBefore: null,
+      markerAfter: marker,
+      beforeEpochs: [...fixture.epochs, e1],
+      afterEpochs: [...fixture.epochs, e1],
+      beforeRuns: [fixture.backfill],
+      afterRuns: [fixture.backfill, ...phaseRuns],
+      phaseRuns,
+      restoreEpochId: e1.id,
+    }),
+  );
+  assert.throws(
+    () =>
+      assertC2ZcOpenPhaseTimeline({
+        markerBefore: null,
+        markerAfter: { ...marker, appliedAt: phaseRuns[2].completedAt },
+        beforeEpochs: [...fixture.epochs, e1],
+        afterEpochs: [...fixture.epochs, e1],
+        beforeRuns: [fixture.backfill],
+        afterRuns: [fixture.backfill, ...phaseRuns],
+        phaseRuns,
+        restoreEpochId: e1.id,
+      }),
+    /after confirmation Verify completedAt/,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcOpenPhaseTimeline({
+        markerBefore: null,
+        markerAfter: marker,
+        beforeEpochs: [...fixture.epochs, e1],
+        afterEpochs: [...fixture.epochs, e1],
+        beforeRuns: [fixture.backfill],
+        afterRuns: [
+          fixture.backfill,
+          ...phaseRuns,
+          { ...fixture.backfill, id: "backfill-e1", semanticEpochId: e1.id },
+        ],
+        phaseRuns,
+        restoreEpochId: e1.id,
+      }),
+    /must not mint an E1 Backfill/,
+  );
+});
+
+test("C2-ZC restart preserves marker, E0/E1, and phase Run identity", () => {
+  const fixture = c2zcFixture();
+  const e1 = {
+    id: "epoch-e1",
+    epochNumber: 1,
+    reason: "restore",
+    createdAt: "2026-08-28T00:00:10.000Z",
+  };
+  const marker = {
+    migrationId: "narrative-c2-canonical-freshness-v1",
+    contractVersion: 1,
+    appliedAt: "2026-08-28T00:00:17.000Z",
+  };
+  const phaseRuns = [
+    c2zcPhase("verify-e1", "dependency-verify", e1.id, "2026-08-28T00:00:11.000Z", "2026-08-28T00:00:12.000Z"),
+    c2zcPhase("rebuild-e1", "semantic-index-rebuild", e1.id, "2026-08-28T00:00:13.000Z", "2026-08-28T00:00:14.000Z"),
+    c2zcPhase("confirm-e1", "dependency-verify", e1.id, "2026-08-28T00:00:15.000Z", "2026-08-28T00:00:16.000Z"),
+  ];
+  assert.doesNotThrow(() =>
+    assertC2ZcRestartInvariants({
+      open: {
+        marker,
+        epochs: [...fixture.epochs, e1],
+        runs: [fixture.backfill, ...phaseRuns],
+      },
+      restart: {
+        marker: { ...marker },
+        epochs: [...fixture.epochs, e1],
+        runs: [fixture.backfill, ...phaseRuns],
+      },
+      phaseRunIds: phaseRuns.map((run) => run.id),
+    }),
+  );
+  assert.throws(
+    () =>
+      assertC2ZcRestartInvariants({
+        open: {
+          marker,
+          epochs: [...fixture.epochs, e1],
+          runs: [fixture.backfill, ...phaseRuns],
+        },
+        restart: {
+          marker: { ...marker, appliedAt: "2026-08-28T00:00:18.000Z" },
+          epochs: [...fixture.epochs, e1],
+          runs: [fixture.backfill, ...phaseRuns],
+        },
+        phaseRunIds: phaseRuns.map((run) => run.id),
+      }),
+    /changed marker appliedAt/,
+  );
+});
+
+test("C2-ZC post-marker project birth is exactly one initial epoch", () => {
+  assert.doesNotThrow(() =>
+    assertC2ZcPostMarkerProjectBirth({
+      marker: {
+        migrationId: "narrative-c2-canonical-freshness-v1",
+        contractVersion: 1,
+        appliedAt: "2026-08-28T00:00:17.000Z",
+      },
+      epochs: [
+        {
+          id: "new-e0",
+          epochNumber: 0,
+          reason: "initial",
+          createdAt: "2026-08-28T00:00:20.000Z",
+        },
+      ],
+    }),
+  );
+  assert.throws(
+    () =>
+      assertC2ZcPostMarkerProjectBirth({
+        marker: null,
+        epochs: [
+          { id: "new-e0", epochNumber: 0, reason: "initial" },
+          { id: "new-e1", epochNumber: 1, reason: "restore" },
+        ],
+      }),
+    /exactly one initial epoch/,
+  );
+});
+
+test("C2-ZC runner uses the shared restore scenario and explicit phase separation", async () => {
+  const [runner, maintenance, harness] = await Promise.all([
+    read("electron/scripts/c2zc-canonical-product-journey.mjs"),
+    read("electron/scripts/narrative-maintenance-product-journeys.mjs"),
+    read("electron/scripts/product-journey-harness.mjs"),
+  ]);
+  assert.match(runner, /runRestoreVerifyRebuildVerifyScenario/);
+  assert.match(runner, /restoreBackupThroughSettingsUi/);
+  assert.match(runner, /setup:\s*"disabled"/);
+  assert.match(runner, /dependency-verify[\s\S]*semantic-index-rebuild[\s\S]*dependency-verify/);
+  assert.match(runner, /appliedAt[\s\S]*completedAt/);
+  assert.match(runner, /createProjectAfterCutover/);
+  assert.match(maintenance, /runRestoreVerifyRebuildVerifyScenario/);
+  assert.match(maintenance, /runRestoreVerifyRebuildVerifyScenario\([\s\S]*id/);
+  assert.deepEqual(
+    C2ZC_PRODUCT_JOURNEY_PHASES,
+    [
+      "c2-zc-canonical-authority-cutover/restore",
+      "c2-zc-canonical-authority-cutover/open",
+      "c2-zc-canonical-authority-cutover/restart",
+    ],
+  );
+  for (const phase of C2ZC_PRODUCT_JOURNEY_PHASES) {
+    assert.ok(PRODUCT_JOURNEY_ELECTRON_PHASES.includes(phase), phase);
+  }
+  assert.match(harness, /PRODUCT_JOURNEY_ELECTRON_PHASES/);
 });
