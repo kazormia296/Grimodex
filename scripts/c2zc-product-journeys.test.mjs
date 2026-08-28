@@ -21,6 +21,11 @@ import {
   assertC2ZcRestartInvariants,
   C2ZC_PRODUCT_JOURNEY_PHASES,
 } from "../electron/scripts/c2zc-canonical-product-journey.mjs";
+import {
+  NARRATIVE_FRESHNESS_DISABLE_ENV,
+  NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+  withLaunchEnvironmentForTest,
+} from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import { PRODUCT_JOURNEY_ELECTRON_PHASES } from "../electron/scripts/product-journey-harness.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
@@ -106,6 +111,93 @@ test("C2-ZC runner reaches the marker only through main scheduler and N-API", as
   assert.match(napi, /NEX_C2ZC_CUTOVER_NOT_READY:/);
   assert.match(harness, /ELECTRON_DISABLE_SANDBOX/);
   assert.match(harness, /\["--no-sandbox", mainCjs\]/);
+});
+
+test("launch-time freshness disable is isolated to C2-ZC restore", async () => {
+  const [runner, maintenance] = await Promise.all([
+    read("electron/scripts/c2zc-canonical-product-journey.mjs"),
+    read("electron/scripts/narrative-maintenance-product-journeys.mjs"),
+  ]);
+  const restoreEnvironment = runner.match(
+    /restoreEnvironment:\s*\{[\s\S]*?\n\s*\},/,
+  )?.[0];
+  assert.match(
+    restoreEnvironment ?? "",
+    /setup:\s*"disabled"[\s\S]*freshness:\s*"disabled"/,
+    "C2-ZC restore must disable freshness for its pre-cutover launch",
+  );
+  assert.equal(
+    runner.match(/freshness:\s*"disabled"/g)?.length,
+    1,
+    "C2-ZC must not opt other launch phases into the freshness disable seam",
+  );
+  const newProjectLaunch = runner.match(
+    /const launched = await harness\.launch\([\s\S]*?\n\s*try \{/,
+  )?.[0];
+  assert.doesNotMatch(newProjectLaunch ?? "", /freshness/);
+
+  const c2FiveBRestore = maintenance.match(
+    /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
+  )?.[0];
+  assert.ok(c2FiveBRestore, "C2-5B restore caller must remain inspectable");
+  assert.doesNotMatch(
+    c2FiveBRestore,
+    /restoreEnvironment|freshness/,
+    "default C2-5B restore must retain the scheduler default",
+  );
+
+  const observed = [];
+  const harness = {
+    async launch(phase) {
+      observed.push({
+        phase,
+        freshness: process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+      });
+      return { phase };
+    },
+  };
+  const launch = async (phase, options = {}) =>
+    withLaunchEnvironmentForTest(
+      { ...options, ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
+      () => harness.launch(phase),
+    );
+
+  await launch(C2ZC_PRODUCT_JOURNEY_PHASES[0]);
+  await launch(C2ZC_PRODUCT_JOURNEY_PHASES[1], {
+    setup: "disabled",
+    freshness: "disabled",
+  });
+  await launch(C2ZC_PRODUCT_JOURNEY_PHASES[2]);
+  await launch(C2ZC_PRODUCT_JOURNEY_PHASES[3]);
+  await launch(C2ZC_PRODUCT_JOURNEY_PHASES[4]);
+  await launch("c2-5b-restore-verify-rebuild-verify/restore");
+
+  assert.deepEqual(observed, [
+    {
+      phase: C2ZC_PRODUCT_JOURNEY_PHASES[0],
+      freshness: undefined,
+    },
+    {
+      phase: C2ZC_PRODUCT_JOURNEY_PHASES[1],
+      freshness: "disabled",
+    },
+    {
+      phase: C2ZC_PRODUCT_JOURNEY_PHASES[2],
+      freshness: undefined,
+    },
+    {
+      phase: C2ZC_PRODUCT_JOURNEY_PHASES[3],
+      freshness: undefined,
+    },
+    {
+      phase: C2ZC_PRODUCT_JOURNEY_PHASES[4],
+      freshness: undefined,
+    },
+    {
+      phase: "c2-5b-restore-verify-rebuild-verify/restore",
+      freshness: undefined,
+    },
+  ]);
 });
 
 test("C2-ZC evidence packet maps failure, swap/stale, restore/import, and birth tests", async () => {

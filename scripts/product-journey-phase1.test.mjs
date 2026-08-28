@@ -11,6 +11,7 @@ import {
   NARRATIVE_MAINTENANCE_SETUP_ENV,
   NARRATIVE_MAINTENANCE_TRIGGER_ENV,
   NARRATIVE_MAINTENANCE_JOURNEY_IDS,
+  withLaunchEnvironmentForTest,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 
 const RUN_KINDS = Object.freeze(["backfill", "dependency-verify"]);
@@ -55,6 +56,7 @@ function createObservationHarness({ ledgerRows = [] } = {}) {
           setup: process.env[NARRATIVE_MAINTENANCE_SETUP_ENV],
           fault: process.env[NARRATIVE_MAINTENANCE_FAULT_ENV],
           trigger: process.env[NARRATIVE_MAINTENANCE_TRIGGER_ENV],
+          freshness: process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
         },
       });
       return { app: { phase }, page: { phase } };
@@ -117,6 +119,7 @@ function createJourneys() {
         seamEnv: {
           ownerToken: process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV],
           setup: process.env[NARRATIVE_MAINTENANCE_SETUP_ENV],
+          freshness: process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
         },
       });
     },
@@ -220,11 +223,72 @@ test("maintenance fault and setup seams require the exact owner contract", async
   assert.deepEqual(configure?.seamEnv, {
     ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
     setup: "disabled",
+    freshness: undefined,
   });
   assert.deepEqual(launch?.seamEnv, {
     ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
     setup: undefined,
     fault: undefined,
     trigger: undefined,
+    freshness: undefined,
   });
+});
+
+test("withLaunchEnvironment restores pre-existing freshness after success", async () => {
+  const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = "pre-existing";
+  try {
+    const result = await withLaunchEnvironmentForTest(
+      { freshness: "disabled" },
+      () => {
+        assert.equal(
+          process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+          "disabled",
+        );
+        return "callback-result";
+      },
+    );
+    assert.equal(result, "callback-result");
+    assert.equal(
+      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+      "pre-existing",
+    );
+  } finally {
+    if (previousFreshness === undefined) {
+      delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+    } else {
+      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = previousFreshness;
+    }
+  }
+});
+
+test("withLaunchEnvironment restores pre-existing freshness after callback throws", async () => {
+  const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = "pre-existing";
+  try {
+    await assert.rejects(
+      () =>
+        withLaunchEnvironmentForTest(
+          { freshness: "disabled" },
+          () => {
+            assert.equal(
+              process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+              "disabled",
+            );
+            throw new Error("callback failure");
+          },
+        ),
+      /callback failure/,
+    );
+    assert.equal(
+      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+      "pre-existing",
+    );
+  } finally {
+    if (previousFreshness === undefined) {
+      delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+    } else {
+      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = previousFreshness;
+    }
+  }
 });

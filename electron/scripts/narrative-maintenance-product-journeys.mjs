@@ -1630,6 +1630,13 @@ async function withLaunchEnvironment(
   }
 }
 
+/**
+ * Narrow unit-test seam for the launch environment transaction. Product
+ * journeys keep using the private helper above so this export cannot become a
+ * runtime launch API by accident.
+ */
+export const withLaunchEnvironmentForTest = withLaunchEnvironment;
+
 async function configureJourneyWorkspace(
   harness,
   configureWorkspace,
