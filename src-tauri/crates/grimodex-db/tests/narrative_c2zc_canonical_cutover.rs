@@ -5,7 +5,7 @@
 //! runtime-owned cutover after all durable workspace evidence and an explicit
 //! scheduler-liveness proof are present.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
@@ -37,7 +37,7 @@ use grimodex_db::{
     load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
     SetNarrativeRuntimePolicyInput,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -48,6 +48,7 @@ const PROJECT_ID: &str = "project-c2zc";
 const EPOCH_ID: &str = "epoch-c2zc";
 const APPLICATION_ID: &str = "application-c2zc";
 const SOURCE_IDENTITY: &str = "project:scene:scene-c2zc";
+const EXPECTED_UPGRADE_PROJECT_IDS: [&str; 2] = release_schema_fixture::LEGACY_PROJECT_IDS;
 const NOW: &str = "2026-08-24T00:00:00.000Z";
 const BACKFILL_CREATED_AT: &str = "2026-08-24T00:00:00.000Z";
 const BACKFILL_STARTED_AT: &str = "2026-08-24T00:00:00.001Z";
@@ -1434,6 +1435,876 @@ fn prepared_envelope(run_id: &str, task_id: &str) -> Value {
     prepared_envelope_for(SOURCE_IDENTITY, &format!("v0@{NOW}"), run_id, task_id)
 }
 
+type LegacySnapshotScopeKind = release_schema_fixture::LegacySeedScope;
+type LegacySnapshotTable = release_schema_fixture::LegacySeedTable;
+
+#[derive(Debug)]
+struct LegacySnapshotIdentity {
+    project_ids: BTreeSet<String>,
+    chat_session_project_by_id: BTreeMap<String, String>,
+    scene_project_by_id: BTreeMap<String, String>,
+    event_project_by_id: BTreeMap<String, String>,
+    fts_source_rowids: BTreeMap<&'static str, BTreeSet<i64>>,
+}
+
+#[derive(Debug)]
+struct LegacySnapshotTableBaseline {
+    descriptor: LegacySnapshotTable,
+    projection_columns: Vec<String>,
+    expected_rows: Vec<Vec<SqlValue>>,
+    expected_keys: Vec<Vec<SqlValue>>,
+}
+
+#[derive(Debug)]
+struct LegacySnapshotBaseline {
+    expected_project_ids: BTreeSet<String>,
+    tables: Vec<LegacySnapshotTableBaseline>,
+}
+
+fn quote_sql_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn snapshot_table_columns(conn: &Connection, table: &str) -> anyhow::Result<Vec<String>> {
+    let sql = format!("PRAGMA table_info({})", quote_sql_identifier(table));
+    let mut statement = conn.prepare(&sql)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(columns)
+}
+
+fn snapshot_projection_columns(columns: &[String], include_rowid: bool) -> Vec<String> {
+    if include_rowid {
+        std::iter::once("rowid".to_string())
+            .chain(columns.iter().cloned())
+            .collect()
+    } else {
+        columns.to_vec()
+    }
+}
+
+fn snapshot_rows(
+    conn: &Connection,
+    table: &str,
+    columns: &[String],
+    include_rowid: bool,
+    order_by: &str,
+) -> anyhow::Result<Vec<Vec<SqlValue>>> {
+    anyhow::ensure!(
+        !columns.is_empty(),
+        "legacy snapshot table {table} has no columns"
+    );
+    let projection_columns = snapshot_projection_columns(columns, include_rowid);
+    let projection = projection_columns
+        .iter()
+        .map(|column| {
+            if column == "rowid" {
+                "rowid".to_string()
+            } else {
+                quote_sql_identifier(column)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {projection} FROM {} ORDER BY {order_by}",
+        quote_sql_identifier(table)
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement
+        .query_map([], |row| {
+            (0..projection_columns.len())
+                .map(|index| row.get::<_, SqlValue>(index))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn snapshot_row_text<'a>(row: &'a [SqlValue], columns: &[String], column: &str) -> Option<&'a str> {
+    let index = columns.iter().position(|name| name == column)?;
+    match row.get(index)? {
+        SqlValue::Text(value) => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+fn snapshot_row_i64(row: &[SqlValue], columns: &[String], column: &str) -> Option<i64> {
+    let index = columns.iter().position(|name| name == column)?;
+    match row.get(index)? {
+        SqlValue::Integer(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn snapshot_row_key(
+    row: &[SqlValue],
+    columns: &[String],
+    identity_columns: &[&str],
+) -> anyhow::Result<Vec<SqlValue>> {
+    identity_columns
+        .iter()
+        .map(|column| {
+            let index = columns
+                .iter()
+                .position(|name| name == column)
+                .ok_or_else(|| anyhow::anyhow!("identity column {column} is not projected"))?;
+            let value = row
+                .get(index)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("identity column {column} is missing from row"))?;
+            anyhow::ensure!(
+                !matches!(value, SqlValue::Null),
+                "identity column {column} must not be NULL"
+            );
+            Ok(value)
+        })
+        .collect()
+}
+
+fn expected_legacy_project_ids() -> BTreeSet<String> {
+    release_schema_fixture::LEGACY_PROJECT_IDS
+        .iter()
+        .map(|project_id| (*project_id).to_string())
+        .collect()
+}
+
+fn expected_legacy_setting_keys() -> BTreeSet<String> {
+    [
+        release_schema_fixture::RELEASE_FIXTURE_SETTING_KEY,
+        release_schema_fixture::SECOND_RELEASE_FIXTURE_SETTING_KEY,
+        release_schema_fixture::WAL_ONLY_SETTING_KEY,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn read_identity_map(
+    conn: &Connection,
+    sql: &str,
+    expected_project_ids: &BTreeSet<String>,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut statement = conn.prepare(sql)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|(_, project_id)| expected_project_ids.contains(project_id))
+        .collect())
+}
+
+fn read_fts_source_rowids(
+    conn: &Connection,
+    source_table: &'static str,
+    expected_project_ids: &BTreeSet<String>,
+) -> anyhow::Result<BTreeSet<i64>> {
+    let sql = match source_table {
+        "codex_entries" | "snippets" | "tree_nodes" => {
+            format!(
+                "SELECT rowid, project_id FROM {}",
+                quote_sql_identifier(source_table)
+            )
+        }
+        "chat_messages" => "SELECT messages.rowid, sessions.project_id
+               FROM chat_messages messages
+               JOIN chat_sessions sessions ON sessions.id = messages.session_id"
+            .to_string(),
+        other => anyhow::bail!("unsupported FTS source table {other}"),
+    };
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|(_, project_id)| expected_project_ids.contains(project_id))
+        .map(|(rowid, _)| rowid)
+        .collect())
+}
+
+fn load_legacy_snapshot_identity(
+    conn: &Connection,
+    expected_project_ids: &BTreeSet<String>,
+) -> anyhow::Result<LegacySnapshotIdentity> {
+    let project_ids = conn
+        .prepare("SELECT id FROM projects ORDER BY id")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+    let chat_session_project_by_id = read_identity_map(
+        conn,
+        "SELECT id, project_id FROM chat_sessions",
+        expected_project_ids,
+    )?;
+    let scene_project_by_id = read_identity_map(
+        conn,
+        "SELECT id, project_id FROM tree_nodes",
+        expected_project_ids,
+    )?;
+    let event_project_by_id = read_identity_map(
+        conn,
+        "SELECT id, project_id FROM events",
+        expected_project_ids,
+    )?;
+    let mut fts_source_rowids = BTreeMap::new();
+    for source_table in ["codex_entries", "snippets", "chat_messages", "tree_nodes"] {
+        fts_source_rowids.insert(
+            source_table,
+            read_fts_source_rowids(conn, source_table, expected_project_ids)?,
+        );
+    }
+    Ok(LegacySnapshotIdentity {
+        project_ids,
+        chat_session_project_by_id,
+        scene_project_by_id,
+        event_project_by_id,
+        fts_source_rowids,
+    })
+}
+
+fn legacy_snapshot_row_is_in_scope(
+    descriptor: LegacySnapshotTable,
+    row: &[SqlValue],
+    columns: &[String],
+    identity: &LegacySnapshotIdentity,
+) -> bool {
+    match descriptor.scope {
+        LegacySnapshotScopeKind::ProjectIdentity => snapshot_row_text(row, columns, "id")
+            .is_some_and(|project_id| identity.project_ids.contains(project_id)),
+        LegacySnapshotScopeKind::ProjectId => snapshot_row_text(row, columns, "project_id")
+            .is_some_and(|project_id| identity.project_ids.contains(project_id)),
+        LegacySnapshotScopeKind::SceneEventIdentity => {
+            let scene_project = snapshot_row_text(row, columns, "scene_id")
+                .and_then(|scene_id| identity.scene_project_by_id.get(scene_id));
+            let event_project = snapshot_row_text(row, columns, "event_id")
+                .and_then(|event_id| identity.event_project_by_id.get(event_id));
+            scene_project.is_some() && scene_project == event_project
+        }
+        LegacySnapshotScopeKind::ChatSessionIdentity => {
+            snapshot_row_text(row, columns, "session_id")
+                .and_then(|session_id| identity.chat_session_project_by_id.get(session_id))
+                .is_some()
+        }
+        LegacySnapshotScopeKind::FtsSource { source_table } => {
+            snapshot_row_i64(row, columns, "rowid").is_some_and(|rowid| {
+                identity
+                    .fts_source_rowids
+                    .get(source_table)
+                    .is_some_and(|rowids| rowids.contains(&rowid))
+            })
+        }
+        LegacySnapshotScopeKind::AuditProject => {
+            let project_id = snapshot_row_text(row, columns, "project_id");
+            let scope_id = snapshot_row_text(row, columns, "scope_id");
+            project_id.is_some_and(|project_id| {
+                identity.project_ids.contains(project_id)
+                    && scope_id == Some(format!("project:{project_id}").as_str())
+            })
+        }
+        LegacySnapshotScopeKind::AppSettingKey => snapshot_row_text(row, columns, "key")
+            .is_some_and(|key| expected_legacy_setting_keys().contains(key)),
+    }
+}
+
+fn load_legacy_snapshot_baseline(snapshot_path: &Path) -> anyhow::Result<LegacySnapshotBaseline> {
+    let expected = Connection::open(snapshot_path)?;
+    let expected_project_ids = expected_legacy_project_ids();
+    let expected_identity = load_legacy_snapshot_identity(&expected, &expected_project_ids)?;
+    anyhow::ensure!(
+        expected_identity.project_ids == expected_project_ids,
+        "the immutable release snapshot must contain exactly the expected project IDs"
+    );
+
+    let manifest_names = release_schema_fixture::LEGACY_SEED_TABLES
+        .iter()
+        .map(|descriptor| descriptor.table)
+        .collect::<BTreeSet<_>>();
+    anyhow::ensure!(
+        manifest_names.len() == release_schema_fixture::LEGACY_SEED_TABLES.len(),
+        "release fixture manifest must not contain duplicate table descriptors"
+    );
+
+    let mut tables = Vec::with_capacity(release_schema_fixture::LEGACY_SEED_TABLES.len());
+    for descriptor in release_schema_fixture::LEGACY_SEED_TABLES {
+        let expected_columns = snapshot_table_columns(&expected, descriptor.table)?;
+        anyhow::ensure!(
+            !expected_columns.is_empty(),
+            "release snapshot is missing manifest table {}",
+            descriptor.table
+        );
+        let include_rowid = matches!(descriptor.scope, LegacySnapshotScopeKind::FtsSource { .. });
+        let projection_columns = snapshot_projection_columns(&expected_columns, include_rowid);
+        let all_rows = snapshot_rows(
+            &expected,
+            descriptor.table,
+            &expected_columns,
+            include_rowid,
+            descriptor.order_by,
+        )?;
+        let expected_rows = all_rows
+            .into_iter()
+            .filter(|row| {
+                legacy_snapshot_row_is_in_scope(
+                    *descriptor,
+                    row,
+                    &projection_columns,
+                    &expected_identity,
+                )
+            })
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            !expected_rows.is_empty(),
+            "manifest table {} must cover at least one seeded row in the immutable snapshot",
+            descriptor.table
+        );
+        let expected_keys = expected_rows
+            .iter()
+            .map(|row| snapshot_row_key(row, &projection_columns, descriptor.identity_columns))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        anyhow::ensure!(
+            expected_keys.len() == expected_rows.len(),
+            "manifest table {} has incomplete seeded identity coverage",
+            descriptor.table
+        );
+        tables.push(LegacySnapshotTableBaseline {
+            descriptor: *descriptor,
+            projection_columns,
+            expected_rows,
+            expected_keys,
+        });
+    }
+
+    let baseline_names = tables
+        .iter()
+        .map(|table| table.descriptor.table)
+        .collect::<BTreeSet<_>>();
+    anyhow::ensure!(
+        baseline_names == manifest_names,
+        "immutable snapshot coverage must equal the exported release fixture manifest"
+    );
+    let baseline = LegacySnapshotBaseline {
+        expected_project_ids,
+        tables,
+    };
+    baseline.assert_fts_token_manifest()?;
+    Ok(baseline)
+}
+
+impl LegacySnapshotBaseline {
+    fn table(&self, table: &str) -> &LegacySnapshotTableBaseline {
+        self.tables
+            .iter()
+            .find(|candidate| candidate.descriptor.table == table)
+            .unwrap_or_else(|| panic!("release fixture manifest missing table {table}"))
+    }
+
+    fn expected_source_ids(&self, source_table: &str) -> BTreeSet<String> {
+        self.table(source_table)
+            .expected_keys
+            .iter()
+            .filter_map(|key| match key.first() {
+                Some(SqlValue::Text(value)) => Some(value.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn assert_fts_token_manifest(&self) -> anyhow::Result<()> {
+        let mut expected_by_surface = BTreeMap::<&str, (&str, BTreeSet<String>)>::new();
+        let mut actual_by_surface = BTreeMap::<&str, BTreeSet<String>>::new();
+        for descriptor in &self.tables {
+            if let LegacySnapshotScopeKind::FtsSource { source_table } = descriptor.descriptor.scope
+            {
+                expected_by_surface.insert(
+                    descriptor.descriptor.table,
+                    (source_table, self.expected_source_ids(source_table)),
+                );
+            }
+        }
+        for check in release_schema_fixture::LEGACY_FTS_TOKEN_CHECKS {
+            anyhow::ensure!(
+                expected_by_surface.contains_key(check.surface_table),
+                "FTS token descriptor references unknown surface {}",
+                check.surface_table
+            );
+            anyhow::ensure!(
+                expected_by_surface
+                    .get(check.surface_table)
+                    .is_some_and(|(source_table, _)| *source_table == check.source_table),
+                "FTS token descriptor maps {} to {}, but the manifest maps it to its declared source",
+                check.surface_table,
+                check.source_table
+            );
+            anyhow::ensure!(
+                self.tables
+                    .iter()
+                    .any(|descriptor| descriptor.descriptor.table == check.source_table),
+                "FTS token descriptor references unknown source {}",
+                check.source_table
+            );
+            anyhow::ensure!(
+                self.expected_source_ids(check.source_table)
+                    .contains(check.source_id),
+                "FTS token {} references non-seeded {} row {}",
+                check.token,
+                check.source_table,
+                check.source_id
+            );
+            let inserted = actual_by_surface
+                .entry(check.surface_table)
+                .or_default()
+                .insert(check.source_id.to_string());
+            anyhow::ensure!(
+                inserted,
+                "FTS token manifest duplicates {}:{}",
+                check.surface_table,
+                check.source_id
+            );
+        }
+        anyhow::ensure!(
+            actual_by_surface
+                == expected_by_surface
+                    .into_iter()
+                    .map(|(surface, (_, source_ids))| (surface, source_ids))
+                    .collect(),
+            "FTS token manifest must cover every seeded source row on every surface"
+        );
+        Ok(())
+    }
+
+    fn assert_fts_tokens_on_connection(&self, conn: &Connection) -> anyhow::Result<()> {
+        for surface in self.tables.iter().filter_map(|descriptor| {
+            descriptor
+                .descriptor
+                .scope
+                .into_fts_source()
+                .map(|_| descriptor.descriptor.table)
+        }) {
+            let surface_identifier = quote_sql_identifier(surface);
+            let sql = format!(
+                "INSERT INTO {surface_identifier}({surface_identifier}, rank) VALUES('integrity-check', 1)"
+            );
+            conn.execute(&sql, []).map_err(|error| {
+                anyhow::anyhow!("FTS integrity-check failed for {surface}: {error}")
+            })?;
+        }
+        for check in release_schema_fixture::LEGACY_FTS_TOKEN_CHECKS {
+            let source_sql = format!(
+                "SELECT rowid FROM {} WHERE id = ?1",
+                quote_sql_identifier(check.source_table)
+            );
+            let source_rowid: i64 = conn
+                .query_row(&source_sql, [check.source_id], |row| row.get(0))
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "seeded FTS source row {}:{} is missing: {error}",
+                        check.source_table,
+                        check.source_id
+                    )
+                })?;
+            let surface_identifier = quote_sql_identifier(check.surface_table);
+            let match_sql = format!(
+                "SELECT rowid FROM {surface_identifier} WHERE {surface_identifier} MATCH ?1"
+            );
+            let mut statement = conn.prepare(&match_sql)?;
+            let matched = statement
+                .query_map([check.token], |row| row.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+            let expected = BTreeSet::from([source_rowid]);
+            anyhow::ensure!(
+                matched == expected,
+                "FTS MATCH {}:{} must return exactly source rowid {source_rowid}, got {matched:?}",
+                check.surface_table,
+                check.token
+            );
+        }
+        Ok(())
+    }
+
+    fn assert_database(&self, db_path: &Path) -> bool {
+        let actual = Connection::open(db_path).expect("open database for legacy snapshot check");
+        let actual_project_ids = actual
+            .prepare("SELECT id FROM projects ORDER BY id")
+            .expect("prepare actual project identity query")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("read actual project identities")
+            .collect::<rusqlite::Result<BTreeSet<_>>>()
+            .expect("collect actual project identities");
+        assert_eq!(
+            actual_project_ids, self.expected_project_ids,
+            "migrated database must retain exactly the two intended project identities"
+        );
+
+        for baseline in &self.tables {
+            let descriptor = baseline.descriptor;
+            let actual_columns =
+                snapshot_table_columns(&actual, descriptor.table).unwrap_or_else(|error| {
+                    panic!("read migrated {} columns: {error:#}", descriptor.table)
+                });
+            let expected_columns = baseline
+                .projection_columns
+                .iter()
+                .filter(|column| column.as_str() != "rowid")
+                .cloned()
+                .collect::<Vec<_>>();
+            let actual_legacy_columns = actual_columns
+                .iter()
+                .filter(|column| expected_columns.contains(column))
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual_legacy_columns, expected_columns,
+                "migrated {} must retain every legacy column in order",
+                descriptor.table
+            );
+            let include_rowid =
+                matches!(descriptor.scope, LegacySnapshotScopeKind::FtsSource { .. });
+            let actual_rows = snapshot_rows(
+                &actual,
+                descriptor.table,
+                &expected_columns,
+                include_rowid,
+                descriptor.order_by,
+            )
+            .unwrap_or_else(|error| panic!("read migrated {} rows: {error:#}", descriptor.table));
+            let actual_in_scope = actual_rows
+                .into_iter()
+                .filter(|row| {
+                    snapshot_row_key(
+                        row,
+                        &baseline.projection_columns,
+                        descriptor.identity_columns,
+                    )
+                    .ok()
+                    .is_some_and(|key| {
+                        baseline
+                            .expected_keys
+                            .iter()
+                            .any(|expected| *expected == key)
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual_in_scope.len(),
+                baseline.expected_rows.len(),
+                "migrated {} has missing or changed seeded identities",
+                descriptor.table
+            );
+            assert_eq!(
+                actual_in_scope, baseline.expected_rows,
+                "migrated {} seeded legacy rows differ in columns, values, identity, or order",
+                descriptor.table
+            );
+        }
+        self.assert_fts_tokens_on_connection(&actual)
+            .unwrap_or_else(|error| panic!("verify seeded FTS tokens: {error:#}"));
+        true
+    }
+}
+
+impl LegacySnapshotScopeKind {
+    fn into_fts_source(self) -> Option<&'static str> {
+        match self {
+            Self::FtsSource { source_table } => Some(source_table),
+            _ => None,
+        }
+    }
+}
+
+/// Compare every legacy column and row from the supervisor's immutable
+/// pre-migration image. Current-schema-only columns are intentionally not
+/// part of the legacy claim, but every old table column, value, and canonical
+/// row order must survive exactly; missing or changed rows for a seeded identity
+/// fail the acceptance while legitimate post-migration runtime rows remain out
+/// of scope.
+fn assert_exact_legacy_user_snapshot(db_path: &Path, snapshot_path: &Path) -> bool {
+    load_legacy_snapshot_baseline(snapshot_path)
+        .unwrap_or_else(|error| panic!("load immutable release snapshot contract: {error:#}"))
+        .assert_database(db_path)
+}
+
+fn clone_sqlite_image(source_path: &Path, destination_path: &Path) {
+    let source = Connection::open(source_path).expect("open source SQLite image");
+    source
+        .execute(
+            "VACUUM INTO ?1",
+            [destination_path.to_string_lossy().as_ref()],
+        )
+        .expect("clone SQLite image for snapshot mutation");
+}
+
+fn assert_snapshot_rejects_mutation<F>(label: &str, mutate: F)
+where
+    F: FnOnce(&Connection) -> anyhow::Result<()>,
+{
+    let workspace = release_schema_fixture::temp_workspace(&format!("snapshot-red-{label}"));
+    let db_path = release_schema_fixture::seed_previous_release_workspace(&workspace);
+    let outcome = migration_supervisor::open_or_migrate_workspace_db(&workspace)
+        .expect("previous-release fixture must migrate for snapshot mutation");
+    let opened = match outcome {
+        WorkspaceOpenDbOutcome::Migrated { opened, .. } => opened,
+        other => panic!("expected migrated fixture for snapshot mutation, got {other:?}"),
+    };
+    drop(opened.database);
+    drop(opened.lease);
+    let snapshot_path = release_schema_fixture::latest_migration_snapshot(&workspace);
+    let mutated_path = workspace.join(format!("snapshot-red-{label}.db"));
+    clone_sqlite_image(&db_path, &mutated_path);
+    {
+        let conn = Connection::open(&mutated_path).expect("open mutable snapshot copy");
+        mutate(&conn).unwrap_or_else(|error| panic!("apply {label} snapshot mutation: {error:#}"));
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_exact_legacy_user_snapshot(&mutated_path, &snapshot_path)
+    }));
+    assert!(
+        result.is_err(),
+        "legacy snapshot validator must reject {label} corruption"
+    );
+}
+
+#[test]
+fn legacy_snapshot_rejects_scene_event_and_each_fts_rowid_corruption() {
+    let _test_guard = serialize_liveness_test();
+    assert_snapshot_rejects_mutation("scene-events-delete", |conn| {
+        conn.execute(
+            "DELETE FROM scene_events
+              WHERE scene_id = 'default-project-scene'
+                AND event_id = 'default-project-event'",
+            [],
+        )?;
+        Ok(())
+    });
+    for (label, sql) in [
+        (
+            "codex-fts-rowid-offset",
+            "UPDATE codex_entries SET rowid = rowid + 1000 WHERE project_id = 'default-project'",
+        ),
+        (
+            "snippets-fts-rowid-offset",
+            "UPDATE snippets SET rowid = rowid + 1000 WHERE project_id = 'default-project'",
+        ),
+        (
+            "chat-messages-fts-rowid-offset",
+            "UPDATE chat_messages SET rowid = rowid + 1000 WHERE session_id = 'default-project-session'",
+        ),
+        (
+            "tree-nodes-fts-rowid-offset",
+            "UPDATE tree_nodes SET rowid = rowid + 1000 WHERE project_id = 'default-project'",
+        ),
+    ] {
+        assert_snapshot_rejects_mutation(label, |conn| {
+            conn.execute(sql, [])?;
+            Ok(())
+        });
+    }
+}
+
+#[test]
+fn legacy_snapshot_rejects_fts_index_delete_all_corruption() {
+    let _test_guard = serialize_liveness_test();
+    for table in [
+        "codex_fts",
+        "snippets_fts",
+        "chat_messages_fts",
+        "tree_nodes_fts",
+    ] {
+        assert_snapshot_rejects_mutation(&format!("{table}-delete-all"), |conn| {
+            let sql = format!("INSERT INTO {table}({table}) VALUES('delete-all')");
+            conn.execute(&sql, [])?;
+            Ok(())
+        });
+    }
+}
+
+fn replace_fts_index_with_only_manifest_tokens(
+    conn: &Connection,
+    surface: &str,
+) -> anyhow::Result<()> {
+    let surface_identifier = quote_sql_identifier(surface);
+    let delete_all_sql =
+        format!("INSERT INTO {surface_identifier}({surface_identifier}) VALUES('delete-all')");
+    conn.execute(&delete_all_sql, [])?;
+
+    for check in release_schema_fixture::LEGACY_FTS_TOKEN_CHECKS
+        .iter()
+        .filter(|check| check.surface_table == surface)
+    {
+        let source_sql = format!(
+            "SELECT rowid FROM {} WHERE id = ?1",
+            quote_sql_identifier(check.source_table)
+        );
+        let source_rowid: i64 = conn.query_row(&source_sql, [check.source_id], |row| row.get(0))?;
+        let insert_sql = match surface {
+            "codex_fts" => {
+                format!("INSERT INTO {surface_identifier}(rowid, aliases) VALUES (?1, ?2)")
+            }
+            "snippets_fts" => {
+                format!("INSERT INTO {surface_identifier}(rowid, title) VALUES (?1, ?2)")
+            }
+            "chat_messages_fts" => {
+                format!("INSERT INTO {surface_identifier}(rowid, content) VALUES (?1, ?2)")
+            }
+            "tree_nodes_fts" => {
+                format!("INSERT INTO {surface_identifier}(rowid, title) VALUES (?1, ?2)")
+            }
+            other => anyhow::bail!("unsupported FTS surface {other}"),
+        };
+        conn.execute(&insert_sql, params![source_rowid, check.token])?;
+    }
+    Ok(())
+}
+
+#[test]
+fn legacy_snapshot_rejects_partial_fts_index_corruption_with_external_content_check() {
+    let _test_guard = serialize_liveness_test();
+    for table in [
+        "codex_fts",
+        "snippets_fts",
+        "chat_messages_fts",
+        "tree_nodes_fts",
+    ] {
+        assert_snapshot_rejects_mutation(&format!("{table}-partial-index"), |conn| {
+            replace_fts_index_with_only_manifest_tokens(conn, table)
+        });
+    }
+}
+
+#[test]
+fn legacy_snapshot_rejects_scene_event_identity_corruption_for_both_projects() {
+    let _test_guard = serialize_liveness_test();
+    for (label, sql) in [
+        (
+            "scene-events-default-delete",
+            "DELETE FROM scene_events
+              WHERE scene_id = 'default-project-scene'
+                AND event_id = 'default-project-event'",
+        ),
+        (
+            "scene-events-gate-delete",
+            "DELETE FROM scene_events
+              WHERE scene_id = 'gate-a2-scene'
+                AND event_id = 'gate-a2-event'",
+        ),
+        (
+            "scene-events-default-scene-cross-project",
+            "UPDATE scene_events SET scene_id = 'gate-a2-scene'
+              WHERE scene_id = 'default-project-scene'
+                AND event_id = 'default-project-event'",
+        ),
+        (
+            "scene-events-gate-scene-cross-project",
+            "UPDATE scene_events SET scene_id = 'default-project-scene'
+              WHERE scene_id = 'gate-a2-scene'
+                AND event_id = 'gate-a2-event'",
+        ),
+        (
+            "scene-events-default-event-cross-project",
+            "UPDATE scene_events SET event_id = 'gate-a2-event'
+              WHERE scene_id = 'default-project-scene'
+                AND event_id = 'default-project-event'",
+        ),
+        (
+            "scene-events-gate-event-cross-project",
+            "UPDATE scene_events SET event_id = 'default-project-event'
+              WHERE scene_id = 'gate-a2-scene'
+                AND event_id = 'gate-a2-event'",
+        ),
+    ] {
+        assert_snapshot_rejects_mutation(label, |conn| {
+            conn.execute(sql, [])?;
+            Ok(())
+        });
+    }
+    assert_snapshot_rejects_mutation("scene-events-cross-project-swap", |conn| {
+        conn.execute_batch(
+            "DELETE FROM scene_events;
+             INSERT INTO scene_events (scene_id, event_id, incarnation_token)
+             VALUES
+               ('default-project-scene', 'gate-a2-event', 'default-project-scene@v0'),
+               ('gate-a2-scene', 'default-project-event', 'gate-a2-scene@v0');",
+        )?;
+        Ok(())
+    });
+}
+
+#[test]
+fn legacy_snapshot_rejects_each_seeded_second_project_content_or_identity_corruption() {
+    let _test_guard = serialize_liveness_test();
+    for (label, sql) in [
+        (
+            "projects-content",
+            "UPDATE projects SET title = 'corrupted' WHERE id = 'default-project'",
+        ),
+        (
+            "project-settings-content",
+            "UPDATE project_settings SET value = 'corrupted'
+              WHERE project_id = 'default-project' AND key = 'release-language'",
+        ),
+        (
+            "map-boards-content",
+            "UPDATE map_boards SET title = 'corrupted' WHERE id = 'default-project-board'",
+        ),
+        (
+            "codex-types-content",
+            "UPDATE codex_types SET label = 'corrupted'
+              WHERE project_id = 'default-project' AND slug = 'character'",
+        ),
+        (
+            "tree-nodes-content",
+            "UPDATE tree_nodes SET title = 'corrupted' WHERE id = 'default-project-scene'",
+        ),
+        (
+            "codex-entries-content",
+            "UPDATE codex_entries SET name = 'corrupted' WHERE id = 'default-project-codex'",
+        ),
+        (
+            "events-content",
+            "UPDATE events SET note = 'corrupted' WHERE id = 'default-project-event'",
+        ),
+        (
+            "scene-events-identity",
+            "UPDATE scene_events SET scene_id = 'gate-a2-scene'
+              WHERE scene_id = 'default-project-scene' AND event_id = 'default-project-event'",
+        ),
+        (
+            "chat-sessions-content",
+            "UPDATE chat_sessions SET title = 'corrupted'
+              WHERE id = 'default-project-session'",
+        ),
+        (
+            "chat-messages-content",
+            "UPDATE chat_messages SET content = 'corrupted'
+              WHERE id = 'default-project-assistant-message'",
+        ),
+        (
+            "snippets-content",
+            "UPDATE snippets SET title = 'corrupted' WHERE id = 'default-project-snippet'",
+        ),
+        (
+            "audit-content",
+            "UPDATE ai_audit_events SET payload = '{\"corrupted\":true}'
+              WHERE project_id = 'default-project' AND sequence = 2",
+        ),
+        (
+            "app-settings-identity",
+            "UPDATE app_settings SET key = 'corrupted.release-fixture'
+              WHERE key = 'default-project.release-fixture'",
+        ),
+    ] {
+        assert_snapshot_rejects_mutation(label, |conn| {
+            conn.execute(sql, [])?;
+            Ok(())
+        });
+    }
+}
+
 fn seed_prepared_application(db: &Database) -> (String, String, String, String) {
     let run_id = "run-c2zc-prepared";
     let task_id = "task-c2zc-prepared";
@@ -1514,12 +2385,13 @@ fn seed_previous_release_application(
     scene_id: &str,
     source_identity: &str,
     revision_token: &str,
+    identity: &str,
 ) -> (String, String, String, String, String) {
-    let run_id = "run-c2zc-previous-release";
-    let task_id = "task-c2zc-previous-release";
-    let set_id = "set-c2zc-previous-release";
-    let proposal_id = "proposal-c2zc-previous-release";
-    let event_id = "event-c2zc-previous-release";
+    let run_id = format!("run-c2zc-previous-release-{identity}");
+    let task_id = format!("task-c2zc-previous-release-{identity}");
+    let set_id = format!("set-c2zc-previous-release-{identity}");
+    let proposal_id = format!("proposal-c2zc-previous-release-{identity}");
+    let event_id = format!("event-c2zc-previous-release-{identity}");
     narrative_extraction_create_run(
         db,
         CreateRunPayload {
@@ -1528,7 +2400,7 @@ fn seed_previous_release_application(
             surface_path_id: "chronicle.extract".to_string(),
             scope_json: json!({}),
             spec_json: json!({ "domain": "chronicle" }),
-            spec_digest: "spec-c2zc-previous-release".to_string(),
+            spec_digest: format!("spec-c2zc-previous-release-{identity}"),
             snapshot_digest: Some(revision_token.to_string()),
             catalog_digest: None,
             registry_digest: None,
@@ -1555,15 +2427,15 @@ fn seed_previous_release_application(
                 proposal_key: "key-c2zc-previous-release".to_string(),
                 kind: "chronicle.event.create".to_string(),
                 payload_json: prepared_event_payload_for(
-                    event_id,
+                    &event_id,
                     scene_id,
                     "C2-ZC previous-release event",
                 ),
                 reconciliation_envelope: Some(prepared_envelope_for(
                     source_identity,
                     revision_token,
-                    run_id,
-                    task_id,
+                    &run_id,
+                    &task_id,
                 )),
             }],
         },
@@ -1586,17 +2458,11 @@ fn seed_previous_release_application(
             revision_id: revision_id.clone(),
             decision: "approved".to_string(),
             decision_json: None,
-            created_by: Some("c2zc-upgrade-test".to_string()),
+            created_by: Some(format!("c2zc-upgrade-test-{identity}")),
         },
     )
     .expect("approve previous-release application proposal");
-    (
-        run_id.to_string(),
-        set_id.to_string(),
-        saved_proposal_id,
-        revision_id,
-        event_id.to_string(),
-    )
+    (run_id, set_id, saved_proposal_id, revision_id, event_id)
 }
 
 fn apply_previous_release_application(
@@ -1608,16 +2474,20 @@ fn apply_previous_release_application(
     proposal_id: &str,
     revision_id: &str,
     event_id: &str,
+    expected_tail_ordinal: Option<String>,
+    identity: &str,
 ) -> String {
+    let request_id = format!("request-c2zc-previous-release-{identity}");
+    let session_id = format!("session-c2zc-previous-release-{identity}");
     let prepared = narrative_extraction_prepare_commit(
         db,
         PrepareCommitPayload {
             project_id: project_id.to_string(),
             run_id: run_id.to_string(),
             proposal_set_id: set_id.to_string(),
-            request_id: "request-c2zc-previous-release".to_string(),
+            request_id: request_id.clone(),
             plan_digest: "client-digest-ignored".to_string(),
-            session_id: "session-c2zc-previous-release".to_string(),
+            session_id: session_id.clone(),
             surface: Some("narrative-extraction".to_string()),
             operations: vec![CommitOperation {
                 kind: "chronicle.event.create".to_string(),
@@ -1633,7 +2503,7 @@ fn apply_previous_release_application(
                 proposal_id: proposal_id.to_string(),
                 revision_id: revision_id.to_string(),
             }],
-            expected_tail_ordinal: Some("a0".to_string()),
+            expected_tail_ordinal,
             entity_bindings: vec![],
             expected_calendar_version: None,
         },
@@ -1647,8 +2517,8 @@ fn apply_previous_release_application(
                 .as_str()
                 .expect("previous-release prepared commit id")
                 .to_string(),
-            request_id: "request-c2zc-previous-release".to_string(),
-            session_id: "session-c2zc-previous-release".to_string(),
+            request_id,
+            session_id,
             expected_version: prepared["version"].as_i64(),
         },
     )
@@ -1669,6 +2539,24 @@ fn current_scene_revision_token(db: &Database, project_id: &str, scene_id: &str)
         Ok(format!("v{version}@{updated_at}"))
     })
     .expect("read migrated scene revision token")
+}
+
+fn current_event_tail_ordinal(db: &Database, project_id: &str) -> Option<String> {
+    db.with_conn(|conn| {
+        Ok::<_, anyhow::Error>(
+            conn.query_row(
+                "SELECT ordinal
+                   FROM events
+                  WHERE project_id = ?1
+                  ORDER BY ordinal DESC, id DESC
+                  LIMIT 1",
+                [project_id],
+                |row| row.get(0),
+            )
+            .optional()?,
+        )
+    })
+    .expect("read project Chronicle tail")
 }
 
 fn drain_incremental_freshness_until_idle(db: &Database, label: &str) {
@@ -1704,34 +2592,24 @@ fn expected_reserved_semantic_index_counts() -> BTreeMap<String, usize> {
     ])
 }
 
-fn assert_clean_verify_evidence(
+fn assert_project_keyset<T>(map: &BTreeMap<String, T>, expected: &[String], label: &str) {
+    assert_eq!(
+        map.keys().cloned().collect::<Vec<_>>(),
+        expected,
+        "{label} must cover exactly the expected project identities"
+    );
+}
+
+fn assert_verify_coverage_evidence(
     db: &Database,
     outcome: &grimodex_db::narrative_extraction::VerifyRunOutcome,
     expected_epoch_id: &str,
-) {
+) -> Value {
     assert!(
         !outcome.run_id.trim().is_empty(),
         "Verify Run ID must be present"
     );
     assert_eq!(outcome.semantic_epoch_id, expected_epoch_id);
-    assert!(
-        outcome.report.is_consistent(),
-        "Verify report is inconsistent: {outcome:?}"
-    );
-    assert!(
-        outcome.report.is_complete(),
-        "Verify report is incomplete: {outcome:?}"
-    );
-    assert!(
-        outcome.report.is_clean(),
-        "Verify report is not clean: {outcome:?}"
-    );
-    assert!(!outcome.report.requires_rebuild());
-    assert!(outcome
-        .report
-        .finding_observation_ids_outside_current_epoch
-        .is_empty());
-
     let coverage = production_verify_check_coverage();
     assert_eq!(coverage["complete"], true);
     assert_eq!(coverage["required"].as_array().map(Vec::len), Some(13));
@@ -1778,6 +2656,165 @@ fn assert_clean_verify_evidence(
         stored["outcomeDigest"],
         canonical_verify_outcome_digest(&stored).expect("recompute Verify outcome digest")
     );
+    stored
+}
+
+fn assert_clean_verify_evidence(
+    db: &Database,
+    outcome: &grimodex_db::narrative_extraction::VerifyRunOutcome,
+    expected_epoch_id: &str,
+) {
+    assert_verify_coverage_evidence(db, outcome, expected_epoch_id);
+    assert!(
+        outcome.report.is_consistent(),
+        "Verify report is inconsistent: {outcome:?}"
+    );
+    assert!(
+        outcome.report.is_complete(),
+        "Verify report is incomplete: {outcome:?}"
+    );
+    assert!(
+        outcome.report.is_clean(),
+        "Verify report is not clean: {outcome:?}"
+    );
+    assert!(!outcome.report.requires_rebuild());
+    assert!(outcome
+        .report
+        .finding_observation_ids_outside_current_epoch
+        .is_empty());
+}
+
+fn assert_maintenance_run_bound_to_epoch(
+    db: &Database,
+    project_id: &str,
+    run_id: &str,
+    expected_run_kind: &str,
+    expected_epoch_id: &str,
+) {
+    assert!(
+        !run_id.trim().is_empty(),
+        "{expected_run_kind} Run ID missing"
+    );
+    let (stored_project_id, stored_run_kind, stored_epoch_id, status): (
+        String,
+        String,
+        Option<String>,
+        String,
+    ) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT project_id, run_kind, semantic_epoch_id, status
+                   FROM narrative_extraction_runs
+                  WHERE id = ?1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?)
+        })
+        .unwrap_or_else(|error| panic!("read {expected_run_kind} Run {run_id}: {error:#}"));
+    assert_eq!(stored_project_id, project_id);
+    assert_eq!(stored_run_kind, expected_run_kind);
+    assert_eq!(stored_epoch_id.as_deref(), Some(expected_epoch_id));
+    assert_eq!(status, "completed");
+}
+
+fn assert_project_freshness_liveness(db: &Database, project_id: &str, epoch_id: &str) {
+    let (
+        acknowledged,
+        last_error,
+        cursor_epoch,
+        active_run_id,
+        reserved_through,
+        lease_owner,
+        lease_expires_at,
+        feed_head,
+        completed_runs,
+        active_runs,
+    ): (
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+        i64,
+    ) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT cursor.acknowledged_through_sequence,
+                        cursor.last_error,
+                        cursor.semantic_epoch_id,
+                        cursor.active_run_id,
+                        cursor.reserved_through_sequence,
+                        cursor.lease_owner,
+                        cursor.lease_expires_at,
+                        COALESCE((SELECT MAX(canonical_sequence)
+                                    FROM narrative_change_events
+                                   WHERE project_id = ?1), 0),
+                        (SELECT COUNT(*)
+                           FROM narrative_extraction_runs
+                          WHERE project_id = ?1
+                            AND run_kind = 'freshness-evaluation'
+                            AND semantic_epoch_id = ?2
+                            AND status = 'completed'),
+                        (SELECT COUNT(*)
+                           FROM narrative_extraction_runs
+                          WHERE project_id = ?1
+                            AND run_kind = 'freshness-evaluation'
+                            AND status IN ('pending', 'running'))
+                   FROM narrative_change_cursors cursor
+                  WHERE cursor.project_id = ?1
+                    AND cursor.consumer_id = 'narrative-incremental-freshness/v1'",
+                params![project_id, epoch_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                    ))
+                },
+            )?)
+        })
+        .unwrap_or_else(|error| panic!("read freshness/liveness for {project_id}: {error:#}"));
+    assert_eq!(
+        acknowledged, feed_head,
+        "{project_id} cursor must reach Feed head"
+    );
+    assert_eq!(last_error, None, "{project_id} cursor must be error-free");
+    assert_eq!(active_run_id, None, "{project_id} cursor must be idle");
+    assert_eq!(
+        reserved_through, None,
+        "{project_id} cursor must have no reservation"
+    );
+    assert_eq!(
+        lease_owner, None,
+        "{project_id} cursor must have no lease owner"
+    );
+    assert_eq!(
+        lease_expires_at, None,
+        "{project_id} cursor must have no lease"
+    );
+    assert!(
+        cursor_epoch.is_none() || cursor_epoch.as_deref() == Some(epoch_id),
+        "{project_id} idle cursor may be NULL, but any bound Epoch must be current: {cursor_epoch:?}"
+    );
+    assert!(
+        completed_runs > 0,
+        "{project_id} needs a completed current-Epoch Freshness Run"
+    );
+    assert_eq!(
+        active_runs, 0,
+        "{project_id} must have no active Freshness Run"
+    );
 }
 
 fn read_c2zc_persistence_counts(db: &Database) -> (i64, i64, i64) {
@@ -1801,6 +2838,28 @@ fn read_c2zc_persistence_counts(db: &Database) -> (i64, i64, i64) {
         ))
     })
     .expect("read C2-ZC persistence counts")
+}
+
+fn read_project_finding_repair_counts(db: &Database, project_id: &str) -> (i64, i64) {
+    db.with_conn(|conn| {
+        Ok::<_, anyhow::Error>((
+            conn.query_row(
+                "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )?,
+            conn.query_row(
+                "SELECT COUNT(*)
+                       FROM narrative_extraction_runs
+                      WHERE project_id = ?1 AND run_kind = 'dependency-repair'",
+                [project_id],
+                |row| row.get(0),
+            )?,
+        ))
+    })
+    .unwrap_or_else(|error| panic!("read Finding/Repair counts for {project_id}: {error:#}"))
 }
 
 fn prepared_commit_payload(
@@ -2022,6 +3081,10 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         other => panic!("expected a real previous-release migration, got {other:?}"),
     };
     release_schema_fixture::assert_release_fixture_rows(&db_path);
+    let legacy_snapshot_path = release_schema_fixture::latest_migration_snapshot(&workspace);
+    let legacy_snapshot = load_legacy_snapshot_baseline(&legacy_snapshot_path)
+        .unwrap_or_else(|error| panic!("load immutable release snapshot contract: {error:#}"));
+    let post_migration_legacy_rows_exact = legacy_snapshot.assert_database(&db_path);
 
     let project_ids = opened
         .database
@@ -2034,15 +3097,58 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         })
         .expect("list migrated projects");
     assert!(
-        project_ids.contains(&release_schema_fixture::PROJECT_ID.to_string()),
-        "migrated release project must remain present"
+        project_ids
+            == EXPECTED_UPGRADE_PROJECT_IDS
+                .iter()
+                .map(|project_id| (*project_id).to_string())
+                .collect::<Vec<_>>(),
+        "migration must expose exactly the expected two project identities: {project_ids:?}"
+    );
+    assert_eq!(
+        release_schema_fixture::PROJECT_ID,
+        "gate-a2-project",
+        "the explicit previous-release fixture project identity is part of this AC"
     );
 
-    // The previous release has no current C2-ZC Application Graph. Create one
-    // through the public proposal/review/apply path while the legacy mirror is
-    // still authoritative; the real Backfill below then imports that legacy
-    // dependency into the current Graph.
+    // Both explicit project identities are present in the previous-release
+    // image and have no current C2-ZC Application Graph. Create a real
+    // Application for each through the public proposal/review/apply path while
+    // the legacy mirror is still authoritative; the real Backfill below then
+    // imports each dependency into the current Graph.
     enable_manual_apply_preserving_flags(&opened.database);
+    let default_source_identity =
+        format!("project:scene:{}", release_schema_fixture::SECOND_SCENE_ID);
+    let default_revision_token = current_scene_revision_token(
+        &opened.database,
+        release_schema_fixture::SECOND_PROJECT_ID,
+        release_schema_fixture::SECOND_SCENE_ID,
+    );
+    let (
+        default_application_source_run_id,
+        default_application_set_id,
+        default_proposal_id,
+        default_revision_id,
+        default_event_id,
+    ) = seed_previous_release_application(
+        &opened.database,
+        release_schema_fixture::SECOND_PROJECT_ID,
+        release_schema_fixture::SECOND_SCENE_ID,
+        &default_source_identity,
+        &default_revision_token,
+        release_schema_fixture::SECOND_PROJECT_ID,
+    );
+    let default_application_id = apply_previous_release_application(
+        &opened.database,
+        release_schema_fixture::SECOND_PROJECT_ID,
+        release_schema_fixture::SECOND_SCENE_ID,
+        &default_application_source_run_id,
+        &default_application_set_id,
+        &default_proposal_id,
+        &default_revision_id,
+        &default_event_id,
+        current_event_tail_ordinal(&opened.database, release_schema_fixture::SECOND_PROJECT_ID),
+        release_schema_fixture::SECOND_PROJECT_ID,
+    );
     let source_identity = format!("project:scene:{}", release_schema_fixture::SCENE_ID);
     let revision_token = current_scene_revision_token(
         &opened.database,
@@ -2056,6 +3162,7 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
             release_schema_fixture::SCENE_ID,
             &source_identity,
             &revision_token,
+            "gate-a2-project",
         );
     let application_id = apply_previous_release_application(
         &opened.database,
@@ -2066,10 +3173,32 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         &proposal_id,
         &revision_id,
         &event_id,
+        current_event_tail_ordinal(&opened.database, release_schema_fixture::PROJECT_ID),
+        "gate-a2-project",
+    );
+    let application_ids_by_project = BTreeMap::from([
+        (
+            release_schema_fixture::SECOND_PROJECT_ID.to_string(),
+            default_application_id,
+        ),
+        (
+            release_schema_fixture::PROJECT_ID.to_string(),
+            application_id,
+        ),
+    ]);
+    assert_eq!(
+        application_ids_by_project
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        project_ids,
+        "Application evidence must cover exactly both expected projects"
     );
     assert!(
-        !application_id.trim().is_empty(),
-        "Application ID must be returned"
+        application_ids_by_project
+            .values()
+            .all(|application_id| !application_id.trim().is_empty()),
+        "every expected project must return an Application ID"
     );
 
     // Backfill is the production release-boundary operation. It must consume
@@ -2083,10 +3212,10 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
             grimodex_db::narrative_extraction::LegacyBackfillBootstrapOutcome::Ran {
                 run_id,
                 ..
-            }
-            | grimodex_db::narrative_extraction::LegacyBackfillBootstrapOutcome::AlreadyRun {
-                run_id,
             } => run_id,
+            grimodex_db::narrative_extraction::LegacyBackfillBootstrapOutcome::AlreadyRun {
+                run_id,
+            } => panic!("unexpected pre-existing Backfill Run during acceptance: {run_id}"),
         };
         assert!(
             !run_id.trim().is_empty(),
@@ -2094,23 +3223,28 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         );
         backfill_run_ids.insert(project_id.clone(), run_id);
     }
-    let migrated_edge_count = opened
-        .database
-        .with_conn(|conn| {
-            Ok::<_, anyhow::Error>(conn.query_row(
-                "SELECT COUNT(*)
-                   FROM narrative_dependency_edges
-                  WHERE project_id = ?1 AND consumer_kind = 'application'
-                    AND consumer_key = ?2",
-                params![release_schema_fixture::PROJECT_ID, application_id],
-                |row| row.get::<_, i64>(0),
-            )?)
-        })
-        .expect("count Backfill-produced Application Edges");
-    assert_eq!(
-        migrated_edge_count, 1,
-        "Backfill must import the legacy dependency exactly once"
-    );
+    assert_project_keyset(&backfill_run_ids, &project_ids, "Backfill Run IDs");
+    for project_id in &project_ids {
+        let migrated_edge_count = opened
+            .database
+            .with_conn(|conn| {
+                Ok::<_, anyhow::Error>(conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_dependency_edges
+                      WHERE project_id = ?1 AND consumer_kind = 'application'
+                        AND consumer_key = ?2",
+                    params![project_id, application_ids_by_project[project_id]],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .unwrap_or_else(|error| {
+                panic!("count {project_id} Backfill-produced Application Edges: {error:#}")
+            });
+        assert_eq!(
+            migrated_edge_count, 1,
+            "{project_id} Backfill must import its legacy dependency exactly once"
+        );
+    }
 
     // Drain the real Change Feed before the first Verify so its cursor/feed
     // check has complete current evidence for every migrated project.
@@ -2132,8 +3266,8 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         .expect("read migrated current Semantic Epochs");
     assert_eq!(
         epoch_rows.len(),
-        project_ids.len(),
-        "one current Epoch per migrated project"
+        EXPECTED_UPGRADE_PROJECT_IDS.len(),
+        "exactly one current Epoch per expected migrated project"
     );
     let epoch_by_project: BTreeMap<String, String> = epoch_rows
         .iter()
@@ -2145,10 +3279,18 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
             (project_id.clone(), epoch_id.clone())
         })
         .collect();
+    assert_eq!(
+        epoch_by_project.keys().cloned().collect::<Vec<_>>(),
+        project_ids,
+        "current Epoch map must cover exactly both expected projects"
+    );
     for project_id in &project_ids {
-        assert!(
-            epoch_by_project.contains_key(project_id),
-            "current Epoch binding missing for project {project_id}"
+        assert_maintenance_run_bound_to_epoch(
+            &opened.database,
+            project_id,
+            &backfill_run_ids[project_id],
+            "backfill",
+            &epoch_by_project[project_id],
         );
     }
 
@@ -2156,6 +3298,7 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
     // deliberately absent at this point, so durable readiness must remain
     // incomplete rather than treating migration/backfill as cutover proof.
     let mut initial_verify_run_ids = BTreeMap::new();
+    let mut initial_verify_evidence_by_project = BTreeMap::new();
     for project_id in &project_ids {
         let verify = run_dependency_verify_for_project(&opened.database, project_id)
             .expect("run production initial current-Epoch Verify");
@@ -2163,8 +3306,40 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
             verify.semantic_epoch_id, epoch_by_project[project_id],
             "initial Verify must bind to the project's current Epoch"
         );
+        let stored = assert_verify_coverage_evidence(
+            &opened.database,
+            &verify,
+            &epoch_by_project[project_id],
+        );
+        assert_maintenance_run_bound_to_epoch(
+            &opened.database,
+            project_id,
+            &verify.run_id,
+            "dependency-verify",
+            &epoch_by_project[project_id],
+        );
+        initial_verify_evidence_by_project.insert(
+            project_id.clone(),
+            json!({
+                "runId": verify.run_id,
+                "semanticEpochId": verify.semantic_epoch_id,
+                "coverage": stored["checkCoverage"].clone(),
+                "reservedSemanticIndex": expected_reserved_semantic_index_counts(),
+                "rebuildRequired": verify.report.requires_rebuild(),
+            }),
+        );
         initial_verify_run_ids.insert(project_id.clone(), verify.run_id);
     }
+    assert_project_keyset(
+        &initial_verify_run_ids,
+        &project_ids,
+        "initial Verify Run IDs",
+    );
+    assert_project_keyset(
+        &initial_verify_evidence_by_project,
+        &project_ids,
+        "initial Verify evidence",
+    );
     let pre_rebuild_readiness = opened
         .database
         .with_conn(|conn| inspect_workspace_cutover_readiness_with_liveness(conn, None))
@@ -2191,8 +3366,16 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
             } => panic!("unexpected active Rebuild Run during acceptance: {run_id}"),
         };
         assert!(!run_id.trim().is_empty(), "Rebuild Run ID must be returned");
+        assert_maintenance_run_bound_to_epoch(
+            &opened.database,
+            project_id,
+            &run_id,
+            "semantic-index-rebuild",
+            &epoch_by_project[project_id],
+        );
         rebuild_run_ids.insert(project_id.clone(), run_id);
     }
+    assert_project_keyset(&rebuild_run_ids, &project_ids, "Rebuild Run IDs");
 
     let mut confirmation_verify_run_ids = BTreeMap::new();
     let mut confirmation_verify_outcomes = BTreeMap::new();
@@ -2200,9 +3383,26 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         let verify = run_dependency_verify_for_project(&opened.database, project_id)
             .expect("run production confirmation current-Epoch Verify");
         assert_clean_verify_evidence(&opened.database, &verify, &epoch_by_project[project_id]);
+        assert_maintenance_run_bound_to_epoch(
+            &opened.database,
+            project_id,
+            &verify.run_id,
+            "dependency-verify",
+            &epoch_by_project[project_id],
+        );
         confirmation_verify_run_ids.insert(project_id.clone(), verify.run_id.clone());
         confirmation_verify_outcomes.insert(project_id.clone(), verify);
     }
+    assert_project_keyset(
+        &confirmation_verify_run_ids,
+        &project_ids,
+        "confirmation Verify Run IDs",
+    );
+    assert_project_keyset(
+        &confirmation_verify_outcomes,
+        &project_ids,
+        "confirmation Verify outcomes",
+    );
 
     // Mint liveness only from a successful shared-Rust cycle at the Feed head;
     // the test never constructs SchedulerLivenessEvidence as a bypass.
@@ -2229,6 +3429,10 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         last_successful_cycle.expect("successful final liveness cycle"),
     )
     .expect("register production scheduler liveness receipt");
+    assert_eq!(
+        evidence.project_ids, project_ids,
+        "scheduler liveness receipt must cover exactly both expected projects"
+    );
 
     let readiness = opened
         .database
@@ -2236,8 +3440,39 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         .expect("read final C2-ZC readiness");
     assert_eq!(readiness.state, ReadinessState::Passed);
     assert!(readiness.ready, "final readiness must pass: {readiness:?}");
-    assert_eq!(readiness.durable.projects.len(), project_ids.len());
-    for project in &readiness.durable.projects {
+    assert_eq!(readiness.scheduler_liveness.state, ReadinessState::Passed);
+    assert!(readiness.scheduler_liveness.passed);
+    assert_eq!(
+        readiness.durable.projects.len(),
+        EXPECTED_UPGRADE_PROJECT_IDS.len(),
+        "durable readiness must report exactly both expected projects"
+    );
+    assert_eq!(
+        readiness
+            .durable
+            .projects
+            .iter()
+            .map(|project| project.project_id.clone())
+            .collect::<BTreeSet<_>>(),
+        project_ids.iter().cloned().collect::<BTreeSet<_>>(),
+        "durable readiness project identities must be exactly the expected two"
+    );
+    for project_id in &project_ids {
+        let project = readiness
+            .durable
+            .projects
+            .iter()
+            .find(|project| project.project_id == *project_id)
+            .unwrap_or_else(|| panic!("readiness missing expected project {project_id}"));
+        assert_eq!(
+            project.current_epoch_id.as_deref(),
+            Some(epoch_by_project[project_id].as_str())
+        );
+        assert_project_freshness_liveness(
+            &opened.database,
+            project_id,
+            &epoch_by_project[project_id],
+        );
         assert!(
             project.ready
                 || (project.incremental_runtime.reasons.len() == 1
@@ -2265,7 +3500,7 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         assert_eq!(
             project.verify.run_id.as_deref(),
             confirmation_verify_run_ids
-                .get(&project.project_id)
+                .get(project_id)
                 .map(String::as_str)
         );
     }
@@ -2291,32 +3526,36 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         first_cutover.authority,
         CanonicalFreshnessAuthority::GenericConsumerFreshness
     );
+    let post_cutover_legacy_rows_exact = legacy_snapshot.assert_database(&db_path);
 
-    let canonical_before = opened
+    let canonical_before_by_project = opened
         .database
         .with_conn(|conn| {
-            canonical_application_freshness(
-                conn,
-                release_schema_fixture::PROJECT_ID,
-                &application_id,
-            )
+            let mut rows = BTreeMap::new();
+            for project_id in &project_ids {
+                let application_id = &application_ids_by_project[project_id];
+                let row = canonical_application_freshness(conn, project_id, application_id)?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "{project_id} Application must have Generic Freshness after cutover"
+                        )
+                    })?;
+                assert_eq!(
+                    row.authority,
+                    CanonicalFreshnessAuthority::GenericConsumerFreshness
+                );
+                assert_eq!(row.semantic_epoch_id, epoch_by_project[project_id]);
+                assert_eq!(row.evidence_freshness, "fresh");
+                assert_eq!(row.build_action, "none");
+                assert_eq!(
+                    row.last_evaluated_run_id.as_deref(),
+                    Some(rebuild_run_ids[project_id].as_str())
+                );
+                rows.insert(project_id.clone(), row);
+            }
+            Ok::<_, anyhow::Error>(rows)
         })
-        .expect("read Generic canonical Application Freshness after cutover")
-        .expect("migrated Application must have Generic Freshness");
-    assert_eq!(
-        canonical_before.authority,
-        CanonicalFreshnessAuthority::GenericConsumerFreshness
-    );
-    assert_eq!(
-        canonical_before.semantic_epoch_id,
-        epoch_by_project[release_schema_fixture::PROJECT_ID]
-    );
-    assert_eq!(canonical_before.evidence_freshness, "fresh");
-    assert_eq!(canonical_before.build_action, "none");
-    assert_eq!(
-        canonical_before.last_evaluated_run_id.as_deref(),
-        Some(rebuild_run_ids[release_schema_fixture::PROJECT_ID].as_str())
-    );
+        .expect("read every project Generic canonical Application Freshness after cutover");
 
     let persistence_before_reopen = read_c2zc_persistence_counts(&opened.database);
     assert_eq!(
@@ -2327,24 +3566,34 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
     // Corrupt only the compatibility projection after cutover. The canonical
     // reread must continue to return the Generic row, proving no legacy
     // fallback or authority weakening.
-    let canonical_after_legacy_mutation = opened
+    let canonical_after_legacy_mutation_by_project = opened
         .database
         .with_conn(|conn| {
-            conn.execute(
-                "UPDATE narrative_projection_freshness
-                    SET status = 'source-missing'
-                  WHERE application_id = ?1",
-                [&application_id],
-            )?;
-            canonical_application_freshness(
-                conn,
-                release_schema_fixture::PROJECT_ID,
-                &application_id,
-            )
+            for application_id in application_ids_by_project.values() {
+                conn.execute(
+                    "UPDATE narrative_projection_freshness
+                        SET status = 'source-missing'
+                      WHERE application_id = ?1",
+                    [application_id],
+                )?;
+            }
+            let mut rows = BTreeMap::new();
+            for project_id in &project_ids {
+                let application_id = &application_ids_by_project[project_id];
+                let row = canonical_application_freshness(conn, project_id, application_id)?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "{project_id} Generic canonical row must remain available after legacy mutation"
+                        )
+                    })?;
+                assert_eq!(row, canonical_before_by_project[project_id]);
+                rows.insert(project_id.clone(), row);
+            }
+            Ok::<_, anyhow::Error>(rows)
         })
-        .expect("read canonical Generic row after legacy compatibility mutation")
-        .expect("Generic canonical row must remain available");
-    assert_eq!(canonical_after_legacy_mutation, canonical_before);
+        .expect("read every project canonical Generic row after legacy compatibility mutation");
+    let legacy_mutation_ignored =
+        canonical_after_legacy_mutation_by_project == canonical_before_by_project;
 
     let (finding_count, automatic_repair_run_count): (i64, i64) = opened
         .database
@@ -2372,6 +3621,26 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         automatic_repair_run_count, 0,
         "clean upgrade must not launch an automatic Repair"
     );
+    let mut finding_repair_by_project = BTreeMap::new();
+    for project_id in &project_ids {
+        let (project_finding_count, project_repair_count) =
+            read_project_finding_repair_counts(&opened.database, project_id);
+        assert_eq!(
+            project_finding_count, 0,
+            "{project_id} must have no unresolved Finding"
+        );
+        assert_eq!(
+            project_repair_count, 0,
+            "{project_id} must have no automatic Repair Run"
+        );
+        finding_repair_by_project.insert(
+            project_id.clone(),
+            json!({
+                "findingCount": project_finding_count,
+                "automaticRepairRunCount": project_repair_count,
+            }),
+        );
+    }
 
     // Every production phase Run must retain the current Epoch selected by
     // Native; no caller-supplied Epoch or synthetic Generic row is accepted.
@@ -2418,24 +3687,57 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
     };
     let persistence_after_reopen = read_c2zc_persistence_counts(&reopened.database);
     assert_eq!(persistence_after_reopen, persistence_before_reopen);
-    let canonical_after_reopen = reopened
+    let canonical_after_reopen_by_project = reopened
         .database
         .with_conn(|conn| {
-            canonical_application_freshness(
-                conn,
-                release_schema_fixture::PROJECT_ID,
-                &application_id,
-            )
+            let mut rows = BTreeMap::new();
+            for project_id in &project_ids {
+                let application_id = &application_ids_by_project[project_id];
+                let row = canonical_application_freshness(conn, project_id, application_id)?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "{project_id} Generic canonical row must survive supervisor reopen"
+                        )
+                    })?;
+                rows.insert(project_id.clone(), row);
+            }
+            Ok::<_, anyhow::Error>(rows)
         })
-        .expect("read canonical Generic row after supervisor reopen")
-        .expect("Generic canonical row must survive supervisor reopen");
-    assert_eq!(canonical_after_reopen, canonical_before);
+        .expect("read every project canonical Generic row after supervisor reopen");
+    assert_eq!(
+        canonical_after_reopen_by_project,
+        canonical_before_by_project
+    );
     release_schema_fixture::assert_release_fixture_rows(&db_path);
+    let post_reopen_legacy_rows_exact = legacy_snapshot.assert_database(&db_path);
+    let legacy_rows_exact = post_reopen_legacy_rows_exact;
 
     let epoch_counts_unchanged = persistence_after_reopen.1 == persistence_before_reopen.1;
     let authority_counts_unchanged = persistence_after_reopen.2 == persistence_before_reopen.2;
     assert!(epoch_counts_unchanged);
     assert!(authority_counts_unchanged);
+    let project_receipt_evidence = project_ids
+        .iter()
+        .map(|project_id| {
+            let canonical = &canonical_after_reopen_by_project[project_id];
+            json!({
+                "projectId": project_id,
+                "applicationId": application_ids_by_project[project_id],
+                "currentEpochId": epoch_by_project[project_id],
+                "backfillRunId": backfill_run_ids[project_id],
+                "initialVerify": initial_verify_evidence_by_project[project_id],
+                "rebuildRunId": rebuild_run_ids[project_id],
+                "confirmationVerifyRunId": confirmation_verify_run_ids[project_id],
+                "readiness": {
+                    "state": "Passed",
+                    "ready": true,
+                    "freshnessLiveness": true,
+                },
+                "findingRepair": finding_repair_by_project[project_id],
+                "canonical": canonical,
+            })
+        })
+        .collect::<Vec<_>>();
     let receipt = json!({
         "sourceSchema": LAST_PUBLIC_RELEASE_SCHEMA_VERSION,
         "targetSchema": SCHEMA_VERSION,
@@ -2448,13 +3750,41 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
                 "epochNumber": epoch_number,
             }))
             .collect::<Vec<_>>(),
-        "legacyRowsExact": true,
+        "legacyRowsExact": legacy_rows_exact,
+        "legacySnapshot": {
+            "comparison": "immutable supervisor pre-migration snapshot",
+            "scope": "all seeded legacy user rows across the exported release-fixture table manifest, including derived FTS rows",
+            "checks": {
+                "postMigration": post_migration_legacy_rows_exact,
+                "postCutover": post_cutover_legacy_rows_exact,
+                "postReopen": post_reopen_legacy_rows_exact,
+            },
+            "tables": release_schema_fixture::LEGACY_SEED_TABLES
+                .iter()
+                .map(|descriptor| json!({
+                    "table": descriptor.table,
+                    "orderBy": descriptor.order_by,
+                    "identityColumns": descriptor.identity_columns,
+                    "scope": descriptor.scope.label(),
+                }))
+                .collect::<Vec<_>>(),
+            "ftsMatchChecks": release_schema_fixture::LEGACY_FTS_TOKEN_CHECKS
+                .iter()
+                .map(|check| json!({
+                    "surface": check.surface_table,
+                    "source": check.source_table,
+                    "sourceId": check.source_id,
+                    "token": check.token,
+                }))
+                .collect::<Vec<_>>(),
+        },
         "phases": {
             "backfillRunIds": backfill_run_ids,
             "initialVerifyRunIds": initial_verify_run_ids,
             "rebuildRunIds": rebuild_run_ids,
             "confirmationVerifyRunIds": confirmation_verify_run_ids,
         },
+        "projectEvidence": project_receipt_evidence,
         "verify": {
             "coverage": {
                 "complete": true,
@@ -2480,12 +3810,8 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
             "secondCallSameReceipt": first_cutover == second_cutover,
         },
         "canonical": {
-            "authority": canonical_after_reopen.authority,
-            "applicationId": application_id,
-            "semanticEpochId": canonical_after_reopen.semantic_epoch_id,
-            "legacyMutationIgnored": canonical_after_legacy_mutation == canonical_before
-                && canonical_after_reopen == canonical_before,
-            "lastEvaluatedRunId": canonical_after_reopen.last_evaluated_run_id,
+            "byProject": canonical_after_reopen_by_project,
+            "legacyMutationIgnored": legacy_mutation_ignored,
         },
         "reopen": {
             "markerCount": persistence_after_reopen.0,
