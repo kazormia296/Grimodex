@@ -76,6 +76,30 @@ type RebuildRunIdentityRow = (
     Option<String>,
     String,
 );
+type DurableEdgeRunResolutionRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+);
+type DurableEdgeArtifactSourceRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+);
+type DurableEdgeCaptureSourceRow = (String, String, String, Option<String>, i64, String, String);
 
 fn require_non_empty(value: &str, name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(!value.trim().is_empty(), "{name} is required");
@@ -2780,20 +2804,7 @@ fn durable_edge_run_resolution_input(
             "id": Value::Null,
         }));
     };
-    let row: Option<(
-        String,
-        String,
-        Option<String>,
-        String,
-        String,
-        Option<String>,
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        i64,
-    )> = conn
+    let row: Option<DurableEdgeRunResolutionRow> = conn
         .query_row(
             "SELECT id, project_id, semantic_epoch_id, run_kind, status,
                     snapshot_digest, surface_path_id, spec_digest, coverage_json,
@@ -2954,15 +2965,7 @@ fn durable_edge_artifact_source_input(
     let artifact_id = source_identity
         .strip_prefix("artifact:")
         .unwrap_or_default();
-    let row: Option<(
-        String,
-        String,
-        Option<String>,
-        String,
-        Option<String>,
-        Option<String>,
-        String,
-    )> = if artifact_id.is_empty() {
+    let row: Option<DurableEdgeArtifactSourceRow> = if artifact_id.is_empty() {
         None
     } else {
         conn.query_row(
@@ -3020,30 +3023,29 @@ fn durable_edge_capture_source_input(
     source_identity: &str,
 ) -> anyhow::Result<Value> {
     let capture_id = source_identity.strip_prefix("capture:").unwrap_or_default();
-    let row: Option<(String, String, String, Option<String>, i64, String, String)> =
-        if capture_id.is_empty() {
-            None
-        } else {
-            conn.query_row(
-                "SELECT id, state, source_kind, sealed_digest, version,
+    let row: Option<DurableEdgeCaptureSourceRow> = if capture_id.is_empty() {
+        None
+    } else {
+        conn.query_row(
+            "SELECT id, state, source_kind, sealed_digest, version,
                         created_at, updated_at
                    FROM import_captures
                   WHERE id = ?1",
-                params![capture_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                    ))
-                },
-            )
-            .optional()?
-        };
+            params![capture_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?
+    };
     Ok(match row {
         Some((id, state, source_kind, sealed_digest, version, created_at, updated_at)) => json!({
             "exists": true,
@@ -3304,13 +3306,13 @@ pub fn verify_narrative_dependency_graph_for_project(
     let current_epoch_id = get_current_epoch(conn, project_id)?.map(|epoch| epoch.id);
     if let Some(current_epoch_id) = current_epoch_id.as_deref() {
         report.edge_state_ids_outside_current_epoch =
-            edge_state_ids_outside_epoch(conn, project_id, &current_epoch_id)?;
+            edge_state_ids_outside_epoch(conn, project_id, current_epoch_id)?;
         report.finding_observation_ids_outside_current_epoch =
-            finding_observation_ids_outside_epoch(conn, project_id, &current_epoch_id)?;
+            finding_observation_ids_outside_epoch(conn, project_id, current_epoch_id)?;
         report.edge_ids_without_current_epoch_state =
-            edge_ids_without_current_epoch_state(conn, project_id, &current_epoch_id)?;
+            edge_ids_without_current_epoch_state(conn, project_id, current_epoch_id)?;
         report.consumer_keys_without_current_epoch_freshness =
-            consumer_keys_without_current_epoch_freshness(conn, project_id, &current_epoch_id)?;
+            consumer_keys_without_current_epoch_freshness(conn, project_id, current_epoch_id)?;
     }
 
     report.application_revision_artifact_references =
@@ -5711,44 +5713,43 @@ mod tests {
     fn missing_commit_applications_are_scoped_by_their_proposal_set_project() {
         let db = test_db();
         db.with_conn(|conn| {
-            for (project_id, suffix) in [("project-1", "a")] {
-                conn.execute(
-                    "INSERT INTO narrative_proposal_sets
-                        (id, run_id, project_id, set_kind, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, 'extraction',
-                             '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
-                    params![
-                        format!("set-missing-{suffix}"),
-                        format!("run-{suffix}"),
-                        project_id
-                    ],
-                )?;
-                conn.execute(
-                    "INSERT INTO narrative_proposals
-                        (id, proposal_set_id, proposal_key, kind, payload_json,
-                         created_at, updated_at)
-                     VALUES (?1, ?2, ?1, 'codex-entry', '{}',
-                             '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
-                    params![
-                        format!("proposal-missing-{suffix}"),
-                        format!("set-missing-{suffix}")
-                    ],
-                )?;
-                conn.execute(
-                    "INSERT INTO narrative_proposal_applications
-                        (id, commit_id, proposal_id, revision_id, applied_entity_kind,
-                         applied_entity_id, created_at)
-                     VALUES (?1, ?2, ?3, ?4, 'codex-entry', ?5,
-                             '2026-08-15T00:00:00.000Z')",
-                    params![
-                        format!("application-missing-{suffix}"),
-                        format!("commit-missing-{suffix}"),
-                        format!("proposal-missing-{suffix}"),
-                        format!("revision-missing-{suffix}"),
-                        format!("entity-missing-{suffix}")
-                    ],
-                )?;
-            }
+            let (project_id, suffix) = ("project-1", "a");
+            conn.execute(
+                "INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'extraction',
+                         '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
+                params![
+                    format!("set-missing-{suffix}"),
+                    format!("run-{suffix}"),
+                    project_id
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, payload_json,
+                     created_at, updated_at)
+                 VALUES (?1, ?2, ?1, 'codex-entry', '{}',
+                         '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
+                params![
+                    format!("proposal-missing-{suffix}"),
+                    format!("set-missing-{suffix}")
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_applications
+                    (id, commit_id, proposal_id, revision_id, applied_entity_kind,
+                     applied_entity_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, 'codex-entry', ?5,
+                         '2026-08-15T00:00:00.000Z')",
+                params![
+                    format!("application-missing-{suffix}"),
+                    format!("commit-missing-{suffix}"),
+                    format!("proposal-missing-{suffix}"),
+                    format!("revision-missing-{suffix}"),
+                    format!("entity-missing-{suffix}")
+                ],
+            )?;
             Ok(())
         })
         .expect("seed project one missing-Commit Application");

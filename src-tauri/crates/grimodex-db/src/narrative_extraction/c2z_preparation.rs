@@ -2503,19 +2503,33 @@ struct IdleCheckpointTaskSnapshot {
     completed_at: Option<String>,
 }
 
+struct IdleCheckpointAttemptTopologyInput<'a> {
+    task_attempt_count: i64,
+    task_status: &'a str,
+    task_created_at: &'a str,
+    task_started_at: Option<&'a str>,
+    task_completed_at: Option<&'a str>,
+    attempts: &'a [IdleCheckpointAttemptSnapshot],
+    run_started_at: Option<&'a str>,
+    run_completed_at: Option<&'a str>,
+}
+
 const IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID: &str =
     "incremental-freshness-idle-checkpoint-attempt-topology-invalid";
 
 fn validate_idle_checkpoint_attempt_topology(
-    task_attempt_count: i64,
-    task_status: &str,
-    task_created_at: &str,
-    task_started_at: Option<&str>,
-    task_completed_at: Option<&str>,
-    attempts: &[IdleCheckpointAttemptSnapshot],
-    run_started_at: Option<&str>,
-    run_completed_at: Option<&str>,
+    input: IdleCheckpointAttemptTopologyInput<'_>,
 ) -> Result<(), &'static str> {
+    let IdleCheckpointAttemptTopologyInput {
+        task_attempt_count,
+        task_status,
+        task_created_at,
+        task_started_at,
+        task_completed_at,
+        attempts,
+        run_started_at,
+        run_completed_at,
+    } = input;
     if task_status != "completed"
         || !(1..=MAX_ATTEMPTS_PER_BATCH).contains(&task_attempt_count)
         || task_attempt_count != attempts.len() as i64
@@ -2696,16 +2710,16 @@ fn validate_idle_checkpoint_readiness_attempt_topology_in_db(
             rows.collect::<rusqlite::Result<Vec<_>>>()
         })
         .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?;
-    validate_idle_checkpoint_attempt_topology(
-        task.attempt_count,
-        &task.status,
-        &task.created_at,
-        task.started_at.as_deref(),
-        task.completed_at.as_deref(),
-        &attempts,
+    validate_idle_checkpoint_attempt_topology(IdleCheckpointAttemptTopologyInput {
+        task_attempt_count: task.attempt_count,
+        task_status: &task.status,
+        task_created_at: &task.created_at,
+        task_started_at: task.started_at.as_deref(),
+        task_completed_at: task.completed_at.as_deref(),
+        attempts: &attempts,
         run_started_at,
         run_completed_at,
-    )
+    })
 }
 
 fn incremental_run_lifecycle_predates_epoch(
@@ -2768,6 +2782,22 @@ mod tests {
     const COMMIT_ID: &str = "commit-c2z";
     const RUN_ID: &str = "run-c2z";
     const SOURCE_IDENTITY: &str = "project:scene:scene-c2z";
+
+    type ReadinessOutcomeMutation = (&'static str, fn(&mut Value));
+    type ReadinessMetadataMutation = (
+        &'static str,
+        Box<dyn Fn(&mut Value, &mut String, &mut Value)>,
+    );
+    type RetryTopologyCase = (
+        &'static str,
+        i64,
+        &'static str,
+        &'static str,
+        Option<&'static str>,
+        Option<&'static str>,
+        Vec<IdleCheckpointAttemptSnapshot>,
+        bool,
+    );
 
     fn test_db() -> Database {
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
@@ -2952,10 +2982,9 @@ mod tests {
                 Some(started_at),
                 Some(completed_at),
             );
-            assert_eq!(
+            assert!(
                 incremental_run_lifecycle_predates_epoch(&run, epoch_created_at)
                     .expect("canonical lifecycle instants"),
-                true,
                 "{label} before the current Epoch must block readiness"
             );
         }
@@ -3014,7 +3043,7 @@ mod tests {
             "the producer's zero-width outcome shape must be accepted"
         );
 
-        let mutations: [(&str, fn(&mut Value)); 4] = [
+        let mutations: [ReadinessOutcomeMutation; 4] = [
             ("kind", |outcome: &mut Value| {
                 outcome["kind"] = json!("incremental-freshness")
             }),
@@ -3112,16 +3141,7 @@ mod tests {
         missing_next_attempt_at[0].next_attempt_at = None;
         let mut completed_with_failure_metadata = valid_failed_then_completed.clone();
         completed_with_failure_metadata[1].failure_code = Some("NEX_FORGED".to_owned());
-        let cases: Vec<(
-            &str,
-            i64,
-            &str,
-            &str,
-            Option<&str>,
-            Option<&str>,
-            Vec<IdleCheckpointAttemptSnapshot>,
-            bool,
-        )> = vec![
+        let cases: Vec<RetryTopologyCase> = vec![
             (
                 "valid failed retry plus completed attempt",
                 2,
@@ -3298,16 +3318,17 @@ mod tests {
             expected_valid,
         ) in cases
         {
-            let result = validate_idle_checkpoint_attempt_topology(
-                task_attempt_count,
-                task_status,
-                task_created_at,
-                task_started_at,
-                task_completed_at,
-                &attempts,
-                Some("2026-08-20T00:00:00.000Z"),
-                Some("2026-08-20T00:00:06.000Z"),
-            );
+            let result =
+                validate_idle_checkpoint_attempt_topology(IdleCheckpointAttemptTopologyInput {
+                    task_attempt_count,
+                    task_status,
+                    task_created_at,
+                    task_started_at,
+                    task_completed_at,
+                    attempts: &attempts,
+                    run_started_at: Some("2026-08-20T00:00:00.000Z"),
+                    run_completed_at: Some("2026-08-20T00:00:06.000Z"),
+                });
             assert_eq!(
                 result.is_ok(),
                 expected_valid,
@@ -3349,16 +3370,16 @@ mod tests {
                         run_completed_at: Option<&str>,
                         task_started_at: Option<&str>,
                         task_completed_at: Option<&str>| {
-            validate_idle_checkpoint_attempt_topology(
-                2,
-                "completed",
-                "2026-08-20T00:00:00.000Z",
+            validate_idle_checkpoint_attempt_topology(IdleCheckpointAttemptTopologyInput {
+                task_attempt_count: 2,
+                task_status: "completed",
+                task_created_at: "2026-08-20T00:00:00.000Z",
                 task_started_at,
                 task_completed_at,
-                &attempts,
+                attempts: &attempts,
                 run_started_at,
                 run_completed_at,
-            )
+            })
         };
 
         assert_eq!(
@@ -3421,7 +3442,7 @@ mod tests {
             "the producer's exact spec/task/work-key shape must be accepted"
         );
 
-        let mutations: [(&str, Box<dyn Fn(&mut Value, &mut String, &mut Value)>); 5] = [
+        let mutations: [ReadinessMetadataMutation; 5] = [
             (
                 "spec unknown field",
                 Box::new(|spec, spec_digest, _task| {
