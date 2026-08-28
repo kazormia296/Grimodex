@@ -31,6 +31,13 @@ const REQUIRED_RUN_KINDS = [
   "dependency-repair",
 ];
 
+const NON_INCREMENTAL_RUN_KINDS = new Set([
+  "dependency-backfill",
+  "dependency-verify",
+  "dependency-rebuild-derived",
+  "dependency-repair",
+]);
+
 const EXPECTED_EXISTING_RUN_KIND_VALUES = {
   "dependency-backfill": "backfill",
   "dependency-verify": null,
@@ -451,6 +458,17 @@ function validateIdleCheckpoint(entry, errors) {
   );
 }
 
+function validateIdleCheckpointPlacement(entry, errors) {
+  if (
+    NON_INCREMENTAL_RUN_KINDS.has(entry.runKind) &&
+    entry.idleCheckpoint !== undefined
+  ) {
+    errors.push(
+      `${entry.runKind}.idleCheckpoint is only permitted on incremental-freshness`,
+    );
+  }
+}
+
 function validateIncrementalFreshness(entry, errors) {
   if (entry.runKind !== "incremental-freshness") return;
 
@@ -788,6 +806,7 @@ function validateCrossFieldContract(policy, errors) {
 
     validateImplementationStatus(entry, errors);
     validateRetiredC2ZcTriggerDeclarations(entry, errors);
+    validateIdleCheckpointPlacement(entry, errors);
     validateIncrementalFreshness(entry, errors);
     validateRunKindSpecificFields(entry, errors);
   }

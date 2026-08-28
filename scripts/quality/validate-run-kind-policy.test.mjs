@@ -687,6 +687,29 @@ describe("validate-run-kind-policy", () => {
     );
   });
 
+  it("rejects an idle checkpoint object on every non-incremental run kind", () => {
+    const nonIncrementalRunKinds = [
+      "dependency-backfill",
+      "dependency-verify",
+      "dependency-rebuild-derived",
+      "dependency-repair",
+    ];
+
+    for (const runKindName of nonIncrementalRunKinds) {
+      const policy = bundledPolicy();
+      runKind(policy, runKindName).idleCheckpoint = structuredClone(
+        EXPECTED_IDLE_CHECKPOINT,
+      );
+      const result = validateFixture(policy);
+      assert.ok(
+        result.errors.some((error) =>
+          error.includes(`${runKindName}.idleCheckpoint`),
+        ),
+        `expected ${runKindName} to reject an idle checkpoint: ${JSON.stringify(result.errors)}`,
+      );
+    }
+  });
+
   it("contains no source interpreter or reachability machinery", () => {
     const validator = readFileSync(
       path.join(REPO_ROOT, "scripts/quality/validate-run-kind-policy.mjs"),

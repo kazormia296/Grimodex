@@ -1018,6 +1018,7 @@
             }
           },
           "else": {
+            "not": { "required": ["idleCheckpoint"] },
             "properties": {
               "cursorBound": { "const": false },
               "adminCommands": { "minItems": 1 }
