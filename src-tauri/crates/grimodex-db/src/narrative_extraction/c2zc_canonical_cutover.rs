@@ -20,6 +20,7 @@ use anyhow::Result;
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::c2z_preparation::{
     inspect_workspace_cutover_readiness, ReadinessGate, ReadinessState, WorkspaceCutoverReadiness,
@@ -448,10 +449,14 @@ fn validate_current_evaluation_run_reference(
         Option<String>,
         String,
         Option<String>,
+        String,
+        String,
+        Option<String>,
     );
     let row: Option<EvaluationPublisherRow> = conn
         .query_row(
-            "SELECT project_id, run_kind, semantic_epoch_id, status, consumer_id
+            "SELECT project_id, run_kind, semantic_epoch_id, status, consumer_id,
+                    spec_json, work_key, outcome_summary_json
                FROM narrative_extraction_runs
               WHERE id = ?1",
             [run_id],
@@ -462,15 +467,36 @@ fn validate_current_evaluation_run_reference(
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
                 ))
             },
         )
         .optional()?;
-    let Some((run_project_id, run_kind, run_epoch_id, status, consumer_id)) = row else {
+    let Some((
+        run_project_id,
+        run_kind,
+        run_epoch_id,
+        status,
+        consumer_id,
+        spec_json,
+        work_key,
+        outcome_summary_json,
+    )) = row
+    else {
         anyhow::bail!(
             "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISSING: application '{application_id}' references missing Freshness publisher Run '{run_id}'"
         );
     };
+    anyhow::ensure!(
+        !is_idle_checkpoint_publisher(
+            &spec_json,
+            &work_key,
+            outcome_summary_json.as_deref(),
+        ),
+        "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references idle checkpoint Run '{run_id}', which is scheduler evidence only and cannot publish Generic Consumer Freshness"
+    );
     match run_kind.as_deref() {
         Some("freshness-evaluation") => {
             anyhow::ensure!(
@@ -502,6 +528,40 @@ fn validate_current_evaluation_run_reference(
             "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Run '{run_id}' that is not the completed current-Epoch Freshness publisher"
         ),
     }
+}
+
+/// An idle checkpoint is a zero-width scheduler receipt, not a Generic
+/// Consumer Freshness publisher.  Keep this check at the shared provenance
+/// boundary so both the irreversible cutover validator and the post-marker
+/// canonical reader reject the same forged reference.
+fn is_idle_checkpoint_publisher(
+    spec_json: &str,
+    work_key: &str,
+    outcome_summary_json: Option<&str>,
+) -> bool {
+    let tagged_spec = serde_json::from_str::<Value>(spec_json)
+        .ok()
+        .and_then(|value| value.get("kind").and_then(Value::as_str).map(str::to_owned))
+        .is_some_and(|kind| kind == "incremental-freshness-idle-checkpoint@1");
+    if tagged_spec {
+        return true;
+    }
+
+    let tagged_outcome = outcome_summary_json
+        .and_then(|json| serde_json::from_str::<Value>(json).ok())
+        .and_then(|value| value.get("kind").and_then(Value::as_str).map(str::to_owned))
+        .is_some_and(|kind| kind == "current-epoch-idle-checkpoint");
+    if tagged_outcome {
+        return true;
+    }
+
+    let Some(coordinates) = work_key.strip_prefix("incremental-freshness:") else {
+        return false;
+    };
+    let parts = coordinates.split(':').collect::<Vec<_>>();
+    parts.len() == 4
+        && parts[1].parse::<i64>().ok() == parts[2].parse::<i64>().ok()
+        && parts[1].parse::<i64>().is_ok()
 }
 
 /// Mint and register the only scheduler-liveness receipt accepted by the

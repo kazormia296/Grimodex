@@ -298,6 +298,69 @@ fn canonical_read_fails_closed_when_generic_evidence_is_missing() {
 }
 
 #[test]
+fn cutover_and_canonical_read_reject_idle_checkpoint_as_generic_publisher() {
+    let _test_guard = serialize_liveness_test();
+
+    // The fixture's normal publisher is the completed Rebuild lifecycle. A
+    // scheduler-only idle checkpoint may prove current-Epoch liveness, but it
+    // must never become the provenance of a Generic Consumer Freshness row.
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        seed_cutover_ready_application_with_freshness_state(
+            conn,
+            "fresh",
+            "none",
+            Some(BASELINE_FRESHNESS_RUN_ID),
+        )
+    })
+    .expect("seed cutover fixture");
+    let evidence = scheduler_heartbeat(&db, "c2zc-idle-publisher-cutover", 4);
+    db.with_conn(|conn| {
+        let error = cut_over_workspace_freshness(conn, &evidence)
+            .expect_err("cutover must reject an idle checkpoint as publisher provenance");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH"),
+            "unexpected cutover error: {error}"
+        );
+        let marker_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM schema_data_migrations WHERE migration_id = ?1",
+            [C2_ZC_CUTOVER_MIGRATION_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(marker_count, 0, "blocked cutover must not write a marker");
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("reject idle publisher during cutover");
+
+    let db = fixture_db();
+    db.with_conn(seed_cutover_ready_application)
+        .expect("seed cutover fixture");
+    let evidence = scheduler_heartbeat(&db, "c2zc-idle-publisher-read", 5);
+    db.with_conn(|conn| {
+        cut_over_workspace_freshness(conn, &evidence)?;
+        conn.execute(
+            "UPDATE narrative_consumer_freshness
+                SET last_evaluated_run_id = ?1
+              WHERE project_id = ?2 AND consumer_kind = 'application'
+                AND consumer_key = ?3",
+            params![BASELINE_FRESHNESS_RUN_ID, PROJECT_ID, APPLICATION_ID],
+        )?;
+        let error = canonical_application_freshness(conn, PROJECT_ID, APPLICATION_ID)
+            .expect_err("canonical read must reject an idle checkpoint as publisher provenance");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH"),
+            "unexpected canonical-read error: {error}"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("reject idle publisher during canonical read");
+}
+
+#[test]
 fn cutover_and_canonical_read_accept_completed_current_epoch_rebuild_publisher() {
     let _test_guard = serialize_liveness_test();
     let db = fixture_db();
@@ -742,7 +805,7 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
         conn,
         "fresh",
         "none",
-        Some(BASELINE_FRESHNESS_RUN_ID),
+        Some(BASELINE_REBUILD_RUN_ID),
     )
 }
 
@@ -926,7 +989,7 @@ fn seed_cutover_ready_application_with_freshness_state(
             evidence_freshness,
             build_action,
             EPOCH_ID,
-            Some(BASELINE_FRESHNESS_RUN_ID),
+            Some(BASELINE_REBUILD_RUN_ID),
             dependency_set_digest(&[SOURCE_IDENTITY]),
             NOW,
         ],

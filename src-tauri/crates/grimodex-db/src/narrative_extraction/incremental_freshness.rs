@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use super::change_feed::{
     get_changes_since, NarrativeChangeEventRecord, CANONICAL_TEXT_NORMALIZER_VERSION,
 };
+use super::commit::digest_plan;
 use super::consumer_identity::{
     is_declared_consumer_kind, is_reserved_semantic_index_consumer_kind, APPLICATION_CONSUMER_KIND,
 };
@@ -67,7 +68,7 @@ const IDLE_CHECKPOINT_VERSION: i64 = 1;
 const MAX_CANONICAL_SEQUENCES_PER_BATCH: i64 = 32;
 const TASK_LEASE_DURATION_SECS: i64 = 300;
 const FAILURE_POLICY_VERSION: &str = "v1";
-const MAX_ATTEMPTS_PER_BATCH: i64 = 3;
+pub(crate) const MAX_ATTEMPTS_PER_BATCH: i64 = 3;
 const LEASE_HEARTBEAT_EDGE_INTERVAL: usize = 64;
 pub const NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME: &str = "NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME";
 
@@ -1202,13 +1203,13 @@ fn create_and_claim_idle_checkpoint_in_tx(
         "throughSequenceInclusive": feed_head,
         "feedHead": feed_head,
     });
-    let input_digest = digest_json(&input_payload)?;
+    let input_digest = idle_checkpoint_digest(&input_payload);
     let task_input = idle_checkpoint_task_input(&input_payload, &input_digest)?;
     let spec_json = json!({
         "kind": "incremental-freshness-idle-checkpoint@1",
         "inputDigest": input_digest,
     });
-    let spec_digest = digest_json(&spec_json)?;
+    let spec_digest = idle_checkpoint_digest(&spec_json);
     let work_key = format!(
         "incremental-freshness:{semantic_epoch_id}:{feed_head}:{feed_head}:{}",
         input_digest.trim_start_matches("sha256:")
@@ -1277,16 +1278,18 @@ fn ensure_idle_checkpoint_task_in_tx(
     task_input: &Value,
 ) -> anyhow::Result<()> {
     let task_id = format!("{run_id}:batch");
+    let created_at = now_string();
     conn.execute(
         "INSERT INTO narrative_extraction_tasks
             (id, run_id, task_kind, status, input_json, priority,
              attempt_count, created_at, version)
-         VALUES (?1, ?2, ?3, 'queued', ?4, 100, 0, datetime('now'), 0)",
+         VALUES (?1, ?2, ?3, 'queued', ?4, 100, 0, ?5, 0)",
         params![
             task_id,
             run_id,
             TASK_KIND,
             serde_json::to_string(task_input)?,
+            created_at,
         ],
     )?;
     Ok(())
@@ -1385,12 +1388,12 @@ fn resume_active_batch_in_tx(
         .query_row(
             "SELECT id
                FROM narrative_extraction_tasks
-              WHERE run_id = ?1 AND task_kind = ?2 AND status = 'running'
-                AND attempt_count >= ?3
+              WHERE run_id = ?1 AND status = 'running'
+                AND attempt_count >= ?2
                 AND lease_expires_at IS NOT NULL
                 AND julianday(lease_expires_at) < julianday('now')
               LIMIT 1",
-            params![active.run_id, TASK_KIND, MAX_ATTEMPTS_PER_BATCH],
+            params![active.run_id, MAX_ATTEMPTS_PER_BATCH],
             |row| row.get(0),
         )
         .optional()?;
@@ -1398,7 +1401,7 @@ fn resume_active_batch_in_tx(
         let message = "incremental Freshness worker was interrupted and exhausted its retry budget";
         conn.execute(
             "UPDATE narrative_extraction_attempts
-                SET status = 'failed', completed_at = datetime('now'),
+                SET status = 'failed', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     error_message = ?1,
                     failure_code = 'NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED',
                     retry_disposition = 'terminal', policy_version = ?2,
@@ -1410,7 +1413,7 @@ fn resume_active_batch_in_tx(
             "UPDATE narrative_extraction_tasks
                 SET status = 'failed', error_message = ?1,
                     lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
-                    completed_at = datetime('now'), version = version + 1
+                    completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), version = version + 1
               WHERE id = ?2 AND run_id = ?3 AND status = 'running'",
             params![message, task_id, active.run_id],
         )?;
@@ -1453,11 +1456,11 @@ fn resume_active_batch_in_tx(
     // durable `running` Attempts for one Task.
     conn.execute(
         "UPDATE narrative_extraction_attempts
-            SET status = 'failed', completed_at = datetime('now'),
+            SET status = 'failed', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                 error_message = 'incremental Freshness worker was interrupted',
                 failure_code = 'NEX_INCREMENTAL_FRESHNESS_INTERRUPTED',
                 retry_disposition = 'retryable', policy_version = ?1,
-                next_attempt_at = datetime('now')
+                next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
           WHERE status = 'running'
             AND task_id IN (
               SELECT id FROM narrative_extraction_tasks
@@ -2636,10 +2639,10 @@ fn publish_idle_checkpoint_in_tx(conn: &Connection, batch: &ClaimedBatch) -> any
     let output_json = serde_json::to_string(&output)?;
     let attempt_updated = conn.execute(
         "UPDATE narrative_extraction_attempts
-            SET status = 'completed', completed_at = datetime('now'), output_json = ?1,
+            SET status = 'completed', completed_at = ?1, output_json = ?2,
                 error_message = NULL
-          WHERE id = ?2 AND task_id = ?3 AND status = 'running'",
-        params![output_json, batch.attempt_id, batch.task_id],
+          WHERE id = ?3 AND task_id = ?4 AND status = 'running'",
+        params![now_string(), output_json, batch.attempt_id, batch.task_id],
     )?;
     anyhow::ensure!(
         attempt_updated == 1,
@@ -2649,10 +2652,16 @@ fn publish_idle_checkpoint_in_tx(conn: &Connection, batch: &ClaimedBatch) -> any
         "UPDATE narrative_extraction_tasks
             SET status = 'completed', output_json = ?1, error_message = NULL,
                 lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
-                completed_at = datetime('now'), version = version + 1
-          WHERE id = ?2 AND run_id = ?3 AND status = 'running'
-            AND lease_owner = ?4",
-        params![output_json, batch.task_id, batch.run_id, batch.lease_owner],
+                completed_at = ?2, version = version + 1
+          WHERE id = ?3 AND run_id = ?4 AND status = 'running'
+            AND lease_owner = ?5",
+        params![
+            output_json,
+            now_string(),
+            batch.task_id,
+            batch.run_id,
+            batch.lease_owner
+        ],
     )?;
     anyhow::ensure!(
         task_updated == 1,
@@ -2735,7 +2744,7 @@ fn validate_idle_checkpoint_task_input(
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("idle checkpoint task input must be an object"))?;
     payload.remove("inputDigest");
-    let expected_digest = digest_json(&Value::Object(payload))?;
+    let expected_digest = idle_checkpoint_digest(&Value::Object(payload));
     anyhow::ensure!(
         input_digest == expected_digest,
         "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_INPUT_INVALID: inputDigest does not match tagged coordinates"
@@ -2782,7 +2791,7 @@ fn validate_idle_checkpoint_run_metadata(
         "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_SPEC_INVALID: spec kind or inputDigest does not match task input"
     );
     anyhow::ensure!(
-        digest_json(&spec)? == spec_digest,
+        idle_checkpoint_digest(&spec) == spec_digest,
         "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_SPEC_INVALID: spec_digest does not match spec JSON"
     );
     let expected_work_key = format!(
@@ -2823,10 +2832,10 @@ fn requeue_after_failure(
             let retry_disposition = if terminal { "terminal" } else { "retryable" };
             let attempt_updated = conn.execute(
                 "UPDATE narrative_extraction_attempts
-                    SET status = 'failed', completed_at = datetime('now'), error_message = ?1,
+                    SET status = 'failed', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), error_message = ?1,
                         failure_code = ?2, retry_disposition = ?3, policy_version = ?4,
                         next_attempt_at = CASE
-                          WHEN ?3 = 'retryable' THEN datetime('now') ELSE NULL END
+                          WHEN ?3 = 'retryable' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END
                   WHERE id = ?5 AND task_id = ?6 AND status = 'running'",
                 params![
                     message,
@@ -2845,7 +2854,7 @@ fn requeue_after_failure(
                 "UPDATE narrative_extraction_tasks
                     SET status = ?1, error_message = ?2,
                         lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
-                        completed_at = CASE WHEN ?1 = 'failed' THEN datetime('now') ELSE NULL END,
+                        completed_at = CASE WHEN ?1 = 'failed' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END,
                         version = version + 1
                   WHERE id = ?3 AND run_id = ?4 AND status = 'running'
                     AND lease_owner = ?5",
@@ -3534,6 +3543,14 @@ fn digest_json(value: &Value) -> anyhow::Result<String> {
     ))
 }
 
+/// Idle checkpoints are scheduler evidence, so their descriptors must have
+/// one stable digest across producer, recovery, and readiness readers.  Keep
+/// the legacy insertion-order digest for ordinary Feed payloads: changing it
+/// would invalidate existing change-set work keys and cursor proofs.
+fn idle_checkpoint_digest(value: &Value) -> String {
+    format!("sha256:{}", digest_plan(value))
+}
+
 fn now_string() -> String {
     chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -3542,6 +3559,7 @@ fn now_string() -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::c2z_preparation::{inspect_project_cutover_readiness, ReadinessState};
     use super::super::declaration_storage::{
         write_dependency_declaration_set, DependencyDeclaration, DependencyDeclarationSetRequest,
     };
@@ -3954,6 +3972,31 @@ mod tests {
         .expect("confirm one-shot idle checkpoint");
     }
 
+    #[test]
+    fn idle_checkpoint_readiness_accepts_the_producer_digest_shape() {
+        let db = rotated_idle_checkpoint_db();
+        let outcome = run_incremental_freshness_cycle(&db)
+            .expect("idle checkpoint producer should complete successfully");
+        assert!(matches!(
+            outcome,
+            IncrementalFreshnessCycleOutcome::Processed(_)
+        ));
+
+        let readiness = db
+            .with_conn(|conn| inspect_project_cutover_readiness(conn, PROJECT_ID))
+            .expect("inspect current-Epoch readiness after idle checkpoint");
+        assert_eq!(
+            readiness.incremental_runtime.state,
+            ReadinessState::Incomplete,
+            "unexpected readiness: {readiness:?}"
+        );
+        assert_eq!(
+            readiness.incremental_runtime.reasons,
+            vec!["incremental-freshness-scheduler-liveness-evidence-unavailable"],
+            "a producer-created idle checkpoint must satisfy all durable metadata checks"
+        );
+    }
+
     fn reserve_claimed_idle_checkpoint(db: &Database) -> ClaimedBatch {
         let reservation = db
             .with_conn(|conn| with_immediate_transaction(conn, reserve_or_resume_batch_in_tx))
@@ -4038,6 +4081,144 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })
         .expect("inspect resumed idle checkpoint lifecycle");
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_accepts_failed_retry_metadata_before_completion() {
+        let db = rotated_idle_checkpoint_db();
+        let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = 'corrupted-idle-checkpoint-kind'
+                  WHERE id = ?1 AND run_id = ?2",
+                params![task_id, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("corrupt idle task kind to exercise retry metadata");
+
+        let first_error = run_incremental_freshness_cycle(&db)
+            .expect_err("the first malformed idle retry must fail closed");
+        assert!(first_error
+            .to_string()
+            .contains("NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_TASK_KIND_INVALID"));
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = ?1
+                  WHERE id = ?2 AND run_id = ?3",
+                params![TASK_KIND, task_id, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("restore canonical idle task kind before retry");
+
+        let second = run_incremental_freshness_cycle(&db)
+            .expect("a corrected idle retry must complete the same Run");
+        assert!(matches!(
+            second,
+            IncrementalFreshnessCycleOutcome::Processed(_)
+        ));
+        db.with_conn(|conn| {
+            let mut rows = conn.prepare(
+                "SELECT attempt_number, status, completed_at, failure_code,
+                        retry_disposition, policy_version, next_attempt_at
+                   FROM narrative_extraction_attempts
+                  WHERE task_id = ?1
+                  ORDER BY attempt_number",
+            )?;
+            let attempts = rows
+                .query_map([task_id.as_str()], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(attempts.len(), 3);
+            assert_eq!(attempts[0].0, 1);
+            assert_eq!(attempts[1].0, 2);
+            assert_eq!(attempts[2].0, 3);
+            for failed in &attempts[..2] {
+                assert_eq!(failed.1, "failed");
+                assert!(failed.2.contains('T') && failed.2.ends_with('Z'));
+                assert!(failed
+                    .3
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("NEX_")));
+                assert_eq!(failed.4.as_deref(), Some("retryable"));
+                assert_eq!(failed.5.as_deref(), Some("v1"));
+                assert!(failed
+                    .6
+                    .as_deref()
+                    .is_some_and(|value| value.contains('T') && value.ends_with('Z')));
+            }
+            assert_eq!(attempts[2].1, "completed");
+            assert!(attempts[2].2.contains('T') && attempts[2].2.ends_with('Z'));
+            assert_eq!(attempts[2].3, None);
+            assert_eq!(attempts[2].4, None);
+            assert_eq!(attempts[2].5, None);
+            assert_eq!(attempts[2].6, None);
+            let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
+            assert_eq!(
+                readiness.incremental_runtime.reasons,
+                vec!["incremental-freshness-scheduler-liveness-evidence-unavailable"]
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect failed-retry idle readiness topology");
+    }
+
+    #[test]
+    fn corrupted_idle_task_kind_at_retry_limit_terminalizes_without_fourth_attempt() {
+        let db = rotated_idle_checkpoint_db();
+        let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = 'corrupted-idle-checkpoint-kind', attempt_count = ?1
+                  WHERE id = ?2 AND run_id = ?3",
+                params![MAX_ATTEMPTS_PER_BATCH, task_id, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("corrupt idle task kind at retry limit");
+
+        let outcome = run_incremental_freshness_cycle(&db)
+            .expect("an exhausted corrupted idle reservation must terminalize safely");
+        assert_eq!(outcome, IncrementalFreshnessCycleOutcome::Idle);
+        db.with_conn(|conn| {
+            let (task_status, run_status, terminal_reason, attempts): (
+                String,
+                String,
+                Option<String>,
+                i64,
+            ) = conn.query_row(
+                "SELECT task.status, run.status, run.terminal_reason_code,
+                        (SELECT COUNT(*) FROM narrative_extraction_attempts
+                          WHERE task_id = task.id)
+                   FROM narrative_extraction_tasks task
+                   JOIN narrative_extraction_runs run ON run.id = task.run_id
+                  WHERE task.id = ?1 AND run.id = ?2",
+                params![task_id, run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(task_status, "failed");
+            assert_eq!(run_status, "failed");
+            assert_eq!(
+                terminal_reason.as_deref(),
+                Some("NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED")
+            );
+            assert_eq!(attempts, 1, "recovery must not claim a fourth Attempt");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect exhausted corrupted idle reservation");
     }
 
     #[test]
@@ -4196,7 +4377,7 @@ mod tests {
                     "spec-extra" => {
                         let mut spec: Value = serde_json::from_str(&spec_json)?;
                         spec["unexpected"] = json!(true);
-                        let recalculated_digest = digest_json(&spec)?;
+                        let recalculated_digest = idle_checkpoint_digest(&spec);
                         conn.execute(
                             "UPDATE narrative_extraction_runs
                                 SET spec_json = ?1, spec_digest = ?2

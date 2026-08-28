@@ -19,6 +19,7 @@ use super::dependency_edges::{
     canonical_source_object_identity, parse_snapshot_run_id_from_source_identity,
     run_id_belongs_to_another_project, validate_stored_source_object_identity, RUN_CONSUMER_KIND,
 };
+use super::incremental_freshness::MAX_ATTEMPTS_PER_BATCH;
 use super::legacy_backfill::{is_valid_completed_backfill_marker, CompletedBackfillMarker};
 use super::maintenance_lifecycle::load_completed_maintenance_run_in_tx;
 use super::maintenance_runtime::{
@@ -2048,7 +2049,8 @@ fn inspect_incremental_runtime_gate(
         project_id: run_project_id,
         semantic_epoch_id: run_epoch,
         status,
-        completed_at,
+        started_at: run_started_at,
+        completed_at: run_completed_at,
         work_key,
         spec_json,
         spec_digest,
@@ -2070,7 +2072,9 @@ fn inspect_incremental_runtime_gate(
             "incremental-freshness-latest-run-not-completed",
         ));
     }
-    if !completed_at.as_deref().is_some_and(is_canonical_instant)
+    if !run_completed_at
+        .as_deref()
+        .is_some_and(is_canonical_instant)
         || work_key
             .as_deref()
             .is_none_or(|key| incremental_work_key_range(key, epoch_id).is_none())
@@ -2134,6 +2138,14 @@ fn inspect_incremental_runtime_gate(
             completed_task_count,
             completed_attempt_count,
             running_attempt_count,
+        ) {
+            return Ok(ReadinessGate::blocked(reason));
+        }
+        if let Err(reason) = validate_idle_checkpoint_readiness_attempt_topology_in_db(
+            conn,
+            &run_id,
+            run_started_at.as_deref(),
+            run_completed_at.as_deref(),
         ) {
             return Ok(ReadinessGate::blocked(reason));
         }
@@ -2467,6 +2479,233 @@ fn validate_idle_checkpoint_readiness_lifecycle(
         return Err("incremental-freshness-idle-checkpoint-lifecycle-invalid");
     }
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct IdleCheckpointAttemptSnapshot {
+    attempt_number: i64,
+    status: String,
+    started_at: String,
+    completed_at: Option<String>,
+    failure_code: Option<String>,
+    retry_disposition: Option<String>,
+    policy_version: Option<String>,
+    next_attempt_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct IdleCheckpointTaskSnapshot {
+    task_kind: String,
+    status: String,
+    attempt_count: i64,
+    created_at: String,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+}
+
+const IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID: &str =
+    "incremental-freshness-idle-checkpoint-attempt-topology-invalid";
+
+fn validate_idle_checkpoint_attempt_topology(
+    task_attempt_count: i64,
+    task_status: &str,
+    task_created_at: &str,
+    task_started_at: Option<&str>,
+    task_completed_at: Option<&str>,
+    attempts: &[IdleCheckpointAttemptSnapshot],
+    run_started_at: Option<&str>,
+    run_completed_at: Option<&str>,
+) -> Result<(), &'static str> {
+    if task_status != "completed"
+        || !(1..=MAX_ATTEMPTS_PER_BATCH).contains(&task_attempt_count)
+        || task_attempt_count != attempts.len() as i64
+    {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    }
+    let task_created_at = parse_incremental_readiness_instant(task_created_at, "taskCreatedAt")
+        .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?;
+    let task_started_at = task_started_at
+        .ok_or(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        .and_then(|value| {
+            parse_incremental_readiness_instant(value, "taskStartedAt")
+                .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        })?;
+    let task_completed_at = task_completed_at
+        .ok_or(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        .and_then(|value| {
+            parse_incremental_readiness_instant(value, "taskCompletedAt")
+                .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        })?;
+    if task_started_at < task_created_at || task_completed_at < task_started_at {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    }
+    let run_started_at = run_started_at
+        .ok_or(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        .and_then(|value| {
+            parse_incremental_readiness_instant(value, "runStartedAt")
+                .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        })?;
+    let run_completed_at = run_completed_at
+        .ok_or(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        .and_then(|value| {
+            parse_incremental_readiness_instant(value, "runCompletedAt")
+                .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        })?;
+    if run_completed_at < run_started_at
+        || run_started_at > task_started_at
+        || run_completed_at < task_completed_at
+    {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    }
+
+    let mut completed_attempt_index = None;
+    let mut previous_started_at = Some(task_started_at);
+    let mut previous_completed_at = None;
+    for (index, attempt) in attempts.iter().enumerate() {
+        if attempt.attempt_number != index as i64 + 1 {
+            return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+        }
+        if !matches!(attempt.status.as_str(), "failed" | "completed") {
+            return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+        }
+        let started_at =
+            parse_incremental_readiness_instant(&attempt.started_at, "attemptStartedAt")
+                .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?;
+        let completed_at = attempt
+            .completed_at
+            .as_deref()
+            .ok_or(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+            .and_then(|value| {
+                parse_incremental_readiness_instant(value, "attemptCompletedAt")
+                    .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+            })?;
+        let retry_ready_at = if attempt.status == "failed" {
+            let value = attempt
+                .next_attempt_at
+                .as_deref()
+                .ok_or(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?;
+            Some(
+                parse_incremental_readiness_instant(value, "nextAttemptAt")
+                    .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?,
+            )
+        } else {
+            None
+        };
+        if attempt.status == "failed" {
+            if attempt
+                .failure_code
+                .as_deref()
+                .is_none_or(|value| !value.starts_with("NEX_"))
+                || attempt.retry_disposition.as_deref() != Some("retryable")
+                || attempt.policy_version.as_deref() != Some("v1")
+                || retry_ready_at.is_none_or(|next_attempt_at| next_attempt_at < completed_at)
+            {
+                return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+            }
+        } else if attempt.failure_code.is_some()
+            || attempt.retry_disposition.is_some()
+            || attempt.policy_version.is_some()
+            || attempt.next_attempt_at.is_some()
+        {
+            return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+        }
+        if completed_at < started_at
+            || previous_started_at.is_some_and(|previous| started_at < previous)
+            || previous_completed_at.is_some_and(|previous| started_at < previous)
+        {
+            return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+        }
+        if attempt.status == "completed" {
+            if completed_attempt_index.replace(index).is_some() {
+                return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+            }
+        } else if completed_attempt_index.is_some() {
+            // A retry after a successful Attempt has no causal meaning and
+            // could hide a forged terminal result.
+            return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+        }
+        previous_started_at = Some(started_at);
+        previous_completed_at = Some(completed_at);
+    }
+    let Some(completed_attempt_index) = completed_attempt_index else {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    };
+    if completed_attempt_index != attempts.len() - 1
+        || previous_completed_at.is_none_or(|completed_at| task_completed_at < completed_at)
+    {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    }
+    Ok(())
+}
+
+fn validate_idle_checkpoint_readiness_attempt_topology_in_db(
+    conn: &Connection,
+    run_id: &str,
+    run_started_at: Option<&str>,
+    run_completed_at: Option<&str>,
+) -> Result<(), &'static str> {
+    let tasks = conn
+        .prepare(
+            "SELECT task_kind, status, attempt_count, created_at, started_at, completed_at
+               FROM narrative_extraction_tasks
+              WHERE run_id = ?1
+              ORDER BY id",
+        )
+        .and_then(|mut statement| {
+            let rows = statement.query_map([run_id], |row| {
+                Ok(IdleCheckpointTaskSnapshot {
+                    task_kind: row.get(0)?,
+                    status: row.get(1)?,
+                    attempt_count: row.get(2)?,
+                    created_at: row.get(3)?,
+                    started_at: row.get(4)?,
+                    completed_at: row.get(5)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?;
+    let Some(task) = tasks.first() else {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    };
+    if tasks.len() != 1 || task.task_kind != "incremental-freshness-batch" {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    }
+
+    let attempts = conn
+        .prepare(
+            "SELECT attempt_number, status, started_at, completed_at,
+                    failure_code, retry_disposition, policy_version, next_attempt_at
+               FROM narrative_extraction_attempts
+              WHERE task_id = (SELECT id FROM narrative_extraction_tasks WHERE run_id = ?1)
+              ORDER BY attempt_number, id",
+        )
+        .and_then(|mut statement| {
+            let rows = statement.query_map([run_id], |row| {
+                Ok(IdleCheckpointAttemptSnapshot {
+                    attempt_number: row.get(0)?,
+                    status: row.get(1)?,
+                    started_at: row.get(2)?,
+                    completed_at: row.get(3)?,
+                    failure_code: row.get(4)?,
+                    retry_disposition: row.get(5)?,
+                    policy_version: row.get(6)?,
+                    next_attempt_at: row.get(7)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?;
+    validate_idle_checkpoint_attempt_topology(
+        task.attempt_count,
+        &task.status,
+        &task.created_at,
+        task.started_at.as_deref(),
+        task.completed_at.as_deref(),
+        &attempts,
+        run_started_at,
+        run_completed_at,
+    )
 }
 
 fn incremental_run_lifecycle_predates_epoch(
@@ -2832,6 +3071,334 @@ mod tests {
                 "unexpected idle lifecycle validation for {label}: {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_rejects_forged_retry_topologies() {
+        let attempt = |number: i64, status: &str, started_at: &str, completed_at: Option<&str>| {
+            IdleCheckpointAttemptSnapshot {
+                attempt_number: number,
+                status: status.to_owned(),
+                started_at: started_at.to_owned(),
+                completed_at: completed_at.map(str::to_owned),
+                failure_code: (status == "failed").then(|| "NEX_TEST_RETRY".to_owned()),
+                retry_disposition: (status == "failed").then(|| "retryable".to_owned()),
+                policy_version: (status == "failed").then(|| "v1".to_owned()),
+                next_attempt_at: (status == "failed")
+                    .then(|| "2026-08-20T00:00:02.500Z".to_owned()),
+            }
+        };
+        let valid_failed_then_completed = vec![
+            attempt(
+                1,
+                "failed",
+                "2026-08-20T00:00:01.000Z",
+                Some("2026-08-20T00:00:02.000Z"),
+            ),
+            attempt(
+                2,
+                "completed",
+                "2026-08-20T00:00:03.000Z",
+                Some("2026-08-20T00:00:04.000Z"),
+            ),
+        ];
+        let mut missing_failure_code = valid_failed_then_completed.clone();
+        missing_failure_code[0].failure_code = None;
+        let mut wrong_retry_disposition = valid_failed_then_completed.clone();
+        wrong_retry_disposition[0].retry_disposition = Some("terminal".to_owned());
+        let mut missing_next_attempt_at = valid_failed_then_completed.clone();
+        missing_next_attempt_at[0].next_attempt_at = None;
+        let mut completed_with_failure_metadata = valid_failed_then_completed.clone();
+        completed_with_failure_metadata[1].failure_code = Some("NEX_FORGED".to_owned());
+        let cases: Vec<(
+            &str,
+            i64,
+            &str,
+            &str,
+            Option<&str>,
+            Option<&str>,
+            Vec<IdleCheckpointAttemptSnapshot>,
+            bool,
+        )> = vec![
+            (
+                "valid failed retry plus completed attempt",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                valid_failed_then_completed.clone(),
+                true,
+            ),
+            (
+                "task attempt count differs",
+                1,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                valid_failed_then_completed.clone(),
+                false,
+            ),
+            (
+                "attempt numbers have a gap",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                vec![
+                    attempt(
+                        1,
+                        "failed",
+                        "2026-08-20T00:00:01.000Z",
+                        Some("2026-08-20T00:00:02.000Z"),
+                    ),
+                    attempt(
+                        3,
+                        "completed",
+                        "2026-08-20T00:00:03.000Z",
+                        Some("2026-08-20T00:00:04.000Z"),
+                    ),
+                ],
+                false,
+            ),
+            (
+                "completed attempt missing",
+                1,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                vec![attempt(
+                    1,
+                    "failed",
+                    "2026-08-20T00:00:01.000Z",
+                    Some("2026-08-20T00:00:02.000Z"),
+                )],
+                false,
+            ),
+            (
+                "running attempt remains",
+                1,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                vec![attempt(1, "running", "2026-08-20T00:00:01.000Z", None)],
+                false,
+            ),
+            (
+                "failed retry follows completion",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                vec![
+                    attempt(
+                        1,
+                        "completed",
+                        "2026-08-20T00:00:01.000Z",
+                        Some("2026-08-20T00:00:02.000Z"),
+                    ),
+                    attempt(
+                        2,
+                        "failed",
+                        "2026-08-20T00:00:03.000Z",
+                        Some("2026-08-20T00:00:04.000Z"),
+                    ),
+                ],
+                false,
+            ),
+            (
+                "attempt timestamp is not monotonic",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                vec![
+                    attempt(
+                        1,
+                        "failed",
+                        "2026-08-20T00:00:03.000Z",
+                        Some("2026-08-20T00:00:04.000Z"),
+                    ),
+                    attempt(
+                        2,
+                        "completed",
+                        "2026-08-20T00:00:02.000Z",
+                        Some("2026-08-20T00:00:05.000Z"),
+                    ),
+                ],
+                false,
+            ),
+            (
+                "task completes before completed attempt",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:03.000Z"),
+                valid_failed_then_completed.clone(),
+                false,
+            ),
+            (
+                "failed attempt missing failure code",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                missing_failure_code,
+                false,
+            ),
+            (
+                "failed attempt has terminal disposition",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                wrong_retry_disposition,
+                false,
+            ),
+            (
+                "failed attempt missing retry deadline",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                missing_next_attempt_at,
+                false,
+            ),
+            (
+                "completed attempt carries retry metadata",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                completed_with_failure_metadata,
+                false,
+            ),
+        ];
+        for (
+            label,
+            task_attempt_count,
+            task_status,
+            task_created_at,
+            task_started_at,
+            task_completed_at,
+            attempts,
+            expected_valid,
+        ) in cases
+        {
+            let result = validate_idle_checkpoint_attempt_topology(
+                task_attempt_count,
+                task_status,
+                task_created_at,
+                task_started_at,
+                task_completed_at,
+                &attempts,
+                Some("2026-08-20T00:00:00.000Z"),
+                Some("2026-08-20T00:00:06.000Z"),
+            );
+            assert_eq!(
+                result.is_ok(),
+                expected_valid,
+                "unexpected retry topology validation for {label}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_requires_run_task_attempt_temporal_envelope() {
+        let attempt = |number: i64, status: &str, started_at: &str, completed_at: &str| {
+            IdleCheckpointAttemptSnapshot {
+                attempt_number: number,
+                status: status.to_owned(),
+                started_at: started_at.to_owned(),
+                completed_at: Some(completed_at.to_owned()),
+                failure_code: (status == "failed").then(|| "NEX_TEST_RETRY".to_owned()),
+                retry_disposition: (status == "failed").then(|| "retryable".to_owned()),
+                policy_version: (status == "failed").then(|| "v1".to_owned()),
+                next_attempt_at: (status == "failed")
+                    .then(|| "2026-08-20T00:00:02.500Z".to_owned()),
+            }
+        };
+        let attempts = vec![
+            attempt(
+                1,
+                "failed",
+                "2026-08-20T00:00:01.000Z",
+                "2026-08-20T00:00:02.000Z",
+            ),
+            attempt(
+                2,
+                "completed",
+                "2026-08-20T00:00:03.000Z",
+                "2026-08-20T00:00:04.000Z",
+            ),
+        ];
+        let validate = |run_started_at: Option<&str>,
+                        run_completed_at: Option<&str>,
+                        task_started_at: Option<&str>,
+                        task_completed_at: Option<&str>| {
+            validate_idle_checkpoint_attempt_topology(
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                task_started_at,
+                task_completed_at,
+                &attempts,
+                run_started_at,
+                run_completed_at,
+            )
+        };
+
+        assert_eq!(
+            validate(
+                Some("2026-08-20T00:00:00.000Z"),
+                Some("2026-08-20T00:00:06.000Z"),
+                Some("2026-08-20T00:00:02.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+            ),
+            Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID),
+            "Attempt 1 before Task.started_at must block readiness"
+        );
+        assert_eq!(
+            validate(
+                Some("2026-08-20T00:00:03.000Z"),
+                Some("2026-08-20T00:00:06.000Z"),
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+            ),
+            Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID),
+            "Run.started_at after Task.started_at must block readiness"
+        );
+        assert_eq!(
+            validate(
+                Some("2026-08-20T00:00:00.000Z"),
+                Some("2026-08-20T00:00:04.000Z"),
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+            ),
+            Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID),
+            "Run.completed_at before Task.completed_at must block readiness"
+        );
+        assert_eq!(
+            validate(
+                Some("2026-08-20T00:00:00.000Z"),
+                Some("2026-08-20T00:00:06.000Z"),
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+            ),
+            Ok(()),
+            "a monotonic Run/Task/Attempt envelope must be accepted"
+        );
     }
 
     #[test]
