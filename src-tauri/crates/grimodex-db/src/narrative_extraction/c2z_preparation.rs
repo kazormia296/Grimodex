@@ -213,6 +213,13 @@ struct IncrementalReadinessRun {
     started_at: Option<String>,
     completed_at: Option<String>,
     work_key: Option<String>,
+    spec_json: String,
+    spec_digest: String,
+    task_input_json: Option<String>,
+    task_count: i64,
+    completed_task_count: i64,
+    completed_attempt_count: i64,
+    running_attempt_count: i64,
     outcome_summary_json: Option<String>,
 }
 
@@ -1944,6 +1951,45 @@ fn inspect_incremental_runtime_gate(
             ))
         }
     };
+    let epoch_created_at: chrono::DateTime<chrono::Utc> = match conn
+        .query_row(
+            "SELECT created_at
+               FROM narrative_semantic_epochs
+              WHERE project_id = ?1 AND id = ?2",
+            params![project_id, epoch_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        Some(created_at) => {
+            match parse_incremental_readiness_instant(&created_at, "epochCreatedAt") {
+                Ok(created_at) => created_at,
+                Err(_) => {
+                    return Ok(ReadinessGate::blocked(
+                        "current-semantic-epoch-created-at-invalid",
+                    ))
+                }
+            }
+        }
+        None => {
+            return Ok(ReadinessGate::blocked("current-semantic-epoch-missing"));
+        }
+    };
+    for run in &runs {
+        match incremental_run_lifecycle_predates_epoch(run, epoch_created_at) {
+            Ok(true) => {
+                return Ok(ReadinessGate::blocked(
+                    "incremental-freshness-run-predates-current-epoch",
+                ))
+            }
+            Ok(false) => {}
+            Err(_) => {
+                return Ok(ReadinessGate::blocked(
+                    "incremental-freshness-run-lifecycle-invalid",
+                ))
+            }
+        }
+    }
     let active_runs = runs
         .iter()
         .filter(|run| matches!(run.status.as_str(), "pending" | "running"))
@@ -2004,6 +2050,13 @@ fn inspect_incremental_runtime_gate(
         status,
         completed_at,
         work_key,
+        spec_json,
+        spec_digest,
+        task_input_json,
+        task_count,
+        completed_task_count,
+        completed_attempt_count,
+        running_attempt_count,
         outcome_summary_json: outcome_json,
         ..
     } = latest;
@@ -2075,6 +2128,35 @@ fn inspect_incremental_runtime_gate(
             "incremental-freshness-completed-outcome-not-at-feed-head",
         ));
     }
+    if work_key_from == work_key_through {
+        if let Err(reason) = validate_idle_checkpoint_readiness_lifecycle(
+            task_count,
+            completed_task_count,
+            completed_attempt_count,
+            running_attempt_count,
+        ) {
+            return Ok(ReadinessGate::blocked(reason));
+        }
+        let Some(work_key_value) = work_key.as_deref() else {
+            return Ok(ReadinessGate::blocked(
+                "incremental-freshness-completed-work-key-invalid",
+            ));
+        };
+        if let Err(reason) = validate_idle_checkpoint_readiness_outcome(&outcome) {
+            return Ok(ReadinessGate::blocked(reason));
+        }
+        if let Err(reason) = validate_idle_checkpoint_readiness_metadata(
+            project_id,
+            epoch_id,
+            from_sequence,
+            work_key_value,
+            &spec_json,
+            &spec_digest,
+            task_input_json.as_deref(),
+        ) {
+            return Ok(ReadinessGate::blocked(reason));
+        }
+    }
     // The database can prove that the last observed run reached the Feed
     // head, but it cannot prove that a scheduler is still alive and able to
     // process the next event.  Keep this gate incomplete until a real
@@ -2095,7 +2177,31 @@ fn load_incremental_readiness_runs(
 ) -> Result<Vec<IncrementalReadinessRun>> {
     let mut statement = conn.prepare(
         "SELECT id, project_id, semantic_epoch_id, status, created_at, started_at,
-                completed_at, work_key, outcome_summary_json
+                completed_at, work_key, spec_json, spec_digest,
+                (SELECT input_json
+                   FROM narrative_extraction_tasks task
+                  WHERE task.run_id = narrative_extraction_runs.id
+                    AND task.task_kind = 'incremental-freshness-batch'
+                  ORDER BY task.id
+                  LIMIT 1),
+                (SELECT COUNT(*)
+                   FROM narrative_extraction_tasks task
+                  WHERE task.run_id = narrative_extraction_runs.id),
+                (SELECT COUNT(*)
+                   FROM narrative_extraction_tasks task
+                  WHERE task.run_id = narrative_extraction_runs.id
+                    AND task.status = 'completed'),
+                (SELECT COUNT(*)
+                   FROM narrative_extraction_attempts attempt
+                   JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+                  WHERE task.run_id = narrative_extraction_runs.id
+                    AND attempt.status = 'completed'),
+                (SELECT COUNT(*)
+                   FROM narrative_extraction_attempts attempt
+                   JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+                  WHERE task.run_id = narrative_extraction_runs.id
+                    AND attempt.status = 'running'),
+                outcome_summary_json
            FROM narrative_extraction_runs
           WHERE project_id = ?1
             AND run_kind = 'freshness-evaluation'
@@ -2118,7 +2224,14 @@ fn load_incremental_readiness_runs(
                 started_at: row.get(5)?,
                 completed_at: row.get(6)?,
                 work_key: row.get(7)?,
-                outcome_summary_json: row.get(8)?,
+                spec_json: row.get(8)?,
+                spec_digest: row.get(9)?,
+                task_input_json: row.get(10)?,
+                task_count: row.get(11)?,
+                completed_task_count: row.get(12)?,
+                completed_attempt_count: row.get(13)?,
+                running_attempt_count: row.get(14)?,
+                outcome_summary_json: row.get(15)?,
             })
         },
     )?;
@@ -2237,6 +2350,146 @@ fn parse_incremental_readiness_instant(
         .map_err(Into::into)
 }
 
+fn validate_idle_checkpoint_readiness_metadata(
+    project_id: &str,
+    epoch_id: &str,
+    feed_head: i64,
+    work_key: &str,
+    spec_json: &str,
+    spec_digest: &str,
+    task_input_json: Option<&str>,
+) -> Result<(), String> {
+    let spec: Value = serde_json::from_str(spec_json)
+        .map_err(|_| "incremental-freshness-idle-checkpoint-spec-invalid".to_owned())?;
+    let Some(spec_object) = spec.as_object() else {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    };
+    const SPEC_KEYS: [&str; 2] = ["kind", "inputDigest"];
+    if spec_object.len() != SPEC_KEYS.len()
+        || spec_object
+            .keys()
+            .any(|key| !SPEC_KEYS.contains(&key.as_str()))
+    {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    }
+    if spec.get("kind").and_then(Value::as_str) != Some("incremental-freshness-idle-checkpoint@1") {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    }
+    let Some(input_digest) = spec.get("inputDigest").and_then(Value::as_str) else {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    };
+    if input_digest.len() != "sha256:".len() + 64
+        || !input_digest.starts_with("sha256:")
+        || !input_digest["sha256:".len()..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    }
+    let expected_spec_digest = format!("sha256:{}", digest_plan(&spec));
+    if spec_digest != expected_spec_digest {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    }
+    let Some(input_json) = task_input_json else {
+        return Err("incremental-freshness-idle-checkpoint-task-invalid".to_owned());
+    };
+    let input: Value = serde_json::from_str(input_json)
+        .map_err(|_| "incremental-freshness-idle-checkpoint-task-invalid".to_owned())?;
+    let Some(input_object) = input.as_object() else {
+        return Err("incremental-freshness-idle-checkpoint-task-invalid".to_owned());
+    };
+    const INPUT_KEYS: [&str; 8] = [
+        "kind",
+        "version",
+        "projectId",
+        "semanticEpochId",
+        "fromSequenceExclusive",
+        "throughSequenceInclusive",
+        "feedHead",
+        "inputDigest",
+    ];
+    if input_object.len() != INPUT_KEYS.len()
+        || input_object
+            .keys()
+            .any(|key| !INPUT_KEYS.contains(&key.as_str()))
+        || input.get("kind").and_then(Value::as_str) != Some("current-epoch-idle-checkpoint")
+        || input.get("version").and_then(Value::as_i64) != Some(1)
+        || input.get("projectId").and_then(Value::as_str) != Some(project_id)
+        || input.get("semanticEpochId").and_then(Value::as_str) != Some(epoch_id)
+        || input.get("fromSequenceExclusive").and_then(Value::as_i64) != Some(feed_head)
+        || input
+            .get("throughSequenceInclusive")
+            .and_then(Value::as_i64)
+            != Some(feed_head)
+        || input.get("feedHead").and_then(Value::as_i64) != Some(feed_head)
+        || input.get("inputDigest").and_then(Value::as_str) != Some(input_digest)
+    {
+        return Err("incremental-freshness-idle-checkpoint-task-invalid".to_owned());
+    }
+    let mut input_payload = input_object.clone();
+    input_payload.remove("inputDigest");
+    if format!("sha256:{}", digest_plan(&Value::Object(input_payload))) != input_digest {
+        return Err("incremental-freshness-idle-checkpoint-task-invalid".to_owned());
+    }
+    let Some(digest_hex) = input_digest.strip_prefix("sha256:") else {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    };
+    let expected_work_key =
+        format!("incremental-freshness:{epoch_id}:{feed_head}:{feed_head}:{digest_hex}");
+    if work_key != expected_work_key {
+        return Err("incremental-freshness-idle-checkpoint-work-key-invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_idle_checkpoint_readiness_outcome(outcome: &Value) -> Result<(), &'static str> {
+    if outcome.get("kind").and_then(Value::as_str) != Some("current-epoch-idle-checkpoint")
+        || outcome.get("version").and_then(Value::as_i64) != Some(1)
+        || outcome.get("affectedEdgeCount").and_then(Value::as_i64) != Some(0)
+        || outcome.get("affectedConsumerCount").and_then(Value::as_i64) != Some(0)
+    {
+        return Err("incremental-freshness-idle-checkpoint-outcome-invalid");
+    }
+    Ok(())
+}
+
+fn validate_idle_checkpoint_readiness_lifecycle(
+    task_count: i64,
+    completed_task_count: i64,
+    completed_attempt_count: i64,
+    running_attempt_count: i64,
+) -> Result<(), &'static str> {
+    if task_count != 1
+        || completed_task_count != 1
+        || completed_attempt_count != 1
+        || running_attempt_count != 0
+    {
+        return Err("incremental-freshness-idle-checkpoint-lifecycle-invalid");
+    }
+    Ok(())
+}
+
+fn incremental_run_lifecycle_predates_epoch(
+    run: &IncrementalReadinessRun,
+    epoch_created_at: chrono::DateTime<chrono::Utc>,
+) -> Result<bool> {
+    let created_at = parse_incremental_readiness_instant(&run.created_at, "createdAt")?;
+    if created_at < epoch_created_at {
+        return Ok(true);
+    }
+    if let Some(started_at) = run.started_at.as_deref() {
+        if parse_incremental_readiness_instant(started_at, "startedAt")? < epoch_created_at {
+            return Ok(true);
+        }
+    }
+    if let Some(completed_at) = run.completed_at.as_deref() {
+        if parse_incremental_readiness_instant(completed_at, "completedAt")? < epoch_created_at {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn is_canonical_instant(value: &str) -> bool {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|parsed| parsed.to_rfc3339_opts(chrono::SecondsFormat::Millis, true) == value)
@@ -2263,6 +2516,7 @@ mod tests {
     use super::*;
     use crate::Database;
     use rusqlite::{params, Connection};
+    use serde_json::json;
     use std::path::Path;
 
     use super::super::restore_rebuild::rebuild_narrative_derived_state_for_project;
@@ -2298,8 +2552,53 @@ mod tests {
             started_at: started_at.map(ToString::to_string),
             completed_at: completed_at.map(ToString::to_string),
             work_key: Some(format!("incremental-freshness:{EPOCH_ID}:0:0:fixture")),
+            spec_json: "{}".to_owned(),
+            spec_digest: "fixture".to_owned(),
+            task_input_json: None,
+            task_count: 1,
+            completed_task_count: 1,
+            completed_attempt_count: 1,
+            running_attempt_count: 0,
             outcome_summary_json: None,
         }
+    }
+
+    fn idle_checkpoint_readiness_metadata() -> (String, String, String, String) {
+        let payload = json!({
+            "kind": "current-epoch-idle-checkpoint",
+            "version": 1,
+            "projectId": PROJECT_ID,
+            "semanticEpochId": EPOCH_ID,
+            "fromSequenceExclusive": 0,
+            "throughSequenceInclusive": 0,
+            "feedHead": 0,
+        });
+        let input_digest = format!("sha256:{}", digest_plan(&payload));
+        let task_input = json!({
+            "kind": "current-epoch-idle-checkpoint",
+            "version": 1,
+            "projectId": PROJECT_ID,
+            "semanticEpochId": EPOCH_ID,
+            "fromSequenceExclusive": 0,
+            "throughSequenceInclusive": 0,
+            "feedHead": 0,
+            "inputDigest": input_digest,
+        });
+        let spec = json!({
+            "kind": "incremental-freshness-idle-checkpoint@1",
+            "inputDigest": input_digest,
+        });
+        let spec_digest = format!("sha256:{}", digest_plan(&spec));
+        let work_key = format!(
+            "incremental-freshness:{EPOCH_ID}:0:0:{}",
+            input_digest.trim_start_matches("sha256:")
+        );
+        (
+            spec.to_string(),
+            spec_digest,
+            task_input.to_string(),
+            work_key,
+        )
     }
 
     #[test]
@@ -2378,6 +2677,232 @@ mod tests {
                 .contains("NEX_C2ZC_INCREMENTAL_RUN_TIMESTAMP_INVALID"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn incremental_readiness_blocks_each_lifecycle_instant_before_epoch() {
+        let epoch_created_at = chrono::DateTime::parse_from_rfc3339("2026-08-20T00:00:10.000Z")
+            .expect("valid epoch instant")
+            .with_timezone(&chrono::Utc);
+        for (label, created_at, started_at, completed_at) in [
+            (
+                "created",
+                "2026-08-20T00:00:09.000Z",
+                "2026-08-20T00:00:11.000Z",
+                "2026-08-20T00:00:12.000Z",
+            ),
+            (
+                "started",
+                "2026-08-20T00:00:11.000Z",
+                "2026-08-20T00:00:09.000Z",
+                "2026-08-20T00:00:12.000Z",
+            ),
+            (
+                "completed",
+                "2026-08-20T00:00:11.000Z",
+                "2026-08-20T00:00:12.000Z",
+                "2026-08-20T00:00:09.000Z",
+            ),
+        ] {
+            let run = incremental_readiness_run(
+                &format!("pre-epoch-{label}"),
+                "completed",
+                created_at,
+                Some(started_at),
+                Some(completed_at),
+            );
+            assert_eq!(
+                incremental_run_lifecycle_predates_epoch(&run, epoch_created_at)
+                    .expect("canonical lifecycle instants"),
+                true,
+                "{label} before the current Epoch must block readiness"
+            );
+        }
+    }
+
+    #[test]
+    fn incremental_readiness_blocks_malformed_lifecycle_instant_before_selection() {
+        let epoch_created_at = chrono::DateTime::parse_from_rfc3339("2026-08-20T00:00:10.000Z")
+            .expect("valid epoch instant")
+            .with_timezone(&chrono::Utc);
+        for (label, created_at, started_at, completed_at) in [
+            (
+                "created",
+                "not-an-instant",
+                "2026-08-20T00:00:11.000Z",
+                "2026-08-20T00:00:12.000Z",
+            ),
+            (
+                "started",
+                "2026-08-20T00:00:11.000Z",
+                "not-an-instant",
+                "2026-08-20T00:00:12.000Z",
+            ),
+            (
+                "completed",
+                "2026-08-20T00:00:11.000Z",
+                "2026-08-20T00:00:12.000Z",
+                "not-an-instant",
+            ),
+        ] {
+            let run = incremental_readiness_run(
+                &format!("malformed-{label}"),
+                "completed",
+                created_at,
+                Some(started_at),
+                Some(completed_at),
+            );
+            assert!(
+                incremental_run_lifecycle_predates_epoch(&run, epoch_created_at).is_err(),
+                "malformed {label} instant must block readiness"
+            );
+        }
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_requires_tagged_zero_width_outcome() {
+        let valid = json!({
+            "kind": "current-epoch-idle-checkpoint",
+            "version": 1,
+            "affectedEdgeCount": 0,
+            "affectedConsumerCount": 0,
+        });
+        assert_eq!(
+            validate_idle_checkpoint_readiness_outcome(&valid),
+            Ok(()),
+            "the producer's zero-width outcome shape must be accepted"
+        );
+
+        let mutations: [(&str, fn(&mut Value)); 4] = [
+            ("kind", |outcome: &mut Value| {
+                outcome["kind"] = json!("incremental-freshness")
+            }),
+            ("version", |outcome: &mut Value| {
+                outcome["version"] = json!(2)
+            }),
+            ("affectedEdgeCount", |outcome: &mut Value| {
+                outcome["affectedEdgeCount"] = json!(1)
+            }),
+            ("affectedConsumerCount", |outcome: &mut Value| {
+                outcome["affectedConsumerCount"] = json!(1)
+            }),
+        ];
+        for (label, mutator) in mutations {
+            let mut mutated = valid.clone();
+            mutator(&mut mutated);
+            assert_eq!(
+                validate_idle_checkpoint_readiness_outcome(&mutated),
+                Err("incremental-freshness-idle-checkpoint-outcome-invalid"),
+                "zero-width outcome mutation {label} must block readiness"
+            );
+        }
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_requires_exact_task_attempt_lifecycle() {
+        let cases = [
+            ("task missing", 0, 0, 0, 0, false),
+            ("task pending", 1, 0, 1, 0, false),
+            ("completed Attempt missing", 1, 1, 0, 0, false),
+            ("completed Attempt duplicated", 1, 1, 2, 0, false),
+            ("running Attempt remains", 1, 1, 1, 1, false),
+            // A retry may leave failed Attempts behind.  Exactly one
+            // completed Attempt and no live Attempt is the valid terminal
+            // shape after the final retry succeeds.
+            ("failed retry plus completed Attempt", 1, 1, 1, 0, true),
+        ];
+        for (
+            label,
+            task_count,
+            completed_task_count,
+            completed_attempt_count,
+            running_attempt_count,
+            expected_valid,
+        ) in cases
+        {
+            let result = validate_idle_checkpoint_readiness_lifecycle(
+                task_count,
+                completed_task_count,
+                completed_attempt_count,
+                running_attempt_count,
+            );
+            assert_eq!(
+                result.is_ok(),
+                expected_valid,
+                "unexpected idle lifecycle validation for {label}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_metadata_is_exactly_bound_to_all_descriptors() {
+        let (spec_json, spec_digest, task_input_json, work_key) =
+            idle_checkpoint_readiness_metadata();
+        assert_eq!(
+            validate_idle_checkpoint_readiness_metadata(
+                PROJECT_ID,
+                EPOCH_ID,
+                0,
+                &work_key,
+                &spec_json,
+                &spec_digest,
+                Some(&task_input_json),
+            ),
+            Ok(()),
+            "the producer's exact spec/task/work-key shape must be accepted"
+        );
+
+        let mutations: [(&str, Box<dyn Fn(&mut Value, &mut String, &mut Value)>); 5] = [
+            (
+                "spec unknown field",
+                Box::new(|spec, spec_digest, _task| {
+                    spec["extra"] = json!("forbidden");
+                    *spec_digest = format!("sha256:{}", digest_plan(spec));
+                }),
+            ),
+            (
+                "spec digest",
+                Box::new(|_spec, spec_digest, _task| *spec_digest = "sha256:bad".to_owned()),
+            ),
+            (
+                "task tag",
+                Box::new(|_spec, _spec_digest, task| {
+                    task["kind"] = json!("incremental-freshness");
+                }),
+            ),
+            (
+                "task digest",
+                Box::new(|_spec, _spec_digest, task| {
+                    task["inputDigest"] = json!("sha256:bad");
+                }),
+            ),
+            ("work key", Box::new(|_spec, _spec_digest, _task| {})),
+        ];
+        for (label, mutate) in mutations {
+            let mut spec = serde_json::from_str::<Value>(&spec_json).expect("valid spec fixture");
+            let mut mutated_spec_digest = spec_digest.clone();
+            let mut task =
+                serde_json::from_str::<Value>(&task_input_json).expect("valid task input fixture");
+            let mut mutated_work_key = work_key.clone();
+            mutate(&mut spec, &mut mutated_spec_digest, &mut task);
+            if label == "work key" {
+                mutated_work_key.push_str(":tampered");
+            }
+            let error = validate_idle_checkpoint_readiness_metadata(
+                PROJECT_ID,
+                EPOCH_ID,
+                0,
+                &mutated_work_key,
+                &spec.to_string(),
+                &mutated_spec_digest,
+                Some(&task.to_string()),
+            )
+            .expect_err("descriptor mutation must block readiness");
+            assert!(
+                error.starts_with("incremental-freshness-idle-checkpoint-"),
+                "unexpected {label} rejection: {error}"
+            );
+        }
     }
 
     fn seed_project(conn: &Connection, project_id: &str) -> anyhow::Result<()> {

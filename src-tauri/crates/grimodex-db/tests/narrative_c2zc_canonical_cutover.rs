@@ -933,9 +933,43 @@ fn seed_cutover_ready_application_with_freshness_state(
     )?;
 
     // Cursor and freshness rows are part of the Verify CAS graph snapshot.
-    // Seed the completed publisher Run before taking that snapshot so the
-    // fixture does not manufacture a digest for a pre-cursor database state.
+    // A zero-width current-Epoch Run is only valid when it has the durable
+    // idle-checkpoint producer shape: exact tagged Task input, matching Run
+    // spec/work key digests, and the tagged zero-count outcome.  Keep the
+    // fixture faithful to that production contract rather than using a
+    // synthetic zero-width outcome that readiness must reject.
+    let idle_payload = json!({
+        "kind": "current-epoch-idle-checkpoint",
+        "version": 1,
+        "projectId": PROJECT_ID,
+        "semanticEpochId": EPOCH_ID,
+        "fromSequenceExclusive": 0,
+        "throughSequenceInclusive": 0,
+        "feedHead": 0,
+    });
+    let idle_input_digest = format!("sha256:{}", digest_plan(&idle_payload));
+    let idle_task_input = json!({
+        "kind": "current-epoch-idle-checkpoint",
+        "version": 1,
+        "projectId": PROJECT_ID,
+        "semanticEpochId": EPOCH_ID,
+        "fromSequenceExclusive": 0,
+        "throughSequenceInclusive": 0,
+        "feedHead": 0,
+        "inputDigest": idle_input_digest,
+    });
+    let idle_spec = json!({
+        "kind": "incremental-freshness-idle-checkpoint@1",
+        "inputDigest": idle_input_digest,
+    });
+    let idle_spec_digest = format!("sha256:{}", digest_plan(&idle_spec));
+    let idle_work_key = format!(
+        "incremental-freshness:{EPOCH_ID}:0:0:{}",
+        idle_input_digest.trim_start_matches("sha256:")
+    );
     let incremental_outcome = json!({
+        "kind": "current-epoch-idle-checkpoint",
+        "version": 1,
         "projectId": PROJECT_ID,
         "runId": BASELINE_FRESHNESS_RUN_ID,
         "fromSequenceExclusive": 0,
@@ -955,17 +989,30 @@ fn seed_cutover_ready_application_with_freshness_state(
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
              status, coverage_json, outcome_summary_json, created_at, completed_at,
              started_at, run_kind, semantic_epoch_id, work_key, consumer_id)
-         VALUES (?1, ?2, 'maintenance', '{}', '{}', 'freshness-c2zc', 'completed',
-                 '{}', ?3, ?4, ?4, ?4, 'freshness-evaluation', ?5, ?6,
+         VALUES (?1, ?2, 'maintenance', '{}', ?3, ?4, 'completed',
+                 '{}', ?5, ?6, ?7, ?8, 'freshness-evaluation', ?9, ?10,
                  'narrative-incremental-freshness/v1')",
         params![
             BASELINE_FRESHNESS_RUN_ID,
             PROJECT_ID,
+            &idle_spec.to_string(),
+            idle_spec_digest,
             incremental_outcome.to_string(),
             NOW,
+            NOW,
+            NOW,
             EPOCH_ID,
-            format!("incremental-freshness:{EPOCH_ID}:0:0:baseline"),
+            idle_work_key,
         ],
+    )?;
+    seed_phase_lifecycle_closure(
+        conn,
+        BASELINE_FRESHNESS_RUN_ID,
+        "incremental-freshness-batch",
+        &idle_task_input.to_string(),
+        NOW,
+        NOW,
+        NOW,
     )?;
 
     // The sealed Verify evidence must be the live graph's own report: the
