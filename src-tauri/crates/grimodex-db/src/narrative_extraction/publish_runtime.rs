@@ -51,7 +51,9 @@ use std::collections::HashSet;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::consumer_identity::{consumer_finding_key, validate_consumer_identity};
+use super::consumer_identity::{
+    consumer_finding_key, is_reserved_semantic_index_consumer_kind, validate_consumer_identity,
+};
 use super::cursor_reservation::acknowledge_cursor_reservation_in_tx;
 use super::dependency_edges::consumer_dependency_set_digest;
 use super::evaluator::{
@@ -107,16 +109,19 @@ fn ensure_edge_belongs_to_project(
     project_id: &str,
     edge_id: &str,
 ) -> anyhow::Result<()> {
-    let owner: Option<String> = conn
+    let edge_identity: Option<(String, String)> = conn
         .query_row(
-            "SELECT project_id FROM narrative_dependency_edges WHERE id = ?1",
+            "SELECT project_id, consumer_kind
+               FROM narrative_dependency_edges WHERE id = ?1",
             params![edge_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    match owner {
-        Some(owner) if owner == project_id => Ok(()),
-        Some(_) => anyhow::bail!(
+    match edge_identity {
+        Some((owner, consumer_kind)) if owner == project_id => {
+            ensure_generic_freshness_target(&consumer_kind)
+        }
+        Some((_, _)) => anyhow::bail!(
             "NEX_PUBLISH_RUNTIME_EDGE_PROJECT_MISMATCH: dependency edge '{edge_id}' does not \
              belong to project '{project_id}'"
         ),
@@ -124,6 +129,14 @@ fn ensure_edge_belongs_to_project(
             "NEX_PUBLISH_RUNTIME_EDGE_MISSING: dependency edge '{edge_id}' was not found"
         ),
     }
+}
+
+fn ensure_generic_freshness_target(consumer_kind: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !is_reserved_semantic_index_consumer_kind(consumer_kind),
+        "NEX_PUBLISH_RUNTIME_RESERVED_CONSUMER: '{consumer_kind}' is not a Generic Freshness target"
+    );
+    Ok(())
 }
 
 /// Upsert one Dependency Edge's latest evaluated outcome into
@@ -216,6 +229,7 @@ pub(crate) fn write_consumer_freshness_in_tx(
 ) -> anyhow::Result<()> {
     anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
     validate_consumer_identity(consumer_kind, consumer_key)?;
+    ensure_generic_freshness_target(consumer_kind)?;
     anyhow::ensure!(
         !semantic_epoch_id.trim().is_empty(),
         "semanticEpochId is required"
@@ -281,6 +295,7 @@ pub(crate) fn seed_consumer_freshness_unknown_in_tx(
         !edge_ids.is_empty(),
         "NEX_PUBLISH_RUNTIME_NO_EDGES: at least one declared Edge is required to seed Generic Freshness"
     );
+    ensure_generic_freshness_target(consumer_kind)?;
     let observation = unknown_edge_observation();
     for edge_id in edge_ids {
         write_edge_state_in_tx(
@@ -328,6 +343,7 @@ pub(crate) fn publish_complete_runless_freshness_in_tx(
     );
     anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
     validate_consumer_identity(consumer_kind, consumer_key)?;
+    ensure_generic_freshness_target(consumer_kind)?;
     anyhow::ensure!(
         !semantic_epoch_id.trim().is_empty(),
         "semanticEpochId is required"
@@ -816,6 +832,7 @@ pub(crate) fn publish_freshness_evaluation_edges_only_in_tx(
     anyhow::ensure!(!run_id.trim().is_empty(), "runId is required");
     anyhow::ensure!(!consumer_kind.trim().is_empty(), "consumerKind is required");
     anyhow::ensure!(!consumer_key.trim().is_empty(), "consumerKey is required");
+    ensure_generic_freshness_target(consumer_kind)?;
     anyhow::ensure!(
         !semantic_epoch_id.trim().is_empty(),
         "semanticEpochId is required"
@@ -1160,6 +1177,121 @@ mod tests {
             |row| row.get(0),
         )
         .expect("count findings")
+    }
+
+    #[test]
+    fn publisher_rejects_reserved_semantic_index_before_writing_generic_state() {
+        let db = test_db();
+        let edge_id = db
+            .with_conn(|conn| {
+                let edge_id = seed_edge(
+                    conn,
+                    "project-1",
+                    "semantic-index",
+                    "lexical",
+                    "project:scene:scene-live",
+                );
+                let epoch_id = seed_epoch(conn, "project-1");
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edge_states
+                        (edge_id, project_id, evidence_freshness, reason_code, build_action,
+                         evaluated_at_epoch_id, evaluated_at)
+                     VALUES (?1, 'project-1', 'stale', 'source-revision-changed',
+                             'rebuild-required', ?2, '2026-08-15T00:00:00.000Z')",
+                    params![edge_id, epoch_id],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_consumer_freshness
+                        (project_id, consumer_kind, consumer_key, evidence_freshness,
+                         build_action, semantic_epoch_id, last_evaluated_run_id, updated_at)
+                     VALUES ('project-1', 'semantic-index', 'lexical', 'stale',
+                             'rebuild-required', ?1, 'previous-run', '2026-08-15T00:00:00.000Z')",
+                    params![epoch_id],
+                )?;
+                Ok::<_, anyhow::Error>(edge_id)
+            })
+            .expect("seed reserved publisher fixture");
+
+        let error = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    let epoch_id =
+                        super::super::semantic_epoch::get_current_epoch(conn, "project-1")?
+                            .ok_or_else(|| anyhow::anyhow!("fixture has no epoch"))?
+                            .id;
+                    publish_freshness_evaluation_edges_only_in_tx(
+                        conn,
+                        "project-1",
+                        "semantic-index-rebuild-run",
+                        "semantic-index",
+                        "lexical",
+                        &[(edge_id.clone(), stale())],
+                        &epoch_id,
+                        "2026-08-15T00:00:01.000Z",
+                    )
+                })
+            })
+            .expect_err("reserved Semantic Index must never enter the Generic publisher");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_PUBLISH_RUNTIME_RESERVED_CONSUMER"),
+            "unexpected reserved publisher rejection: {error:#}"
+        );
+
+        db.with_conn(|conn| {
+            let edge_state: (String, Option<String>, String, String, String) = conn.query_row(
+                "SELECT evidence_freshness, reason_code, build_action,
+                        evaluated_at_epoch_id, evaluated_at
+                   FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                params![edge_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+            assert_eq!(
+                edge_state,
+                (
+                    "stale".to_string(),
+                    Some("source-revision-changed".to_string()),
+                    "rebuild-required".to_string(),
+                    conn.query_row(
+                        "SELECT semantic_epoch_id FROM narrative_consumer_freshness
+                          WHERE project_id = 'project-1' AND consumer_kind = 'semantic-index'
+                            AND consumer_key = 'lexical'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )?,
+                    "2026-08-15T00:00:00.000Z".to_string(),
+                )
+            );
+            let freshness: (String, String, Option<String>, String) = conn.query_row(
+                "SELECT evidence_freshness, build_action, last_evaluated_run_id, updated_at
+                   FROM narrative_consumer_freshness
+                  WHERE project_id = 'project-1' AND consumer_kind = 'semantic-index'
+                    AND consumer_key = 'lexical'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(
+                freshness,
+                (
+                    "stale".to_string(),
+                    "rebuild-required".to_string(),
+                    Some("previous-run".to_string()),
+                    "2026-08-15T00:00:00.000Z".to_string(),
+                )
+            );
+            assert_eq!(finding_count(conn, "project-1"), 0);
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("reserved publisher rejection must leave state untouched");
     }
 
     #[test]

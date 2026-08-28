@@ -1158,6 +1158,72 @@ fn find_existing_application_edge(
     .map_err(Into::into)
 }
 
+/// A completed Backfill from a superseded Epoch can be the Legacy boundary
+/// for the current Epoch, but only when the evidence is unambiguously older
+/// than the current restore boundary. The maintenance planner already owns
+/// the historical fallback selection; this helper only proves that the
+/// selected marker names an earlier Epoch and completed before the current
+/// Epoch was minted. In particular, a future/imported Epoch or a marker that
+/// completed after the restore is never treated as historical evidence.
+fn historical_backfill_precedes_current_epoch(
+    conn: &Connection,
+    project_id: &str,
+    backfill_epoch_id: &str,
+    current_epoch_id: &str,
+    backfill_completed_at: &str,
+) -> Result<bool> {
+    if backfill_epoch_id == current_epoch_id {
+        return Ok(false);
+    }
+    let historical_epoch: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT epoch_number, created_at
+               FROM narrative_semantic_epochs
+              WHERE project_id = ?1 AND id = ?2",
+            params![project_id, backfill_epoch_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let current_epoch: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT epoch_number, created_at
+               FROM narrative_semantic_epochs
+              WHERE project_id = ?1 AND id = ?2",
+            params![project_id, current_epoch_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (
+        Some((historical_number, historical_created_at)),
+        Some((current_number, current_created_at)),
+    ) = (historical_epoch, current_epoch)
+    else {
+        return Ok(false);
+    };
+    let Ok(backfill_completed_at) =
+        super::legacy_backfill::parse_maintenance_instant(backfill_completed_at)
+    else {
+        return Ok(false);
+    };
+    let Ok(historical_created_at) =
+        super::legacy_backfill::parse_maintenance_instant(&historical_created_at)
+    else {
+        return Ok(false);
+    };
+    let Ok(current_created_at) =
+        super::legacy_backfill::parse_maintenance_instant(&current_created_at)
+    else {
+        return Ok(false);
+    };
+    // `epoch_number` is the durable monotonic boundary; the timestamp checks
+    // close both imported/future-evidence holes without changing planner
+    // selection semantics. A marker cannot complete before its own Epoch was
+    // minted, nor after the current restore Epoch was minted.
+    Ok(historical_number < current_number
+        && historical_created_at <= backfill_completed_at
+        && backfill_completed_at < current_created_at)
+}
+
 fn inspect_backfill_gate(
     conn: &Connection,
     project_id: &str,
@@ -1180,9 +1246,6 @@ fn inspect_backfill_gate(
             ReadinessGate::blocked("legacy-backfill-not-completed")
         });
     }
-    if run.semantic_epoch_id.as_deref() != Some(epoch_id) {
-        return Ok(ReadinessGate::blocked("legacy-backfill-epoch-mismatch"));
-    }
     if load_completed_maintenance_run_in_tx(conn, &run.run_id).is_err() {
         return Ok(ReadinessGate::blocked("legacy-backfill-lifecycle-invalid"));
     }
@@ -1201,6 +1264,23 @@ fn inspect_backfill_gate(
     )?;
     if !marker_valid {
         return Ok(ReadinessGate::blocked("legacy-backfill-marker-invalid"));
+    }
+    if run.semantic_epoch_id.as_deref() != Some(epoch_id) {
+        let Some(backfill_epoch_id) = run.semantic_epoch_id.as_deref() else {
+            return Ok(ReadinessGate::blocked("legacy-backfill-epoch-mismatch"));
+        };
+        let Some(backfill_completed_at) = run.completed_at.as_deref() else {
+            return Ok(ReadinessGate::blocked("legacy-backfill-epoch-mismatch"));
+        };
+        if !historical_backfill_precedes_current_epoch(
+            conn,
+            project_id,
+            backfill_epoch_id,
+            epoch_id,
+            backfill_completed_at,
+        )? {
+            return Ok(ReadinessGate::blocked("legacy-backfill-epoch-mismatch"));
+        }
     }
     Ok(ReadinessGate::passed())
 }
@@ -1601,12 +1681,57 @@ fn inspect_phase_lifecycle_gate(
             "NEX_C2ZC_PHASE_LIFECYCLE_NOT_COMPLETED: {phase} Run '{}' is not completed",
             run.run_id
         );
-        anyhow::ensure!(
-            run.semantic_epoch_id.as_deref() == Some(epoch_id),
-            "NEX_C2ZC_PHASE_LIFECYCLE_EPOCH_MISMATCH: {phase} Run '{}' is not current",
-            run.run_id
-        );
+        if run.semantic_epoch_id.as_deref() != Some(epoch_id) {
+            anyhow::ensure!(
+                phase == "backfill",
+                "NEX_C2ZC_PHASE_LIFECYCLE_EPOCH_MISMATCH: {phase} Run '{}' is not current",
+                run.run_id
+            );
+            let backfill_epoch_id = run.semantic_epoch_id.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_C2ZC_PHASE_LIFECYCLE_EPOCH_MISMATCH: backfill Run '{}' has no Epoch",
+                    run.run_id
+                )
+            })?;
+            let backfill_completed_at = run.completed_at.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_C2ZC_PHASE_LIFECYCLE_EPOCH_MISMATCH: backfill Run '{}' has no completion instant",
+                    run.run_id
+                )
+            })?;
+            anyhow::ensure!(
+                historical_backfill_precedes_current_epoch(
+                    conn,
+                    project_id,
+                    backfill_epoch_id,
+                    epoch_id,
+                    backfill_completed_at,
+                )?,
+                "NEX_C2ZC_PHASE_LIFECYCLE_EPOCH_MISMATCH: backfill Run '{}' is not a historical boundary before the current Epoch",
+                run.run_id
+            );
+        }
         let handle = load_completed_maintenance_run_in_tx(conn, &run.run_id)?;
+        if phase == "backfill" {
+            let marker_valid = is_valid_completed_backfill_marker(
+                conn,
+                project_id,
+                &CompletedBackfillMarker {
+                    run_kind: &run.run_kind,
+                    status: &run.status,
+                    spec_json: run.spec_json.as_deref(),
+                    semantic_epoch_id: run.semantic_epoch_id.as_deref(),
+                    work_key: run.work_key.as_deref(),
+                    completed_at: run.completed_at.as_deref(),
+                    outcome_summary_json: run.outcome_summary_json.as_deref(),
+                },
+            )?;
+            anyhow::ensure!(
+                marker_valid,
+                "NEX_C2ZC_PHASE_LIFECYCLE_BACKFILL_MARKER_INVALID: Run '{}' is not a canonical completed Backfill marker",
+                run.run_id
+            );
+        }
         let (task_started_at, completed_at): (String, String) = conn.query_row(
             "SELECT t.started_at, r.completed_at
                FROM narrative_extraction_runs r
@@ -2269,6 +2394,197 @@ mod tests {
             params![APPLICATION_ID, COMMIT_ID],
         )?;
         Ok(())
+    }
+
+    #[test]
+    fn historical_v3_backfill_is_a_valid_boundary_for_current_epoch_readiness() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let backfill_spec_digest = format!(
+                "sha256:{}",
+                digest_plan(&serde_json::json!({
+                    "backfillAlgorithmVersion": "3"
+                }))
+            );
+            let rebuild_spec_digest = format!("sha256:{}", digest_plan(&serde_json::json!({})));
+            let verify_spec_digest = format!(
+                "sha256:{}",
+                digest_plan(&serde_json::json!({
+                    "verifyContractVersion": VERIFY_CONTRACT_VERSION
+                }))
+            );
+            conn.execute(
+                "UPDATE narrative_semantic_epochs
+                    SET epoch_number = 1, reason = 'restore',
+                        created_at = '2026-08-20T00:00:02.000Z'
+                  WHERE id = ?1",
+                params![EPOCH_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-c2z-old', ?1, 0, 'initial',
+                         '2026-08-19T00:00:00.000Z')",
+                params![PROJECT_ID],
+            )?;
+
+            let backfill_outcome = serde_json::json!({
+                "maintenancePhase": "backfill-complete",
+                "backfillAlgorithmVersion": "3",
+                "semanticEpochId": "epoch-c2z-old",
+                "summary": {
+                    "epoch_created": false,
+                    "contributions_created": 0,
+                    "edges_created": 0,
+                    "applications_without_run_id": 0
+                }
+            });
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET spec_json = '{\"backfillAlgorithmVersion\":\"3\"}',
+                        spec_digest = ?1,
+                        status = 'completed',
+                        created_at = '2026-08-19T00:00:00.000Z',
+                        started_at = '2026-08-19T00:00:00.001Z',
+                        completed_at = '2026-08-19T00:00:00.002Z',
+                        outcome_summary_json = ?2,
+                        semantic_epoch_id = 'epoch-c2z-old',
+                        work_key = 'legacy-dependency-backfill:v3'
+                  WHERE id = ?3",
+                params![backfill_spec_digest, backfill_outcome.to_string(), RUN_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_extraction_tasks
+                    (id, run_id, task_kind, status, input_json, attempt_count,
+                     created_at, started_at, completed_at)
+                 VALUES ('historical-backfill-task', ?1, 'maintenance-backfill',
+                         'completed', '{\"backfillAlgorithmVersion\":\"3\"}', 1,
+                         '2026-08-19T00:00:00.000Z',
+                         '2026-08-19T00:00:00.001Z',
+                         '2026-08-19T00:00:00.002Z')",
+                params![RUN_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_extraction_attempts
+                    (id, task_id, attempt_number, status, started_at, completed_at)
+                 VALUES ('historical-backfill-attempt', 'historical-backfill-task',
+                         1, 'completed', '2026-08-19T00:00:00.001Z',
+                         '2026-08-19T00:00:00.002Z')",
+                [],
+            )?;
+
+            for (run_id, run_kind, work_key, created_at, started_at, completed_at, task_kind) in [
+                (
+                    "current-rebuild",
+                    "semantic-index-rebuild",
+                    "dependency-rebuild-derived",
+                    "2026-08-20T00:00:03.000Z",
+                    "2026-08-20T00:00:04.000Z",
+                    "2026-08-20T00:00:05.000Z",
+                    "maintenance-semantic-index-rebuild",
+                ),
+                (
+                    "current-verify",
+                    "dependency-verify",
+                    "dependency-verify:epoch-c2z",
+                    "2026-08-20T00:00:06.000Z",
+                    "2026-08-20T00:00:07.000Z",
+                    "2026-08-20T00:00:08.000Z",
+                    "maintenance-dependency-verify",
+                ),
+            ] {
+                let phase_spec = if run_kind == "semantic-index-rebuild" {
+                    "{}".to_string()
+                } else {
+                    format!(r#"{{"verifyContractVersion":"{VERIFY_CONTRACT_VERSION}"}}"#)
+                };
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json,
+                         spec_digest, status, coverage_json, created_at, started_at,
+                         completed_at, run_kind, semantic_epoch_id, work_key)
+                     VALUES (?1, ?2, 'maintenance', '{}', ?3, ?4,
+                             'completed', '{}', ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        run_id,
+                        PROJECT_ID,
+                        phase_spec.as_str(),
+                        if run_kind == "semantic-index-rebuild" {
+                            rebuild_spec_digest.as_str()
+                        } else {
+                            verify_spec_digest.as_str()
+                        },
+                        created_at,
+                        started_at,
+                        completed_at,
+                        run_kind,
+                        EPOCH_ID,
+                        work_key,
+                    ],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_extraction_tasks
+                        (id, run_id, task_kind, status, input_json, attempt_count,
+                         created_at, started_at, completed_at)
+                     VALUES (?1, ?2, ?3, 'completed', ?4, 1, ?5, ?6, ?7)",
+                    params![
+                        format!("{run_id}-task"),
+                        run_id,
+                        task_kind,
+                        phase_spec.as_str(),
+                        created_at,
+                        started_at,
+                        completed_at,
+                    ],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_extraction_attempts
+                        (id, task_id, attempt_number, status, started_at, completed_at)
+                     VALUES (?1, ?2, 1, 'completed', ?3, ?4)",
+                    params![
+                        format!("{run_id}-attempt"),
+                        format!("{run_id}-task"),
+                        started_at,
+                        completed_at,
+                    ],
+                )?;
+            }
+
+            let backfill = inspect_backfill_gate(conn, PROJECT_ID, Some(EPOCH_ID))?;
+            assert_eq!(
+                backfill.state,
+                ReadinessState::Passed,
+                "a valid historical Backfill is the completed Legacy boundary"
+            );
+            let lifecycle = inspect_phase_lifecycle_gate(conn, PROJECT_ID, Some(EPOCH_ID))?;
+            assert_eq!(
+                lifecycle.state,
+                ReadinessState::Passed,
+                "Backfill -> current Rebuild -> current confirmation Verify is valid"
+            );
+
+            // The historical marker must also be causally after the Epoch it
+            // names. Moving that Epoch past the marker is fail-closed even
+            // though the marker and lifecycle rows remain otherwise valid.
+            conn.execute(
+                "UPDATE narrative_semantic_epochs
+                    SET created_at = '2026-08-19T00:00:00.003Z'
+                  WHERE id = 'epoch-c2z-old'",
+                [],
+            )?;
+            assert_eq!(
+                inspect_backfill_gate(conn, PROJECT_ID, Some(EPOCH_ID))?.state,
+                ReadinessState::Blocked,
+                "a Backfill completed before its historical Epoch was minted must block"
+            );
+            assert_eq!(
+                inspect_phase_lifecycle_gate(conn, PROJECT_ID, Some(EPOCH_ID))?.state,
+                ReadinessState::Blocked,
+                "phase lifecycle must reject the same causal inversion"
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("historical Backfill must satisfy current-epoch readiness");
     }
 
     fn seed_legacy_freshness_and_dependency(conn: &Connection, status: &str) {

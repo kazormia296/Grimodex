@@ -17,7 +17,9 @@ use grimodex_core::narrative_dependency::{
     DependencyEffectInput, SourceChangeClass,
 };
 
-use super::consumer_identity::{is_declared_consumer_kind, owning_run_id_for_consumer};
+use super::consumer_identity::{
+    is_declared_consumer_kind, is_reserved_semantic_index_consumer_kind, owning_run_id_for_consumer,
+};
 use super::declaration_storage::{
     list_dependency_declaration_head_keys_in_tx, read_active_dependency_declaration_set_in_tx,
     ActiveDependencyDeclarationSetRead,
@@ -1226,6 +1228,20 @@ fn rebuild_derived_state_edges_in_project(
                 let edges =
                     find_edges_by_consumer(conn, project_id, &consumer_kind, &consumer_key)?;
                 if edges.is_empty() {
+                    return Ok(());
+                }
+                if is_reserved_semantic_index_consumer_kind(&consumer_kind) {
+                    // Semantic Index metadata, D1, and its V1 Edge graph are
+                    // a reserved manual-terminal surface. Rebuild-Derived
+                    // must not reinterpret it as a Generic Freshness
+                    // Consumer, including when an older/newer build left a
+                    // mixed graph behind.
+                    tracing::debug!(
+                        target: "narrative.rebuild",
+                        consumer_kind = %consumer_kind,
+                        consumer_key = %consumer_key,
+                        "NEX_RESERVED_SEMANTIC_INDEX_REBUILD_SKIPPED"
+                    );
                     return Ok(());
                 }
                 // Two separate questions, deliberately not one. Whether the
@@ -6159,6 +6175,290 @@ mod tests {
             ],
             "unknown Consumers must be invalidated while supported Consumers are evaluated"
         );
+    }
+
+    #[test]
+    fn rebuild_skips_reserved_semantic_index_without_mutating_its_v1_or_derived_state() {
+        use crate::narrative_extraction::{
+            write_dependency_declaration_set, DependencyDeclaration,
+            DependencyDeclarationSetRequest,
+        };
+        use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
+
+        let db = test_db();
+        let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
+        seed_run_edge(
+            &db,
+            "project-1",
+            "run-supported",
+            "project:scene:scene-live",
+        );
+        let semantic_existing_edge_id = db
+            .with_conn(|conn| {
+                record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    "semantic-index",
+                    "lexical-existing",
+                    "project:scene:scene-live",
+                    r#"["/body"]"#,
+                    None,
+                    None,
+                    "2026-08-15T00:00:00.000Z",
+                )
+            })
+            .expect("record existing reserved Semantic Index edge");
+        let semantic_absent_edge_id = db
+            .with_conn(|conn| {
+                record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    "semantic-index",
+                    "lexical-absent",
+                    "project:scene:scene-live",
+                    r#"["/content"]"#,
+                    None,
+                    None,
+                    "2026-08-15T00:00:01.000Z",
+                )
+            })
+            .expect("record absent-state reserved Semantic Index edge");
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_index_metadata
+                    (project_id, index_key, generation, built_at, source_digest,
+                     dependency_set_digest, dirty_cache_flag)
+                 VALUES ('project-1', 'lexical', 7, '2026-08-15T00:00:00.000Z',
+                         'source-before', 'dependency-before', 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_dependency_edge_states
+                    (edge_id, project_id, evidence_freshness, reason_code, build_action,
+                     evaluated_at_epoch_id, evaluated_at)
+                 VALUES (?1, 'project-1', 'stale', 'source-revision-changed',
+                         'rebuild-required', ?2, '2026-08-15T00:00:02.000Z')",
+                params![semantic_existing_edge_id, epoch_id],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness,
+                     build_action, semantic_epoch_id, last_evaluated_run_id, updated_at)
+                 VALUES ('project-1', 'semantic-index', 'lexical-existing', 'stale',
+                         'rebuild-required', ?1, 'previous-run', '2026-08-15T00:00:02.000Z')",
+                params![epoch_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed reserved metadata and existing state");
+
+        write_dependency_declaration_set(
+            &db,
+            DependencyDeclarationSetRequest {
+                project_id: "project-1".to_string(),
+                consumer_kind: "semantic-index".to_string(),
+                consumer_key: "lexical-existing".to_string(),
+                producer_id: "semantic-index-test-producer".to_string(),
+                producer_generation: 1,
+                expected_head_version: 0,
+                declarations: vec![DependencyDeclaration {
+                    source_object_identity: "project:scene:scene-live".to_string(),
+                    role: DependencyRole::RankingOnly,
+                    selector: DependencySelector::WholeSource,
+                }],
+                created_at: "2026-08-15T00:00:02.000Z".to_string(),
+            },
+        )
+        .expect("seed reserved D1 declaration");
+
+        let before = db
+            .with_conn(|conn| {
+                let existing_state: (String, Option<String>, String, String, String) = conn
+                    .query_row(
+                        "SELECT evidence_freshness, reason_code, build_action,
+                                evaluated_at_epoch_id, evaluated_at
+                           FROM narrative_dependency_edge_states
+                          WHERE edge_id = ?1",
+                        params![semantic_existing_edge_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
+                    )?;
+                let existing_freshness: (String, String, String, Option<String>, String) = conn
+                    .query_row(
+                        "SELECT evidence_freshness, build_action, semantic_epoch_id,
+                                last_evaluated_run_id, updated_at
+                           FROM narrative_consumer_freshness
+                          WHERE project_id = 'project-1'
+                            AND consumer_kind = 'semantic-index'
+                            AND consumer_key = 'lexical-existing'",
+                        [],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
+                    )?;
+                let v1_read_set: String = conn.query_row(
+                    "SELECT read_set_json FROM narrative_dependency_edges WHERE id = ?1",
+                    params![semantic_existing_edge_id],
+                    |row| row.get(0),
+                )?;
+                let metadata: (i64, String, String, i64) = conn.query_row(
+                    "SELECT generation, source_digest, dependency_set_digest, dirty_cache_flag
+                       FROM narrative_semantic_index_metadata
+                      WHERE project_id = 'project-1' AND index_key = 'lexical'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                let d1_head: Option<(String, String, i64, i64, String)> = conn
+                    .query_row(
+                        "SELECT active_declaration_set_id, producer_id, producer_generation,
+                                version, updated_at
+                           FROM narrative_dependency_declaration_heads
+                          WHERE project_id = 'project-1'
+                            AND consumer_kind = 'semantic-index'
+                            AND consumer_key = 'lexical-existing'",
+                        [],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                Ok::<_, anyhow::Error>((
+                    existing_state,
+                    existing_freshness,
+                    v1_read_set,
+                    metadata,
+                    d1_head,
+                ))
+            })
+            .expect("capture reserved state before rebuild");
+
+        let outcome = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("rebuild must continue with a reserved Consumer present");
+        let RebuildDerivedStateOutcome::Ran { summary, .. } = outcome else {
+            panic!("expected a fresh Rebuild-Derived Run");
+        };
+        assert_eq!(summary.consumers_evaluated, 1);
+        assert_eq!(summary.edges_evaluated, 1);
+        assert_eq!(summary.consumers_skipped_unresolvable_scope, 0);
+        assert_eq!(summary.edges_skipped_unresolvable_scope, 0);
+
+        db.with_conn(|conn| {
+            let after_state: (String, Option<String>, String, String, String) = conn.query_row(
+                "SELECT evidence_freshness, reason_code, build_action,
+                        evaluated_at_epoch_id, evaluated_at
+                   FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                params![semantic_existing_edge_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+            assert_eq!(after_state, before.0);
+            let after_freshness: (String, String, String, Option<String>, String) = conn
+                .query_row(
+                    "SELECT evidence_freshness, build_action, semantic_epoch_id,
+                            last_evaluated_run_id, updated_at
+                       FROM narrative_consumer_freshness
+                      WHERE project_id = 'project-1'
+                        AND consumer_kind = 'semantic-index'
+                        AND consumer_key = 'lexical-existing'",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )?;
+            assert_eq!(after_freshness, before.1);
+            let absent_state_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                params![semantic_absent_edge_id],
+                |row| row.get(0),
+            )?;
+            let absent_freshness_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_consumer_freshness
+                  WHERE project_id = 'project-1' AND consumer_kind = 'semantic-index'
+                    AND consumer_key = 'lexical-absent'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(absent_state_count, 0);
+            assert_eq!(absent_freshness_count, 0);
+            let v1_read_set: String = conn.query_row(
+                "SELECT read_set_json FROM narrative_dependency_edges WHERE id = ?1",
+                params![semantic_existing_edge_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(v1_read_set, before.2);
+            let metadata: (i64, String, String, i64) = conn.query_row(
+                "SELECT generation, source_digest, dependency_set_digest, dirty_cache_flag
+                   FROM narrative_semantic_index_metadata
+                  WHERE project_id = 'project-1' AND index_key = 'lexical'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(metadata, before.3);
+            let d1_head: Option<(String, String, i64, i64, String)> = conn
+                .query_row(
+                    "SELECT active_declaration_set_id, producer_id, producer_generation,
+                            version, updated_at
+                       FROM narrative_dependency_declaration_heads
+                      WHERE project_id = 'project-1'
+                        AND consumer_kind = 'semantic-index'
+                        AND consumer_key = 'lexical-existing'",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            assert_eq!(d1_head, before.4);
+            let supported_freshness: String = conn.query_row(
+                "SELECT evidence_freshness FROM narrative_consumer_freshness
+                  WHERE project_id = 'project-1' AND consumer_kind = ?1
+                    AND consumer_key = 'run-supported'",
+                params![RUN_CONSUMER_KIND],
+                |row| row.get(0),
+            )?;
+            assert_eq!(supported_freshness, "stale");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("reserved state must remain unchanged after rebuild");
     }
 
     #[test]

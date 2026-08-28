@@ -25,7 +25,9 @@ use sha2::{Digest, Sha256};
 use super::change_feed::{
     get_changes_since, NarrativeChangeEventRecord, CANONICAL_TEXT_NORMALIZER_VERSION,
 };
-use super::consumer_identity::{is_declared_consumer_kind, APPLICATION_CONSUMER_KIND};
+use super::consumer_identity::{
+    is_declared_consumer_kind, is_reserved_semantic_index_consumer_kind, APPLICATION_CONSUMER_KIND,
+};
 use super::cursor_reservation::{
     acknowledge_cursor_reservation_in_tx, release_cursor_reservation_in_tx,
     reserve_cursor_range_in_tx,
@@ -1327,6 +1329,12 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
             renew_batch_lease(db, batch)?;
         }
         edge_declaration_guards.push(edge.clone());
+        if is_reserved_semantic_index_consumer_kind(&edge.consumer_kind) {
+            // The Semantic Index owns its metadata/D1/V1 surface. Keep the
+            // Edge declaration CAS guard, but do not route this reserved Edge
+            // through the Generic Freshness evaluator or publisher.
+            continue;
+        }
         if !is_declared_consumer_kind(&edge.consumer_kind) {
             // A forward-version or reserved Consumer kind has no evaluator in
             // this build. Publish an explicit Unknown/Manual observation so a
@@ -2907,6 +2915,7 @@ mod tests {
     use super::super::declaration_storage::{
         write_dependency_declaration_set, DependencyDeclaration, DependencyDeclarationSetRequest,
     };
+    use super::super::dependency_edges::record_dependency_edge_in_tx;
     use super::*;
     use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 
@@ -3343,6 +3352,226 @@ mod tests {
             "unexpected publish failure: {error:#}"
         );
         assert_publish_rolled_back(&db, &batch);
+    }
+
+    #[test]
+    fn incremental_feed_skips_reserved_semantic_index_without_mutating_any_surface() {
+        let db = fixture_db();
+        let (semantic_existing_edge_id, semantic_absent_edge_id) = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_semantic_index_metadata
+                        (project_id, index_key, generation, built_at, source_digest,
+                         dependency_set_digest, dirty_cache_flag)
+                     VALUES (?1, 'lexical', 7, '2026-08-15T00:00:00.000Z',
+                             'source-before', 'dependency-before', 0)",
+                    params![PROJECT_ID],
+                )?;
+                let existing = record_dependency_edge_in_tx(
+                    conn,
+                    PROJECT_ID,
+                    "semantic-index",
+                    "lexical-existing",
+                    &format!("project:scene:{SCENE_ID}"),
+                    r#"["/body"]"#,
+                    None,
+                    None,
+                    OCCURRED_AT,
+                )?;
+                let absent = record_dependency_edge_in_tx(
+                    conn,
+                    PROJECT_ID,
+                    "semantic-index",
+                    "lexical-absent",
+                    &format!("project:scene:{SCENE_ID}"),
+                    r#"["/content"]"#,
+                    None,
+                    None,
+                    OCCURRED_AT,
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edge_states
+                        (edge_id, project_id, evidence_freshness, reason_code, build_action,
+                         evaluated_at_epoch_id, evaluated_at)
+                     VALUES (?1, ?2, 'stale', 'source-revision-changed',
+                             'rebuild-required', ?3, '2026-08-15T00:00:02.000Z')",
+                    params![existing, PROJECT_ID, EPOCH_ID],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_consumer_freshness
+                        (project_id, consumer_kind, consumer_key, evidence_freshness,
+                         build_action, semantic_epoch_id, last_evaluated_run_id, updated_at)
+                     VALUES (?1, 'semantic-index', 'lexical-existing', 'stale',
+                             'rebuild-required', ?2, 'previous-run', '2026-08-15T00:00:02.000Z')",
+                    params![PROJECT_ID, EPOCH_ID],
+                )?;
+                Ok::<_, anyhow::Error>((existing, absent))
+            })
+            .expect("seed reserved Semantic Index Feed fixture");
+
+        let before = db
+            .with_conn(|conn| {
+                let existing_state: (String, Option<String>, String, String, String) = conn
+                    .query_row(
+                        "SELECT evidence_freshness, reason_code, build_action,
+                                evaluated_at_epoch_id, evaluated_at
+                           FROM narrative_dependency_edge_states
+                          WHERE edge_id = ?1",
+                        params![semantic_existing_edge_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
+                    )?;
+                let existing_freshness: (String, String, String, Option<String>, String) = conn
+                    .query_row(
+                        "SELECT evidence_freshness, build_action, semantic_epoch_id,
+                                last_evaluated_run_id, updated_at
+                           FROM narrative_consumer_freshness
+                          WHERE project_id = ?1 AND consumer_kind = 'semantic-index'
+                            AND consumer_key = 'lexical-existing'",
+                        params![PROJECT_ID],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
+                    )?;
+                let edge_snapshot: (String, String) = conn.query_row(
+                    "SELECT consumer_key, read_set_json
+                       FROM narrative_dependency_edges WHERE id = ?1",
+                    params![semantic_existing_edge_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                let metadata: (i64, String, String, i64) = conn.query_row(
+                    "SELECT generation, source_digest, dependency_set_digest, dirty_cache_flag
+                       FROM narrative_semantic_index_metadata
+                      WHERE project_id = ?1 AND index_key = 'lexical'",
+                    params![PROJECT_ID],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                let finding_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_maintenance_finding_observations
+                      WHERE project_id = ?1 AND finding_key LIKE 'semantic-index:%'",
+                    params![PROJECT_ID],
+                    |row| row.get(0),
+                )?;
+                Ok::<_, anyhow::Error>((
+                    existing_state,
+                    existing_freshness,
+                    edge_snapshot,
+                    metadata,
+                    finding_count,
+                ))
+            })
+            .expect("capture reserved surfaces before Feed cycle");
+
+        let outcome = run_incremental_freshness_cycle(&db).expect("run incremental Feed cycle");
+        let IncrementalFreshnessCycleOutcome::Processed(summary) = outcome else {
+            panic!("the fixture Feed must produce one processed cycle");
+        };
+        assert_eq!(summary.affected_edge_count, 1);
+        assert_eq!(summary.affected_consumer_count, 1);
+
+        db.with_conn(|conn| {
+            let after_state: (String, Option<String>, String, String, String) = conn.query_row(
+                "SELECT evidence_freshness, reason_code, build_action,
+                        evaluated_at_epoch_id, evaluated_at
+                   FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                params![semantic_existing_edge_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+            assert_eq!(after_state, before.0);
+            let after_freshness: (String, String, String, Option<String>, String) = conn
+                .query_row(
+                    "SELECT evidence_freshness, build_action, semantic_epoch_id,
+                            last_evaluated_run_id, updated_at
+                       FROM narrative_consumer_freshness
+                      WHERE project_id = ?1 AND consumer_kind = 'semantic-index'
+                        AND consumer_key = 'lexical-existing'",
+                    params![PROJECT_ID],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )?;
+            assert_eq!(after_freshness, before.1);
+            let absent_edge_state_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                params![semantic_absent_edge_id],
+                |row| row.get(0),
+            )?;
+            let absent_freshness_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_consumer_freshness
+                  WHERE project_id = ?1 AND consumer_kind = 'semantic-index'
+                    AND consumer_key = 'lexical-absent'",
+                params![PROJECT_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(absent_edge_state_count, 0);
+            assert_eq!(absent_freshness_count, 0);
+            let edge_snapshot: (String, String) = conn.query_row(
+                "SELECT consumer_key, read_set_json
+                   FROM narrative_dependency_edges WHERE id = ?1",
+                params![semantic_existing_edge_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(edge_snapshot, before.2);
+            let metadata: (i64, String, String, i64) = conn.query_row(
+                "SELECT generation, source_digest, dependency_set_digest, dirty_cache_flag
+                   FROM narrative_semantic_index_metadata
+                  WHERE project_id = ?1 AND index_key = 'lexical'",
+                params![PROJECT_ID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(metadata, before.3);
+            let finding_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_maintenance_finding_observations
+                  WHERE project_id = ?1 AND finding_key LIKE 'semantic-index:%'",
+                params![PROJECT_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(finding_count, before.4);
+            let supported_freshness: String = conn.query_row(
+                "SELECT evidence_freshness FROM narrative_consumer_freshness
+                  WHERE project_id = ?1 AND consumer_kind = 'narrative-extraction-run'
+                    AND consumer_key = ?2",
+                params![PROJECT_ID, CONSUMER_RUN_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(supported_freshness, "stale");
+            let acknowledged: i64 = conn.query_row(
+                "SELECT acknowledged_through_sequence FROM narrative_change_cursors
+                  WHERE project_id = ?1 AND consumer_id = ?2",
+                params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(acknowledged, 1, "Feed cycle must acknowledge its range");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("reserved surfaces must remain unchanged after Feed cycle");
     }
 
     #[test]
