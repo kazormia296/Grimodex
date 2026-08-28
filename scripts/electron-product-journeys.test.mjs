@@ -907,6 +907,96 @@ test("trusted restore reload allows only the exact Ubuntu Xvfb Skia mailbox line
   assert.equal(diagnostics.mainCleanPass, true);
 });
 
+test("C2-ZC restore reload allows the exact Ubuntu Xvfb Skia mailbox line", async (t) => {
+  const mainStderr = new EventEmitter();
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: mainStderr }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => app,
+    },
+    closeApp: async () => {
+      mainStderr.emit("end");
+    },
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  const phase = "c2-zc-canonical-authority-cutover/restore";
+  const launched = await harness.launch(phase);
+  mainStderr.emit(
+    "data",
+    "[1145775:0828/155801.947748:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n",
+  );
+  await harness.close(launched.app, launched.page, phase);
+
+  const diagnostics = await harness.finalizeDiagnostics();
+  assert.equal(diagnostics.mainErrorCount, 1);
+  assert.deepEqual(diagnostics.unallowedMainErrors, []);
+  assert.equal(diagnostics.mainCleanPass, true);
+});
+
+test("C2-ZC Skia mailbox allowance remains phase- and message-exact", async (t) => {
+  const exact =
+    "[1145775:0828/155801.947748:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n";
+  for (const [phase, message] of [
+    ["c2-zc-canonical-authority-cutover/open", exact],
+    ["c2-zc-canonical-authority-cutover/new-project", exact],
+    [
+      "c2-zc-canonical-authority-cutover/restore",
+      exact.replace("ProduceSkia:", "ProduceSkiaNearMatch:"),
+    ],
+  ]) {
+    const mainStderr = new EventEmitter();
+    const page = {
+      isClosed: () => false,
+      on: () => undefined,
+      waitForFunction: async () => undefined,
+      screenshot: async () => undefined,
+    };
+    const app = {
+      firstWindow: async () => page,
+      process: () => ({ stdout: null, stderr: mainStderr }),
+    };
+    const harness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      electronLauncher: {
+        launch: async () => app,
+      },
+      closeApp: async () => {
+        mainStderr.emit("end");
+      },
+    });
+    t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+    const launched = await harness.launch(phase);
+    mainStderr.emit("data", message);
+    await harness.close(launched.app, launched.page, phase);
+    const error = await harness.finalizeDiagnostics().then(
+      () => null,
+      (cause) => cause,
+    );
+    assert.equal(error?.name, "MainProcessDiagnosticsError", phase);
+    assert.deepEqual(
+      error?.diagnostics.unallowedMainErrors.map(
+        ({ phase: actualPhase }) => actualPhase,
+      ),
+      [phase],
+      phase,
+    );
+  }
+});
+
 test("shared-image mailbox noise remains gated outside configure and for near matches", async (t) => {
   const mainStderr = new EventEmitter();
   const page = {
