@@ -5,24 +5,26 @@ use grimodex_db::narrative_extraction::c2zc_restore_fixture::{
     FixtureBuildOptions,
 };
 use grimodex_db::narrative_extraction::{
-    rebuild_narrative_derived_state_for_project, run_dependency_verify_for_project,
-    RebuildDerivedStateOutcome,
+    canonical_application_freshness, cut_over_workspace_freshness,
+    rebuild_narrative_derived_state_for_project, record_live_scheduler_heartbeat,
+    run_dependency_verify_for_project, run_incremental_freshness_cycle_with_liveness_capability,
+    RebuildDerivedStateOutcome, C2_ZC_CUTOVER_MIGRATION_ID,
 };
 use grimodex_db::Database;
+use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use serde_json::Value;
 
 fn candidate_and_output() -> (PathBuf, PathBuf) {
     let root = std::env::temp_dir().join(format!(
         "grimodex-c2zc-fixture-candidate-{}",
         uuid::Uuid::new_v4()
     ));
-    let output = root
-        .parent()
-        .expect("temp directory parent")
-        .join(format!("grimodex-c2zc-fixture-output-{}", uuid::Uuid::new_v4()));
+    let output = root.parent().expect("temp directory parent").join(format!(
+        "grimodex-c2zc-fixture-output-{}",
+        uuid::Uuid::new_v4()
+    ));
     fs::create_dir_all(&root).expect("candidate directory");
     fs::write(root.join("candidate.txt"), "candidate\n").expect("candidate file");
     run_git(&root, &["init", "--quiet"]);
@@ -45,8 +47,10 @@ fn run_git(root: &std::path::Path, args: &[&str]) {
 #[test]
 fn offline_restore_fixture_builder_has_a_candidate_bound_contract() {
     let (candidate, output) = candidate_and_output();
-    let options = FixtureBuildOptions::new(&candidate, &output)
-        .with_builder_command(vec!["c2zc-restore-fixture".to_string(), "build".to_string()]);
+    let options = FixtureBuildOptions::new(&candidate, &output).with_builder_command(vec![
+        "c2zc-restore-fixture".to_string(),
+        "build".to_string(),
+    ]);
     let result = build_offline_restore_fixture(options).expect("fixture builder");
 
     assert!(!result.manifest.c2zc_marker_present);
@@ -54,9 +58,47 @@ fn offline_restore_fixture_builder_has_a_candidate_bound_contract() {
     assert_eq!(result.manifest.semantic.scene_count, 1);
     assert_eq!(result.manifest.semantic.e0_count, 1);
     assert_eq!(result.manifest.semantic.completed_backfill_count, 1);
-    assert_eq!(result.manifest.semantic.dependency_edge_count, 1);
-    assert_eq!(result.manifest.semantic.edge_state_count, 0);
-    assert_eq!(result.manifest.semantic.owner_freshness_count, 0);
+    assert_eq!(result.manifest.semantic.application_count, 1);
+    assert_eq!(
+        result.manifest.semantic.legacy_projection_freshness_count,
+        1
+    );
+    assert_eq!(
+        result.manifest.semantic.legacy_projection_dependency_count,
+        1
+    );
+    assert_eq!(result.manifest.semantic.application_edge_count, 1);
+    assert_eq!(result.manifest.semantic.application_edge_state_count, 0);
+    assert_eq!(result.manifest.semantic.application_freshness_count, 0);
+    assert!(!result.manifest.semantic.application_id.is_empty());
+    assert_eq!(
+        result.manifest.semantic.edge["consumerKind"],
+        Value::String("application".to_string())
+    );
+    assert_eq!(
+        result.manifest.semantic.edge["consumerKey"],
+        Value::String(result.manifest.semantic.application_id.clone())
+    );
+    assert_eq!(
+        result.manifest.semantic.application["id"],
+        Value::String(result.manifest.semantic.application_id.clone())
+    );
+    assert_eq!(
+        result.manifest.semantic.application["runStatus"],
+        Value::String("completed".to_string())
+    );
+    assert_eq!(
+        result.manifest.semantic.application["commitStatus"],
+        Value::String("applied".to_string())
+    );
+    assert_eq!(
+        result.manifest.semantic.legacy_projection["freshness"]["applicationId"],
+        Value::String(result.manifest.semantic.application_id.clone())
+    );
+    assert_eq!(
+        result.manifest.semantic.expected_restore_lifecycle["marker"],
+        Value::String("after-confirmation-verify".to_string())
+    );
     assert_eq!(result.manifest.semantic.semantic_index_rows, 0);
     assert!(result.manifest.semantic.cursor_settled);
     assert_eq!(
@@ -70,7 +112,11 @@ fn offline_restore_fixture_builder_has_a_candidate_bound_contract() {
     for suffix in ["-wal", "-shm", "-journal"] {
         assert!(!result
             .database_path
-            .with_file_name(format!("{}{}", result.database_path.file_name().unwrap().to_string_lossy(), suffix))
+            .with_file_name(format!(
+                "{}{}",
+                result.database_path.file_name().unwrap().to_string_lossy(),
+                suffix
+            ))
             .exists());
     }
     fs::remove_dir_all(candidate).expect("candidate cleanup");
@@ -98,24 +144,116 @@ fn offline_restore_fixture_drives_production_verify_rebuild_verify() {
 
     let restored = Database::new(&restored_path).expect("open restored fixture");
     restored.migrate().expect("migrate restored fixture");
-    let initial = run_dependency_verify_for_project(
-        &restored,
-        "c2zc-restore-fixture-project",
-    )
-    .expect("initial Verify");
+    let initial = run_dependency_verify_for_project(&restored, "c2zc-restore-fixture-project")
+        .expect("initial Verify");
+    assert!(!initial.report.has_consistency_issues());
+    assert!(initial.report.is_incomplete_only());
     assert!(initial.report.requires_rebuild());
-    let rebuild = rebuild_narrative_derived_state_for_project(
-        &restored,
-        "c2zc-restore-fixture-project",
-    )
-    .expect("conditional Rebuild");
+    assert_eq!(initial.report.edge_ids_without_current_epoch_state.len(), 1);
+    assert_eq!(
+        initial.report.consumer_keys_without_current_epoch_freshness,
+        vec![(
+            "application".to_string(),
+            result.manifest.semantic.application_id.clone()
+        )]
+    );
+    assert!(initial
+        .report
+        .legacy_mirror_migration_parity
+        .incomplete
+        .iter()
+        .any(|item| item
+            == &format!(
+                "application:{}:generic-freshness-missing",
+                result.manifest.semantic.application_id
+            )));
+    let rebuild =
+        rebuild_narrative_derived_state_for_project(&restored, "c2zc-restore-fixture-project")
+            .expect("conditional Rebuild");
     assert!(matches!(rebuild, RebuildDerivedStateOutcome::Ran { .. }));
-    let confirmation = run_dependency_verify_for_project(
-        &restored,
-        "c2zc-restore-fixture-project",
-    )
-    .expect("confirmation Verify");
+    let confirmation = run_dependency_verify_for_project(&restored, "c2zc-restore-fixture-project")
+        .expect("confirmation Verify");
+    assert!(confirmation.report.is_consistent());
+    assert!(confirmation.report.is_complete());
     assert!(!confirmation.report.requires_rebuild());
+    assert!(confirmation.report.legacy_mirror_migration_parity.passed);
+    restored
+        .with_conn(|conn| {
+            let (edge_state_epoch, edge_state_freshness): (String, String) = conn.query_row(
+                "SELECT evaluated_at_epoch_id, evidence_freshness
+                   FROM narrative_dependency_edge_states
+                  WHERE project_id = ?1 AND edge_id = ?2",
+                rusqlite::params![
+                    result.manifest.semantic.project_id,
+                    result.manifest.semantic.edge["id"]
+                        .as_str()
+                        .expect("application edge id")
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let current_epoch: String = conn.query_row(
+                "SELECT id FROM narrative_semantic_epochs
+                  WHERE project_id = ?1
+                  ORDER BY epoch_number DESC LIMIT 1",
+                rusqlite::params![result.manifest.semantic.project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(edge_state_epoch, current_epoch);
+            assert_eq!(edge_state_freshness, "fresh");
+            let (freshness_epoch, freshness_status): (String, String) = conn.query_row(
+                "SELECT semantic_epoch_id, evidence_freshness
+                   FROM narrative_consumer_freshness
+                  WHERE project_id = ?1
+                    AND consumer_kind = 'application'
+                    AND consumer_key = ?2",
+                rusqlite::params![
+                    result.manifest.semantic.project_id,
+                    result.manifest.semantic.application_id
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(freshness_epoch, current_epoch);
+            assert_eq!(freshness_status, "fresh");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("rebuild publishes current-epoch application state");
+
+    let (_cycle, liveness_capability) =
+        run_incremental_freshness_cycle_with_liveness_capability(&restored)
+            .expect("successful confirmation scheduler cycle");
+    let liveness = record_live_scheduler_heartbeat(
+        &restored,
+        "c2zc-restore-fixture-test-scheduler",
+        1,
+        liveness_capability,
+    )
+    .expect("register confirmation scheduler liveness");
+    let cutover = restored
+        .with_conn(|conn| cut_over_workspace_freshness(conn, &liveness))
+        .expect("cut over after confirmation Verify");
+    assert_eq!(cutover.migration_id, C2_ZC_CUTOVER_MIGRATION_ID);
+    let canonical = restored
+        .with_conn(|conn| {
+            canonical_application_freshness(
+                conn,
+                &result.manifest.semantic.project_id,
+                &result.manifest.semantic.application_id,
+            )
+        })
+        .expect("read canonical Application freshness after marker")
+        .expect("Application freshness after marker");
+    assert_eq!(canonical.evidence_freshness, "fresh");
+    restored
+        .with_conn(|conn| {
+            let marker_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM schema_data_migrations WHERE migration_id = ?1",
+                [C2_ZC_CUTOVER_MIGRATION_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(marker_count, 1);
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("C2-ZC marker after lifecycle");
 
     drop(restored);
     fs::remove_dir_all(candidate).expect("candidate cleanup");
@@ -143,10 +281,9 @@ fn offline_restore_fixture_manifest_rejects_artifact_path_escape() {
     let (candidate, output) = candidate_and_output();
     let result = build_offline_restore_fixture(FixtureBuildOptions::new(&candidate, &output))
         .expect("fixture builder");
-    let mut manifest: Value = serde_json::from_slice(
-        &fs::read(&result.manifest_path).expect("read manifest"),
-    )
-    .expect("manifest JSON");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(&result.manifest_path).expect("read manifest"))
+            .expect("manifest JSON");
     manifest["artifacts"]["fixture"]["path"] = Value::String("../outside.db".to_string());
     let tampered = output.join("tampered.manifest.json");
     fs::write(
@@ -156,7 +293,9 @@ fn offline_restore_fixture_manifest_rejects_artifact_path_escape() {
     .expect("write tampered manifest");
 
     let error = verify_manifest(&tampered).expect_err("path escape must fail closed");
-    assert!(error.to_string().contains("C2ZC_FIXTURE_ARTIFACT_PATH_ESCAPE"));
+    assert!(error
+        .to_string()
+        .contains("C2ZC_FIXTURE_ARTIFACT_PATH_ESCAPE"));
     fs::remove_dir_all(candidate).expect("candidate cleanup");
     fs::remove_dir_all(output).expect("output cleanup");
 }
@@ -167,14 +306,19 @@ fn offline_restore_fixture_rejects_output_inside_candidate_before_writing() {
     let output = candidate.join("generated");
     let error = build_offline_restore_fixture(FixtureBuildOptions::new(&candidate, &output))
         .expect_err("candidate-contained output must fail closed");
-    assert!(error.to_string().contains("C2ZC_FIXTURE_OUTPUT_INSIDE_CANDIDATE"));
+    assert!(error
+        .to_string()
+        .contains("C2ZC_FIXTURE_OUTPUT_INSIDE_CANDIDATE"));
     let status = Command::new("git")
         .current_dir(&candidate)
         .args(["status", "--porcelain=v1", "--untracked-files=all"])
         .output()
         .expect("git status");
     assert!(status.status.success());
-    assert!(status.stdout.is_empty(), "output rejection dirtied candidate");
+    assert!(
+        status.stdout.is_empty(),
+        "output rejection dirtied candidate"
+    );
     fs::remove_dir_all(candidate).expect("candidate cleanup");
 }
 
@@ -196,8 +340,8 @@ fn offline_restore_fixture_rechecks_candidate_binding() {
 #[test]
 fn offline_restore_fixture_rechecks_candidate_before_manifest_publication() {
     let (candidate, output) = candidate_and_output();
-    let options = FixtureBuildOptions::new(&candidate, &output)
-        .with_before_manifest_publish_hook(|root| {
+    let options =
+        FixtureBuildOptions::new(&candidate, &output).with_before_manifest_publish_hook(|root| {
             fs::write(
                 root.join("changed-during-build.txt"),
                 "changed while the fixture was being generated\n",
@@ -234,10 +378,9 @@ fn offline_restore_fixture_manifest_recomputes_every_semantic_digest_and_matches
     let (candidate, output) = candidate_and_output();
     let result = build_offline_restore_fixture(FixtureBuildOptions::new(&candidate, &output))
         .expect("fixture builder");
-    let original: Value = serde_json::from_slice(
-        &fs::read(&result.manifest_path).expect("read manifest"),
-    )
-    .expect("manifest JSON");
+    let original: Value =
+        serde_json::from_slice(&fs::read(&result.manifest_path).expect("read manifest"))
+            .expect("manifest JSON");
 
     let semantic_fields = [
         ("/semantic/project", "project"),
@@ -248,12 +391,22 @@ fn offline_restore_fixture_manifest_recomputes_every_semantic_digest_and_matches
         ("/semantic/epochDigest", "epoch digest"),
         ("/semantic/backfill", "backfill"),
         ("/semantic/backfillDigest", "backfill digest"),
+        ("/semantic/application", "application"),
+        ("/semantic/applicationDigest", "application digest"),
+        ("/semantic/legacyProjection", "legacy projection"),
+        (
+            "/semantic/legacyProjectionDigest",
+            "legacy projection digest",
+        ),
         ("/semantic/edge", "edge"),
         ("/semantic/edgeDigest", "edge digest"),
         ("/semantic/feedCursor", "feed cursor"),
         ("/semantic/feedCursorDigest", "feed cursor digest"),
         ("/semantic/derivedStateGap", "derived state gap"),
-        ("/semantic/derivedStateGapDigest", "derived state gap digest"),
+        (
+            "/semantic/derivedStateGapDigest",
+            "derived state gap digest",
+        ),
         ("/semantic/semanticIndex", "semantic index"),
         ("/semantic/semanticIndexDigest", "semantic index digest"),
         (
@@ -300,8 +453,16 @@ fn offline_restore_fixture_manifest_recomputes_every_semantic_digest_and_matches
 #[test]
 fn offline_restore_fixture_rejects_expected_head_or_tree_mismatch() {
     for (expected_head, expected_tree, expected_code) in [
-        (Some("0".repeat(40)), None, "C2ZC_FIXTURE_CANDIDATE_HEAD_MISMATCH"),
-        (None, Some("0".repeat(40)), "C2ZC_FIXTURE_CANDIDATE_TREE_MISMATCH"),
+        (
+            Some("0".repeat(40)),
+            None,
+            "C2ZC_FIXTURE_CANDIDATE_HEAD_MISMATCH",
+        ),
+        (
+            None,
+            Some("0".repeat(40)),
+            "C2ZC_FIXTURE_CANDIDATE_TREE_MISMATCH",
+        ),
     ] {
         let (candidate, output) = candidate_and_output();
         let mut options = FixtureBuildOptions::new(&candidate, &output);
@@ -331,14 +492,16 @@ fn offline_restore_fixture_rejects_symlinked_candidate_and_artifact_paths() {
     let candidate_alias = output
         .parent()
         .expect("temp directory parent")
-        .join(format!("grimodex-c2zc-fixture-candidate-alias-{}", uuid::Uuid::new_v4()));
+        .join(format!(
+            "grimodex-c2zc-fixture-candidate-alias-{}",
+            uuid::Uuid::new_v4()
+        ));
     symlink(&candidate, &candidate_alias).expect("candidate symlink");
-    let error = build_offline_restore_fixture(FixtureBuildOptions::new(
-        &candidate_alias,
-        &output,
-    ))
-    .expect_err("symlinked candidate must fail closed");
-    assert!(error.to_string().contains("C2ZC_FIXTURE_SYMLINK_PATH_REJECTED"));
+    let error = build_offline_restore_fixture(FixtureBuildOptions::new(&candidate_alias, &output))
+        .expect_err("symlinked candidate must fail closed");
+    assert!(error
+        .to_string()
+        .contains("C2ZC_FIXTURE_SYMLINK_PATH_REJECTED"));
     assert!(!output.exists());
     fs::remove_file(candidate_alias).expect("candidate alias cleanup");
     fs::remove_dir_all(candidate).expect("candidate cleanup");
@@ -349,13 +512,18 @@ fn offline_restore_fixture_rejects_symlinked_candidate_and_artifact_paths() {
     let outside = output
         .parent()
         .expect("temp directory parent")
-        .join(format!("grimodex-c2zc-fixture-outside-{}", uuid::Uuid::new_v4()));
+        .join(format!(
+            "grimodex-c2zc-fixture-outside-{}",
+            uuid::Uuid::new_v4()
+        ));
     fs::write(&outside, b"not the fixture").expect("outside file");
     fs::remove_file(&result.backup_path).expect("remove backup before symlink");
     symlink(&outside, &result.backup_path).expect("backup symlink");
     let error = verify_manifest(&result.manifest_path)
         .expect_err("symlinked fixture artifact must fail closed");
-    assert!(error.to_string().contains("C2ZC_FIXTURE_SYMLINK_PATH_REJECTED"));
+    assert!(error
+        .to_string()
+        .contains("C2ZC_FIXTURE_SYMLINK_PATH_REJECTED"));
     fs::remove_file(&result.backup_path).expect("backup symlink cleanup");
     fs::remove_file(outside).expect("outside file cleanup");
     fs::remove_dir_all(candidate).expect("candidate cleanup");

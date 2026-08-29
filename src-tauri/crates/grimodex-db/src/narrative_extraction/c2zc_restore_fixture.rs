@@ -9,8 +9,8 @@
 //! immutable manifest binds the bytes and semantic contents to a clean
 //! candidate checkout.
 
-use std::fs::{self, File, OpenOptions};
 use std::fmt;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -26,18 +26,29 @@ use crate::domain_writes::{
     project_create, project_delete, tree_node_create, ProjectCreatePayload, ProjectDeletePayload,
     TreeNodeCreatePayload,
 };
-use crate::Database;
+use crate::{
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
+    SetNarrativeRuntimePolicyInput,
+};
 
 use super::change_feed::NarrativeChangeOrigin;
-use super::dependency_edges::{
-    canonical_source_object_identity, record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
+use super::dependency_edges::canonical_source_object_identity;
+use super::legacy_backfill::{
+    bootstrap_legacy_dependency_backfill_for_project, LegacyBackfillBootstrapOutcome,
+    LEGACY_BACKFILL_ALGORITHM_VERSION, LEGACY_BACKFILL_WORK_KEY,
 };
-use super::legacy_backfill::bootstrap_legacy_dependency_backfill_for_project;
-use super::models::{CreateRunPayload, RunRefPayload};
-use super::task_leases::with_immediate_transaction;
+use super::models::{
+    AppendDecisionPayload, ApplyCommitPayload, ClaimTaskPayload, CommitApplicationRef,
+    CommitOperation, CreateRunPayload, CreateTaskSeed, FinishTaskPayload, PrepareCommitPayload,
+    ProposalSeed, SaveProposalSetPayload,
+};
+use super::semantic_epoch::create_epoch_in_tx;
 use super::{
-    digest_plan, narrative_extraction_cancel_run, narrative_extraction_create_run,
-    run_incremental_freshness_cycle, C2_ZC_CUTOVER_MIGRATION_ID,
+    digest_plan, narrative_extraction_append_human_decision, narrative_extraction_apply_commit,
+    narrative_extraction_claim_task, narrative_extraction_create_run,
+    narrative_extraction_finish_task, narrative_extraction_prepare_commit,
+    narrative_extraction_save_proposal_set, run_incremental_freshness_cycle,
+    C2_ZC_CUTOVER_MIGRATION_ID,
 };
 
 /// Version of the support code that produced a fixture.  This is part of the
@@ -67,6 +78,28 @@ type FixtureCursorRow = (
     Option<String>,
     Option<String>,
     String,
+);
+type ApplicationSnapshotRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
 );
 type BeforeManifestPublishHook = Arc<dyn Fn(&Path) -> Result<()> + Send + Sync>;
 
@@ -180,14 +213,20 @@ pub struct FixtureArtifacts {
 pub struct SemanticSnapshot {
     pub project_id: String,
     pub scene_id: String,
-    pub owner_run_id: String,
+    pub application_id: String,
+    pub apply_run_id: String,
+    pub backfill_run_id: String,
     pub project_count: i64,
     pub scene_count: i64,
     pub e0_count: i64,
     pub completed_backfill_count: i64,
     pub dependency_edge_count: i64,
-    pub edge_state_count: i64,
-    pub owner_freshness_count: i64,
+    pub application_count: i64,
+    pub legacy_projection_freshness_count: i64,
+    pub legacy_projection_dependency_count: i64,
+    pub application_edge_count: i64,
+    pub application_edge_state_count: i64,
+    pub application_freshness_count: i64,
     pub cursor_settled: bool,
     pub semantic_index_rows: i64,
     pub scene_source_revision: String,
@@ -201,6 +240,10 @@ pub struct SemanticSnapshot {
     pub epoch_digest: String,
     pub backfill: Value,
     pub backfill_digest: String,
+    pub application: Value,
+    pub application_digest: String,
+    pub legacy_projection: Value,
+    pub legacy_projection_digest: String,
     pub edge: Value,
     pub edge_digest: String,
     pub feed_cursor: Value,
@@ -259,11 +302,26 @@ pub fn build_offline_restore_fixture(options: FixtureBuildOptions) -> Result<Fix
 
     let db = Database::new(&database_path).context("opening fixture database")?;
     db.migrate().context("migrating fixture database")?;
-    create_fixture_domain(&db)?;
+    let application = create_fixture_domain(&db)?;
     settle_change_feed(&db)?;
-    let edge_id = create_fixture_owner_and_edge(&db)?;
-    assert_derived_state_gap(&db, &edge_id)?;
+    let backfill_run_id = create_fixture_backfill(&db)?;
+    let edge_id = find_application_edge(&db, &application.application_id)?;
+    assert_derived_state_gap(&db, &application.application_id, &edge_id)?;
     let semantic = collect_semantic_snapshot(&db, &edge_id)?;
+    anyhow::ensure!(
+        semantic.backfill_run_id == backfill_run_id,
+        "C2ZC_FIXTURE_BACKFILL_RUN_MISMATCH: writer={} snapshot={}",
+        backfill_run_id,
+        semantic.backfill_run_id
+    );
+    anyhow::ensure!(
+        semantic.application_id == application.application_id
+            && semantic.apply_run_id == application.apply_run_id
+            && semantic.application["proposalId"] == Value::String(application.proposal_id.clone())
+            && semantic.application["revisionId"] == Value::String(application.revision_id.clone())
+            && semantic.application["eventId"] == Value::String(application.event_id.clone()),
+        "C2ZC_FIXTURE_APPLICATION_SNAPSHOT_MISMATCH"
+    );
     validate_fixture_semantics(&semantic)?;
     db.backup_to(&backup_path)
         .context("creating WAL-safe fixture backup")?;
@@ -312,11 +370,8 @@ pub fn build_offline_restore_fixture(options: FixtureBuildOptions) -> Result<Fix
         if let Some(hook) = options.before_manifest_publish_hook.as_ref() {
             hook(&candidate.root).context("running pre-publication fixture hook")?;
         }
-        let final_candidate = resolve_candidate(&options).map_err(|error| {
-            anyhow::anyhow!(
-                "C2ZC_FIXTURE_CANDIDATE_RECHECK_FAILED: {error:#}"
-            )
-        })?;
+        let final_candidate = resolve_candidate(&options)
+            .map_err(|error| anyhow::anyhow!("C2ZC_FIXTURE_CANDIDATE_RECHECK_FAILED: {error:#}"))?;
         anyhow::ensure!(
             final_candidate.binding == manifest.candidate,
             "C2ZC_FIXTURE_CANDIDATE_CHANGED_BEFORE_MANIFEST: initial={:?} final={:?}",
@@ -347,8 +402,8 @@ pub fn verify_manifest(manifest_path: &Path) -> Result<FixtureManifest> {
     reject_symlink_components(manifest_path)?;
     let manifest_path = existing_regular_file(manifest_path, "manifest")?;
     let bytes = fs::read(&manifest_path).context("reading fixture manifest")?;
-    let manifest: FixtureManifest = serde_json::from_slice(&bytes)
-        .context("parsing C2-ZC restore fixture manifest")?;
+    let manifest: FixtureManifest =
+        serde_json::from_slice(&bytes).context("parsing C2-ZC restore fixture manifest")?;
     anyhow::ensure!(
         manifest.manifest_version == C2ZC_RESTORE_FIXTURE_MANIFEST_VERSION,
         "C2ZC_FIXTURE_MANIFEST_VERSION_UNSUPPORTED: {}",
@@ -402,16 +457,8 @@ pub fn verify_manifest(manifest_path: &Path) -> Result<FixtureManifest> {
         .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_MANIFEST_PARENT_MISSING"))?;
     let fixture_path = resolve_relative_artifact(base, &manifest.artifacts.fixture.path)?;
     let database_path = resolve_relative_artifact(base, &manifest.artifacts.database.path)?;
-    verify_artifact(
-        &fixture_path,
-        &manifest.artifacts.fixture,
-        "fixture",
-    )?;
-    verify_artifact(
-        &database_path,
-        &manifest.artifacts.database,
-        "database",
-    )?;
+    verify_artifact(&fixture_path, &manifest.artifacts.fixture, "fixture")?;
+    verify_artifact(&database_path, &manifest.artifacts.database, "database")?;
     anyhow::ensure!(
         manifest.artifacts.fixture.sha256 == manifest.fixture_sha256
             && manifest.artifacts.fixture.size_bytes == manifest.fixture_size_bytes,
@@ -419,7 +466,8 @@ pub fn verify_manifest(manifest_path: &Path) -> Result<FixtureManifest> {
     );
     let connection = Connection::open(&fixture_path).context("opening fixture backup")?;
     quick_check_connection(&connection)?;
-    let schema_version: i32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let schema_version: i32 =
+        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     anyhow::ensure!(
         schema_version == manifest.schema_version,
         "C2ZC_FIXTURE_SCHEMA_VERSION_MISMATCH: manifest={} actual={}",
@@ -454,7 +502,16 @@ pub fn verify_manifest_against_candidate(
     Ok(manifest)
 }
 
-fn create_fixture_domain(db: &Database) -> Result<()> {
+#[derive(Debug)]
+struct FixtureApplication {
+    application_id: String,
+    apply_run_id: String,
+    proposal_id: String,
+    revision_id: String,
+    event_id: String,
+}
+
+fn create_fixture_domain(db: &Database) -> Result<FixtureApplication> {
     project_delete(
         db,
         ProjectDeletePayload {
@@ -511,8 +568,26 @@ fn create_fixture_domain(db: &Database) -> Result<()> {
         },
     )
     .context("creating fixture scene through typed writer")?;
-    bootstrap_legacy_dependency_backfill_for_project(db, PROJECT_ID)
-        .context("creating completed historical Backfill boundary")?;
+    db.with_conn(|conn| create_epoch_in_tx(conn, PROJECT_ID, "initial", None))
+        .context("creating fixture E0 through the semantic epoch writer")?;
+    enable_fixture_manual_apply(db)?;
+    create_fixture_application(db)
+}
+
+fn enable_fixture_manual_apply(db: &Database) -> Result<()> {
+    let before = load_narrative_runtime_policy_from_db(db)
+        .context("loading fixture narrative runtime policy")?;
+    set_narrative_runtime_policy(
+        db,
+        SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "manual-apply".to_string(),
+            maintenance_enabled: before.maintenance_enabled,
+            generic_import_enabled: before.generic_import_enabled,
+            background_ai_enabled: before.background_ai_enabled,
+        },
+    )
+    .context("enabling manual Apply through typed runtime policy writer")?;
     Ok(())
 }
 
@@ -530,9 +605,17 @@ fn settle_change_feed(db: &Database) -> Result<()> {
     anyhow::bail!("C2ZC_FIXTURE_CURSOR_DID_NOT_SETTLE: bounded cycle limit exceeded")
 }
 
-fn create_fixture_owner_and_edge(db: &Database) -> Result<String> {
+fn create_fixture_application(db: &Database) -> Result<FixtureApplication> {
+    let task_id = format!("{OWNER_RUN_ID}-task");
+    let task_kind = "c2zc.restore.fixture.application".to_string();
+    let set_id = format!("{OWNER_RUN_ID}-proposal-set");
+    let proposal_id = format!("{OWNER_RUN_ID}-proposal");
+    let event_id = format!("{OWNER_RUN_ID}-event");
+    let source_identity =
+        canonical_source_object_identity("scene-body", &format!("project:scene:{SCENE_ID}"))?;
+    let source_revision = fixture_scene_source_revision(db)?;
     let spec = json!({
-        "fixture": "c2zc-restore-verify-rebuild-verify",
+        "fixture": "c2zc-restore-verify-rebuild-verify-application",
         "contractVersion": C2ZC_RESTORE_FIXTURE_CONTRACT_VERSION,
     });
     narrative_extraction_create_run(
@@ -548,57 +631,308 @@ fn create_fixture_owner_and_edge(db: &Database) -> Result<String> {
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
-            tasks: Vec::new(),
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(task_id.clone()),
+                task_kind: task_kind.clone(),
+                input_json: None,
+                priority: None,
+            }],
         },
     )
-    .context("creating fixture owner run through typed writer")?;
-    narrative_extraction_cancel_run(
+    .context("creating fixture Application source Run through typed writer")?;
+    let saved = narrative_extraction_save_proposal_set(
         db,
-        RunRefPayload {
+        SaveProposalSetPayload {
             run_id: OWNER_RUN_ID.to_string(),
             project_id: PROJECT_ID.to_string(),
-            chronicle_blocked_discard: None,
+            proposal_set_id: Some(set_id.clone()),
+            set_kind: "chronicle.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(proposal_id.clone()),
+                proposal_key: "c2zc-restore-fixture-application".to_string(),
+                kind: "chronicle.event.create".to_string(),
+                payload_json: fixture_event_payload(&event_id),
+                reconciliation_envelope: Some(fixture_reconciliation_envelope(
+                    &source_identity,
+                    &source_revision,
+                    OWNER_RUN_ID,
+                    &task_id,
+                )),
+            }],
         },
     )
-    .context("terminalizing fixture owner run through typed writer")?;
+    .context("saving fixture Application ProposalSet through typed writer")?;
+    let saved_proposal_id = saved["proposals"][0]["proposalId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("fixture proposal response omitted proposalId"))?
+        .to_string();
+    let revision_id = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("fixture proposal response omitted revisionId"))?
+        .to_string();
+    narrative_extraction_append_human_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: OWNER_RUN_ID.to_string(),
+            project_id: PROJECT_ID.to_string(),
+            proposal_id: saved_proposal_id.clone(),
+            revision_id: revision_id.clone(),
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("c2zc-restore-fixture".to_string()),
+        },
+    )
+    .context("approving fixture Application Proposal through typed writer")?;
+    let expected_tail_ordinal = current_event_tail_ordinal(db)?;
+    let request_id = format!("{OWNER_RUN_ID}-prepare");
+    let session_id = format!("{OWNER_RUN_ID}-session");
+    let prepared = narrative_extraction_prepare_commit(
+        db,
+        PrepareCommitPayload {
+            project_id: PROJECT_ID.to_string(),
+            run_id: OWNER_RUN_ID.to_string(),
+            proposal_set_id: set_id,
+            request_id: request_id.clone(),
+            plan_digest: "c2zc-restore-fixture-plan".to_string(),
+            session_id: session_id.clone(),
+            surface: Some("narrative-extraction".to_string()),
+            operations: vec![CommitOperation {
+                kind: "chronicle.event.create".to_string(),
+                payload: fixture_event_payload(&event_id),
+                proposal_id: saved_proposal_id.clone(),
+                revision_id: revision_id.clone(),
+            }],
+            applications: vec![CommitApplicationRef {
+                proposal_id: saved_proposal_id.clone(),
+                revision_id: revision_id.clone(),
+            }],
+            expected_tail_ordinal,
+            entity_bindings: Vec::new(),
+            expected_calendar_version: None,
+        },
+    )
+    .context("preparing fixture Application commit through typed writer")?;
+    let prepared_commit_id = prepared["preparedCommitId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("fixture prepared commit omitted preparedCommitId"))?
+        .to_string();
+    let applied = narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: PROJECT_ID.to_string(),
+            prepared_commit_id,
+            request_id,
+            session_id,
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .context("applying fixture Application commit through typed writer")?;
+    anyhow::ensure!(
+        applied["status"] == Value::String("applied".to_string()),
+        "C2ZC_FIXTURE_APPLICATION_APPLY_NOT_APPLIED: {applied}"
+    );
+    let commit_id = applied["commitId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("fixture Apply response omitted commitId"))?;
+    let application_id = db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT id FROM narrative_proposal_applications WHERE commit_id = ?1",
+            [commit_id],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(Into::into)
+    })?;
+    let claimed = narrative_extraction_claim_task(
+        db,
+        ClaimTaskPayload {
+            run_id: OWNER_RUN_ID.to_string(),
+            project_id: PROJECT_ID.to_string(),
+            lease_owner: "c2zc-restore-fixture-builder".to_string(),
+            lease_duration_secs: Some(300),
+            task_kinds: Some(vec![task_kind]),
+        },
+    )
+    .context("claiming fixture Application Task through typed writer")?;
+    anyhow::ensure!(
+        claimed["claimed"] == Value::Bool(true),
+        "C2ZC_FIXTURE_APPLICATION_TASK_NOT_CLAIMED: {claimed}"
+    );
+    let attempt_id = claimed["task"]["attemptId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("fixture Task claim response omitted attemptId"))?
+        .to_string();
+    let finished = narrative_extraction_finish_task(
+        db,
+        FinishTaskPayload {
+            run_id: OWNER_RUN_ID.to_string(),
+            project_id: PROJECT_ID.to_string(),
+            task_id,
+            attempt_id,
+            lease_owner: "c2zc-restore-fixture-builder".to_string(),
+            output_json: Some(json!({ "fixture": "application-applied" })),
+            artifacts: Vec::new(),
+            chronicle_stage_bundle: None,
+            chronicle_stage_receipts: Vec::new(),
+            historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
+        },
+    )
+    .context("finishing fixture Application Task through typed writer")?;
+    anyhow::ensure!(
+        finished["status"] == Value::String("completed".to_string()),
+        "C2ZC_FIXTURE_APPLICATION_TASK_NOT_FINISHED: {finished}"
+    );
+    assert_fixture_application_run_terminal(db)?;
+    Ok(FixtureApplication {
+        application_id,
+        apply_run_id: OWNER_RUN_ID.to_string(),
+        proposal_id: saved_proposal_id,
+        revision_id,
+        event_id,
+    })
+}
 
-    let (source_revision, edge_identity) = db.with_conn(|conn| {
-        let updated: (i64, String) = conn.query_row(
+fn assert_fixture_application_run_terminal(db: &Database) -> Result<()> {
+    let (run_status, task_status, attempt_status): (String, String, String) =
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT r.status, t.status, a.status
+               FROM narrative_extraction_runs r
+               JOIN narrative_extraction_tasks t ON t.run_id = r.id
+               JOIN narrative_extraction_attempts a ON a.task_id = t.id
+              WHERE r.id = ?1 AND r.project_id = ?2
+              ORDER BY a.attempt_number DESC
+              LIMIT 1",
+                params![OWNER_RUN_ID, PROJECT_ID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(Into::into)
+        })?;
+    anyhow::ensure!(
+        run_status == "completed" && task_status == "completed" && attempt_status == "completed",
+        "C2ZC_FIXTURE_APPLICATION_RUN_NOT_TERMINAL: run={run_status}, task={task_status}, attempt={attempt_status}"
+    );
+    Ok(())
+}
+
+fn fixture_event_payload(event_id: &str) -> Value {
+    json!({
+        "eventId": event_id,
+        "title": "C2-ZC offline restore application event",
+        "note": null,
+        "kind": "generic",
+        "precision": "unknown",
+        "placement": { "mode": "append-tail", "afterOrdinal": null },
+        "secret": false,
+        "revealSceneId": SCENE_ID,
+        "detail": null,
+        "primaryCodexId": null,
+        "locationCodexId": null,
+        "participants": [],
+        "startTime": null,
+        "endTime": null,
+        "startGranularity": "none",
+        "endGranularity": "none"
+    })
+}
+
+fn fixture_reconciliation_envelope(
+    source_identity: &str,
+    revision_token: &str,
+    run_id: &str,
+    task_id: &str,
+) -> Value {
+    let read_set = json!([{
+        "inputRef": source_identity,
+        "kind": "snapshot-document",
+        "sourceKind": "scene-body",
+        "revisionToken": revision_token,
+    }]);
+    json!({
+        "schemaVersion": 1,
+        "runId": run_id,
+        "taskId": task_id,
+        "reconcilerId": "c2zc.restore.fixture",
+        "reconcilerVersion": "1.0.0",
+        "proposalSchemaId": "chronicle.event",
+        "proposalSchemaVersion": "1",
+        "sourceBasis": [{
+            "sourceKind": "scene-body",
+            "sourceKey": source_identity,
+            "revisionToken": revision_token,
+        }],
+        "evidenceSet": [],
+        "readSet": read_set,
+        "readSetDigest": format!("sha256:{}", digest_plan(&read_set)),
+        "changeKind": "add"
+    })
+}
+
+fn fixture_scene_source_revision(db: &Database) -> Result<String> {
+    db.with_conn(|conn| {
+        let (version, updated_at): (i64, String) = conn.query_row(
             "SELECT version, updated_at FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
             params![SCENE_ID, PROJECT_ID],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let source_identity = canonical_source_object_identity(
-            "scene-body",
-            &format!("project:scene:{SCENE_ID}"),
-        )?;
-        Ok((format!("v{}@{}", updated.0, updated.1), source_identity))
-    })?;
-    let read_set_json = serde_json::to_string(&vec![source_revision])?;
-    db.with_conn(|conn| {
-        with_immediate_transaction(conn, |conn| {
-            record_dependency_edge_in_tx(
-                conn,
-                PROJECT_ID,
-                RUN_CONSUMER_KIND,
-                OWNER_RUN_ID,
-                &edge_identity,
-                &read_set_json,
-                None,
-                Some(OWNER_RUN_ID),
-                &grimodex_core::now_rfc3339_millis(),
-            )
-        })
+        Ok(format!("v{version}@{updated_at}"))
     })
-    .context("recording fixture dependency Edge through production writer")
+}
+
+fn current_event_tail_ordinal(db: &Database) -> Result<Option<String>> {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT ordinal
+                   FROM events
+                  WHERE project_id = ?1
+                  ORDER BY ordinal DESC, id DESC
+                  LIMIT 1",
+                [PROJECT_ID],
+                |row| row.get(0),
+            )
+            .optional()?)
+    })
+}
+
+fn create_fixture_backfill(db: &Database) -> Result<String> {
+    let outcome = bootstrap_legacy_dependency_backfill_for_project(db, PROJECT_ID)
+        .context("creating completed historical Backfill boundary")?;
+    match outcome {
+        LegacyBackfillBootstrapOutcome::Ran { run_id, summary } => {
+            anyhow::ensure!(
+                summary.edges_created == 1 && summary.applications_without_run_id == 0,
+                "C2ZC_FIXTURE_BACKFILL_APPLICATION_EDGE_INVALID: {:?}",
+                summary
+            );
+            Ok(run_id)
+        }
+        LegacyBackfillBootstrapOutcome::AlreadyRun { run_id } => {
+            anyhow::bail!("C2ZC_FIXTURE_BACKFILL_ALREADY_EXISTS: {run_id}")
+        }
+    }
 }
 
 /// Assert the rebuildable derived-state gap created by the canonical writer
-/// ordering.  The Feed/Cursor is settled before the owner Edge is declared,
-/// so the production Edge writer leaves both derived tables absent.  Keeping
-/// this helper read-only is important: fixture construction must not bypass a
-/// product writer with ad-hoc domain DML, even for derived rows.
-fn assert_derived_state_gap(db: &Database, edge_id: &str) -> Result<()> {
+/// ordering. The Feed/Cursor is settled before the Backfill declares the
+/// Application Edge, so the production Edge writer leaves both Generic
+/// derived tables absent. Keeping this helper read-only is important: fixture
+/// construction must not bypass a product writer with ad-hoc domain DML.
+fn find_application_edge(db: &Database, application_id: &str) -> Result<String> {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT id FROM narrative_dependency_edges
+              WHERE project_id = ?1 AND consumer_kind = 'application' AND consumer_key = ?2
+              ORDER BY id",
+            params![PROJECT_ID, application_id],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+    })
+}
+
+fn assert_derived_state_gap(db: &Database, application_id: &str, edge_id: &str) -> Result<()> {
     db.with_conn(|conn| {
         let edge_state_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_dependency_edge_states
@@ -606,19 +940,19 @@ fn assert_derived_state_gap(db: &Database, edge_id: &str) -> Result<()> {
             params![PROJECT_ID, edge_id],
             |row| row.get(0),
         )?;
-        let owner_freshness_count: i64 = conn.query_row(
+        let application_freshness_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_consumer_freshness
               WHERE project_id = ?1
-                AND consumer_kind = ?2
-                AND consumer_key = ?3",
-            params![PROJECT_ID, RUN_CONSUMER_KIND, OWNER_RUN_ID],
+                AND consumer_kind = 'application'
+                AND consumer_key = ?2",
+            params![PROJECT_ID, application_id],
             |row| row.get(0),
         )?;
         anyhow::ensure!(
-            edge_state_count == 0 && owner_freshness_count == 0,
-            "C2ZC_FIXTURE_DERIVED_STATE_ALREADY_PRESENT: edgeState={} ownerFreshness={}",
+            edge_state_count == 0 && application_freshness_count == 0,
+            "C2ZC_FIXTURE_DERIVED_STATE_ALREADY_PRESENT: edgeState={} applicationFreshness={}",
             edge_state_count,
-            owner_freshness_count
+            application_freshness_count
         );
         Ok(())
     })
@@ -641,7 +975,8 @@ fn collect_semantic_snapshot_from_connection(
         c2zc_marker_count == 0,
         "C2ZC_FIXTURE_MARKER_PRESENT: current C2-ZC marker count={c2zc_marker_count}"
     );
-    let project_count: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))?;
+    let project_count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))?;
     let scene_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM tree_nodes WHERE project_id = ?1",
         params![PROJECT_ID],
@@ -735,6 +1070,25 @@ fn collect_semantic_snapshot_from_connection(
             }))
         },
     )?;
+    let application_id = edge["consumerKey"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_APPLICATION_EDGE_KEY_MISSING"))?
+        .to_string();
+    let application = load_application_snapshot(conn, &application_id)?;
+    let apply_run_id = application["runId"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_APPLICATION_RUN_ID_MISSING"))?
+        .to_string();
+    let backfill_run_id = backfill["rows"]
+        .as_array()
+        .and_then(|rows| rows.first())
+        .and_then(|row| row["id"].as_str())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_BACKFILL_RUN_ID_MISSING"))?
+        .to_string();
+    let legacy_projection = load_legacy_projection_snapshot(conn, &application_id)?;
     let (scene_version, scene_updated_at): (i64, String) = conn.query_row(
         "SELECT version, updated_at FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
         params![SCENE_ID, PROJECT_ID],
@@ -751,33 +1105,67 @@ fn collect_semantic_snapshot_from_connection(
         params![PROJECT_ID],
         |row| row.get(0),
     )?;
-    let edge_state_count: i64 = conn.query_row(
+    let application_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_proposal_applications a
+          JOIN narrative_apply_commits c ON c.id = a.commit_id
+         WHERE c.project_id = ?1",
+        params![PROJECT_ID],
+        |row| row.get(0),
+    )?;
+    let legacy_projection_freshness_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_projection_freshness f
+          JOIN narrative_proposal_applications a ON a.id = f.application_id
+          JOIN narrative_apply_commits c ON c.id = a.commit_id
+         WHERE c.project_id = ?1 AND f.application_id = ?2",
+        params![PROJECT_ID, application_id],
+        |row| row.get(0),
+    )?;
+    let legacy_projection_dependency_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_projection_dependencies d
+          JOIN narrative_proposal_applications a ON a.id = d.application_id
+          JOIN narrative_apply_commits c ON c.id = a.commit_id
+         WHERE c.project_id = ?1 AND d.application_id = ?2",
+        params![PROJECT_ID, application_id],
+        |row| row.get(0),
+    )?;
+    let application_edge_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_dependency_edges
+          WHERE project_id = ?1 AND consumer_kind = 'application'
+            AND consumer_key = ?2",
+        params![PROJECT_ID, application_id],
+        |row| row.get(0),
+    )?;
+    let application_edge_state_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM narrative_dependency_edge_states
           WHERE project_id = ?1 AND edge_id = ?2",
         params![PROJECT_ID, edge_id],
         |row| row.get(0),
     )?;
-    let owner_freshness_count: i64 = conn.query_row(
+    let application_freshness_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM narrative_consumer_freshness
-          WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
-        params![PROJECT_ID, RUN_CONSUMER_KIND, OWNER_RUN_ID],
+          WHERE project_id = ?1 AND consumer_kind = 'application' AND consumer_key = ?2",
+        params![PROJECT_ID, application_id],
         |row| row.get(0),
     )?;
 
     let (feed_cursor, cursor_settled) = load_feed_cursor_snapshot(conn)?;
     let (semantic_index, semantic_index_rows) = load_semantic_index_snapshot(conn)?;
     let derived_state_gap = json!({
-        "edgeStateRows": edge_state_count,
-        "ownerFreshnessRows": owner_freshness_count,
+        "applicationEdgeStateRows": application_edge_state_count,
+        "applicationFreshnessRows": application_freshness_count,
+        "genericApplicationRows": application_freshness_count,
         "rebuildScope": "narrative_dependency_edge_states+narrative_consumer_freshness",
     });
     let expected_restore_lifecycle = json!({
         "firstVerify": "rebuild-required",
         "conditionalRebuild": "required",
         "confirmationVerify": "clean",
+        "marker": "after-confirmation-verify",
     });
     let epoch_digest = digest_json(&epoch);
     let backfill_digest = digest_json(&backfill);
+    let application_digest = digest_json(&application);
+    let legacy_projection_digest = digest_json(&legacy_projection);
     let edge_digest = digest_json(&edge);
     let feed_cursor_digest = digest_json(&feed_cursor);
     let derived_state_gap_digest = digest_json(&derived_state_gap);
@@ -786,14 +1174,20 @@ fn collect_semantic_snapshot_from_connection(
     let mut semantic = SemanticSnapshot {
         project_id: PROJECT_ID.to_string(),
         scene_id: SCENE_ID.to_string(),
-        owner_run_id: OWNER_RUN_ID.to_string(),
+        application_id,
+        apply_run_id,
+        backfill_run_id,
         project_count,
         scene_count,
         e0_count,
         completed_backfill_count,
         dependency_edge_count: edge_count,
-        edge_state_count,
-        owner_freshness_count,
+        application_count,
+        legacy_projection_freshness_count,
+        legacy_projection_dependency_count,
+        application_edge_count,
+        application_edge_state_count,
+        application_freshness_count,
         cursor_settled,
         semantic_index_rows,
         scene_source_revision,
@@ -807,6 +1201,10 @@ fn collect_semantic_snapshot_from_connection(
         epoch_digest,
         backfill,
         backfill_digest,
+        application,
+        application_digest,
+        legacy_projection,
+        legacy_projection_digest,
         edge,
         edge_digest,
         feed_cursor,
@@ -823,18 +1221,159 @@ fn collect_semantic_snapshot_from_connection(
     Ok(semantic)
 }
 
+fn load_application_snapshot(conn: &Connection, application_id: &str) -> Result<Value> {
+    let (
+        id,
+        commit_id,
+        project_id,
+        run_id,
+        run_status,
+        proposal_set_id,
+        request_id,
+        plan_digest,
+        commit_status,
+        session_id,
+        commit_created_at,
+        completed_at,
+        commit_version,
+        proposal_id,
+        revision_id,
+        applied_entity_kind,
+        applied_entity_id,
+        created_at,
+        application_kind,
+        compensates_application_id,
+    ): ApplicationSnapshotRow = conn.query_row(
+        "SELECT a.id, a.commit_id, c.project_id, c.run_id, r.status, c.proposal_set_id,
+                c.request_id, c.plan_digest, c.status, c.session_id, c.created_at,
+                c.completed_at, c.version, a.proposal_id, a.revision_id,
+                a.applied_entity_kind, a.applied_entity_id, a.created_at,
+                a.application_kind, a.compensates_application_id
+           FROM narrative_proposal_applications a
+           JOIN narrative_apply_commits c ON c.id = a.commit_id
+           LEFT JOIN narrative_extraction_runs r
+             ON r.id = c.run_id AND r.project_id = c.project_id
+          WHERE a.id = ?1 AND c.project_id = ?2",
+        params![application_id, PROJECT_ID],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+                row.get(9)?,
+                row.get(10)?,
+                row.get(11)?,
+                row.get(12)?,
+                row.get(13)?,
+                row.get(14)?,
+                row.get(15)?,
+                row.get(16)?,
+                row.get(17)?,
+                row.get(18)?,
+                row.get(19)?,
+            ))
+        },
+    )?;
+    let event_id = if applied_entity_kind == "event" {
+        Value::String(applied_entity_id.clone())
+    } else {
+        Value::Null
+    };
+    Ok(json!({
+        "id": id,
+        "commitId": commit_id,
+        "projectId": project_id,
+        "runId": run_id,
+        "runStatus": run_status,
+        "proposalSetId": proposal_set_id,
+        "requestId": request_id,
+        "planDigest": plan_digest,
+        "commitStatus": commit_status,
+        "sessionId": session_id,
+        "commitCreatedAt": commit_created_at,
+        "completedAt": completed_at,
+        "commitVersion": commit_version,
+        "proposalId": proposal_id,
+        "revisionId": revision_id,
+        "appliedEntityKind": applied_entity_kind,
+        "appliedEntityId": applied_entity_id,
+        "eventId": event_id,
+        "createdAt": created_at,
+        "applicationKind": application_kind,
+        "compensatesApplicationId": compensates_application_id,
+    }))
+}
+
+fn load_legacy_projection_snapshot(conn: &Connection, application_id: &str) -> Result<Value> {
+    let (freshness_status, freshness_reason, freshness_version, freshness_updated_at): (
+        String,
+        Option<String>,
+        i64,
+        String,
+    ) = conn.query_row(
+        "SELECT status, reason_json, version, updated_at
+           FROM narrative_projection_freshness
+          WHERE application_id = ?1",
+        [application_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let freshness_reason = freshness_reason
+        .map(|raw| serde_json::from_str::<Value>(&raw))
+        .transpose()
+        .context("decoding legacy projection freshness reason")?
+        .unwrap_or(Value::Null);
+    let dependencies = query_json_rows(
+        conn,
+        "SELECT source_kind, source_key, observed_revision_token, propagation
+           FROM narrative_projection_dependencies
+          WHERE application_id = ?1
+          ORDER BY source_kind, source_key",
+        [application_id],
+        |row| {
+            Ok(json!({
+                "sourceKind": row.get::<_, String>(0)?,
+                "sourceKey": row.get::<_, String>(1)?,
+                "observedRevisionToken": row.get::<_, String>(2)?,
+                "propagation": row.get::<_, String>(3)?,
+            }))
+        },
+    )?;
+    Ok(json!({
+        "freshness": {
+            "applicationId": application_id,
+            "status": freshness_status,
+            "reasonJson": freshness_reason,
+            "version": freshness_version,
+            "updatedAt": freshness_updated_at,
+        },
+        "dependencies": dependencies,
+    }))
+}
+
 fn semantic_contents_payload(semantic: &SemanticSnapshot) -> Value {
     json!({
         "projectId": &semantic.project_id,
         "sceneId": &semantic.scene_id,
-        "ownerRunId": &semantic.owner_run_id,
+        "applicationId": &semantic.application_id,
+        "applyRunId": &semantic.apply_run_id,
+        "backfillRunId": &semantic.backfill_run_id,
         "projectCount": semantic.project_count,
         "sceneCount": semantic.scene_count,
         "e0Count": semantic.e0_count,
         "completedBackfillCount": semantic.completed_backfill_count,
         "dependencyEdgeCount": semantic.dependency_edge_count,
-        "edgeStateCount": semantic.edge_state_count,
-        "ownerFreshnessCount": semantic.owner_freshness_count,
+        "applicationCount": semantic.application_count,
+        "legacyProjectionFreshnessCount": semantic.legacy_projection_freshness_count,
+        "legacyProjectionDependencyCount": semantic.legacy_projection_dependency_count,
+        "applicationEdgeCount": semantic.application_edge_count,
+        "applicationEdgeStateCount": semantic.application_edge_state_count,
+        "applicationFreshnessCount": semantic.application_freshness_count,
         "cursorSettled": semantic.cursor_settled,
         "semanticIndexRows": semantic.semantic_index_rows,
         "sceneSourceRevision": &semantic.scene_source_revision,
@@ -844,6 +1383,8 @@ fn semantic_contents_payload(semantic: &SemanticSnapshot) -> Value {
         "scene": &semantic.scene,
         "epoch": &semantic.epoch,
         "backfill": &semantic.backfill,
+        "application": &semantic.application,
+        "legacyProjection": &semantic.legacy_projection,
         "edge": &semantic.edge,
         "feedCursor": &semantic.feed_cursor,
         "derivedStateGap": &semantic.derived_state_gap,
@@ -873,6 +1414,16 @@ fn validate_semantic_payload_digests(semantic: &SemanticSnapshot) -> Result<()> 
             "backfill",
             semantic.backfill_digest.as_str(),
             digest_json(&semantic.backfill),
+        ),
+        (
+            "application",
+            semantic.application_digest.as_str(),
+            digest_json(&semantic.application),
+        ),
+        (
+            "legacyProjection",
+            semantic.legacy_projection_digest.as_str(),
+            digest_json(&semantic.legacy_projection),
         ),
         (
             "edge",
@@ -938,34 +1489,140 @@ fn validate_fixture_semantics(semantic: &SemanticSnapshot) -> Result<()> {
         semantic.completed_backfill_count
     );
     anyhow::ensure!(
-        semantic.backfill["rows"].as_array().is_some_and(|rows| rows.len() == 1),
+        semantic.backfill["rows"]
+            .as_array()
+            .is_some_and(|rows| rows.len() == 1),
         "C2ZC_FIXTURE_BACKFILL_BOUNDARY_INVALID"
     );
+    let backfill_row = semantic.backfill["rows"]
+        .as_array()
+        .and_then(|rows| rows.first())
+        .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_BACKFILL_BOUNDARY_MISSING"))?;
+    let e0_id = semantic.epoch["rows"]
+        .as_array()
+        .and_then(|rows| rows.first())
+        .and_then(|row| row["id"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_E0_ID_MISSING"))?;
     anyhow::ensure!(
-        semantic.dependency_edge_count == 1,
-        "C2ZC_FIXTURE_EDGE_INVALID: {}",
-        semantic.dependency_edge_count
+        backfill_row["projectId"] == Value::String(PROJECT_ID.to_string())
+            && backfill_row["runKind"] == Value::String("backfill".to_string())
+            && backfill_row["workKey"] == Value::String(LEGACY_BACKFILL_WORK_KEY.to_string())
+            && backfill_row["status"] == Value::String("completed".to_string())
+            && backfill_row["semanticEpochId"] == Value::String(e0_id.to_string()),
+        "C2ZC_FIXTURE_BACKFILL_PROVENANCE_INVALID"
+    );
+    let backfill_spec: Value = serde_json::from_str(
+        backfill_row["specJson"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_BACKFILL_SPEC_MISSING"))?,
+    )
+    .context("C2ZC_FIXTURE_BACKFILL_SPEC_INVALID")?;
+    anyhow::ensure!(
+        backfill_spec["backfillAlgorithmVersion"]
+            == Value::String(LEGACY_BACKFILL_ALGORITHM_VERSION.to_string())
+            && backfill_row["specDigest"]
+                == Value::String(format!("sha256:{}", digest_plan(&backfill_spec))),
+        "C2ZC_FIXTURE_BACKFILL_SPEC_BINDING_INVALID"
+    );
+    let backfill_outcome: Value = serde_json::from_str(
+        backfill_row["outcomeSummaryJson"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_BACKFILL_OUTCOME_MISSING"))?,
+    )
+    .context("C2ZC_FIXTURE_BACKFILL_OUTCOME_INVALID")?;
+    anyhow::ensure!(
+        backfill_outcome["maintenancePhase"] == Value::String("backfill-complete".to_string())
+            && backfill_outcome["backfillAlgorithmVersion"]
+                == Value::String(LEGACY_BACKFILL_ALGORITHM_VERSION.to_string())
+            && backfill_outcome["semanticEpochId"] == Value::String(e0_id.to_string())
+            && backfill_outcome["summary"]["epoch_created"] == Value::Bool(false)
+            && backfill_outcome["summary"]["contributions_created"] == Value::Number(1.into())
+            && backfill_outcome["summary"]["edges_created"] == Value::Number(1.into())
+            && backfill_outcome["summary"]["applications_without_run_id"]
+                == Value::Number(0.into()),
+        "C2ZC_FIXTURE_BACKFILL_OUTCOME_INVALID"
     );
     anyhow::ensure!(
-        semantic.edge_state_count == 0 && semantic.owner_freshness_count == 0,
-        "C2ZC_FIXTURE_DERIVED_GAP_INVALID: edgeState={} ownerFreshness={}",
-        semantic.edge_state_count,
-        semantic.owner_freshness_count
+        semantic.application_count == 1,
+        "C2ZC_FIXTURE_APPLICATION_COUNT_INVALID: {}",
+        semantic.application_count
     );
     anyhow::ensure!(
-        semantic.cursor_settled,
-        "C2ZC_FIXTURE_CURSOR_UNSETTLED"
+        semantic.legacy_projection_freshness_count == 1
+            && semantic.legacy_projection_dependency_count == 1,
+        "C2ZC_FIXTURE_LEGACY_PROJECTION_INVALID: freshness={} dependencies={}",
+        semantic.legacy_projection_freshness_count,
+        semantic.legacy_projection_dependency_count
     );
+    anyhow::ensure!(
+        semantic.application_edge_count == 1,
+        "C2ZC_FIXTURE_APPLICATION_EDGE_INVALID: {}",
+        semantic.application_edge_count
+    );
+    anyhow::ensure!(
+        semantic.application_edge_state_count == 0 && semantic.application_freshness_count == 0,
+        "C2ZC_FIXTURE_DERIVED_GAP_INVALID: edgeState={} applicationFreshness={}",
+        semantic.application_edge_state_count,
+        semantic.application_freshness_count
+    );
+    anyhow::ensure!(semantic.cursor_settled, "C2ZC_FIXTURE_CURSOR_UNSETTLED");
     anyhow::ensure!(
         semantic.semantic_index_rows == 0,
         "C2ZC_FIXTURE_SEMANTIC_INDEX_PRESENT: {}",
         semantic.semantic_index_rows
     );
     anyhow::ensure!(
-        semantic.edge["consumerKind"] == Value::String(RUN_CONSUMER_KIND.to_string())
-            && semantic.edge["consumerKey"] == Value::String(OWNER_RUN_ID.to_string())
-            && semantic.edge["owningRunId"] == Value::String(OWNER_RUN_ID.to_string()),
+        !semantic.application_id.is_empty()
+            && semantic.application["id"] == Value::String(semantic.application_id.clone())
+            && semantic.application["projectId"] == Value::String(PROJECT_ID.to_string())
+            && semantic.application["runId"] == Value::String(semantic.apply_run_id.clone())
+            && semantic.application["runStatus"] == Value::String("completed".to_string())
+            && semantic.application["commitStatus"] == Value::String("applied".to_string())
+            && semantic.application["applicationKind"] == Value::String("normal".to_string())
+            && semantic.application["compensatesApplicationId"] == Value::Null
+            && semantic.application["proposalId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+            && semantic.application["revisionId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+            && semantic.application["appliedEntityId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+            && semantic.application["completedAt"]
+                .as_str()
+                .is_some_and(|at| !at.is_empty())
+            && semantic.application["eventId"] == semantic.application["appliedEntityId"],
+        "C2ZC_FIXTURE_APPLICATION_PROVENANCE_INVALID"
+    );
+    anyhow::ensure!(
+        semantic.edge["consumerKind"] == Value::String("application".to_string())
+            && semantic.edge["consumerKey"] == Value::String(semantic.application_id.clone())
+            && semantic.edge["owningRunId"] == Value::String(semantic.backfill_run_id.clone())
+            && semantic.edge["generatedByTransactionId"] == Value::Null,
         "C2ZC_FIXTURE_EDGE_OWNER_INVALID"
+    );
+    anyhow::ensure!(
+        semantic.legacy_projection["freshness"]["applicationId"]
+            == Value::String(semantic.application_id.clone())
+            && semantic.legacy_projection["freshness"]["status"]
+                == Value::String("fresh".to_string())
+            && semantic.legacy_projection["freshness"]["reasonJson"] == Value::Null
+            && semantic.legacy_projection["freshness"]["version"] == Value::Number(0.into()),
+        "C2ZC_FIXTURE_LEGACY_FRESHNESS_INVALID"
+    );
+    anyhow::ensure!(
+        semantic.legacy_projection["dependencies"]
+            .as_array()
+            .is_some_and(|rows| {
+                rows.len() == 1
+                    && rows[0]["sourceKind"] == Value::String("scene-body".to_string())
+                    && rows[0]["sourceKey"] == Value::String(format!("project:scene:{SCENE_ID}"))
+                    && rows[0]["observedRevisionToken"]
+                        == Value::String(semantic.scene_source_revision.clone())
+                    && rows[0]["propagation"] == Value::String("freshness-only".to_string())
+            }),
+        "C2ZC_FIXTURE_LEGACY_DEPENDENCY_INVALID"
     );
     anyhow::ensure!(
         semantic.edge_source_object_identity == format!("project:scene:{SCENE_ID}"),
@@ -987,7 +1644,8 @@ fn validate_backup(path: &Path, semantic: &SemanticSnapshot) -> Result<()> {
     validate_semantic_payload_digests(semantic)?;
     let connection = Connection::open(path).context("opening generated fixture backup")?;
     quick_check_connection(&connection)?;
-    let schema_version: i32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let schema_version: i32 =
+        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     anyhow::ensure!(
         schema_version == grimodex_core::SCHEMA_VERSION,
         "C2ZC_FIXTURE_SCHEMA_VERSION_MISMATCH: expected={} actual={}",
@@ -996,8 +1654,8 @@ fn validate_backup(path: &Path, semantic: &SemanticSnapshot) -> Result<()> {
     );
     let edge_id = connection.query_row(
         "SELECT id FROM narrative_dependency_edges
-          WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
-        params![PROJECT_ID, RUN_CONSUMER_KIND, OWNER_RUN_ID],
+          WHERE project_id = ?1 AND consumer_kind = 'application' AND consumer_key = ?2",
+        params![PROJECT_ID, semantic.application_id],
         |row| row.get::<_, String>(0),
     )?;
     let copied = collect_semantic_snapshot_from_connection(&connection, &edge_id)?;
@@ -1017,8 +1675,9 @@ fn materialize_standalone_database(database_path: &Path, backup_path: &Path) -> 
         let sidecar = path_with_suffix(database_path, suffix);
         if fs::symlink_metadata(&sidecar).is_ok() {
             reject_symlink_components(&sidecar)?;
-            fs::remove_file(&sidecar)
-                .with_context(|| format!("removing generated SQLite sidecar '{}'", sidecar.display()))?;
+            fs::remove_file(&sidecar).with_context(|| {
+                format!("removing generated SQLite sidecar '{}'", sidecar.display())
+            })?;
         }
     }
     fs::copy(backup_path, database_path).context("materializing standalone fixture database")?;
@@ -1035,12 +1694,8 @@ fn validate_backup_semantics(conn: &Connection, expected: &SemanticSnapshot) -> 
     validate_semantic_payload_digests(expected)?;
     let edge_id: String = conn.query_row(
         "SELECT id FROM narrative_dependency_edges
-          WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
-        params![
-            expected.project_id,
-            RUN_CONSUMER_KIND,
-            expected.owner_run_id
-        ],
+          WHERE project_id = ?1 AND consumer_kind = 'application' AND consumer_key = ?2",
+        params![expected.project_id, expected.application_id],
         |row| row.get(0),
     )?;
     let actual = collect_semantic_snapshot_from_connection(conn, &edge_id)?;
@@ -1127,8 +1782,20 @@ fn load_feed_cursor_snapshot(conn: &Connection) -> Result<(Value, bool)> {
             },
         )
         .optional()?;
-    let Some((consumer_id, acknowledged, lease_owner, lease_expires_at, last_error, updated_at, project_id)) = row else {
-        return Ok((json!({ "feedHead": feed_head, "cursor": Value::Null }), false));
+    let Some((
+        consumer_id,
+        acknowledged,
+        lease_owner,
+        lease_expires_at,
+        last_error,
+        updated_at,
+        project_id,
+    )) = row
+    else {
+        return Ok((
+            json!({ "feedHead": feed_head, "cursor": Value::Null }),
+            false,
+        ));
     };
     let settled = project_id == PROJECT_ID
         && consumer_id == C2ZC_RESTORE_FIXTURE_CURSOR_CONSUMER_ID
@@ -1217,7 +1884,8 @@ fn quick_check_connection(conn: &Connection) -> Result<()> {
 }
 
 fn digest_file(path: &Path) -> Result<(String, u64)> {
-    let mut file = File::open(path).with_context(|| format!("opening artifact '{}'`", path.display()))?;
+    let mut file =
+        File::open(path).with_context(|| format!("opening artifact '{}'`", path.display()))?;
     let mut hasher = Sha256::new();
     let mut size = 0_u64;
     let mut buffer = [0_u8; 1024 * 1024];
@@ -1308,7 +1976,10 @@ fn resolve_candidate(options: &FixtureBuildOptions) -> Result<CandidateResolutio
             tree
         );
     }
-    let status = git_command(&root, &["status", "--porcelain=v1", "--untracked-files=all"])?;
+    let status = git_command(
+        &root,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    )?;
     anyhow::ensure!(
         status.is_empty(),
         "C2ZC_FIXTURE_CANDIDATE_DIRTY: git status is not empty: {}",
@@ -1330,7 +2001,10 @@ fn resolve_candidate(options: &FixtureBuildOptions) -> Result<CandidateResolutio
 }
 
 fn git_rev_parse(root: &Path, revision: &str) -> Result<String> {
-    let output = git_command(root, &["rev-parse", "--verify", "--end-of-options", revision])?;
+    let output = git_command(
+        root,
+        &["rev-parse", "--verify", "--end-of-options", revision],
+    )?;
     let value = output.trim();
     anyhow::ensure!(
         (value.len() == 40 || value.len() == 64)
@@ -1366,9 +2040,8 @@ fn prepare_output_dir(candidate_root: &Path, output: &Path) -> Result<PathBuf> {
         lexical_output.display()
     );
     if !output.exists() {
-        fs::create_dir_all(output).with_context(|| {
-            format!("creating fixture output directory '{}'", output.display())
-        })?;
+        fs::create_dir_all(output)
+            .with_context(|| format!("creating fixture output directory '{}'", output.display()))?;
     }
     reject_symlink_components(output)?;
     let output = fs::canonicalize(output)?;
@@ -1394,8 +2067,9 @@ fn cleanup_unpublished_artifacts(paths: &[&Path]) -> Result<()> {
             path.display()
         );
         reject_symlink_components(path)?;
-        fs::remove_file(path)
-            .with_context(|| format!("removing unpublished fixture artifact '{}'", path.display()))?;
+        fs::remove_file(path).with_context(|| {
+            format!("removing unpublished fixture artifact '{}'", path.display())
+        })?;
     }
     Ok(())
 }
@@ -1431,7 +2105,10 @@ fn resolve_relative_artifact(base: &Path, relative: &str) -> Result<PathBuf> {
     anyhow::ensure!(
         !path.is_absolute()
             && !path.components().any(|component| {
-                matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_))
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
             }),
         "C2ZC_FIXTURE_ARTIFACT_PATH_ESCAPE: {relative}"
     );
