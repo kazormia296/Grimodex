@@ -2578,6 +2578,12 @@ fn drain_incremental_freshness_until_idle(db: &Database, label: &str) {
                     "{label}: processed cycle sequence range is invalid: {summary:?}"
                 );
             }
+            grimodex_db::narrative_extraction::IncrementalFreshnessCycleOutcome::Held(summary) => {
+                panic!(
+                    "{label}: incremental cycle unexpectedly held project {}",
+                    summary.project_id
+                );
+            }
         }
     }
     panic!("{label}: bounded incremental drain did not reach Idle");
