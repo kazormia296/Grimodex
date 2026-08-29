@@ -311,6 +311,7 @@ fn keep_first_cleanup_error<T>(
 fn restore_renderer_sql_policy(
     conn: &Connection,
     state: &RendererSqlPolicyState,
+    reserved_project_setting_guard_requested: bool,
 ) -> anyhow::Result<()> {
     let mut first_error = None;
     keep_first_cleanup_error(
@@ -321,7 +322,9 @@ fn restore_renderer_sql_policy(
         &mut first_error,
         conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>),
     );
-    keep_first_cleanup_error(&mut first_error, drop_reserved_project_setting_guard(conn));
+    if reserved_project_setting_guard_requested {
+        keep_first_cleanup_error(&mut first_error, drop_reserved_project_setting_guard(conn));
+    }
     keep_first_cleanup_error(
         &mut first_error,
         conn.set_db_config(
@@ -354,7 +357,20 @@ fn restore_renderer_sql_policy(
     }
 }
 
-fn with_untrusted_sql_policy<T, F>(conn: &Connection, operation: F) -> anyhow::Result<T>
+fn untrusted_sql_needs_reserved_project_setting_guard(conn: &Connection, sql: &str) -> bool {
+    // SQLite's own readonly classification handles comments, EXPLAIN, WITH,
+    // trigger-side-effect writes, and future syntax without a handwritten SQL
+    // parser. Invalid or otherwise unclassifiable SQL stays fail-closed.
+    conn.prepare(sql)
+        .map(|statement| !statement.readonly())
+        .unwrap_or(true)
+}
+
+fn with_untrusted_sql_policy<T, F>(
+    conn: &Connection,
+    reserved_project_setting_guard_requested: bool,
+    operation: F,
+) -> anyhow::Result<T>
 where
     F: FnOnce(&Connection) -> anyhow::Result<T>,
 {
@@ -371,7 +387,9 @@ where
     let denied_for_hook = Arc::clone(&denied_reason);
     let budget_for_hook = Arc::clone(&budget_exhausted);
     let setup_result = (|| -> rusqlite::Result<()> {
-        install_reserved_project_setting_guard(conn)?;
+        if reserved_project_setting_guard_requested {
+            install_reserved_project_setting_guard(conn)?;
+        }
         conn.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, RENDERER_SQL_LENGTH_LIMIT)?;
         conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, RENDERER_VDBE_OP_LIMIT)?;
         conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
@@ -414,7 +432,7 @@ where
         Ok(())
     })();
     if let Err(error) = setup_result {
-        let _ = restore_renderer_sql_policy(conn, &state);
+        let _ = restore_renderer_sql_policy(conn, &state, reserved_project_setting_guard_requested);
         return Err(error.into());
     }
 
@@ -425,7 +443,8 @@ where
         *columns.borrow_mut() = None;
     });
 
-    let cleanup_result = restore_renderer_sql_policy(conn, &state);
+    let cleanup_result =
+        restore_renderer_sql_policy(conn, &state, reserved_project_setting_guard_requested);
     if let Err(error) = cleanup_result {
         return Err(anyhow::anyhow!(
             "failed to restore SQLite policy after renderer SQL: {error}"
@@ -591,7 +610,10 @@ impl Database {
 
         let sql_started = Instant::now();
         let result = if origin.is_untrusted() {
-            with_untrusted_sql_policy(&conn, |conn| {
+            let reserved_project_setting_guard_requested = statements.iter().any(|statement| {
+                untrusted_sql_needs_reserved_project_setting_guard(&conn, &statement.sql)
+            });
+            with_untrusted_sql_policy(&conn, reserved_project_setting_guard_requested, |conn| {
                 Self::execute_batch_tx_with_conn(conn, statements)
             })
         } else {
@@ -794,7 +816,9 @@ impl Database {
 
         let sql_started = Instant::now();
         let result = if origin.is_untrusted() {
-            with_untrusted_sql_policy(&conn, |conn| {
+            let reserved_project_setting_guard_requested =
+                untrusted_sql_needs_reserved_project_setting_guard(&conn, sql);
+            with_untrusted_sql_policy(&conn, reserved_project_setting_guard_requested, |conn| {
                 Self::execute_with_conn(conn, sql, params, method)
             })
         } else {
@@ -1738,6 +1762,97 @@ mod tests {
             )
             .expect("read trusted seed");
         assert_eq!(rows[0]["title"], Value::from("Before"));
+    }
+
+    #[test]
+    fn untrusted_read_only_sql_does_not_churn_reserved_project_setting_guard() {
+        let db = test_db();
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TEMP TRIGGER grimodex_guard_reserved_project_setting_insert
+                 AFTER INSERT ON main.project_settings
+                 WHEN 0 BEGIN SELECT 1; END",
+            )?;
+            Ok(())
+        })
+        .expect("create benign temporary trigger sentinel");
+
+        for origin in [SqlOrigin::Renderer, SqlOrigin::McpGeneric] {
+            db.execute_untrusted(origin, "SELECT 1 AS value", &[], "all")
+                .unwrap_or_else(|error| panic!("{origin:?} read-only SQL: {error}"));
+            db.execute_batch_tx_untrusted(
+                origin,
+                &[
+                    BatchStatement {
+                        sql: "SELECT 1 AS value".to_string(),
+                        params: vec![],
+                        method: "all".to_string(),
+                    },
+                    BatchStatement {
+                        sql: "-- leading comment\nSELECT 2 AS value".to_string(),
+                        params: vec![],
+                        method: "all".to_string(),
+                    },
+                ],
+            )
+            .unwrap_or_else(|error| panic!("{origin:?} read-only batch: {error}"));
+        }
+
+        let sentinel = db
+            .execute(
+                "SELECT count(*) AS count FROM temp.sqlite_master
+                 WHERE type = 'trigger'
+                   AND name = 'grimodex_guard_reserved_project_setting_insert'",
+                &[],
+                "get",
+            )
+            .expect("inspect read-only trigger sentinel");
+        assert_eq!(sentinel[0]["count"], Value::from(1));
+    }
+
+    #[test]
+    fn untrusted_sql_readonly_probe_fails_closed_for_non_readonly_statements() {
+        let db = test_db();
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            let cases = [
+                ("SELECT 1", false),
+                ("-- leading comment\nSELECT 1", false),
+                (
+                    "WITH values_cte AS (SELECT 1) SELECT * FROM values_cte",
+                    false,
+                ),
+                ("EXPLAIN SELECT 1", false),
+                (
+                    "INSERT INTO project_settings (project_id, key, value) VALUES (?1, ?2, ?3)",
+                    true,
+                ),
+                (
+                    "UPDATE project_settings SET value = ?1 WHERE project_id = ?2 AND key = ?3",
+                    true,
+                ),
+                (
+                    "DELETE FROM project_settings WHERE project_id = ?1 AND key = ?2",
+                    true,
+                ),
+                (
+                    "WITH values_cte AS (SELECT 1) INSERT INTO project_settings
+                     (project_id, key, value) VALUES (?1, ?2, ?3)",
+                    true,
+                ),
+                ("not valid SQLite", true),
+            ];
+            for (sql, expected_guard) in cases {
+                assert_eq!(
+                    untrusted_sql_needs_reserved_project_setting_guard(conn, sql),
+                    expected_guard,
+                    "unexpected readonly probe result for {sql:?}"
+                );
+            }
+            Ok(())
+        })
+        .expect("probe readonly statements");
     }
 
     #[test]
