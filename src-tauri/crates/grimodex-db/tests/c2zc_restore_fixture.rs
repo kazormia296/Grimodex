@@ -167,11 +167,13 @@ fn offline_restore_fixture_drives_production_verify_rebuild_verify() {
         .expect("fixture builder");
     let (_restore_workspace, restore_state) =
         restore_fixture_through_production_path(&result, &output);
-    let restore_epoch = assert_restore_epoch_boundary(&restore_state);
-    let e0_id = result.manifest.semantic.epoch["rows"][0]["id"]
-        .as_str()
-        .expect("fixture E0 id");
-    assert_ne!(restore_epoch, e0_id);
+    let expected_restore_identity = expected_restore_identity(&result);
+    let restore_epoch = assert_restore_epoch_boundary(
+        &restore_state,
+        &result.manifest.semantic.epoch,
+        &expected_restore_identity,
+    );
+    assert_c2zc_marker_count(&restore_state, 0);
     assert_legacy_projection_unchanged(
         &restore_state,
         &result.manifest.semantic.application_id,
@@ -183,6 +185,7 @@ fn offline_restore_fixture_drives_production_verify_rebuild_verify() {
         run_dependency_verify_for_project(db, "c2zc-restore-fixture-project")
     })
     .expect("initial Verify");
+    assert_c2zc_marker_count(&restore_state, 0);
     assert!(!initial.report.has_consistency_issues());
     assert!(initial.report.is_incomplete_only());
     assert!(initial.report.requires_rebuild());
@@ -216,6 +219,11 @@ fn offline_restore_fixture_drives_production_verify_rebuild_verify() {
     })
     .expect("conditional Rebuild");
     assert!(matches!(rebuild, RebuildDerivedStateOutcome::Ran { .. }));
+    assert_restore_gap_inventory(
+        &restore_state,
+        &result.manifest.semantic.expected_restore_gap,
+        &restore_epoch,
+    );
     assert_legacy_projection_unchanged(
         &restore_state,
         &result.manifest.semantic.application_id,
@@ -244,48 +252,7 @@ fn offline_restore_fixture_drives_production_verify_rebuild_verify() {
         &result.manifest.semantic.application_id,
         true,
     );
-    with_db_state(&restore_state, |db| {
-        db.with_conn(|conn| {
-            let (edge_state_epoch, edge_state_freshness): (String, String) = conn.query_row(
-                "SELECT evaluated_at_epoch_id, evidence_freshness
-                   FROM narrative_dependency_edge_states
-                  WHERE project_id = ?1 AND edge_id = ?2",
-                rusqlite::params![
-                    result.manifest.semantic.project_id,
-                    result.manifest.semantic.edge["id"]
-                        .as_str()
-                        .expect("application edge id")
-                ],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            let current_epoch: String = conn.query_row(
-                "SELECT id FROM narrative_semantic_epochs
-                  WHERE project_id = ?1
-                  ORDER BY epoch_number DESC LIMIT 1",
-                rusqlite::params![result.manifest.semantic.project_id],
-                |row| row.get(0),
-            )?;
-            assert_eq!(current_epoch, restore_epoch);
-            assert_eq!(edge_state_epoch, current_epoch);
-            assert_eq!(edge_state_freshness, "fresh");
-            let (freshness_epoch, freshness_status): (String, String) = conn.query_row(
-                "SELECT semantic_epoch_id, evidence_freshness
-                   FROM narrative_consumer_freshness
-                  WHERE project_id = ?1
-                    AND consumer_kind = 'application'
-                    AND consumer_key = ?2",
-                rusqlite::params![
-                    result.manifest.semantic.project_id,
-                    result.manifest.semantic.application_id
-                ],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            assert_eq!(freshness_epoch, current_epoch);
-            assert_eq!(freshness_status, "fresh");
-            Ok::<_, anyhow::Error>(())
-        })
-    })
-    .expect("rebuild publishes current-epoch application state");
+    assert_c2zc_marker_count(&restore_state, 0);
 
     let (_cycle, liveness_capability) = with_db_state(&restore_state, |db| {
         run_incremental_freshness_cycle_with_liveness_capability(db)
@@ -300,6 +267,7 @@ fn offline_restore_fixture_drives_production_verify_rebuild_verify() {
         )
     })
     .expect("register confirmation scheduler liveness");
+    assert_c2zc_marker_count(&restore_state, 0);
     let cutover = with_db_state(&restore_state, |db| {
         db.with_conn(|conn| cut_over_workspace_freshness(conn, &liveness))
     })
@@ -317,25 +285,24 @@ fn offline_restore_fixture_drives_production_verify_rebuild_verify() {
     .expect("read canonical Application freshness after marker")
     .expect("Application freshness after marker");
     assert_eq!(canonical.evidence_freshness, "fresh");
+    assert_restore_gap_inventory(
+        &restore_state,
+        &result.manifest.semantic.expected_restore_gap,
+        &restore_epoch,
+    );
     assert_legacy_projection_unchanged(
         &restore_state,
         &result.manifest.semantic.application_id,
         &result.manifest.semantic.legacy_projection,
         &result.manifest.semantic.legacy_projection_digest,
     );
+    assert_legacy_parity_vectors(
+        &restore_state,
+        &result.manifest.semantic.application_id,
+        true,
+    );
     assert_semantic_index_footprint_is_zero(&restore_state);
-    with_db_state(&restore_state, |db| {
-        db.with_conn(|conn| {
-            let marker_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM schema_data_migrations WHERE migration_id = ?1",
-                [C2_ZC_CUTOVER_MIGRATION_ID],
-                |row| row.get(0),
-            )?;
-            assert_eq!(marker_count, 1);
-            Ok::<_, anyhow::Error>(())
-        })
-    })
-    .expect("C2-ZC marker after lifecycle");
+    assert_c2zc_marker_count(&restore_state, 1);
 
     drop(restore_state);
     fs::remove_dir_all(candidate).expect("candidate cleanup");
@@ -367,6 +334,7 @@ fn restore_fixture_through_production_path(
         switching: AtomicBool::new(false),
         open_lock: Mutex::new(()),
     };
+    assert_c2zc_marker_count(&state, 0);
     restore_backup_core(&state, RESTORE_BACKUP_NAME, || {})
         .expect("install fixture through production restore_backup_core");
     // The production restore preflight runs the idempotent full migration on
@@ -477,9 +445,172 @@ fn expected_restore_gap_vectors(gap: &Value) -> (Vec<String>, Vec<(String, Strin
     (edge_ids, consumer_keys)
 }
 
-fn assert_restore_epoch_boundary(state: &WorkspaceState) -> String {
+fn expected_restore_identity(result: &FixtureBuildResult) -> String {
+    let digest = result
+        .manifest
+        .artifacts
+        .fixture
+        .sha256
+        .strip_prefix("sha256:")
+        .expect("fixture artifact SHA-256 prefix");
+    format!("restore-image-sha256:{digest}")
+}
+
+fn assert_c2zc_marker_count(state: &WorkspaceState, expected: i64) {
+    let actual = with_db_state(state, |db| {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM schema_data_migrations WHERE migration_id = ?1",
+                [C2_ZC_CUTOVER_MIGRATION_ID],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(Into::into)
+        })
+    })
+    .expect("read C2-ZC marker count");
+    assert_eq!(actual, expected, "unexpected C2-ZC marker count");
+}
+
+fn assert_restore_gap_inventory(state: &WorkspaceState, gap: &Value, current_epoch: &str) {
+    let expected_edges = gap["edgeIdsWithoutCurrentEpochState"]
+        .as_array()
+        .expect("expected restore gap edge inventory")
+        .clone();
+    let expected_consumers = gap["consumerKeysWithoutCurrentEpochFreshness"]
+        .as_array()
+        .expect("expected restore gap consumer inventory")
+        .clone();
+    let actual = with_db_state(state, |db| {
+        db.with_conn(|conn| {
+            let actual_edges = {
+                let mut statement = conn.prepare(
+                    "SELECT id, consumer_kind, consumer_key
+                       FROM narrative_dependency_edges
+                      WHERE project_id = ?1 AND consumer_kind <> 'semantic-index'
+                      ORDER BY id ASC",
+                )?;
+                let rows = statement
+                    .query_map(["c2zc-restore-fixture-project"], |row| {
+                        Ok(json!({
+                            "id": row.get::<_, String>(0)?,
+                            "consumerKind": row.get::<_, String>(1)?,
+                            "consumerKey": row.get::<_, String>(2)?,
+                        }))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let actual_consumers = {
+                let mut statement = conn.prepare(
+                    "SELECT DISTINCT consumer_kind, consumer_key
+                       FROM narrative_dependency_edges
+                      WHERE project_id = ?1 AND consumer_kind <> 'semantic-index'
+                      ORDER BY consumer_kind ASC, consumer_key ASC",
+                )?;
+                let rows = statement
+                    .query_map(["c2zc-restore-fixture-project"], |row| {
+                        Ok(json!({
+                            "consumerKind": row.get::<_, String>(0)?,
+                            "consumerKey": row.get::<_, String>(1)?,
+                        }))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            for edge in &expected_edges {
+                let edge_id = edge["id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("expected restore gap edge id missing"))?;
+                let (epoch_id, freshness): (String, String) = conn.query_row(
+                    "SELECT evaluated_at_epoch_id, evidence_freshness
+                       FROM narrative_dependency_edge_states
+                      WHERE project_id = ?1 AND edge_id = ?2",
+                    rusqlite::params!["c2zc-restore-fixture-project", edge_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                anyhow::ensure!(
+                    epoch_id == current_epoch && freshness == "fresh",
+                    "restored edge state is not current/fresh: edge={} epoch={} freshness={}",
+                    edge_id,
+                    epoch_id,
+                    freshness
+                );
+            }
+            for consumer in &expected_consumers {
+                let consumer_kind = consumer["consumerKind"].as_str().ok_or_else(|| {
+                    anyhow::anyhow!("expected restore gap consumer kind missing")
+                })?;
+                let consumer_key = consumer["consumerKey"].as_str().ok_or_else(|| {
+                    anyhow::anyhow!("expected restore gap consumer key missing")
+                })?;
+                let (epoch_id, freshness): (String, String) = conn.query_row(
+                    "SELECT semantic_epoch_id, evidence_freshness
+                       FROM narrative_consumer_freshness
+                      WHERE project_id = ?1
+                        AND consumer_kind = ?2
+                        AND consumer_key = ?3",
+                    rusqlite::params![
+                        "c2zc-restore-fixture-project",
+                        consumer_kind,
+                        consumer_key
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                anyhow::ensure!(
+                    epoch_id == current_epoch && freshness == "fresh",
+                    "restored consumer freshness is not current/fresh: kind={} key={} epoch={} freshness={}",
+                    consumer_kind,
+                    consumer_key,
+                    epoch_id,
+                    freshness
+                );
+            }
+            Ok::<_, anyhow::Error>((actual_edges, actual_consumers))
+        })
+    })
+    .expect("read restored durable graph inventory");
+    assert_eq!(actual.0, expected_edges, "active Edge census changed");
+    assert_eq!(
+        actual.1, expected_consumers,
+        "active Consumer census changed"
+    );
+}
+
+fn assert_restore_epoch_boundary(
+    state: &WorkspaceState,
+    expected_epoch: &Value,
+    expected_restore_identity: &str,
+) -> String {
     with_db_state(state, |db| {
         db.with_conn(|conn| {
+            let actual_e0 = conn.query_row(
+                "SELECT id, project_id, epoch_number, reason,
+                        triggered_by_change_event_uid, created_at
+                   FROM narrative_semantic_epochs
+                  WHERE project_id = ?1 AND epoch_number = 0
+                  ORDER BY id ASC
+                  LIMIT 1",
+                ["c2zc-restore-fixture-project"],
+                |row| {
+                    Ok(json!({
+                        "id": row.get::<_, String>(0)?,
+                        "projectId": row.get::<_, String>(1)?,
+                        "epochNumber": row.get::<_, i64>(2)?,
+                        "reason": row.get::<_, String>(3)?,
+                        "triggeredByChangeEventUid": row.get::<_, Option<String>>(4)?,
+                        "createdAt": row.get::<_, String>(5)?,
+                    }))
+                },
+            )?;
+            let expected_e0_rows = expected_epoch["rows"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("manifest E0 payload missing"))?;
+            anyhow::ensure!(
+                expected_e0_rows.len() == 1 && actual_e0 == expected_e0_rows[0],
+                "restore fixture E0 payload differs from manifest: actual={} expected={}",
+                actual_e0,
+                expected_e0_rows.first().unwrap_or(&Value::Null)
+            );
             let mut statement = conn.prepare(
                 "SELECT id, epoch_number, reason, triggered_by_change_event_uid
                    FROM narrative_semantic_epochs
@@ -512,10 +643,7 @@ fn assert_restore_epoch_boundary(state: &WorkspaceState) -> String {
                 .ok_or_else(|| anyhow::anyhow!("restore fixture E1 missing"))?;
             anyhow::ensure!(
                 e1.2 == "restore"
-                    && e1
-                        .3
-                        .as_deref()
-                        .is_some_and(|identity| identity.starts_with("restore-image-sha256:"))
+                    && e1.3.as_deref() == Some(expected_restore_identity)
                     && e1.0 != e0.0,
                 "restore fixture E1 boundary invalid: {:?}",
                 e1
