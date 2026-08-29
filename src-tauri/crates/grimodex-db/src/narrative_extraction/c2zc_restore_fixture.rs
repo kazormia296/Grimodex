@@ -571,6 +571,12 @@ fn create_fixture_domain(db: &Database) -> Result<FixtureApplication> {
     db.with_conn(|conn| create_epoch_in_tx(conn, PROJECT_ID, "initial", None))
         .context("creating fixture E0 through the semantic epoch writer")?;
     enable_fixture_manual_apply(db)?;
+    // Consume the scene creation Feed before the proposal is declared.  The
+    // later Apply Feed addresses the newly-created event, not the scene-body
+    // Source Basis used by the proposal.  This keeps the proposal-revision
+    // Edge's historical state out of the restore boundary while the final
+    // settle after Backfill still proves the canonical cursor is idle.
+    settle_change_feed(db)?;
     create_fixture_application(db)
 }
 
