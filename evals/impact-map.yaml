@@ -207,6 +207,8 @@ rules:
       - src/application/narrative-extraction/extractionCoordinator.test.ts
       - electron/shared/ipcContract.ts
       - electron/shared/ipcContract.test.ts
+      - scripts/quality/validate-change-feed-writers.mjs
+      - scripts/quality/validate-change-feed-writers.test.mjs
       - src-tauri/crates/grimodex-core/src/canonical_json.rs
       - src-tauri/crates/grimodex-core/tests/canonical_json.rs
       - src-tauri/crates/grimodex-core/src/narrative_ir.rs

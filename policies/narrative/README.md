@@ -64,7 +64,11 @@ Project INSERT/DELETE is also structurally protected. `project_create`
 publishes the Project scope and its four builtin Codex types in one trusted
 transaction; the builtin catalog is the ordered Feed payload. Bootstrap, sample
 seed, and scan staging creation retain their fixed non-user initialization
-contracts.
+contracts. The canonical project-birth inventory is exactly
+`project.create`, `import.session.apply`, and `scan.import.publish`.
+`scan.staging-project.create` is hidden and noncanonical staging allocation, not
+product project-create proof; completed scans promote only through the typed
+`scan_staging_project_publish` Electron IPC/N-API route owned by shared Rust.
 
 Map has an explicit boundary. `map_write_bundle` is the only Canonical Native
 Map aggregate writer and owns promotions that create Scene, Snippet, Codex Entry,
@@ -185,7 +189,7 @@ binds PR #559's clean candidate base/head/tree to the byte-identical tree merged
 as `651791655177538ee02bc7e773f7d98c534ea324`. Credentialed/live-model Heavy
 work remains deferred and is not counted as passing NIR-0 evidence.
 
-## Gate C2 — FOUNDATION COMPLETE; C2-ZC FINAL ACCEPTANCE CANDIDATE
+## Gate C2 — FOUNDATION COMPLETE; C2-ZC CANDIDATE
 
 Gate C2 begins from ADR 005's existing "Authority matrix and C2 start
 condition" checklist (Mutation Route / Source Event Contract / Object
@@ -198,8 +202,8 @@ file; this section is the running status record, alongside PR history and the
 accepted ADR/policy contracts.
 
 ```text
-Gate C2 — FOUNDATION COMPLETE; C2-ZC final acceptance candidate recorded;
-accepted iff the exact candidate has the complete gate receipt
+Gate C2 — FOUNDATION COMPLETE; C2-ZC focused-green code candidate recorded;
+final acceptance pending the complete gate receipt
   Contract / Registry / Ledger Spine (C2-00): complete
   Schema / Transport Extension Spine (C2-01): complete
   Wave 1 foundation lanes:                    complete
@@ -209,7 +213,7 @@ accepted iff the exact candidate has the complete gate receipt
   C2-3 Finding identity / Attention re-home:  complete; merged through PR #556/#559
   C2-5 shared triggers / lifecycle recovery:  complete; merged through PR #556/#559
   C2-ZB Application re-key migration:         complete; SCHEMA 32 merged and hardened
-  C2-ZC Canonical Authority Cutover:          final acceptance candidate; see the complete gate receipt below
+  C2-ZC Canonical Authority Cutover:          focused-green candidate; final acceptance pending
 ```
 
 ### C2-1 Change-Feed-driven incremental Freshness runtime
@@ -264,16 +268,12 @@ retrieval work. C2-3's
 three-layer Finding identity and exact Attention re-homing, C2-5's automatic
 Backfill/Verify/Rebuild-Derived scheduling and shared cross-Run-Kind recovery,
 and C2-ZB's schema-owned Application re-key are merged through PR #556 and PR
-#559. C2-ZC has a final acceptance candidate. It becomes an accepted canonical
-authority switch if and only if the complete C2-ZC gate receipt exists. The
-implementation candidate is
-`3010e13e4a91da99eae16cb9f8bd773177c2ac58` against
-`78732ff5635da220396bd606010dd53f4d0350a9`; its standalone real Electron
-journey and pre-closeout candidate-bound Quick/verify passed. The committed
-documentation candidate is accepted iff it has its own clean Quick/verify, Full
-from stage 1, Full receipt verification, and the Sol final. Until that receipt
-exists, Generic Consumer Freshness is not declared the accepted canonical read
-authority and the Legacy projection remains compatibility behavior.
+#559. C2-ZC is a focused-green code candidate. It becomes an accepted
+canonical-authority switch only after the complete C2-ZC gate receipt exists.
+The product journey, clean Full CI and receipt verification, and the Sol final
+remain pending. Until those gates are recorded, Generic Consumer Freshness is
+not the accepted canonical read authority and the Legacy projection remains
+compatibility behavior.
 
 The paragraphs below preserve the landing rationale for earlier C2 slices;
 their historical environment-specific validation caveats are not the current

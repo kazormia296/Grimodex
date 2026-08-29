@@ -213,6 +213,10 @@ requirements:
       - agent-tool-manifest.json
       - policies/narrative/narrative-run-kind-policy.json
       - scripts/quality/validate-run-kind-policy.mjs
+      - policies/narrative/change-feed-writers.json
+      - scripts/quality/validate-change-feed-writers.mjs
+      - src/features/import/scan/scanImportOperations.ts
+      - src/features/import/scan/scanStagingProject.ts
       - policies/narrative/narrative-failure-policy.json
       - scripts/quality/validate-execution-state-authority.mjs
       - electron/main/narrativeFreshness.ts
@@ -245,6 +249,7 @@ requirements:
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/validate-run-kind-policy.test.mjs
+      - scripts/quality/validate-change-feed-writers.test.mjs
       - scripts/quality/validate-execution-state-authority.test.mjs
       - scripts/quality/narrative-maintenance-boundary.test.mjs
       - electron/main/narrativeFreshness.test.ts
@@ -436,6 +441,7 @@ requirements:
       - policies/narrative/semantic-core-authorities.json
       - policies/narrative/narrative-consumer-contract.json
       - policies/narrative/narrative-artifact-authority.json
+      - policies/narrative/change-feed-writers.json
       - policies/narrative/README.md
       - policies/narrative/fixtures/artifact-authority.json
       - policies/narrative/narrative-ir-contract.json
@@ -477,6 +483,8 @@ requirements:
       - src-tauri/crates/grimodex-core/src/narrative_scope_authority_basis.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
       - scripts/quality/validate-semantic-core-boundary.test.mjs
+      - scripts/quality/validate-change-feed-writers.mjs
+      - scripts/quality/validate-change-feed-writers.test.mjs
       - scripts/quality/validate-narrative-ir-contract.mjs
       - docs/plans/narrative-ir-nir0-implementation-plan.md
       - docs/plans/narrative-c2zc-canonical-cutover-impact-matrix.md

@@ -62,6 +62,25 @@ const EXCLUSION_REASONS = new Set([
   "untrusted-generic-sql",
   "workspace-import",
 ]);
+const VISIBILITIES = new Set(["visible", "hidden"]);
+const CANONICALITIES = new Set(["canonical", "noncanonical"]);
+const CANONICAL_BIRTHS = Object.freeze([
+  { operationId: "project.create.renderer", opType: "project.create" },
+  {
+    operationId: "import.session.apply.internal",
+    opType: "import.session.apply",
+  },
+  { operationId: "scan.import.publish", opType: "scan.import.publish" },
+]);
+const SCAN_STAGING_OPERATION_ID = "scan.staging-project.create";
+const SCAN_PUBLISH_OPERATION_ID = "scan.import.publish";
+const SCAN_PUBLISH_ROUTE = "scan_staging_project_publish";
+const SHARED_RUST_WRITER_MODULE =
+  "src-tauri/crates/grimodex-db/src/domain_writes.rs";
+const SCAN_IMPORT_OPERATIONS_MODULE =
+  "src/features/import/scan/scanImportOperations.ts";
+const SCAN_STAGING_PROJECT_MODULE =
+  "src/features/import/scan/scanStagingProject.ts";
 
 // Gate C2 lets each Wave lane own one operation-fragment file instead of
 // editing the single root manifest, so parallel lanes stop colliding on the
@@ -172,6 +191,7 @@ const ELECTRON_MUTATING_ROUTES = [
   "runtime_performance_seed",
   "authorship_replace_lane",
   "scan_staging_project_create",
+  "scan_staging_project_publish",
   "trash_bin_create",
   "trash_bin_delete",
   "trash_bin_clear_all",
@@ -376,6 +396,226 @@ function sourceContainsSymbol(source, symbol) {
 
 function sourceContainsRoute(source, route) {
   return new RegExp(`\\b${escapeRegExp(route)}\\b`).test(source);
+}
+
+function validateOperationClassification(operation, errors) {
+  const label = `operation ${operation.id}`;
+  if (
+    operation.visibility !== undefined &&
+    !VISIBILITIES.has(operation.visibility)
+  ) {
+    errors.push(`${label} visibility is invalid: ${operation.visibility}`);
+  }
+  if (
+    operation.canonicality !== undefined &&
+    !CANONICALITIES.has(operation.canonicality)
+  ) {
+    errors.push(`${label} canonicality is invalid: ${operation.canonicality}`);
+  }
+
+  if (operation.id === SCAN_STAGING_OPERATION_ID) {
+    if (operation.visibility !== "hidden") {
+      errors.push(`${operation.id} must be hidden`);
+    }
+    if (operation.canonicality !== "noncanonical") {
+      errors.push(`${operation.id} must be noncanonical`);
+    }
+    if (operation.feedPolicy !== "excluded") {
+      errors.push(
+        `${operation.id} must remain excluded from the canonical feed`,
+      );
+    }
+    if (operation.exclusionReason !== "staging-only") {
+      errors.push(`${operation.id} must use the staging-only exclusion reason`);
+    }
+    if (operation.canonical !== null) {
+      errors.push(`${operation.id} canonical must remain null`);
+    }
+  }
+
+  if (operation.id === SCAN_PUBLISH_OPERATION_ID) {
+    if (operation.visibility !== "visible") {
+      errors.push(`${operation.id} must be visible`);
+    }
+    if (operation.canonicality !== "canonical") {
+      errors.push(`${operation.id} must be canonical`);
+    }
+    if (operation.feedPolicy !== "required") {
+      errors.push(`${operation.id} must be required by the canonical feed`);
+    }
+    if (operation.canonical?.opType !== SCAN_PUBLISH_OPERATION_ID) {
+      errors.push(
+        `${operation.id} canonical.opType must be ${SCAN_PUBLISH_OPERATION_ID}`,
+      );
+    }
+    if (operation.implementation?.module !== SHARED_RUST_WRITER_MODULE) {
+      errors.push(
+        `${operation.id} must be owned by shared Rust module ${SHARED_RUST_WRITER_MODULE}`,
+      );
+    }
+    for (const surface of ["electron-ipc", "napi"]) {
+      if (
+        !operation.routes?.some(
+          (route) =>
+            route?.surface === surface && route.name === SCAN_PUBLISH_ROUTE,
+        )
+      ) {
+        errors.push(
+          `${operation.id} must declare ${surface}:${SCAN_PUBLISH_ROUTE}`,
+        );
+      }
+    }
+  }
+}
+
+function validateCanonicalBirthInventory(manifest, operations, errors) {
+  const hasProductionBirthOperation = operations.some((operation) =>
+    CANONICAL_BIRTHS.some((birth) => birth.operationId === operation?.id),
+  );
+  const hasScanStagingOperation = operations.some(
+    (operation) => operation?.id === SCAN_STAGING_OPERATION_ID,
+  );
+  if (!hasProductionBirthOperation && !hasScanStagingOperation) return;
+
+  if (!Array.isArray(manifest.canonicalBirths)) {
+    errors.push(
+      "change feed writer manifest canonicalBirths must enumerate project.create, import.session.apply, and scan.import.publish",
+    );
+    return;
+  }
+  if (manifest.canonicalBirths.length !== CANONICAL_BIRTHS.length) {
+    errors.push(
+      `change feed writer manifest canonicalBirths must contain exactly ${CANONICAL_BIRTHS.length} entries`,
+    );
+  }
+
+  const operationIds = new Set(operations.map((operation) => operation?.id));
+  const declaredIds = new Set();
+  for (const [index, birth] of manifest.canonicalBirths.entries()) {
+    const label = `canonicalBirths[${index}]`;
+    if (!isObject(birth) || !nonEmptyString(birth.operationId)) {
+      errors.push(`${label} must declare an operationId`);
+      continue;
+    }
+    if (!nonEmptyString(birth.opType)) {
+      errors.push(`${label}.opType must be non-empty`);
+    }
+    if (declaredIds.has(birth.operationId)) {
+      errors.push(`${label} duplicates operationId ${birth.operationId}`);
+    }
+    declaredIds.add(birth.operationId);
+    if (!operationIds.has(birth.operationId)) {
+      errors.push(
+        `${label} references missing canonical birth operation ${birth.operationId}`,
+      );
+    }
+  }
+
+  for (const expected of CANONICAL_BIRTHS) {
+    const declared = manifest.canonicalBirths.find(
+      (birth) => birth?.operationId === expected.operationId,
+    );
+    if (!declared) {
+      errors.push(
+        `canonicalBirths is missing ${expected.operationId} (${expected.opType})`,
+      );
+      continue;
+    }
+    if (declared.opType !== expected.opType) {
+      errors.push(
+        `canonicalBirths ${expected.operationId} must use opType ${expected.opType}`,
+      );
+    }
+    const operation = operations.find(
+      (candidate) => candidate?.id === expected.operationId,
+    );
+    if (!operation) continue;
+    if (operation.feedPolicy === "excluded") {
+      errors.push(
+        `canonical birth ${expected.operationId} cannot be feedPolicy excluded`,
+      );
+    }
+    if (operation.canonical?.opType !== expected.opType) {
+      errors.push(
+        `canonical birth ${expected.operationId} must declare canonical.opType ${expected.opType}`,
+      );
+    }
+  }
+}
+
+function validateRendererScanPublishContract(repoRoot, errors, sourceCache) {
+  const absolute = safeRepoPath(
+    repoRoot,
+    SCAN_IMPORT_OPERATIONS_MODULE,
+    "scan.import.publish renderer contract",
+    errors,
+  );
+  if (!absolute || !existsSync(absolute)) {
+    if (absolute) {
+      errors.push(
+        `scan.import.publish renderer contract module does not exist: ${SCAN_IMPORT_OPERATIONS_MODULE}`,
+      );
+    }
+    return;
+  }
+  let source = sourceCache.get(absolute);
+  if (source === undefined) {
+    source = readFileSync(absolute, "utf8");
+    sourceCache.set(absolute, source);
+  }
+  const start = source.indexOf("async publishStagingProject");
+  const end = source.indexOf("async discardStagingProject", start);
+  if (start < 0 || end <= start) {
+    errors.push(
+      "scan.import.publish renderer contract must expose publishStagingProject",
+    );
+    return;
+  }
+  const publishBody = source.slice(start, end);
+  if (
+    /deleteProjectSetting\(\s*projectId\s*,\s*SCAN_IMPORT_STATE_KEY\s*\)/.test(
+      publishBody,
+    )
+  ) {
+    errors.push(
+      "scan.import.publish renderer contract must not delete SCAN_IMPORT_STATE_KEY generically",
+    );
+  }
+  const delegatesToPublishHelper = /\bpublishScanStagingProject\s*\(/.test(
+    publishBody,
+  );
+  if (sourceContainsRoute(publishBody, SCAN_PUBLISH_ROUTE)) return;
+  if (!delegatesToPublishHelper) {
+    errors.push(
+      `scan.import.publish renderer contract must call ${SCAN_PUBLISH_ROUTE} or delegate to publishScanStagingProject`,
+    );
+    return;
+  }
+
+  const helperAbsolute = safeRepoPath(
+    repoRoot,
+    SCAN_STAGING_PROJECT_MODULE,
+    "scan.import.publish renderer publish helper",
+    errors,
+  );
+  if (!helperAbsolute || !existsSync(helperAbsolute)) {
+    if (helperAbsolute) {
+      errors.push(
+        `scan.import.publish renderer publish helper module does not exist: ${SCAN_STAGING_PROJECT_MODULE}`,
+      );
+    }
+    return;
+  }
+  let helperSource = sourceCache.get(helperAbsolute);
+  if (helperSource === undefined) {
+    helperSource = readFileSync(helperAbsolute, "utf8");
+    sourceCache.set(helperAbsolute, helperSource);
+  }
+  if (!sourceContainsRoute(helperSource, SCAN_PUBLISH_ROUTE)) {
+    errors.push(
+      `scan.import.publish renderer publish helper must call ${SCAN_PUBLISH_ROUTE}`,
+    );
+  }
 }
 
 function readJson(filePath, label, errors) {
@@ -948,6 +1188,8 @@ export function validateChangeFeedWriters({
       errors.push(`${label} scope is invalid: ${operation.scope}`);
     }
 
+    validateOperationClassification(operation, errors);
+
     if (!Array.isArray(operation.writerIds)) {
       errors.push(`${label} writerIds must be an array`);
     } else {
@@ -1021,6 +1263,15 @@ export function validateChangeFeedWriters({
       errors,
       sourceCache,
     );
+  }
+
+  validateCanonicalBirthInventory(manifest, manifest.operations, errors);
+  if (
+    manifest.operations.some(
+      (operation) => operation?.id === SCAN_PUBLISH_OPERATION_ID,
+    )
+  ) {
+    validateRendererScanPublishContract(repoRoot, errors, sourceCache);
   }
 
   validateMcpAuthorityContract(manifest, repoRoot, errors);

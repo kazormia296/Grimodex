@@ -4,9 +4,7 @@
 
 - **Lifecycle:** Active mutable roadmap
 - **Last updated:** 2026-08-28
-- **Current focus:** Final C2-ZC acceptance candidate; accepted iff the exact
-  candidate has clean Quick/verify, Full from stage 1/verify, and the Sol
-  final; until that receipt exists NIR-1 remains blocked
+- **Current focus:** C2-ZC canonical-authority evidence; NIR-1 remains blocked
 - **North star:** **本文に追従し、根拠を示し、人間の修正を覚える Living Story Bible**
 
 This document is the canonical **mutable implementation and product roadmap** for Narrative Semantic Core, AI-assisted extraction, incremental maintenance, and the Living Story Bible product surface.
@@ -63,7 +61,7 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 | C2-5B contract-aware activation    | **Complete** | Durable Backfill/Verify/Rebuild lifecycle ownership, current-contract evidence, bounded recovery, live-authority dispatch, Maintenance Inbox routing, and product journeys are merged through PR #556 and PR #559.                                                                                                                                                               |
 | C2-ZA cutover preparation          | **Complete** | SELECT-only legacy/Generic parity measurement, fail-closed per-workspace readiness, and `application` re-key dry-run classification are merged without changing the canonical read authority.                                                                                                                                                                                    |
 | C2-ZB Application re-key migration | **Complete** | SCHEMA 32 performs the schema-owned, all-project preflighted Application re-key, Finding/Attention re-home, derived invalidation, migration Epoch, and final marker atomically. PR #559 closed the remaining ownership, restart, and compatibility findings.                                                                                                                        |
-| C2-ZC canonical cutover            | **Final acceptance candidate — accepted iff the exact candidate passes all gates** | The standalone real Electron journey and pre-closeout candidate-bound Quick/verify passed for implementation HEAD `3010e13e4a91da99eae16cb9f8bd773177c2ac58` against `origin/master` `78732ff5635da220396bd606010dd53f4d0350a9`. The committed documentation candidate is accepted iff it has clean Quick → verify → Full from stage 1 → verify and the Sol final; until that receipt exists it does not establish an accepted canonical cutover and NIR-1 remains blocked. |
+| C2-ZC canonical cutover            | **Blocked — code candidate only** | Focused code and contract evidence are green, but the production product journey, clean Full CI plus receipt verification, and Sol final are not complete. The candidate therefore does not establish a canonical cutover or unblock NIR-1. |
 | First Retrieval Vertical Slice     | **Blocked**  | NIR-1 cannot start until C2-ZC final acceptance is recorded. The minimum shared Narrative IR contract is certified by NIR-0, but the retrieval dependency on the C2-ZC authority remains unmet. |
 | Living Story Bible product Epics   | **Planned**  | Correction Memory, live Structure Health, Change Review, reports, graph exploration, and Map proposals are defined below.                                                                                                                                                                                                                                                        |
 
@@ -78,7 +76,7 @@ C2-ZA: parity/readiness/re-key dry-run ── complete
 C2-ZB: `application` re-key + Attention re-home migration ── complete
 NIR-0: Chronicle `scene-event@1` add-only pilot ── certified
   ↓
-C2-ZC: Generic Consumer Freshness becomes canonical ── final acceptance candidate; accepted iff the exact candidate has complete clean Quick/verify/Full-from-stage-1/verify and Sol receipt
+C2-ZC: Generic Consumer Freshness becomes canonical ── candidate; final acceptance pending
   ↓
 First Retrieval Vertical Slice
   ↓
@@ -93,7 +91,7 @@ Readable reports and graph exploration
 Map draft proposals and later visualization products
 ```
 
-The ordering after PR #536 remains intentional: **Consumer granularity → Finding identity → lifecycle activation → Application re-key → canonical cutover**. The first four joins are complete, while the C2-ZC authority switch is recorded as a final acceptance candidate accepted iff its own clean Quick/verify/Full/verify sequence and the Sol final are recorded. The scheduler owns the one-way activation; later NIR-1 work must not reopen it or smuggle another authority into NIR-0 certification.
+The ordering after PR #536 remains intentional: **Consumer granularity → Finding identity → lifecycle activation → Application re-key → canonical cutover**. The first four joins are complete, while the C2-ZC authority switch remains a focused-green candidate pending its final evidence gates. The scheduler owns the one-way activation; later NIR-1 work must not reopen it or smuggle another authority into NIR-0 certification.
 
 ### Parallel branch ownership
 
@@ -304,7 +302,7 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 ## C2-Z: Canonical authority cutover
 
-**State:** C2-ZC final acceptance candidate — accepted iff the exact candidate has the complete gate receipt
+**State:** C2-ZC candidate — final acceptance pending
 
 ### C2-ZA read-only preparation
 
@@ -323,7 +321,13 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 ### C2-ZC canonical switch boundary
 
-**State:** Final acceptance candidate — accepted iff the exact candidate has the complete gate receipt
+**State:** Blocked — focused-green code candidate; final acceptance pending
+
+Canonical project births are exactly `project.create`,
+`import.session.apply`, and `scan.import.publish`. Scan staging allocation is
+an explicitly hidden, noncanonical workspace operation and is not product
+project-create proof; the typed `scan_staging_project_publish` route is the
+only promotion path into the canonical scan import operation.
 
 - The existing main-only Freshness scheduler runs one bounded cycle, revalidates
   the current workspace authority/generation, and mints a capability-bound
@@ -336,13 +340,9 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
   shared-Rust/database authority boundary; renderer and preload gain no
   cutover surface.
 
-Focused evidence does not constitute acceptance. The standalone real Electron
-journey and pre-closeout candidate-bound Quick/verify are recorded for
-implementation HEAD `3010e13e4a91da99eae16cb9f8bd773177c2ac58`; the committed
-documentation candidate is accepted iff it has its own clean Quick/verify, Full
-from stage 1, Full receipt verification, and the Sol final. Until that receipt
-exists, the marker is not an accepted canonical cutover and NIR-1 remains
-blocked.
+Focused evidence does not constitute acceptance. The product journey, clean
+Full CI and its receipt verification, and the Sol final remain required before
+the marker can be treated as an accepted canonical cutover.
 
 ### Per-Workspace cutover requirements
 
@@ -457,7 +457,7 @@ evaluations remain explicitly deferred and were not counted as passing evidence.
 
 ## NIR-1: First Retrieval Vertical Slice
 
-**State:** Blocked until the C2-ZC final acceptance receipt exists
+**State:** Blocked — C2-ZC final acceptance is not complete
 
 NIR-1 cannot start from focused-green code evidence. Its start condition is a
 recorded C2-ZC product journey, clean Full CI with receipt verification, and
