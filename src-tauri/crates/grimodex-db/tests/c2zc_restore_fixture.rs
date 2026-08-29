@@ -8,9 +8,10 @@ use grimodex_db::narrative_extraction::c2zc_restore_fixture::{
 };
 use grimodex_db::narrative_extraction::{
     canonical_application_freshness, cut_over_workspace_freshness, digest_plan,
-    rebuild_narrative_derived_state_for_project, record_live_scheduler_heartbeat,
-    run_dependency_verify_for_project, run_incremental_freshness_cycle_with_liveness_capability,
-    RebuildDerivedStateOutcome, C2_ZC_CUTOVER_MIGRATION_ID,
+    inspect_legacy_generic_freshness_parity, rebuild_narrative_derived_state_for_project,
+    record_live_scheduler_heartbeat, run_dependency_verify_for_project,
+    run_incremental_freshness_cycle_with_liveness_capability, RebuildDerivedStateOutcome,
+    C2_ZC_CUTOVER_MIGRATION_ID,
 };
 use grimodex_db::{with_db_state, ActiveWorkspace, Database, WorkspaceAuthority, WorkspaceState};
 use serde_json::{json, Value};
@@ -81,6 +82,28 @@ fn offline_restore_fixture_builder_has_a_candidate_bound_contract() {
     assert_eq!(
         result.manifest.semantic.edge["consumerKey"],
         Value::String(result.manifest.semantic.application_id.clone())
+    );
+    let expected_gap = &result.manifest.semantic.expected_restore_gap;
+    let expected_edges = expected_gap["edgeIdsWithoutCurrentEpochState"]
+        .as_array()
+        .expect("expected restore gap edge inventory");
+    assert_eq!(expected_edges.len(), 2);
+    assert!(expected_edges.iter().any(|edge| {
+        edge["consumerKind"] == Value::String("application".to_string())
+            && edge["consumerKey"] == Value::String(result.manifest.semantic.application_id.clone())
+            && edge["id"].as_str().is_some_and(|id| !id.is_empty())
+    }));
+    assert!(expected_edges.iter().any(|edge| {
+        edge["consumerKind"] == Value::String("proposal-revision".to_string())
+            && edge["consumerKey"] == result.manifest.semantic.application["revisionId"]
+            && edge["id"].as_str().is_some_and(|id| !id.is_empty())
+    }));
+    assert_eq!(
+        expected_gap["consumerKeysWithoutCurrentEpochFreshness"]
+            .as_array()
+            .expect("expected restore gap consumer inventory")
+            .len(),
+        2
     );
     assert_eq!(
         result.manifest.semantic.application["id"],
@@ -163,32 +186,20 @@ fn offline_restore_fixture_drives_production_verify_rebuild_verify() {
     assert!(!initial.report.has_consistency_issues());
     assert!(initial.report.is_incomplete_only());
     assert!(initial.report.requires_rebuild());
-    let application_edge_id = result.manifest.semantic.edge["id"]
-        .as_str()
-        .expect("application edge id");
-    let application_edge_gaps = initial
-        .report
-        .edge_ids_without_current_epoch_state
-        .iter()
-        .filter(|edge_id| edge_id.as_str() == application_edge_id)
-        .cloned()
-        .collect::<Vec<_>>();
-    assert_eq!(application_edge_gaps, vec![application_edge_id.to_string()]);
-    let application_freshness_gaps = initial
-        .report
-        .consumer_keys_without_current_epoch_freshness
-        .iter()
-        .filter(|(kind, key)| {
-            kind == "application" && key == &result.manifest.semantic.application_id
-        })
-        .cloned()
-        .collect::<Vec<_>>();
+    let (expected_edge_ids, expected_consumer_keys) =
+        expected_restore_gap_vectors(&result.manifest.semantic.expected_restore_gap);
     assert_eq!(
-        application_freshness_gaps,
-        vec![(
-            "application".to_string(),
-            result.manifest.semantic.application_id.clone()
-        )]
+        initial.report.edge_ids_without_current_epoch_state,
+        expected_edge_ids
+    );
+    assert_eq!(
+        initial.report.consumer_keys_without_current_epoch_freshness,
+        expected_consumer_keys
+    );
+    assert_legacy_parity_vectors(
+        &restore_state,
+        &result.manifest.semantic.application_id,
+        false,
     );
     assert!(initial
         .report
@@ -219,7 +230,20 @@ fn offline_restore_fixture_drives_production_verify_rebuild_verify() {
     assert!(confirmation.report.is_consistent());
     assert!(confirmation.report.is_complete());
     assert!(!confirmation.report.requires_rebuild());
+    assert!(confirmation
+        .report
+        .edge_ids_without_current_epoch_state
+        .is_empty());
+    assert!(confirmation
+        .report
+        .consumer_keys_without_current_epoch_freshness
+        .is_empty());
     assert!(confirmation.report.legacy_mirror_migration_parity.passed);
+    assert_legacy_parity_vectors(
+        &restore_state,
+        &result.manifest.semantic.application_id,
+        true,
+    );
     with_db_state(&restore_state, |db| {
         db.with_conn(|conn| {
             let (edge_state_epoch, edge_state_freshness): (String, String) = conn.query_row(
@@ -351,30 +375,106 @@ fn restore_fixture_through_production_path(
     // known migration bootstrap through the same trusted domain writer used
     // by the fixture builder, so cutover readiness covers the fixture's one
     // restored project rather than an unrelated migration artifact.
-    let has_bootstrap_project = with_db_state(&state, |db| {
+    assert_project_ids(&state, &["c2zc-restore-fixture-project", "default-project"]);
+    with_db_state(&state, |db| {
+        project_delete(
+            db,
+            ProjectDeletePayload {
+                project_id: "default-project".to_string(),
+            },
+        )
+        .map_err(Into::into)
+    })
+    .expect("remove production migration bootstrap project through typed writer");
+    assert_project_ids(&state, &["c2zc-restore-fixture-project"]);
+    (workspace, state)
+}
+
+fn assert_project_ids(state: &WorkspaceState, expected: &[&str]) {
+    let actual = with_db_state(state, |db| {
         db.with_conn(|conn| {
-            conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
-                ["default-project"],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(Into::into)
+            let mut statement = conn.prepare("SELECT id FROM projects ORDER BY id ASC")?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(ids)
         })
     })
-    .expect("inspect production migration bootstrap project");
-    if has_bootstrap_project {
-        with_db_state(&state, |db| {
-            project_delete(
-                db,
-                ProjectDeletePayload {
-                    project_id: "default-project".to_string(),
-                },
-            )
-            .map_err(Into::into)
+    .expect("read restored project set");
+    assert_eq!(
+        actual,
+        expected
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect::<Vec<_>>()
+    );
+}
+
+fn assert_legacy_parity_vectors(
+    state: &WorkspaceState,
+    application_id: &str,
+    generic_row_present: bool,
+) {
+    let parity = with_db_state(state, |db| {
+        db.with_conn(|conn| {
+            inspect_legacy_generic_freshness_parity(conn, "c2zc-restore-fixture-project")
         })
-        .expect("remove production migration bootstrap project through typed writer");
-    }
-    (workspace, state)
+    })
+    .expect("read Legacy/Generic parity vectors");
+    let application_ids = vec![application_id.to_string()];
+    let generic_application_ids = if generic_row_present {
+        application_ids.clone()
+    } else {
+        Vec::new()
+    };
+    let missing_generic_application_ids = if generic_row_present {
+        Vec::new()
+    } else {
+        application_ids.clone()
+    };
+    assert_eq!(parity.legacy_application_ids, application_ids);
+    assert_eq!(parity.generic_application_ids, generic_application_ids);
+    assert!(parity.missing_legacy_application_ids.is_empty());
+    assert_eq!(
+        parity.missing_generic_application_ids,
+        missing_generic_application_ids
+    );
+    assert!(parity.status_mismatches.is_empty());
+    assert!(parity.dependency_mismatches.is_empty());
+    assert!(parity.unsupported_generic_values.is_empty());
+    assert!(parity.invalid_legacy_dependencies.is_empty());
+}
+
+fn expected_restore_gap_vectors(gap: &Value) -> (Vec<String>, Vec<(String, String)>) {
+    let edge_ids = gap["edgeIdsWithoutCurrentEpochState"]
+        .as_array()
+        .expect("expected restore gap edge inventory")
+        .iter()
+        .map(|edge| {
+            edge["id"]
+                .as_str()
+                .expect("expected restore gap edge id")
+                .to_string()
+        })
+        .collect();
+    let consumer_keys = gap["consumerKeysWithoutCurrentEpochFreshness"]
+        .as_array()
+        .expect("expected restore gap consumer inventory")
+        .iter()
+        .map(|consumer| {
+            (
+                consumer["consumerKind"]
+                    .as_str()
+                    .expect("expected restore gap consumer kind")
+                    .to_string(),
+                consumer["consumerKey"]
+                    .as_str()
+                    .expect("expected restore gap consumer key")
+                    .to_string(),
+            )
+        })
+        .collect();
+    (edge_ids, consumer_keys)
 }
 
 fn assert_restore_epoch_boundary(state: &WorkspaceState) -> String {
@@ -664,6 +764,11 @@ fn offline_restore_fixture_manifest_recomputes_every_semantic_digest_and_matches
         (
             "/semantic/derivedStateGapDigest",
             "derived state gap digest",
+        ),
+        ("/semantic/expectedRestoreGap", "expected restore gap"),
+        (
+            "/semantic/expectedRestoreGapDigest",
+            "expected restore gap digest",
         ),
         ("/semantic/semanticIndex", "semantic index"),
         ("/semantic/semanticIndexDigest", "semantic index digest"),

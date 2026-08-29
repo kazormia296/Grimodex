@@ -250,6 +250,13 @@ pub struct SemanticSnapshot {
     pub feed_cursor_digest: String,
     pub derived_state_gap: Value,
     pub derived_state_gap_digest: String,
+    /// Complete, deterministic inventory of the non-Semantic-Index durable
+    /// Consumers that will be missing current-Epoch derived state after the
+    /// production restore boundary.  The canonical ProposalSet writer also
+    /// declares a proposal-revision Edge; it is intentionally included here
+    /// rather than filtered out of lifecycle evidence.
+    pub expected_restore_gap: Value,
+    pub expected_restore_gap_digest: String,
     pub semantic_index: Value,
     pub semantic_index_digest: String,
     pub expected_restore_lifecycle: Value,
@@ -1082,6 +1089,12 @@ fn collect_semantic_snapshot_from_connection(
         .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_APPLICATION_EDGE_KEY_MISSING"))?
         .to_string();
     let application = load_application_snapshot(conn, &application_id)?;
+    let revision_id = application["revisionId"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_APPLICATION_REVISION_ID_MISSING"))?;
+    let expected_restore_gap =
+        load_expected_restore_gap_snapshot(conn, &application_id, revision_id)?;
     let apply_run_id = application["runId"]
         .as_str()
         .filter(|value| !value.trim().is_empty())
@@ -1175,6 +1188,7 @@ fn collect_semantic_snapshot_from_connection(
     let edge_digest = digest_json(&edge);
     let feed_cursor_digest = digest_json(&feed_cursor);
     let derived_state_gap_digest = digest_json(&derived_state_gap);
+    let expected_restore_gap_digest = digest_json(&expected_restore_gap);
     let semantic_index_digest = digest_json(&semantic_index);
     let expected_restore_lifecycle_digest = digest_json(&expected_restore_lifecycle);
     let mut semantic = SemanticSnapshot {
@@ -1217,6 +1231,8 @@ fn collect_semantic_snapshot_from_connection(
         feed_cursor_digest,
         derived_state_gap,
         derived_state_gap_digest,
+        expected_restore_gap,
+        expected_restore_gap_digest,
         semantic_index,
         semantic_index_digest,
         expected_restore_lifecycle,
@@ -1316,6 +1332,97 @@ fn load_application_snapshot(conn: &Connection, application_id: &str) -> Result<
     }))
 }
 
+/// Capture the complete non-Semantic-Index restore-gap inventory.  The
+/// proposal-revision Edge is emitted by the canonical `save_proposal_set`
+/// writer for the source-basis row required by the Application envelope; it
+/// is a real durable Consumer and therefore must remain visible in the
+/// production Verify vectors.
+fn load_expected_restore_gap_snapshot(
+    conn: &Connection,
+    application_id: &str,
+    revision_id: &str,
+) -> Result<Value> {
+    let edges = query_json_rows(
+        conn,
+        "SELECT id, consumer_kind, consumer_key
+           FROM narrative_dependency_edges
+          WHERE project_id = ?1 AND consumer_kind <> 'semantic-index'
+          ORDER BY id ASC",
+        params![PROJECT_ID],
+        |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "consumerKind": row.get::<_, String>(1)?,
+                "consumerKey": row.get::<_, String>(2)?,
+            }))
+        },
+    )?;
+    let consumers = query_json_rows(
+        conn,
+        "SELECT DISTINCT consumer_kind, consumer_key
+           FROM narrative_dependency_edges
+          WHERE project_id = ?1 AND consumer_kind <> 'semantic-index'
+          ORDER BY consumer_kind ASC, consumer_key ASC",
+        params![PROJECT_ID],
+        |row| {
+            Ok(json!({
+                "consumerKind": row.get::<_, String>(0)?,
+                "consumerKey": row.get::<_, String>(1)?,
+            }))
+        },
+    )?;
+    anyhow::ensure!(
+        edges.len() == 2 && consumers.len() == 2,
+        "C2ZC_FIXTURE_RESTORE_GAP_INVENTORY_INVALID: edges={} consumers={}",
+        edges.len(),
+        consumers.len()
+    );
+    let application_edges = edges
+        .iter()
+        .filter(|edge| {
+            edge["consumerKind"] == Value::String("application".to_string())
+                && edge["consumerKey"] == Value::String(application_id.to_string())
+        })
+        .count();
+    let proposal_revision_edges = edges
+        .iter()
+        .filter(|edge| {
+            edge["consumerKind"] == Value::String("proposal-revision".to_string())
+                && edge["consumerKey"] == Value::String(revision_id.to_string())
+        })
+        .count();
+    anyhow::ensure!(
+        application_edges == 1 && proposal_revision_edges == 1,
+        "C2ZC_FIXTURE_RESTORE_GAP_CONSUMER_BINDING_INVALID: applicationEdges={} proposalRevisionEdges={}",
+        application_edges,
+        proposal_revision_edges
+    );
+    let application_consumers = consumers
+        .iter()
+        .filter(|consumer| {
+            consumer["consumerKind"] == Value::String("application".to_string())
+                && consumer["consumerKey"] == Value::String(application_id.to_string())
+        })
+        .count();
+    let proposal_revision_consumers = consumers
+        .iter()
+        .filter(|consumer| {
+            consumer["consumerKind"] == Value::String("proposal-revision".to_string())
+                && consumer["consumerKey"] == Value::String(revision_id.to_string())
+        })
+        .count();
+    anyhow::ensure!(
+        application_consumers == 1 && proposal_revision_consumers == 1,
+        "C2ZC_FIXTURE_RESTORE_GAP_CONSUMER_VECTOR_INVALID: applicationConsumers={} proposalRevisionConsumers={}",
+        application_consumers,
+        proposal_revision_consumers
+    );
+    Ok(json!({
+        "edgeIdsWithoutCurrentEpochState": edges,
+        "consumerKeysWithoutCurrentEpochFreshness": consumers,
+    }))
+}
+
 fn load_legacy_projection_snapshot(conn: &Connection, application_id: &str) -> Result<Value> {
     let (freshness_status, freshness_reason, freshness_version, freshness_updated_at): (
         String,
@@ -1394,6 +1501,7 @@ fn semantic_contents_payload(semantic: &SemanticSnapshot) -> Value {
         "edge": &semantic.edge,
         "feedCursor": &semantic.feed_cursor,
         "derivedStateGap": &semantic.derived_state_gap,
+        "expectedRestoreGap": &semantic.expected_restore_gap,
         "semanticIndex": &semantic.semantic_index,
         "expectedRestoreLifecycle": &semantic.expected_restore_lifecycle,
     })
@@ -1445,6 +1553,11 @@ fn validate_semantic_payload_digests(semantic: &SemanticSnapshot) -> Result<()> 
             "derivedStateGap",
             semantic.derived_state_gap_digest.as_str(),
             digest_json(&semantic.derived_state_gap),
+        ),
+        (
+            "expectedRestoreGap",
+            semantic.expected_restore_gap_digest.as_str(),
+            digest_json(&semantic.expected_restore_gap),
         ),
         (
             "semanticIndex",
@@ -1564,6 +1677,52 @@ fn validate_fixture_semantics(semantic: &SemanticSnapshot) -> Result<()> {
         semantic.application_edge_count == 1,
         "C2ZC_FIXTURE_APPLICATION_EDGE_INVALID: {}",
         semantic.application_edge_count
+    );
+    let expected_restore_edges = semantic.expected_restore_gap["edgeIdsWithoutCurrentEpochState"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_RESTORE_GAP_EDGE_VECTOR_MISSING"))?;
+    let expected_restore_consumers = semantic.expected_restore_gap
+        ["consumerKeysWithoutCurrentEpochFreshness"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_RESTORE_GAP_CONSUMER_VECTOR_MISSING"))?;
+    anyhow::ensure!(
+        expected_restore_edges.len() == 2
+            && expected_restore_consumers.len() == 2
+            && semantic.dependency_edge_count == expected_restore_edges.len() as i64,
+        "C2ZC_FIXTURE_RESTORE_GAP_VECTOR_COUNT_INVALID: edges={} consumers={} dependencyEdges={}",
+        expected_restore_edges.len(),
+        expected_restore_consumers.len(),
+        semantic.dependency_edge_count
+    );
+    let application_revision_id = semantic.application["revisionId"]
+        .as_str()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_APPLICATION_REVISION_ID_MISSING"))?;
+    let application_edge_id = semantic.edge["id"]
+        .as_str()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_APPLICATION_EDGE_ID_MISSING"))?;
+    anyhow::ensure!(
+        expected_restore_edges.iter().any(|edge| {
+            edge["id"] == Value::String(application_edge_id.to_string())
+                && edge["consumerKind"] == Value::String("application".to_string())
+                && edge["consumerKey"] == Value::String(semantic.application_id.clone())
+        }) && expected_restore_edges.iter().any(|edge| {
+            edge["id"].as_str().is_some_and(|id| !id.trim().is_empty())
+                && edge["consumerKind"] == Value::String("proposal-revision".to_string())
+                && edge["consumerKey"] == Value::String(application_revision_id.to_string())
+        }),
+        "C2ZC_FIXTURE_RESTORE_GAP_EDGE_BINDING_INVALID"
+    );
+    anyhow::ensure!(
+        expected_restore_consumers.iter().any(|consumer| {
+            consumer["consumerKind"] == Value::String("application".to_string())
+                && consumer["consumerKey"] == Value::String(semantic.application_id.clone())
+        }) && expected_restore_consumers.iter().any(|consumer| {
+            consumer["consumerKind"] == Value::String("proposal-revision".to_string())
+                && consumer["consumerKey"] == Value::String(application_revision_id.to_string())
+        }),
+        "C2ZC_FIXTURE_RESTORE_GAP_CONSUMER_BINDING_INVALID"
     );
     anyhow::ensure!(
         semantic.application_edge_state_count == 0 && semantic.application_freshness_count == 0,
