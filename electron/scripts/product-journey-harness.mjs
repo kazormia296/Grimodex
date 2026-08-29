@@ -96,6 +96,7 @@ const PRODUCT_JOURNEY_OPERATION_JOURNAL_NAME = "operations.jsonl";
 const PRODUCT_JOURNEY_OPERATION_JOURNAL_VERSION = 1;
 const PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS = 5_000;
 const PRODUCT_JOURNEY_LANE_KILL_GRACE_MS = 250;
+const PRODUCT_JOURNEY_SCREENSHOT_TIMEOUT_MS = 1_000;
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
@@ -2303,9 +2304,11 @@ export function createProductJourneyJournal(filePath) {
   }
   let tail = Promise.resolve();
   let closed = false;
+  let closing = false;
+  let closePromise = null;
 
   function append(entry) {
-    if (closed) {
+    if (closing || closed) {
       return Promise.reject(new Error("product journey journal is closed"));
     }
     const encoded = `${JSON.stringify(entry)}\n`;
@@ -2326,9 +2329,15 @@ export function createProductJourneyJournal(filePath) {
     return write;
   }
 
-  async function close() {
-    await tail;
+  function close() {
+    if (closePromise) return closePromise;
+    // Flip both guards before awaiting the accepted-write tail. This makes
+    // close linearizable: an append racing with close is rejected and cannot
+    // enqueue a write after the close snapshot.
+    closing = true;
     closed = true;
+    closePromise = tail.then(() => undefined);
+    return closePromise;
   }
 
   return Object.freeze({
@@ -2377,6 +2386,7 @@ export async function withOperationTimeout(
     signal = null,
     onTimeout = null,
     onFailure = null,
+    onLateResolve = null,
   } = {},
 ) {
   const normalizedPhase = operationPhase(phase);
@@ -2417,6 +2427,23 @@ export async function withOperationTimeout(
       signal,
     });
   });
+  // A timed-out Electron launch can still resolve with an app handle after
+  // the caller has observed the timeout. Give the owner a chance to adopt and
+  // clean that late resource immediately; never let the callback rejection
+  // become an unhandled rejection.
+  void operationPromise
+    .then(
+      (value) => {
+        if (timedOut && typeof onLateResolve === "function") {
+          void Promise.resolve()
+            .then(() => onLateResolve(value))
+            .catch(() => undefined);
+        }
+        return value;
+      },
+      () => undefined,
+    )
+    .catch(() => undefined);
   const timeoutPromise = new Promise((_, reject) => {
     timerId = globalThis.setTimeout(() => {
       timedOut = true;
@@ -2641,7 +2668,9 @@ export async function killProcessTree(
     // Cleanup is best effort; continue to the forceful phase.
   }
   await sleepFor(graceMs);
-  if (processHasExited(child)) return;
+  // The direct child may exit while descendants in its process group remain.
+  // Always address the group after the grace period; ESRCH is harmless when
+  // the group has already disappeared.
   if (pid !== null && pid > 0 && pid !== process.pid) {
     try {
       process.kill(-pid, forceSignal);
@@ -2693,12 +2722,15 @@ export async function runWithLaneWatchdog(
     startedAt,
   });
 
-  const childSet = new Set(
-    typeof children === "function" ? children() : children,
-  );
+  const initialChildren =
+    typeof children === "function" ? children() : children;
+  const childSet = new Set(initialChildren ?? []);
   const laneAbortController = abortController ?? new AbortController();
   const effectiveSignal = laneAbortController.signal;
   let failurePromise = null;
+  let cleanupStarted = false;
+  const killedChildren = new Set();
+  const pendingChildKills = new Set();
   let timerId;
   let abortListener;
   let externalAbortListener;
@@ -2712,8 +2744,59 @@ export async function runWithLaneWatchdog(
     else
       signal.addEventListener("abort", externalAbortListener, { once: true });
   }
+  const killOptions = {
+    signal: "SIGTERM",
+    forceSignal: "SIGKILL",
+    graceMs: killGraceMs,
+  };
+  const killChild = (child) => {
+    if (!child || killedChildren.has(child)) return Promise.resolve();
+    killedChildren.add(child);
+    let killResult;
+    try {
+      // Invoke the first termination synchronously so a child registered after
+      // abort is never left alive for another event-loop turn.
+      killResult = killChildren(child, killOptions);
+    } catch {
+      killResult = undefined;
+    }
+    const killPromise = Promise.resolve(killResult).catch(() => undefined);
+    pendingChildKills.add(killPromise);
+    void killPromise.then(
+      () => pendingChildKills.delete(killPromise),
+      () => pendingChildKills.delete(killPromise),
+    );
+    return killPromise;
+  };
+  const drainChildren = async () => {
+    let stablePasses = 0;
+    while (stablePasses < 2) {
+      const currentChildren =
+        typeof children === "function" ? children() : children;
+      for (const child of currentChildren ?? []) {
+        if (child) childSet.add(child);
+      }
+      const pending = [...childSet].filter(
+        (child) => child && !killedChildren.has(child),
+      );
+      if (pending.length > 0) {
+        stablePasses = 0;
+        await Promise.all(pending.map(killChild));
+      }
+      if (pendingChildKills.size > 0) {
+        stablePasses = 0;
+        await Promise.all([...pendingChildKills]);
+        continue;
+      }
+      stablePasses += 1;
+      if (stablePasses < 2) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+  };
   const captureOnce = async (error, status) => {
     if (failurePromise) return failurePromise;
+    cleanupStarted = true;
     failurePromise = (async () => {
       const failureName = normalizedPhase.replaceAll(/[\\/]/gu, "-");
       try {
@@ -2735,20 +2818,7 @@ export async function runWithLaneWatchdog(
       } catch {
         // Child termination below is mandatory even when graceful cleanup fails.
       }
-      const currentChildren =
-        typeof children === "function" ? children() : children;
-      for (const child of currentChildren ?? []) childSet.add(child);
-      await Promise.all(
-        [...childSet].map((child) =>
-          Promise.resolve(
-            killChildren(child, {
-              signal: "SIGTERM",
-              forceSignal: "SIGKILL",
-              graceMs: killGraceMs,
-            }),
-          ).catch(() => undefined),
-        ),
-      );
+      await drainChildren();
     })();
     return failurePromise;
   };
@@ -2795,7 +2865,12 @@ export async function runWithLaneWatchdog(
       requestId: normalizedRequestId,
       signal: effectiveSignal,
       registerChild(child) {
-        if (child) childSet.add(child);
+        if (!child) return child;
+        if (cleanupStarted || effectiveSignal.aborted) {
+          void killChild(child);
+          return child;
+        }
+        childSet.add(child);
         return child;
       },
     });
@@ -2970,18 +3045,14 @@ export function createProductJourneyHarness({
     const page = lastResources.page;
     if (!app) return;
     await settleWithin(
-      runHarnessOperation(
-        "electron-close",
-        () => closeApp(app, page, reason),
-        {
-          phase: lastResources.phase ?? "cleanup",
-          command: "electron-close",
-          args: { reason },
-          timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
-          useLaneSignal: false,
-          suppressTimeoutCleanup: true,
-        },
-      ),
+      runHarnessOperation("electron-close", () => closeApp(app, page, reason), {
+        phase: lastResources.phase ?? "cleanup",
+        command: "electron-close",
+        args: { reason },
+        timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+        useLaneSignal: false,
+        suppressTimeoutCleanup: true,
+      }),
       PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
     ).catch(() => undefined);
     await settleWithin(
@@ -3023,6 +3094,52 @@ export function createProductJourneyHarness({
     return failureCleanupPromise;
   }
 
+  async function handleLateElectronLaunch(app, phase, launchId) {
+    if (!app || typeof app !== "object") return;
+    let appProcess = null;
+    try {
+      appProcess = typeof app.process === "function" ? app.process() : null;
+    } catch {
+      // Even if the late app cannot expose its child handle, close the app
+      // itself and preserve the original launch timeout.
+    }
+    trackChild(appProcess);
+    appChildProcesses.set(app, appProcess);
+    const failureName = operationPhase(phase).replaceAll(/[\\/]/gu, "-");
+    await captureFailureOnce(failureName, {
+      phase,
+      launchId,
+      reason: "electron-launch-resolved-after-timeout",
+    }).catch(() => undefined);
+
+    if (lastResources.app === null || lastResources.app === app) {
+      lastResources.app = app;
+      lastResources.page = null;
+      lastResources.phase = phase;
+      lastResources.launchId = launchId;
+      await closeActiveResources("late-electron-launch");
+    } else {
+      // A caller may have started another lane after observing the timeout.
+      // Never overwrite its active resources; close this late app directly.
+      await settleWithin(
+        withOperationTimeout(
+          "electron-close",
+          () => closeApp(app, null, "late-electron-launch"),
+          {
+            phase: `${phase}/late-launch`,
+            command: "electron-close",
+            args: { launchId },
+            timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+            journal: operationJournal,
+            onTimeout: null,
+          },
+        ),
+        PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+      ).catch(() => undefined);
+    }
+    await killTrackedChildren();
+  }
+
   async function handleOperationTimeout(error) {
     if (laneWatchdogController) {
       if (!laneWatchdogController.signal.aborted) {
@@ -3041,6 +3158,11 @@ export function createProductJourneyHarness({
   }
 
   function requestAbort(reason) {
+    // A signal arriving during dispose must join the already-running guarded
+    // cleanup. The handlers are deliberately still installed until that
+    // promise settles, so checking disposed first would make the second
+    // signal a no-op instead of reusing the in-flight capture.
+    if (failureCleanupPromise) return failureCleanupPromise;
     if (disposed) return Promise.resolve();
     if (laneWatchdogController) {
       if (!laneWatchdogController.signal.aborted) {
@@ -3069,6 +3191,7 @@ export function createProductJourneyHarness({
       useLaneSignal = true,
       suppressTimeoutCleanup = false,
       onTimeout = null,
+      onLateResolve = null,
     } = {},
   ) {
     return withOperationTimeout(operation, fn, {
@@ -3084,6 +3207,7 @@ export function createProductJourneyHarness({
       onTimeout: suppressTimeoutCleanup
         ? null
         : (onTimeout ?? handleOperationTimeout),
+      onLateResolve,
     });
   }
 
@@ -3131,8 +3255,11 @@ export function createProductJourneyHarness({
       const reason = signal === "SIGINT" ? "SIGINT" : "SIGTERM";
       void requestAbort(reason);
     };
-    process.once("SIGINT", onSignal);
-    process.once("SIGTERM", onSignal);
+    // Keep handlers installed for the whole capture/cleanup window. Repeated
+    // signals join the guarded abort path instead of falling through to the
+    // process default termination behavior.
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
     signalHandlersInstalled = { onSignal };
   }
 
@@ -3725,6 +3852,8 @@ export function createProductJourneyHarness({
     await rm(retainedRendererPath, { force: true });
     const launchId = `launch-${randomUUID()}`;
     recordTimeline("launch-requested", { phase, launchId });
+    lastResources.phase = phase;
+    lastResources.launchId = launchId;
     const env = { ...process.env };
     delete env.ELECTRON_RENDERER_URL;
     env.GRIMODEX_USER_DATA_DIR = userDataDir;
@@ -3763,6 +3892,8 @@ export function createProductJourneyHarness({
         command: "electron-launch",
         args: { executablePath: electronBin, args: electronArgs },
         timeoutMs: launchTimeoutMs,
+        onLateResolve: (lateApp) =>
+          handleLateElectronLaunch(lateApp, phase, launchId),
       },
     );
     lastResources.app = app;
@@ -3935,12 +4066,15 @@ export function createProductJourneyHarness({
 
   async function retainRendererScreenshot(page) {
     if (!artifactRoot || !page || page.isClosed()) return;
-    await page
-      .screenshot({
-        path: retainedRendererPath,
-        fullPage: true,
-      })
-      .catch(() => undefined);
+    await settleWithin(
+      Promise.resolve().then(() =>
+        page.screenshot({
+          path: retainedRendererPath,
+          fullPage: true,
+        }),
+      ),
+      PRODUCT_JOURNEY_SCREENSHOT_TIMEOUT_MS,
+    ).catch(() => undefined);
   }
 
   async function close(app, page, phase) {
@@ -4218,15 +4352,18 @@ export function createProductJourneyHarness({
       ).catch(() => undefined),
     ]);
     await mkdir(destination, { recursive: true });
+    // Publish all durable non-image evidence before attempting the optional
+    // renderer screenshot. A broken screenshot implementation must not hide
+    // the runtime, database, receipt, log, or operation journal snapshot.
+    await cp(tmpRoot, path.join(destination, "runtime"), {
+      recursive: true,
+      force: true,
+    });
     await retainRendererScreenshot(lastResources.page);
     await copyFile(
       retainedRendererPath,
       path.join(destination, "renderer.png"),
     ).catch(() => undefined);
-    await cp(tmpRoot, path.join(destination, "runtime"), {
-      recursive: true,
-      force: true,
-    });
   }
 
   async function dispose({ success, name }) {

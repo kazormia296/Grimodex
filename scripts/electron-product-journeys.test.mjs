@@ -22,8 +22,10 @@ import yaml from "js-yaml";
 
 import { PRODUCT_JOURNEY_CATALOG } from "../electron/scripts/product-journey-catalog.mjs";
 import {
+  createProductJourneyJournal,
   createProductJourneyHarness,
   invokeOk,
+  killProcessTree,
   NARRATIVE_MAINTENANCE_NONCE_ENV,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
@@ -3227,6 +3229,11 @@ test("harness signal abort captures exactly once before child cleanup", async (t
     baselineSignalListeners.sigterm + 1,
   );
   process.emit("SIGTERM");
+  process.emit("SIGTERM");
+  assert.equal(
+    process.listenerCount("SIGTERM"),
+    baselineSignalListeners.sigterm + 1,
+  );
   await Promise.all([harness.abort("SIGTERM"), harness.abort("SIGTERM")]);
   await assert.rejects(running, /aborted.*observability\/signal/i);
   assert.deepEqual(child.killSignals, ["SIGTERM", "SIGKILL"]);
@@ -3241,4 +3248,254 @@ test("harness signal abort captures exactly once before child cleanup", async (t
   );
   const retained = await readdir(artifactRoot);
   assert.deepEqual(retained, ["observability-signal"]);
+});
+
+test("late electron launch resolution is registered and cleaned after timeout", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-late-launch-"),
+  );
+  const child = new EventEmitter();
+  child.pid = 424245;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.killSignals = [];
+  child.kill = (signal) => {
+    child.killSignals.push(signal);
+    child.killed = true;
+    child.exitCode = 0;
+    return true;
+  };
+  let resolveLaunch;
+  const launchResult = new Promise((resolve) => {
+    resolveLaunch = resolve;
+  });
+  let resolveClosed;
+  const closed = new Promise((resolve) => {
+    resolveClosed = resolve;
+  });
+  const lateApp = {
+    context: () => null,
+    process: () => child,
+    firstWindow: async () => {
+      throw new Error("late launch must not reach firstWindow");
+    },
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    operationTimeoutMs: 15,
+    launchTimeoutMs: 100,
+    electronLauncher: { launch: async () => launchResult },
+    closeApp: async (app) => {
+      app.closed = true;
+      resolveClosed();
+    },
+  });
+  t.after(async () => {
+    resolveLaunch?.(lateApp);
+    await harness.dispose({ success: false, name: "late-launch" });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  await assert.rejects(harness.launch("observability/late-launch"), (error) => {
+    assert.match(error.message, /timed out/i);
+    assert.match(error.message, /electron-launch/);
+    assert.match(error.message, /observability\/late-launch/);
+    return true;
+  });
+  resolveLaunch(lateApp);
+  await Promise.race([
+    closed,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("late launch cleanup timeout")), 500),
+    ),
+  ]);
+  assert.equal(lateApp.closed, true);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(child.killed, true);
+  assert.deepEqual(child.killSignals, ["SIGTERM"]);
+  await harness.dispose({ success: false, name: "late-launch" });
+});
+
+test("failure evidence is published before a bounded optional screenshot", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-hung-screenshot-"),
+  );
+  let resolveScreenshotStarted;
+  const screenshotStarted = new Promise((resolve) => {
+    resolveScreenshotStarted = resolve;
+  });
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    evaluate: async () => [],
+    waitForFunction: async () => undefined,
+    screenshot: async () => {
+      resolveScreenshotStarted();
+      return new Promise(() => {});
+    },
+  };
+  const app = {
+    context: () => null,
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: null }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    operationTimeoutMs: 100,
+    electronLauncher: { launch: async () => app },
+    closeApp: async () => undefined,
+  });
+  t.after(async () => {
+    await harness.dispose({ success: false, name: "hung-screenshot" });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  const launched = await harness.launch("observability/hung-screenshot");
+  const snapshotWorkspace = harness.workspacePath("snapshot-workspace");
+  await mkdir(snapshotWorkspace, { recursive: true });
+  await execFile("sqlite3", [
+    path.join(snapshotWorkspace, "grimodex.db"),
+    "CREATE TABLE evidence (value TEXT);",
+  ]);
+  const capture = harness.captureFailureArtifact("hung-screenshot");
+  await Promise.race([
+    screenshotStarted,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("screenshot was not attempted")), 500),
+    ),
+  ]);
+  const runtime = path.join(artifactRoot, "hung-screenshot", "runtime");
+  assert.match(
+    await readFile(path.join(runtime, "operations.jsonl"), "utf8"),
+    /electron-launch/,
+  );
+  assert.equal(
+    await readFile(path.join(runtime, "diagnostics", "main.log"), "utf8"),
+    "",
+  );
+  await readFile(path.join(runtime, "diagnostics", "renderer.log"), "utf8");
+  await readFile(
+    path.join(runtime, "diagnostics", "authority-timeline.json"),
+    "utf8",
+  );
+  await readFile(
+    path.join(runtime, "diagnostics", "renderer-diagnostics.json"),
+    "utf8",
+  );
+  await readFile(
+    path.join(runtime, "diagnostics", "main-diagnostics.json"),
+    "utf8",
+  );
+  assert.ok(
+    (
+      await readFile(
+        path.join(runtime, "diagnostics", "databases", "snapshot-workspace.db"),
+      )
+    ).byteLength > 0,
+  );
+  await readdir(path.join(runtime, "diagnostics", "receipt-snapshot"));
+  await Promise.race([
+    capture,
+    new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error("hung screenshot was not bounded")),
+        2_000,
+      ),
+    ),
+  ]);
+  await harness
+    .close(launched.app, launched.page, "observability/hung-screenshot")
+    .catch(() => undefined);
+});
+
+test("journal close rejects appends before waiting for accepted writes", async (t) => {
+  const journalRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-journal-close-"),
+  );
+  const journalPath = path.join(journalRoot, "operations.jsonl");
+  const journal = createProductJourneyJournal(journalPath);
+  t.after(() => rm(journalRoot, { recursive: true, force: true }));
+
+  const entry = {
+    phase: "observability/journal-close",
+    operation: "test",
+    requestId: "request-journal-close",
+    argsDigest:
+      "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    status: "started",
+  };
+  const accepted = journal.append(entry);
+  const closing = journal.close();
+  await assert.rejects(
+    journal.append({ ...entry, status: "completed" }),
+    /closed|closing/i,
+  );
+  await Promise.all([accepted, closing]);
+  await assert.rejects(journal.append(entry), /closed|closing/i);
+  assert.equal(
+    (await readFile(journalPath, "utf8")).trim().split("\n").length,
+    1,
+  );
+});
+
+test("lane watchdog kills children registered while cleanup is draining", async () => {
+  const firstChild = { pid: 424246 };
+  const lateChild = { pid: 424247 };
+  let registerChild;
+  const killed = [];
+  const killChildren = async (child) => {
+    killed.push(child);
+    if (child === firstChild) registerChild(lateChild);
+  };
+  const running = runWithLaneWatchdog(
+    async (context) => {
+      registerChild = context.registerChild;
+      await new Promise(() => {});
+    },
+    {
+      phase: "observability/late-child",
+      timeoutMs: 20,
+      children: [firstChild],
+      killChildren,
+    },
+  );
+  await assert.rejects(running, /watchdog.*observability\/late-child/i);
+  assert.equal(killed.includes(firstChild), true);
+  assert.equal(killed.includes(lateChild), true);
+});
+
+test("killProcessTree addresses descendants after an exited direct child", async () => {
+  const originalKill = process.kill;
+  const groupSignals = [];
+  process.kill = (pid, signal) => {
+    if (pid === -424248) {
+      groupSignals.push(signal);
+      return true;
+    }
+    return originalKill(pid, signal);
+  };
+  try {
+    await killProcessTree(
+      {
+        pid: 424248,
+        exitCode: 0,
+        signalCode: null,
+        kill: () => {
+          throw new Error("direct child is already exited");
+        },
+      },
+      { graceMs: 0 },
+    );
+  } finally {
+    process.kill = originalKill;
+  }
+  assert.deepEqual(groupSignals, ["SIGTERM", "SIGKILL"]);
 });
