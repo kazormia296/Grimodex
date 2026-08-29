@@ -1171,8 +1171,23 @@ function assertC2ZcFixtureSemantic(semantic, label) {
   if (backfill.specDigest !== digestJson(backfillSpec)) {
     throw new Error(`${label}.backfill spec digest does not match`);
   }
-  for (const field of ["createdAt", "startedAt", "completedAt"]) {
-    assertCanonicalTimestamp(backfill[field], `${label}.backfill.${field}`);
+  const backfillCreatedAt = assertCanonicalTimestamp(
+    backfill.createdAt,
+    `${label}.backfill.createdAt`,
+  );
+  const backfillStartedAt = assertCanonicalTimestamp(
+    backfill.startedAt,
+    `${label}.backfill.startedAt`,
+  );
+  const backfillCompletedAt = assertCanonicalTimestamp(
+    backfill.completedAt,
+    `${label}.backfill.completedAt`,
+  );
+  if (
+    Date.parse(backfillCreatedAt) > Date.parse(backfillStartedAt) ||
+    Date.parse(backfillStartedAt) >= Date.parse(backfillCompletedAt)
+  ) {
+    throw new Error(`${label}.backfill timestamps are not strictly ordered`);
   }
   assertNonNegativeInteger(backfill.taskCount, `${label}.backfill.taskCount`);
   assertNonNegativeInteger(
@@ -1392,6 +1407,21 @@ function assertC2ZcFixtureSemantic(semantic, label) {
   }
   if (expectedGapConsumers.length !== 2) {
     throw new Error(`${label}.expectedRestoreGap consumer count is invalid`);
+  }
+  if (
+    new Set(expectedGapEdges.map((edge) => edge.id)).size !==
+    expectedGapEdges.length
+  ) {
+    throw new Error(`${label}.expectedRestoreGap contains duplicate edges`);
+  }
+  if (
+    new Set(
+      expectedGapConsumers.map(
+        (consumer) => `${consumer.consumerKind}\u0000${consumer.consumerKey}`,
+      ),
+    ).size !== expectedGapConsumers.length
+  ) {
+    throw new Error(`${label}.expectedRestoreGap contains duplicate consumers`);
   }
   const orderedExpectedGapEdges = [...expectedGapEdges].sort((left, right) =>
     left.id < right.id ? -1 : left.id > right.id ? 1 : 0,

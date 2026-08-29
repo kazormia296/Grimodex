@@ -730,6 +730,46 @@ test("fixture manifest is a non-vacuous Application/Legacy image with exact dige
       value.semantic.backfill = {};
       refreshC2ZcFixtureSemanticDigests(value.semantic);
     },
+    (value) => {
+      value.semantic.expectedRestoreGap.edgeIdsWithoutCurrentEpochState[1].id =
+        value.semantic.edge.id;
+      refreshC2ZcFixtureSemanticDigests(value.semantic);
+    },
+    (value) => {
+      value.semantic.expectedRestoreGap.edgeIdsWithoutCurrentEpochState.push({
+        id: "extra-edge",
+        consumerKind: "application",
+        consumerKey: value.semantic.applicationId,
+      });
+      refreshC2ZcFixtureSemanticDigests(value.semantic);
+    },
+    (value) => {
+      value.semantic.expectedRestoreGap.edgeIdsWithoutCurrentEpochState.pop();
+      refreshC2ZcFixtureSemanticDigests(value.semantic);
+    },
+    (value) => {
+      value.semantic.expectedRestoreGap.edgeIdsWithoutCurrentEpochState.reverse();
+      refreshC2ZcFixtureSemanticDigests(value.semantic);
+    },
+    (value) => {
+      value.semantic.expectedRestoreGap.consumerKeysWithoutCurrentEpochFreshness.push(
+        { consumerKind: "application", consumerKey: "extra-application" },
+      );
+      refreshC2ZcFixtureSemanticDigests(value.semantic);
+    },
+    (value) => {
+      value.semantic.expectedRestoreGap.consumerKeysWithoutCurrentEpochFreshness.pop();
+      refreshC2ZcFixtureSemanticDigests(value.semantic);
+    },
+    (value) => {
+      value.semantic.expectedRestoreGap.consumerKeysWithoutCurrentEpochFreshness.reverse();
+      refreshC2ZcFixtureSemanticDigests(value.semantic);
+    },
+    (value) => {
+      const backfill = value.semantic.backfill.rows[0];
+      backfill.startedAt = backfill.completedAt;
+      refreshC2ZcFixtureSemanticDigests(value.semantic);
+    },
   ]) {
     const mutated = structuredClone(manifest);
     mutate(mutated);
@@ -800,6 +840,96 @@ test("initial Verify accepts unrelated vectors but still requires the fixture ta
       }),
     /Rust|outcome|13/i,
   );
+
+  const expectedEdgeIds =
+    fixtureSemantic().expectedRestoreGap.edgeIdsWithoutCurrentEpochState.map(
+      (edge) => edge.id,
+    );
+  const expectedConsumerPairs =
+    fixtureSemantic().expectedRestoreGap.consumerKeysWithoutCurrentEpochFreshness.map(
+      (consumer) => [consumer.consumerKind, consumer.consumerKey],
+    );
+  for (const [label, mutate] of [
+    [
+      "duplicate edge",
+      (report) => {
+        report.edgeIdsWithoutCurrentEpochState = [
+          expectedEdgeIds[0],
+          expectedEdgeIds[0],
+        ];
+      },
+    ],
+    [
+      "extra edge",
+      (report) => {
+        report.edgeIdsWithoutCurrentEpochState = [
+          ...expectedEdgeIds,
+          "extra-edge",
+        ];
+      },
+    ],
+    [
+      "missing edge",
+      (report) => {
+        report.edgeIdsWithoutCurrentEpochState = expectedEdgeIds.slice(0, 1);
+      },
+    ],
+    [
+      "reordered edge",
+      (report) => {
+        report.edgeIdsWithoutCurrentEpochState = [...expectedEdgeIds].reverse();
+      },
+    ],
+    [
+      "duplicate consumer",
+      (report) => {
+        report.consumerKeysWithoutCurrentEpochFreshness = [
+          expectedConsumerPairs[0],
+          expectedConsumerPairs[0],
+        ];
+      },
+    ],
+    [
+      "extra consumer",
+      (report) => {
+        report.consumerKeysWithoutCurrentEpochFreshness = [
+          ...expectedConsumerPairs,
+          ["application", "extra-application"],
+        ];
+      },
+    ],
+    [
+      "missing consumer",
+      (report) => {
+        report.consumerKeysWithoutCurrentEpochFreshness =
+          expectedConsumerPairs.slice(0, 1);
+      },
+    ],
+    [
+      "reordered consumer",
+      (report) => {
+        report.consumerKeysWithoutCurrentEpochFreshness = [
+          ...expectedConsumerPairs,
+        ].reverse();
+      },
+    ],
+  ]) {
+    const mutated = structuredClone(fixture);
+    mutate(mutated.runs[0].outcomeSummaryJson.report);
+    assert.throws(
+      () =>
+        assertC2ZcRestoreLifecycleOrder(mutated.runs, {
+          currentEpochId: "e1",
+          restoreEpochId: "e1",
+          expectedRestoreLifecycle: mutated.expectedRestoreLifecycle,
+          marker: mutated.marker,
+          rustOutcome: mutated.rustOutcome,
+          fixtureSemantic: fixtureSemantic(),
+        }),
+      /edge|consumer|gap|fixture|order|vector/i,
+      label,
+    );
+  }
 });
 
 function settledApplicationSnapshot(
