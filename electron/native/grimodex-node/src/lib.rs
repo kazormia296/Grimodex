@@ -114,6 +114,16 @@ use uuid::Uuid;
 const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
 const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT: &str = "narrative-maintenance:epoch-rotated";
 
+type NarrativeCiProjectCursorRow = (
+    Option<String>,
+    i64,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
     // Workspace metadata survives a process restart, while the recovery gate
     // generation is unique to the live Backend and still changes for an
@@ -202,15 +212,7 @@ fn narrative_ci_quiescence_state_with_snapshot_hook(
                     active_run_id,
                     cursor_epoch_id,
                     last_error,
-                ): (
-                    Option<String>,
-                    i64,
-                    Option<i64>,
-                    Option<i64>,
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                ) = conn.query_row(
+                ): NarrativeCiProjectCursorRow = conn.query_row(
                     "SELECT
                     (SELECT id
                        FROM narrative_semantic_epochs
