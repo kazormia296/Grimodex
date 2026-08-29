@@ -68,6 +68,8 @@ const C2ZC_FIXTURE_GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/u;
 const C2ZC_FIXTURE_SHA256 = /^sha256:[0-9a-f]{64}$/u;
 const C2ZC_CANONICAL_TIMESTAMP =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+const C2ZC_TYPED_TREE_NODE_PRODUCER_TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|\+00:00)$/u;
 const C2ZC_RESTORE_FIXTURE_MANIFEST_KEYS = Object.freeze([
   "manifestVersion",
   "contractVersion",
@@ -200,6 +202,50 @@ function assertCanonicalTimestamp(value, label) {
     !Number.isFinite(Date.parse(value))
   ) {
     throw new Error(`${label} must be a canonical UTC millisecond timestamp`);
+  }
+  return value;
+}
+
+function assertC2ZcTypedTreeNodeProducerTimestamp(value, label) {
+  requireText(value, label);
+  const match = C2ZC_TYPED_TREE_NODE_PRODUCER_TIMESTAMP.exec(value);
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] =
+    match ?? [];
+  // The typed tree-node producer output profile is zero-offset RFC3339 with
+  // non-leap seconds. RFC3339 date-fullyear is four unsigned digits; keep
+  // year 0000 in its proleptic Gregorian calendar so leap-year validation
+  // remains deterministic without Date.parse normalization.
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const daysInMonth =
+    month === 2
+      ? year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+        ? 29
+        : 28
+      : [4, 6, 9, 11].includes(month)
+        ? 30
+        : 31;
+
+  if (
+    !match ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59 ||
+    second < 0 ||
+    second > 59
+  ) {
+    throw new Error(
+      `${label} must be a typed tree-node producer timestamp (zero-offset RFC3339, non-leap seconds, optional 1-9 fractional digits)`,
+    );
   }
   return value;
 }
@@ -1085,7 +1131,10 @@ function assertC2ZcFixtureSemantic(semantic, label) {
     throw new Error(`${label}.scene does not match the fixture source`);
   }
   assertNonNegativeInteger(scene.version, `${label}.scene.version`);
-  assertCanonicalTimestamp(scene.updatedAt, `${label}.scene.updatedAt`);
+  assertC2ZcTypedTreeNodeProducerTimestamp(
+    scene.updatedAt,
+    `${label}.scene.updatedAt`,
+  );
   if (semantic.sceneSourceRevision !== `v${scene.version}@${scene.updatedAt}`) {
     throw new Error(`${label}.scene source revision is not bound to the seed`);
   }

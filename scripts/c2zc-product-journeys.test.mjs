@@ -317,6 +317,116 @@ test("restore fixture accepts the canonical initial scene version boundary", () 
   }
 });
 
+test("restore fixture accepts the real Rust typed tree-node producer timestamp shape", async () => {
+  const rustFixtureSource = await read(
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs",
+  );
+  const rustWriterSource = await read(
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+  );
+  const treeNodeCreateSource = rustWriterSource.slice(
+    rustWriterSource.indexOf("pub fn tree_node_create_with_authority("),
+    rustWriterSource.indexOf("pub fn tree_node_delete("),
+  );
+  assert.match(
+    rustFixtureSource,
+    /"updatedAt": row\.get::<_, String>\(8\)\?/,
+    "Rust fixture serialization must retain tree_nodes.updated_at verbatim",
+  );
+  assert.match(
+    rustFixtureSource,
+    /let scene_source_revision = format!\("v\{scene_version\}@\{scene_updated_at\}"\);/,
+    "Rust fixture serialization must compose the source token from the raw timestamp",
+  );
+  assert.match(
+    treeNodeCreateSource,
+    /let now = chrono::Utc::now\(\)\.to_rfc3339\(\);/,
+    "the typed tree-node producer must remain the source of scene.updatedAt",
+  );
+  const sceneUpdatedAt = "2026-08-29T20:37:21.914339624+00:00";
+  const sceneSourceRevision = `v0@${sceneUpdatedAt}`;
+  const semantic = createC2ZcFixtureSemantic({ sceneSourceRevision });
+  semantic.scene.version = 0;
+  refreshC2ZcFixtureSemanticDigests(semantic);
+  const manifest = createC2ZcFixtureManifest({ semantic });
+
+  assert.doesNotThrow(() => assertC2ZcRestoreFixtureManifest(manifest));
+  assert.equal(manifest.semantic.scene.updatedAt, sceneUpdatedAt);
+  assert.equal(manifest.semantic.sceneSourceRevision, sceneSourceRevision);
+  assert.equal(
+    manifest.semantic.edgeReadSetJson,
+    JSON.stringify([sceneSourceRevision]),
+  );
+  assert.equal(
+    manifest.semantic.legacyProjection.dependencies[0].observedRevisionToken,
+    sceneSourceRevision,
+  );
+});
+
+test("typed tree-node producer timestamps use the source profile without weakening authority timestamps", () => {
+  for (const sceneUpdatedAt of [
+    "2026-08-29T20:37:21Z",
+    "2026-08-29T20:37:21.1Z",
+    "2026-08-29T20:37:21.914339624+00:00",
+    "2024-02-29T20:37:21.123456789Z",
+    "0000-02-29T20:37:21Z",
+  ]) {
+    const semantic = createC2ZcFixtureSemantic({
+      sceneSourceRevision: `v1@${sceneUpdatedAt}`,
+    });
+    assert.doesNotThrow(
+      () =>
+        assertC2ZcRestoreFixtureManifest(
+          createC2ZcFixtureManifest({ semantic }),
+        ),
+      `valid source timestamp must be accepted: ${sceneUpdatedAt}`,
+    );
+  }
+
+  for (const sceneUpdatedAt of [
+    "2026-02-29T20:37:21Z",
+    "2026-04-31T20:37:21Z",
+    "2026-08-29T24:37:21Z",
+    "2026-08-29T20:60:21Z",
+    // Generic RFC3339 permits leap-second syntax; tree_node_create's Utc::now
+    // producer output profile is explicitly non-leap-second.
+    "2026-08-29T20:37:60Z",
+    "2026-08-29T20:37:61Z",
+    "2026-08-29T20:37:21+01:00",
+    "2026-08-29T20:37:21-00:00",
+    "2026-08-29T20:37:21z",
+    "2026-08-29T20:37:21.1234567890Z",
+    " 2026-08-29T20:37:21Z",
+    "2026-08-29T20:37:21Z ",
+    "2026-08-29T20:37:21Ztrailing",
+  ]) {
+    const semantic = createC2ZcFixtureSemantic({
+      sceneSourceRevision: `v1@${sceneUpdatedAt}`,
+    });
+    assert.throws(
+      () =>
+        assertC2ZcRestoreFixtureManifest(
+          createC2ZcFixtureManifest({ semantic }),
+        ),
+      /scene(?:\.updatedAt|SourceRevision).*?(?:timestamp|RFC3339|non-empty)/i,
+      `invalid source timestamp must be rejected: ${sceneUpdatedAt}`,
+    );
+  }
+
+  const authorityTimestamp = "2026-08-29T20:37:21.914339624+00:00";
+  const authoritySemantic = createC2ZcFixtureSemantic();
+  authoritySemantic.epoch.rows[0].createdAt = authorityTimestamp;
+  refreshC2ZcFixtureSemanticDigests(authoritySemantic);
+  assert.throws(
+    () =>
+      assertC2ZcRestoreFixtureManifest(
+        createC2ZcFixtureManifest({ semantic: authoritySemantic }),
+      ),
+    /epoch\.rows\[0\]\.createdAt.*canonical UTC millisecond timestamp/i,
+    "authority timestamps must retain the canonical millisecond contract",
+  );
+});
+
 test("Verify coverage compares values from the Rust outcome without a JS check catalogue", () => {
   const rustOutcome = {
     checkCoverage: {

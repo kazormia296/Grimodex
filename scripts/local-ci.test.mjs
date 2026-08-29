@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   access,
   chmod,
@@ -26,8 +27,10 @@ import {
 import {
   buildLocalCiPlan,
   collectProductJourneyEvidence,
+  expectedC2ZcAcceptanceForPlan,
   parseLocalCiArgs,
   prepareLocalCiArtifacts,
+  readC2ZcRestoreFixtureEvidence,
   resolveLocalCiCandidate,
   runLocalCiPlan,
   validateLocalCiCandidate,
@@ -139,9 +142,17 @@ function c2zcFixtureEvidence(candidate) {
     artifacts: { fixture, database },
     fixtureManifest,
     manifestVersion: fixtureManifest.manifestVersion,
+    manifestSha256: manifest.sha256,
+    manifestSizeBytes: manifest.size,
     fixtureSha256: fixtureManifest.fixtureSha256,
     fixtureSizeBytes: fixtureManifest.fixtureSizeBytes,
+    semanticContentsDigest: fixtureManifest.semantic.contentsDigest,
+    contractVersion: fixtureManifest.contractVersion,
+    builderVersion: fixtureManifest.builderVersion,
     candidate: fixtureManifest.candidate,
+    candidateHeadSha: fixtureManifest.candidate.resolvedHeadSha,
+    candidateTreeSha: fixtureManifest.candidate.resolvedTreeSha,
+    candidateStatusSha256: fixtureManifest.candidate.statusSha256,
   };
 }
 
@@ -177,6 +188,7 @@ function completeProductJourneyEvidence(overrides = {}) {
     journeyIds: PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
     allPassed: true,
     allClean: true,
+    acceptanceRequired: false,
     results: identity,
     manifest: {
       ...identity,
@@ -186,6 +198,50 @@ function completeProductJourneyEvidence(overrides = {}) {
     artifactDigest: `sha256:${"e".repeat(64)}`,
     ...overrides,
   };
+}
+
+function fullStageBindingPlan({ productJourneySet = "not-c2zc" } = {}) {
+  return {
+    profile: "full",
+    comparison: { base: "origin/master", head: "HEAD" },
+    stages: [
+      "rust",
+      "c2-zc-rust-acceptance-gate",
+      "c2-zc-restore-fixture-builder",
+      "migration-recovery-gate",
+      "electron-runtime-performance",
+      "electron-product-journeys",
+    ].map((id, index) => ({
+      id,
+      label: `stage-${index}`,
+      commands: [
+        {
+          label: `command-${index}`,
+          command: "node",
+          args: [`command-${index}`],
+          env:
+            id === "electron-product-journeys" && productJourneySet !== null
+              ? { GRIMODEX_PRODUCT_JOURNEY_SET: productJourneySet }
+              : {},
+        },
+      ],
+    })),
+  };
+}
+
+function passedStagesForPlan(plan) {
+  return plan.stages.map((stage) => ({
+    ...stage,
+    status: "passed",
+    durationMs: 1,
+    commands: stage.commands.map((command) => ({
+      ...command,
+      durationMs: 1,
+      exitCode: 0,
+      signal: null,
+      status: "passed",
+    })),
+  }));
 }
 
 test("local CI registry accounts for every hosted Full CI job", async () => {
@@ -248,6 +304,18 @@ test("C2-ZC fixture builder is candidate-bound and rejects a missing Cargo manif
   assert.throws(
     () => validateLocalCiRegistry(mutated),
     /manifest-path.*src-tauri\/Cargo\.toml/i,
+  );
+
+  const reordered = structuredClone(registry);
+  const rustIndex = reordered.profiles.full.indexOf("rust");
+  const fixtureIndex = reordered.profiles.full.indexOf(
+    "c2-zc-restore-fixture-builder",
+  );
+  [reordered.profiles.full[rustIndex], reordered.profiles.full[fixtureIndex]] =
+    [reordered.profiles.full[fixtureIndex], reordered.profiles.full[rustIndex]];
+  assert.throws(
+    () => validateLocalCiRegistry(reordered),
+    /exact C2-ZC stage order/i,
   );
 });
 
@@ -620,11 +688,17 @@ test("local Full builds and verifies an external C2-ZC fixture before passing it
   );
   assert.equal(
     fixtureInput.path,
-    path.join(outputDir, "c2zc-restore-fixture.backup.db"),
+    path.join(
+      temporaryRoot,
+      ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.backup.db",
+    ),
   );
   assert.equal(
     fixtureInput.manifest,
-    path.join(outputDir, "c2zc-restore-fixture.manifest.json"),
+    path.join(
+      temporaryRoot,
+      ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.manifest.json",
+    ),
   );
   assert.ok(result.c2zcRestoreFixture);
   assert.equal(
@@ -636,9 +710,224 @@ test("local Full builds and verifies an external C2-ZC fixture before passing it
     ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.manifest.json",
   );
   await assert.rejects(
-    readFile(fixtureInput.path),
+    readFile(path.join(outputDir, "c2zc-restore-fixture.backup.db")),
     /ENOENT/,
     "the repo-external working fixture is removed after the product stage",
+  );
+  await access(fixtureInput.path);
+
+  const copiedFixturePaths = {
+    fixturePath: fixtureInput.path,
+    databasePath: path.join(
+      temporaryRoot,
+      result.c2zcRestoreFixture.artifacts.database.path,
+    ),
+    manifestPath: fixtureInput.manifest,
+  };
+  await readC2ZcRestoreFixtureEvidence(copiedFixturePaths, {
+    root: temporaryRoot,
+    candidate,
+  });
+  await writeFile(copiedFixturePaths.databasePath, "tampered database", "utf8");
+  await assert.rejects(
+    readC2ZcRestoreFixtureEvidence(copiedFixturePaths, {
+      root: temporaryRoot,
+      candidate,
+    }),
+    /bytes|digest|manifest artifacts/i,
+    "Full fixture evidence must re-read the copied database",
+  );
+});
+
+test("local Full passes the verified copied fixture to product journeys, never the mutable builder temp", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-c2zc-stable-fixture-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const nativePath = path.join(temporaryRoot, "custom", "grimodex-node.node");
+  const mainPath = path.join(temporaryRoot, "dist-electron", "main.cjs");
+  const rendererPath = path.join(temporaryRoot, "dist", "index.html");
+  await Promise.all([
+    mkdir(path.dirname(nativePath), { recursive: true }),
+    mkdir(path.dirname(mainPath), { recursive: true }),
+    mkdir(path.dirname(rendererPath), { recursive: true }),
+    writeFile(nativePath, "native"),
+    writeFile(mainPath, "main"),
+    writeFile(rendererPath, "renderer"),
+  ]);
+  const registry = await readRegistry();
+  registry.stages["electron-product-journeys"] = {
+    label: "C2-ZC product journeys",
+    env: {
+      GRIMODEX_PRODUCT_JOURNEY_SET: "c2-zc",
+      GRIMODEX_PRODUCT_JOURNEY_IDS: "",
+      GRIMODEX_NODE_PATH: nativePath,
+    },
+    commands: [
+      { label: "build", command: "build", args: [], cwd: "." },
+      { label: "journeys", command: "journeys", args: [], cwd: "." },
+    ],
+  };
+  const full = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const fixtureStage = full.stages.find(
+    (stage) => stage.id === "c2-zc-restore-fixture-builder",
+  );
+  const productStage = full.stages.find(
+    (stage) => stage.id === "electron-product-journeys",
+  );
+  const candidate = completeCandidate();
+  const fixtureBytes = Buffer.from("offline-fixture", "utf8");
+  const executed = [];
+  const result = await runLocalCiPlan(
+    { ...full, stages: [fixtureStage, productStage] },
+    {
+      candidate,
+      root: temporaryRoot,
+      executeCommand: async (command) => {
+        executed.push(command);
+        if (command.args.includes("build")) {
+          const outputDir =
+            command.args[command.args.indexOf("--output-dir") + 1];
+          const manifest = c2zcFixtureManifest(candidate, fixtureBytes);
+          await mkdir(outputDir, { recursive: true });
+          await writeFile(
+            path.join(outputDir, manifest.artifacts.fixture.path),
+            fixtureBytes,
+          );
+          await writeFile(
+            path.join(outputDir, manifest.artifacts.database.path),
+            fixtureBytes,
+          );
+          await writeFile(
+            path.join(outputDir, "c2zc-restore-fixture.manifest.json"),
+            `${JSON.stringify(manifest, null, 2)}\n`,
+          );
+        }
+        return { durationMs: 1, exitCode: 0, signal: null };
+      },
+    },
+  );
+
+  assert.equal(result.status, "passed");
+  const productCommand = executed.find(
+    (command) => command.label === "journeys",
+  );
+  const fixtureInput = JSON.parse(
+    productCommand.env.GRIMODEX_C2ZC_RESTORE_FIXTURE,
+  );
+  assert.equal(
+    fixtureInput.path,
+    path.join(
+      temporaryRoot,
+      ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.backup.db",
+    ),
+  );
+  assert.equal(
+    fixtureInput.manifest,
+    path.join(
+      temporaryRoot,
+      ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.manifest.json",
+    ),
+  );
+  assert.notEqual(fixtureInput.path, result.c2zcRestoreFixture?.workingPath);
+});
+
+test("Full verify derives C2-ZC acceptance from the planned selection instead of receipt self-assertion", () => {
+  const registry = JSON.parse(
+    readFileSync(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"),
+  );
+  const plan = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  assert.equal(expectedC2ZcAcceptanceForPlan(plan), true);
+  const candidate = completeCandidate();
+  const receipt = {
+    version: 3,
+    profile: "full",
+    coverage: { completeness: "complete", fromStage: null },
+    candidate,
+    status: "passed",
+    stages: passedStagesForPlan(plan),
+    productJourneyEvidence: completeProductJourneyEvidence({
+      acceptanceRequired: false,
+    }),
+  };
+
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(receipt, {
+        profile: "full",
+        candidate,
+        plan,
+      }),
+    /C2-ZC|acceptance|planned/i,
+  );
+});
+
+test("fixture validation failure keeps only bounded candidate/run diagnostic metadata", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-c2zc-fixture-diagnostic-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const registry = await readRegistry();
+  const full = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const fixtureStage = full.stages.find(
+    (stage) => stage.id === "c2-zc-restore-fixture-builder",
+  );
+  const candidate = completeCandidate();
+  const result = await runLocalCiPlan(
+    { ...full, stages: [fixtureStage] },
+    {
+      candidate,
+      root: temporaryRoot,
+      executeCommand: async (command) => {
+        if (command.args.includes("build")) {
+          const outputDir =
+            command.args[command.args.indexOf("--output-dir") + 1];
+          await mkdir(outputDir, { recursive: true });
+          await writeFile(
+            path.join(outputDir, "c2zc-restore-fixture.backup.db"),
+            "not-a-valid-fixture",
+          );
+        }
+        return { durationMs: 1, exitCode: 0, signal: null };
+      },
+    },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.c2zcRestoreFixture, null);
+  assert.equal(result.c2zcRestoreFixtureDiagnostic.schema, 1);
+  assert.equal(
+    result.c2zcRestoreFixtureDiagnostic.stage,
+    "c2-zc-restore-fixture-builder",
+  );
+  assert.equal(
+    result.c2zcRestoreFixtureDiagnostic.candidate.currentHeadSha,
+    candidate.currentHeadSha,
+  );
+  assert.match(result.c2zcRestoreFixtureDiagnostic.runId, /^[0-9a-f-]{36}$/);
+  assert.ok(result.c2zcRestoreFixtureDiagnostic.error.message.length < 512);
+  assert.equal("database" in result.c2zcRestoreFixtureDiagnostic, false);
+  await assert.rejects(
+    readFile(
+      path.join(
+        temporaryRoot,
+        ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.db",
+      ),
+    ),
+    /ENOENT/,
+    "invalid fixture diagnostics must not retain the copied database",
   );
 });
 
@@ -1001,17 +1290,19 @@ test("dirty candidate fingerprints change when file content changes", async () =
 
 test("only complete candidate-bound receipts satisfy merge and release gates", () => {
   const candidate = completeCandidate();
+  const plan = fullStageBindingPlan();
   const receipt = {
     version: 3,
     profile: "full",
     coverage: { completeness: "complete", fromStage: null },
     candidate,
     status: "passed",
+    stages: passedStagesForPlan(plan),
     productJourneyEvidence: completeProductJourneyEvidence(),
   };
 
   assert.doesNotThrow(() =>
-    verifyLocalCiReceipt(receipt, { profile: "full", candidate }),
+    verifyLocalCiReceipt(receipt, { profile: "full", candidate, plan }),
   );
   assert.throws(
     () =>
@@ -1020,7 +1311,7 @@ test("only complete candidate-bound receipts satisfy merge and release gates", (
           ...receipt,
           coverage: { completeness: "partial", fromStage: "security" },
         },
-        { profile: "full", candidate },
+        { profile: "full", candidate, plan },
       ),
     /complete/,
   );
@@ -1028,6 +1319,7 @@ test("only complete candidate-bound receipts satisfy merge and release gates", (
     () =>
       verifyLocalCiReceipt(receipt, {
         profile: "full",
+        plan,
         candidate: {
           ...candidate,
           resolvedHeadSha: "d".repeat(40),
@@ -1039,6 +1331,7 @@ test("only complete candidate-bound receipts satisfy merge and release gates", (
     () =>
       verifyLocalCiReceipt(receipt, {
         profile: "full",
+        plan,
         candidate: {
           ...candidate,
           worktreeFingerprint: "d".repeat(64),
@@ -1048,30 +1341,274 @@ test("only complete candidate-bound receipts satisfy merge and release gates", (
   );
 });
 
-test("Full receipts require bound product journey results and artifact evidence", () => {
+test("Full receipt verification binds every planned stage and command", () => {
   const candidate = completeCandidate();
+  const plan = fullStageBindingPlan();
   const receipt = {
     version: 3,
     profile: "full",
     coverage: { completeness: "complete", fromStage: null },
     candidate,
     status: "passed",
+    productJourneyEvidence: completeProductJourneyEvidence({
+      acceptanceRequired: false,
+    }),
+    stages: passedStagesForPlan(plan),
   };
+
+  assert.doesNotThrow(() =>
+    verifyLocalCiReceipt(receipt, { profile: "full", candidate, plan }),
+  );
+
+  for (const [label, mutate] of [
+    ["missing stage", (mutated) => mutated.stages.pop()],
+    ["reordered stage", (mutated) => mutated.stages.reverse()],
+    [
+      "failed stage",
+      (mutated) => {
+        mutated.stages[0].status = "failed";
+      },
+    ],
+    [
+      "missing command",
+      (mutated) => {
+        mutated.stages[0].commands.pop();
+      },
+    ],
+    [
+      "reordered command",
+      (mutated) => {
+        mutated.stages[0].commands.reverse();
+        mutated.stages[0].commands.push({
+          ...mutated.stages[0].commands[0],
+          label: "unexpected-command",
+        });
+      },
+    ],
+    [
+      "nonzero command",
+      (mutated) => {
+        mutated.stages[0].commands[0].exitCode = 1;
+      },
+    ],
+    [
+      "reduced command args",
+      (mutated) => {
+        mutated.stages[0].commands[0].args = [];
+      },
+    ],
+    [
+      "changed command cwd",
+      (mutated) => {
+        mutated.stages[0].commands[0].cwd = "unexpected";
+      },
+    ],
+    [
+      "changed planned env",
+      (mutated) => {
+        mutated.stages.at(-1).commands[0].env = {
+          GRIMODEX_PRODUCT_JOURNEY_SET: "unexpected",
+        };
+      },
+    ],
+    [
+      "signaled command",
+      (mutated) => {
+        mutated.stages[0].commands[0].signal = "SIGTERM";
+      },
+    ],
+    [
+      "unexpected dynamic-stage env",
+      (mutated) => {
+        mutated.stages[1].commands[0].env.UNEXPECTED_ACCEPTANCE_OVERRIDE =
+          "true";
+      },
+    ],
+  ]) {
+    const mutated = structuredClone(receipt);
+    mutate(mutated);
+    assert.throws(
+      () => verifyLocalCiReceipt(mutated, { profile: "full", candidate, plan }),
+      /stage|command|passed|exitCode/i,
+      label,
+    );
+  }
 
   assert.throws(
     () => verifyLocalCiReceipt(receipt, { profile: "full", candidate }),
+    /plan/i,
+    "Full receipt verification must reject a missing plan",
+  );
+
+  const customPlan = fullStageBindingPlan();
+  customPlan.comparison = {
+    base: "upstream/release-candidate",
+    head: "feature/c2zc-review",
+  };
+  for (const stage of customPlan.stages.filter((entry) =>
+    ["c2-zc-rust-acceptance-gate", "electron-product-journeys"].includes(
+      entry.id,
+    ),
+  )) {
+    stage.commands[0].env = {
+      ...stage.commands[0].env,
+      GRIMODEX_C2ZC_RUST_REQUESTED_BASE: "origin/master",
+      GRIMODEX_C2ZC_RUST_REQUESTED_HEAD: "HEAD",
+    };
+  }
+  const customReceipt = {
+    ...receipt,
+    stages: passedStagesForPlan(customPlan),
+  };
+  for (const stage of customReceipt.stages.filter((entry) =>
+    ["c2-zc-rust-acceptance-gate", "electron-product-journeys"].includes(
+      entry.id,
+    ),
+  )) {
+    stage.commands[0].env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE =
+      customPlan.comparison.base;
+    stage.commands[0].env.GRIMODEX_C2ZC_RUST_REQUESTED_HEAD =
+      customPlan.comparison.head;
+  }
+  assert.doesNotThrow(() =>
+    verifyLocalCiReceipt(customReceipt, {
+      profile: "full",
+      candidate,
+      plan: customPlan,
+    }),
+  );
+  customReceipt.stages.at(
+    -1,
+  ).commands[0].env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE = "origin/master";
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(customReceipt, {
+        profile: "full",
+        candidate,
+        plan: customPlan,
+      }),
+    /env.*planned/i,
+  );
+
+  const fixturePlan = fullStageBindingPlan();
+  const fixtureStage = fixturePlan.stages.find(
+    (stage) => stage.id === "c2-zc-restore-fixture-builder",
+  );
+  fixtureStage.commands = [
+    {
+      label: "build fixture",
+      command: "cargo",
+      args: [
+        "run",
+        "--",
+        "build",
+        "--repo-root",
+        ".",
+        "--output-dir",
+        "__C2ZC_RESTORE_FIXTURE_OUTPUT_DIR__",
+        "--candidate",
+        "HEAD",
+        "--expected-head",
+        "__C2ZC_RESTORE_FIXTURE_EXPECTED_HEAD__",
+        "--expected-tree",
+        "__C2ZC_RESTORE_FIXTURE_EXPECTED_TREE__",
+      ],
+      cwd: ".",
+      env: {},
+    },
+    {
+      label: "verify fixture",
+      command: "cargo",
+      args: [
+        "run",
+        "--",
+        "verify",
+        "--manifest",
+        "__C2ZC_RESTORE_FIXTURE_MANIFEST__",
+        "--repo-root",
+        ".",
+        "--candidate",
+        "HEAD",
+      ],
+      cwd: ".",
+      env: {},
+    },
+  ];
+  const fixtureReceipt = {
+    ...receipt,
+    stages: passedStagesForPlan(fixturePlan),
+  };
+  const fixtureReceiptStage = fixtureReceipt.stages.find(
+    (stage) => stage.id === "c2-zc-restore-fixture-builder",
+  );
+  const fixtureOutputDir = "/tmp/grimodex-c2zc-fixture-run";
+  const replaceOption = (command, option, value) => {
+    command.args[command.args.indexOf(option) + 1] = value;
+  };
+  const [buildFixture, verifyFixture] = fixtureReceiptStage.commands;
+  for (const command of [buildFixture, verifyFixture]) {
+    replaceOption(command, "--repo-root", "/repo");
+    replaceOption(command, "--candidate", fixturePlan.comparison.head);
+  }
+  replaceOption(buildFixture, "--output-dir", fixtureOutputDir);
+  replaceOption(buildFixture, "--expected-head", candidate.resolvedHeadSha);
+  replaceOption(buildFixture, "--expected-tree", candidate.resolvedHeadTreeSha);
+  replaceOption(
+    verifyFixture,
+    "--manifest",
+    path.join(fixtureOutputDir, "c2zc-restore-fixture.manifest.json"),
+  );
+  assert.doesNotThrow(() =>
+    verifyLocalCiReceipt(fixtureReceipt, {
+      profile: "full",
+      candidate,
+      plan: fixturePlan,
+    }),
+  );
+  replaceOption(
+    verifyFixture,
+    "--manifest",
+    "/tmp/unrelated/c2zc-restore-fixture.manifest.json",
+  );
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(fixtureReceipt, {
+        profile: "full",
+        candidate,
+        plan: fixturePlan,
+      }),
+    /fixture.*paths.*coherent/i,
+  );
+});
+
+test("Full receipts require bound product journey results and artifact evidence", () => {
+  const candidate = completeCandidate();
+  const plan = fullStageBindingPlan();
+  const receipt = {
+    version: 3,
+    profile: "full",
+    coverage: { completeness: "complete", fromStage: null },
+    candidate,
+    status: "passed",
+    stages: passedStagesForPlan(plan),
+  };
+
+  assert.throws(
+    () => verifyLocalCiReceipt(receipt, { profile: "full", candidate, plan }),
     /product journey evidence/i,
   );
 });
 
 test("Full receipts fail closed when a C2-ZC-complete result omits its Rust receipt binding", () => {
   const candidate = completeCandidate();
+  const plan = fullStageBindingPlan({ productJourneySet: null });
   const receipt = {
     version: 3,
     profile: "full",
     coverage: { completeness: "complete", fromStage: null },
     candidate,
     status: "passed",
+    stages: passedStagesForPlan(plan),
     productJourneyEvidence: completeProductJourneyEvidence({
       acceptanceRequired: true,
       acceptanceComplete: true,
@@ -1080,7 +1617,7 @@ test("Full receipts fail closed when a C2-ZC-complete result omits its Rust rece
   };
 
   assert.throws(
-    () => verifyLocalCiReceipt(receipt, { profile: "full", candidate }),
+    () => verifyLocalCiReceipt(receipt, { profile: "full", candidate, plan }),
     /C2-ZC|Rust|acceptance|evidence/i,
   );
 });
@@ -1213,18 +1750,21 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   assert.match(evidence.artifactDigest, /^sha256:[0-9a-f]{64}$/);
 
   const candidate = completeCandidate();
+  const receiptPlan = fullStageBindingPlan();
   const receipt = {
     version: 3,
     profile: "full",
     coverage: { completeness: "complete", fromStage: null },
     candidate,
     status: "passed",
+    stages: passedStagesForPlan(receiptPlan),
     productJourneyEvidence: evidence,
   };
   assert.doesNotThrow(() =>
     verifyLocalCiReceipt(receipt, {
       profile: "full",
       candidate,
+      plan: receiptPlan,
       currentProductJourneyEvidence: evidence,
     }),
   );
@@ -1286,6 +1826,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
         {
           profile: "full",
           candidate,
+          plan: receiptPlan,
           currentProductJourneyEvidence: evidence,
         },
       ),
@@ -1402,19 +1943,30 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     acceptedEvidence.c2zcRustAcceptance.receiptSha256,
     rustReceipt.receiptSha256,
   );
+  const acceptedFixtureEvidence = c2zcFixtureEvidence(candidate);
+  const acceptedReceiptPlan = fullStageBindingPlan({
+    productJourneySet: null,
+  });
+  // Full collection stores the complete, re-verifiable fixture evidence here;
+  // only product results/manifests use the compact summary.
+  acceptedEvidence.c2zcRestoreFixture = acceptedFixtureEvidence;
   const acceptedLocalReceipt = {
     version: 3,
     profile: "full",
     coverage: { completeness: "complete", fromStage: null },
     candidate,
     status: "passed",
+    stages: passedStagesForPlan(acceptedReceiptPlan),
     productJourneyEvidence: acceptedEvidence,
-    c2zcRestoreFixture: c2zcFixtureEvidence(candidate),
+    c2zcRestoreFixture: acceptedFixtureEvidence,
   };
   assert.doesNotThrow(() =>
     verifyLocalCiReceipt(acceptedLocalReceipt, {
       profile: "full",
       candidate,
+      plan: acceptedReceiptPlan,
+      currentProductJourneyEvidence: acceptedEvidence,
+      currentC2ZcRestoreFixtureEvidence: acceptedFixtureEvidence,
     }),
   );
   for (const mutate of [
@@ -1460,7 +2012,13 @@ test("Full product journey evidence binds result and manifest bytes to the recei
             ...acceptedLocalReceipt,
             productJourneyEvidence: mutatedEvidence,
           },
-          { profile: "full", candidate },
+          {
+            profile: "full",
+            candidate,
+            plan: acceptedReceiptPlan,
+            currentProductJourneyEvidence: acceptedEvidence,
+            currentC2ZcRestoreFixtureEvidence: acceptedFixtureEvidence,
+          },
         ),
       /Rust acceptance gates|candidate|evidence|artifact/i,
     );

@@ -26,6 +26,10 @@ import {
   runProductJourneys,
 } from "../electron/scripts/product-journeys.mjs";
 import { NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG } from "../electron/scripts/product-journey-catalog.mjs";
+import {
+  createC2ZcFixtureManifest,
+  createC2ZcFixtureSemantic,
+} from "../scripts/c2zc-fixture-test-support.mjs";
 
 function deterministicClock(values) {
   let index = 0;
@@ -557,6 +561,188 @@ test("C2-ZC build preflight binds the three selected capability artifacts and om
     result.artifacts.find((artifact) => artifact.name === "N-API native module")
       .realPath,
     await realpath(nativePath),
+  );
+});
+
+test("C2-ZC product results and audit manifest bind the verified fixture manifest and candidate", async (t) => {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-c2zc-fixture-evidence-"),
+  );
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const mainPath = path.join(root, "dist-electron", "main.cjs");
+  const rendererPath = path.join(root, "dist", "index.html");
+  const nativePath = path.join(root, "custom", "grimodex-node.node");
+  const fixtureRoot = path.join(
+    root,
+    ".artifacts",
+    "local-ci",
+    "c2-zc-restore-fixture",
+  );
+  const fixturePath = path.join(fixtureRoot, "c2zc-restore-fixture.backup.db");
+  const databasePath = path.join(fixtureRoot, "c2zc-restore-fixture.db");
+  const manifestPath = path.join(
+    fixtureRoot,
+    "c2zc-restore-fixture.manifest.json",
+  );
+  await Promise.all([
+    mkdir(path.dirname(mainPath), { recursive: true }),
+    mkdir(path.dirname(rendererPath), { recursive: true }),
+    mkdir(path.dirname(nativePath), { recursive: true }),
+    mkdir(fixtureRoot, { recursive: true }),
+    writeFile(mainPath, "main"),
+    writeFile(rendererPath, "renderer"),
+    writeFile(nativePath, "native"),
+  ]);
+  const candidate = {
+    requestedBase: "origin/master",
+    requestedHead: "HEAD",
+    resolvedBaseSha: "a".repeat(40),
+    resolvedHeadSha: "b".repeat(40),
+    resolvedHeadTreeSha: "c".repeat(40),
+    currentHeadSha: "b".repeat(40),
+    worktreeClean: true,
+    worktreeFingerprint: "d".repeat(64),
+    worktreeStatusHash: "e".repeat(64),
+  };
+  const fixtureBytes = Buffer.from("offline-fixture", "utf8");
+  const fixtureManifest = createC2ZcFixtureManifest({
+    candidate: {
+      requested: candidate.requestedHead,
+      resolvedHeadSha: candidate.resolvedHeadSha,
+      resolvedTreeSha: candidate.resolvedHeadTreeSha,
+      headSha: candidate.currentHeadSha,
+      treeSha: candidate.resolvedHeadTreeSha,
+      clean: candidate.worktreeClean,
+      statusSha256: `sha256:${candidate.worktreeStatusHash}`,
+    },
+    semantic: createC2ZcFixtureSemantic(),
+    fixtureSha256: `sha256:${createHash("sha256")
+      .update(fixtureBytes)
+      .digest("hex")}`,
+    fixtureSizeBytes: fixtureBytes.length,
+    schemaVersion: 34,
+    fixturePath: "c2zc-restore-fixture.backup.db",
+    databasePath: "c2zc-restore-fixture.db",
+  });
+  await Promise.all([
+    writeFile(fixturePath, fixtureBytes),
+    writeFile(databasePath, fixtureBytes),
+    writeFile(manifestPath, `${JSON.stringify(fixtureManifest, null, 2)}\n`),
+  ]);
+  const environment = {
+    GRIMODEX_NODE_PATH: nativePath,
+    GRIMODEX_C2ZC_RESTORE_FIXTURE: JSON.stringify({
+      path: fixturePath,
+      manifest: manifestPath,
+    }),
+  };
+  const journeys = NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map(({ id }) => ({
+    id,
+    run: async () => undefined,
+  }));
+  const artifacts = (
+    await assertBuildArtifacts(journeys, {
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      root,
+      env: environment,
+    })
+  ).artifacts;
+  const report = await runProductJourneys({
+    root,
+    environment,
+    catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+    journeys,
+    selectionName: "c2-zc",
+    assertArtifacts: () => ({ artifacts }),
+    buildReceipt: {
+      version: 1,
+      verified: true,
+      source: "local-ci-candidate",
+      candidate,
+      artifacts,
+    },
+    rustAcceptanceEvidence: {
+      required: true,
+      verified: true,
+      candidate,
+      receipt: { candidate },
+    },
+    createHarness: () => ({
+      withLaneWatchdog: async (run) => run(),
+      dispose: async () => {},
+    }),
+    resultsPath: path.join(root, "results.json"),
+  });
+
+  assert.match(
+    report.c2zcRestoreFixture.manifestSha256,
+    /^sha256:[0-9a-f]{64}$/u,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.fixtureSha256,
+    fixtureManifest.fixtureSha256,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.fixtureSizeBytes,
+    fixtureManifest.fixtureSizeBytes,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.semanticContentsDigest,
+    fixtureManifest.semantic.contentsDigest,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.contractVersion,
+    fixtureManifest.contractVersion,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.builderVersion,
+    fixtureManifest.builderVersion,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.candidateHeadSha,
+    fixtureManifest.candidate.resolvedHeadSha,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.candidateTreeSha,
+    fixtureManifest.candidate.resolvedTreeSha,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.candidateStatusSha256,
+    fixtureManifest.candidate.statusSha256,
+  );
+  const manifest = await readJson(path.join(root, "manifest.json"));
+  assert.deepEqual(manifest.c2zcRestoreFixture, report.c2zcRestoreFixture);
+
+  await writeFile(databasePath, "mutated-database", "utf8");
+  await assert.rejects(
+    runProductJourneys({
+      root,
+      environment,
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      journeys,
+      selectionName: "c2-zc",
+      assertArtifacts: () => ({ artifacts }),
+      buildReceipt: {
+        version: 1,
+        verified: true,
+        source: "local-ci-candidate",
+        candidate,
+        artifacts,
+      },
+      rustAcceptanceEvidence: {
+        required: true,
+        verified: true,
+        candidate,
+        receipt: { candidate },
+      },
+      createHarness: () => ({
+        withLaneWatchdog: async (run) => run(),
+        dispose: async () => {},
+      }),
+      resultsPath: path.join(root, "mutated-results.json"),
+    }),
+    /bytes|digest|manifest artifacts/i,
+    "the product lane must re-read the current fixture database",
   );
 });
 

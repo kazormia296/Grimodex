@@ -19,7 +19,10 @@ import { launchProductJourneyMcpClient } from "./product-journey-mcp-client.mjs"
 import { createNativeRoundTripJourneys } from "./product-journey-native-roundtrips.mjs";
 import { createNarrativeMaintenanceProductJourneys } from "./narrative-maintenance-product-journeys.mjs";
 import {
+  C2ZC_RESTORE_FIXTURE_ENV,
   C2ZC_PRODUCT_JOURNEY_ID,
+  assertC2ZcFixtureCandidateBinding,
+  loadC2ZcRestoreFixtureInput,
   runC2ZcCanonicalAuthorityJourney,
 } from "./c2zc-canonical-product-journey.mjs";
 import { runC2ZcRendererMcpDmlDenialJourney } from "./c2zc-renderer-mcp-dml-denial-product-journey.mjs";
@@ -2532,6 +2535,176 @@ export function assertProductJourneyArtifactEvidence(actual, expected, label) {
   return assertProductJourneyArtifactSet(actual, expected, label);
 }
 
+const C2ZC_FIXTURE_SUMMARY_KEYS = Object.freeze([
+  "manifestVersion",
+  "manifestSha256",
+  "fixtureSha256",
+  "fixtureSizeBytes",
+  "semanticContentsDigest",
+  "contractVersion",
+  "builderVersion",
+  "candidateHeadSha",
+  "candidateTreeSha",
+  "candidateStatusSha256",
+]);
+
+function normalizeSha256(value) {
+  return String(value ?? "").startsWith("sha256:")
+    ? String(value)
+    : `sha256:${String(value ?? "")}`;
+}
+
+function assertC2ZcFixtureSummary(
+  summary,
+  { candidate = null, label = "C2-ZC fixture summary" } = {},
+) {
+  if (
+    !isPlainObject(summary) ||
+    JSON.stringify(Object.keys(summary).sort()) !==
+      JSON.stringify([...C2ZC_FIXTURE_SUMMARY_KEYS].sort()) ||
+    !Number.isSafeInteger(summary.manifestVersion) ||
+    summary.manifestVersion < 1 ||
+    !PRODUCT_JOURNEY_SHA256_HEX.test(
+      normalizeSha256(summary.manifestSha256).slice(7),
+    ) ||
+    !PRODUCT_JOURNEY_SHA256_HEX.test(
+      normalizeSha256(summary.fixtureSha256).slice(7),
+    ) ||
+    !Number.isSafeInteger(summary.fixtureSizeBytes) ||
+    summary.fixtureSizeBytes < 0 ||
+    !PRODUCT_JOURNEY_SHA256_HEX.test(
+      normalizeSha256(summary.semanticContentsDigest).slice(7),
+    ) ||
+    typeof summary.contractVersion !== "number" ||
+    typeof summary.builderVersion !== "string" ||
+    !PRODUCT_JOURNEY_GIT_OBJECT_ID.test(summary.candidateHeadSha) ||
+    !PRODUCT_JOURNEY_GIT_OBJECT_ID.test(summary.candidateTreeSha) ||
+    !/^sha256:[0-9a-f]{64}$/u.test(summary.candidateStatusSha256)
+  ) {
+    throw new Error(`${label} has an invalid compact evidence shape`);
+  }
+  if (candidate) {
+    const candidateStatusSha256 = normalizeSha256(
+      candidate.fixtureStatusSha256 ??
+        candidate.worktreeStatusHash ??
+        candidate.statusSha256,
+    );
+    if (
+      summary.candidateHeadSha !== candidate.resolvedHeadSha ||
+      summary.candidateTreeSha !==
+        (candidate.resolvedHeadTreeSha ?? candidate.resolvedTreeSha) ||
+      summary.candidateStatusSha256 !== candidateStatusSha256
+    ) {
+      throw new Error(`${label} is bound to a different candidate`);
+    }
+  }
+  return summary;
+}
+
+export function assertC2ZcProductJourneyFixtureSummary(
+  actual,
+  expected,
+  label = "C2-ZC product journey fixture summary",
+) {
+  assertC2ZcFixtureSummary(actual, { label });
+  assertC2ZcFixtureSummary(expected, { label: `${label} expected` });
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`${label} does not match the verified fixture evidence`);
+  }
+  return actual;
+}
+
+function createC2ZcFixtureSummary(manifest, manifestIdentity) {
+  return {
+    manifestVersion: manifest.manifestVersion,
+    manifestSha256: manifestIdentity.sha256,
+    fixtureSha256: manifest.fixtureSha256,
+    fixtureSizeBytes: manifest.fixtureSizeBytes,
+    semanticContentsDigest: manifest.semantic.contentsDigest,
+    contractVersion: manifest.contractVersion,
+    builderVersion: manifest.builderVersion,
+    candidateHeadSha: manifest.candidate.resolvedHeadSha,
+    candidateTreeSha: manifest.candidate.resolvedTreeSha,
+    candidateStatusSha256: manifest.candidate.statusSha256,
+  };
+}
+
+function productJourneyPathInsideRoot(root, value, label) {
+  const relative = path.relative(path.resolve(root), path.resolve(value));
+  if (
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error(`${label} must stay inside the product artifact root`);
+  }
+}
+
+/** Load and hash the stable C2-ZC fixture, returning only its bound summary. */
+export async function readC2ZcProductJourneyFixtureEvidence({
+  root = rootDir,
+  environment = process.env,
+  candidate = null,
+} = {}) {
+  const raw = environment[C2ZC_RESTORE_FIXTURE_ENV];
+  if (raw === undefined || raw === "") return null;
+  const input = await loadC2ZcRestoreFixtureInput(undefined, environment);
+  if (typeof input.manifestPath !== "string" || input.manifestPath === "") {
+    throw new Error("C2-ZC product journey fixture must use a manifest path");
+  }
+  const fixturePath = path.resolve(input.path);
+  const manifestPath = path.resolve(input.manifestPath);
+  const databasePath = path.resolve(
+    path.dirname(manifestPath),
+    input.manifest.artifacts.database.path,
+  );
+  const expectedFixturePath = path.resolve(
+    path.dirname(manifestPath),
+    input.manifest.artifacts.fixture.path,
+  );
+  for (const [label, value] of [
+    ["C2-ZC fixture", fixturePath],
+    ["C2-ZC fixture database", databasePath],
+    ["C2-ZC fixture manifest", manifestPath],
+  ]) {
+    productJourneyPathInsideRoot(root, value, label);
+  }
+  const [fixtureIdentity, databaseIdentity, manifestIdentity, expectedFixture] =
+    await Promise.all([
+      resolveProductJourneyArtifact(fixturePath, { root }),
+      resolveProductJourneyArtifact(databasePath, { root }),
+      resolveProductJourneyArtifact(manifestPath, { root }),
+      resolveProductJourneyArtifact(expectedFixturePath, { root }),
+    ]);
+  if (
+    fixtureIdentity.realPath !== expectedFixture.realPath ||
+    fixtureIdentity.sha256 !== input.manifest.artifacts.fixture.sha256 ||
+    fixtureIdentity.size !== input.manifest.artifacts.fixture.sizeBytes ||
+    databaseIdentity.sha256 !== input.manifest.artifacts.database.sha256 ||
+    databaseIdentity.size !== input.manifest.artifacts.database.sizeBytes ||
+    input.manifest.fixtureSha256 !== fixtureIdentity.sha256 ||
+    input.manifest.fixtureSizeBytes !== fixtureIdentity.size
+  ) {
+    throw new Error(
+      "C2-ZC product journey fixture bytes, realpaths, or manifest artifacts do not match",
+    );
+  }
+  assertC2ZcFixtureCandidateBinding(
+    input.manifest.candidate,
+    candidate ?? input.manifest.candidate,
+    "C2-ZC product journey fixture candidate",
+  );
+  return assertC2ZcFixtureSummary(
+    createC2ZcFixtureSummary(input.manifest, manifestIdentity),
+    { candidate },
+  );
+}
+
+function productJourneyFixtureEvidenceEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 async function resolveAndVerifyProductJourneyArtifacts(
   journeys,
   {
@@ -2787,17 +2960,23 @@ export function refreshProductJourneyOutcome(report) {
         report.c2zcRustAcceptance?.candidate,
         report.c2zcRustAcceptance?.receipt?.candidate,
       ));
+  const fixtureEvidenceComplete =
+    report.acceptanceRequired !== true ||
+    (report.c2zcRestoreFixture !== null &&
+      report.c2zcRestoreFixture !== undefined);
   report.rustAcceptanceComplete = rustAcceptanceComplete;
   report.allPassed =
     exactLanePass &&
     rustAcceptanceComplete &&
     buildReceiptComplete &&
-    candidateBindingComplete;
+    candidateBindingComplete &&
+    fixtureEvidenceComplete;
   report.allClean =
     exactLaneClean &&
     rustAcceptanceComplete &&
     buildReceiptComplete &&
-    candidateBindingComplete;
+    candidateBindingComplete &&
+    fixtureEvidenceComplete;
   // This is the final acceptance bit. It cannot be inherited from a Rust-only
   // preflight when a required product lane failed or is not clean.
   report.acceptanceComplete =
@@ -2826,6 +3005,7 @@ async function writeAuditManifest(
     buildReceipt: report.buildReceipt ?? null,
     acceptanceComplete: report.acceptanceComplete === true,
     c2zcRustAcceptance: report.c2zcRustAcceptance ?? null,
+    c2zcRestoreFixture: report.c2zcRestoreFixture ?? null,
     results: {
       path: path.basename(outputPath),
       realPath: results.realPath,
@@ -2908,6 +3088,7 @@ export async function runProductJourneys({
     buildReceipt: buildReceipt ?? readProductJourneyBuildReceipt(environment),
     acceptanceComplete: false,
     c2zcRustAcceptance: null,
+    c2zcRestoreFixture: null,
     selectionBinding: {
       catalogJourneyIds: catalog.map((journey) => journey.id),
       journeyIds: journeys.map((journey) => journey.id),
@@ -2943,6 +3124,19 @@ export async function runProductJourneys({
         root,
         environment,
       }));
+    const fixtureEnvironmentValue = environment[C2ZC_RESTORE_FIXTURE_ENV];
+    const fixtureRequiredWithoutOverride =
+      report.acceptanceRequired === true && rustAcceptanceEvidence === null;
+    if (
+      report.acceptanceRequired === true &&
+      (fixtureEnvironmentValue !== undefined || fixtureRequiredWithoutOverride)
+    ) {
+      report.c2zcRestoreFixture = await readC2ZcProductJourneyFixtureEvidence({
+        root,
+        environment,
+        candidate: report.c2zcRustAcceptance?.candidate ?? null,
+      });
+    }
     report.rustAcceptanceComplete =
       report.acceptanceRequired !== true ||
       (report.c2zcRustAcceptance.required === true &&
@@ -3152,6 +3346,32 @@ export async function runProductJourneys({
           candidate: report.c2zcRustAcceptance?.candidate,
         },
       );
+    }
+    if (
+      report.acceptanceRequired === true &&
+      report.c2zcRestoreFixture !== null
+    ) {
+      const currentFixtureEvidence =
+        await readC2ZcProductJourneyFixtureEvidence({
+          root,
+          environment,
+          candidate: report.c2zcRustAcceptance?.candidate ?? null,
+        });
+      assertC2ZcFixtureSummary(currentFixtureEvidence, {
+        candidate: report.c2zcRustAcceptance?.candidate ?? null,
+        label: "C2-ZC product journey fixture summary",
+      });
+      if (
+        !productJourneyFixtureEvidenceEqual(
+          report.c2zcRestoreFixture,
+          currentFixtureEvidence,
+        )
+      ) {
+        throw new Error(
+          "C2-ZC restore fixture changed after product journeys ran",
+        );
+      }
+      report.c2zcRestoreFixture = currentFixtureEvidence;
     }
   } catch (error) {
     report.status = "failed";
