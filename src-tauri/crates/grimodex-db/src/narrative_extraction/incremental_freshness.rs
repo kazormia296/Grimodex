@@ -4177,14 +4177,16 @@ mod tests {
         task_count: i64,
         attempt_count: i64,
         feed_event_count: i64,
-        cursor: Option<(
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )>,
+        cursor: Option<HeldProjectCursor>,
     }
+
+    type HeldProjectCursor = (
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
 
     fn held_project_fixture_db() -> Database {
         let db = fixture_db();

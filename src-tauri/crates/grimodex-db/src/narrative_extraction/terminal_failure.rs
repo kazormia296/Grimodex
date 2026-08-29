@@ -36,6 +36,16 @@ pub const TERMINAL_FAILURE_CONSUMER_KIND: &str = "narrative-maintenance-failure"
 
 const TERMINAL_FAILURE_EVIDENCE: EvidenceFreshness = EvidenceFreshness::Unknown;
 
+type SealedVerifyRunRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 /// Map a validated terminal NEX code to the diagnostic reason vocabulary that
 /// predates terminal failures. The NEX code remains the immutable primary
 /// evidence; this compatibility bucket is deliberately typed by semantic
@@ -573,15 +583,7 @@ fn sealed_graph_repair_evidence_detail_digest(
     semantic_epoch_id: &str,
 ) -> anyhow::Result<String> {
     let expected_work_key = format!("{VERIFY_RUN_KIND}:{semantic_epoch_id}");
-    let row: Option<(
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = conn
+    let row: Option<SealedVerifyRunRow> = conn
         .query_row(
             "SELECT project_id, status, run_kind, work_key, semantic_epoch_id,
                     terminal_reason_code, outcome_summary_json
