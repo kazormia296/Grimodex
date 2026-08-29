@@ -23,6 +23,7 @@ import yaml from "js-yaml";
 import { PRODUCT_JOURNEY_CATALOG } from "../electron/scripts/product-journey-catalog.mjs";
 import {
   createProductJourneyHarness,
+  invokeOk,
   NARRATIVE_MAINTENANCE_NONCE_ENV,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
@@ -41,6 +42,8 @@ import {
   readNarrativeMaintenanceCiHeldFreshness,
   narrativeMaintenanceReceiptRoot,
   MAIN_PROCESS_NOISE_ALLOWLIST,
+  runWithLaneWatchdog,
+  waitUntil,
 } from "../electron/scripts/product-journey-harness.mjs";
 import {
   configureWorkspace,
@@ -2931,4 +2934,311 @@ test("product journey harness opts in before launch and reads structured lifecyc
 
   await harness.close(launched.app, launched.page, "lifecycle-trace");
   await harness.dispose({ success: true, name: "lifecycle-trace" });
+});
+
+test("invokeOk hard-stops a hung renderer operation with phase, command, and request identity", async () => {
+  const result = invokeOk(
+    {
+      evaluate: async () => new Promise(() => {}),
+    },
+    "hung_command",
+    { secret: "must-not-be-logged" },
+    {
+      phase: "observability/hung-ipc",
+      requestId: "request-hung-ipc",
+      timeoutMs: 20,
+    },
+  );
+  await assert.rejects(
+    Promise.race([
+      result,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("test timeout")), 250),
+      ),
+    ]),
+    (error) => {
+      assert.match(error.message, /timed out/i);
+      assert.match(error.message, /observability\/hung-ipc/);
+      assert.match(error.message, /hung_command/);
+      assert.match(error.message, /request-hung-ipc/);
+      return true;
+    },
+  );
+});
+
+test("waitUntil bounds each predicate iteration even when the predicate never settles", async () => {
+  const startedAt = Date.now();
+  await assert.rejects(
+    Promise.race([
+      waitUntil(() => new Promise(() => {}), "hung predicate", 35, 1, {
+        phase: "observability/hung-predicate",
+        iterationTimeoutMs: 8,
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("test timeout")), 250),
+      ),
+    ]),
+    (error) => {
+      assert.match(error.message, /timeout waiting for hung predicate/i);
+      assert.match(error.message, /observability\/hung-predicate/);
+      assert.ok(Date.now() - startedAt < 200);
+      return true;
+    },
+  );
+});
+
+test("harness records durable operation journal entries without raw arguments", async (t) => {
+  const journalRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-journal-"),
+  );
+  const journalPath = path.join(journalRoot, "operations.jsonl");
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    evaluate: async (_operation, argument) =>
+      Array.isArray(argument) ? { ok: true, value: null } : undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: null }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    journalPath,
+    operationTimeoutMs: 100,
+    electronLauncher: { launch: async () => app },
+    closeApp: async () => undefined,
+  });
+  t.after(async () => {
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(journalRoot, { recursive: true, force: true });
+  });
+
+  const launched = await harness.launch("observability/journal");
+  await harness.invokeOk(launched.page, "journal_command", {
+    token: "do-not-write-this-secret",
+  });
+  await harness.close(launched.app, launched.page, "observability/journal");
+
+  const lines = (await readFile(journalPath, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.ok(lines.length >= 2);
+  assert.equal(
+    lines.every((entry) => entry.phase.startsWith("observability/journal")),
+    true,
+  );
+  assert.equal(
+    lines.every((entry) => typeof entry.operation === "string"),
+    true,
+  );
+  assert.equal(
+    lines.every((entry) => /^request-[0-9a-f-]{36}$/u.test(entry.requestId)),
+    true,
+  );
+  assert.equal(
+    lines.every((entry) => /^sha256:[0-9a-f]{64}$/u.test(entry.argsDigest)),
+    true,
+  );
+  assert.equal(
+    lines.every((entry) => typeof entry.startedAt === "string"),
+    true,
+  );
+  assert.equal(
+    lines.every((entry) => typeof entry.finishedAt === "string"),
+    true,
+  );
+  assert.equal(
+    lines.every((entry) =>
+      ["started", "completed", "failed", "timeout"].includes(entry.status),
+    ),
+    true,
+  );
+  assert.equal(
+    (await readFile(journalPath, "utf8")).includes("do-not-write-this-secret"),
+    false,
+  );
+  assert.ok(
+    lines.some(
+      (entry) =>
+        entry.operation === "ipc:journal_command" && entry.status === "started",
+    ),
+  );
+  assert.ok(
+    lines.some(
+      (entry) =>
+        entry.operation === "ipc:journal_command" &&
+        entry.status === "completed",
+    ),
+  );
+});
+
+test("lane watchdog captures partial evidence and kills registered children", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-watchdog-"),
+  );
+  const child = new EventEmitter();
+  child.pid = 424242;
+  child.killSignals = [];
+  child.kill = (signal) => {
+    child.killSignals.push(signal);
+    child.killed = true;
+    return true;
+  };
+  let captured = 0;
+  t.after(() => rm(artifactRoot, { recursive: true, force: true }));
+
+  await assert.rejects(
+    runWithLaneWatchdog(() => new Promise(() => {}), {
+      phase: "observability/watchdog",
+      timeoutMs: 20,
+      children: [child],
+      captureFailureArtifact: async (name) => {
+        captured += 1;
+        await writeFile(path.join(artifactRoot, `${name}.partial`), "partial");
+      },
+    }),
+    /watchdog.*observability\/watchdog/i,
+  );
+  assert.equal(captured, 1);
+  assert.deepEqual(child.killSignals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(
+    await readFile(
+      path.join(artifactRoot, "observability-watchdog.partial"),
+      "utf8",
+    ),
+    "partial",
+  );
+});
+
+test("harness bounds lifecycle init-script installation and retains a partial lane artifact", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-init-timeout-"),
+  );
+  const mainProcess = new EventEmitter();
+  mainProcess.pid = 424243;
+  mainProcess.exitCode = null;
+  mainProcess.signalCode = null;
+  mainProcess.killSignals = [];
+  mainProcess.kill = (signal) => {
+    mainProcess.killSignals.push(signal);
+    return true;
+  };
+  const app = {
+    context: () => ({ addInitScript: async () => new Promise(() => {}) }),
+    process: () => mainProcess,
+    firstWindow: async () => {
+      throw new Error("firstWindow must not run after init timeout");
+    },
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    operationTimeoutMs: 15,
+    launchTimeoutMs: 200,
+    electronLauncher: { launch: async () => app },
+    closeApp: async () => undefined,
+  });
+  t.after(async () => {
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  await assert.rejects(harness.launch("observability/init-script"), (error) => {
+    assert.match(error.message, /timed out/i);
+    assert.match(error.message, /observability\/init-script/);
+    assert.match(error.message, /page\.addInitScript:lifecycle-trace/);
+    assert.match(error.message, /request-[0-9a-f-]{36}/u);
+    return true;
+  });
+  await harness.dispose({ success: false, name: "observability-init-script" });
+  assert.deepEqual(mainProcess.killSignals, ["SIGTERM", "SIGKILL"]);
+  assert.ok(
+    await readFile(
+      path.join(
+        artifactRoot,
+        "observability-init-script",
+        "runtime",
+        "operations.jsonl",
+      ),
+      "utf8",
+    ).then((contents) =>
+      contents.includes("page.addInitScript:lifecycle-trace"),
+    ),
+  );
+});
+
+test("harness signal abort captures exactly once before child cleanup", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-signal-"),
+  );
+  const baselineSignalListeners = {
+    sigint: process.listenerCount("SIGINT"),
+    sigterm: process.listenerCount("SIGTERM"),
+  };
+  const child = new EventEmitter();
+  child.pid = 424244;
+  child.killSignals = [];
+  child.kill = (signal) => {
+    child.killSignals.push(signal);
+    return true;
+  };
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    evaluate: async () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => child,
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    laneWatchdogMs: 250,
+    operationTimeoutMs: 100,
+    electronLauncher: { launch: async () => app },
+    closeApp: async () => undefined,
+  });
+  t.after(async () => {
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+  const launched = await harness.launch("observability/signal");
+  const running = harness.withLaneWatchdog(
+    () => new Promise(() => {}),
+    "observability/signal",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(
+    process.listenerCount("SIGINT"),
+    baselineSignalListeners.sigint + 1,
+  );
+  assert.equal(
+    process.listenerCount("SIGTERM"),
+    baselineSignalListeners.sigterm + 1,
+  );
+  process.emit("SIGTERM");
+  await Promise.all([harness.abort("SIGTERM"), harness.abort("SIGTERM")]);
+  await assert.rejects(running, /aborted.*observability\/signal/i);
+  assert.deepEqual(child.killSignals, ["SIGTERM", "SIGKILL"]);
+  await harness
+    .close(launched.app, launched.page, "observability/signal")
+    .catch(() => undefined);
+  await harness.dispose({ success: false, name: "observability-signal" });
+  assert.equal(process.listenerCount("SIGINT"), baselineSignalListeners.sigint);
+  assert.equal(
+    process.listenerCount("SIGTERM"),
+    baselineSignalListeners.sigterm,
+  );
+  const retained = await readdir(artifactRoot);
+  assert.deepEqual(retained, ["observability-signal"]);
 });

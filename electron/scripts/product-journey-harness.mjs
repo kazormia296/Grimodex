@@ -9,17 +9,22 @@ import {
   readFile,
   readdir,
   realpath,
-  rename,
   rmdir,
   rm,
   writeFile,
 } from "node:fs/promises";
-import { closeSync, fsyncSync, mkdtempSync, openSync } from "node:fs";
+import {
+  closeSync,
+  fsyncSync,
+  mkdtempSync,
+  openSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { promisify } from "node:util";
 
 import { _electron } from "playwright";
 
@@ -27,7 +32,6 @@ import { closeElectronAppWithDiagnostics } from "./close-electron-app.mjs";
 import { C2ZC_RENDERER_DML_PHASE_ALLOWLIST } from "./c2zc-renderer-mcp-dml-denial-product-journey.mjs";
 
 const require = createRequire(import.meta.url);
-const execFile = promisify(execFileCallback);
 const PRODUCT_JOURNEY_AI_ENV = "GRIMODEX_PRODUCT_JOURNEY_FAKE_AI";
 const PRODUCT_JOURNEY_AI_VERSION = "deterministic-v1";
 const PRODUCT_JOURNEY_FIXTURE_DML_OWNER = "ci-product-journey-harness-v1";
@@ -86,6 +90,12 @@ const LIFECYCLE_TRACE_LISTENER_KEY =
   "__GRIMODEX_PRODUCT_JOURNEY_LIFECYCLE_LISTENER__";
 const MAX_LIFECYCLE_TRACE_EVENTS = 256;
 const MAIN_PROCESS_DRAIN_TIMEOUT_MS = 2_000;
+export const PRODUCT_JOURNEY_OPERATION_TIMEOUT_MS = 30_000;
+export const PRODUCT_JOURNEY_LANE_WATCHDOG_TIMEOUT_MS = 15 * 60_000;
+const PRODUCT_JOURNEY_OPERATION_JOURNAL_NAME = "operations.jsonl";
+const PRODUCT_JOURNEY_OPERATION_JOURNAL_VERSION = 1;
+const PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS = 5_000;
+const PRODUCT_JOURNEY_LANE_KILL_GRACE_MS = 250;
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
@@ -1372,20 +1382,27 @@ export async function readNarrativeMaintenanceCiHeldFreshness(
   return latest;
 }
 
-async function awaitNarrativeMaintenanceReceipt(state, phase) {
+async function awaitNarrativeMaintenanceReceipt(
+  state,
+  phase,
+  runOperation = null,
+) {
   const deadline = Date.now() + state.launchTimeoutMs;
   let sawPartial = false;
   for (;;) {
-    const artifact = await inspectNarrativeMaintenanceReceipt(
-      state.root,
-      state.expected,
-      phase,
-      {
+    const inspect = () =>
+      inspectNarrativeMaintenanceReceipt(state.root, state.expected, phase, {
         seenHeldFreshnessRequestNonces: state.seenHeldFreshnessRequestNonces,
         heldFreshnessRequestNonceBySequence:
           state.heldFreshnessRequestNonceBySequence,
-      },
-    );
+      });
+    const artifact = runOperation
+      ? await runOperation("receipt-revalidate", inspect, {
+          phase,
+          command: "receipt-revalidate",
+          args: { phase },
+        })
+      : await inspect();
     if (artifact) {
       state.artifact = artifact;
       state.heldFreshnessArtifacts = artifact.heldFreshnessArtifacts;
@@ -1415,18 +1432,27 @@ async function awaitNarrativeMaintenanceReceipt(state, phase) {
   }
 }
 
-async function reverifyNarrativeMaintenanceReceipt(state, phase) {
-  const artifact = await inspectNarrativeMaintenanceReceipt(
-    state.root,
-    state.expected,
-    phase,
-    {
+async function reverifyNarrativeMaintenanceReceipt(
+  state,
+  phase,
+  runOperation = null,
+  { allowTransientTemp = false } = {},
+) {
+  const inspect = () =>
+    inspectNarrativeMaintenanceReceipt(state.root, state.expected, phase, {
       allowMissing: false,
+      allowTransientTemp,
       seenHeldFreshnessRequestNonces: state.seenHeldFreshnessRequestNonces,
       heldFreshnessRequestNonceBySequence:
         state.heldFreshnessRequestNonceBySequence,
-    },
-  );
+    });
+  const artifact = runOperation
+    ? await runOperation("receipt-revalidate", inspect, {
+        phase,
+        command: "receipt-revalidate",
+        args: { phase },
+      })
+    : await inspect();
   if (state.expected === null) return null;
   if (!artifact || artifact.sha256 !== state.artifact?.sha256) {
     throw new Error(
@@ -1508,14 +1534,22 @@ async function writeNarrativeMaintenanceHeldFreshnessRequest(
   if (nonceReal !== nonceDir || !isContainedPath(rootReal, nonceReal)) {
     throw new Error("held-Freshness request nonce directory escaped its root");
   }
-  const handle = await open(temporaryPath, "wx", 0o600);
+  // Keep publication synchronous so a writer scheduled on the next event-loop
+  // turn cannot observe the previous request while this small atomic file is
+  // being flushed. The rename is atomic and both the file and parent
+  // directory are synced before yielding to the caller.
+  writeFileSync(temporaryPath, encoded, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  renameSync(temporaryPath, requestPath);
+  const requestFd = openSync(requestPath, "r");
   try {
-    await handle.writeFile(encoded, "utf8");
-    await handle.sync();
+    fsyncSync(requestFd);
   } finally {
-    await handle.close();
+    closeSync(requestFd);
   }
-  await rename(temporaryPath, requestPath);
   syncNarrativeMaintenanceDirectoryStrict(nonceDir);
   return request;
 }
@@ -1524,6 +1558,7 @@ async function awaitNarrativeMaintenanceHeldFreshness(
   state,
   phase,
   { previousSequence = null, requestNonce, workspaceBinding } = {},
+  runOperation = null,
 ) {
   if (state.expected === null) {
     throw new Error(
@@ -1559,30 +1594,39 @@ async function awaitNarrativeMaintenanceHeldFreshness(
     }
   }
   state.heldFreshnessBinding = workspaceBinding;
-  // Bind the request to the immutable launch ACK before writing it. This
-  // prevents a stale/partially replaced launch from accepting a fresh barrier
-  // request under the wrong seam nonce.
-  await reverifyNarrativeMaintenanceReceipt(state, `${phase}/before-request`);
+  // Publish the caller's request before revalidation so a writer cannot race
+  // with a stale request left by an earlier failed wait. Revalidation still
+  // runs before accepting any resulting immutable sequence, so a replaced or
+  // partially written launch cannot pass the boundary.
   const request = await writeNarrativeMaintenanceHeldFreshnessRequest(state, {
     requestNonce,
     phase,
     workspaceBinding,
   });
+  await reverifyNarrativeMaintenanceReceipt(
+    state,
+    `${phase}/before-request`,
+    runOperation,
+    { allowTransientTemp: true },
+  );
   const deadline = Date.now() + state.launchTimeoutMs;
   let sawPartial = false;
   for (;;) {
-    const artifact = await inspectNarrativeMaintenanceReceipt(
-      state.root,
-      state.expected,
-      phase,
-      {
+    const inspect = () =>
+      inspectNarrativeMaintenanceReceipt(state.root, state.expected, phase, {
         allowMissing: false,
         allowTransientTemp: true,
         seenHeldFreshnessRequestNonces: state.seenHeldFreshnessRequestNonces,
         heldFreshnessRequestNonceBySequence:
           state.heldFreshnessRequestNonceBySequence,
-      },
-    );
+      });
+    const artifact = runOperation
+      ? await runOperation("receipt-revalidate", inspect, {
+          phase,
+          command: "receipt-revalidate",
+          args: { phase, previousSequence },
+        })
+      : await inspect();
     if (artifact) {
       assertHeldFreshnessArtifactHistoryStable(
         state.heldFreshnessArtifacts,
@@ -1625,8 +1669,12 @@ async function awaitNarrativeMaintenanceHeldFreshness(
   }
 }
 
-async function consumeNarrativeMaintenanceReceipt(state, phase) {
-  await reverifyNarrativeMaintenanceReceipt(state, phase);
+async function consumeNarrativeMaintenanceReceipt(
+  state,
+  phase,
+  runOperation = null,
+) {
+  await reverifyNarrativeMaintenanceReceipt(state, phase, runOperation);
   if (state.expected === null) return;
   const nonceDir = path.join(state.root, state.expected.nonce);
   const children = await readdir(nonceDir, { withFileTypes: true });
@@ -2133,49 +2181,677 @@ const lifecycleTraceCaptureConfig = Object.freeze({
   maxEvents: MAX_LIFECYCLE_TRACE_EVENTS,
 });
 
-/** Typed renderer bridge invocation shared by product and performance journeys. */
-export async function invokeOk(page, command, args = {}) {
-  const envelope = await page.evaluate(
-    ([name, input]) => globalThis.grimodex.invoke(name, input),
-    [command, args],
-  );
-  if (!envelope.ok) {
-    throw new Error(`${command} rejected: ${envelope.error}`);
+function operationRequestId(value) {
+  if (typeof value === "string" && value.length > 0 && !value.includes("\0")) {
+    return value;
   }
-  return envelope.value;
+  return `request-${randomUUID()}`;
 }
 
-/** Poll a boundary assertion while keeping the last transport error. */
+function operationPhase(value) {
+  if (
+    typeof value === "string" &&
+    value.trim() !== "" &&
+    !value.includes("\0")
+  ) {
+    return value;
+  }
+  return "product-journey";
+}
+
+function operationTimeout(
+  value,
+  fallback = PRODUCT_JOURNEY_OPERATION_TIMEOUT_MS,
+) {
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  return Math.max(1, Math.floor(value));
+}
+
+function operationDigest(value) {
+  let canonical;
+  try {
+    canonical = canonicalJson(value);
+  } catch {
+    canonical = JSON.stringify(String(value));
+  }
+  if (typeof canonical !== "string") {
+    canonical = JSON.stringify(canonical ?? null) ?? String(canonical);
+  }
+  return `sha256:${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
+}
+
+function operationErrorMessage(error) {
+  return boundedDiagnosticText(
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
+export class ProductJourneyOperationTimeoutError extends Error {
+  constructor({ phase, operation, command, requestId, timeoutMs }) {
+    const commandName = command ?? operation;
+    super(
+      `product journey operation timed out after ${timeoutMs}ms: ` +
+        `phase=${phase} command=${commandName} requestId=${requestId}`,
+    );
+    this.name = "ProductJourneyOperationTimeoutError";
+    this.phase = phase;
+    this.operation = operation;
+    this.command = commandName;
+    this.requestId = requestId;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+export class ProductJourneyLaneWatchdogError extends Error {
+  constructor({ phase, requestId, timeoutMs }) {
+    super(
+      `product journey lane watchdog timed out after ${timeoutMs}ms: ` +
+        `phase=${phase} requestId=${requestId}`,
+    );
+    this.name = "ProductJourneyLaneWatchdogError";
+    this.phase = phase;
+    this.requestId = requestId;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+export class ProductJourneyLaneAbortError extends Error {
+  constructor({ phase, requestId, reason }) {
+    super(
+      `product journey lane aborted by ${reason}: phase=${phase} requestId=${requestId}`,
+    );
+    this.name = "ProductJourneyLaneAbortError";
+    this.phase = phase;
+    this.requestId = requestId;
+    this.reason = reason;
+  }
+}
+
+function journalEntry({
+  phase,
+  operation,
+  requestId,
+  argsDigest,
+  status,
+  startedAt,
+  finishedAt = new Date().toISOString(),
+}) {
+  return {
+    version: PRODUCT_JOURNEY_OPERATION_JOURNAL_VERSION,
+    phase,
+    operation,
+    requestId,
+    argsDigest,
+    startedAt,
+    finishedAt,
+    status,
+  };
+}
+
+/**
+ * Append-only operation journal. Each event is one O_APPEND write followed by
+ * fsync, and writes are serialized so concurrent operations cannot interleave
+ * JSONL records. The journal intentionally stores only an argument digest.
+ */
+export function createProductJourneyJournal(filePath) {
+  if (
+    typeof filePath !== "string" ||
+    !path.isAbsolute(filePath) ||
+    filePath.includes("\0")
+  ) {
+    throw new Error("product journey journal path must be absolute");
+  }
+  let tail = Promise.resolve();
+  let closed = false;
+
+  function append(entry) {
+    if (closed) {
+      return Promise.reject(new Error("product journey journal is closed"));
+    }
+    const encoded = `${JSON.stringify(entry)}\n`;
+    const write = tail.then(async () => {
+      await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+      const handle = await open(filePath, "a", 0o600);
+      try {
+        const result = await handle.write(encoded, null, "utf8");
+        if (result.bytesWritten !== Buffer.byteLength(encoded, "utf8")) {
+          throw new Error("product journey journal write was incomplete");
+        }
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    });
+    tail = write.catch(() => undefined);
+    return write;
+  }
+
+  async function close() {
+    await tail;
+    closed = true;
+  }
+
+  return Object.freeze({
+    path: filePath,
+    append,
+    close,
+  });
+}
+
+function operationJournalRecord(
+  journal,
+  { phase, operation, requestId, args, status, startedAt },
+) {
+  if (!journal) return Promise.resolve();
+  return journal.append(
+    journalEntry({
+      phase,
+      operation,
+      requestId,
+      argsDigest: operationDigest(args),
+      status,
+      startedAt,
+    }),
+  );
+}
+
+function operationAbortError({ phase, operation, command, requestId, reason }) {
+  return new ProductJourneyLaneAbortError({
+    phase,
+    requestId,
+    reason: `${reason} during ${command ?? operation}`,
+  });
+}
+
+/** Execute one operation with a hard deadline and optional durable journal. */
+export async function withOperationTimeout(
+  operation,
+  fn,
+  {
+    phase = "product-journey",
+    command = operation,
+    requestId = operationRequestId(),
+    args = {},
+    timeoutMs = PRODUCT_JOURNEY_OPERATION_TIMEOUT_MS,
+    journal = null,
+    signal = null,
+    onTimeout = null,
+    onFailure = null,
+  } = {},
+) {
+  const normalizedPhase = operationPhase(phase);
+  const normalizedOperation =
+    typeof operation === "string" && operation.length > 0
+      ? operation
+      : "operation";
+  const normalizedRequestId = operationRequestId(requestId);
+  const budget = operationTimeout(timeoutMs);
+  const startedAt = new Date().toISOString();
+  await operationJournalRecord(journal, {
+    phase: normalizedPhase,
+    operation: normalizedOperation,
+    requestId: normalizedRequestId,
+    args,
+    status: "started",
+    startedAt,
+  });
+
+  let timerId;
+  let abortListener;
+  let timedOut = false;
+  const operationPromise = Promise.resolve().then(() => {
+    if (signal?.aborted) {
+      throw operationAbortError({
+        phase: normalizedPhase,
+        operation: normalizedOperation,
+        command,
+        requestId: normalizedRequestId,
+        reason: signal.reason ?? "abort",
+      });
+    }
+    return fn({
+      phase: normalizedPhase,
+      operation: normalizedOperation,
+      command,
+      requestId: normalizedRequestId,
+      signal,
+    });
+  });
+  const timeoutPromise = new Promise((_, reject) => {
+    timerId = globalThis.setTimeout(() => {
+      timedOut = true;
+      reject(
+        new ProductJourneyOperationTimeoutError({
+          phase: normalizedPhase,
+          operation: normalizedOperation,
+          command,
+          requestId: normalizedRequestId,
+          timeoutMs: budget,
+        }),
+      );
+    }, budget);
+  });
+  const abortPromise = signal
+    ? new Promise((_, reject) => {
+        abortListener = () =>
+          reject(
+            operationAbortError({
+              phase: normalizedPhase,
+              operation: normalizedOperation,
+              command,
+              requestId: normalizedRequestId,
+              reason: signal.reason ?? "abort",
+            }),
+          );
+        if (signal.aborted) abortListener();
+        else signal.addEventListener("abort", abortListener, { once: true });
+      })
+    : new Promise(() => {});
+
+  try {
+    const value = await Promise.race([
+      operationPromise,
+      timeoutPromise,
+      abortPromise,
+    ]);
+    await operationJournalRecord(journal, {
+      phase: normalizedPhase,
+      operation: normalizedOperation,
+      requestId: normalizedRequestId,
+      args,
+      status: "completed",
+      startedAt,
+    });
+    return value;
+  } catch (error) {
+    const status = timedOut ? "timeout" : "failed";
+    await operationJournalRecord(journal, {
+      phase: normalizedPhase,
+      operation: normalizedOperation,
+      requestId: normalizedRequestId,
+      args,
+      status,
+      startedAt,
+    });
+    if (timedOut && typeof onTimeout === "function") {
+      await onTimeout(error);
+    } else if (!timedOut && typeof onFailure === "function") {
+      await onFailure(error);
+    }
+    throw error;
+  } finally {
+    if (timerId) globalThis.clearTimeout(timerId);
+    if (abortListener && signal) {
+      signal.removeEventListener("abort", abortListener);
+    }
+    // Keep a rejection handler attached to the losing branches. This is
+    // important when a renderer or native call rejects after its hard timeout.
+    void operationPromise.catch(() => undefined);
+  }
+}
+
+/** Typed renderer bridge invocation shared by product and performance journeys. */
+export async function invokeOk(page, command, args = {}, options = {}) {
+  const phase = operationPhase(options.phase);
+  const requestId = operationRequestId(options.requestId);
+  return withOperationTimeout(
+    `ipc:${command}`,
+    async () => {
+      const envelope = await page.evaluate(
+        ([name, input]) => globalThis.grimodex.invoke(name, input),
+        [command, args],
+      );
+      if (!envelope?.ok) {
+        throw new Error(
+          `${command} rejected: ${envelope?.error ?? "unknown error"}`,
+        );
+      }
+      return envelope.value;
+    },
+    {
+      ...options,
+      phase,
+      command,
+      requestId,
+      args,
+    },
+  );
+}
+
+/** Poll a boundary assertion while bounding every predicate iteration. */
 export async function waitUntil(
   fn,
   label,
   timeoutMs = 30_000,
   intervalMs = 500,
+  options = {},
 ) {
-  const deadline = Date.now() + timeoutMs;
+  const onTimeout = options.onTimeout;
+  const iterationOptions = { ...options };
+  delete iterationOptions.onTimeout;
+  const totalBudget = operationTimeout(timeoutMs, 30_000);
+  const interval = Math.max(0, Number.isFinite(intervalMs) ? intervalMs : 500);
+  const iterationBudget = operationTimeout(
+    options.iterationTimeoutMs,
+    Math.min(totalBudget, 5_000),
+  );
+  const phase = operationPhase(options.phase);
+  const signal = options.signal;
+  const deadline = Date.now() + totalBudget;
   let lastError = null;
+  let lastRequestId = null;
   for (;;) {
+    if (signal?.aborted) {
+      throw operationAbortError({
+        phase,
+        operation: `predicate:${label}`,
+        command: label,
+        requestId: lastRequestId ?? operationRequestId(options.requestId),
+        reason: signal.reason ?? "abort",
+      });
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const requestId = operationRequestId(options.requestId);
+    lastRequestId = requestId;
     try {
-      const value = await fn();
+      const value = await withOperationTimeout(
+        `predicate:${label}`,
+        () => fn(),
+        {
+          ...iterationOptions,
+          phase,
+          command: label,
+          requestId,
+          timeoutMs: Math.min(iterationBudget, remaining),
+          args: { label, iterationTimeoutMs: iterationBudget },
+        },
+      );
       if (value) return value;
     } catch (error) {
       lastError = error;
+      if (signal?.aborted) throw error;
     }
-    if (Date.now() > deadline) {
-      throw new Error(
-        `timeout waiting for ${label}${
-          lastError ? `: ${lastError.message ?? lastError}` : ""
-        }`,
-      );
+    const sleepMs = Math.min(interval, Math.max(0, deadline - Date.now()));
+    if (sleepMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, sleepMs));
     }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  const timeoutError = new Error(
+    `timeout waiting for ${label}${
+      lastError ? `: ${operationErrorMessage(lastError)}` : `: phase=${phase}`
+    } requestId=${lastRequestId}`,
+  );
+  if (typeof onTimeout === "function") {
+    await onTimeout(timeoutError).catch(() => undefined);
+  }
+  throw timeoutError;
+}
+
+function processHasExited(child) {
+  return Boolean(
+    child &&
+    ((child.exitCode !== null && child.exitCode !== undefined) ||
+      (child.signalCode !== null && child.signalCode !== undefined)),
+  );
+}
+
+function sleepFor(ms) {
+  return ms > 0
+    ? new Promise((resolve) => setTimeout(resolve, ms))
+    : Promise.resolve();
+}
+
+async function settleWithin(promise, timeoutMs) {
+  let timerId;
+  try {
+    await Promise.race([
+      Promise.resolve(promise),
+      new Promise((resolve) => {
+        timerId = globalThis.setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timerId) globalThis.clearTimeout(timerId);
   }
 }
+
+/** Best-effort process-group cleanup used by lane watchdogs and abort paths. */
+export async function killProcessTree(
+  child,
+  {
+    signal = "SIGTERM",
+    forceSignal = "SIGKILL",
+    graceMs = PRODUCT_JOURNEY_LANE_KILL_GRACE_MS,
+  } = {},
+) {
+  if (!child) return;
+  const pid = Number.isSafeInteger(child.pid) ? child.pid : null;
+  if (pid !== null && pid > 0 && pid !== process.pid) {
+    try {
+      process.kill(-pid, signal);
+    } catch {
+      // A process group is not guaranteed for fake/test children or a child
+      // that exited between the snapshot and this cleanup call.
+    }
+  }
+  try {
+    if (!processHasExited(child)) child.kill?.(signal);
+  } catch {
+    // Cleanup is best effort; continue to the forceful phase.
+  }
+  await sleepFor(graceMs);
+  if (processHasExited(child)) return;
+  if (pid !== null && pid > 0 && pid !== process.pid) {
+    try {
+      process.kill(-pid, forceSignal);
+    } catch {
+      // Continue with the direct child handle below.
+    }
+  }
+  try {
+    if (!processHasExited(child)) child.kill?.(forceSignal);
+  } catch {
+    // The child may have exited while the forceful signal was being sent.
+  }
+}
+
+/**
+ * Bound one journey lane. Failure handling is re-entrant safe and always
+ * captures evidence before cleanup and process termination.
+ */
+export async function runWithLaneWatchdog(
+  fn,
+  {
+    phase = "product-journey",
+    timeoutMs = PRODUCT_JOURNEY_LANE_WATCHDOG_TIMEOUT_MS,
+    children = [],
+    captureFailureArtifact = async () => undefined,
+    cleanup = async () => undefined,
+    killChildren = killProcessTree,
+    killGraceMs = PRODUCT_JOURNEY_LANE_KILL_GRACE_MS,
+    signal = null,
+    abortController = null,
+    journal = null,
+    requestId = operationRequestId(),
+  } = {},
+) {
+  const normalizedPhase = operationPhase(phase);
+  const normalizedRequestId = operationRequestId(requestId);
+  const budget = operationTimeout(
+    timeoutMs,
+    PRODUCT_JOURNEY_LANE_WATCHDOG_TIMEOUT_MS,
+  );
+  const startedAt = new Date().toISOString();
+  const args = { phase: normalizedPhase };
+  await operationJournalRecord(journal, {
+    phase: normalizedPhase,
+    operation: "lane-watchdog",
+    requestId: normalizedRequestId,
+    args,
+    status: "started",
+    startedAt,
+  });
+
+  const childSet = new Set(
+    typeof children === "function" ? children() : children,
+  );
+  const laneAbortController = abortController ?? new AbortController();
+  const effectiveSignal = laneAbortController.signal;
+  let failurePromise = null;
+  let timerId;
+  let abortListener;
+  let externalAbortListener;
+  if (signal && signal !== effectiveSignal) {
+    externalAbortListener = () => {
+      if (!effectiveSignal.aborted) {
+        laneAbortController.abort(signal.reason ?? "abort");
+      }
+    };
+    if (signal.aborted) externalAbortListener();
+    else
+      signal.addEventListener("abort", externalAbortListener, { once: true });
+  }
+  const captureOnce = async (error, status) => {
+    if (failurePromise) return failurePromise;
+    failurePromise = (async () => {
+      const failureName = normalizedPhase.replaceAll(/[\\/]/gu, "-");
+      try {
+        await settleWithin(
+          Promise.resolve().then(() =>
+            captureFailureArtifact(failureName, { error, status }),
+          ),
+          PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+        );
+      } catch {
+        // Preserve the original watchdog/abort reason while still terminating
+        // all known children.
+      }
+      try {
+        await settleWithin(
+          Promise.resolve().then(() => cleanup({ error, status })),
+          PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+        );
+      } catch {
+        // Child termination below is mandatory even when graceful cleanup fails.
+      }
+      const currentChildren =
+        typeof children === "function" ? children() : children;
+      for (const child of currentChildren ?? []) childSet.add(child);
+      await Promise.all(
+        [...childSet].map((child) =>
+          Promise.resolve(
+            killChildren(child, {
+              signal: "SIGTERM",
+              forceSignal: "SIGKILL",
+              graceMs: killGraceMs,
+            }),
+          ).catch(() => undefined),
+        ),
+      );
+    })();
+    return failurePromise;
+  };
+  const timeoutPromise = new Promise((_, reject) => {
+    timerId = globalThis.setTimeout(
+      () =>
+        reject(
+          new ProductJourneyLaneWatchdogError({
+            phase: normalizedPhase,
+            requestId: normalizedRequestId,
+            timeoutMs: budget,
+          }),
+        ),
+      budget,
+    );
+  });
+  const abortPromise = effectiveSignal
+    ? new Promise((_, reject) => {
+        abortListener = () =>
+          reject(
+            new ProductJourneyLaneAbortError({
+              phase: normalizedPhase,
+              requestId: normalizedRequestId,
+              reason: effectiveSignal.reason ?? "abort",
+            }),
+          );
+        if (effectiveSignal.aborted) abortListener();
+        else
+          effectiveSignal.addEventListener("abort", abortListener, {
+            once: true,
+          });
+      })
+    : new Promise(() => {});
+  const operationPromise = Promise.resolve().then(() => {
+    if (effectiveSignal.aborted) {
+      throw new ProductJourneyLaneAbortError({
+        phase: normalizedPhase,
+        requestId: normalizedRequestId,
+        reason: effectiveSignal.reason ?? "abort",
+      });
+    }
+    return fn({
+      phase: normalizedPhase,
+      requestId: normalizedRequestId,
+      signal: effectiveSignal,
+      registerChild(child) {
+        if (child) childSet.add(child);
+        return child;
+      },
+    });
+  });
+  try {
+    const result = await Promise.race([
+      operationPromise,
+      timeoutPromise,
+      abortPromise,
+    ]);
+    await operationJournalRecord(journal, {
+      phase: normalizedPhase,
+      operation: "lane-watchdog",
+      requestId: normalizedRequestId,
+      args,
+      status: "completed",
+      startedAt,
+    });
+    return result;
+  } catch (error) {
+    const status =
+      error instanceof ProductJourneyLaneWatchdogError ? "timeout" : "failed";
+    if (status === "timeout" && !effectiveSignal.aborted) {
+      laneAbortController.abort("timeout");
+    }
+    await operationJournalRecord(journal, {
+      phase: normalizedPhase,
+      operation: "lane-watchdog",
+      requestId: normalizedRequestId,
+      args,
+      status,
+      startedAt,
+    });
+    await captureOnce(error, status);
+    throw error;
+  } finally {
+    if (timerId) globalThis.clearTimeout(timerId);
+    if (abortListener)
+      effectiveSignal.removeEventListener("abort", abortListener);
+    if (externalAbortListener && signal)
+      signal.removeEventListener("abort", externalAbortListener);
+    void operationPromise.catch(() => undefined);
+  }
+}
+
+// Public name used by the harness-facing runner integration. Keep the
+// standalone implementation export as well for focused unit tests.
+export const withLaneWatchdog = runWithLaneWatchdog;
 
 export function createProductJourneyHarness({
   mainCjs,
   electronBin = require("electron"),
   launchTimeoutMs = 60_000,
+  operationTimeoutMs = PRODUCT_JOURNEY_OPERATION_TIMEOUT_MS,
+  laneWatchdogMs = null,
+  journalPath = null,
   mainProcessDrainTimeoutMs = MAIN_PROCESS_DRAIN_TIMEOUT_MS,
   artifactRoot = process.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ?? null,
   electronLauncher = _electron,
@@ -2191,12 +2867,28 @@ export function createProductJourneyHarness({
       "product journey harness requires a positive mainProcessDrainTimeoutMs",
     );
   }
+  if (!Number.isFinite(operationTimeoutMs) || operationTimeoutMs <= 0) {
+    throw new Error(
+      "product journey harness requires a positive operationTimeoutMs",
+    );
+  }
+  if (
+    laneWatchdogMs !== null &&
+    (!Number.isFinite(laneWatchdogMs) || laneWatchdogMs <= 0)
+  ) {
+    throw new Error(
+      "product journey harness requires a positive laneWatchdogMs or null",
+    );
+  }
   validateMainProcessNoiseAllowlist(mainProcessNoiseAllowlist);
 
   const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "grimodex-product-"));
   const userDataDir = path.join(tmpRoot, "user-data");
   const receiptRoot = narrativeMaintenanceReceiptRoot(userDataDir);
   const retainedRendererPath = path.join(tmpRoot, "last-renderer.png");
+  const operationJournalPath =
+    journalPath ?? path.join(tmpRoot, PRODUCT_JOURNEY_OPERATION_JOURNAL_NAME);
+  const operationJournal = createProductJourneyJournal(operationJournalPath);
   const mainLog = [];
   const rendererLog = [];
   const mainDiagnostics = [];
@@ -2209,8 +2901,18 @@ export function createProductJourneyHarness({
   const authorityTimeline = [];
   const recordedLifecycleEvents = new Set();
   const ownedWorkspaces = new Set();
+  const trackedChildren = new Set();
+  const trackedChildRemovers = new Map();
+  const appChildProcesses = new Map();
   let fixtureOperationsInFlight = false;
   let launchInFlight = false;
+  let laneWatchdogController = null;
+  let laneWatchdogPromise = null;
+  let failureCapturePromise = null;
+  let failureCleanupPromise = null;
+  const harnessAbortController = new AbortController();
+  let signalHandlersInstalled = false;
+  let disposed = false;
   const lastResources = {
     app: null,
     page: null,
@@ -2227,6 +2929,218 @@ export function createProductJourneyHarness({
       event,
       ...details,
     });
+  }
+
+  function trackChild(child) {
+    if (!child || typeof child !== "object") return child;
+    trackedChildren.add(child);
+    const remove = () => {
+      trackedChildren.delete(child);
+      trackedChildRemovers.delete(child);
+    };
+    if (typeof child.once === "function") {
+      child.once("exit", remove);
+      child.once("close", remove);
+    }
+    trackedChildRemovers.set(child, remove);
+    return child;
+  }
+
+  function forgetChild(child) {
+    const remove = trackedChildRemovers.get(child);
+    if (remove) remove();
+    else trackedChildren.delete(child);
+  }
+
+  async function killTrackedChildren() {
+    const children = [...trackedChildren];
+    await Promise.all(
+      children.map((child) => killProcessTree(child).catch(() => undefined)),
+    );
+    for (const child of children) {
+      forgetChild(child);
+      for (const [app, appChild] of appChildProcesses) {
+        if (appChild === child) appChildProcesses.delete(app);
+      }
+    }
+  }
+
+  async function closeActiveResources(reason) {
+    const app = lastResources.app;
+    const page = lastResources.page;
+    if (!app) return;
+    await settleWithin(
+      runHarnessOperation(
+        "electron-close",
+        () => closeApp(app, page, reason),
+        {
+          phase: lastResources.phase ?? "cleanup",
+          command: "electron-close",
+          args: { reason },
+          timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+          useLaneSignal: false,
+          suppressTimeoutCleanup: true,
+        },
+      ),
+      PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+    ).catch(() => undefined);
+    await settleWithin(
+      Promise.resolve().then(() => drainMainDiagnosticStream(app)),
+      PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+    ).catch(() => undefined);
+    await settleWithin(
+      Promise.resolve().then(() => drainDiagnosticWork()),
+      PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+    ).catch(() => undefined);
+    receiptStates.delete(app);
+    if (lastResources.app === app) {
+      lastResources.app = null;
+      lastResources.page = null;
+      lastResources.phase = null;
+      lastResources.launchId = null;
+      lastResources.receiptArtifact = null;
+      lastResources.heldFreshnessArtifact = null;
+    }
+  }
+
+  function captureFailureOnce(name, details = {}) {
+    if (failureCapturePromise) return failureCapturePromise;
+    failureCapturePromise = settleWithin(
+      Promise.resolve().then(() => captureFailureArtifact(name, details)),
+      PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+    );
+    return failureCapturePromise;
+  }
+
+  async function captureFailureWithCleanup(name, reason = "failure") {
+    if (failureCleanupPromise) return failureCleanupPromise;
+    const capture = captureFailureOnce(name);
+    failureCleanupPromise = (async () => {
+      await capture.catch(() => undefined);
+      await closeActiveResources(`failure:${reason}`).catch(() => undefined);
+      await killTrackedChildren();
+    })();
+    return failureCleanupPromise;
+  }
+
+  async function handleOperationTimeout(error) {
+    if (laneWatchdogController) {
+      if (!laneWatchdogController.signal.aborted) {
+        laneWatchdogController.abort("timeout");
+      }
+      return;
+    }
+    if (!harnessAbortController.signal.aborted) {
+      harnessAbortController.abort("timeout");
+    }
+    await captureFailureWithCleanup(
+      operationPhase(lastResources.phase).replaceAll(/[\\/]/gu, "-"),
+      "timeout",
+    );
+    void error;
+  }
+
+  function requestAbort(reason) {
+    if (disposed) return Promise.resolve();
+    if (laneWatchdogController) {
+      if (!laneWatchdogController.signal.aborted) {
+        laneWatchdogController.abort(reason);
+      }
+      return laneWatchdogPromise?.catch(() => undefined) ?? Promise.resolve();
+    }
+    if (!harnessAbortController.signal.aborted) {
+      harnessAbortController.abort(reason);
+    }
+    return captureFailureWithCleanup(
+      `signal-${String(reason).toLowerCase()}`,
+      reason,
+    );
+  }
+
+  function runHarnessOperation(
+    operation,
+    fn,
+    {
+      phase = lastResources.phase ?? "product-journey",
+      command = operation,
+      requestId = undefined,
+      args = {},
+      timeoutMs = operationTimeoutMs,
+      useLaneSignal = true,
+      suppressTimeoutCleanup = false,
+      onTimeout = null,
+    } = {},
+  ) {
+    return withOperationTimeout(operation, fn, {
+      phase,
+      command,
+      requestId,
+      args,
+      timeoutMs,
+      journal: operationJournal,
+      signal: useLaneSignal
+        ? (laneWatchdogController?.signal ?? harnessAbortController.signal)
+        : null,
+      onTimeout: suppressTimeoutCleanup
+        ? null
+        : (onTimeout ?? handleOperationTimeout),
+    });
+  }
+
+  function runNativeInvocation(
+    operation,
+    executable,
+    args,
+    { command = executable, ...options } = {},
+  ) {
+    return runHarnessOperation(
+      operation,
+      () =>
+        new Promise((resolve, reject) => {
+          let child;
+          try {
+            child = execFileCallback(
+              executable,
+              args,
+              (error, stdout, stderr) => {
+                if (error) {
+                  error.stdout = stdout;
+                  error.stderr = stderr;
+                  reject(error);
+                  return;
+                }
+                resolve({ stdout, stderr });
+              },
+            );
+          } catch (error) {
+            reject(error);
+            return;
+          }
+          trackChild(child);
+        }),
+      {
+        ...options,
+        command,
+      },
+    );
+  }
+
+  function installSignalHandlers() {
+    if (signalHandlersInstalled) return;
+    const onSignal = (signal) => {
+      const reason = signal === "SIGINT" ? "SIGINT" : "SIGTERM";
+      void requestAbort(reason);
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+    signalHandlersInstalled = { onSignal };
+  }
+
+  function removeSignalHandlers() {
+    if (!signalHandlersInstalled) return;
+    process.off("SIGINT", signalHandlersInstalled.onSignal);
+    process.off("SIGTERM", signalHandlersInstalled.onSignal);
+    signalHandlersInstalled = false;
   }
 
   function enqueueDiagnosticWork(operation) {
@@ -2465,11 +3379,12 @@ export function createProductJourneyHarness({
   }
 
   async function readFixtureRows(databasePath, query) {
-    const { stdout } = await execFile("sqlite3", [
-      "-json",
-      databasePath,
-      query,
-    ]);
+    const { stdout } = await runNativeInvocation(
+      "native:sqlite3",
+      "sqlite3",
+      ["-json", databasePath, query],
+      { args: { databasePath, query } },
+    );
     const parsed = JSON.parse(String(stdout).trim() || "[]");
     if (!Array.isArray(parsed)) {
       throw new Error(
@@ -2723,7 +3638,12 @@ export function createProductJourneyHarness({
         ),
         "COMMIT;",
       ].join("\n");
-      await execFile("sqlite3", ["-bail", databasePath, script]);
+      await runNativeInvocation(
+        "native:sqlite3",
+        "sqlite3",
+        ["-bail", databasePath, script],
+        { args: { databasePath, operationCount: normalizedOperations.length } },
+      );
       const afterCounts = await Promise.all(
         normalizedOperations.map((operation) =>
           fixtureOperationCounts(databasePath, operation),
@@ -2765,10 +3685,19 @@ export function createProductJourneyHarness({
     if (!page || page.isClosed?.() || typeof page.evaluate !== "function") {
       return [];
     }
-    const events = await page.evaluate((bufferKey) => {
-      const value = globalThis[bufferKey];
-      return Array.isArray(value) ? value : [];
-    }, LIFECYCLE_TRACE_BUFFER_KEY);
+    const events = await runHarnessOperation(
+      "page.evaluate:lifecycle-trace",
+      () =>
+        page.evaluate((bufferKey) => {
+          const value = globalThis[bufferKey];
+          return Array.isArray(value) ? value : [];
+        }, LIFECYCLE_TRACE_BUFFER_KEY),
+      {
+        phase: lastResources.phase ?? "lifecycle-trace",
+        command: "page.evaluate:lifecycle-trace",
+        args: { bufferKey: LIFECYCLE_TRACE_BUFFER_KEY },
+      },
+    );
     const normalized = Array.isArray(events) ? events : [];
     mergeLifecycleTraceEvents(normalized);
     return normalized;
@@ -2792,6 +3721,7 @@ export function createProductJourneyHarness({
   }
 
   async function launchRenderer(phase) {
+    installSignalHandlers();
     await rm(retainedRendererPath, { force: true });
     const launchId = `launch-${randomUUID()}`;
     recordTimeline("launch-requested", { phase, launchId });
@@ -2819,28 +3749,49 @@ export function createProductJourneyHarness({
       receiptCount: 0,
     };
     await requireCleanNarrativeMaintenanceReceiptRoot(receiptState.root, phase);
-    const app = await electronLauncher.launch({
-      executablePath: electronBin,
-      args: electronArgs,
-      env,
-      timeout: launchTimeoutMs,
-    });
-    const browserContext =
-      typeof app.context === "function" ? app.context() : null;
-    if (typeof browserContext?.addInitScript === "function") {
-      await browserContext.addInitScript(
-        installLifecycleTraceCapture,
-        lifecycleTraceCaptureConfig,
-      );
-    }
+    const app = await runHarnessOperation(
+      "electron-launch",
+      () =>
+        electronLauncher.launch({
+          executablePath: electronBin,
+          args: electronArgs,
+          env,
+          timeout: launchTimeoutMs,
+        }),
+      {
+        phase,
+        command: "electron-launch",
+        args: { executablePath: electronBin, args: electronArgs },
+        timeoutMs: launchTimeoutMs,
+      },
+    );
     lastResources.app = app;
     lastResources.page = null;
     lastResources.phase = phase;
     lastResources.launchId = launchId;
     lastResources.receiptArtifact = null;
     lastResources.heldFreshnessArtifact = null;
-    receiptStates.set(app, receiptState);
     const appProcess = typeof app.process === "function" ? app.process() : null;
+    trackChild(appProcess);
+    appChildProcesses.set(app, appProcess);
+    const browserContext =
+      typeof app.context === "function" ? app.context() : null;
+    if (typeof browserContext?.addInitScript === "function") {
+      await runHarnessOperation(
+        "page.addInitScript:lifecycle-trace",
+        () =>
+          browserContext.addInitScript(
+            installLifecycleTraceCapture,
+            lifecycleTraceCaptureConfig,
+          ),
+        {
+          phase,
+          command: "page.addInitScript:lifecycle-trace",
+          args: lifecycleTraceCaptureConfig,
+        },
+      );
+    }
+    receiptStates.set(app, receiptState);
     // stdout remains diagnostics-only.  The acceptance receipt is read from
     // the harness-owned userData-derived file root below.
     appProcess?.stdout?.on("data", (data) => {
@@ -2850,7 +3801,11 @@ export function createProductJourneyHarness({
     });
     attachMainDiagnosticStream(app, appProcess?.stderr, phase);
     try {
-      await awaitNarrativeMaintenanceReceipt(receiptState, phase);
+      await awaitNarrativeMaintenanceReceipt(
+        receiptState,
+        phase,
+        runHarnessOperation,
+      );
       if (receiptState.artifact) {
         lastResources.receiptArtifact = receiptState.artifact;
         recordTimeline("main-maintenance-receipt", {
@@ -2870,12 +3825,30 @@ export function createProductJourneyHarness({
           });
         }
       }
-      const page = await app.firstWindow({ timeout: launchTimeoutMs });
+      const page = await runHarnessOperation(
+        "page.firstWindow",
+        () => app.firstWindow({ timeout: launchTimeoutMs }),
+        {
+          phase,
+          command: "page.firstWindow",
+          args: { timeoutMs: launchTimeoutMs },
+          timeoutMs: launchTimeoutMs,
+        },
+      );
       lastResources.page = page;
       if (typeof page.evaluate === "function") {
-        await page.evaluate(
-          installLifecycleTraceCapture,
-          lifecycleTraceCaptureConfig,
+        await runHarnessOperation(
+          "page.evaluate:install-lifecycle-trace",
+          () =>
+            page.evaluate(
+              installLifecycleTraceCapture,
+              lifecycleTraceCaptureConfig,
+            ),
+          {
+            phase,
+            command: "page.evaluate:install-lifecycle-trace",
+            args: lifecycleTraceCaptureConfig,
+          },
         );
       }
       recordTimeline("renderer-window-ready");
@@ -2911,10 +3884,20 @@ export function createProductJourneyHarness({
           });
         });
       });
-      await page.waitForFunction(
-        () => globalThis.grimodex?.shell === "electron",
-        undefined,
-        { timeout: launchTimeoutMs },
+      await runHarnessOperation(
+        "page.waitForFunction:electron-shell",
+        () =>
+          page.waitForFunction(
+            () => globalThis.grimodex?.shell === "electron",
+            undefined,
+            { timeout: launchTimeoutMs },
+          ),
+        {
+          phase,
+          command: "page.waitForFunction:electron-shell",
+          args: { timeoutMs: launchTimeoutMs },
+          timeoutMs: launchTimeoutMs,
+        },
       );
       // Give the bridge one event-loop turn to settle, then re-read the
       // immutable file artifact.  This closes the pre-bridge acceptance
@@ -2924,6 +3907,7 @@ export function createProductJourneyHarness({
       await reverifyNarrativeMaintenanceReceipt(
         receiptState,
         `${phase}/bridge`,
+        runHarnessOperation,
       );
       lastResources.heldFreshnessArtifact = receiptState.heldFreshnessArtifact;
       recordTimeline("renderer-bridge-ready", { launchId });
@@ -2964,9 +3948,28 @@ export function createProductJourneyHarness({
     const receiptState = receiptStates.get(app);
     await readLifecycleTrace(page).catch(() => undefined);
     await retainRendererScreenshot(page);
-    await closeApp(app, page, phase);
+    await runHarnessOperation(
+      "electron-close",
+      () => closeApp(app, page, phase),
+      {
+        phase,
+        command: "electron-close",
+        args: { phase },
+        timeoutMs: Math.max(launchTimeoutMs, mainProcessDrainTimeoutMs),
+        useLaneSignal: false,
+      },
+    );
+    const appProcess = appChildProcesses.get(app);
+    if (appProcess) {
+      forgetChild(appProcess);
+      appChildProcesses.delete(app);
+    }
     if (receiptState) {
-      await consumeNarrativeMaintenanceReceipt(receiptState, `${phase}/close`);
+      await consumeNarrativeMaintenanceReceipt(
+        receiptState,
+        `${phase}/close`,
+        runHarnessOperation,
+      );
       receiptStates.delete(app);
     }
     await drainMainDiagnosticStream(app);
@@ -2983,6 +3986,7 @@ export function createProductJourneyHarness({
       lastResources.receiptArtifact = null;
       lastResources.heldFreshnessArtifact = null;
     }
+    if (!laneWatchdogController) removeSignalHandlers();
   }
 
   async function awaitHeldFreshness(
@@ -3007,6 +4011,7 @@ export function createProductJourneyHarness({
       state,
       phase,
       requestOptions ?? {},
+      runHarnessOperation,
     );
     lastResources.heldFreshnessArtifact = artifact;
     recordTimeline("main-maintenance-held-freshness", {
@@ -3035,18 +4040,113 @@ export function createProductJourneyHarness({
     if (!state) {
       throw new Error(`no active product-journey launch for ${phase}`);
     }
-    return readNarrativeMaintenanceCiHeldFreshness(
-      state.root,
-      state.expected,
-      phase,
+    return runHarnessOperation(
+      "receipt-revalidate",
+      () =>
+        readNarrativeMaintenanceCiHeldFreshness(
+          state.root,
+          state.expected,
+          phase,
+          {
+            ...(readOptions ?? {}),
+            previousHeldFreshnessArtifacts: state.heldFreshnessArtifacts,
+            seenHeldFreshnessRequestNonces:
+              state.seenHeldFreshnessRequestNonces,
+            heldFreshnessRequestNonceBySequence:
+              state.heldFreshnessRequestNonceBySequence,
+          },
+        ),
       {
-        ...(readOptions ?? {}),
-        previousHeldFreshnessArtifacts: state.heldFreshnessArtifacts,
-        seenHeldFreshnessRequestNonces: state.seenHeldFreshnessRequestNonces,
-        heldFreshnessRequestNonceBySequence:
-          state.heldFreshnessRequestNonceBySequence,
+        phase,
+        command: "receipt-revalidate",
+        args: {
+          phase,
+          previousSequence: readOptions?.previousSequence ?? null,
+        },
       },
     );
+  }
+
+  async function withLaneWatchdog(fn, phaseOrOptions, options = {}) {
+    const laneOptions =
+      typeof phaseOrOptions === "string"
+        ? { ...options, phase: phaseOrOptions }
+        : { ...options, ...(phaseOrOptions ?? {}) };
+    const phase = operationPhase(laneOptions.phase ?? lastResources.phase);
+    const controller = new AbortController();
+    if (laneWatchdogController) {
+      throw new Error(
+        `product journey lane watchdog is already active for ${phase}`,
+      );
+    }
+    laneWatchdogController = controller;
+    installSignalHandlers();
+    const watchdog = runWithLaneWatchdog(fn, {
+      ...laneOptions,
+      phase,
+      timeoutMs:
+        laneOptions.timeoutMs ??
+        laneWatchdogMs ??
+        PRODUCT_JOURNEY_LANE_WATCHDOG_TIMEOUT_MS,
+      children: () => [...trackedChildren],
+      captureFailureArtifact: (name, details) =>
+        captureFailureOnce(name, details),
+      cleanup: (details) => closeActiveResources(`lane-${details.status}`),
+      journal: operationJournal,
+      signal: controller.signal,
+      abortController: controller,
+    });
+    laneWatchdogPromise = watchdog;
+    try {
+      return await watchdog;
+    } finally {
+      if (laneWatchdogController === controller) laneWatchdogController = null;
+      if (laneWatchdogPromise === watchdog) laneWatchdogPromise = null;
+      if (!lastResources.app && !laneWatchdogController) {
+        removeSignalHandlers();
+      }
+    }
+  }
+
+  const runLane = withLaneWatchdog;
+
+  async function captureDatabaseSnapshots() {
+    const diagnosticsDir = path.join(tmpRoot, "diagnostics");
+    const snapshotsDir = path.join(diagnosticsDir, "databases");
+    await mkdir(snapshotsDir, { recursive: true });
+    for (const workspace of ownedWorkspaces) {
+      const databasePath = path.join(workspace, "grimodex.db");
+      const snapshotPath = path.join(
+        snapshotsDir,
+        `${path.basename(workspace)}.db`,
+      );
+      try {
+        const metadata = await lstat(databasePath);
+        if (!metadata.isFile() || metadata.isSymbolicLink()) continue;
+        await runNativeInvocation(
+          "native:sqlite3-backup",
+          "sqlite3",
+          [
+            "-bail",
+            databasePath,
+            `.backup '${snapshotPath.replaceAll("'", "''")}'`,
+          ],
+          {
+            phase: lastResources.phase ?? "failure",
+            command: "sqlite3 .backup",
+            args: { workspace: path.basename(workspace) },
+            useLaneSignal: false,
+            suppressTimeoutCleanup: true,
+          },
+        );
+      } catch (error) {
+        await writeFile(
+          `${snapshotPath}.error`,
+          `${operationErrorMessage(error)}\n`,
+          { mode: 0o600 },
+        ).catch(() => undefined);
+      }
+    }
   }
 
   async function captureFailureArtifact(name) {
@@ -3056,6 +4156,11 @@ export function createProductJourneyHarness({
     const destination = path.join(artifactRoot, name);
     const diagnosticsDir = path.join(tmpRoot, "diagnostics");
     await mkdir(diagnosticsDir, { recursive: true });
+    await captureDatabaseSnapshots();
+    await cp(receiptRoot, path.join(diagnosticsDir, "receipt-snapshot"), {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
     await Promise.all([
       writeFile(
         path.join(diagnosticsDir, "main.log"),
@@ -3107,6 +4212,10 @@ export function createProductJourneyHarness({
         `${JSON.stringify(mainDiagnostics, null, 2)}\n`,
         "utf8",
       ),
+      copyFile(
+        operationJournalPath,
+        path.join(diagnosticsDir, "operations.jsonl"),
+      ).catch(() => undefined),
     ]);
     await mkdir(destination, { recursive: true });
     await retainRendererScreenshot(lastResources.page);
@@ -3121,46 +4230,82 @@ export function createProductJourneyHarness({
   }
 
   async function dispose({ success, name }) {
+    if (disposed) return;
+    disposed = true;
     if (!success) {
-      if (lastResources.app) {
-        await readLifecycleTrace(lastResources.page).catch(() => undefined);
-        await retainRendererScreenshot(lastResources.page);
-        await closeApp(
-          lastResources.app,
-          lastResources.page,
-          `failure:${name}`,
-        ).catch(() => undefined);
-        await drainMainDiagnosticStream(lastResources.app);
-        await drainDiagnosticWork();
-        lastResources.app = null;
-        lastResources.page = null;
-        lastResources.phase = null;
-      }
-      await captureFailureArtifact(name).catch((error) => {
+      await captureFailureWithCleanup(name, name).catch((error) => {
         console.error(
           `[electron:product] failed to retain artifacts: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
       });
+      removeSignalHandlers();
+      await operationJournal.close().catch(() => undefined);
       console.error(`[electron:product] retained temporary root: ${tmpRoot}`);
       return;
     }
+    removeSignalHandlers();
+    if (lastResources.app) {
+      await closeActiveResources("dispose");
+      await killTrackedChildren();
+    }
+    await operationJournal.close();
     await rm(tmpRoot, { recursive: true, force: true });
+  }
+
+  function invokeHarnessOk(page, command, args = {}, options = {}) {
+    return invokeOk(page, command, args, {
+      ...options,
+      phase: options.phase ?? lastResources.phase ?? "product-journey",
+      timeoutMs: options.timeoutMs ?? operationTimeoutMs,
+      journal: operationJournal,
+      signal:
+        options.signal ??
+        laneWatchdogController?.signal ??
+        harnessAbortController.signal,
+      onTimeout: options.onTimeout ?? handleOperationTimeout,
+    });
+  }
+
+  function waitHarnessUntil(
+    fn,
+    label,
+    timeoutMs = 30_000,
+    intervalMs = 500,
+    options = {},
+  ) {
+    return waitUntil(fn, label, timeoutMs, intervalMs, {
+      ...options,
+      phase: options.phase ?? lastResources.phase ?? "product-journey",
+      iterationTimeoutMs:
+        options.iterationTimeoutMs ?? Math.min(operationTimeoutMs, timeoutMs),
+      journal: operationJournal,
+      signal:
+        options.signal ??
+        laneWatchdogController?.signal ??
+        harnessAbortController.signal,
+      onTimeout: options.onTimeout ?? handleOperationTimeout,
+    });
   }
 
   return {
     tmpRoot,
     userDataDir,
     receiptRoot,
+    journalPath: operationJournalPath,
     workspacePath,
     executeFixtureOperations,
     launch,
     close,
     awaitHeldFreshness,
     readHeldFreshness,
-    invokeOk,
-    waitUntil,
+    withLaneWatchdog,
+    runLane,
+    abort: requestAbort,
+    captureFailureArtifact: captureFailureOnce,
+    invokeOk: invokeHarnessOk,
+    waitUntil: waitHarnessUntil,
     recordTimeline,
     readLifecycleTrace,
     diagnostics,
