@@ -784,7 +784,7 @@ function assertC2ZcRustAcceptanceEvidenceShape(evidence, label) {
     !isPlainObject(evidence.candidate) ||
     !isPlainObject(evidence.receipt) ||
     evidence.receipt.schema !== "grimodex.c2zc.rust-acceptance-receipt" ||
-    evidence.receipt.version !== 1 ||
+    evidence.receipt.version !== 2 ||
     !Array.isArray(evidence.gates) ||
     JSON.stringify(evidence.gates.map((gate) => gate?.id)) !==
       JSON.stringify(C2ZC_RUST_ACCEPTANCE_GATE_IDS) ||
@@ -793,6 +793,15 @@ function assertC2ZcRustAcceptanceEvidenceShape(evidence, label) {
       JSON.stringify(evidence.receipt.candidate)
   ) {
     throw new Error(`${label} must include all ordered Rust acceptance gates`);
+  }
+  if (
+    !isPlainObject(evidence.verifyOutcome) ||
+    JSON.stringify(evidence.verifyOutcome) !==
+      JSON.stringify(evidence.receipt.verifyOutcome)
+  ) {
+    throw new Error(
+      `${label} must propagate the verified Rust Verify outcome exactly`,
+    );
   }
 }
 
@@ -1412,6 +1421,7 @@ export async function collectProductJourneyEvidence(
       receiptSha256: verifiedRustReceipt.receiptSha256,
       candidate: verifiedRustReceipt.receipt.candidate,
       gates: verifiedRustReceipt.receipt.gates,
+      verifyOutcome: verifiedRustReceipt.receipt.verifyOutcome,
       receipt: verifiedRustReceipt.receipt,
     };
     if (
@@ -1422,7 +1432,9 @@ export async function collectProductJourneyEvidence(
       JSON.stringify(c2zcRustAcceptance.receipt.candidate) !==
         JSON.stringify(reported.candidate) ||
       JSON.stringify(c2zcRustAcceptance.receipt.gates) !==
-        JSON.stringify(reported.gates)
+        JSON.stringify(reported.gates) ||
+      JSON.stringify(c2zcRustAcceptance.verifyOutcome) !==
+        JSON.stringify(reported.verifyOutcome)
     ) {
       throw new Error(
         "C2-ZC product journey results do not match the verified Rust receipt",

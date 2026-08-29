@@ -727,6 +727,40 @@ test("C2-ZC impact registration is structured and rejects gate command/test/rece
       "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
     requiresReceipt: true,
   });
+  assert.deepEqual(rule.acceptanceGates[5], {
+    id: "c2-zc-production-verify-coverage",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+        "--",
+        "--exact",
+        "--nocapture",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+      test: "a_verify_run_records_its_report_under_a_completed_run",
+      fullTestName:
+        "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+      proof:
+        "production Verify persists and validates exact 13/13 check coverage",
+    },
+    source:
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+    test: "a_verify_run_records_its_report_under_a_completed_run",
+    fullTestName:
+      "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+    requiresReceipt: true,
+  });
   assert.doesNotThrow(() => validateAcceptanceGateRegistration({ map }));
 
   for (const mutate of [

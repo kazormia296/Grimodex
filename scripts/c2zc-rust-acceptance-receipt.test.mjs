@@ -21,6 +21,17 @@ import {
   verifyC2ZcRustAcceptanceReceipt,
 } from "./c2zc-rust-acceptance-receipt.mjs";
 
+const VERIFY_OUTCOME = {
+  verifyContractVersion: "9",
+  checkCoverage: {
+    complete: true,
+    required: Array.from({ length: 13 }, (_, index) => `rust-check-${index}`),
+    covered: Array.from({ length: 13 }, (_, index) => `rust-check-${index}`),
+    missing: [],
+  },
+};
+const VERIFY_OUTCOME_JSON = JSON.stringify(VERIFY_OUTCOME);
+
 function candidate(overrides = {}) {
   return {
     requestedBase: "origin/master",
@@ -57,6 +68,12 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 `,
+  "c2-zc-production-verify-coverage": `C2ZC_RUST_VERIFY_OUTCOME=${VERIFY_OUTCOME_JSON}
+
+test narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+`,
 };
 
 test("C2-ZC Rust receipt keeps readiness, liveness, and native restore-lock gates ordered", () => {
@@ -68,6 +85,7 @@ test("C2-ZC Rust receipt keeps readiness, liveness, and native restore-lock gate
       "c2-zc-readiness-corruption-fail-closed",
       "c2-zc-liveness-restore-lock-binding",
       "c2-zc-native-restore-lock-release",
+      "c2-zc-production-verify-coverage",
     ],
   );
   assert.equal(
@@ -83,6 +101,14 @@ test("C2-ZC Rust receipt keeps readiness, liveness, and native restore-lock gate
   assert.match(
     C2ZC_RUST_ACCEPTANCE_GATES[4].contract.designImpact,
     /skipped.*never passed/i,
+  );
+  assert.deepEqual(C2ZC_RUST_ACCEPTANCE_GATES[5].argv.args.slice(-2), [
+    "--exact",
+    "--nocapture",
+  ]);
+  assert.equal(
+    C2ZC_RUST_ACCEPTANCE_GATES[5].contract.fullTestName,
+    "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
   );
 });
 
@@ -144,6 +170,7 @@ test("C2-ZC Rust receipt binds all exact gate commands and candidate", async (t)
   );
   assert.equal(receipt.schema, "grimodex.c2zc.rust-acceptance-receipt");
   assert.equal(receipt.version, C2ZC_RUST_ACCEPTANCE_RECEIPT_VERSION);
+  assert.deepEqual(receipt.verifyOutcome, VERIFY_OUTCOME);
   assert.deepEqual(receipt.candidate, currentCandidate);
   assert.equal(receipt.catalogDigest, PRODUCT_JOURNEY_CATALOG_DIGEST);
   assert.deepEqual(
@@ -204,6 +231,117 @@ test("C2-ZC Rust receipt binds all exact gate commands and candidate", async (t)
       receiptSha256: result.receiptSha256,
     }),
   );
+});
+
+test("C2-ZC Rust receipt parses only one valid production Verify outcome sentinel", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-c2zc-rust-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const currentCandidate = candidate();
+  const valid = OUTPUT_BY_GATE_ID["c2-zc-production-verify-coverage"];
+  const runWithVerifyStdout = (stdout, stderr = "") =>
+    createReceipt({
+      root,
+      currentCandidate,
+      execute: async (_argv, { gate }) =>
+        gate.id === "c2-zc-production-verify-coverage"
+          ? gateExecution({ id: gate.id, stdout, stderr })
+          : gateExecution({ id: gate.id }),
+    });
+
+  await assert.doesNotReject(() => createReceipt({ root, currentCandidate }));
+  for (const [label, stdout, stderr] of [
+    ["missing", valid.replace(/C2ZC_RUST_VERIFY_OUTCOME=.*\n/u, ""), ""],
+    [
+      "duplicate",
+      `${valid}C2ZC_RUST_VERIFY_OUTCOME=${VERIFY_OUTCOME_JSON}\n`,
+      "",
+    ],
+    [
+      "stderr-only",
+      valid.replace(/C2ZC_RUST_VERIFY_OUTCOME=.*\n/u, ""),
+      `C2ZC_RUST_VERIFY_OUTCOME=${VERIFY_OUTCOME_JSON}\n`,
+    ],
+    [
+      "malformed",
+      valid.replace(VERIFY_OUTCOME_JSON, "{"),
+      "",
+    ],
+    [
+      "incomplete",
+      valid.replace(VERIFY_OUTCOME_JSON, JSON.stringify({
+        ...VERIFY_OUTCOME,
+        checkCoverage: { ...VERIFY_OUTCOME.checkCoverage, complete: false },
+      })),
+      "",
+    ],
+    [
+      "wrong count",
+      valid.replace(VERIFY_OUTCOME_JSON, JSON.stringify({
+        ...VERIFY_OUTCOME,
+        checkCoverage: {
+          ...VERIFY_OUTCOME.checkCoverage,
+          required: VERIFY_OUTCOME.checkCoverage.required.slice(0, 12),
+        },
+      })),
+      "",
+    ],
+    [
+      "duplicate check",
+      valid.replace(VERIFY_OUTCOME_JSON, JSON.stringify({
+        ...VERIFY_OUTCOME,
+        checkCoverage: {
+          ...VERIFY_OUTCOME.checkCoverage,
+          covered: [
+            ...VERIFY_OUTCOME.checkCoverage.covered.slice(0, 12),
+            VERIFY_OUTCOME.checkCoverage.covered[0],
+          ],
+        },
+      })),
+      "",
+    ],
+    [
+      "nonempty missing",
+      valid.replace(VERIFY_OUTCOME_JSON, JSON.stringify({
+        ...VERIFY_OUTCOME,
+        checkCoverage: {
+          ...VERIFY_OUTCOME.checkCoverage,
+          missing: ["unexpected-check"],
+        },
+      })),
+      "",
+    ],
+    [
+      "required covered mismatch",
+      valid.replace(VERIFY_OUTCOME_JSON, JSON.stringify({
+        ...VERIFY_OUTCOME,
+        checkCoverage: {
+          ...VERIFY_OUTCOME.checkCoverage,
+          covered: [
+            "different-check",
+            ...VERIFY_OUTCOME.checkCoverage.covered.slice(1),
+          ],
+        },
+      })),
+      "",
+    ],
+    [
+      "required covered order mismatch",
+      valid.replace(VERIFY_OUTCOME_JSON, JSON.stringify({
+        ...VERIFY_OUTCOME,
+        checkCoverage: {
+          ...VERIFY_OUTCOME.checkCoverage,
+          covered: [...VERIFY_OUTCOME.checkCoverage.covered].reverse(),
+        },
+      })),
+      "",
+    ],
+  ]) {
+    await assert.rejects(
+      runWithVerifyStdout(stdout, stderr),
+      /sentinel|Verify outcome|coverage|13|duplicate|missing|malformed|stderr/i,
+      label,
+    );
+  }
 });
 
 test("C2-ZC Rust receipt rejects gate omission, duplication, order, command, output, and hash mutations", async (t) => {

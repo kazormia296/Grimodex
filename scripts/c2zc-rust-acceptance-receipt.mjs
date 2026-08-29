@@ -28,7 +28,7 @@ const repoRoot = path.resolve(
 
 export const C2ZC_RUST_ACCEPTANCE_RECEIPT_SCHEMA =
   "grimodex.c2zc.rust-acceptance-receipt";
-export const C2ZC_RUST_ACCEPTANCE_RECEIPT_VERSION = 1;
+export const C2ZC_RUST_ACCEPTANCE_RECEIPT_VERSION = 2;
 export const C2ZC_RUST_ACCEPTANCE_RECEIPT_PATH =
   ".artifacts/local-ci/c2-zc-rust-acceptance.json";
 export const C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST = digestProductJourneyCatalog(
@@ -36,6 +36,8 @@ export const C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST = digestProductJourneyCatalog(
 );
 export const C2ZC_RUST_ACCEPTANCE_LOCAL_CI_STAGE_ID =
   "c2-zc-rust-acceptance-gate";
+export const C2ZC_RUST_VERIFY_OUTCOME_GATE_ID =
+  "c2-zc-production-verify-coverage";
 
 function freezeArgv(argv) {
   return Object.freeze({
@@ -192,6 +194,34 @@ export const C2ZC_RUST_ACCEPTANCE_GATES = Object.freeze([
         "Runs before Full's later stages; a skipped native test is never passed in the receipt",
     },
   }),
+  freezeGate({
+    id: C2ZC_RUST_VERIFY_OUTCOME_GATE_ID,
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+        "--",
+        "--exact",
+        "--nocapture",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+      test: "a_verify_run_records_its_report_under_a_completed_run",
+      fullTestName:
+        "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+      proof:
+        "production Verify persists and validates exact 13/13 check coverage",
+    },
+  }),
 ]);
 export const C2ZC_RUST_ACCEPTANCE_GATE_IDS = Object.freeze(
   C2ZC_RUST_ACCEPTANCE_GATES.map((gate) => gate.id),
@@ -236,6 +266,143 @@ function canonicalJson(value) {
 
 function sha256(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+const C2ZC_RUST_VERIFY_COVERAGE_COUNT = 13;
+const C2ZC_RUST_VERIFY_OUTCOME_SENTINEL = "C2ZC_RUST_VERIFY_OUTCOME=";
+
+function exactObjectKeys(value, expected, label) {
+  if (!isPlainObject(value)) throw new Error(`${label} must be an object`);
+  const actual = Object.keys(value).sort();
+  const canonicalExpected = [...expected].sort();
+  if (
+    actual.length !== canonicalExpected.length ||
+    actual.some((key, index) => key !== canonicalExpected[index])
+  ) {
+    throw new Error(`${label} has unexpected keys`);
+  }
+}
+
+function assertVerifyCoverage(coverage) {
+  exactObjectKeys(
+    coverage,
+    ["complete", "required", "covered", "missing"],
+    "C2-ZC Rust Verify checkCoverage",
+  );
+  if (
+    coverage.complete !== true ||
+    !Array.isArray(coverage.required) ||
+    !Array.isArray(coverage.covered) ||
+    !Array.isArray(coverage.missing)
+  ) {
+    throw new Error(
+      "C2-ZC Rust Verify checkCoverage must be complete with arrays",
+    );
+  }
+  if (
+    coverage.required.length !== C2ZC_RUST_VERIFY_COVERAGE_COUNT ||
+    coverage.covered.length !== C2ZC_RUST_VERIFY_COVERAGE_COUNT
+  ) {
+    throw new Error(
+      "C2-ZC Rust Verify checkCoverage must contain exactly 13 required and covered checks",
+    );
+  }
+  if (coverage.missing.length !== 0) {
+    throw new Error(
+      "C2-ZC Rust Verify checkCoverage missing must be empty",
+    );
+  }
+  for (const [label, values] of [
+    ["required", coverage.required],
+    ["covered", coverage.covered],
+  ]) {
+    if (
+      values.some(
+        (value) =>
+          typeof value !== "string" ||
+          value.length === 0 ||
+          value.trim() !== value,
+      )
+    ) {
+      throw new Error(
+        `C2-ZC Rust Verify checkCoverage ${label} must contain non-empty strings`,
+      );
+    }
+    if (new Set(values).size !== C2ZC_RUST_VERIFY_COVERAGE_COUNT) {
+      throw new Error(
+        `C2-ZC Rust Verify checkCoverage ${label} must not contain duplicates`,
+      );
+    }
+  }
+  if (
+    canonicalJson(coverage.required) !== canonicalJson(coverage.covered)
+  ) {
+    throw new Error(
+      "C2-ZC Rust Verify checkCoverage required and covered mismatch",
+    );
+  }
+  return coverage;
+}
+
+function sentinelValues(value) {
+  if (typeof value !== "string") return [];
+  return [
+    ...value.matchAll(
+      /C2ZC_RUST_VERIFY_OUTCOME=([^\r\n]*)/gu,
+    ),
+  ].map((match) => match[1]);
+}
+
+/** Parse the Rust-owned production Verify outcome from the exact gate stdout. */
+export function parseC2ZcRustVerifyOutcome(stdout, stderr = "") {
+  if (typeof stdout !== "string" || typeof stderr !== "string") {
+    throw new Error("C2-ZC Rust Verify sentinel streams must be strings");
+  }
+  const stdoutValues = sentinelValues(stdout);
+  const stderrValues = sentinelValues(stderr);
+  if (stderrValues.length > 0) {
+    throw new Error(
+      "C2-ZC Rust Verify outcome sentinel must be emitted on stdout, not stderr",
+    );
+  }
+  if (stdoutValues.length === 0) {
+    throw new Error("C2-ZC Rust Verify outcome sentinel is missing");
+  }
+  if (stdoutValues.length !== 1) {
+    throw new Error(
+      "C2-ZC Rust Verify outcome sentinel must occur exactly once",
+    );
+  }
+  const serialized = stdoutValues[0];
+  let parsed;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch (error) {
+    throw new Error("C2-ZC Rust Verify outcome sentinel JSON is malformed", {
+      cause: error,
+    });
+  }
+  if (JSON.stringify(parsed) !== serialized) {
+    throw new Error(
+      "C2-ZC Rust Verify outcome sentinel JSON must be compact canonical JSON",
+    );
+  }
+  exactObjectKeys(
+    parsed,
+    ["verifyContractVersion", "checkCoverage"],
+    "C2-ZC Rust Verify outcome",
+  );
+  if (
+    typeof parsed.verifyContractVersion !== "string" ||
+    parsed.verifyContractVersion.length === 0 ||
+    parsed.verifyContractVersion.trim() !== parsed.verifyContractVersion
+  ) {
+    throw new Error(
+      "C2-ZC Rust Verify outcome verifyContractVersion must be non-empty",
+    );
+  }
+  assertVerifyCoverage(parsed.checkCoverage);
+  return parsed;
 }
 
 function requireSha256(value, label) {
@@ -693,6 +860,20 @@ function assertReceiptContract(receipt, { candidate, catalogDigest }) {
       );
     }
   }
+  const verifyGate =
+    receipt.gates[C2ZC_RUST_ACCEPTANCE_GATES.length - 1];
+  const parsedVerifyOutcome = parseC2ZcRustVerifyOutcome(
+    verifyGate.stdout,
+    verifyGate.stderr,
+  );
+  if (
+    !isPlainObject(receipt.verifyOutcome) ||
+    canonicalJson(receipt.verifyOutcome) !== canonicalJson(parsedVerifyOutcome)
+  ) {
+    throw new Error(
+      "C2-ZC Rust receipt verifyOutcome does not match the production Verify gate sentinel",
+    );
+  }
   if (Object.hasOwn(receipt, "receiptSha256")) {
     throw new Error(
       "C2-ZC Rust receipt self hash must remain outside its payload",
@@ -732,6 +913,7 @@ export async function createC2ZcRustAcceptanceReceipt({
   const attemptId = randomUUID();
   const failureLogPath = failureEvidencePath(outputPath, candidate, attemptId);
   const gates = [];
+  let verifyOutcome;
   for (const definition of C2ZC_RUST_ACCEPTANCE_GATES) {
     const gateStartedAt = clock();
     assertTimestamp(
@@ -763,6 +945,9 @@ export async function createC2ZcRustAcceptanceReceipt({
         definition.fullTestName,
         `C2-ZC Rust gate ${definition.id}`,
       );
+      if (definition.id === C2ZC_RUST_VERIFY_OUTCOME_GATE_ID) {
+        verifyOutcome = parseC2ZcRustVerifyOutcome(stdout, stderr);
+      }
       const gate = {
         id: definition.id,
         argv: {
@@ -876,6 +1061,7 @@ export async function createC2ZcRustAcceptanceReceipt({
     finishedAt,
     catalogDigest,
     gates,
+    verifyOutcome,
   };
   assertReceiptContract(receipt, { candidate, catalogDigest });
   const payload = `${JSON.stringify(receipt, null, 2)}\n`;

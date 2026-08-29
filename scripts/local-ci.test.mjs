@@ -94,7 +94,7 @@ function c2zcFixtureManifest(candidate, fixtureBytes) {
       applicationId: "fixture-application",
       applyRunId: "fixture-owner-run",
       backfillRunId: "fixture-backfill-run",
-      sceneSourceRevision: "v0",
+      sceneSourceRevision: "v1@2026-08-29T00:00:01.000Z",
     }),
     fixtureSha256: digest,
     fixtureSizeBytes: fixtureBytes.length,
@@ -145,6 +145,16 @@ function c2zcFixtureEvidence(candidate) {
   };
 }
 
+const VERIFY_OUTCOME = {
+  verifyContractVersion: "9",
+  checkCoverage: {
+    complete: true,
+    required: Array.from({ length: 13 }, (_, index) => `rust-check-${index}`),
+    covered: Array.from({ length: 13 }, (_, index) => `rust-check-${index}`),
+    missing: [],
+  },
+};
+
 function exactRustGateOutput(gateId) {
   const fullTestName =
     gateId === "c2-zc-dml-native-owned-table-denial"
@@ -155,8 +165,14 @@ function exactRustGateOutput(gateId) {
           ? "same_project_receipt_cannot_cross_database_authority"
           : gateId === "c2-zc-native-restore-lock-release"
             ? "narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence"
+            : gateId === "c2-zc-production-verify-coverage"
+              ? "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run"
             : "canonical_read_has_no_legacy_fallback_after_generic_cutover";
-  return `test ${fullTestName} ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n`;
+  const sentinel =
+    gateId === "c2-zc-production-verify-coverage"
+      ? `C2ZC_RUST_VERIFY_OUTCOME=${JSON.stringify(VERIFY_OUTCOME)}\n\n`
+      : "";
+  return `${sentinel}test ${fullTestName} ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n`;
 }
 
 function completeProductJourneyEvidence(overrides = {}) {
@@ -452,7 +468,7 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
     productCommand.env.GRIMODEX_C2ZC_RUST_RECEIPT_SHA256,
     receipt.receiptSha256,
   );
-  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 5);
+  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 6);
   assert.equal(C2ZC_RUST_ACCEPTANCE_GATES[0].argv.command, "cargo");
   assert.match(
     C2ZC_RUST_ACCEPTANCE_GATES[0].argv.args.join(" "),
@@ -1340,6 +1356,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     receiptSha256: rustReceipt.receiptSha256,
     candidate,
     gates: rustReceipt.receipt.gates,
+    verifyOutcome: rustReceipt.receipt.verifyOutcome,
     receipt: rustReceipt.receipt,
   };
   const acceptedReport = {

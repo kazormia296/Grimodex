@@ -7687,6 +7687,21 @@ mod tests {
             format!("sha256:{}", digest_plan(&stored["report"])),
             outcome.report_digest
         );
+        assert_eq!(stored["checkCoverage"], production_verify_check_coverage());
+        assert!(
+            validate_verify_check_coverage(&stored)
+                .expect("stored Verify check coverage must validate")
+        );
+        validate_canonical_verify_outcome_digest(&stored)
+            .expect("stored Verify outcome digest must validate");
+        let verify_outcome = json!({
+            "verifyContractVersion": stored["verifyContractVersion"],
+            "checkCoverage": stored["checkCoverage"],
+        });
+        println!(
+            "C2ZC_RUST_VERIFY_OUTCOME={}",
+            serde_json::to_string(&verify_outcome).expect("serialize Verify outcome sentinel")
+        );
     }
 
     #[test]

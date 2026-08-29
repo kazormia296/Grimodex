@@ -2733,6 +2733,7 @@ async function readC2ZcRustAcceptanceEvidence({
     receiptSha256: verified.receiptSha256,
     candidate,
     gates: verified.receipt.gates,
+    verifyOutcome: verified.receipt.verifyOutcome,
     receipt: verified.receipt,
   };
 }
@@ -2758,7 +2759,11 @@ export function refreshProductJourneyOutcome(report) {
   const rustAcceptanceComplete =
     report.acceptanceRequired !== true ||
     (report.c2zcRustAcceptance?.required === true &&
-      report.c2zcRustAcceptance?.verified === true);
+      report.c2zcRustAcceptance?.verified === true &&
+      isPlainObject(report.c2zcRustAcceptance?.verifyOutcome) &&
+      isPlainObject(report.c2zcRustAcceptance?.receipt) &&
+      JSON.stringify(report.c2zcRustAcceptance.verifyOutcome) ===
+        JSON.stringify(report.c2zcRustAcceptance.receipt.verifyOutcome));
   const buildReceiptComplete =
     report.acceptanceRequired !== true ||
     (report.buildReceipt?.verified === true &&

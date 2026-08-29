@@ -464,6 +464,30 @@ rules:
         test: completed_freshness_cycle_releases_authority_before_restore_quiescence
         fullTestName: narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence
         requiresReceipt: true
+      - id: c2-zc-production-verify-coverage
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --lib
+            - narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run
+            - --
+            - --exact
+            - --nocapture
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
+          test: a_verify_run_records_its_report_under_a_completed_run
+          fullTestName: narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run
+          proof: production Verify persists and validates exact 13/13 check coverage
+        source: src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
+        test: a_verify_run_records_its_report_under_a_completed_run
+        fullTestName: narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run
+        requiresReceipt: true
     requirements:
       - GDX-POLICY-001
       - GDX-TRACE-001
