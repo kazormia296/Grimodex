@@ -24,6 +24,8 @@ impl Database {
     /// checkpoint or silently acquire a second marker-writing authority.
     pub(crate) const C2_ZC_CUTOVER_MIGRATION_ID: &'static str =
         "narrative-c2-canonical-freshness-v1";
+    pub(crate) const C2_ZC_CUTOVER_MIGRATION_ID_PREFIX: &'static str =
+        "narrative-c2-canonical-freshness-";
     pub(crate) const C2_ZC_CUTOVER_CONTRACT_VERSION: i64 = 1;
 
     pub(crate) fn read_c2zc_cutover_marker(conn: &Connection) -> anyhow::Result<Option<i64>> {
@@ -45,6 +47,37 @@ impl Database {
         )
         .optional()
         .map_err(Into::into)
+    }
+
+    /// Read every marker in the C2-ZC cutover namespace without interpreting
+    /// its version. Import boundaries must reject current, future, and
+    /// foreign versions before native migration can repair or publish them.
+    pub(crate) fn read_c2zc_cutover_marker_rows(
+        conn: &Connection,
+    ) -> anyhow::Result<Vec<(String, i64)>> {
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                  WHERE type = 'table' AND name = 'schema_data_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(Vec::new());
+        }
+        let like_pattern = format!("{}%", Self::C2_ZC_CUTOVER_MIGRATION_ID_PREFIX);
+        let mut statement = conn.prepare(
+            "SELECT migration_id, contract_version
+               FROM schema_data_migrations
+              WHERE migration_id = ?1 OR migration_id LIKE ?2
+              ORDER BY migration_id ASC",
+        )?;
+        let rows = statement.query_map(
+            [Self::C2_ZC_CUTOVER_MIGRATION_ID, like_pattern.as_str()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub(crate) fn record_c2zc_cutover_marker(

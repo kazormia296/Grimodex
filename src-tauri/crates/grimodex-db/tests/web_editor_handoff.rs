@@ -1,3 +1,7 @@
+use grimodex_db::narrative_extraction::{
+    C2_ZC_CUTOVER_CONTRACT_VERSION, C2_ZC_CUTOVER_MIGRATION_ID,
+};
+use grimodex_db::protected_writers::bundled_protected_writer_registry;
 use grimodex_db::web_editor_handoff::{
     import_web_editor_workspace, WEB_EDITOR_HANDOFF_SCHEMA_VERSION,
 };
@@ -113,6 +117,20 @@ fn browser_database(root: &Path, project_id: &str, title: &str) -> Vec<u8> {
     std::fs::read(path).expect("source bytes")
 }
 
+fn mutate_browser_database(
+    root: &Path,
+    project_id: &str,
+    title: &str,
+    mutate: impl FnOnce(&Connection) -> rusqlite::Result<()>,
+) -> Vec<u8> {
+    let _database = browser_database(root, project_id, title);
+    let path = root.join("browser.db");
+    let conn = Connection::open(&path).expect("open browser database for mutation");
+    mutate(&conn).expect("mutate browser database fixture");
+    drop(conn);
+    std::fs::read(path).expect("mutated source bytes")
+}
+
 fn handoff_json(database: &[u8], project_id: &str, title: &str) -> String {
     json!({
         "schemaVersion": WEB_EDITOR_HANDOFF_SCHEMA_VERSION,
@@ -132,6 +150,19 @@ fn settings_path(root: &Path) -> GlobalSettingsPath {
         path: root.join("global-settings.json"),
         write_lock: Mutex::new(()),
     }
+}
+
+fn unpublished_workspace_count(root: &Path) -> usize {
+    std::fs::read_dir(root)
+        .expect("root entries")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("web-editor-workspace-")
+        })
+        .count()
 }
 
 #[test]
@@ -236,4 +267,133 @@ fn rejects_unicode_control_characters_at_the_native_boundary() {
     assert_eq!(published, 0);
 
     std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn rejects_current_future_and_foreign_c2zc_cutover_markers_before_publishing() {
+    let markers = [
+        (
+            "current",
+            C2_ZC_CUTOVER_MIGRATION_ID,
+            C2_ZC_CUTOVER_CONTRACT_VERSION,
+        ),
+        (
+            "future",
+            C2_ZC_CUTOVER_MIGRATION_ID,
+            C2_ZC_CUTOVER_CONTRACT_VERSION + 1,
+        ),
+        (
+            "foreign",
+            "narrative-c2-canonical-freshness-foreign",
+            C2_ZC_CUTOVER_CONTRACT_VERSION,
+        ),
+    ];
+
+    for (label, migration_id, contract_version) in markers {
+        let root = temp_dir(&format!("marker-{label}"));
+        let source = mutate_browser_database(
+            &root.join("source"),
+            "web-project",
+            "White Lighthouse",
+            |conn| {
+                conn.execute(
+                    "DELETE FROM schema_data_migrations
+                      WHERE migration_id LIKE 'narrative-c2-canonical-freshness-%'",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO schema_data_migrations
+                        (migration_id, contract_version, applied_at)
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![migration_id, contract_version, "2026-07-19T03:04:05.000Z"],
+                )?;
+                Ok(())
+            },
+        );
+
+        let error = import_web_editor_workspace(
+            &settings_path(&root),
+            &handoff_json(&source, "web-project", "White Lighthouse"),
+        )
+        .expect_err("C2-ZC marker must never cross the Web Editor boundary");
+        let message = error.to_string();
+        assert!(
+            message.contains("NEX_C2ZC_WEB_EDITOR_HANDOFF_MARKER_REJECTED"),
+            "{label}: unexpected error: {message}"
+        );
+        assert!(
+            message.contains("schema_data_migrations"),
+            "{label}: {message}"
+        );
+        assert_eq!(unpublished_workspace_count(&root), 0, "{label}");
+
+        std::fs::remove_dir_all(root).ok();
+    }
+}
+
+#[test]
+fn rejects_non_empty_semantic_epoch_before_publishing_and_cleans_candidate() {
+    let root = temp_dir("semantic-epoch");
+    let source = mutate_browser_database(
+        &root.join("source"),
+        "web-project",
+        "White Lighthouse",
+        |conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    "epoch-web-import",
+                    "web-project",
+                    0,
+                    "initial",
+                    "2026-07-19T03:04:05.000Z"
+                ],
+            )?;
+            Ok(())
+        },
+    );
+
+    let error = import_web_editor_workspace(
+        &settings_path(&root),
+        &handoff_json(&source, "web-project", "White Lighthouse"),
+    )
+    .expect_err("native-owned Semantic Epoch must never cross the Web Editor boundary");
+    let message = error.to_string();
+    assert!(
+        message.contains("NEX_C2ZC_WEB_EDITOR_HANDOFF_AUTHORITY_REJECTED"),
+        "unexpected error: {message}"
+    );
+    assert!(message.contains("narrative_semantic_epochs"), "{message}");
+    assert_eq!(unpublished_workspace_count(&root), 0);
+
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn c2zc_native_owned_registry_has_the_exact_authority_finding_and_repair_tables() {
+    let registry = bundled_protected_writer_registry();
+    let mut tables = registry
+        .active_entries()
+        .filter(|entry| entry.aggregate.starts_with("narrative-c2zc-"))
+        .map(|entry| entry.table.as_str())
+        .collect::<Vec<_>>();
+    tables.sort_unstable();
+
+    assert_eq!(tables.len(), 9);
+    assert_eq!(
+        tables,
+        vec![
+            "narrative_consumer_freshness",
+            "narrative_dependency_edge_states",
+            "narrative_dependency_edges",
+            "narrative_extraction_runs",
+            "narrative_maintenance_finding_lifecycle",
+            "narrative_maintenance_finding_observations",
+            "narrative_maintenance_repair_leases",
+            "narrative_semantic_epochs",
+            "narrative_semantic_index_metadata",
+        ]
+    );
 }

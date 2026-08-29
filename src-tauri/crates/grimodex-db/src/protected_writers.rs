@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 pub const PROTECTED_WRITER_SQL_ERROR: &str = "PROTECTED_WRITER_SQL";
+pub const C2ZC_NATIVE_OWNED_AGGREGATE_PREFIX: &str = "narrative-c2zc-";
 
 const REGISTRY_JSON: &str = include_str!("../../../../policies/narrative/protected-writers.json");
 
@@ -75,6 +76,24 @@ impl ProtectedWriterRegistry {
         self.by_table
             .values()
             .filter(|entry| entry.enforcement == WriterEnforcement::Active)
+    }
+
+    /// Native-owned C2-ZC authority, finding, and repair tables.
+    ///
+    /// Keep this selection table-driven from the protected-writer policy so
+    /// every consumer shares the same ownership boundary as untrusted SQL.
+    pub fn c2zc_native_owned_entries(&self) -> impl Iterator<Item = &ProtectedWriterEntry> {
+        let mut entries = self
+            .by_table
+            .values()
+            .filter(|entry| {
+                entry
+                    .aggregate
+                    .starts_with(C2ZC_NATIVE_OWNED_AGGREGATE_PREFIX)
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by(|left, right| left.table.cmp(&right.table));
+        entries.into_iter()
     }
 }
 

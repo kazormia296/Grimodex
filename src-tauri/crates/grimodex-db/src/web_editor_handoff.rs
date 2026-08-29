@@ -13,6 +13,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::{
+    protected_writers::bundled_protected_writer_registry,
     schema_contract::{inspect_connection, SchemaContract},
     workspace, AppResult, Database, GlobalSettingsPath,
 };
@@ -209,12 +210,70 @@ fn collect_allowed_derived_fts_tables(conn: &Connection) -> anyhow::Result<Vec<S
     Ok(virtual_tables.into_iter().map(|(name, _)| name).collect())
 }
 
+fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master
+              WHERE type = 'table' AND name = ?1
+         )",
+        [table],
+        |row| row.get(0),
+    )?)
+}
+
+fn reject_untrusted_c2zc_boundary(conn: &Connection) -> anyhow::Result<()> {
+    let marker_rows = Database::read_c2zc_cutover_marker_rows(conn).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_C2ZC_WEB_EDITOR_HANDOFF_BOUNDARY_READ_FAILED: cannot inspect C2-ZC cutover marker: {error}"
+        )
+    })?;
+    if let Some((migration_id, contract_version)) = marker_rows.first() {
+        anyhow::bail!(
+            "NEX_C2ZC_WEB_EDITOR_HANDOFF_MARKER_REJECTED: schema_data_migrations contains C2-ZC cutover marker '{migration_id}' with contract version {contract_version}"
+        );
+    }
+
+    let registry = bundled_protected_writer_registry();
+    for entry in registry.c2zc_native_owned_entries() {
+        let table_is_present = table_exists(conn, &entry.table).map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_C2ZC_WEB_EDITOR_HANDOFF_BOUNDARY_READ_FAILED: cannot inspect native-owned C2-ZC table '{}': {error}",
+                entry.table
+            )
+        })?;
+        if !table_is_present {
+            continue;
+        }
+        let quoted_table = entry.table.replace('"', "\"\"");
+        let row_count: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM \"{quoted_table}\""),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_C2ZC_WEB_EDITOR_HANDOFF_BOUNDARY_READ_FAILED: cannot count native-owned C2-ZC table '{}': {error}",
+                    entry.table
+                )
+            })?;
+        if row_count > 0 {
+            anyhow::bail!(
+                "NEX_C2ZC_WEB_EDITOR_HANDOFF_AUTHORITY_REJECTED: native-owned C2-ZC table '{}' contains {row_count} row(s)",
+                entry.table
+            );
+        }
+    }
+    Ok(())
+}
+
 fn validate_staged_sqlite(path: &Path) -> anyhow::Result<()> {
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     harden_untrusted_connection(&conn)?;
+    reject_untrusted_c2zc_boundary(&conn)?;
     let quick_check: String = conn.query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
     if quick_check != "ok" {
         anyhow::bail!("Web Editor SQLite integrity check failed: {quick_check}");
