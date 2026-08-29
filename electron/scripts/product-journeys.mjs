@@ -21,7 +21,6 @@ import { createNarrativeMaintenanceProductJourneys } from "./narrative-maintenan
 import {
   C2ZC_PRODUCT_JOURNEY_ID,
   runC2ZcCanonicalAuthorityJourney,
-  runC2ZcPostMarkerLifecycleJourney,
 } from "./c2zc-canonical-product-journey.mjs";
 import { runC2ZcRendererMcpDmlDenialJourney } from "./c2zc-renderer-mcp-dml-denial-product-journey.mjs";
 import {
@@ -58,7 +57,8 @@ const AUTHORING_PROMPT = `AUTHORING-JOURNEY-${Date.now()}`;
 const AUTHORING_OUTPUT = "AUTHORING-AI-OUTPUT";
 const PRODUCT_JOURNEY_MODEL = "product-journey-model";
 const PENDING_SAVE_AUTOSAVE_DELAY_MS = 60_000;
-const PRODUCT_JOURNEY_RESULTS_VERSION = 4;
+const PRODUCT_JOURNEY_RESULTS_VERSION = 5;
+const PRODUCT_JOURNEY_LANE_WATCHDOG_TIMEOUT_MS = 10 * 60 * 1000;
 const PRODUCT_JOURNEY_AUDIT_MANIFEST_VERSION = 1;
 const C2ZC_RUST_RECEIPT_PATH_ENV = "GRIMODEX_C2ZC_RUST_RECEIPT_PATH";
 const C2ZC_RUST_RECEIPT_SHA256_ENV = "GRIMODEX_C2ZC_RUST_RECEIPT_SHA256";
@@ -506,16 +506,15 @@ export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS =
 export const NARRATIVE_C2ZC_PRODUCT_JOURNEYS = [
   {
     id: C2ZC_PRODUCT_JOURNEY_ID,
+    required: true,
+    acceptanceRole: "required",
     run: (harness) =>
       runC2ZcCanonicalAuthorityJourney(harness, configureWorkspace),
   },
   {
-    id: "c2-zc-post-marker-lifecycle",
-    run: (harness) =>
-      runC2ZcPostMarkerLifecycleJourney(harness, configureWorkspace),
-  },
-  {
     id: "c2-zc-renderer-mcp-dml-denial",
+    required: true,
+    acceptanceRole: "auxiliary",
     run: runC2ZcRendererMcpDmlDenialJourney,
   },
 ];
@@ -2379,7 +2378,7 @@ export function assertProductJourneySelectionBinding({
       JSON.stringify(C2ZC_PRODUCT_JOURNEY_IDS)
     ) {
       throw new Error(
-        "c2-zc selection must use the exact three-lane C2-ZC catalog",
+        "c2-zc selection must use the exact canonical-plus-auxiliary C2-ZC catalog",
       );
     }
     if (
@@ -2567,7 +2566,7 @@ async function resolveAndVerifyProductJourneyArtifacts(
 
 function hasC2ZcAcceptanceJourney(journeys) {
   const selectedIds = new Set(journeys.map((journey) => journey?.id));
-  return C2ZC_PRODUCT_JOURNEY_IDS.every((id) => selectedIds.has(id));
+  return selectedIds.has(C2ZC_PRODUCT_JOURNEY_ID);
 }
 
 function requiresC2ZcRustAcceptance({ journeys, selectionName }) {
@@ -2739,15 +2738,23 @@ async function readC2ZcRustAcceptanceEvidence({
 }
 
 export function refreshProductJourneyOutcome(report) {
+  const requiredJourneyIds =
+    Array.isArray(report.requiredJourneyIds) &&
+    report.requiredJourneyIds.length > 0
+      ? report.requiredJourneyIds
+      : report.journeyIds;
+  const requiredResults = (report.journeys ?? []).filter((journey) =>
+    requiredJourneyIds.includes(journey?.id),
+  );
   const exactLanePass =
     report.status === "passed" &&
-    Array.isArray(report.journeyIds) &&
+    Array.isArray(requiredJourneyIds) &&
     Array.isArray(report.journeys) &&
-    report.journeys.length === report.journeyIds.length &&
-    report.journeys.every((journey) => journey.status === "passed");
+    requiredResults.length === requiredJourneyIds.length &&
+    requiredResults.every((journey) => journey.status === "passed");
   const exactLaneClean =
     exactLanePass &&
-    report.journeys.every((journey) => journey.cleanPass === true);
+    requiredResults.every((journey) => journey.cleanPass === true);
   const rustAcceptanceComplete =
     report.acceptanceRequired !== true ||
     (report.c2zcRustAcceptance?.required === true &&
@@ -2801,6 +2808,7 @@ async function writeAuditManifest(
     status: report.status,
     catalogDigest: report.catalogDigest,
     journeyIds: [...report.journeyIds],
+    requiredJourneyIds: [...(report.requiredJourneyIds ?? report.journeyIds)],
     allPassed: report.allPassed === true,
     allClean: report.allClean === true,
     acceptanceRequired: report.acceptanceRequired === true,
@@ -2876,6 +2884,12 @@ export async function runProductJourneys({
     catalogDigest,
     catalogJourneyIds: catalog.map((journey) => journey.id),
     journeyIds: journeys.map((journey) => journey.id),
+    requiredJourneyIds: catalog
+      .filter(
+        (journey) =>
+          journey.required !== false && journey.acceptanceRole !== "diagnostic",
+      )
+      .map((journey) => journey.id),
     acceptanceRequired: requiresC2ZcRustAcceptance({
       journeys,
       selectionName,
@@ -2978,6 +2992,10 @@ export async function runProductJourneys({
   const continueAfterJourneyFailure = selectionName === "c2-zc";
   let firstJourneyFailure = null;
   for (const [index, journey] of journeys.entries()) {
+    const catalogEntry = catalog.find((entry) => entry.id === journey.id);
+    const journeyIsRequired =
+      (journey.required ?? catalogEntry?.required ?? true) !== false &&
+      (journey.acceptanceRole ?? catalogEntry?.acceptanceRole) !== "diagnostic";
     const startedAt = clock();
     let durationMs = null;
     let harness = null;
@@ -2985,7 +3003,14 @@ export async function runProductJourneys({
     try {
       harness = factory();
       harness.c2zcRustAcceptanceEvidence = report.c2zcRustAcceptance;
-      const journeyResult = await journey.run(harness);
+      const runJourney = () => journey.run(harness);
+      const journeyResult =
+        typeof harness.withLaneWatchdog === "function"
+          ? await harness.withLaneWatchdog(runJourney, {
+              phase: journey.id,
+              timeoutMs: PRODUCT_JOURNEY_LANE_WATCHDOG_TIMEOUT_MS,
+            })
+          : await runJourney();
       durationMs = elapsedMilliseconds(clock, startedAt);
       const diagnostics = normalizeProductJourneyDiagnostics(
         await harness.finalizeDiagnostics?.(),
@@ -3008,7 +3033,7 @@ export async function runProductJourneys({
       log(`${journey.id}: PASS`);
     } catch (error) {
       durationMs ??= elapsedMilliseconds(clock, startedAt);
-      report.status = "failed";
+      if (journeyIsRequired) report.status = "failed";
       const journeyDiagnostics = normalizeProductJourneyDiagnostics(
         error?.diagnostics ?? harness?.diagnostics?.(),
       );
@@ -3062,9 +3087,11 @@ export async function runProductJourneys({
         },
       );
       if (continueAfterJourneyFailure) {
-        firstJourneyFailure ??= wrappedError;
+        if (journeyIsRequired) firstJourneyFailure ??= wrappedError;
         await writeResults(outputPath, report);
-        log(`${journey.id}: FAIL (continuing focused C2-ZC lanes)`);
+        log(
+          `${journey.id}: FAIL (${journeyIsRequired ? "continuing required C2-ZC lane" : "diagnostic only"})`,
+        );
         continue;
       }
       report.journeys.push(

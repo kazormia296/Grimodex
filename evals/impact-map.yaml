@@ -318,7 +318,7 @@ rules:
     suites:
       - narrative-extraction
   - id: narrative-maintenance-product-journeys
-    reason: C2-5B durable maintenance journeys and the C2-ZC canonical-authority candidate journey and final acceptance gates bind schema, epoch, digest, retry, interruption, workspace-wake, feed-liveness, and one-way Generic authority evidence to the runtime and semantic contract gates.
+    reason: C2-5B durable maintenance journeys and the C2-ZC single canonical lifecycle bind restore, epoch, Verify/Rebuild/Freshness ordering, workspace authority, feed liveness, and one-way Generic authority evidence to candidate-bound runtime and semantic contract gates.
     paths:
       - electron/scripts/narrative-maintenance-product-journeys.mjs
       - electron/scripts/c2zc-canonical-product-journey.mjs
@@ -415,6 +415,54 @@ rules:
         source: src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs
         test: rebuild_outcome_tamper_and_missing_evidence_fail_closed
         fullTestName: narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed
+        requiresReceipt: true
+      - id: c2-zc-liveness-restore-lock-binding
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --test
+            - narrative_c2zc_liveness_binding
+            - same_project_receipt_cannot_cross_database_authority
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/tests/narrative_c2zc_liveness_binding.rs
+          test: same_project_receipt_cannot_cross_database_authority
+          fullTestName: same_project_receipt_cannot_cross_database_authority
+          proof: restore-lock liveness receipt remains bound to the project Database authority
+        source: src-tauri/crates/grimodex-db/tests/narrative_c2zc_liveness_binding.rs
+        test: same_project_receipt_cannot_cross_database_authority
+        fullTestName: same_project_receipt_cannot_cross_database_authority
+        requiresReceipt: true
+      - id: c2-zc-native-restore-lock-release
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - electron/native/grimodex-node/Cargo.toml
+            - --lib
+            - narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: electron/native/grimodex-node/src/lib.rs
+          test: completed_freshness_cycle_releases_authority_before_restore_quiescence
+          fullTestName: narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence
+          proof: completed Freshness cycle releases authority before restore quiescence
+          heavy: true
+          fullCiPreflight: true
+          designImpact: Runs before Full's later stages; a skipped native test is never passed in the receipt
+        source: electron/native/grimodex-node/src/lib.rs
+        test: completed_freshness_cycle_releases_authority_before_restore_quiescence
+        fullTestName: narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence
         requiresReceipt: true
     requirements:
       - GDX-POLICY-001

@@ -137,6 +137,61 @@ export const C2ZC_RUST_ACCEPTANCE_GATES = Object.freeze([
       proof: "direct persisted Rebuild evidence corruption blocks readiness",
     },
   }),
+  freezeGate({
+    id: "c2-zc-liveness-restore-lock-binding",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_c2zc_liveness_binding",
+        "same_project_receipt_cannot_cross_database_authority",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/tests/narrative_c2zc_liveness_binding.rs",
+      test: "same_project_receipt_cannot_cross_database_authority",
+      fullTestName: "same_project_receipt_cannot_cross_database_authority",
+      proof:
+        "restore-lock liveness receipt remains bound to the project Database authority",
+    },
+  }),
+  freezeGate({
+    id: "c2-zc-native-restore-lock-release",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "electron/native/grimodex-node/Cargo.toml",
+        "--lib",
+        "narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source: "electron/native/grimodex-node/src/lib.rs",
+      test: "completed_freshness_cycle_releases_authority_before_restore_quiescence",
+      fullTestName:
+        "narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence",
+      proof:
+        "completed Freshness cycle releases authority before restore quiescence",
+      heavy: true,
+      fullCiPreflight: true,
+      designImpact:
+        "Runs before Full's later stages; a skipped native test is never passed in the receipt",
+    },
+  }),
 ]);
 export const C2ZC_RUST_ACCEPTANCE_GATE_IDS = Object.freeze(
   C2ZC_RUST_ACCEPTANCE_GATES.map((gate) => gate.id),
@@ -568,7 +623,7 @@ function assertReceiptContract(receipt, { candidate, catalogDigest }) {
     receipt.gates.length !== C2ZC_RUST_ACCEPTANCE_GATES.length
   ) {
     throw new Error(
-      "C2-ZC Rust receipt must contain exactly the three ordered acceptance gates",
+      "C2-ZC Rust receipt must contain exactly the ordered acceptance gates",
     );
   }
   for (const [index, gate] of receipt.gates.entries()) {

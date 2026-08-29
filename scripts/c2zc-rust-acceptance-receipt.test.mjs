@@ -49,42 +49,41 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 `,
+  "c2-zc-liveness-restore-lock-binding": `test same_project_receipt_cannot_cross_database_authority ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+`,
+  "c2-zc-native-restore-lock-release": `test narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+`,
 };
 
-test("C2-ZC Rust receipt includes the readiness-corruption gate after DML", () => {
-  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 3);
-  assert.deepEqual(C2ZC_RUST_ACCEPTANCE_GATES[2], {
-    id: "c2-zc-readiness-corruption-fail-closed",
-    argv: {
-      command: "cargo",
-      args: [
-        "test",
-        "--manifest-path",
-        "src-tauri/Cargo.toml",
-        "-p",
-        "grimodex-db",
-        "--lib",
-        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
-        "--",
-        "--exact",
-      ],
-      cwd: ".",
-    },
-    contract: {
-      source:
-        "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
-      test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
-      fullTestName:
-        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
-      proof: "direct persisted Rebuild evidence corruption blocks readiness",
-    },
-    source:
-      "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
-    test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
-    fullTestName:
-      "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
-    requiresReceipt: true,
-  });
+test("C2-ZC Rust receipt keeps readiness, liveness, and native restore-lock gates ordered", () => {
+  assert.deepEqual(
+    C2ZC_RUST_ACCEPTANCE_GATES.map(({ id }) => id),
+    [
+      "c2-zc-canonical-no-legacy-fallback",
+      "c2-zc-dml-native-owned-table-denial",
+      "c2-zc-readiness-corruption-fail-closed",
+      "c2-zc-liveness-restore-lock-binding",
+      "c2-zc-native-restore-lock-release",
+    ],
+  );
+  assert.equal(
+    C2ZC_RUST_ACCEPTANCE_GATES[3].contract.source,
+    "src-tauri/crates/grimodex-db/tests/narrative_c2zc_liveness_binding.rs",
+  );
+  assert.equal(
+    C2ZC_RUST_ACCEPTANCE_GATES[4].contract.source,
+    "electron/native/grimodex-node/src/lib.rs",
+  );
+  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES[4].contract.heavy, true);
+  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES[4].contract.fullCiPreflight, true);
+  assert.match(
+    C2ZC_RUST_ACCEPTANCE_GATES[4].contract.designImpact,
+    /skipped.*never passed/i,
+  );
 });
 
 function gateExecution(overrides = {}) {

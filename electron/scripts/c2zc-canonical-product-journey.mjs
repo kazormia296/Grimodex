@@ -1,105 +1,45 @@
+import {
+  copyFile,
+  lstat,
+  mkdir,
+  readFile,
+  realpath,
+  stat,
+} from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
+import process from "node:process";
 
-import {
-  assertRestoreFixtureEvidence,
-  compareInstants,
-  parseInstant,
-  restoreBackupThroughSettingsUi,
-  runRestoreVerifyRebuildVerifyScenario,
-  NARRATIVE_MAINTENANCE_OWNER_TOKEN,
-  withLaunchEnvironmentForTest,
-} from "./narrative-maintenance-product-journeys.mjs";
-import {
-  C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
-  C2ZC_RUST_ACCEPTANCE_GATES,
-} from "../../scripts/c2zc-rust-acceptance-receipt.mjs";
+import { restoreBackupThroughSettingsUi } from "./narrative-maintenance-product-journeys.mjs";
 
-const C2ZC_CUTOVER_MIGRATION_ID = "narrative-c2-canonical-freshness-v1";
-const C2ZC_CUTOVER_CONTRACT_VERSION = 1;
-const C2ZC_SYSTEM_WORK_KEYS = Object.freeze([
-  "trigger",
-  "canonicalWorkKey",
-  "authorityId",
-  "generation",
-  "productJourneyBarrierId",
-  "correlation",
+/**
+ * C2-ZC is one stateful lifecycle.  The runner owns only observations and
+ * typed product calls; restore, Verify, Rebuild, Freshness, marker, and
+ * workspace authority remain production-owned.
+ */
+export const C2ZC_PRODUCT_JOURNEY_ID = "c2-zc-canonical-authority-cutover";
+export const C2ZC_RESTORE_FIXTURE_ENV = "GRIMODEX_C2ZC_RESTORE_FIXTURE";
+export const C2ZC_RESTORE_FIXTURE_MANIFEST_VERSION = 1;
+export const C2ZC_RESTORE_FIXTURE_CONTRACT_VERSION = 1;
+export const C2ZC_RESTORE_FIXTURE_BUILDER_VERSION =
+  "c2zc-restore-fixture-builder/v1";
+export const C2ZC_VERIFY_COVERAGE_COUNT = 13;
+export const C2ZC_CANONICAL_PRODUCT_JOURNEY_PHASES = Object.freeze([
+  `${C2ZC_PRODUCT_JOURNEY_ID}/restore-fixture`,
+  `${C2ZC_PRODUCT_JOURNEY_ID}/restore`,
+  `${C2ZC_PRODUCT_JOURNEY_ID}/open`,
+  `${C2ZC_PRODUCT_JOURNEY_ID}/restart`,
+  `${C2ZC_PRODUCT_JOURNEY_ID}/typed-write`,
+  `${C2ZC_PRODUCT_JOURNEY_ID}/restart-persistence`,
 ]);
 
-function c2zcSystemWorkMarker(value, label) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  let marker = value.systemWork;
-  if (marker === undefined && value.specJson !== undefined) {
-    const spec = parseObject(value.specJson, `${label} specJson`);
-    marker = spec.systemWork;
-  }
-  if (marker === undefined && value.spec !== undefined) {
-    const spec = parseObject(value.spec, `${label} spec`);
-    marker = spec.systemWork;
-  }
-  if (marker === undefined || marker === null) return null;
-  if (!marker || typeof marker !== "object" || Array.isArray(marker)) {
-    throw new Error(`${label} marker must be an object`);
-  }
-  assertExactKeys(marker, C2ZC_SYSTEM_WORK_KEYS, label);
-  if (marker.trigger !== "workspace-opened") {
-    throw new Error(`${label} trigger is invalid`);
-  }
-  for (const key of [
-    "canonicalWorkKey",
-    "authorityId",
-    "productJourneyBarrierId",
-    "correlation",
-  ]) {
-    if (
-      typeof marker[key] !== "string" ||
-      marker[key].length === 0 ||
-      marker[key].trim() !== marker[key] ||
-      marker[key].includes("\u0000")
-    ) {
-      throw new Error(`${label} ${key} is invalid`);
-    }
-  }
-  if (!Number.isSafeInteger(marker.generation) || marker.generation <= 0) {
-    throw new Error(`${label} generation is invalid`);
-  }
-  if (
-    typeof value.runKind === "string" &&
-    typeof value.projectId === "string" &&
-    typeof value.workKey === "string"
-  ) {
-    const base = `narrative-maintenance:v1/${value.runKind}/${value.projectId}/${value.workKey}`;
-    const expected =
-      value.semanticEpochId === undefined || value.semanticEpochId === null
-        ? base
-        : `${base}/epoch/${value.semanticEpochId}`;
-    if (marker.canonicalWorkKey !== expected) {
-      throw new Error(`${label} canonicalWorkKey is not bound to the Run`);
-    }
-  }
-  return Object.freeze({ ...marker });
-}
-const C2ZC_FRESHNESS_CONSUMER_KIND = "application";
-export const C2ZC_VERIFY_CHECK_NAMES = Object.freeze([
-  "producer-and-generation-consistency",
-  "active-edge-duplicates",
-  "cross-project-edge",
-  "consumer-and-source-key-format",
-  "application-revision-artifact-references",
-  "dependency-set-digest",
-  "contribution-to-application-commit-correspondence",
-  "legacy-mirror-migration-parity",
-  "edge-state-belongs-to-current-epoch",
-  "consumer-freshness-dependency-set-digest",
-  "finding-observation-belongs-to-current-epoch",
-  "cursor-and-feed-head-consistency",
-  "semantic-index-generation-correspondence",
-]);
 export const C2ZC_SEMANTIC_INDEX_ZERO_COUNTS = Object.freeze({
   metadataRows: 0,
   activeD1HeadRows: 0,
   v1EdgeRows: 0,
   consumerFreshnessRows: 0,
 });
+
 export const C2ZC_CANONICAL_FRESHNESS_CONTRACT = Object.freeze({
   authority: "GenericConsumerFreshness",
   rustSource:
@@ -117,78 +57,152 @@ export const C2ZC_CANONICAL_FRESHNESS_CONTRACT = Object.freeze({
   noLegacyFallback: true,
   missingGenericError: "NEX_C2ZC_GENERIC_FRESHNESS_MISSING",
 });
-const C2ZC_WAIT_MS = 60_000;
-const C2ZC_PHASE_RUN_KINDS = Object.freeze([
-  "dependency-verify",
-  "semantic-index-rebuild",
-  "dependency-verify",
-]);
-const C2ZC_IDLE_RUN_KIND = "freshness-evaluation";
-const C2ZC_IDLE_TASK_KIND = "incremental-freshness-batch";
-const C2ZC_IDLE_TASK_INPUT_KIND = "current-epoch-idle-checkpoint";
-const C2ZC_IDLE_SPEC_KIND = "incremental-freshness-idle-checkpoint@1";
-const C2ZC_IDLE_HEX_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+const C2ZC_CUTOVER_MIGRATION_ID = "narrative-c2-canonical-freshness-v1";
+const C2ZC_CUTOVER_CONTRACT_VERSION = 1;
+const C2ZC_FRESHNESS_CONSUMER_KIND = "application";
 const C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID =
   "narrative-incremental-freshness/v1";
-const C2ZC_INCREMENTAL_FRESHNESS_TASK_KIND = "incremental-freshness-batch";
-const C2ZC_SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/;
-// Generic Consumer Freshness stores the dependency-set digest as the native
-// Rust helper's bare lowercase SHA-256 hex.  Accept the historical
-// `sha256:`-prefixed representation in fixture snapshots, but never accept a
-// free-form token or a digest with the wrong length.
-const C2ZC_DEPENDENCY_SHA256_DIGEST = /^(?:sha256:)?[0-9a-f]{64}$/u;
-const C2ZC_REBUILD_WORK_KEY = "dependency-rebuild-derived";
-const C2ZC_REBUILD_TASK_KIND = "maintenance-semantic-index-rebuild";
-const C2ZC_MAX_IDLE_ATTEMPTS = 3;
-const C2ZC_AUTOMATIC_RUN_KINDS = new Set([
+const C2ZC_WAIT_MS = 60_000;
+const C2ZC_FIXTURE_GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/u;
+const C2ZC_FIXTURE_SHA256 = /^sha256:[0-9a-f]{64}$/u;
+const C2ZC_RESTORE_FIXTURE_MANIFEST_KEYS = Object.freeze([
+  "manifestVersion",
+  "contractVersion",
+  "schemaVersion",
+  "databaseSchemaVersion",
+  "c2zcMarkerPresent",
+  "candidate",
+  "builderVersion",
+  "builderCommand",
+  "exactBuilderCommand",
+  "artifacts",
+  "fixtureSha256",
+  "fixtureSizeBytes",
+  "semantic",
+]);
+const C2ZC_RESTORE_FIXTURE_CANDIDATE_KEYS = Object.freeze([
+  "requested",
+  "resolvedHeadSha",
+  "resolvedTreeSha",
+  "headSha",
+  "treeSha",
+  "clean",
+  "statusSha256",
+]);
+const C2ZC_RESTORE_FIXTURE_ARTIFACT_KEYS = Object.freeze([
+  "path",
+  "sha256",
+  "sizeBytes",
+]);
+const C2ZC_RESTORE_FIXTURE_SEMANTIC_KEYS = Object.freeze([
+  "projectId",
+  "sceneId",
+  "ownerRunId",
+  "projectCount",
+  "e0Count",
+  "completedBackfillCount",
+  "dependencyEdgeCount",
+  "edgeStateCount",
+  "ownerFreshnessCount",
+  "cursorSettled",
+  "semanticIndexRows",
+  "sceneSourceRevision",
+  "edgeSourceObjectIdentity",
+  "edgeReadSetJson",
+  "project",
+  "projectDigest",
+  "scene",
+  "sceneDigest",
+  "epoch",
+  "epochDigest",
   "backfill",
-  "dependency-verify",
-  "semantic-index-rebuild",
-  "dependency-repair",
-]);
-const C2ZC_SETTLING_RUN_KINDS = new Set([
-  ...C2ZC_AUTOMATIC_RUN_KINDS,
-  C2ZC_IDLE_RUN_KIND,
-]);
-
-export const C2ZC_PRODUCT_JOURNEY_ID = "c2-zc-canonical-authority-cutover";
-export const C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID =
-  "c2-zc-post-marker-lifecycle";
-export const C2ZC_CANONICAL_PRODUCT_JOURNEY_PHASES = Object.freeze([
-  `${C2ZC_PRODUCT_JOURNEY_ID}/restore-fixture`,
-  `${C2ZC_PRODUCT_JOURNEY_ID}/restore`,
-  `${C2ZC_PRODUCT_JOURNEY_ID}/open`,
-  `${C2ZC_PRODUCT_JOURNEY_ID}/restart`,
-  `${C2ZC_PRODUCT_JOURNEY_ID}/restart-persistence`,
-]);
-export const C2ZC_POST_MARKER_PRODUCT_JOURNEY_PHASES = Object.freeze([
-  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/bootstrap-restore-fixture`,
-  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/bootstrap-restore`,
-  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/bootstrap-open`,
-  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/bootstrap-restart`,
-  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/bootstrap-restart-persistence`,
-  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/open`,
-  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/new-project`,
-  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/restart`,
-]);
-/** @deprecated Use the phase list belonging to the selected atomic lane. */
-export const C2ZC_PRODUCT_JOURNEY_PHASES = Object.freeze([
-  ...C2ZC_CANONICAL_PRODUCT_JOURNEY_PHASES,
-  ...C2ZC_POST_MARKER_PRODUCT_JOURNEY_PHASES,
+  "backfillDigest",
+  "edge",
+  "edgeDigest",
+  "feedCursor",
+  "feedCursorDigest",
+  "derivedStateGap",
+  "semanticIndex",
+  "expectedRestoreLifecycle",
+  "contentsDigest",
 ]);
 
-const C2ZC_WORKSPACE_LIFECYCLE_PHASES = Object.freeze([
-  "switch-requested",
-  "quiescence-started",
-  "authority-commit",
-  "new-scope-hydrated",
-]);
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseObject(value, label) {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch (error) {
+      throw new Error(`${label} is not valid JSON`, { cause: error });
+    }
+  }
+  if (!isObject(parsed)) throw new Error(`${label} must be an object`);
+  return parsed;
+}
+
+function parseArray(value, label) {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch (error) {
+      throw new Error(`${label} is not valid JSON`, { cause: error });
+    }
+  }
+  if (!Array.isArray(parsed)) throw new Error(`${label} must be an array`);
+  return parsed;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (isObject(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function assertExactKeys(value, expected, label) {
+  if (!isObject(value)) throw new Error(`${label} must be an object`);
+  const actual = Object.keys(value).sort();
+  const keys = [...expected].sort();
+  if (
+    actual.length !== keys.length ||
+    actual.some((key, index) => key !== keys[index])
+  ) {
+    throw new Error(`${label} has unexpected keys`);
+  }
+}
+
+function requireText(value, label) {
+  if (
+    typeof value !== "string" ||
+    value.trim() === "" ||
+    value !== value.trim() ||
+    value.includes("\u0000")
+  ) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  return value;
+}
 
 function rowsOf(result) {
   return Array.isArray(result?.rows) ? result.rows : [];
 }
 
-function c2zcOutcome(value, label) {
+function rows(value, label) {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value;
+}
+
+function outcomeOf(value, label) {
   if (value?.outcomeSummaryJson !== undefined) {
     return parseObject(value.outcomeSummaryJson, `${label} outcomeSummaryJson`);
   }
@@ -198,152 +212,83 @@ function c2zcOutcome(value, label) {
   return parseObject(value, `${label} outcome`);
 }
 
-function c2zcReport(value, label) {
-  const outcome = c2zcOutcome(value, label);
-  const report = outcome?.report ?? value?.report;
-  if (!report || typeof report !== "object" || Array.isArray(report)) {
+function reportOf(value, label) {
+  const outcome = outcomeOf(value, label);
+  const report = outcome.report ?? value?.report;
+  if (!isObject(report)) {
     throw new Error(`${label} must contain the production Verify report`);
   }
   return { outcome, report };
 }
 
-/**
- * Validate the machine-readable coverage persisted by a production Verify
- * Run. The Rust validator compares this object against its compiled
- * catalogue; this product contract repeats that exact comparison so a
- * journey cannot pass by merely observing a completed Run.
- */
-export function assertC2ZcVerifyCoverage(run, label = "C2-ZC Verify") {
-  const { outcome, report } = c2zcReport(run, label);
-  if (run?.status !== undefined && run.status !== "completed") {
-    throw new Error(`${label} must be a completed production Verify Run`);
-  }
-  const coverage = outcome.checkCoverage;
-  if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
-    throw new Error(`${label} is missing its machine-readable check coverage`);
-  }
+function expectedCoverageOf(value, label) {
+  const candidate = value?.checkCoverage ?? value?.coverage ?? value;
+  const coverage = parseObject(candidate, `${label} check coverage`);
   assertExactKeys(
     coverage,
     ["complete", "required", "covered", "missing"],
-    `${label} check coverage`,
+    label,
   );
-  if (
-    coverage.complete !== true ||
-    canonicalJson(coverage.required) !==
-      canonicalJson(C2ZC_VERIFY_CHECK_NAMES) ||
-    canonicalJson(coverage.covered) !==
-      canonicalJson(C2ZC_VERIFY_CHECK_NAMES) ||
-    canonicalJson(coverage.missing) !== "[]"
-  ) {
-    throw new Error(
-      `${label} does not contain the exact production 13-check coverage`,
-    );
-  }
-  const typedChecks = [
-    [
-      "application-revision-artifact-references",
-      "applicationRevisionArtifactReferences",
-    ],
-    [
-      "semantic-index-dependency-set-digest",
-      "semanticIndexDependencySetDigest",
-    ],
-    [
-      "contribution-to-application-commit-correspondence",
-      "contributionToApplicationCommitCorrespondence",
-    ],
-    ["legacy-mirror-migration-parity", "legacyMirrorMigrationParity"],
-    ["cursor-and-feed-head-consistency", "cursorAndFeedHeadConsistency"],
-    [
-      "semantic-index-generation-correspondence",
-      "semanticIndexGenerationCorrespondence",
-    ],
-  ];
-  for (const [checkName, field] of typedChecks) {
-    const check = report[field];
-    if (!check || typeof check !== "object" || Array.isArray(check)) {
-      throw new Error(`${label} typed check '${checkName}' is missing`);
-    }
-    assertExactKeys(
-      check,
-      [
-        "completed",
-        "passed",
-        "issues",
-        "incomplete",
-        ...(Object.hasOwn(check, "observedCounts") ? ["observedCounts"] : []),
-      ],
-      `${label} typed check '${checkName}'`,
-    );
-    if (
-      check.completed !== true ||
-      check.passed !== true ||
-      canonicalJson(check.issues) !== "[]" ||
-      canonicalJson(check.incomplete) !== "[]"
-    ) {
-      throw new Error(
-        `${label} typed check '${checkName}' is not complete and passed`,
-      );
-    }
-  }
-  for (const field of [
-    "edgeIdsWithMissingSource",
-    "duplicateEdgeKeys",
-    "edgeIdsWithCrossProjectConsumer",
-    "edgeIdsWithMalformedKeys",
-    "edgeStateIdsOutsideCurrentEpoch",
-    "edgeIdsWithoutCurrentEpochState",
-    "findingObservationIdsOutsideCurrentEpoch",
-    "consumerKeysWithoutCurrentEpochFreshness",
-    "duplicateEdgeIdsToDeactivate",
-    "edgeIdsWithUnresolvableConsumerScope",
-    "consumerKeysWithStaleDependencySetDigest",
-    "consumerKeysWithUncomputedDependencySetDigest",
-    "orphanedAttentionFindingKeys",
-    "orphanedAttentionRehomeAmbiguities",
-  ]) {
-    if (canonicalJson(report[field]) !== "[]") {
-      throw new Error(`${label} report has unresolved '${field}' evidence`);
-    }
-  }
-  if (report.rebuildRequired !== false) {
-    throw new Error(`${label} report still requires a derived-state rebuild`);
-  }
-  return { outcome, report, checkCoverage: coverage };
+  return coverage;
 }
 
-/** Validate both production-owned Semantic Index footprint checks. */
+/**
+ * Compare the persisted machine-readable values with the Rust Verify outcome.
+ * The JavaScript contract deliberately does not reproduce Rust's check list.
+ */
+export function assertC2ZcVerifyCoverage(
+  run,
+  rustOutcome,
+  label = "C2-ZC Verify",
+) {
+  const { outcome } = reportOf(run, label);
+  if (run?.status !== undefined && run.status !== "completed") {
+    throw new Error(`${label} must be a completed production Verify Run`);
+  }
+  const actual = expectedCoverageOf(outcome, `${label} persisted`);
+  if (
+    actual.complete !== true ||
+    !Array.isArray(actual.required) ||
+    !Array.isArray(actual.covered) ||
+    !Array.isArray(actual.missing) ||
+    actual.required.length !== C2ZC_VERIFY_COVERAGE_COUNT ||
+    actual.covered.length !== C2ZC_VERIFY_COVERAGE_COUNT ||
+    actual.missing.length !== 0
+  ) {
+    throw new Error(`${label} does not contain complete 13/13 coverage`);
+  }
+  if (rustOutcome !== undefined && rustOutcome !== null) {
+    const expected = expectedCoverageOf(rustOutcome, "Rust Verify outcome");
+    if (stableJson(actual) !== stableJson(expected)) {
+      throw new Error(`${label} coverage values differ from the Rust outcome`);
+    }
+  }
+  return { outcome, checkCoverage: actual };
+}
+
 export function assertC2ZcSemanticIndexZero(
   value,
   label = "C2-ZC Semantic Index",
 ) {
-  const { report } = c2zcReport(value, label);
+  const { report } = reportOf(value, label);
   for (const field of [
     "semanticIndexDependencySetDigest",
     "semanticIndexGenerationCorrespondence",
   ]) {
     const check = report[field];
-    if (!check || typeof check !== "object") {
+    if (!isObject(check))
       throw new Error(`${label} check '${field}' is missing`);
-    }
-    assertExactKeys(
-      check,
-      ["completed", "passed", "issues", "incomplete", "observedCounts"],
-      `${label} check '${field}'`,
-    );
     if (
-      canonicalJson(check.observedCounts) !==
-      canonicalJson(C2ZC_SEMANTIC_INDEX_ZERO_COUNTS)
+      stableJson(check.observedCounts) !==
+      stableJson(C2ZC_SEMANTIC_INDEX_ZERO_COUNTS)
     ) {
-      throw new Error(
-        `${label} reserved Semantic Index surfaces are not exactly zero`,
-      );
+      throw new Error(`${label} reserved Semantic Index surfaces are not zero`);
     }
     if (
       check.completed !== true ||
       check.passed !== true ||
-      canonicalJson(check.issues) !== "[]" ||
-      canonicalJson(check.incomplete) !== "[]"
+      stableJson(check.issues) !== "[]" ||
+      stableJson(check.incomplete) !== "[]"
     ) {
       throw new Error(`${label} check '${field}' is not complete and passed`);
     }
@@ -351,9 +296,7 @@ export function assertC2ZcSemanticIndexZero(
   return C2ZC_SEMANTIC_INDEX_ZERO_COUNTS;
 }
 
-/** A marker is a one-way activation fact, never a count-only observation. */
-function markerRowsFromSnapshot(snapshot) {
-  if (snapshot === null || snapshot === undefined) return [];
+function markerRowsOf(snapshot) {
   if (Array.isArray(snapshot)) return snapshot;
   if (Array.isArray(snapshot?.markerRows)) return snapshot.markerRows;
   if (snapshot?.marker) return [snapshot.marker];
@@ -361,2462 +304,527 @@ function markerRowsFromSnapshot(snapshot) {
 }
 
 export function assertC2ZcMarkerExactlyOnce(snapshot, label = "C2-ZC marker") {
-  const markerRows = markerRowsFromSnapshot(snapshot);
+  const markerRows = markerRowsOf(snapshot);
   if (markerRows.length !== 1) {
     throw new Error(`${label} must contain exactly one persisted marker row`);
   }
   const marker = markerRows[0];
   if (
     marker?.migrationId !== C2ZC_CUTOVER_MIGRATION_ID ||
-    Number(marker?.contractVersion) !== C2ZC_CUTOVER_CONTRACT_VERSION
+    Number(marker?.contractVersion) !== C2ZC_CUTOVER_CONTRACT_VERSION ||
+    typeof marker?.appliedAt !== "string" ||
+    marker.appliedAt.trim() === ""
   ) {
     throw new Error(`${label} is not the current C2-ZC marker`);
-  }
-  parseInstant(marker.appliedAt, `${label} appliedAt`);
-  if (
-    snapshot?.marker &&
-    canonicalJson(snapshot.marker) !== canonicalJson(marker)
-  ) {
-    throw new Error(
-      `${label} primary observation does not match its marker rows`,
-    );
   }
   return marker;
 }
 
-function activeC2ZcInboxEntries(entries) {
-  return rows(entries, "C2-ZC Inbox entries").filter((entry) => {
-    const observation = entry?.latestObservation ?? entry?.latest_observation;
-    return observation !== null && observation !== undefined;
-  });
+export function assertC2ZcFindingInboxEmpty(
+  snapshot,
+  label = "C2-ZC findings",
+) {
+  const findings = snapshot?.unresolvedFindings ?? snapshot?.findings ?? [];
+  const inbox = snapshot?.inboxEntries ?? snapshot?.inbox ?? [];
+  if (!Array.isArray(findings) || !Array.isArray(inbox)) {
+    throw new Error(`${label} must expose findings and inbox arrays`);
+  }
+  if (findings.length !== 0 || inbox.length !== 0) {
+    throw new Error(`${label} contains unresolved findings or Inbox entries`);
+  }
+  return true;
 }
 
-/**
- * A resolved lifecycle row is a claim about an earlier observation, not a
- * self-authenticating status bit.  The native writer binds that row to an
- * exact prior observation and material-basis digest; keep the Electron
- * acceptance boundary honest when a snapshot includes resolved history.
- */
-function assertC2ZcFindingResolutionCausality(snapshot, label) {
-  const lifecycle = Array.isArray(snapshot?.findingLifecycle)
-    ? snapshot.findingLifecycle
-    : [];
-  const resolved = lifecycle.filter(
-    (finding) => finding?.lifecycleState === "resolved",
-  );
-  if (resolved.length === 0) return;
-  const observations = snapshot?.findingObservations;
-  if (!Array.isArray(observations)) {
-    throw new Error(
-      `${label} resolved Finding lifecycle rows have no observed-evidence ledger`,
-    );
-  }
-  for (const finding of resolved) {
-    const prior = observations.find(
-      (observation) =>
-        observation?.projectId === finding.projectId &&
-        observation?.findingIdentity === finding.findingIdentity &&
-        observation?.findingKey === finding.findingKey &&
-        observation?.ruleId === finding.ruleId &&
-        Number(observation?.ruleVersion) === Number(finding.ruleVersion) &&
-        observation?.materialBasisDigest === finding.materialBasisDigest &&
-        observation?.semanticEpochId === finding.semanticEpochId &&
-        typeof observation?.observedAt === "string" &&
-        compareInstants(observation.observedAt, finding.observedAt) <= 0,
-    );
-    if (!prior) {
-      throw new Error(
-        `${label} resolved Finding '${finding.findingIdentity}' is not causally anchored to an observed prior`,
-      );
-    }
-  }
-}
-
-/** Findings are zero only when final unresolved lifecycle and active Inbox rows are both empty. */
-export function assertC2ZcFindingInboxEmpty(snapshot, label = "C2-ZC marker") {
-  const lifecycle = Array.isArray(snapshot?.findingLifecycle)
-    ? snapshot.findingLifecycle
-    : null;
-  let unresolved =
-    snapshot?.unresolvedFindings ?? snapshot?.findings?.unresolved ?? [];
-  if (lifecycle !== null) {
-    const epochs = Array.isArray(snapshot?.epochs) ? snapshot.epochs : [];
-    if (epochs.length > 0) {
-      unresolved = latestC2ZcFindingLifecycle(lifecycle, epochs);
-    } else {
-      const latestByIdentity = new Map();
-      for (const finding of lifecycle) {
-        if (typeof finding?.findingIdentity !== "string") continue;
-        const prior = latestByIdentity.get(finding.findingIdentity);
-        if (
-          !prior ||
-          compareInstants(prior.observedAt, finding.observedAt) < 0 ||
-          (compareInstants(prior.observedAt, finding.observedAt) === 0 &&
-            String(prior.id).localeCompare(String(finding.id)) < 0)
-        ) {
-          latestByIdentity.set(finding.findingIdentity, finding);
-        }
-      }
-      unresolved = [...latestByIdentity.values()].filter(
-        (finding) => finding.lifecycleState !== "resolved",
-      );
-    }
-  }
-  const activeInbox = Array.isArray(snapshot?.inboxEntries)
-    ? activeC2ZcInboxEntries(snapshot.inboxEntries)
-    : Array.isArray(snapshot?.inbox)
-      ? activeC2ZcInboxEntries(snapshot.inbox)
-      : null;
-  const inboxFindings = snapshot?.inboxFindings;
-  if (!Array.isArray(unresolved) || unresolved.length !== 0) {
-    throw new Error(`${label} has unresolved Finding lifecycle rows`);
-  }
-  if (Array.isArray(activeInbox) && activeInbox.length !== 0) {
-    throw new Error(`${label} Inbox still contains active Findings`);
-  }
-  if (
-    !Array.isArray(activeInbox) &&
-    (!Array.isArray(inboxFindings) || inboxFindings.length !== 0)
-  ) {
-    throw new Error(`${label} Inbox still contains active Findings`);
-  }
-  assertC2ZcFindingResolutionCausality(snapshot, label);
-  return snapshot;
-}
-
-/** Compare every Legacy projection row and value, including nullable fields. */
 export function assertC2ZcLegacyProjectionStable(
   before,
   after,
   label = "C2-ZC Legacy projection",
 ) {
-  if (canonicalJson(before) !== canonicalJson(after)) {
-    throw new Error(
-      `${label} changed; the compatibility projection must remain byte-for-byte stable`,
-    );
+  if (stableJson(before) !== stableJson(after)) {
+    throw new Error(`${label} changed across the lifecycle boundary`);
   }
   return after;
 }
 
-/**
- * Fixture DML is deliberately represented by a typed operation receipt. The
- * receipt is part of the backup contract so the acceptance cannot silently
- * substitute an arbitrary SQL mutation or a count-only observation.
- */
-export function assertC2ZcFixtureOperationReceipt(
-  receipt,
-  expectedKind,
-  { projectId, edgeId, consumerKey } = {},
-  label = `C2-ZC fixture ${expectedKind}`,
-) {
-  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
-    throw new Error(`${label} receipt is missing`);
-  }
-  assertExactKeys(
-    receipt,
-    [
-      "operationCount",
-      "operationDigest",
-      "operations",
-      "beforeCounts",
-      "afterCounts",
-    ],
-    `${label} receipt`,
-  );
-  if (
-    receipt.operationCount !== 1 ||
-    !/^sha256:[0-9a-f]{64}$/.test(receipt.operationDigest) ||
-    !Array.isArray(receipt.operations) ||
-    receipt.operations.length !== 1 ||
-    !Array.isArray(receipt.beforeCounts) ||
-    !Array.isArray(receipt.afterCounts) ||
-    receipt.beforeCounts.length !== 1 ||
-    receipt.afterCounts.length !== 1
-  ) {
-    throw new Error(
-      `${label} receipt must describe exactly one operation and its counts`,
-    );
-  }
-  const entry = receipt.operations[0];
-  assertExactKeys(
-    entry,
-    ["operation", "kind", "operationDigest", "beforeCounts", "afterCounts"],
-    `${label} operation receipt`,
-  );
-  if (
-    entry.kind !== expectedKind ||
-    canonicalJson(entry.operationDigest) !==
-      canonicalJson(sha256Canonical(entry.operation)) ||
-    canonicalJson(entry.beforeCounts) !==
-      canonicalJson(receipt.beforeCounts[0]) ||
-    canonicalJson(entry.afterCounts) !== canonicalJson(receipt.afterCounts[0])
-  ) {
-    throw new Error(`${label} operation digest/count binding is invalid`);
-  }
-  if (expectedKind === "dependency-edge-insert") {
-    const operation = entry.operation;
-    assertExactKeys(
-      operation,
-      [
-        "kind",
-        "id",
-        "projectId",
-        "consumerKind",
-        "consumerKey",
-        "sourceObjectIdentity",
-        "readSetJson",
-        "generatedByTransactionId",
-        "createdAt",
-        "owningRunId",
-      ],
-      `${label} operation`,
-    );
-    if (
-      operation.projectId !== projectId ||
-      operation.id !== edgeId ||
-      operation.consumerKind !== "narrative-extraction-run" ||
-      operation.consumerKey !== consumerKey ||
-      operation.owningRunId !== consumerKey ||
-      operation.generatedByTransactionId !== null ||
-      entry.beforeCounts?.rows !== 0 ||
-      entry.afterCounts?.rows !== 1
-    ) {
-      throw new Error(`${label} is not the exact owned Dependency Edge insert`);
-    }
-  } else if (expectedKind === "dependency-derived-state-gap-delete") {
-    const operation = entry.operation;
-    assertExactKeys(
-      operation,
-      ["kind", "projectId", "edgeId", "consumerKind", "consumerKey"],
-      `${label} operation`,
-    );
-    if (
-      operation.projectId !== projectId ||
-      operation.edgeId !== edgeId ||
-      operation.consumerKind !== "narrative-extraction-run" ||
-      operation.consumerKey !== consumerKey ||
-      canonicalJson(entry.beforeCounts) !==
-        canonicalJson({ edgeStateRows: 1, freshnessRows: 1 }) ||
-      canonicalJson(entry.afterCounts) !==
-        canonicalJson({ edgeStateRows: 0, freshnessRows: 0 })
-    ) {
-      throw new Error(
-        `${label} is not the exact owned derived-state gap delete`,
-      );
-    }
-  } else {
-    throw new Error(`${label} is not a permitted C2-ZC fixture operation kind`);
-  }
-  return receipt;
-}
-
-/**
- * Prove the post-marker typed-writer -> Change Feed -> Generic storage and
- * provenance path from its durable Generic row and completed producer Run.
- * The canonical read function remains Rust-owned because no Electron IPC
- * exposes it; this acceptance assertion deliberately does not fabricate such
- * an IPC call or fall back to Legacy rows.
- */
-export function assertC2ZcGenericFreshnessStorage(
-  snapshot,
-  { projectId, applicationId, epochId },
-  label = "C2-ZC post-marker Generic Freshness storage/provenance",
-) {
-  if (
-    typeof projectId !== "string" ||
-    typeof applicationId !== "string" ||
-    typeof epochId !== "string"
-  ) {
-    throw new Error(
-      `${label} requires project, Application, and Epoch identities`,
-    );
-  }
-  assertC2ZcGenericRowsComplete(snapshot, label, {
-    expectedGenericConsumers: [
-      {
-        projectId,
-        consumerKind: C2ZC_FRESHNESS_CONSUMER_KIND,
-        consumerKey: applicationId,
-        semanticEpochId: epochId,
-      },
-    ],
-  });
-  const genericRows = snapshot?.genericRows ?? snapshot?.generic ?? [];
-  const targetRows = rows(genericRows, `${label} Generic rows`).filter(
-    (candidate) =>
-      (candidate?.applicationId ?? candidate?.consumerKey) === applicationId,
-  );
-  if (targetRows.length !== 1) {
-    throw new Error(
-      `${label} must contain exactly one post-marker Generic Consumer Freshness row`,
-    );
-  }
-  const row = targetRows[0];
-  if (
-    (row.projectId !== undefined && row.projectId !== projectId) ||
-    row.consumerKind !== C2ZC_FRESHNESS_CONSUMER_KIND ||
-    (row.applicationId ?? row.consumerKey) !== applicationId ||
-    row.evidenceFreshness !== "fresh" ||
-    row.buildAction !== "none" ||
-    row.semanticEpochId !== epochId ||
-    typeof row.lastEvaluatedRunId !== "string" ||
-    row.lastEvaluatedRunId.trim() === "" ||
-    typeof row.dependencySetDigest !== "string" ||
-    !dependencyDigestMatchesExpected(
-      row.dependencySetDigest,
-      Array.isArray(snapshot?.dependencyEdges)
-        ? snapshot.dependencyEdges
-            .filter(
-              (edge) =>
-                edge.projectId === projectId &&
-                edge.consumerKind === C2ZC_FRESHNESS_CONSUMER_KIND &&
-                edge.consumerKey === applicationId,
-            )
-            .map((edge) => edge.sourceObjectIdentity)
-        : null,
-    ) ||
-    typeof row.updatedAt !== "string"
-  ) {
-    throw new Error(
-      `${label} Generic row is not current evaluated storage/provenance`,
-    );
-  }
-  parseInstant(row.updatedAt, `${label} Generic updatedAt`);
-  const producer = rows(snapshot?.runs, `${label} producer Runs`).find(
-    (run) => run.id === row.lastEvaluatedRunId,
-  );
-  if (
-    !producer ||
-    producer.projectId !== projectId ||
-    producer.status !== "completed" ||
-    producer.semanticEpochId !== epochId
-  ) {
-    throw new Error(
-      `${label} Generic row is not bound to a completed current-epoch producer Run`,
-    );
-  }
-  if (producer.runKind === "freshness-evaluation") {
-    if (producer.consumerId !== C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID) {
-      throw new Error(
-        `${label} Generic row producer Run has no exact Freshness consumerId`,
-      );
-    }
-    assertC2ZcIncrementalPublisherProvenance(
-      snapshot,
-      row,
-      producer,
-      { projectId, applicationId, epochId },
-      label,
-    );
-  } else if (producer.runKind === "semantic-index-rebuild") {
-    assertC2ZcRebuildPublisherProvenance(
-      snapshot,
-      row,
-      producer,
-      { projectId, epochId },
-      label,
-    );
-  } else {
-    throw new Error(
-      `${label} Generic row producer Run is neither non-idle Freshness nor exact Rebuild`,
-    );
-  }
-  return { row, producer, contract: C2ZC_CANONICAL_FRESHNESS_CONTRACT };
-}
-
-/**
- * Validate the alternate canonical publisher: a completed, current-Epoch
- * Rebuild-Derived lifecycle.  Rebuild does not have a Feed range, so it is
- * accepted only with the strict native maintenance spec/outcome and its
- * exactly-one Task/Attempt terminal contract.
- */
-function assertC2ZcRebuildPublisherProvenance(
-  snapshot,
-  row,
-  producer,
-  { projectId, epochId },
-  label,
-) {
-  if (
-    producer.projectId !== projectId ||
-    producer.runKind !== "semantic-index-rebuild" ||
-    producer.status !== "completed" ||
-    producer.semanticEpochId !== epochId ||
-    producer.workKey !== C2ZC_REBUILD_WORK_KEY ||
-    producer.consumerId !== null
-  ) {
-    throw new Error(`${label} Rebuild publisher identity is invalid`);
-  }
-  const spec = parseObject(producer.specJson, `${label} Rebuild Run specJson`);
-  const marker = c2zcSystemWorkMarker(producer, `${label} Rebuild systemWork`);
-  const baseSpec = { ...spec };
-  if (marker) delete baseSpec.systemWork;
-  if (
-    canonicalJson(baseSpec) !== "{}" ||
-    producer.specDigest !== sha256Json(baseSpec)
-  ) {
-    throw new Error(
-      `${label} Rebuild spec/digest is not the exact empty contract`,
-    );
-  }
-  const outcome = c2zcOutcome(producer, `${label} Rebuild Run`);
-  assertExactKeys(
-    outcome,
-    ["rebuildContractVersion", "semanticEpochId", "summaryDigest", "summary"],
-    `${label} Rebuild outcome`,
-  );
-  if (
-    outcome.rebuildContractVersion !== "1" ||
-    outcome.semanticEpochId !== epochId ||
-    !C2ZC_SHA256_DIGEST.test(outcome.summaryDigest)
-  ) {
-    throw new Error(`${label} Rebuild outcome header is invalid`);
-  }
-  const summary = parseObject(outcome.summary, `${label} Rebuild summary`);
-  assertExactKeys(
-    summary,
-    [
-      "consumersEvaluated",
-      "edgesEvaluated",
-      "consumersSkippedUnresolvableScope",
-      "edgesSkippedUnresolvableScope",
-    ],
-    `${label} Rebuild summary`,
-  );
-  if (
-    Object.values(summary).some(
-      (count) => !Number.isSafeInteger(count) || count < 0,
-    ) ||
-    sha256Canonical(summary) !== outcome.summaryDigest
-  ) {
-    throw new Error(`${label} Rebuild summary/digest is malformed`);
-  }
-  const tasks = rows(producer.tasks, `${label} Rebuild tasks`);
-  if (tasks.length !== 1) {
-    throw new Error(`${label} Rebuild must contain exactly one Task`);
-  }
-  const task = tasks[0];
-  if (
-    task.taskKind !== C2ZC_REBUILD_TASK_KIND ||
-    task.status !== "completed" ||
-    Number(task.attemptCount) !== 1
-  ) {
-    throw new Error(`${label} Rebuild Task lifecycle is invalid`);
-  }
-  const taskInput = parseObject(task.inputJson, `${label} Rebuild Task input`);
-  if (canonicalJson(taskInput) !== canonicalJson(spec)) {
-    throw new Error(`${label} Rebuild Task input is not the exact Run spec`);
-  }
-  const taskOutput = parseObject(
-    task.outputJson,
-    `${label} Rebuild Task output`,
-  );
-  if (canonicalJson(taskOutput) !== canonicalJson(outcome)) {
-    throw new Error(
-      `${label} Rebuild Task output does not match its Run outcome`,
-    );
-  }
-  const attempts = rows(task.attempts, `${label} Rebuild attempts`);
-  if (attempts.length !== 1) {
-    throw new Error(`${label} Rebuild must contain exactly one Attempt`);
-  }
-  const attempt = attempts[0];
-  if (
-    attempt.taskId !== task.id ||
-    Number(attempt.attemptNumber) !== 1 ||
-    attempt.status !== "completed" ||
-    attempt.failureCode !== null ||
-    attempt.retryDisposition !== null ||
-    attempt.policyVersion !== null ||
-    attempt.nextAttemptAt !== null
-  ) {
-    throw new Error(`${label} Rebuild Attempt lifecycle is invalid`);
-  }
-  const attemptOutput = parseObject(
-    attempt.outputJson,
-    `${label} Rebuild Attempt output`,
-  );
-  if (canonicalJson(attemptOutput) !== canonicalJson(outcome)) {
-    throw new Error(
-      `${label} Rebuild Attempt output does not match its Run outcome`,
-    );
-  }
-  for (const [name, value] of [
-    ["Run.createdAt", producer.createdAt],
-    ["Run.startedAt", producer.startedAt],
-    ["Run.completedAt", producer.completedAt],
-    ["Task.createdAt", task.createdAt],
-    ["Task.startedAt", task.startedAt],
-    ["Task.completedAt", task.completedAt],
-    ["Attempt.startedAt", attempt.startedAt],
-    ["Attempt.completedAt", attempt.completedAt],
-  ]) {
-    parseInstant(value, `${label} Rebuild ${name}`);
-  }
-  if (
-    ![
-      [producer.createdAt, producer.startedAt],
-      [task.createdAt, task.startedAt],
-      [producer.createdAt, task.createdAt],
-      [producer.startedAt, task.startedAt],
-      [task.startedAt, attempt.startedAt],
-      [attempt.startedAt, attempt.completedAt],
-      [attempt.completedAt, task.completedAt],
-      [task.completedAt, producer.completedAt],
-    ].every(([left, right]) => compareInstants(left, right) <= 0) ||
-    task.completedAt !== attempt.completedAt ||
-    producer.completedAt !== task.completedAt
-  ) {
-    throw new Error(`${label} Rebuild lifecycle timestamps are not exact`);
-  }
-  return { row, producer, task, attempts, outcome };
-}
-
-/**
- * A Generic row is publishable evidence only when its Freshness Run carries
- * the exact non-idle Feed descriptor and closed Task/Attempt lifecycle that
- * produced it.  This mirrors the shared Rust cutover validator while keeping
- * the Electron journey honest about the route it actually executes: the
- * journey observes typed writer -> Feed -> Generic storage/provenance and
- * never invokes canonical_application_freshness through an invented IPC.
- */
-function assertC2ZcIncrementalPublisherProvenance(
-  snapshot,
-  row,
-  producer,
-  { projectId, applicationId = null, epochId },
-  label,
-) {
-  if (
-    producer.projectId !== projectId ||
-    producer.runKind !== "freshness-evaluation" ||
-    producer.status !== "completed" ||
-    producer.semanticEpochId !== epochId ||
-    producer.consumerId !== C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID
-  ) {
-    throw new Error(`${label} Freshness publisher Run identity is invalid`);
-  }
-  const spec = parseObject(
-    producer.specJson,
-    `${label} publisher Run specJson`,
-  );
-  const marker = c2zcSystemWorkMarker(
-    producer,
-    `${label} publisher Run systemWork`,
-  );
-  if (marker) delete spec.systemWork;
-  assertExactKeys(
-    spec,
-    [
-      "projectId",
-      "fromSequenceExclusive",
-      "throughSequenceInclusive",
-      "eventIds",
-      "affectedObjects",
-      "feedPageDigest",
-    ],
-    `${label} publisher Run Feed descriptor`,
-  );
-  const fromSequence = spec.fromSequenceExclusive;
-  const throughSequence = spec.throughSequenceInclusive;
-  if (
-    spec.projectId !== projectId ||
-    !Number.isSafeInteger(fromSequence) ||
-    fromSequence < 0 ||
-    !Number.isSafeInteger(throughSequence) ||
-    throughSequence <= fromSequence ||
-    !Array.isArray(spec.eventIds) ||
-    spec.eventIds.length === 0 ||
-    spec.eventIds.some(
-      (eventId) => typeof eventId !== "string" || eventId.trim() === "",
-    ) ||
-    !Array.isArray(spec.affectedObjects) ||
-    spec.affectedObjects.some(
-      (objectId) => typeof objectId !== "string" || objectId.trim() === "",
-    ) ||
-    !C2ZC_SHA256_DIGEST.test(spec.feedPageDigest) ||
-    typeof producer.specDigest !== "string" ||
-    producer.specDigest !== sha256Json(spec)
-  ) {
-    throw new Error(
-      `${label} publisher Run does not carry the exact current Feed descriptor/digest`,
-    );
-  }
-  const expectedWorkKey = `incremental-freshness:${epochId}:${fromSequence}:${throughSequence}:${producer.specDigest.slice("sha256:".length)}`;
-  if (producer.workKey !== expectedWorkKey) {
-    throw new Error(`${label} publisher Run workKey is not Feed-bound`);
-  }
-
-  const outcome = c2zcOutcome(producer, `${label} publisher Run`);
-  assertExactKeys(
-    outcome,
-    [
-      "projectId",
-      "runId",
-      "fromSequenceExclusive",
-      "throughSequenceInclusive",
-      "affectedEdgeCount",
-      "affectedConsumerCount",
-      "hasMore",
-    ],
-    `${label} publisher Run outcome`,
-  );
-  if (
-    outcome.projectId !== projectId ||
-    outcome.runId !== producer.id ||
-    outcome.fromSequenceExclusive !== fromSequence ||
-    outcome.throughSequenceInclusive !== throughSequence ||
-    !Number.isSafeInteger(outcome.affectedEdgeCount) ||
-    outcome.affectedEdgeCount <= 0 ||
-    !Number.isSafeInteger(outcome.affectedConsumerCount) ||
-    outcome.affectedConsumerCount <= 0 ||
-    typeof outcome.hasMore !== "boolean"
-  ) {
-    throw new Error(`${label} publisher Run outcome is idle or malformed`);
-  }
-  const tasks = rows(producer.tasks, `${label} publisher Run tasks`);
-  if (tasks.length !== 1) {
-    throw new Error(`${label} publisher Run must contain exactly one Task`);
-  }
-  const task = tasks[0];
-  if (
-    task.taskKind !== C2ZC_INCREMENTAL_FRESHNESS_TASK_KIND ||
-    task.status !== "completed" ||
-    !Number.isSafeInteger(Number(task.attemptCount)) ||
-    Number(task.attemptCount) <= 0
-  ) {
-    throw new Error(
-      `${label} publisher Task is not a completed Freshness batch`,
-    );
-  }
-  const taskInput = parseObject(
-    task.inputJson,
-    `${label} publisher Task inputJson`,
-  );
-  assertExactKeys(
-    taskInput,
-    ["changeSetId", "fromSequenceExclusive", "throughSequenceInclusive"],
-    `${label} publisher Task input`,
-  );
-  if (
-    typeof taskInput.changeSetId !== "string" ||
-    taskInput.changeSetId.trim() === "" ||
-    taskInput.fromSequenceExclusive !== fromSequence ||
-    taskInput.throughSequenceInclusive !== throughSequence
-  ) {
-    throw new Error(`${label} publisher Task input is not Feed-bound`);
-  }
-  if (
-    canonicalJson(
-      parseObject(task.outputJson, `${label} publisher Task output`),
-    ) !== canonicalJson(outcome)
-  ) {
-    throw new Error(
-      `${label} publisher Task output does not match its Run outcome`,
-    );
-  }
-
-  const changeSet = rows(
-    snapshot?.changeSets,
-    `${label} publisher Change Sets`,
-  ).find(
-    (candidate) =>
-      candidate.changeSetId === taskInput.changeSetId &&
-      candidate.projectId === projectId,
-  );
-  if (!changeSet) {
-    throw new Error(`${label} publisher Change Set is missing`);
-  }
-  const sealedEventIds = parseArray(
-    changeSet.eventIdsJson,
-    `${label} publisher Change Set eventIdsJson`,
-  );
-  if (
-    changeSet.fromSequenceExclusive !== fromSequence ||
-    changeSet.throughSequenceInclusive !== throughSequence ||
-    changeSet.digest !== producer.specDigest ||
-    canonicalJson(sealedEventIds) !== canonicalJson(spec.eventIds) ||
-    !C2ZC_SHA256_DIGEST.test(String(changeSet.digest))
-  ) {
-    throw new Error(`${label} publisher Change Set is not bound to its Run`);
-  }
-  const liveEvents = rows(
-    snapshot?.feedEvents,
-    `${label} publisher Feed events`,
-  )
-    .filter(
-      (event) =>
-        event.canonicalSequence > fromSequence &&
-        event.canonicalSequence <= throughSequence,
-    )
-    .sort(
-      (left, right) =>
-        left.canonicalSequence - right.canonicalSequence ||
-        left.eventOrdinal - right.eventOrdinal ||
-        String(left.eventId).localeCompare(String(right.eventId)),
-    );
-  if (
-    canonicalJson(liveEvents.map((event) => event.eventId)) !==
-    canonicalJson(spec.eventIds)
-  ) {
-    throw new Error(`${label} publisher live Feed range is not Run-bound`);
-  }
-  if (applicationId !== null) {
-    const targetEdges = rows(
-      snapshot?.dependencyEdges,
-      `${label} publisher Dependency Edges`,
-    ).filter(
-      (edge) =>
-        edge.projectId === projectId &&
-        edge.consumerKind === C2ZC_FRESHNESS_CONSUMER_KIND &&
-        edge.consumerKey === applicationId &&
-        typeof edge.sourceObjectIdentity === "string" &&
-        edge.sourceObjectIdentity.trim() !== "",
-    );
-    const affectedObjects = parseArray(
-      changeSet.affectedObjectsJson,
-      `${label} publisher Change Set affectedObjectsJson`,
-    );
-    if (
-      affectedObjects.some(
-        (objectId) => typeof objectId !== "string" || objectId.trim() === "",
-      ) ||
-      !targetEdges.some((edge) =>
-        affectedObjects.includes(edge.sourceObjectIdentity),
-      )
-    ) {
-      throw new Error(
-        `${label} publisher range does not contain source/full-graph evidence for the target Application`,
-      );
-    }
-  }
-
-  const attempts = rows(task.attempts, `${label} publisher Task attempts`);
-  if (attempts.length !== Number(task.attemptCount)) {
-    throw new Error(`${label} publisher Task attempt count is not exact`);
-  }
-  for (const [index, attempt] of attempts.entries()) {
-    if (
-      attempt.taskId !== task.id ||
-      Number(attempt.attemptNumber) !== index + 1 ||
-      !["failed", "completed"].includes(attempt.status)
-    ) {
-      throw new Error(`${label} publisher Attempt topology is invalid`);
-    }
-    parseInstant(attempt.startedAt, `${label} publisher Attempt.startedAt`);
-    parseInstant(attempt.completedAt, `${label} publisher Attempt.completedAt`);
-    if (attempt.status === "failed") {
-      if (
-        attempt.outputJson !== null ||
-        typeof attempt.failureCode !== "string" ||
-        !attempt.failureCode.startsWith("NEX_") ||
-        !["retryable", "terminal"].includes(attempt.retryDisposition) ||
-        attempt.policyVersion !== "v1" ||
-        index === attempts.length - 1
-      ) {
-        throw new Error(
-          `${label} publisher failed Attempt metadata is invalid`,
-        );
-      }
-    } else if (
-      index !== attempts.length - 1 ||
-      attempt.failureCode !== null ||
-      attempt.retryDisposition !== null ||
-      attempt.policyVersion !== null ||
-      attempt.nextAttemptAt !== null ||
-      canonicalJson(
-        parseObject(attempt.outputJson, `${label} publisher Attempt output`),
-      ) !== canonicalJson(outcome)
-    ) {
-      throw new Error(
-        `${label} publisher completed Attempt output/lifecycle is invalid`,
-      );
-    }
-  }
-  if (attempts.at(-1)?.status !== "completed") {
-    throw new Error(`${label} publisher Run has no completed final Attempt`);
-  }
-  for (const [name, value] of [
-    ["Run.createdAt", producer.createdAt],
-    ["Run.startedAt", producer.startedAt],
-    ["Run.completedAt", producer.completedAt],
-    ["Task.createdAt", task.createdAt],
-    ["Task.startedAt", task.startedAt],
-    ["Task.completedAt", task.completedAt],
-  ]) {
-    parseInstant(value, `${label} publisher ${name}`);
-  }
-  return { row, producer, task, attempts, outcome };
-}
-
-/** Require one current-Epoch, non-idle Freshness publisher for a Feed event. */
-export function assertC2ZcNonIdleFreshnessProducer(
-  snapshot,
-  { projectId, epochId, eventId },
-  label = "C2-ZC Freshness producer",
-) {
-  const candidates = rows(snapshot?.runs, `${label} Runs`)
-    .filter(
-      (run) =>
-        run.runKind === "freshness-evaluation" &&
-        run.status === "completed" &&
-        run.semanticEpochId === epochId &&
-        run.consumerId === C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
-    )
-    .reverse();
-  for (const producer of candidates) {
-    try {
-      const spec = parseObject(producer.specJson, `${label} specJson`);
-      if (!parseArray(spec.eventIds, `${label} eventIds`).includes(eventId)) {
-        continue;
-      }
-      assertC2ZcIncrementalPublisherProvenance(
-        snapshot,
-        {},
-        producer,
-        { projectId, applicationId: null, epochId },
-        label,
-      );
-      return producer;
-    } catch {
-      // Keep searching only among current-Epoch Freshness Runs. A malformed
-      // candidate is not evidence for another run and is reported below.
-    }
-  }
-  throw new Error(
-    `${label} has no valid current-Epoch non-idle publisher containing Feed event '${eventId}'`,
-  );
-}
-
-function genericConsumerIdentity(consumer, label, index, currentEpochId) {
-  if (
-    !consumer ||
-    typeof consumer.projectId !== "string" ||
-    consumer.projectId.trim() === "" ||
-    consumer.consumerKind !== C2ZC_FRESHNESS_CONSUMER_KIND ||
-    typeof consumer.consumerKey !== "string" ||
-    consumer.consumerKey.trim() === "" ||
-    typeof consumer.semanticEpochId !== "string" ||
-    consumer.semanticEpochId.trim() === ""
-  ) {
-    throw new Error(`${label} expected consumer ${index} is invalid`);
-  }
-  if (
-    currentEpochId !== undefined &&
-    consumer.semanticEpochId !== currentEpochId
-  ) {
-    throw new Error(`${label} expected consumer ${index} is not current-Epoch`);
-  }
-  return `${consumer.projectId}\0${consumer.consumerKind}\0${consumer.consumerKey}`;
-}
-
-function canonicalGenericConsumerSet(consumers, label, currentEpochId) {
-  if (!Array.isArray(consumers)) {
-    throw new Error(`${label} expected Generic consumer set is missing`);
-  }
-  const keys = consumers.map((consumer, index) =>
-    genericConsumerIdentity(consumer, label, index, currentEpochId),
-  );
-  if (new Set(keys).size !== keys.length) {
-    throw new Error(`${label} expected consumer set contains a duplicate`);
-  }
-  return keys.sort();
-}
-
-function deriveC2ZcGenericConsumers(
-  snapshot,
-  label,
-  expectedGenericConsumers = null,
-) {
-  const currentEpochId = snapshot?.epochs?.at(-1)?.id;
-  const snapshotProjectId = snapshot?.projectId;
-  const derivedByCanonicalKey = new Map();
-  if (Array.isArray(snapshot?.dependencyEdges)) {
-    for (const [index, edge] of snapshot.dependencyEdges.entries()) {
-      if (
-        edge?.consumerKind !== C2ZC_FRESHNESS_CONSUMER_KIND ||
-        (snapshotProjectId !== undefined &&
-          edge.projectId !== snapshotProjectId)
-      ) {
-        continue;
-      }
-      const consumer = {
-        projectId: edge.projectId,
-        consumerKind: edge.consumerKind,
-        consumerKey: edge.consumerKey,
-        semanticEpochId: currentEpochId,
-      };
-      const canonicalKey = genericConsumerIdentity(
-        consumer,
-        label,
-        index,
-        currentEpochId,
-      );
-      // Multiple source edges can point to one Application. Generic storage
-      // is consumer-keyed, so derive that consumer exactly once while still
-      // rejecting duplicate declarations in expectedGenericConsumers below.
-      if (!derivedByCanonicalKey.has(canonicalKey)) {
-        derivedByCanonicalKey.set(canonicalKey, consumer);
-      }
-    }
-  }
-  const derived = [...derivedByCanonicalKey.values()];
-  const derivedKeys = canonicalGenericConsumerSet(
-    derived,
-    label,
-    currentEpochId,
-  );
-  if (Object.hasOwn(snapshot ?? {}, "expectedGenericConsumers")) {
-    const reportedKeys = canonicalGenericConsumerSet(
-      snapshot.expectedGenericConsumers,
-      label,
-      currentEpochId,
-    );
-    if (canonicalJson(reportedKeys) !== canonicalJson(derivedKeys)) {
-      throw new Error(
-        `${label} expected Generic consumer set does not exactly match dependency Edges`,
-      );
-    }
-  }
-  if (expectedGenericConsumers !== null) {
-    const requestedKeys = canonicalGenericConsumerSet(
-      expectedGenericConsumers,
-      label,
-      currentEpochId,
-    );
-    if (canonicalJson(requestedKeys) !== canonicalJson(derivedKeys)) {
-      throw new Error(
-        `${label} requested Generic consumer set does not exactly match dependency Edges`,
-      );
-    }
-  }
-  return derived;
-}
-
-/** Ensure the snapshot carries every durable Generic Consumer Freshness value. */
 export function assertC2ZcGenericRowsComplete(
   snapshot,
-  label = "C2-ZC Generic Consumer Freshness",
-  { expectedGenericConsumers = null } = {},
+  label = "C2-ZC Generic storage",
 ) {
-  const genericRows = rows(
-    snapshot?.genericRows ?? snapshot?.generic ?? [],
-    `${label} rows`,
-  );
-  const currentEpochId = snapshot?.epochs?.at(-1)?.id;
-  const snapshotProjectId = snapshot?.projectId;
-  const expectedConsumers = deriveC2ZcGenericConsumers(
-    snapshot,
-    label,
-    expectedGenericConsumers,
-  );
-  const expectedKeys = new Set(
-    expectedConsumers.map((consumer) =>
-      genericConsumerIdentity(consumer, label, "derived", currentEpochId),
-    ),
-  );
-  if (genericRows.length !== expectedConsumers.length) {
-    throw new Error(
-      `${label} rows do not exactly match the expected consumer set`,
-    );
-  }
-  const observedKeys = new Set();
+  const genericRows = rows(snapshot?.genericRows, `${label} rows`);
   for (const [index, row] of genericRows.entries()) {
-    assertExactKeys(
-      row,
-      [
-        "projectId",
-        "consumerKind",
-        "consumerKey",
-        "evidenceFreshness",
-        "buildAction",
-        "semanticEpochId",
-        "lastEvaluatedRunId",
-        "dependencySetDigest",
-        "updatedAt",
-      ],
-      `${label} row ${index}`,
-    );
-    if (
-      typeof row.projectId !== "string" ||
-      row.projectId.trim() === "" ||
-      row.consumerKind !== C2ZC_FRESHNESS_CONSUMER_KIND ||
-      typeof row.consumerKey !== "string" ||
-      row.consumerKey.trim() === "" ||
-      !new Set([
-        "fresh",
-        "stale",
-        "source-missing",
-        "anchor-mismatch",
-        "read-set-drift",
-        "unknown",
-      ]).has(row.evidenceFreshness) ||
-      !new Set([
-        "none",
-        "revalidate-exact",
-        "reanchor-candidate",
-        "resolve-only",
-        "recompile-only",
-        "rebuild-required",
-        "refresh-available",
-        "manual",
-      ]).has(row.buildAction) ||
-      typeof row.semanticEpochId !== "string" ||
-      row.semanticEpochId.trim() === "" ||
-      (snapshotProjectId !== undefined &&
-        row.projectId !== snapshotProjectId) ||
-      (currentEpochId !== undefined &&
-        row.semanticEpochId !== currentEpochId) ||
-      typeof row.lastEvaluatedRunId !== "string" ||
-      row.lastEvaluatedRunId.trim() === "" ||
-      typeof row.dependencySetDigest !== "string" ||
-      !dependencyDigestMatchesExpected(
-        row.dependencySetDigest,
-        Array.isArray(snapshot?.dependencyEdges)
-          ? snapshot.dependencyEdges
-              .filter(
-                (edge) =>
-                  edge.projectId === row.projectId &&
-                  edge.consumerKind === row.consumerKind &&
-                  edge.consumerKey === row.consumerKey,
-              )
-              .map((edge) => edge.sourceObjectIdentity)
-          : null,
-      ) ||
-      typeof row.updatedAt !== "string"
-    ) {
-      throw new Error(`${label} row ${index} has incomplete durable values`);
+    for (const field of C2ZC_CANONICAL_FRESHNESS_CONTRACT.requiredEvidence) {
+      if (
+        row[field] === undefined ||
+        row[field] === null ||
+        row[field] === ""
+      ) {
+        throw new Error(`${label} row ${index} is missing ${field}`);
+      }
     }
-    const key = `${row.projectId}\0${row.consumerKind}\0${row.consumerKey}`;
-    if (!expectedKeys.has(key) || observedKeys.has(key)) {
+    if (row.consumerKind !== C2ZC_FRESHNESS_CONSUMER_KIND) {
       throw new Error(
-        `${label} row ${index} is not an exact expected consumer`,
-      );
-    }
-    const expectedConsumer = expectedConsumers.find(
-      (consumer) =>
-        consumer.projectId === row.projectId &&
-        consumer.consumerKind === row.consumerKind &&
-        consumer.consumerKey === row.consumerKey,
-    );
-    if (
-      !expectedConsumer ||
-      expectedConsumer.semanticEpochId !== row.semanticEpochId
-    ) {
-      throw new Error(
-        `${label} row ${index} is not bound to the current expected Epoch`,
-      );
-    }
-    observedKeys.add(key);
-    parseInstant(row.updatedAt, `${label} row ${index} updatedAt`);
-    const producer = rows(snapshot?.runs, `${label} producer Runs`).find(
-      (run) => run.id === row.lastEvaluatedRunId,
-    );
-    if (!producer) {
-      throw new Error(
-        `${label} row ${index} references a missing producer Run`,
-      );
-    }
-    if (producer.runKind === "freshness-evaluation") {
-      assertC2ZcIncrementalPublisherProvenance(
-        snapshot,
-        row,
-        producer,
-        {
-          projectId: row.projectId,
-          applicationId: row.consumerKey,
-          epochId: row.semanticEpochId,
-        },
-        `${label} row ${index}`,
-      );
-    } else if (
-      producer.runKind !== "semantic-index-rebuild" ||
-      producer.status !== "completed" ||
-      producer.semanticEpochId !== row.semanticEpochId
-    ) {
-      throw new Error(`${label} row ${index} has an invalid producer Run kind`);
-    } else {
-      assertC2ZcRebuildPublisherProvenance(
-        snapshot,
-        row,
-        producer,
-        {
-          projectId: row.projectId,
-          epochId: row.semanticEpochId,
-        },
-        `${label} row ${index}`,
+        `${label} row ${index} is not an Application Consumer row`,
       );
     }
   }
   return genericRows;
 }
 
-/**
- * Validate the shared settled-project boundary. The cutover lane may contain
- * both restored E0 and current E1, while a newly-created post-marker project
- * must retain exactly its initial E0. Epoch/pending checks alone are
- * intentionally insufficient: a completed Run without the production Verify
- * payload can otherwise look settled. A project with no current application
- * consumers is valid; its Generic table must then be exactly empty. The
- * post-marker typed Application path applies its separate one-row requirement
- * after the typed producer is created.
- */
-function assertC2ZcSettledProject(
+export function assertC2ZcGenericFreshnessStorage(
   snapshot,
-  label,
-  { requireSingleInitialEpoch = false } = {},
+  { projectId, applicationId, epochId } = {},
+  label = "C2-ZC Generic storage",
 ) {
-  assertC2ZcMarkerExactlyOnce(snapshot, `${label} marker`);
-  const epochs = rows(snapshot?.epochs, `${label} Epochs`);
-  if (
-    (requireSingleInitialEpoch && epochs.length !== 1) ||
-    (!requireSingleInitialEpoch && epochs.length === 0)
-  ) {
-    throw new Error(
-      requireSingleInitialEpoch
-        ? `${label} must retain exactly one initial Epoch`
-        : `${label} must retain a current Semantic Epoch`,
-    );
-  }
-  const pending = snapshot?.pendingRuns ?? snapshot?.pendingOrRunningRuns;
-  if (!Array.isArray(pending)) {
-    throw new Error(`${label} is missing its pending or running Run evidence`);
-  }
-  if (pending.length !== 0) {
-    throw new Error(
-      `${label} is not settled: pending or running maintenance remains`,
-    );
-  }
-  if (snapshot?.projectSettled !== true) {
-    throw new Error(`${label} did not reach the settled project boundary`);
-  }
-  const verifyRunId = snapshot?.verifyRunId;
-  if (typeof verifyRunId !== "string" || verifyRunId.trim() === "") {
-    throw new Error(`${label} requires a completed current-Epoch Verify Run`);
-  }
-  const currentEpochId = epochs.at(-1)?.id;
-  const verifyRun = rows(snapshot?.runs, `${label} Runs`).find(
-    (run) => run.id === verifyRunId,
+  requireText(projectId, `${label} projectId`);
+  requireText(applicationId, `${label} applicationId`);
+  requireText(epochId, `${label} epochId`);
+  const candidates = rows(snapshot?.genericRows, `${label} rows`).filter(
+    (row) =>
+      row.projectId === projectId &&
+      row.consumerKind === C2ZC_FRESHNESS_CONSUMER_KIND &&
+      row.consumerKey === applicationId,
   );
-  if (
-    !verifyRun ||
-    verifyRun.runKind !== "dependency-verify" ||
-    verifyRun.status !== "completed" ||
-    verifyRun.semanticEpochId !== currentEpochId
-  ) {
-    throw new Error(
-      `${label} verifyRunId must identify a completed current-Epoch Verify Run`,
-    );
+  if (candidates.length !== 1) {
+    throw new Error(`${label} must contain exactly one targeted Generic row`);
   }
-  assertC2ZcVerifyCoverage(verifyRun, `${label} Verify`);
-  assertC2ZcSemanticIndexZero(verifyRun, `${label} Verify Semantic Index`);
-  assertC2ZcGenericRowsComplete(snapshot, label);
-  assertC2ZcFeedCursorSettled(
-    snapshot,
-    { epochId: currentEpochId },
-    `${label} Change Feed cursor`,
-  );
-  assertC2ZcFindingInboxEmpty(snapshot, label);
-  const repairRuns = rows(snapshot.runs, `${label} Runs`).filter(
-    (run) => run.runKind === "dependency-repair",
-  );
-  if (repairRuns.length !== 0) {
-    throw new Error(`${label} must not contain a dependency-repair Run`);
+  const row = candidates[0];
+  if (row.semanticEpochId !== epochId) {
+    throw new Error(`${label} row is not bound to the current Semantic Epoch`);
   }
-  return requireSingleInitialEpoch ? epochs[0] : epochs.at(-1);
+  assertC2ZcGenericRowsComplete({ genericRows: [row] }, label);
+  return row;
 }
 
-/** A post-marker project must settle with its one initial Epoch. */
-export function assertC2ZcPostMarkerProjectSettled(
+export function assertC2ZcFeedCursorSettled(
   snapshot,
-  label = "C2-ZC post-marker project",
+  { epochId } = {},
+  label = "C2-ZC Change Feed cursor",
 ) {
-  return assertC2ZcSettledProject(snapshot, label, {
-    requireSingleInitialEpoch: true,
-  });
-}
-
-const C2ZC_HELD_FRESHNESS_TYPE =
-  "grimodex:narrative-maintenance-ci-held-freshness";
-const C2ZC_UUID_V4 =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const C2ZC_HELD_RECEIPT_KEYS = [
-  "version",
-  "type",
-  "nonce",
-  "requestNonce",
-  "phase",
-  "requestedAt",
-  "sequence",
-  "observedAt",
-  "monotonicObservedAtMs",
-  "workspaceBinding",
-  "freshness",
-  "state",
-  "stateDigest",
-];
-const C2ZC_HELD_FRESHNESS_KEYS = [
-  "cycleGeneration",
-  "requestBarrierCycleGeneration",
-  "requestPublishedAtMs",
-  "cycleStartedAtMs",
-  "observedAtMs",
-  "inFlight",
-  "hasMore",
-  "noWrite",
-  "heldProjectId",
-  "cutoverNotReady",
-  "wakePending",
-  "timerScheduled",
-  "nextCycleGuardStateDigest",
-];
-
-function assertC2ZcHeldWorkspaceBinding(value, expected, label) {
+  const cursor = snapshot?.feedCursor;
+  if (!isObject(cursor)) throw new Error(`${label} is missing its cursor`);
   if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    JSON.stringify(Object.keys(value).sort()) !==
-      JSON.stringify(["authorityId", "generation"]) ||
-    typeof value.authorityId !== "string" ||
-    value.authorityId.trim() !== value.authorityId ||
-    value.authorityId.length === 0 ||
-    !Number.isSafeInteger(value.generation) ||
-    value.generation <= 0
+    cursor.lastError !== null &&
+    cursor.lastError !== undefined &&
+    cursor.lastError !== ""
   ) {
-    throw new Error(`${label} workspace binding is invalid`);
+    throw new Error(`${label} has a persisted error`);
   }
   if (
-    expected !== undefined &&
-    canonicalJson(value) !== canonicalJson(expected)
+    Number(cursor.acknowledgedThrough) !== Number(cursor.feedHead) ||
+    cursor.reservedThrough !== null ||
+    cursor.activeRunId !== null
   ) {
-    throw new Error(`${label} workspace binding does not match the request`);
+    throw new Error(`${label} is not fully acknowledged`);
+  }
+  if (epochId !== undefined && cursor.semanticEpochId !== null) {
+    throw new Error(`${label} retains an active Semantic Epoch`);
+  }
+  return cursor;
+}
+
+function assertPositiveInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive integer`);
   }
   return value;
 }
 
-function normalizeC2ZcHeldCursor(cursor, label) {
-  if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) {
-    throw new Error(`${label} cursor is missing`);
+function assertNonNegativeInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
   }
-  const cursorKeys = Object.keys(cursor).sort();
-  const expectedCursorKeys = [
-    "acknowledgedThrough",
-    "activeRunId",
-    "lastError",
-    "reservedThrough",
-    "semanticEpochId",
-  ];
-  if (
-    JSON.stringify(cursorKeys) !== JSON.stringify(expectedCursorKeys) &&
-    JSON.stringify(cursorKeys) !==
-      JSON.stringify(["projectId", ...expectedCursorKeys].sort())
-  ) {
-    throw new Error(`${label} cursor has unexpected keys`);
-  }
-  const normalized = {
-    acknowledgedThrough: cursor.acknowledgedThrough,
-    reservedThrough:
-      cursor.reservedThrough === null || cursor.reservedThrough === undefined
-        ? null
-        : cursor.reservedThrough,
-    activeRunId: cursor.activeRunId ?? null,
-    semanticEpochId: cursor.semanticEpochId ?? null,
-    lastError: cursor.lastError ?? null,
-  };
-  if (
-    !Number.isSafeInteger(normalized.acknowledgedThrough) ||
-    normalized.acknowledgedThrough < 0 ||
-    (normalized.reservedThrough !== null &&
-      (!Number.isSafeInteger(normalized.reservedThrough) ||
-        normalized.reservedThrough < 0)) ||
-    ["activeRunId", "semanticEpochId", "lastError"].some(
-      (key) =>
-        normalized[key] !== null &&
-        (typeof normalized[key] !== "string" ||
-          normalized[key].trim() !== normalized[key] ||
-          normalized[key].length === 0),
-    )
-  ) {
-    throw new Error(`${label} cursor is invalid`);
-  }
-  return normalized;
+  return value;
 }
 
-/**
- * Validate the main sidecar as a pre-marker held-Freshness event only.
- * This evidence proves the selected secondary project was held while A/B
- * inventory and cursors were observed. It is intentionally not a cutover,
- * workspace-wide, or post-marker settlement receipt.
- */
-export function assertC2ZcPreMarkerHeldEvidence(
-  event,
-  {
-    requestNonce,
-    phase,
-    workspaceBinding,
-    secondaryProjectId,
-    projectInventory,
-    label = "C2-ZC pre-marker held Freshness",
-  } = {},
+function assertFixtureGitObjectId(value, label) {
+  if (typeof value !== "string" || !C2ZC_FIXTURE_GIT_OBJECT_ID.test(value)) {
+    throw new Error(`${label} must be a lowercase Git object ID`);
+  }
+  return value;
+}
+
+function assertFixtureSha256(value, label) {
+  if (typeof value !== "string" || !C2ZC_FIXTURE_SHA256.test(value)) {
+    throw new Error(`${label} must be a sha256 digest`);
+  }
+  return value;
+}
+
+function assertFixtureArtifactPath(value, label) {
+  requireText(value, label);
+  if (
+    path.isAbsolute(value) ||
+    value !== path.basename(value) ||
+    value === "." ||
+    value === ".." ||
+    value.split(/[\\/]/u).some((part) => part === "." || part === "..")
+  ) {
+    throw new Error(`${label} must be a relative file name`);
+  }
+  return value;
+}
+
+function assertC2ZcFixtureCandidate(candidate, label) {
+  if (!isObject(candidate)) throw new Error(`${label} must be an object`);
+  assertExactKeys(candidate, C2ZC_RESTORE_FIXTURE_CANDIDATE_KEYS, label);
+  requireText(candidate.requested, `${label}.requested`);
+  for (const field of [
+    "resolvedHeadSha",
+    "resolvedTreeSha",
+    "headSha",
+    "treeSha",
+  ]) {
+    assertFixtureGitObjectId(candidate[field], `${label}.${field}`);
+  }
+  if (
+    candidate.resolvedHeadSha !== candidate.headSha ||
+    candidate.resolvedTreeSha !== candidate.treeSha
+  ) {
+    throw new Error(`${label} head/tree aliases do not match resolved values`);
+  }
+  if (candidate.clean !== true) {
+    throw new Error(`${label}.clean must be true`);
+  }
+  assertFixtureSha256(candidate.statusSha256, `${label}.statusSha256`);
+  return candidate;
+}
+
+function assertC2ZcFixtureArtifact(artifact, label) {
+  if (!isObject(artifact)) throw new Error(`${label} must be an object`);
+  assertExactKeys(artifact, C2ZC_RESTORE_FIXTURE_ARTIFACT_KEYS, label);
+  assertFixtureArtifactPath(artifact.path, `${label}.path`);
+  assertFixtureSha256(artifact.sha256, `${label}.sha256`);
+  assertNonNegativeInteger(artifact.sizeBytes, `${label}.sizeBytes`);
+  return artifact;
+}
+
+function assertC2ZcFixtureSemantic(semantic, label) {
+  if (!isObject(semantic)) throw new Error(`${label} must be an object`);
+  assertExactKeys(semantic, C2ZC_RESTORE_FIXTURE_SEMANTIC_KEYS, label);
+  for (const field of ["projectId", "sceneId", "ownerRunId"]) {
+    requireText(semantic[field], `${label}.${field}`);
+  }
+  for (const field of [
+    "projectCount",
+    "e0Count",
+    "completedBackfillCount",
+    "dependencyEdgeCount",
+    "edgeStateCount",
+    "ownerFreshnessCount",
+    "semanticIndexRows",
+  ]) {
+    assertNonNegativeInteger(semantic[field], `${label}.${field}`);
+  }
+  if (
+    semantic.projectCount !== 1 ||
+    semantic.e0Count !== 1 ||
+    semantic.completedBackfillCount !== 1 ||
+    semantic.dependencyEdgeCount !== 1 ||
+    semantic.edgeStateCount !== 0 ||
+    semantic.ownerFreshnessCount !== 0 ||
+    semantic.semanticIndexRows !== 0 ||
+    semantic.cursorSettled !== true
+  ) {
+    throw new Error(
+      `${label} is not the required pre-cutover derived-state gap`,
+    );
+  }
+  for (const field of [
+    "sceneSourceRevision",
+    "edgeSourceObjectIdentity",
+    "edgeReadSetJson",
+  ]) {
+    requireText(semantic[field], `${label}.${field}`);
+  }
+  for (const field of [
+    "projectDigest",
+    "sceneDigest",
+    "epochDigest",
+    "backfillDigest",
+    "edgeDigest",
+    "feedCursorDigest",
+    "contentsDigest",
+  ]) {
+    assertFixtureSha256(semantic[field], `${label}.${field}`);
+  }
+  for (const field of [
+    "project",
+    "epoch",
+    "backfill",
+    "edge",
+    "feedCursor",
+    "derivedStateGap",
+    "semanticIndex",
+    "expectedRestoreLifecycle",
+  ]) {
+    if (!isObject(semantic[field])) {
+      throw new Error(`${label}.${field} must be an object`);
+    }
+  }
+  return semantic;
+}
+
+/** Validate the exact output contract of the Rust offline fixture builder. */
+export function assertC2ZcRestoreFixtureManifest(
+  manifest,
+  label = "C2-ZC restore fixture manifest",
 ) {
-  const receipt = event?.receipt ?? event;
-  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
-    throw new Error(`${label} event is missing`);
+  if (!isObject(manifest)) throw new Error(`${label} must be an object`);
+  assertExactKeys(manifest, C2ZC_RESTORE_FIXTURE_MANIFEST_KEYS, label);
+  if (manifest.manifestVersion !== C2ZC_RESTORE_FIXTURE_MANIFEST_VERSION) {
+    throw new Error(`${label} manifestVersion is unsupported`);
   }
-  assertExactKeys(receipt, C2ZC_HELD_RECEIPT_KEYS, `${label} receipt`);
-  if (receipt.type !== C2ZC_HELD_FRESHNESS_TYPE) {
-    throw new Error(`${label} has an invalid event type`);
+  if (manifest.contractVersion !== C2ZC_RESTORE_FIXTURE_CONTRACT_VERSION) {
+    throw new Error(`${label} contractVersion is unsupported`);
   }
-  if (
-    typeof requestNonce !== "string" ||
-    requestNonce.trim() === "" ||
-    !C2ZC_UUID_V4.test(requestNonce) ||
-    receipt.requestNonce !== requestNonce
-  ) {
-    throw new Error(`${label} requestNonce does not match the request`);
-  }
-  if (
-    typeof phase !== "string" ||
-    phase.trim() === "" ||
-    phase.length > 256 ||
-    phase.includes("\u0000") ||
-    receipt.phase !== phase
-  ) {
-    throw new Error(`${label} phase does not match the request`);
-  }
-  if (
-    receipt.version !== 1 ||
-    typeof receipt.nonce !== "string" ||
-    receipt.nonce.trim() !== receipt.nonce ||
-    receipt.nonce.length === 0 ||
-    !C2ZC_UUID_V4.test(receipt.nonce) ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(
-      receipt.requestedAt,
-    ) ||
-    !Number.isSafeInteger(receipt.sequence) ||
-    receipt.sequence <= 0 ||
-    typeof receipt.observedAt !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(
-      receipt.observedAt,
-    ) ||
-    Date.parse(receipt.observedAt) < Date.parse(receipt.requestedAt) ||
-    !Number.isSafeInteger(receipt.monotonicObservedAtMs) ||
-    receipt.monotonicObservedAtMs < 0 ||
-    !/^sha256:[0-9a-f]{64}$/u.test(receipt.stateDigest)
-  ) {
-    throw new Error(`${label} receipt header is invalid`);
-  }
-  assertC2ZcHeldWorkspaceBinding(
-    receipt.workspaceBinding,
-    workspaceBinding,
-    label,
-  );
-  const freshness = receipt.freshness;
-  if (!freshness || typeof freshness !== "object" || Array.isArray(freshness)) {
-    throw new Error(`${label} is missing the exact held Freshness observation`);
-  }
-  assertExactKeys(freshness, C2ZC_HELD_FRESHNESS_KEYS, `${label} freshness`);
-  const requestedAtMs = Date.parse(receipt.requestedAt);
-  if (
-    typeof receipt.requestedAt !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(
-      receipt.requestedAt,
-    ) ||
-    !Number.isFinite(requestedAtMs) ||
-    !Number.isSafeInteger(freshness.requestBarrierCycleGeneration) ||
-    freshness.requestBarrierCycleGeneration <= 0 ||
-    freshness.requestBarrierCycleGeneration >= freshness.cycleGeneration ||
-    !Number.isSafeInteger(freshness.requestPublishedAtMs) ||
-    freshness.requestPublishedAtMs < 0 ||
-    freshness.requestPublishedAtMs < requestedAtMs ||
-    !Number.isSafeInteger(freshness.cycleStartedAtMs) ||
-    freshness.cycleStartedAtMs < 0 ||
-    freshness.cycleStartedAtMs <= freshness.requestPublishedAtMs ||
-    !Number.isSafeInteger(freshness.observedAtMs) ||
-    freshness.observedAtMs < 0 ||
-    freshness.observedAtMs <= requestedAtMs ||
-    freshness.cycleStartedAtMs > freshness.observedAtMs
-  ) {
+  assertPositiveInteger(manifest.schemaVersion, `${label}.schemaVersion`);
+  if (manifest.databaseSchemaVersion !== manifest.schemaVersion) {
     throw new Error(
-      `${label} freshness cycle timing is not causally ordered after requestedAt`,
+      `${label} databaseSchemaVersion does not match schemaVersion`,
     );
   }
-  if (
-    !Number.isSafeInteger(freshness.cycleGeneration) ||
-    freshness.cycleGeneration <= 0 ||
-    freshness.inFlight !== false ||
-    freshness.hasMore !== false ||
-    freshness.noWrite !== true ||
-    typeof freshness.heldProjectId !== "string" ||
-    freshness.heldProjectId.trim() !== freshness.heldProjectId ||
-    freshness.heldProjectId.length === 0 ||
-    freshness.cutoverNotReady !== true ||
-    freshness.wakePending !== false ||
-    typeof freshness.timerScheduled !== "boolean" ||
-    (freshness.nextCycleGuardStateDigest !== null &&
-      typeof freshness.nextCycleGuardStateDigest !== "string") ||
-    freshness.timerScheduled !== (freshness.nextCycleGuardStateDigest !== null)
-  ) {
-    throw new Error(`${label} freshness is not a held no-write observation`);
+  if (manifest.c2zcMarkerPresent !== false) {
+    throw new Error(`${label} must be a pre-cutover image without the marker`);
   }
-  const heldProject = freshness.heldProjectId;
-  const cutoverNotReady = freshness.cutoverNotReady;
-  const noWrite = freshness.noWrite;
-  if (
-    typeof secondaryProjectId !== "string" ||
-    secondaryProjectId.trim() === "" ||
-    heldProject !== secondaryProjectId ||
-    cutoverNotReady !== true ||
-    noWrite !== true
-  ) {
-    throw new Error(
-      `${label} must hold the requested secondary with cutoverNotReady/noWrite evidence`,
-    );
+  assertC2ZcFixtureCandidate(manifest.candidate, `${label}.candidate`);
+  if (manifest.builderVersion !== C2ZC_RESTORE_FIXTURE_BUILDER_VERSION) {
+    throw new Error(`${label} builderVersion is unsupported`);
   }
-  const state = receipt.state;
   if (
-    !state ||
-    typeof state !== "object" ||
-    Array.isArray(state) ||
-    state.marker !== null ||
-    state.freshnessHoldProjectId !== secondaryProjectId ||
-    state.heldProjectId !== secondaryProjectId ||
-    !Array.isArray(state.projects) ||
-    state.projects.length !== 2
+    !Array.isArray(manifest.builderCommand) ||
+    manifest.builderCommand.length === 0 ||
+    manifest.builderCommand.some((value) => typeof value !== "string") ||
+    !Array.isArray(manifest.exactBuilderCommand) ||
+    manifest.exactBuilderCommand.length === 0 ||
+    manifest.exactBuilderCommand.some((value) => typeof value !== "string") ||
+    stableJson(manifest.builderCommand) !==
+      stableJson(manifest.exactBuilderCommand)
   ) {
-    throw new Error(
-      `${label} must prove marker=null with an observed A/B state`,
-    );
+    throw new Error(`${label} builder command is invalid`);
+  }
+  if (!isObject(manifest.artifacts)) {
+    throw new Error(`${label}.artifacts must be an object`);
   }
   assertExactKeys(
-    state,
-    [
-      "authorityId",
-      "generation",
-      "freshnessHoldProjectId",
-      "heldProjectId",
-      "projects",
-      "marker",
-      "stateDigest",
-    ],
-    `${label} state`,
+    manifest.artifacts,
+    ["fixture", "database"],
+    `${label}.artifacts`,
+  );
+  assertC2ZcFixtureArtifact(
+    manifest.artifacts.fixture,
+    `${label}.artifacts.fixture`,
+  );
+  assertC2ZcFixtureArtifact(
+    manifest.artifacts.database,
+    `${label}.artifacts.database`,
+  );
+  assertFixtureSha256(manifest.fixtureSha256, `${label}.fixtureSha256`);
+  assertNonNegativeInteger(
+    manifest.fixtureSizeBytes,
+    `${label}.fixtureSizeBytes`,
   );
   if (
-    state.authorityId !== receipt.workspaceBinding.authorityId ||
-    state.generation !== receipt.workspaceBinding.generation ||
-    !/^sha256:[0-9a-f]{64}$/u.test(state.stateDigest) ||
-    state.stateDigest !== receipt.stateDigest
-  ) {
-    throw new Error(`${label} state binding or digest is invalid`);
-  }
-  const stateWithoutDigest = { ...state };
-  delete stateWithoutDigest.stateDigest;
-  if (sha256Canonical(stateWithoutDigest) !== state.stateDigest) {
-    throw new Error(`${label} state digest does not bind the observed state`);
-  }
-  if (
-    freshness.timerScheduled &&
-    freshness.nextCycleGuardStateDigest !== state.stateDigest
-  ) {
-    throw new Error(`${label} freshness guard digest does not bind the state`);
-  }
-  const observedProjects = state.projects.map((project, index) => {
-    if (
-      !project ||
-      typeof project.projectId !== "string" ||
-      project.projectId.trim() === "" ||
-      JSON.stringify(Object.keys(project).sort()) !==
-        JSON.stringify(["currentEpochId", "cursor", "feedHead", "projectId"]) ||
-      !project.cursor ||
-      JSON.stringify(Object.keys(project.cursor).sort()) !==
-        JSON.stringify(
-          [
-            "acknowledgedThrough",
-            "activeRunId",
-            "lastError",
-            "reservedThrough",
-            "semanticEpochId",
-          ].sort(),
-        )
-    ) {
-      throw new Error(`${label} state project ${index} is invalid`);
-    }
-    return {
-      projectId: project.projectId,
-      currentEpochId: project.currentEpochId ?? null,
-      feedHead: project.feedHead,
-      cursor: normalizeC2ZcHeldCursor(
-        project.cursor,
-        `${label} state project ${project.projectId}`,
-      ),
-    };
-  });
-  for (const project of observedProjects) {
-    if (
-      (project.currentEpochId !== null &&
-        (typeof project.currentEpochId !== "string" ||
-          project.currentEpochId.trim() !== project.currentEpochId ||
-          project.currentEpochId.length === 0)) ||
-      !Number.isSafeInteger(project.feedHead) ||
-      project.feedHead < 0
-    ) {
-      throw new Error(
-        `${label} state project ${project.projectId} has invalid epoch/feed evidence`,
-      );
-    }
-  }
-  const observedIds = observedProjects.map((project) => project.projectId);
-  if (
-    new Set(observedIds).size !== observedIds.length ||
-    canonicalJson([...observedIds].sort()) !== canonicalJson(observedIds)
-  ) {
-    throw new Error(`${label} A/B project inventory is not sorted and unique`);
-  }
-  const expectedIds = projectInventory;
-  if (
-    !Array.isArray(expectedIds) ||
-    expectedIds.length !== 2 ||
-    new Set(expectedIds).size !== expectedIds.length ||
-    canonicalJson([...expectedIds].sort()) !== canonicalJson(observedIds)
+    manifest.fixtureSha256 !== manifest.artifacts.fixture.sha256 ||
+    manifest.fixtureSizeBytes !== manifest.artifacts.fixture.sizeBytes
   ) {
     throw new Error(
-      `${label} project inventory does not match observed A/B state`,
+      `${label} top-level fixture digest disagrees with artifact`,
     );
   }
-  const held = observedProjects.find(
-    (project) => project.projectId === secondaryProjectId,
-  );
-  if (!held) {
-    throw new Error(`${label} omitted the held secondary project`);
-  }
-  if (
-    Number(held.feedHead) <= Number(held.cursor.acknowledgedThrough) &&
-    held.cursor.activeRunId === null &&
-    held.cursor.reservedThrough === null
-  ) {
-    throw new Error(
-      `${label} secondary cursor is not held at an incomplete boundary`,
-    );
-  }
-  return {
-    event: receipt,
-    workspaceBinding: receipt.workspaceBinding,
-    projectInventory: observedIds,
-    projects: observedProjects,
-    secondaryProjectId,
-  };
+  assertC2ZcFixtureSemantic(manifest.semantic, `${label}.semantic`);
+  return manifest;
 }
 
 /**
- * Bind the workspace-wide cutover proof to every post-marker project
- * observation and the candidate-bound shared-Rust boundary receipt.
+ * Narrow boundary between the fixture builder and this journey. The builder
+ * owns the offline SQLite image; this runner only stages the verified image
+ * and uses the production Settings restore route.
  */
-export function assertC2ZcWorkspaceCutoverReceipt({
-  markerBefore,
-  markerAfter,
-  projects,
-  projectSnapshots,
-  projectInventory,
-  rustBoundaryEvidence,
-  label = "C2-ZC workspace cutover",
-}) {
-  const beforeRows = markerRowsFromSnapshot(markerBefore);
-  if (beforeRows.length !== 0) {
-    throw new Error(`${label} must observe no marker before activation`);
-  }
-  const afterSnapshot = markerAfter?.markerRows
-    ? markerAfter
-    : { marker: markerAfter, markerRows: markerAfter ? [markerAfter] : [] };
-  const marker = assertC2ZcMarkerExactlyOnce(
-    afterSnapshot,
-    `${label} marker after activation`,
-  );
-  const rustReceipt = rustBoundaryEvidence?.receipt ?? null;
-  if (
-    rustBoundaryEvidence == null ||
-    rustBoundaryEvidence.verified !== true ||
-    typeof rustBoundaryEvidence.receiptPath !== "string" ||
-    rustBoundaryEvidence.receiptPath.trim() === "" ||
-    !C2ZC_SHA256_DIGEST.test(rustBoundaryEvidence.receiptSha256 ?? "") ||
-    rustReceipt === null ||
-    rustReceipt.schema !== "grimodex.c2zc.rust-acceptance-receipt" ||
-    rustReceipt.version !== 1 ||
-    rustReceipt.catalogDigest !== C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST ||
-    !Array.isArray(rustReceipt.gates) ||
-    rustReceipt.gates.length !== C2ZC_RUST_ACCEPTANCE_GATES.length ||
-    rustReceipt.gates.some(
-      (gate, index) =>
-        canonicalJson({
-          id: gate?.id,
-          argv: gate?.argv,
-          contract: gate?.contract,
-          source: gate?.source,
-          test: gate?.test,
-          fullTestName: gate?.fullTestName,
-          requiresReceipt: gate?.requiresReceipt,
-        }) !== canonicalJson(C2ZC_RUST_ACCEPTANCE_GATES[index]) ||
-        gate?.exitStatus !== 0 ||
-        gate?.signal !== null ||
-        gate?.testCount !== 1 ||
-        gate?.passedCount !== 1 ||
-        gate?.failedCount !== 0,
-    ) ||
-    (rustBoundaryEvidence.gates !== undefined &&
-      canonicalJson(rustBoundaryEvidence.gates) !==
-        canonicalJson(rustReceipt.gates)) ||
-    (rustBoundaryEvidence.candidate !== undefined &&
-      canonicalJson(rustBoundaryEvidence.candidate) !==
-        canonicalJson(rustReceipt.candidate))
-  ) {
-    throw new Error(
-      `${label} Rust boundary evidence is not a candidate-bound shared-Rust receipt`,
-    );
-  }
-  const entries = projects ?? projectSnapshots;
-  if (!Array.isArray(entries) || entries.length === 0) {
-    throw new Error(
-      `${label} requires every project snapshot after activation`,
-    );
-  }
-  if (!Array.isArray(projectInventory) || projectInventory.length === 0) {
-    throw new Error(`${label} requires the exact projects-table inventory`);
-  }
-  const inventoryIds = projectInventory.map((project, index) => {
-    const projectId =
-      typeof project === "string"
-        ? project
-        : (project?.projectId ?? project?.id);
-    if (typeof projectId !== "string" || projectId.trim() === "") {
-      throw new Error(
-        `${label} projects-table inventory row ${index} is invalid`,
-      );
-    }
-    return projectId;
-  });
-  if (new Set(inventoryIds).size !== inventoryIds.length) {
-    throw new Error(`${label} projects-table inventory contains duplicates`);
-  }
-  const ids = new Set();
-  for (const [index, entry] of entries.entries()) {
-    const before = entry?.before ?? entry?.beforeSnapshot ?? null;
-    const after = entry?.after ?? entry?.afterSnapshot ?? entry?.snapshot;
-    const projectId = entry?.projectId ?? after?.projectId;
-    if (
-      typeof projectId !== "string" ||
-      projectId.trim() === "" ||
-      ids.has(projectId) ||
-      !after
-    ) {
-      throw new Error(`${label} project observation ${index} is invalid`);
-    }
-    ids.add(projectId);
-    const currentEpochId = after.epochs?.at(-1)?.id;
-    if (typeof currentEpochId !== "string" || currentEpochId.trim() === "") {
-      throw new Error(
-        `${label} project ${projectId} post-marker snapshot is missing its current Epoch`,
-      );
-    }
-    if (after.projectId !== projectId) {
-      throw new Error(
-        `${label} nested project snapshot ${projectId} crossed identity`,
-      );
-    }
-    assertC2ZcSettledProject(after, `${label} project ${projectId}`);
-    if (!before || !before.legacyProjection || !after.legacyProjection) {
-      throw new Error(
-        `${label} project ${projectId} requires before/after Legacy projection snapshots`,
-      );
-    }
-    assertC2ZcLegacyProjectionStable(
-      before.legacyProjection,
-      after.legacyProjection,
-      `${label} project ${projectId} Legacy projection`,
-    );
-    const markerRows = markerRowsFromSnapshot(after);
-    if (canonicalJson(markerRows) !== canonicalJson([marker])) {
-      throw new Error(
-        `${label} project ${projectId} does not observe the shared marker exactly once`,
-      );
-    }
-  }
-  if (
-    canonicalJson([...ids].sort()) !== canonicalJson([...inventoryIds].sort())
-  ) {
-    throw new Error(
-      `${label} project snapshots omit or add a workspace project`,
-    );
-  }
-  return {
-    marker,
-    projectIds: [...ids],
-    rustBoundaryEvidence,
-  };
-}
-
-/** Validate the released Change Feed cursor against the observed feed head. */
-export function assertC2ZcFeedCursorSettled(
-  snapshot,
-  { epochId = null } = {},
-  label = "C2-ZC Change Feed cursor",
+export function assertC2ZcRestoreFixtureInput(
+  input,
+  label = "C2-ZC restore fixture",
 ) {
-  const feedAndCursor = snapshot?.feedAndCursor;
-  const feedHead = Number(feedAndCursor?.feedHead);
-  const cursor = feedAndCursor?.cursor;
-  if (!Number.isSafeInteger(feedHead) || feedHead < 0 || !cursor) {
-    throw new Error(`${label} is missing its durable feed head or cursor`);
-  }
+  if (!isObject(input)) throw new Error(`${label} must be an object`);
+  assertExactKeys(input, ["path", "manifest"], label);
   if (
-    Number(cursor.acknowledgedThrough) !== feedHead ||
-    cursor.activeRunId !== null ||
-    cursor.reservedThrough !== null ||
-    cursor.semanticEpochId !== null ||
-    cursor.lastError !== null
+    typeof input.path !== "string" ||
+    !path.isAbsolute(input.path) ||
+    input.path.includes("\u0000")
   ) {
-    throw new Error(`${label} is not released at the observed feed head`);
+    throw new Error(`${label} path must be absolute and NUL-free`);
   }
-  if (epochId !== null && snapshot?.epochs?.at(-1)?.id !== epochId) {
-    throw new Error(`${label} is not bound to the expected current Epoch`);
+  if (typeof input.manifest === "string") {
+    if (!path.isAbsolute(input.manifest) || input.manifest.includes("\u0000")) {
+      throw new Error(`${label} manifest path must be absolute and NUL-free`);
+    }
+    return input;
   }
-  return feedAndCursor;
+  assertC2ZcRestoreFixtureManifest(
+    parseObject(input.manifest, `${label} manifest`),
+    `${label} manifest`,
+  );
+  return input;
 }
 
-/**
- * Prove the workspace-wide cutover gate with two independently observed
- * projects.  A settled project is not sufficient authority: the marker must
- * remain absent while any other project's cursor is still incomplete, then
- * appear exactly once only after both projects converge at their own feed
- * heads.
- */
-export function assertC2ZcTwoProjectConvergenceGate({
-  primarySettled,
-  secondaryIncomplete,
-  markerRowsWhileIncomplete,
-  convergedPrimary,
-  convergedSecondary,
-  label = "C2-ZC two-project convergence gate",
-}) {
-  if (!primarySettled || !secondaryIncomplete) {
-    throw new Error(`${label} is missing both project observations`);
-  }
-  assertC2ZcFeedCursorSettled(
-    primarySettled,
-    { epochId: primarySettled.epochs?.at(-1)?.id },
-    `${label} primary project`,
-  );
-  const secondaryFeed = secondaryIncomplete.feedAndCursor;
-  const secondaryCursor = secondaryFeed?.cursor;
-  if (
-    !secondaryCursor ||
-    !Number.isSafeInteger(Number(secondaryFeed.feedHead)) ||
-    Number(secondaryFeed.feedHead) < 0 ||
-    (Number(secondaryCursor.acknowledgedThrough) ===
-      Number(secondaryFeed.feedHead) &&
-      secondaryCursor.activeRunId === null &&
-      secondaryCursor.reservedThrough === null &&
-      secondaryCursor.semanticEpochId === null &&
-      secondaryCursor.lastError === null)
-  ) {
-    throw new Error(`${label} secondary project was already cursor-settled`);
-  }
-  if (
-    !Array.isArray(markerRowsWhileIncomplete) ||
-    markerRowsWhileIncomplete.length !== 0
-  ) {
-    throw new Error(
-      `${label} published the canonical marker while the secondary cursor was incomplete`,
-    );
-  }
-  if (convergedPrimary === undefined || convergedSecondary === undefined) {
-    return { primary: primarySettled, secondary: secondaryIncomplete };
-  }
-  assertC2ZcMarkerExactlyOnce(
-    convergedPrimary,
-    `${label} converged primary marker`,
-  );
-  assertC2ZcMarkerExactlyOnce(
-    convergedSecondary,
-    `${label} converged secondary marker`,
-  );
-  assertC2ZcFeedCursorSettled(
-    convergedPrimary,
-    { epochId: convergedPrimary.epochs?.at(-1)?.id },
-    `${label} converged primary cursor`,
-  );
-  assertC2ZcFeedCursorSettled(
-    convergedSecondary,
-    { epochId: convergedSecondary.epochs?.at(-1)?.id },
-    `${label} converged secondary cursor`,
-  );
-  if (
-    canonicalJson(convergedPrimary.markerRows) !==
-      canonicalJson(convergedSecondary.markerRows) ||
-    convergedPrimary.markerRows.length !== 1 ||
-    convergedSecondary.markerRows.length !== 1
-  ) {
-    throw new Error(`${label} did not converge to one shared marker row`);
-  }
-  return {
-    primary: convergedPrimary,
-    secondary: convergedSecondary,
-  };
-}
-
-const C2ZC_INCREMENTAL_HOLD_PROTECTED_FIELDS = Object.freeze([
-  "marker",
-  "markerRows",
-  "feedAndCursor",
-  "changeSets",
-]);
-const C2ZC_SECONDARY_MAINTENANCE_RUN_KINDS = Object.freeze([
-  "backfill",
-  "dependency-verify",
-  "semantic-index-rebuild",
-  "dependency-verify",
-]);
-
-/**
- * Project creation is one typed transaction that publishes the four builtin
- * Codex catalog events. Keep this assertion tied to the transaction/request,
- * ordinals, and object keys rather than treating the transaction as a single
- * Feed row.
- */
-export function assertC2ZcProjectCreateFeedEvidence(
-  snapshot,
-  { projectId, requireUnacked = true },
-  label = "C2-ZC project_create Feed",
+export function resolveC2ZcRestoreFixtureInput(
+  input,
+  environment = process.env,
 ) {
-  if (typeof projectId !== "string" || projectId.trim() === "") {
-    throw new Error(`${label} requires a projectId`);
+  let value = input;
+  if (value === undefined || value === null || value === "") {
+    value = environment[C2ZC_RESTORE_FIXTURE_ENV];
   }
-  const requestId = `c2-zc-journey-project-create:${projectId}`;
-  const events = rows(snapshot?.feedEvents, `${label} events`).filter(
-    (event) => event.requestId === requestId,
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch (error) {
+      throw new Error(`${C2ZC_RESTORE_FIXTURE_ENV} must be JSON`, {
+        cause: error,
+      });
+    }
+  }
+  return assertC2ZcRestoreFixtureInput(value);
+}
+
+async function stageC2ZcRestoreFixture(workspace, fixture) {
+  const sourceMetadata = await lstat(fixture.path);
+  if (!sourceMetadata.isFile()) {
+    throw new Error("C2-ZC restore fixture path must be a regular file");
+  }
+  const sourcePath = await realpath(fixture.path);
+  const sourceStat = await stat(sourcePath);
+  if (!sourceStat.isFile())
+    throw new Error("C2-ZC restore fixture path must be a file");
+  const backupDirectory = path.join(workspace, "backups");
+  await mkdir(backupDirectory, { recursive: true });
+  const targetPath = path.join(
+    backupDirectory,
+    fixture.manifest.artifacts.fixture.path,
   );
-  if (events.length !== 4) {
-    throw new Error(
-      `${label} must contain exactly four typed project_create Feed events`,
-    );
-  }
-  const expectedSlugs = ["character", "location", "item", "lore"];
-  const transactionId = events[0]?.transactionId;
-  if (typeof transactionId !== "string" || transactionId.trim() === "") {
-    throw new Error(`${label} transaction binding is missing`);
-  }
-  for (const [ordinal, event] of events.entries()) {
-    if (
-      event.transactionId !== transactionId ||
-      event.requestId !== requestId ||
-      event.sourceDomain !== "project.create" ||
-      Number(event.eventOrdinal) !== ordinal ||
-      !Number.isSafeInteger(Number(event.canonicalSequence)) ||
-      Number(event.canonicalSequence) <= 0 ||
-      event.changeKind !== "catalog" ||
-      event.mutationKind !== "create"
-    ) {
-      throw new Error(`${label} event ${ordinal} has invalid typed binding`);
-    }
-    const objectKey = parseObject(
-      event.objectKeyJson,
-      `${label} event ${ordinal} objectKeyJson`,
-    );
-    assertExactKeys(
-      objectKey,
-      ["kind", "componentId"],
-      `${label} event ${ordinal} object key`,
-    );
-    if (
-      objectKey.kind !== "component" ||
-      objectKey.componentId !==
-        `codex-type:${projectId}-${expectedSlugs[ordinal]}`
-    ) {
-      throw new Error(
-        `${label} event ${ordinal} is not the builtin catalog row`,
-      );
-    }
-    if (requireUnacked) {
-      const acknowledgedThrough = Number(
-        snapshot?.feedAndCursor?.cursor?.acknowledgedThrough ?? 0,
-      );
-      if (
-        !Number.isSafeInteger(acknowledgedThrough) ||
-        Number(event.canonicalSequence) <= acknowledgedThrough
-      ) {
-        throw new Error(
-          `${label} event ${ordinal} was acknowledged before hold`,
-        );
-      }
-    }
-  }
-  return events;
-}
-
-function assertC2ZcNoIncrementalFreshnessWrites(snapshot, label) {
-  const freshnessRuns = rows(snapshot?.runs, `${label} Runs`).filter(
-    (run) =>
-      run?.runKind === "freshness-evaluation" ||
-      run?.consumerId === C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID ||
-      run?.taskKind === C2ZC_INCREMENTAL_FRESHNESS_TASK_KIND,
+  await copyFile(sourcePath, targetPath);
+  await assertFixtureArtifactDigest(
+    targetPath,
+    fixture.manifest.artifacts.fixture,
+    "C2-ZC staged restore fixture",
   );
-  for (const run of rows(snapshot?.runs, `${label} Runs`)) {
-    for (const task of Array.isArray(run?.tasks) ? run.tasks : []) {
-      if (
-        task?.taskKind === C2ZC_INCREMENTAL_FRESHNESS_TASK_KIND ||
-        (Array.isArray(task?.attempts) &&
-          task.attempts.length > 0 &&
-          run?.runKind === "freshness-evaluation")
-      ) {
-        freshnessRuns.push(run);
-        break;
-      }
-    }
-  }
-  if (freshnessRuns.length !== 0) {
-    throw new Error(
-      `${label} contains an incremental Freshness Run/Task/Attempt before the held cycle`,
-    );
-  }
+  return { targetPath, sourcePath, manifest: fixture.manifest };
 }
 
-function assertC2ZcNoFreshnessCursorWrite(snapshot, label) {
-  const feedAndCursor = snapshot?.feedAndCursor;
-  const feedHead = Number(feedAndCursor?.feedHead);
-  const cursor = feedAndCursor?.cursor;
-  if (!Number.isSafeInteger(feedHead) || feedHead < 0 || !cursor) {
-    throw new Error(`${label} is missing its durable Feed/cursor observation`);
+async function assertFixtureArtifactDigest(filePath, expected, label) {
+  const metadata = await lstat(filePath);
+  if (!metadata.isFile()) throw new Error(`${label} must be a regular file`);
+  const bytes = await readFile(filePath);
+  const actualSha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  if (actualSha256 !== expected.sha256 || bytes.length !== expected.sizeBytes) {
+    throw new Error(`${label} bytes do not match its manifest digest`);
   }
-  const acknowledgedThrough =
-    cursor.acknowledgedThrough === null ||
-    cursor.acknowledgedThrough === undefined
-      ? null
-      : Number(cursor.acknowledgedThrough);
-  if (
-    acknowledgedThrough !== null &&
-    (!Number.isSafeInteger(acknowledgedThrough) ||
-      acknowledgedThrough >= feedHead)
-  ) {
-    throw new Error(`${label} Freshness cursor ACKed the B Feed head`);
-  }
-  if (
-    (cursor.activeRunId !== null && cursor.activeRunId !== undefined) ||
-    (cursor.reservedThrough !== null && cursor.reservedThrough !== undefined) ||
-    (cursor.semanticEpochId !== null && cursor.semanticEpochId !== undefined)
-  ) {
-    throw new Error(
-      `${label} Freshness cursor retained a reservation or active Run`,
-    );
-  }
-  if (cursor.lastError !== null) {
-    throw new Error(`${label} Freshness cursor has an unresolved error`);
-  }
+  return { sha256: actualSha256, sizeBytes: bytes.length };
 }
 
-function assertC2ZcCompletedMaintenanceRun(
-  run,
-  { projectId, epochId, taskKind },
-  label,
+export async function loadC2ZcRestoreFixtureInput(
+  input,
+  environment = process.env,
 ) {
-  if (
-    run?.projectId !== projectId ||
-    run?.status !== "completed" ||
-    run?.semanticEpochId !== epochId ||
-    run?.taskKind !== taskKind ||
-    run?.taskStatus !== "completed" ||
-    Number(run?.taskCount) !== 1 ||
-    Number(run?.attemptCount) !== 1 ||
-    Number(run?.taskAttemptCount) !== 1 ||
-    Number(run?.lastAttemptNumber) !== 1 ||
-    Number(run?.maxAttemptNumber) !== 1 ||
-    run?.lastAttemptStatus !== "completed"
-  ) {
-    throw new Error(`${label} Run/Task/Attempt lifecycle is not complete`);
-  }
-  const tasks = rows(run.tasks, `${label} tasks`);
-  if (tasks.length !== 1) {
-    throw new Error(`${label} must contain exactly one Task`);
-  }
-  const task = tasks[0];
-  const attempts = rows(task.attempts, `${label} attempts`);
-  if (
-    task.id !== run.taskId ||
-    task.taskKind !== taskKind ||
-    task.status !== "completed" ||
-    Number(task.attemptCount) !== 1 ||
-    attempts.length !== 1 ||
-    attempts[0]?.taskId !== task.id ||
-    Number(attempts[0]?.attemptNumber) !== 1 ||
-    attempts[0]?.status !== "completed"
-  ) {
-    throw new Error(`${label} Task/Attempt identity or lifecycle is invalid`);
-  }
-  const lifecycleFields = [
-    "createdAt",
-    "startedAt",
-    "taskCreatedAt",
-    "taskStartedAt",
-    "lastAttemptStartedAt",
-    "lastAttemptCompletedAt",
-    "taskCompletedAt",
-    "completedAt",
-  ];
-  for (let index = 0; index < lifecycleFields.length; index += 1) {
-    const field = lifecycleFields[index];
-    parseInstant(run[field], `${label} ${field}`);
-    if (
-      index > 0 &&
-      compareInstants(run[lifecycleFields[index - 1]], run[field]) > 0
-    ) {
-      throw new Error(`${label} lifecycle timestamps are not monotonic`);
+  const fixture = resolveC2ZcRestoreFixtureInput(input, environment);
+  let manifestPath = null;
+  const manifest =
+    typeof fixture.manifest === "string"
+      ? ((manifestPath = fixture.manifest),
+        parseObject(
+          JSON.parse(await readFile(fixture.manifest, "utf8")),
+          "C2-ZC restore fixture manifest",
+        ))
+      : fixture.manifest;
+  assertC2ZcRestoreFixtureManifest(manifest);
+  const manifestBase = path.dirname(manifestPath ?? fixture.path);
+  for (const [name, artifact] of Object.entries(manifest.artifacts)) {
+    const artifactPath = path.resolve(manifestBase, artifact.path);
+    const resolvedInput = path.resolve(fixture.path);
+    if (path.resolve(artifactPath) !== resolvedInput && name === "fixture") {
+      throw new Error("C2-ZC fixture path does not match manifest artifact");
     }
-  }
-  return run;
-}
-
-/**
- * Validate the secondary project transition independently from the held q
- * receipt. Project creation happens before the marker and therefore has no
- * C2-ZC epoch; normal Backfill owns the first epoch and the V/R/V readiness
- * chain. Only the project-create Feed rows and incremental Freshness surfaces
- * are immutable across that transition.
- */
-export function assertC2ZcSecondaryMaintenanceReadiness({
-  projectId,
-  afterCreate,
-  atHold,
-  label = "C2-ZC secondary maintenance",
-}) {
-  if (
-    typeof projectId !== "string" ||
-    projectId.trim() === "" ||
-    !afterCreate ||
-    !atHold
-  ) {
-    throw new Error(`${label} requires the post-create and held snapshots`);
-  }
-  for (const [phase, snapshot] of [
-    ["post-create", afterCreate],
-    ["held", atHold],
-  ]) {
-    if (snapshot.projectId !== undefined && snapshot.projectId !== projectId) {
-      throw new Error(`${label} ${phase} snapshot crossed project identity`);
-    }
-    assertC2ZcNoIncrementalFreshnessWrites(snapshot, `${label} ${phase}`);
-    assertC2ZcNoFreshnessCursorWrite(snapshot, `${label} ${phase}`);
-  }
-  if (rows(afterCreate.epochs, `${label} post-create Epochs`).length !== 0) {
-    throw new Error(
-      `${label} post-create snapshot must preserve the no-epoch pre-marker boundary`,
-    );
-  }
-  const createEvents = assertC2ZcProjectCreateFeedEvidence(
-    afterCreate,
-    { projectId, requireUnacked: true },
-    `${label} post-create project_create`,
-  );
-  const heldCreateEvents = assertC2ZcProjectCreateFeedEvidence(
-    atHold,
-    { projectId, requireUnacked: true },
-    `${label} held project_create`,
-  );
-  if (canonicalJson(createEvents) !== canonicalJson(heldCreateEvents)) {
-    throw new Error(
-      `${label} original project_create Feed identities changed before the held cycle`,
-    );
-  }
-  for (const field of C2ZC_INCREMENTAL_HOLD_PROTECTED_FIELDS) {
-    if (
-      field === "feedAndCursor" ||
-      field === "changeSets" ||
-      field === "marker" ||
-      field === "markerRows"
-    ) {
-      if (canonicalJson(atHold[field]) !== canonicalJson(afterCreate[field])) {
-        throw new Error(`${label} held B changed protected ${field}`);
-      }
-    }
-  }
-  if (
-    Number(atHold.feedAndCursor?.feedHead) !==
-    Number(afterCreate.feedAndCursor?.feedHead)
-  ) {
-    throw new Error(`${label} held B changed its project_create Feed head`);
-  }
-
-  const epochs = rows(atHold.epochs, `${label} held Epochs`);
-  if (
-    epochs.length !== 1 ||
-    Number(epochs[0]?.epochNumber) !== 0 ||
-    epochs[0]?.reason !== "initial" ||
-    typeof epochs[0]?.id !== "string" ||
-    epochs[0].id.trim() === ""
-  ) {
-    throw new Error(
-      `${label} held B must contain exactly one initial epoch created by Backfill`,
-    );
-  }
-  parseInstant(epochs[0].createdAt, `${label} held B initial Epoch createdAt`);
-
-  const maintenanceRuns = rows(atHold.runs, `${label} held Runs`).filter(
-    (run) => C2ZC_AUTOMATIC_RUN_KINDS.has(run.runKind),
-  );
-  if (
-    canonicalJson(maintenanceRuns.map((run) => run.runKind)) !==
-    canonicalJson(C2ZC_SECONDARY_MAINTENANCE_RUN_KINDS)
-  ) {
-    throw new Error(
-      `${label} held B maintenance must be exactly Backfill -> Verify -> Rebuild -> confirmation Verify`,
-    );
-  }
-  const [backfill, verify, rebuild, confirmationVerify] = maintenanceRuns;
-  const maintenanceRunIds = new Set();
-  for (const run of maintenanceRuns) {
-    if (
-      typeof run.id !== "string" ||
-      run.id.trim() === "" ||
-      maintenanceRunIds.has(run.id)
-    ) {
-      throw new Error(
-        `${label} held B maintenance Run identities are not unique`,
-      );
-    }
-    maintenanceRunIds.add(run.id);
-  }
-  assertC2ZcCompletedMaintenanceRun(
-    backfill,
-    {
-      projectId,
-      epochId: epochs[0].id,
-      taskKind: "maintenance-backfill",
-    },
-    `${label} Backfill`,
-  );
-  for (const [index, run] of [verify, confirmationVerify].entries()) {
-    assertC2ZcCompletedMaintenanceRun(
-      run,
-      {
-        projectId,
-        epochId: epochs[0].id,
-        taskKind: "maintenance-dependency-verify",
-      },
-      `${label} Verify ${index + 1}`,
-    );
-    assertC2ZcVerifyCoverage(run, `${label} Verify ${index + 1}`);
-    assertC2ZcSemanticIndexZero(run, `${label} Verify ${index + 1}`);
-  }
-  assertC2ZcCompletedMaintenanceRun(
-    rebuild,
-    {
-      projectId,
-      epochId: epochs[0].id,
-      taskKind: "maintenance-semantic-index-rebuild",
-    },
-    `${label} Rebuild`,
-  );
-  if (
-    atHold.projectSettled !== true ||
-    rows(atHold.pendingRuns, `${label} held pending Runs`).length !== 0
-  ) {
-    throw new Error(`${label} held B is not maintenance-ready`);
-  }
-  assertC2ZcFindingInboxEmpty(atHold, `${label} held B Findings/Inbox`);
-  return {
-    projectId,
-    projectCreateEvents: heldCreateEvents,
-    initialEpoch: epochs[0],
-    maintenanceRuns,
-  };
-}
-
-/**
- * Prove the causal A/B hold checkpoint used by the canonical journey.  The
- * receipt alone is not enough: A must have a real typed Feed event with a
- * current non-idle publisher, while B must be selected by the held cycle and
- * remain unchanged at the durable boundary.
- */
-export function assertC2ZcPreMarkerCausalEvidence({
-  primarySnapshot,
-  secondaryBeforeHold,
-  secondaryDuringHold,
-  preMarkerHeldEvidence,
-  primaryProjectId,
-  secondaryProjectId,
-  primaryEventId,
-  primaryEpochId = null,
-  verifyRuns = [],
-  requestNonce = null,
-  phase = null,
-  workspaceBinding = null,
-  label = "C2-ZC causal A/B hold",
-}) {
-  if (
-    !primarySnapshot ||
-    !secondaryBeforeHold ||
-    !secondaryDuringHold ||
-    !preMarkerHeldEvidence ||
-    typeof primaryProjectId !== "string" ||
-    typeof secondaryProjectId !== "string" ||
-    typeof primaryEventId !== "string"
-  ) {
-    throw new Error(
-      `${label} is missing the primary, secondary, or hold receipt`,
-    );
-  }
-  const receipt = preMarkerHeldEvidence.receipt ?? preMarkerHeldEvidence;
-  const state = receipt?.state;
-  const freshness = receipt?.freshness;
-  assertC2ZcPreMarkerHeldEvidence(receipt, {
-    requestNonce,
-    phase,
-    workspaceBinding,
-    secondaryProjectId,
-    projectInventory: state?.projects?.map((project) => project?.projectId),
-    label,
-  });
-  if (
-    !freshness ||
-    freshness.heldProjectId !== secondaryProjectId ||
-    freshness.cutoverNotReady !== true ||
-    freshness.noWrite !== true ||
-    !state ||
-    state.freshnessHoldProjectId !== secondaryProjectId ||
-    state.heldProjectId !== secondaryProjectId ||
-    state.marker !== null
-  ) {
-    throw new Error(
-      `${label} requires the actual held B NOT_READY receipt with noWrite evidence`,
-    );
-  }
-  if (
-    primarySnapshot.markerRows?.length !== 0 ||
-    primarySnapshot.marker !== null
-  ) {
-    throw new Error(`${label} observed a marker before the B cursor converged`);
-  }
-  const primaryEpoch = primarySnapshot.epochs?.at(-1);
-  if (
-    !primaryEpoch ||
-    (primaryEpochId !== null && primaryEpoch.id !== primaryEpochId) ||
-    Number(primaryEpoch.epochNumber) !== 1 ||
-    primaryEpoch.reason !== "restore" ||
-    primarySnapshot.projectSettled !== true
-  ) {
-    throw new Error(`${label} A is not readiness-clean at current restore E1`);
-  }
-  assertC2ZcFeedCursorSettled(
-    primarySnapshot,
-    { epochId: primaryEpoch.id },
-    `${label} A current-Epoch cursor`,
-  );
-  const primaryEvent = rows(
-    primarySnapshot.feedEvents,
-    `${label} A Feed events`,
-  ).find((event) => event.eventId === primaryEventId);
-  if (
-    !primaryEvent ||
-    !Number.isSafeInteger(Number(primaryEvent.canonicalSequence)) ||
-    Number(primaryEvent.canonicalSequence) <= 0 ||
-    typeof primaryEvent.transactionId !== "string" ||
-    primaryEvent.transactionId.trim() === "" ||
-    typeof primaryEvent.requestId !== "string" ||
-    primaryEvent.requestId.trim() === "" ||
-    typeof primaryEvent.sourceDomain !== "string" ||
-    primaryEvent.sourceDomain.trim() === ""
-  ) {
-    throw new Error(`${label} A Feed event is not a typed transaction event`);
-  }
-  assertC2ZcNonIdleFreshnessProducer(
-    primarySnapshot,
-    {
-      projectId: primaryProjectId,
-      epochId: primaryEpoch.id,
-      eventId: primaryEventId,
-    },
-    `${label} A current-Epoch Freshness producer`,
-  );
-  const secondaryMaintenance = assertC2ZcSecondaryMaintenanceReadiness({
-    projectId: secondaryProjectId,
-    afterCreate: secondaryBeforeHold,
-    atHold: secondaryDuringHold,
-    label,
-  });
-  const secondaryEvents = secondaryMaintenance.projectCreateEvents;
-  if (
-    Number(secondaryDuringHold.feedAndCursor?.feedHead ?? 0) <=
-    Number(secondaryDuringHold.feedAndCursor?.cursor?.acknowledgedThrough ?? 0)
-  ) {
-    throw new Error(
-      `${label} B is not blocked by an incomplete Freshness cursor`,
-    );
-  }
-  const heldProjects = new Map(
-    rows(state.projects, `${label} held state projects`).map((project) => [
-      project.projectId,
-      project,
-    ]),
-  );
-  const heldPrimary = heldProjects.get(primaryProjectId);
-  const heldSecondary = heldProjects.get(secondaryProjectId);
-  if (!heldPrimary || !heldSecondary) {
-    throw new Error(`${label} held receipt omitted A or B workspace state`);
-  }
-  const cursorIsSettled = (project) =>
-    project.cursor.acknowledgedThrough === project.feedHead &&
-    project.cursor.activeRunId === null &&
-    project.cursor.reservedThrough === null &&
-    project.cursor.semanticEpochId === null &&
-    project.cursor.lastError === null;
-  if (cursorIsSettled(heldSecondary) || !cursorIsSettled(heldPrimary)) {
-    throw new Error(
-      `${label} receipt did not show A settled and B cursor-blocked`,
-    );
-  }
-  const verifyRows = rows(verifyRuns, `${label} Verify Runs`);
-  if (verifyRows.length !== 2) {
-    throw new Error(`${label} requires both production Verify Runs`);
-  }
-  for (const [index, verifyRun] of verifyRows.entries()) {
-    assertC2ZcVerifyCoverage(verifyRun, `${label} Verify ${index + 1}`);
-    assertC2ZcSemanticIndexZero(
-      verifyRun,
-      `${label} Verify ${index + 1} Semantic Index`,
+    await assertFixtureArtifactDigest(
+      artifactPath,
+      artifact,
+      `C2-ZC ${name} artifact`,
     );
   }
   return {
-    primaryEvent,
-    secondaryEvents,
-    preMarkerHeldEvidence,
-    primarySnapshot,
-    secondaryBeforeHold,
-    secondaryDuringHold,
-    secondaryMaintenance,
+    path: fixture.path,
+    manifest,
+    manifestPath,
   };
 }
 
-// Compatibility export for older acceptance fixtures; the canonical runner
-// and all new consumers use the explicit pre-marker name above.
-export const assertC2ZcCausalHoldEvidence = assertC2ZcPreMarkerCausalEvidence;
-
-function settledWorkspaceLifecycleTransition(events, workspace) {
-  if (!Array.isArray(events)) return null;
-  const grouped = new Map();
-  for (const event of events) {
-    if (
-      event?.schemaVersion !== 1 ||
-      event.kind !== "workspace" ||
-      typeof event.transitionId !== "string"
-    ) {
-      continue;
-    }
-    const group = grouped.get(event.transitionId) ?? [];
-    group.push(event);
-    grouped.set(event.transitionId, group);
+function observedCandidateOf(value, label) {
+  const candidate = value?.receipt?.candidate ?? value?.candidate ?? value;
+  if (!isObject(candidate)) {
+    throw new Error(`${label} must expose the candidate-bound Rust receipt`);
   }
-  const matching = [...grouped.values()]
-    .map((group) =>
-      [...group].sort((left, right) => left.sequence - right.sequence),
-    )
-    .filter((group) => {
-      if (
-        JSON.stringify(group.map((event) => event.phase)) !==
-        JSON.stringify(C2ZC_WORKSPACE_LIFECYCLE_PHASES)
-      ) {
-        return false;
-      }
-      if (
-        !group.every((event, index) => {
-          const from = event.from;
-          const to = event.to;
-          if (
-            event.sequence !== index ||
-            to?.workspacePath !== workspace ||
-            from?.workspacePath !== null ||
-            from?.workspaceOpenRevision !== 0 ||
-            typeof from?.projectId !== "string" ||
-            from.projectId.trim() === ""
-          ) {
-            return false;
-          }
-          if (index < 2) {
-            return to.workspaceOpenRevision === null && to.projectId === null;
-          }
-          return (
-            Number.isSafeInteger(to.workspaceOpenRevision) &&
-            to.workspaceOpenRevision > 0 &&
-            typeof to.projectId === "string" &&
-            to.projectId.trim() !== ""
-          );
-        })
-      ) {
-        return false;
-      }
-      const authority = group[2]?.to;
-      const hydrated = group[3]?.to;
-      return (
-        authority?.workspaceOpenRevision === hydrated?.workspaceOpenRevision &&
-        authority?.projectId === hydrated?.projectId
-      );
-    })
-    .findLast((group) => {
-      const settled = group.at(-1)?.to;
-      return (
-        settled?.workspacePath === workspace &&
-        Number.isSafeInteger(settled.workspaceOpenRevision) &&
-        settled.workspaceOpenRevision > 0 &&
-        typeof settled.projectId === "string" &&
-        settled.projectId.trim() !== ""
-      );
-    });
-  return matching ?? null;
-}
-
-function assertC2ZcWorkspaceBinding(binding, workspace, label) {
-  if (
-    !binding ||
-    typeof binding !== "object" ||
-    typeof binding.authorityId !== "string" ||
-    binding.authorityId.trim() === "" ||
-    !Number.isSafeInteger(binding.generation) ||
-    binding.generation <= 0 ||
-    typeof binding.authorityInstanceId !== "string" ||
-    binding.authorityInstanceId.trim() === ""
-  ) {
-    throw new Error(`${label} returned an invalid Native workspace binding`);
-  }
-  if (typeof workspace !== "string" || workspace.trim() === "") {
-    throw new Error(`${label} requires an exact workspace path`);
-  }
-  return Object.freeze({
-    authorityId: binding.authorityId,
-    generation: binding.generation,
-    authorityInstanceId: binding.authorityInstanceId,
-  });
-}
-
-/** Restore/reload binds the existing workspace; it is not a workspace switch. */
-async function captureC2ZcWorkspaceBinding(harness, page, workspace, label) {
-  const binding = await harness.invokeOk(
-    page,
-    "narrative_extraction_capture_workspace_binding",
-    { expectedWorkspacePath: workspace },
-  );
-  return assertC2ZcWorkspaceBinding(binding, workspace, label);
+  return candidate;
 }
 
 /**
- * A fresh launch may emit a workspace transition. It remains supplemental:
- * startup event capture cannot replace the durable Native binding proof and
- * must never block project_create.
+ * Re-bind the fixture's candidate/head/tree evidence to the live Rust receipt.
+ * The Rust receipt uses a richer candidate shape; only equivalent fields are
+ * compared here, while the fixture's status and byte digests are checked
+ * against their own manifest artifacts above.
  */
-function observeC2ZcWorkspaceLifecycleSupplement(harness, page, workspace) {
-  if (typeof harness.readLifecycleTrace !== "function") {
-    return Promise.resolve(null);
+export function assertC2ZcFixtureCandidateBinding(
+  manifestCandidate,
+  observedCandidate,
+  label = "C2-ZC fixture candidate",
+) {
+  const fixtureCandidate = assertC2ZcFixtureCandidate(manifestCandidate, label);
+  const candidate = observedCandidateOf(observedCandidate, label);
+  const requested = candidate.requestedHead ?? candidate.requested;
+  const resolvedHeadSha = candidate.resolvedHeadSha;
+  const resolvedTreeSha =
+    candidate.resolvedHeadTreeSha ?? candidate.resolvedTreeSha;
+  const currentHeadSha = candidate.currentHeadSha ?? candidate.headSha;
+  const worktreeClean = candidate.worktreeClean ?? candidate.clean;
+  if (
+    typeof requested !== "string" ||
+    typeof resolvedHeadSha !== "string" ||
+    typeof resolvedTreeSha !== "string" ||
+    typeof currentHeadSha !== "string" ||
+    worktreeClean !== true
+  ) {
+    throw new Error(`${label} does not expose a complete candidate binding`);
   }
-  // Defer even the read invocation so project_create is the first operation
-  // after the durable binding; this is context capture, not a gate.
-  return Promise.resolve()
-    .then(() => harness.readLifecycleTrace(page))
-    .then((events) => settledWorkspaceLifecycleTransition(events, workspace))
-    .catch(() => null);
+  if (requested !== fixtureCandidate.requested) {
+    throw new Error(
+      `${label} requested candidate does not match the Rust receipt`,
+    );
+  }
+  if (resolvedHeadSha !== fixtureCandidate.resolvedHeadSha) {
+    throw new Error(`${label} resolved HEAD does not match the Rust receipt`);
+  }
+  if (resolvedTreeSha !== fixtureCandidate.resolvedTreeSha) {
+    throw new Error(`${label} resolved tree does not match the Rust receipt`);
+  }
+  if (currentHeadSha !== fixtureCandidate.headSha) {
+    throw new Error(`${label} current HEAD does not match the fixture`);
+  }
+  if (
+    candidate.fixtureStatusSha256 !== undefined &&
+    candidate.fixtureStatusSha256 !== fixtureCandidate.statusSha256
+  ) {
+    throw new Error(`${label} status digest does not match the fixture`);
+  }
+  const observedStatusSha256 =
+    candidate.fixtureStatusSha256 ??
+    candidate.worktreeStatusHash ??
+    candidate.statusSha256;
+  if (typeof observedStatusSha256 === "string") {
+    const normalizedStatusSha256 = observedStatusSha256.startsWith("sha256:")
+      ? observedStatusSha256
+      : `sha256:${observedStatusSha256}`;
+    if (normalizedStatusSha256 !== fixtureCandidate.statusSha256) {
+      throw new Error(`${label} status digest does not match the fixture`);
+    }
+  }
+  return fixtureCandidate;
 }
 
 async function queryRows(harness, page, sql, params = []) {
@@ -2829,408 +837,56 @@ async function queryRows(harness, page, sql, params = []) {
   );
 }
 
-async function readC2ZcMaintenanceInbox(harness, page, projectId) {
-  const value = await harness.invokeOk(
+async function readInbox(harness, page, projectId) {
+  const result = await harness.invokeOk(
     page,
     "narrative_maintenance_inbox_list",
     {
       payload: { projectId },
     },
   );
-  const entries = Array.isArray(value)
-    ? value
-    : Array.isArray(value?.entries)
-      ? value.entries
-      : null;
-  if (!entries) {
-    throw new Error(
-      `C2-ZC maintenance Inbox returned a non-list value: ${JSON.stringify(value)}`,
-    );
-  }
-  return entries;
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.entries)) return result.entries;
+  throw new Error("C2-ZC maintenance Inbox did not return an array");
 }
 
-function latestC2ZcFindingLifecycle(rowsValue, epochs) {
-  const currentEpochId = rows(epochs, "C2-ZC finding Epochs").at(-1)?.id;
-  if (typeof currentEpochId !== "string" || currentEpochId.trim() === "") {
-    return [];
-  }
-  const latestByIdentity = new Map();
-  for (const finding of rows(rowsValue, "C2-ZC Finding lifecycle")) {
-    if (typeof finding?.findingIdentity !== "string") continue;
-    const prior = latestByIdentity.get(finding.findingIdentity);
-    if (
-      !prior ||
-      compareInstants(prior.observedAt, finding.observedAt) < 0 ||
-      (compareInstants(prior.observedAt, finding.observedAt) === 0 &&
-        String(prior.id).localeCompare(String(finding.id)) < 0)
-    ) {
-      latestByIdentity.set(finding.findingIdentity, finding);
-    }
-  }
-  return [...latestByIdentity.values()].filter(
-    (finding) =>
-      finding.semanticEpochId === currentEpochId &&
-      finding.lifecycleState !== "resolved",
-  );
-}
-
-export async function readC2ZcRunLedger(harness, page, projectId, runs) {
-  const [taskRows, attemptRows] = await Promise.all([
-    queryRows(
-      harness,
-      page,
-      `SELECT t.id,
-              t.run_id AS runId,
-              t.task_kind AS taskKind,
-              t.status,
-              t.attempt_count AS attemptCount,
-              t.priority,
-              t.lease_owner AS leaseOwner,
-              t.lease_expires_at AS leaseExpiresAt,
-              t.heartbeat_at AS heartbeatAt,
-              t.error_message AS errorMessage,
-              t.input_json AS inputJson,
-              t.output_json AS outputJson,
-              t.created_at AS createdAt,
-              t.started_at AS startedAt,
-              t.completed_at AS completedAt,
-              t.version
-         FROM narrative_extraction_tasks t
-         JOIN narrative_extraction_runs r ON r.id = t.run_id
-        WHERE r.project_id = ?
-        ORDER BY t.run_id, t.created_at, t.id`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT a.id,
-              a.task_id AS taskId,
-              a.attempt_number AS attemptNumber,
-              a.status,
-              a.started_at AS startedAt,
-              a.completed_at AS completedAt,
-              a.error_message AS errorMessage,
-              a.output_json AS outputJson,
-              a.failure_code AS failureCode,
-              a.retry_disposition AS retryDisposition,
-              a.policy_version AS policyVersion,
-              a.next_attempt_at AS nextAttemptAt
-         FROM narrative_extraction_attempts a
-         JOIN narrative_extraction_tasks t ON t.id = a.task_id
-         JOIN narrative_extraction_runs r ON r.id = t.run_id
-        WHERE r.project_id = ?
-        ORDER BY t.run_id, a.attempt_number, a.id`,
-      [projectId],
-    ),
-  ]);
-  const attemptsByTaskId = new Map();
-  for (const attempt of attemptRows) {
-    const taskAttempts = attemptsByTaskId.get(attempt.taskId) ?? [];
-    taskAttempts.push(attempt);
-    attemptsByTaskId.set(attempt.taskId, taskAttempts);
-  }
-  const tasksByRunId = new Map();
-  for (const task of taskRows) {
-    const runTasks = tasksByRunId.get(task.runId) ?? [];
-    runTasks.push({
-      ...task,
-      attempts: attemptsByTaskId.get(task.id) ?? [],
-    });
-    tasksByRunId.set(task.runId, runTasks);
-  }
-  return rows(runs, "C2-ZC Run ledger").map((run) => {
-    const runTasks = tasksByRunId.get(run.id) ?? [];
-    const firstTask = runTasks[0] ?? null;
-    const attempts = runTasks.flatMap((task) => task.attempts ?? []);
-    const lastAttempt = attempts.at(-1) ?? null;
-    return {
-      ...run,
-      tasks: runTasks,
-      taskId: firstTask?.id ?? null,
-      taskKind: firstTask?.taskKind ?? null,
-      taskStatus: firstTask?.status ?? null,
-      taskCount: runTasks.length,
-      attemptCount: attempts.length,
-      taskAttemptCount: firstTask?.attemptCount ?? null,
-      lastAttemptStatus: lastAttempt?.status ?? null,
-      lastAttemptNumber: lastAttempt?.attemptNumber ?? null,
-      maxAttemptNumber:
-        attempts.length === 0
-          ? null
-          : Math.max(
-              ...attempts.map((attempt) => Number(attempt.attemptNumber)),
-            ),
-      taskInputJson: firstTask?.inputJson ?? null,
-      taskCreatedAt: firstTask?.createdAt ?? null,
-      taskStartedAt: firstTask?.startedAt ?? null,
-      taskCompletedAt: firstTask?.completedAt ?? null,
-      lastAttemptStartedAt: lastAttempt?.startedAt ?? null,
-      lastAttemptCompletedAt: lastAttempt?.completedAt ?? null,
-    };
-  });
-}
-
-async function createProjectWithC2ZcWorkspaceBinding(
+export async function readC2ZcRunLedger(
   harness,
   page,
-  workspace,
-  {
-    idPrefix = "c2-zc-journey-project",
-    title = "C2-ZC post-marker project",
-    label = "C2-ZC project",
-    observeLifecycle = false,
-  } = {},
+  projectId,
+  existingRuns,
 ) {
-  if (typeof workspace !== "string" || workspace.trim() === "") {
-    throw new Error(`${label} requires an open workspace path`);
-  }
-  const binding = await captureC2ZcWorkspaceBinding(
+  if (Array.isArray(existingRuns)) return existingRuns;
+  return queryRows(
     harness,
     page,
-    workspace,
-    label,
-  );
-  let projectId = null;
-  if (observeLifecycle) {
-    // This trace is diagnostic context only. Do not await it or put a timeout
-    // gate in front of the durable Native binding and project_create.
-    void observeC2ZcWorkspaceLifecycleSupplement(harness, page, workspace)
-      .then((lifecycleSupplement) => {
-        if (typeof harness.recordTimeline === "function") {
-          harness.recordTimeline("c2-zc-workspace-lifecycle-supplement", {
-            label,
-            projectId,
-            binding,
-            lifecycleSupplement,
-            lifecycleIsSupplemental: true,
-          });
-        }
-      })
-      .catch(() => {});
-  }
-  if (typeof harness.recordTimeline === "function") {
-    harness.recordTimeline("c2-zc-project-create-binding", {
-      label,
-      projectId,
-      binding,
-      lifecycleSupplement: null,
-      lifecycleIsSupplemental: true,
-    });
-  }
-  projectId = `${idPrefix}-${randomUUID()}`;
-  const now = new Date().toISOString();
-  await harness.invokeOk(page, "project_create", {
-    payload: {
-      requestId: `c2-zc-journey-project-create:${projectId}`,
-      projectId,
-      sessionId: C2ZC_PRODUCT_JOURNEY_ID,
-      eventUid: `c2-zc-journey-project-create-event:${projectId}`,
-      origin: "human",
-      originalTransactionId: null,
-      undoJournalId: null,
-      title,
-      genre: null,
-      pov: null,
-      tense: null,
-      language: "ja",
-      styleGuide: null,
-      aiInstructions: null,
-      outline: null,
-      targetReaders: null,
-      createdAt: now,
-      updatedAt: now,
-    },
-  });
-  if (typeof harness.recordTimeline === "function") {
-    harness.recordTimeline("c2-zc-project-created-with-binding", {
-      label,
-      projectId,
-      binding,
-      lifecycleSupplement: null,
-      lifecycleIsSupplemental: true,
-    });
-  }
-  return projectId;
-}
-
-/**
- * Restore/reload keeps the same workspace.  The project birth is authorized
- * by the durable Native workspace binding; a document-local lifecycle trace
- * is intentionally not a prerequisite.
- */
-export async function createProjectAfterRestoredBinding(
-  harness,
-  page,
-  workspace,
-  options = {},
-) {
-  return createProjectWithC2ZcWorkspaceBinding(harness, page, workspace, {
-    ...options,
-    label: options.label ?? "C2-ZC restored workspace binding",
-    observeLifecycle: false,
-  });
-}
-
-/**
- * A true post-marker fresh launch may expose a lifecycle transition, but the
- * durable binding remains the authority proof and project_create never waits
- * on the supplemental trace.
- */
-export async function createProjectAfterFreshLaunch(
-  harness,
-  page,
-  workspace,
-  options = {},
-) {
-  return createProjectWithC2ZcWorkspaceBinding(harness, page, workspace, {
-    ...options,
-    label: options.label ?? "C2-ZC fresh workspace binding",
-    observeLifecycle: true,
-  });
-}
-
-/**
- * Append one real primary-project Feed event while the restore launch still
- * has setup/Freshness disabled.  This is a typed Scene metadata writer for
- * the fixture's existing source identity, so the two-project hold observes
- * an actual A event that can evaluate the restored Edge before B is selected;
- * no Feed or Freshness authority table is seeded by fixture SQL.
- */
-export async function createPrimaryTypedFeedMutation(harness, page, projectId) {
-  const current = await queryRows(
-    harness,
-    page,
-    `SELECT id, version,
-            story_time_order AS storyTimeOrder,
-            story_time_label AS storyTimeLabel,
-            chronicle_start_time AS startTime,
-            chronicle_start_minute AS startMinute,
-            chronicle_start_granularity AS startGranularity,
-            chronicle_end_time AS endTime,
-            chronicle_end_minute AS endMinute,
-            chronicle_end_granularity AS endGranularity,
-            chronicle_precision AS precision
-       FROM tree_nodes
-      WHERE project_id = ? AND node_type = 'scene'
-      ORDER BY id
-      LIMIT 1`,
+    `SELECT id, project_id AS projectId,
+            run_kind AS runKind, work_key AS workKey, status,
+            semantic_epoch_id AS semanticEpochId,
+            outcome_summary_json AS outcomeSummaryJson,
+            created_at AS createdAt, started_at AS startedAt,
+            completed_at AS completedAt, version
+       FROM narrative_extraction_runs
+      WHERE project_id = ?
+      ORDER BY created_at, id`,
     [projectId],
   );
-  if (
-    current.length !== 1 ||
-    typeof current[0]?.id !== "string" ||
-    !Number.isSafeInteger(Number(current[0]?.version))
-  ) {
-    throw new Error(
-      "C2-ZC primary typed Feed mutation could not read Scene OCC state",
-    );
-  }
-  const requestId = `c2-zc-primary-feed:${projectId}:${randomUUID()}`;
-  const nextStoryTimeLabel = `${current[0].storyTimeLabel ?? ""} [C2-ZC typed Feed]`;
-  const result = await harness.invokeOk(page, "temporal_scene_patch", {
-    payload: {
-      projectId,
-      requestId,
-      sessionId: C2ZC_PRODUCT_JOURNEY_ID,
-      eventUid: `${requestId}:event`,
-      origin: "human",
-      authorityRoute: "human-direct",
-      caller: "typed-domain-api",
-      controls: [
-        "runtime-policy",
-        "actor-context",
-        "typed-writer",
-        "occ",
-        "change-event",
-        "change-feed",
-      ],
-      provenance: null,
-      writesAuthorityProtectedField: false,
-      originalTransactionId: null,
-      undoJournalId: null,
-      targetId: current[0].id,
-      baseVersion: Number(current[0].version),
-      storyTimeOrder: current[0].storyTimeOrder ?? null,
-      storyTimeLabel: nextStoryTimeLabel,
-      startTime: current[0].startTime ?? null,
-      startMinute: current[0].startMinute ?? null,
-      startGranularity: current[0].startGranularity ?? "none",
-      endTime: current[0].endTime ?? null,
-      endMinute: current[0].endMinute ?? null,
-      endGranularity: current[0].endGranularity ?? "none",
-      precision: current[0].precision ?? "exact",
-    },
-  });
-  if (result?.sceneId !== current[0].id) {
-    throw new Error(
-      `C2-ZC primary typed Scene mutation did not commit: ${JSON.stringify(result)}`,
-    );
-  }
-  const events = await queryRows(
-    harness,
-    page,
-    `SELECT event.id AS eventId,
-            event.canonical_sequence AS canonicalSequence,
-            transaction_row.request_id AS requestId
-       FROM narrative_change_events event
-       JOIN narrative_change_transactions transaction_row
-         ON transaction_row.project_id = event.project_id
-        AND transaction_row.id = event.transaction_id
-      WHERE event.project_id = ?
-        AND transaction_row.request_id = ?
-      ORDER BY event.canonical_sequence, event.event_ordinal, event.id`,
-    [projectId, requestId],
-  );
-  if (
-    events.length !== 1 ||
-    events[0].requestId !== requestId ||
-    !Number.isSafeInteger(Number(events[0].canonicalSequence))
-  ) {
-    throw new Error(
-      `C2-ZC primary typed Project mutation did not append exactly one Feed event: ${JSON.stringify(events)}`,
-    );
-  }
-  return {
-    projectId,
-    requestId,
-    eventId: events[0].eventId,
-    canonicalSequence: Number(events[0].canonicalSequence),
-  };
 }
 
-/**
- * Read a convergence observation from several independent SQL queries.  This
- * helper is deliberately not an atomic transaction/snapshot; transactional
- * authority and marker guarantees are asserted by the shared-Rust evidence
- * bound in `assertC2ZcWorkspaceCutoverReceipt`.
- */
-async function readAuthoritySnapshot(harness, page, projectId) {
+/** Read live durable values without inventing a second maintenance engine. */
+export async function readC2ZcAuthoritySnapshot(harness, page, projectId) {
   const [
     markerRows,
-    projectInventoryRows,
     epochs,
-    runRows,
+    runs,
     genericRows,
-    dependencyEdges,
-    legacyFreshness,
-    legacyDependencies,
-    findingLifecycle,
-    findingObservations,
-    inboxEntries,
-    feedAndCursorRows,
-    feedEvents,
-    changeSets,
-    proposalSets,
-    proposals,
-    proposalRevisions,
-    proposalDecisions,
-    applyCommits,
-    applyOperations,
+    legacyProjection,
+    feedCursorRows,
     applications,
-    commitJournals,
     codexEntries,
+    projectInventory,
+    findingRows,
+    inboxEntries,
   ] = await Promise.all([
     queryRows(
       harness,
@@ -3245,14 +901,6 @@ async function readAuthoritySnapshot(harness, page, projectId) {
     queryRows(
       harness,
       page,
-      `SELECT id AS projectId
-         FROM projects
-        ORDER BY id`,
-      [],
-    ),
-    queryRows(
-      harness,
-      page,
       `SELECT id, project_id AS projectId,
               epoch_number AS epochNumber, reason,
               created_at AS createdAt
@@ -3261,36 +909,7 @@ async function readAuthoritySnapshot(harness, page, projectId) {
         ORDER BY epoch_number, id`,
       [projectId],
     ),
-    queryRows(
-      harness,
-      page,
-      `SELECT id, project_id AS projectId,
-              run_kind AS runKind, work_key AS workKey, status,
-              semantic_epoch_id AS semanticEpochId,
-              consumer_id AS consumerId,
-              surface_path_id AS surfacePathId,
-              scope_json AS scopeJson,
-              spec_json AS specJson,
-              spec_digest AS specDigest,
-              snapshot_digest AS snapshotDigest,
-              catalog_digest AS catalogDigest,
-              registry_digest AS registryDigest,
-              coverage_json AS coverageJson,
-              outcome_summary_json AS outcomeSummaryJson,
-              terminal_reason_code AS terminalReasonCode,
-              created_at AS createdAt, started_at AS startedAt,
-              completed_at AS completedAt,
-              version,
-              superseded_by_run_id AS supersededByRunId,
-              request_id AS requestId,
-              idempotency_domain AS idempotencyDomain,
-              request_payload_digest AS requestPayloadDigest,
-              actor_id AS actorId
-         FROM narrative_extraction_runs
-        WHERE project_id = ?
-        ORDER BY created_at, id`,
-      [projectId],
-    ),
+    readC2ZcRunLedger(harness, page, projectId),
     queryRows(
       harness,
       page,
@@ -3305,319 +924,73 @@ async function readAuthoritySnapshot(harness, page, projectId) {
               updated_at AS updatedAt
          FROM narrative_consumer_freshness
         WHERE project_id = ? AND consumer_kind = ?
-        ORDER BY consumer_kind, consumer_key`,
+        ORDER BY consumer_key`,
       [projectId, C2ZC_FRESHNESS_CONSUMER_KIND],
     ),
     queryRows(
       harness,
       page,
-      `SELECT id AS edgeId,
-              project_id AS projectId,
-              consumer_kind AS consumerKind,
-              consumer_key AS consumerKey,
-              source_object_identity AS sourceObjectIdentity,
-              read_set_json AS readSetJson,
-              generated_by_transaction_id AS generatedByTransactionId,
-              created_at AS createdAt,
-              owning_run_id AS owningRunId
-         FROM narrative_dependency_edges
-        WHERE project_id = ?
-        ORDER BY consumer_kind, consumer_key, source_object_identity, id`,
+      `SELECT application.id AS applicationId,
+              freshness.status AS status,
+              freshness.reason_json AS reasonJson,
+              freshness.version AS version,
+              freshness.updated_at AS updatedAt
+         FROM narrative_projection_freshness freshness
+         JOIN narrative_proposal_applications application
+           ON application.id = freshness.application_id
+         JOIN narrative_apply_commits commit_row
+           ON commit_row.id = application.commit_id
+        WHERE commit_row.project_id = ?
+        ORDER BY application.id`,
       [projectId],
     ),
-    queryRows(
-      harness,
-      page,
-      `SELECT a.id AS applicationId,
-              f.status,
-              f.reason_json AS reasonJson,
-              f.version,
-              f.updated_at AS updatedAt
-         FROM narrative_projection_freshness f
-         JOIN narrative_proposal_applications a ON a.id = f.application_id
-         JOIN narrative_apply_commits c ON c.id = a.commit_id
-        WHERE c.project_id = ?
-        ORDER BY a.id`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT a.id AS applicationId,
-              d.source_kind AS sourceKind,
-              d.source_key AS sourceKey,
-              d.observed_revision_token AS observedRevisionToken,
-              d.propagation
-         FROM narrative_projection_dependencies d
-         JOIN narrative_proposal_applications a ON a.id = d.application_id
-         JOIN narrative_apply_commits c ON c.id = a.commit_id
-        WHERE c.project_id = ?
-        ORDER BY a.id, d.source_kind, d.source_key`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT id,
-              project_id AS projectId,
-              finding_identity AS findingIdentity,
-              finding_key AS findingKey,
-              rule_id AS ruleId,
-              rule_version AS ruleVersion,
-              lifecycle_state AS lifecycleState,
-              observation_digest AS observationDigest,
-              material_basis_digest AS materialBasisDigest,
-              run_id AS runId,
-              semantic_epoch_id AS semanticEpochId,
-              observed_at AS observedAt
-         FROM narrative_maintenance_finding_lifecycle
-        WHERE project_id = ?
-        ORDER BY observed_at, id`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT id,
-              project_id AS projectId,
-              run_id AS runId,
-              semantic_epoch_id AS semanticEpochId,
-              edge_id AS edgeId,
-              finding_key AS findingKey,
-              reason_code AS reasonCode,
-              evidence_freshness_snapshot AS evidenceFreshnessSnapshot,
-              material_basis_digest AS materialBasisDigest,
-              observed_at AS observedAt,
-              finding_identity AS findingIdentity,
-              rule_id AS ruleId,
-              rule_version AS ruleVersion,
-              observation_digest AS observationDigest
-         FROM narrative_maintenance_finding_observations
-        WHERE project_id = ?
-        ORDER BY observed_at, id`,
-      [projectId],
-    ),
-    readC2ZcMaintenanceInbox(harness, page, projectId),
     queryRows(
       harness,
       page,
       `SELECT COALESCE(MAX(canonical_sequence), 0) AS feedHead,
               (SELECT acknowledged_through_sequence
                  FROM narrative_change_cursors
-                WHERE project_id = ?
-                  AND consumer_id = 'narrative-incremental-freshness/v1'
+                WHERE project_id = ? AND consumer_id = ?
                 LIMIT 1) AS acknowledgedThrough,
               (SELECT reserved_through_sequence
                  FROM narrative_change_cursors
-                WHERE project_id = ?
-                  AND consumer_id = 'narrative-incremental-freshness/v1'
+                WHERE project_id = ? AND consumer_id = ?
                 LIMIT 1) AS reservedThrough,
               (SELECT active_run_id
                  FROM narrative_change_cursors
-                WHERE project_id = ?
-                  AND consumer_id = 'narrative-incremental-freshness/v1'
+                WHERE project_id = ? AND consumer_id = ?
                 LIMIT 1) AS activeRunId,
               (SELECT semantic_epoch_id
                  FROM narrative_change_cursors
-                WHERE project_id = ?
-                  AND consumer_id = 'narrative-incremental-freshness/v1'
+                WHERE project_id = ? AND consumer_id = ?
                 LIMIT 1) AS semanticEpochId,
               (SELECT last_error
                  FROM narrative_change_cursors
-                WHERE project_id = ?
-                  AND consumer_id = 'narrative-incremental-freshness/v1'
-                LIMIT 1) AS lastError,
-              (SELECT COUNT(*)
-                 FROM narrative_change_cursors
-                WHERE project_id = ?
-                  AND consumer_id = 'narrative-incremental-freshness/v1') AS cursorPresent
+                WHERE project_id = ? AND consumer_id = ?
+                LIMIT 1) AS lastError
          FROM narrative_change_events
         WHERE project_id = ?`,
       [
         projectId,
+        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
         projectId,
+        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
         projectId,
+        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
         projectId,
+        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
         projectId,
-        projectId,
+        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
         projectId,
       ],
     ),
     queryRows(
       harness,
       page,
-      `SELECT event.id AS eventId,
-              event.canonical_sequence AS canonicalSequence,
-              event.event_ordinal AS eventOrdinal,
-              event.transaction_id AS transactionId,
-              event.canonical_change_event_uid AS canonicalChangeEventUid,
-              event.object_key_json AS objectKeyJson,
-              event.change_kind AS changeKind,
-              event.mutation_kind AS mutationKind,
-              transaction_row.request_id AS requestId,
-              transaction_row.source_domain AS sourceDomain,
-              transaction_row.cause_kind AS causeKind,
-              transaction_row.origin,
-              transaction_row.application_ids_json AS applicationIdsJson
-         FROM narrative_change_events event
-         LEFT JOIN narrative_change_transactions transaction_row
-           ON transaction_row.project_id = event.project_id
-          AND transaction_row.id = event.transaction_id
-        WHERE event.project_id = ?
-        ORDER BY event.canonical_sequence, event.event_ordinal, event.id`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT id AS changeSetId,
-              project_id AS projectId,
-              from_sequence_exclusive AS fromSequenceExclusive,
-              through_sequence_inclusive AS throughSequenceInclusive,
-              event_ids_json AS eventIdsJson,
-              affected_objects_json AS affectedObjectsJson,
-              digest
-         FROM narrative_change_sets
-        WHERE project_id = ?
-        ORDER BY from_sequence_exclusive, through_sequence_inclusive, id`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT id AS proposalSetId,
-              run_id AS runId,
-              project_id AS projectId,
-              set_kind AS setKind,
-              status,
-              summary_json AS summaryJson,
-              created_at AS createdAt,
-              updated_at AS updatedAt,
-              version
-         FROM narrative_proposal_sets
-        WHERE project_id = ?
-        ORDER BY id`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT proposal.id AS proposalId,
-              proposal.proposal_set_id AS proposalSetId,
-              proposal.proposal_key AS proposalKey,
-              proposal.kind,
-              proposal.status,
-              proposal.payload_json AS payloadJson,
-              proposal.current_revision_id AS currentRevisionId,
-              proposal.created_at AS createdAt,
-              proposal.updated_at AS updatedAt
-         FROM narrative_proposals proposal
-         JOIN narrative_proposal_sets proposal_set
-           ON proposal_set.id = proposal.proposal_set_id
-        WHERE proposal_set.project_id = ?
-        ORDER BY proposal.id`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT revision.id AS revisionId,
-              revision.proposal_id AS proposalId,
-              revision.revision_number AS revisionNumber,
-              revision.payload_json AS payloadJson,
-              revision.plan_fragment_json AS planFragmentJson,
-              revision.plan_fragment_digest AS planFragmentDigest,
-              revision.origin_kind AS originKind,
-              revision.reconciliation_envelope_json AS reconciliationEnvelopeJson,
-              revision.reconciliation_envelope_digest AS reconciliationEnvelopeDigest,
-              revision.created_at AS createdAt,
-              revision.created_by AS createdBy
-         FROM narrative_proposal_revisions revision
-         JOIN narrative_proposals proposal ON proposal.id = revision.proposal_id
-         JOIN narrative_proposal_sets proposal_set
-           ON proposal_set.id = proposal.proposal_set_id
-        WHERE proposal_set.project_id = ?
-        ORDER BY revision.proposal_id, revision.revision_number, revision.id`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT decision.id AS decisionId,
-              decision.proposal_id AS proposalId,
-              decision.revision_id AS revisionId,
-              decision.decision,
-              decision.decision_json AS decisionJson,
-              decision.created_at AS createdAt,
-              decision.created_by AS createdBy,
-              decision.actor_kind AS actorKind,
-              decision.actor_id AS actorId,
-              decision.authority_scope AS authorityScope,
-              decision.override_field_paths_json AS overrideFieldPathsJson
-         FROM narrative_proposal_decisions decision
-         JOIN narrative_proposals proposal ON proposal.id = decision.proposal_id
-         JOIN narrative_proposal_sets proposal_set
-           ON proposal_set.id = proposal.proposal_set_id
-        WHERE proposal_set.project_id = ?
-        ORDER BY decision.proposal_id, decision.created_at, decision.id`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT id AS commitId,
-              project_id AS projectId,
-              run_id AS runId,
-              proposal_set_id AS proposalSetId,
-              request_id AS requestId,
-              plan_digest AS planDigest,
-              status,
-              receipt_json AS receiptJson,
-              error_message AS errorMessage,
-              prepared_plan_json AS preparedPlanJson,
-              prepared_policy_version AS preparedPolicyVersion,
-              prepared_at AS preparedAt,
-              authority_digest AS authorityDigest,
-              session_id AS sessionId,
-              created_at AS createdAt,
-              completed_at AS completedAt,
-              version
-         FROM narrative_apply_commits
-        WHERE project_id = ?
-        ORDER BY created_at, id`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT operation.id AS operationId,
-              operation.commit_id AS commitId,
-              operation.operation_index AS operationIndex,
-              operation.operation_kind AS operationKind,
-              operation.payload_json AS payloadJson,
-              operation.result_entity_kind AS resultEntityKind,
-              operation.result_entity_id AS resultEntityId,
-              operation.status,
-              operation.created_at AS createdAt
-         FROM narrative_apply_operations operation
-         JOIN narrative_apply_commits commit_row
-           ON commit_row.id = operation.commit_id
-        WHERE commit_row.project_id = ?
-        ORDER BY operation.commit_id, operation.operation_index, operation.id`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT application.id AS applicationId,
-              application.commit_id AS commitId,
-              application.proposal_id AS proposalId,
-              application.revision_id AS revisionId,
-              application.applied_entity_kind AS appliedEntityKind,
-              application.applied_entity_id AS appliedEntityId,
-              application.created_at AS createdAt,
-              application.application_kind AS applicationKind,
-              application.compensates_application_id AS compensatesApplicationId
+      `SELECT id AS applicationId, commit_id AS commitId,
+              proposal_id AS proposalId, revision_id AS revisionId,
+              applied_entity_kind AS appliedEntityKind,
+              applied_entity_id AS appliedEntityId, created_at AS createdAt
          FROM narrative_proposal_applications application
          JOIN narrative_apply_commits commit_row
            ON commit_row.id = application.commit_id
@@ -3628,193 +1001,292 @@ async function readAuthoritySnapshot(harness, page, projectId) {
     queryRows(
       harness,
       page,
-      `SELECT journal.id AS journalId,
-              journal.commit_id AS commitId,
-              journal.project_id AS projectId,
-              journal.before_json AS beforeJson,
-              journal.after_json AS afterJson,
-              journal.created_at AS createdAt
-         FROM narrative_commit_journals journal
-        WHERE journal.project_id = ?
-        ORDER BY journal.commit_id, journal.id`,
-      [projectId],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT id AS entryId,
-              project_id AS projectId,
-              parent_id AS parentId,
-              type,
-              name,
-              aliases,
-              excluded_aliases AS excludedAliases,
-              summary,
-              content,
-              icon,
-              tags_cache AS tagsCache,
-              context_mode AS contextMode,
-              children_budget AS childrenBudget,
-              source_chat_message_id AS sourceChatMessageId,
-              notes,
-              created_at AS createdAt,
-              updated_at AS updatedAt
-              ,version,
-              readings
+      `SELECT id AS entryId, project_id AS projectId, name, type_slug AS typeSlug
          FROM codex_entries
         WHERE project_id = ?
         ORDER BY id`,
       [projectId],
     ),
+    queryRows(
+      harness,
+      page,
+      "SELECT id AS projectId FROM projects ORDER BY id",
+    ),
+    queryRows(
+      harness,
+      page,
+      `SELECT id, finding_identity AS findingIdentity,
+              lifecycle_state AS lifecycleState,
+              semantic_epoch_id AS semanticEpochId
+         FROM narrative_maintenance_finding_lifecycle
+        WHERE project_id = ?
+        ORDER BY id`,
+      [projectId],
+    ),
+    readInbox(harness, page, projectId),
   ]);
-  const runs = await readC2ZcRunLedger(harness, page, projectId, runRows);
-  const unresolvedFindings = latestC2ZcFindingLifecycle(
-    findingLifecycle,
-    epochs,
-  );
-  const inboxFindings = activeC2ZcInboxEntries(inboxEntries);
-  const pendingRuns = runs.filter(
-    (run) =>
-      C2ZC_SETTLING_RUN_KINDS.has(run.runKind) &&
-      (run.status === "pending" || run.status === "running"),
-  );
-  const legacyProjection = {
-    freshness: legacyFreshness,
-    dependencies: legacyDependencies,
-  };
-  const latestVerifyRun = [...runs]
-    .reverse()
-    .find(
-      (run) =>
-        run.runKind === "dependency-verify" && run.status === "completed",
-    );
-  let verifyCoverage = null;
-  let semanticIndexCounts = null;
-  if (latestVerifyRun) {
-    const verify = assertC2ZcVerifyCoverage(
-      latestVerifyRun,
-      "C2-ZC persisted Verify",
-    );
-    verifyCoverage = verify.checkCoverage;
-    semanticIndexCounts = assertC2ZcSemanticIndexZero(
-      latestVerifyRun,
-      "C2-ZC persisted Verify Semantic Index",
-    );
-  }
-  const feedRow = feedAndCursorRows[0] ?? {};
-  const currentEpochId = epochs.at(-1)?.id ?? null;
-  const expectedGenericConsumers = dependencyEdges
-    .filter(
-      (edge) =>
-        edge.consumerKind === C2ZC_FRESHNESS_CONSUMER_KIND &&
-        edge.projectId === projectId,
-    )
-    .reduce((consumers, edge) => {
-      const key = `${edge.projectId}\0${edge.consumerKind}\0${edge.consumerKey}`;
-      if (!consumers.some((consumer) => consumer.key === key)) {
-        consumers.push({
-          key,
-          projectId: edge.projectId,
-          consumerKind: edge.consumerKind,
-          consumerKey: edge.consumerKey,
-          semanticEpochId: currentEpochId,
-        });
-      }
-      return consumers;
-    }, [])
-    .map(({ key: _key, ...consumer }) => consumer);
+  const feedCursor = feedCursorRows[0] ?? null;
+  const currentEpoch = epochs.at(-1) ?? null;
   return {
     projectId,
-    projectInventory: projectInventoryRows.map(({ projectId: id }) => ({
-      projectId: id,
-    })),
-    marker: markerRows[0] ?? null,
+    projectInventory,
     markerRows,
+    marker: markerRows[0] ?? null,
     epochs,
+    currentEpochId: currentEpoch?.id ?? null,
     runs,
-    verifyRunId: latestVerifyRun?.id ?? null,
-    verifyCoverage,
-    semanticIndexCounts,
     genericRows,
-    genericCount: genericRows.length,
-    expectedGenericConsumers,
-    dependencyEdges,
     legacyProjection,
-    legacyCount: legacyFreshness.length + legacyDependencies.length,
-    findingLifecycle,
-    findingObservations,
-    unresolvedFindings,
+    feedCursor,
+    applications,
+    codexEntries,
+    findingRows,
     inboxEntries,
-    inboxFindings,
-    feedEvents,
-    changeSets,
-    typedArtifacts: {
-      proposalSets,
-      proposals,
-      proposalRevisions,
-      proposalDecisions,
-      applyCommits,
-      applyOperations,
-      applications,
-      commitJournals,
-      codexEntries,
-    },
-    pendingRuns,
-    feedAndCursor: {
-      feedHead: Number(feedRow.feedHead ?? 0),
-      cursor: {
-        acknowledgedThrough:
-          feedRow.acknowledgedThrough === null ||
-          feedRow.acknowledgedThrough === undefined
-            ? null
-            : Number(feedRow.acknowledgedThrough),
-        reservedThrough:
-          feedRow.reservedThrough === null ||
-          feedRow.reservedThrough === undefined
-            ? null
-            : Number(feedRow.reservedThrough),
-        activeRunId: feedRow.activeRunId ?? null,
-        semanticEpochId: feedRow.semanticEpochId ?? null,
-        lastError: feedRow.lastError ?? null,
-        cursorPresent: Number(feedRow.cursorPresent ?? 0) > 0,
-      },
-    },
     projectSettled:
-      pendingRuns.length === 0 &&
-      unresolvedFindings.length === 0 &&
-      inboxFindings.length === 0,
+      runs.length > 0 && runs.every((run) => run.status === "completed"),
   };
 }
 
-/**
- * Create one real post-marker Application through the existing typed
- * extraction/review/Apply route. This is intentionally a small Codex entry
- * mutation: it exercises the production Application writer and Change Feed
- * without adding a cutover/writer IPC or seeding authority tables from SQL.
- */
-export async function createPostMarkerTypedApplication(
+function initialEpoch(epochs, label) {
+  const values = rows(epochs, `${label} epochs`);
+  const epoch = values.find((candidate) => Number(candidate.epochNumber) === 0);
+  if (!epoch || epoch.reason !== "initial" || typeof epoch.id !== "string") {
+    throw new Error(`${label} must retain an initial E0 epoch`);
+  }
+  return epoch;
+}
+
+function restoredEpoch(epochs, label) {
+  const values = rows(epochs, `${label} epochs`);
+  const e0 = initialEpoch(values, label);
+  const e1 = values.find((candidate) => Number(candidate.epochNumber) === 1);
+  if (!e1 || e1.reason !== "restore" || e1.id === e0.id) {
+    throw new Error(`${label} must contain restored E1 after E0`);
+  }
+  return { e0, e1 };
+}
+
+function assertSameEpochLineage(before, after, label) {
+  const left = rows(before, `${label} before epochs`);
+  const right = rows(after, `${label} after epochs`);
+  if (
+    left.length !== right.length ||
+    left.some((epoch, index) => stableJson(epoch) !== stableJson(right[index]))
+  ) {
+    throw new Error(`${label} changed the persisted Semantic Epoch lineage`);
+  }
+  return right;
+}
+
+/** Verify -> optional Rebuild -> confirmation Verify -> Freshness. */
+export function assertC2ZcRestoreLifecycleOrder(
+  runValues,
+  { currentEpochId, restoreEpochId, rustOutcome } = {},
+  label = "C2-ZC restore lifecycle",
+) {
+  const runsValue = rows(runValues, `${label} runs`);
+  const completed = runsValue.filter((run) => run.status === "completed");
+  const verifyRuns = completed.filter(
+    (run) => run.runKind === "dependency-verify",
+  );
+  if (verifyRuns.length === 0) throw new Error(`${label} is missing Verify`);
+  const firstVerify = verifyRuns[0];
+  if (
+    restoreEpochId !== undefined &&
+    firstVerify.semanticEpochId !== restoreEpochId
+  ) {
+    throw new Error(
+      `${label} first Verify is not bound to the restored E1 Semantic Epoch`,
+    );
+  }
+  const firstReport = reportOf(firstVerify, `${label} first Verify`).report;
+  const firstCoverage = assertC2ZcVerifyCoverage(
+    firstVerify,
+    rustOutcome,
+    `${label} first Verify`,
+  );
+  let finalVerify = firstVerify;
+  let endIndex = runsValue.indexOf(firstVerify);
+  if (firstReport.rebuildRequired === true) {
+    const rebuild = completed.find(
+      (run) =>
+        runsValue.indexOf(run) > endIndex &&
+        run.runKind === "semantic-index-rebuild",
+    );
+    if (!rebuild) throw new Error(`${label} requires a conditional Rebuild`);
+    const rebuildIndex = runsValue.indexOf(rebuild);
+    finalVerify = completed.find(
+      (run) =>
+        runsValue.indexOf(run) > rebuildIndex &&
+        run.runKind === "dependency-verify",
+    );
+    if (!finalVerify) {
+      throw new Error(`${label} is missing the confirmation Verify`);
+    }
+    endIndex = runsValue.indexOf(finalVerify);
+  }
+  const finalReport = reportOf(finalVerify, `${label} final Verify`).report;
+  if (
+    restoreEpochId !== undefined &&
+    finalVerify.semanticEpochId !== restoreEpochId
+  ) {
+    throw new Error(
+      `${label} confirmation Verify is not bound to the restored E1 Semantic Epoch`,
+    );
+  }
+  if (finalReport.rebuildRequired !== false) {
+    throw new Error(`${label} final Verify still requests Rebuild`);
+  }
+  const finalCoverage = assertC2ZcVerifyCoverage(
+    finalVerify,
+    rustOutcome ?? firstCoverage.outcome,
+    `${label} final Verify`,
+  );
+  const freshness = completed.find(
+    (run) =>
+      runsValue.indexOf(run) > endIndex &&
+      run.runKind === "freshness-evaluation" &&
+      (currentEpochId === undefined || run.semanticEpochId === currentEpochId),
+  );
+  if (!freshness) throw new Error(`${label} is missing post-Verify Freshness`);
+  return {
+    firstVerify,
+    rebuild:
+      firstReport.rebuildRequired === true
+        ? completed.find(
+            (run) =>
+              runsValue.indexOf(run) > runsValue.indexOf(firstVerify) &&
+              run.runKind === "semantic-index-rebuild",
+          )
+        : null,
+    finalVerify,
+    firstCoverage,
+    finalCoverage,
+    freshness,
+  };
+}
+
+export function assertC2ZcRestartInvariants({
+  before,
+  restart,
+  label = "C2-ZC first restart",
+} = {}) {
+  if (!before || !restart) throw new Error(`${label} requires both snapshots`);
+  if (before.projectId !== restart.projectId) {
+    throw new Error(`${label} changed the project authority`);
+  }
+  assertC2ZcMarkerExactlyOnce(before, `${label} before marker`);
+  assertC2ZcMarkerExactlyOnce(restart, `${label} after marker`);
+  if (stableJson(before.markerRows) !== stableJson(restart.markerRows)) {
+    throw new Error(`${label} changed the persisted authority marker`);
+  }
+  assertSameEpochLineage(before.epochs, restart.epochs, label);
+  if (
+    before.currentEpochId !== undefined &&
+    before.currentEpochId !== restart.currentEpochId
+  ) {
+    throw new Error(`${label} changed the current Semantic Epoch authority`);
+  }
+  assertC2ZcLegacyProjectionStable(
+    before.legacyProjection,
+    restart.legacyProjection,
+    `${label} Legacy projection`,
+  );
+  const beforeIds = new Set(
+    rows(before.runs, `${label} before runs`).map((run) => run.id),
+  );
+  const restartRuns = rows(restart.runs, `${label} restart runs`);
+  if ([...beforeIds].some((id) => !restartRuns.some((run) => run.id === id))) {
+    throw new Error(`${label} lost a durable Run identity`);
+  }
+  if (
+    restartRuns.some(
+      (run) =>
+        run.runKind === "backfill" &&
+        run.semanticEpochId === restart.epochs.at(-1)?.id,
+    )
+  ) {
+    throw new Error(`${label} minted an E1 Backfill on restart`);
+  }
+  return restart;
+}
+
+export function assertC2ZcFinalRestartPersistence({
+  before,
+  restart,
+  application,
+  label = "C2-ZC final restart",
+} = {}) {
+  assertC2ZcRestartInvariants({ before, restart, label });
+  if (!application?.applicationId) {
+    throw new Error(`${label} requires the typed Application identity`);
+  }
+  assertC2ZcGenericFreshnessStorage(
+    restart,
+    {
+      projectId: application.projectId,
+      applicationId: application.applicationId,
+      epochId: restart.currentEpochId ?? restart.epochs.at(-1)?.id,
+    },
+    `${label} Generic storage`,
+  );
+  if (
+    !restart.applications.some(
+      (row) => row.applicationId === application.applicationId,
+    ) ||
+    !restart.codexEntries.some((row) => row.entryId === application.entryId)
+  ) {
+    throw new Error(`${label} lost the typed Application or Generic entity`);
+  }
+  return restart;
+}
+
+function stablePayloadDigest(value) {
+  return `sha256:${createHash("sha256").update(stableJson(value), "utf8").digest("hex")}`;
+}
+
+async function captureWorkspaceBinding(harness, page, workspace, label) {
+  const binding = await harness.invokeOk(
+    page,
+    "narrative_extraction_capture_workspace_binding",
+    { expectedWorkspacePath: workspace },
+  );
+  if (
+    !isObject(binding) ||
+    typeof binding.authorityId !== "string" ||
+    binding.authorityId.trim() === "" ||
+    !Number.isSafeInteger(Number(binding.generation)) ||
+    Number(binding.generation) <= 0 ||
+    typeof binding.authorityInstanceId !== "string" ||
+    binding.authorityInstanceId.trim() === ""
+  ) {
+    throw new Error(`${label} returned an invalid Native workspace binding`);
+  }
+  return {
+    authorityId: binding.authorityId,
+    generation: Number(binding.generation),
+    authorityInstanceId: binding.authorityInstanceId,
+  };
+}
+
+/** One real typed producer/Application write after the canonical marker. */
+export async function createTypedApplicationAfterMarker(
   harness,
   page,
   workspace,
   projectId,
 ) {
-  const workspaceBinding = await captureC2ZcWorkspaceBinding(
+  const workspaceBinding = await captureWorkspaceBinding(
     harness,
     page,
     workspace,
-    "C2-ZC post-marker typed Application",
+    "C2-ZC typed Application",
   );
-  const runId = `c2-zc-post-marker-run-${randomUUID()}`;
+  const runId = `c2-zc-typed-run-${randomUUID()}`;
   const taskId = `${runId}-task`;
-  const snapshotDigest = sha256Canonical({
-    kind: "c2-zc-post-marker-snapshot@1",
-    runId,
-  });
-  const specJson = {
-    kind: "c2-zc-post-marker-application@1",
-    version: 1,
-    projectId,
-  };
+  const snapshot = { kind: "c2-zc-typed-source@1", projectId, runId };
+  const snapshotDigest = stablePayloadDigest(snapshot);
+  const specJson = { kind: "c2-zc-typed-application@1", version: 1, projectId };
   const createdRun = await harness.invokeOk(
     page,
     "narrative_extraction_create_run",
@@ -3822,10 +1294,10 @@ export async function createPostMarkerTypedApplication(
       payload: {
         runId,
         projectId,
-        surfacePathId: "c2-zc-post-marker-application",
+        surfacePathId: "c2-zc-typed-application",
         scopeJson: { projectId },
         specJson,
-        specDigest: sha256Canonical(specJson),
+        specDigest: stablePayloadDigest(specJson),
         snapshotDigest,
         catalogDigest: null,
         registryDigest: null,
@@ -3833,8 +1305,8 @@ export async function createPostMarkerTypedApplication(
         tasks: [
           {
             taskId,
-            taskKind: "c2-zc-post-marker-application",
-            inputJson: { kind: "c2-zc-post-marker-source@1" },
+            taskKind: "c2-zc-typed-application",
+            inputJson: snapshot,
             priority: 1,
           },
         ],
@@ -3844,10 +1316,10 @@ export async function createPostMarkerTypedApplication(
   );
   if (createdRun?.runId !== runId || createdRun?.status !== "running") {
     throw new Error(
-      `C2-ZC post-marker typed Application Run was not created: ${JSON.stringify(createdRun)}`,
+      `C2-ZC typed Application Run was not created: ${JSON.stringify(createdRun)}`,
     );
   }
-  const leaseOwner = `c2-zc-post-marker-journey:${randomUUID()}`;
+  const leaseOwner = `c2-zc-typed-journey:${randomUUID()}`;
   const claimed = await harness.invokeOk(
     page,
     "narrative_extraction_claim_task",
@@ -3857,7 +1329,7 @@ export async function createPostMarkerTypedApplication(
         projectId,
         leaseOwner,
         leaseDurationSecs: 60,
-        taskKinds: ["c2-zc-post-marker-application"],
+        taskKinds: ["c2-zc-typed-application"],
       },
       workspaceBinding,
     },
@@ -3865,23 +1337,39 @@ export async function createPostMarkerTypedApplication(
   if (
     claimed?.claimed !== true ||
     claimed.task?.taskId !== taskId ||
-    typeof claimed.task?.attemptId !== "string" ||
-    claimed.task.attemptId.trim() === ""
+    typeof claimed.task?.attemptId !== "string"
   ) {
     throw new Error(
-      `C2-ZC post-marker typed Application Task was not claimed: ${JSON.stringify(claimed)}`,
+      `C2-ZC typed Application Task was not claimed: ${JSON.stringify(claimed)}`,
     );
   }
   const attemptId = claimed.task.attemptId;
-
   const proposalSetId = `${runId}-proposal-set`;
   const proposalId = `${runId}-proposal`;
   const entryId = `${runId}-entry`;
+  const entryPayload = {
+    entryId,
+    typeSlug: "character",
+    name: "C2-ZC canonical lifecycle entry",
+    summary: "Typed mutation after marker",
+    aliases: [],
+    parentId: null,
+    content: '{"type":"doc","content":[]}',
+    narrativeEntityId: `${runId}-entity`,
+  };
+  const readSet = [
+    {
+      inputRef: `snapshot:${runId}`,
+      kind: "snapshot-document",
+      sourceKind: "snapshot-document",
+      revisionToken: snapshotDigest,
+    },
+  ];
   const revisionEnvelope = {
     schemaVersion: 1,
     runId,
     taskId,
-    reconcilerId: "c2-zc-post-marker-product-journey",
+    reconcilerId: "c2-zc-canonical-lifecycle",
     reconcilerVersion: "1",
     proposalSchemaId: "codex.entry.create",
     proposalSchemaVersion: "1",
@@ -3893,33 +1381,9 @@ export async function createPostMarkerTypedApplication(
       },
     ],
     evidenceSet: [],
-    readSet: [
-      {
-        inputRef: `snapshot:${runId}`,
-        kind: "snapshot-document",
-        sourceKind: "snapshot-document",
-        revisionToken: snapshotDigest,
-      },
-    ],
-    readSetDigest: sha256Canonical([
-      {
-        inputRef: `snapshot:${runId}`,
-        kind: "snapshot-document",
-        sourceKind: "snapshot-document",
-        revisionToken: snapshotDigest,
-      },
-    ]),
+    readSet,
+    readSetDigest: stablePayloadDigest(readSet),
     changeKind: "add",
-  };
-  const entryPayload = {
-    entryId,
-    typeSlug: "character",
-    name: "C2-ZC post-marker acceptance entry",
-    summary: "Typed post-marker mutation",
-    aliases: [],
-    parentId: null,
-    content: '{"type":"doc","content":[]}',
-    narrativeEntityId: `${runId}-entity`,
   };
   const savedSet = await harness.invokeOk(
     page,
@@ -3929,8 +1393,8 @@ export async function createPostMarkerTypedApplication(
         runId,
         projectId,
         proposalSetId,
-        setKind: "c2-zc.post-marker.review@1",
-        summaryJson: { kind: "c2-zc-post-marker-application@1" },
+        setKind: "c2-zc.canonical-lifecycle@1",
+        summaryJson: { kind: "c2-zc-typed-application@1" },
         proposals: [
           {
             proposalId,
@@ -3948,11 +1412,10 @@ export async function createPostMarkerTypedApplication(
   if (
     savedSet?.proposalSetId !== proposalSetId ||
     savedProposal?.proposalId !== proposalId ||
-    typeof savedProposal?.revisionId !== "string" ||
-    savedProposal.revisionId.trim() === ""
+    typeof savedProposal?.revisionId !== "string"
   ) {
     throw new Error(
-      `C2-ZC post-marker typed ProposalSet was not persisted: ${JSON.stringify(savedSet)}`,
+      `C2-ZC typed ProposalSet was not persisted: ${JSON.stringify(savedSet)}`,
     );
   }
   const revisionId = savedProposal.revisionId;
@@ -3977,7 +1440,7 @@ export async function createPostMarkerTypedApplication(
         runId,
         proposalSetId,
         requestId,
-        planDigest: sha256Canonical({ runId, proposalId, revisionId }),
+        planDigest: stablePayloadDigest({ runId, proposalId, revisionId }),
         sessionId: C2ZC_PRODUCT_JOURNEY_ID,
         surface: "narrative-extraction",
         operations: [
@@ -3995,12 +1458,9 @@ export async function createPostMarkerTypedApplication(
       },
     },
   );
-  if (
-    typeof prepared?.preparedCommitId !== "string" ||
-    prepared.preparedCommitId.trim() === ""
-  ) {
+  if (typeof prepared?.preparedCommitId !== "string") {
     throw new Error(
-      `C2-ZC post-marker typed Commit was not prepared: ${JSON.stringify(prepared)}`,
+      `C2-ZC typed Commit was not prepared: ${JSON.stringify(prepared)}`,
     );
   }
   const applied = await harness.invokeOk(
@@ -4019,7 +1479,7 @@ export async function createPostMarkerTypedApplication(
   const commitId = applied?.commitId ?? applied?.id;
   if (typeof commitId !== "string" || commitId.trim() === "") {
     throw new Error(
-      `C2-ZC post-marker typed Commit did not apply: ${JSON.stringify(applied)}`,
+      `C2-ZC typed Commit did not apply: ${JSON.stringify(applied)}`,
     );
   }
   const applicationRows = await queryRows(
@@ -4027,18 +1487,16 @@ export async function createPostMarkerTypedApplication(
     page,
     `SELECT id AS applicationId
        FROM narrative_proposal_applications
-      WHERE commit_id = ? AND project_id = ?
+      WHERE commit_id = ?
       ORDER BY id`,
-    [commitId, projectId],
+    [commitId],
   );
-  if (
-    applicationRows.length !== 1 ||
-    typeof applicationRows[0]?.applicationId !== "string"
-  ) {
+  if (applicationRows.length !== 1) {
     throw new Error(
-      `C2-ZC post-marker typed Commit must create exactly one Application: ${JSON.stringify(applicationRows)}`,
+      `C2-ZC typed Commit did not create one Application: ${JSON.stringify(applicationRows)}`,
     );
   }
+  const applicationId = applicationRows[0].applicationId;
   const finished = await harness.invokeOk(
     page,
     "narrative_extraction_finish_task",
@@ -4050,9 +1508,9 @@ export async function createPostMarkerTypedApplication(
         attemptId,
         leaseOwner,
         outputJson: {
-          kind: "c2-zc-post-marker-application-completed@1",
+          kind: "c2-zc-typed-application-completed@1",
           commitId,
-          applicationId: applicationRows[0].applicationId,
+          applicationId,
         },
       },
       workspaceBinding,
@@ -4060,11 +1518,10 @@ export async function createPostMarkerTypedApplication(
   );
   if (
     finished?.status !== "completed" ||
-    finished.task?.id !== taskId ||
     finished.task?.status !== "completed"
   ) {
     throw new Error(
-      `C2-ZC post-marker typed Application Task did not finish: ${JSON.stringify(finished)}`,
+      `C2-ZC typed Application Task did not finish: ${JSON.stringify(finished)}`,
     );
   }
   return {
@@ -4072,2826 +1529,324 @@ export async function createPostMarkerTypedApplication(
     runId,
     taskId,
     attemptId,
-    leaseOwner,
     proposalSetId,
     proposalId,
     revisionId,
     entryId,
     commitId,
-    applicationId: applicationRows[0].applicationId,
-    snapshotDigest,
+    applicationId,
   };
 }
 
-async function waitForMarker(harness, page, projectId) {
+async function waitForProjectId(
+  harness,
+  page,
+  expectedProjectId,
+  { requireExpected = false } = {},
+) {
   return harness.waitUntil(
     async () => {
-      const snapshot = await readAuthoritySnapshot(harness, page, projectId);
-      if (
-        snapshot.markerRows.length !== 1 ||
-        snapshot.epochs.length === 0 ||
-        snapshot.projectSettled !== true
-      ) {
-        return null;
-      }
-      assertC2ZcMarkerExactlyOnce(snapshot);
-      assertC2ZcFindingInboxEmpty(snapshot);
-      assertC2ZcGenericRowsComplete(snapshot);
-      assertC2ZcFeedCursorSettled(snapshot, {
-        epochId: snapshot.epochs.at(-1)?.id,
-      });
-      return snapshot;
+      const projects = await queryRows(
+        harness,
+        page,
+        "SELECT id AS projectId FROM projects ORDER BY id",
+      );
+      const match = projects.find((row) => row.projectId === expectedProjectId);
+      if (requireExpected && !match) return null;
+      return match?.projectId ?? projects[0]?.projectId ?? null;
     },
-    "C2-ZC canonical marker after main scheduler wake",
+    "C2-ZC restored project hydration",
     C2ZC_WAIT_MS,
     250,
   );
 }
 
-async function waitForTwoProjectConvergenceGate(
+async function waitForLifecycle(
   harness,
   page,
-  primaryProjectId,
-  secondaryProjectId,
+  projectId,
+  { restoreEpochId, rustOutcome } = {},
 ) {
-  let incompleteGate = null;
-  await harness.waitUntil(
+  return harness.waitUntil(
     async () => {
-      const [primary, secondary] = await Promise.all([
-        readAuthoritySnapshot(harness, page, primaryProjectId),
-        readAuthoritySnapshot(harness, page, secondaryProjectId),
-      ]);
-      if (primary.markerRows.length !== 0) {
-        throw new Error(
-          "C2-ZC two-project gate observed the marker before its incomplete-cursor checkpoint",
-        );
-      }
+      const snapshot = await readC2ZcAuthoritySnapshot(
+        harness,
+        page,
+        projectId,
+      );
       try {
-        assertC2ZcTwoProjectConvergenceGate({
-          primarySettled: primary,
-          secondaryIncomplete: secondary,
-          markerRowsWhileIncomplete: primary.markerRows,
+        const lifecycle = assertC2ZcRestoreLifecycleOrder(snapshot.runs, {
+          currentEpochId: snapshot.currentEpochId,
+          restoreEpochId,
+          rustOutcome,
         });
-        incompleteGate = { primary, secondary };
-        return incompleteGate;
+        assertC2ZcMarkerExactlyOnce(snapshot);
+        assertC2ZcFindingInboxEmpty(snapshot);
+        assertC2ZcGenericRowsComplete(snapshot);
+        assertC2ZcFeedCursorSettled(snapshot, {
+          epochId: snapshot.currentEpochId,
+        });
+        return { snapshot, lifecycle };
       } catch {
         return null;
       }
     },
-    "C2-ZC two-project incomplete-cursor checkpoint",
+    "C2-ZC canonical restore lifecycle settlement",
     C2ZC_WAIT_MS,
     250,
   );
-  return incompleteGate;
 }
 
-function rows(value, label) {
-  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
-  return value;
-}
-
-function initialEpoch(epochs, label) {
-  const value = rows(epochs, `${label} Epochs`);
-  if (
-    value.length !== 1 ||
-    value[0]?.epochNumber !== 0 ||
-    value[0]?.reason !== "initial" ||
-    typeof value[0]?.id !== "string" ||
-    value[0].id.trim() === ""
-  ) {
-    throw new Error(`${label} must contain exactly one initial epoch E0`);
-  }
-  parseInstant(value[0].createdAt, `${label} E0 createdAt`);
-  return value[0];
-}
-
-function sameEpochLineage(before, after, label) {
-  const left = rows(before, `${label} before Epochs`);
-  const right = rows(after, `${label} after Epochs`);
-  if (
-    left.length !== right.length ||
-    right.some(
-      (epoch, index) =>
-        epoch?.id !== left[index]?.id ||
-        Number(epoch?.epochNumber) !== Number(left[index]?.epochNumber) ||
-        epoch?.reason !== left[index]?.reason,
-    )
-  ) {
-    throw new Error(`${label} changed the existing Semantic Epoch lineage`);
-  }
-  return right;
-}
-
-/** Validate the pre-cutover WAL-safe E0/B0 image and its real derived gap. */
-export function assertC2ZcRestoreBackupFixture(
-  snapshot,
-  label = "C2-ZC pre-cutover backup",
-) {
-  if (!snapshot || typeof snapshot !== "object") {
-    throw new Error(`${label} is not an object`);
-  }
-  if (snapshot.marker !== null) {
-    throw new Error(
-      `${label} pre-cutover backup must not contain the C2-ZC marker`,
-    );
-  }
-  const e0 = initialEpoch(snapshot.epochs, label);
-  const backfills = rows(
-    snapshot.backfillRuns ?? (snapshot.backfill ? [snapshot.backfill] : []),
-    `${label} Backfill Runs`,
-  );
-  const backfill =
-    snapshot.backfill ?? (backfills.length === 1 ? backfills[0] : null);
-  if (backfills.length !== 1 || !backfill) {
-    throw new Error(
-      `${label} must contain exactly one closed Task and Attempt`,
-    );
-  }
-  if (
-    backfill.runKind !== "backfill" ||
-    backfill.workKey !== "legacy-dependency-backfill:v3" ||
-    backfill.semanticEpochId !== e0.id ||
-    backfill.status !== "completed" ||
-    backfill.taskKind !== "maintenance-backfill" ||
-    backfill.taskStatus !== "completed" ||
-    backfill.lastAttemptStatus !== "completed" ||
-    Number(backfill.taskCount) !== 1 ||
-    Number(backfill.attemptCount) !== 1 ||
-    Number(backfill.taskAttemptCount) !== 1 ||
-    Number(backfill.lastAttemptNumber) !== 1 ||
-    Number(backfill.maxAttemptNumber) !== 1 ||
-    typeof backfill.id !== "string" ||
-    backfill.id.trim() === "" ||
-    (backfill.taskId !== undefined && !backfill.taskId) ||
-    (backfill.attemptId !== undefined && !backfill.attemptId)
-  ) {
-    throw new Error(
-      `${label} must contain exactly one closed Task and Attempt`,
-    );
-  }
-  const expectedProjectId =
-    snapshot.projectId ?? backfill.projectId ?? snapshot.edge?.projectId;
-  if (
-    typeof expectedProjectId !== "string" ||
-    expectedProjectId.trim() === "" ||
-    backfill.projectId !== expectedProjectId ||
-    snapshot.edge?.projectId !== expectedProjectId
-  ) {
-    throw new Error(
-      `${label} B0 and canonical Edge must belong to the same project`,
-    );
-  }
-  const lifecycleFields = [
-    "createdAt",
-    "startedAt",
-    "taskCreatedAt",
-    "taskStartedAt",
-    "lastAttemptStartedAt",
-    "lastAttemptCompletedAt",
-    "taskCompletedAt",
-    "completedAt",
-  ];
-  for (const field of lifecycleFields) {
-    parseInstant(backfill[field], `${label} B0 ${field}`);
-  }
-  for (let index = 1; index < lifecycleFields.length; index += 1) {
-    if (
-      compareInstants(
-        backfill[lifecycleFields[index - 1]],
-        backfill[lifecycleFields[index]],
-      ) > 0
-    ) {
-      throw new Error(`${label} B0 lifecycle timestamps are not monotonic`);
-    }
-  }
-  const edge = snapshot.edge;
-  if (!edge || Number(snapshot.derivedState?.edgeCount) !== 1) {
-    throw new Error(`${label} derived-state gap requires one canonical Edge`);
-  }
-  let readSetToken = snapshot.readSetToken;
-  if (!readSetToken) {
-    try {
-      const readSet = JSON.parse(edge.readSetJson);
-      readSetToken = Array.isArray(readSet) ? readSet[0] : null;
-    } catch {
-      readSetToken = null;
-    }
-  }
-  assertRestoreFixtureEvidence([edge], {
-    projectId: edge.projectId,
-    edgeId: edge.id,
-    consumerKey: edge.consumerKey,
-    sourceObjectIdentity: edge.sourceObjectIdentity,
-    owningRunId: edge.owningRunId,
-    readSetToken,
-  });
-  if (
-    Number(snapshot.derivedState?.edgeStateCount) !== 0 ||
-    Number(snapshot.derivedState?.freshnessCount) !== 0
-  ) {
-    throw new Error(
-      `${label} must preserve the canonical Edge while containing a derived-state gap`,
-    );
-  }
-  const fixtureOperations = snapshot.fixtureOperations;
-  if (
-    !fixtureOperations ||
-    typeof fixtureOperations !== "object" ||
-    Array.isArray(fixtureOperations)
-  ) {
-    throw new Error(`${label} must bind its typed fixture operation receipts`);
-  }
-  assertExactKeys(
-    fixtureOperations,
-    ["edgeInsert", "gapDelete"],
-    `${label} fixture operation binding`,
-  );
-  assertC2ZcFixtureOperationReceipt(
-    fixtureOperations.edgeInsert,
-    "dependency-edge-insert",
-    {
-      projectId: expectedProjectId,
-      edgeId: edge.id,
-      consumerKey: edge.consumerKey,
-    },
-    `${label} Dependency Edge insert`,
-  );
-  assertC2ZcFixtureOperationReceipt(
-    fixtureOperations.gapDelete,
-    "dependency-derived-state-gap-delete",
-    {
-      projectId: expectedProjectId,
-      edgeId: edge.id,
-      consumerKey: edge.consumerKey,
-    },
-    `${label} derived-state gap delete`,
-  );
-  return { e0, backfill, edge };
-}
-
-/** Validate disabled Settings restore: E0/B0 remain and only E1 is minted. */
-export function assertC2ZcRestoreStageIsolation({
-  setup,
-  marker,
-  beforeEpochs,
-  afterEpochs,
-  beforeRuns,
-  afterRuns,
-  label = "C2-ZC restore stage",
-}) {
-  if (setup !== "disabled") {
-    throw new Error(`${label} must launch with maintenance setup disabled`);
-  }
-  if (marker !== null) {
-    throw new Error(`${label} must not apply the C2-ZC marker during restore`);
-  }
-  const e0 = initialEpoch(beforeEpochs, `${label} before`);
-  const after = rows(afterEpochs, `${label} after Epochs`);
-  if (
-    after.length !== 2 ||
-    after[0]?.id !== e0.id ||
-    Number(after[0]?.epochNumber) !== 0 ||
-    after[1]?.reason !== "restore" ||
-    Number(after[1]?.epochNumber) !== 1 ||
-    typeof after[1]?.id !== "string" ||
-    after[1].id === e0.id
-  ) {
-    throw new Error(
-      `${label} must mint exactly E1(reason=restore) while retaining E0`,
-    );
-  }
-  parseInstant(after[1].createdAt, `${label} E1 createdAt`);
-  const priorRuns = rows(beforeRuns, `${label} before Runs`);
-  const currentRuns = rows(afterRuns, `${label} after Runs`);
-  const priorIds = new Set(priorRuns.map((run) => run.id));
-  const freshFreshness = currentRuns.filter(
-    (run) => !priorIds.has(run.id) && run.runKind === C2ZC_IDLE_RUN_KIND,
-  );
-  if (freshFreshness.length > 0) {
-    throw new Error(`${label} must not run Freshness Runs during restore`);
-  }
-  const fresh = currentRuns.filter(
-    (run) => !priorIds.has(run.id) && C2ZC_AUTOMATIC_RUN_KINDS.has(run.runKind),
-  );
-  if (fresh.length > 0) {
-    throw new Error(`${label} must not run maintenance phases during restore`);
-  }
-  const b0 = priorRuns.find(
-    (run) =>
-      run.runKind === "backfill" &&
-      run.workKey === "legacy-dependency-backfill:v3",
-  );
-  const retainedB0 = currentRuns.find((run) => run.id === b0?.id);
-  if (
-    !b0 ||
-    !retainedB0 ||
-    b0.semanticEpochId !== e0.id ||
-    retainedB0.semanticEpochId !== e0.id
-  ) {
-    throw new Error(`${label} must retain the canonical B0 under E0`);
-  }
-  return after[1];
-}
-
-function parseObject(value, label) {
-  let parsed = value;
-  if (typeof value === "string") {
-    try {
-      parsed = JSON.parse(value);
-    } catch (error) {
-      throw new Error(`${label} is not canonical JSON`, { cause: error });
-    }
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${label} must be a JSON object`);
-  }
-  return parsed;
-}
-
-function parseArray(value, label) {
-  let parsed = value;
-  if (typeof value === "string") {
-    try {
-      parsed = JSON.parse(value);
-    } catch (error) {
-      throw new Error(`${label} is not canonical JSON`, { cause: error });
-    }
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error(`${label} must be a JSON array`);
-  }
-  return parsed;
-}
-
-// This is the JS counterpart of the shared Rust digest_plan seam: object keys
-// are sorted recursively, arrays retain their order, and the UTF-8 JSON bytes
-// are hashed with SHA-256. The idle descriptor contains only JSON-safe integer,
-// boolean, and string values, so JSON.stringify has the same number spelling as
-// serde_json for this contract.
-function canonicalJson(value) {
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
-  }
-  if (value !== null && typeof value === "object") {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function sha256Canonical(value) {
-  return `sha256:${createHash("sha256")
-    .update(canonicalJson(value), "utf8")
-    .digest("hex")}`;
-}
-
-function dependencySetSha256(sourceObjectIdentities) {
-  const canonical = [...sourceObjectIdentities]
-    .sort()
-    .map((identity) => `${Buffer.byteLength(identity, "utf8")}:${identity}\n`)
-    .join("");
-  return createHash("sha256").update(canonical, "utf8").digest("hex");
-}
-
-function dependencyDigestMatchesExpected(value, identities) {
-  if (typeof value !== "string" || !C2ZC_DEPENDENCY_SHA256_DIGEST.test(value)) {
-    return false;
-  }
-  if (!identities) return true;
-  const expected = dependencySetSha256(identities);
-  return value === expected || value === `sha256:${expected}`;
-}
-
-// Incremental Freshness stores the Feed descriptor digest over the producer's
-// insertion-order JSON (the Rust `digest_json` helper), unlike the sorted
-// digest used by idle checkpoints and most contract snapshots.
-function sha256Json(value) {
-  return `sha256:${createHash("sha256")
-    .update(JSON.stringify(value), "utf8")
-    .digest("hex")}`;
-}
-
-function assertExactKeys(value, expected, label) {
-  const actual = Object.keys(value).sort();
-  const keys = [...expected].sort();
-  if (
-    actual.length !== keys.length ||
-    actual.some((key, index) => key !== keys[index])
-  ) {
-    throw new Error(`${label} has unexpected keys`);
-  }
-}
-
-function assertOutputMatchesRunOutcome(outputJson, outcome, label) {
-  let output;
-  try {
-    output = parseObject(outputJson, `${label} outputJson`);
-  } catch (error) {
-    throw new Error(`${label} output JSON does not match Run outcome`, {
-      cause: error,
-    });
-  }
-  if (canonicalJson(output) !== canonicalJson(outcome)) {
-    throw new Error(`${label} output JSON does not match Run outcome`);
-  }
-}
-
-function parseCanonicalLifecycleInstant(value, label) {
-  if (
-    typeof value !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
-  ) {
-    throw new Error(`${label} must be canonical RFC3339 milliseconds`);
-  }
-  return parseInstant(value, label);
-}
-
-function assertC2ZcIdleCheckpointRun(run, restoreEpochId, label) {
-  if (
-    run?.runKind !== C2ZC_IDLE_RUN_KIND ||
-    run.status !== "completed" ||
-    run.semanticEpochId !== restoreEpochId ||
-    typeof run.id !== "string" ||
-    run.id.trim() === ""
-  ) {
-    throw new Error(`${label} must be a completed current-E1 Freshness Run`);
-  }
-  if (run.projectId !== undefined && typeof run.projectId !== "string") {
-    throw new Error(`${label} project binding is invalid`);
-  }
-  if (run.consumerId !== "narrative-incremental-freshness/v1") {
-    throw new Error(
-      `${label} consumerId must be narrative-incremental-freshness/v1`,
-    );
-  }
-
-  const taskRows = Array.isArray(run.tasks) ? run.tasks : [];
-  const task = taskRows[0];
-  const attempts = Array.isArray(task?.attempts) ? task.attempts : [];
-  const taskAttemptCount = Number(task?.attemptCount);
-  if (
-    taskRows.length !== 1 ||
-    !task ||
-    typeof task.id !== "string" ||
-    task.id.trim() === "" ||
-    (task.runId !== undefined && task.runId !== run.id) ||
-    task.taskKind !== C2ZC_IDLE_TASK_KIND ||
-    task.status !== "completed" ||
-    run.taskKind !== task.taskKind ||
-    run.taskStatus !== task.status ||
-    Number(run.taskCount) !== taskRows.length ||
-    Number(run.attemptCount) !== attempts.length ||
-    Number(run.taskAttemptCount) !== taskAttemptCount ||
-    !Number.isInteger(taskAttemptCount) ||
-    taskAttemptCount < 1 ||
-    taskAttemptCount > C2ZC_MAX_IDLE_ATTEMPTS ||
-    taskAttemptCount !== attempts.length
-  ) {
-    throw new Error(`${label} Task/Attempt retry topology is invalid`);
-  }
-  if (task.inputJson !== undefined && task.inputJson !== run.taskInputJson) {
-    throw new Error(`${label} Task/Attempt retry topology is invalid`);
-  }
-
-  const taskInput = parseObject(run.taskInputJson, `${label} Task input`);
-  assertExactKeys(
-    taskInput,
-    [
-      "kind",
-      "version",
-      "projectId",
-      "semanticEpochId",
-      "fromSequenceExclusive",
-      "throughSequenceInclusive",
-      "feedHead",
-      "inputDigest",
-    ],
-    `${label} Task input`,
-  );
-  if (
-    taskInput.kind !== C2ZC_IDLE_TASK_INPUT_KIND ||
-    taskInput.version !== 1 ||
-    taskInput.semanticEpochId !== restoreEpochId ||
-    (run.projectId !== undefined && taskInput.projectId !== run.projectId) ||
-    !Number.isSafeInteger(taskInput.feedHead) ||
-    taskInput.feedHead < 0 ||
-    taskInput.fromSequenceExclusive !== taskInput.feedHead ||
-    taskInput.throughSequenceInclusive !== taskInput.feedHead ||
-    !C2ZC_IDLE_HEX_DIGEST.test(taskInput.inputDigest)
-  ) {
-    throw new Error(
-      `${label} Task input is not a tagged zero-width current-E1 checkpoint`,
-    );
-  }
-  const taskInputPayload = { ...taskInput };
-  delete taskInputPayload.inputDigest;
-  if (sha256Canonical(taskInputPayload) !== taskInput.inputDigest) {
-    throw new Error(
-      `${label} Task input digest does not match its canonical payload`,
-    );
-  }
-
-  const spec = parseObject(run.specJson, `${label} Run spec`);
-  assertExactKeys(spec, ["kind", "inputDigest"], `${label} Run spec`);
-  if (
-    spec.kind !== C2ZC_IDLE_SPEC_KIND ||
-    spec.inputDigest !== taskInput.inputDigest
-  ) {
-    throw new Error(`${label} Run spec is not bound to the idle Task input`);
-  }
-  if (!C2ZC_IDLE_HEX_DIGEST.test(run.specDigest ?? "")) {
-    throw new Error(`${label} Run specDigest is not a canonical sha256 digest`);
-  }
-  if (sha256Canonical(spec) !== run.specDigest) {
-    throw new Error(`${label} specDigest does not match its canonical spec`);
-  }
-  const expectedWorkKey =
-    `incremental-freshness:${restoreEpochId}:${taskInput.fromSequenceExclusive}:` +
-    `${taskInput.throughSequenceInclusive}:${taskInput.inputDigest.slice("sha256:".length)}`;
-  if (run.workKey !== expectedWorkKey) {
-    throw new Error(`${label} work_key is not bound to the idle Task input`);
-  }
-
-  const outcome = parseObject(run.outcomeSummaryJson, `${label} Run outcome`);
-  assertExactKeys(
-    outcome,
-    [
-      "kind",
-      "version",
-      "projectId",
-      "runId",
-      "fromSequenceExclusive",
-      "throughSequenceInclusive",
-      "affectedEdgeCount",
-      "affectedConsumerCount",
-      "hasMore",
-    ],
-    `${label} Run outcome`,
-  );
-  if (
-    outcome.kind !== C2ZC_IDLE_TASK_INPUT_KIND ||
-    outcome.version !== 1 ||
-    outcome.projectId !== taskInput.projectId ||
-    outcome.runId !== run.id ||
-    outcome.fromSequenceExclusive !== taskInput.fromSequenceExclusive ||
-    outcome.throughSequenceInclusive !== taskInput.throughSequenceInclusive ||
-    outcome.affectedEdgeCount !== 0 ||
-    outcome.affectedConsumerCount !== 0 ||
-    outcome.hasMore !== false
-  ) {
-    throw new Error(`${label} outcome is not a zero-width idle checkpoint`);
-  }
-  assertOutputMatchesRunOutcome(task.outputJson, outcome, `${label} Task`);
-
-  let lifecycle;
-  try {
-    lifecycle = {
-      runCreatedAt: parseCanonicalLifecycleInstant(
-        run.createdAt,
-        `${label} Run.createdAt`,
-      ),
-      runStartedAt: parseCanonicalLifecycleInstant(
-        run.startedAt,
-        `${label} Run.startedAt`,
-      ),
-      taskCreatedAt: parseCanonicalLifecycleInstant(
-        run.taskCreatedAt,
-        `${label} Task.createdAt`,
-      ),
-      taskStartedAt: parseCanonicalLifecycleInstant(
-        run.taskStartedAt,
-        `${label} Task.startedAt`,
-      ),
-      attemptStartedAt: parseCanonicalLifecycleInstant(
-        run.lastAttemptStartedAt,
-        `${label} Attempt.startedAt`,
-      ),
-      attemptCompletedAt: parseCanonicalLifecycleInstant(
-        run.lastAttemptCompletedAt,
-        `${label} Attempt.completedAt`,
-      ),
-      taskCompletedAt: parseCanonicalLifecycleInstant(
-        run.taskCompletedAt,
-        `${label} Task.completedAt`,
-      ),
-      runCompletedAt: parseCanonicalLifecycleInstant(
-        run.completedAt,
-        `${label} Run.completedAt`,
-      ),
-      taskDetailCreatedAt: parseCanonicalLifecycleInstant(
-        task.createdAt,
-        `${label} Task.createdAt detail`,
-      ),
-      taskDetailStartedAt: parseCanonicalLifecycleInstant(
-        task.startedAt,
-        `${label} Task.startedAt detail`,
-      ),
-      taskDetailCompletedAt: parseCanonicalLifecycleInstant(
-        task.completedAt,
-        `${label} Task.completedAt detail`,
-      ),
-    };
-  } catch (error) {
-    throw new Error(
-      `${label} Task/Attempt lifecycle temporal envelope is invalid`,
-      {
-        cause: error,
-      },
-    );
-  }
-  if (
-    compareInstants(lifecycle.taskCreatedAt, lifecycle.taskDetailCreatedAt) !==
-      0 ||
-    compareInstants(lifecycle.taskStartedAt, lifecycle.taskDetailStartedAt) !==
-      0 ||
-    compareInstants(
-      lifecycle.taskCompletedAt,
-      lifecycle.taskDetailCompletedAt,
-    ) !== 0
-  ) {
-    throw new Error(
-      `${label} Task/Attempt lifecycle temporal envelope is invalid`,
-    );
-  }
-  const orderedLifecycle = [
-    ["Run.createdAt", lifecycle.runCreatedAt],
-    ["Run.startedAt", lifecycle.runStartedAt],
-    ["Task.createdAt", lifecycle.taskCreatedAt],
-    ["Task.startedAt", lifecycle.taskStartedAt],
-    ["Attempt.startedAt", lifecycle.attemptStartedAt],
-    ["Attempt.completedAt", lifecycle.attemptCompletedAt],
-    ["Task.completedAt", lifecycle.taskCompletedAt],
-    ["Run.completedAt", lifecycle.runCompletedAt],
-  ];
-  for (let index = 1; index < orderedLifecycle.length; index += 1) {
-    if (
-      compareInstants(
-        orderedLifecycle[index - 1][1],
-        orderedLifecycle[index][1],
-      ) > 0
-    ) {
-      throw new Error(
-        `${label} Task/Attempt lifecycle temporal envelope is invalid`,
-      );
-    }
-  }
-
-  const attemptIds = new Set();
-  let previousStartedAt = lifecycle.taskStartedAt;
-  let previousCompletedAt = null;
-  let completedAttemptIndex = -1;
-  for (const [index, attempt] of attempts.entries()) {
-    if (
-      typeof attempt?.id !== "string" ||
-      attempt.id.trim() === "" ||
-      attemptIds.has(attempt.id) ||
-      (attempt.taskId !== undefined && attempt.taskId !== task.id) ||
-      Number(attempt.attemptNumber) !== index + 1 ||
-      !["failed", "completed"].includes(attempt.status)
-    ) {
-      throw new Error(`${label} Task/Attempt retry topology is invalid`);
-    }
-    attemptIds.add(attempt.id);
-    let startedAt;
-    let completedAt;
-    try {
-      startedAt = parseCanonicalLifecycleInstant(
-        attempt.startedAt,
-        `${label} Attempt ${index + 1}.startedAt`,
-      );
-      completedAt = parseCanonicalLifecycleInstant(
-        attempt.completedAt,
-        `${label} Attempt ${index + 1}.completedAt`,
-      );
-    } catch (error) {
-      throw new Error(
-        `${label} Task/Attempt lifecycle temporal envelope is invalid`,
-        {
-          cause: error,
-        },
-      );
-    }
-    if (
-      compareInstants(startedAt, previousStartedAt) < 0 ||
-      (previousCompletedAt &&
-        compareInstants(startedAt, previousCompletedAt) < 0) ||
-      compareInstants(completedAt, startedAt) < 0
-    ) {
-      throw new Error(`${label} Task/Attempt retry topology is invalid`);
-    }
-    if (attempt.status === "failed") {
-      if (attempt.outputJson !== null) {
-        throw new Error(
-          `${label} Task/Attempt retry topology is invalid: failed Attempt outputJson must be NULL`,
-        );
-      }
-      let nextAttemptAt;
-      try {
-        nextAttemptAt = parseCanonicalLifecycleInstant(
-          attempt.nextAttemptAt,
-          `${label} Attempt ${index + 1}.nextAttemptAt`,
-        );
-      } catch (error) {
-        throw new Error(`${label} Task/Attempt retry topology is invalid`, {
-          cause: error,
-        });
-      }
-      if (
-        typeof attempt.failureCode !== "string" ||
-        !attempt.failureCode.startsWith("NEX_") ||
-        attempt.retryDisposition !== "retryable" ||
-        attempt.policyVersion !== "v1" ||
-        compareInstants(nextAttemptAt, completedAt) < 0
-      ) {
-        throw new Error(`${label} Task/Attempt retry topology is invalid`);
-      }
-      if (completedAttemptIndex >= 0) {
-        throw new Error(`${label} Task/Attempt retry topology is invalid`);
-      }
-    } else {
-      if (
-        attempt.failureCode != null ||
-        attempt.retryDisposition != null ||
-        attempt.policyVersion != null ||
-        attempt.nextAttemptAt != null
-      ) {
-        throw new Error(`${label} Task/Attempt retry topology is invalid`);
-      }
-      if (completedAttemptIndex >= 0) {
-        throw new Error(`${label} Task/Attempt retry topology is invalid`);
-      }
-      completedAttemptIndex = index;
-    }
-    previousStartedAt = startedAt;
-    previousCompletedAt = completedAt;
-  }
-  if (
-    completedAttemptIndex !== attempts.length - 1 ||
-    compareInstants(lifecycle.taskCompletedAt, previousCompletedAt) < 0
-  ) {
-    throw new Error(`${label} Task/Attempt retry topology is invalid`);
-  }
-  const finalAttempt = attempts.at(-1);
-  assertOutputMatchesRunOutcome(
-    finalAttempt.outputJson,
-    outcome,
-    `${label} final Attempt`,
-  );
-  if (
-    Number(run.lastAttemptNumber) !== finalAttempt.attemptNumber ||
-    Number(run.maxAttemptNumber) !== finalAttempt.attemptNumber ||
-    run.lastAttemptStatus !== finalAttempt.status ||
-    compareInstants(run.lastAttemptStartedAt, finalAttempt.startedAt) !== 0 ||
-    compareInstants(run.lastAttemptCompletedAt, finalAttempt.completedAt) !== 0
-  ) {
-    throw new Error(`${label} Task/Attempt retry topology is invalid`);
-  }
-  return run;
-}
-
-/** Validate the exact V/R/V -> one current-E1 idle Freshness -> marker order. */
-export function assertC2ZcOpenTotalOrder({
-  markerBefore,
-  markerAfter,
-  beforeEpochs,
-  afterEpochs,
-  beforeRuns,
-  afterRuns,
-  phaseRuns,
-  idleRun,
-  restoreEpochId,
-  label = "C2-ZC normal open",
-}) {
-  const phases = assertC2ZcOpenPhaseTimeline({
-    markerBefore,
-    markerAfter,
-    beforeEpochs,
-    afterEpochs,
-    beforeRuns,
-    afterRuns,
-    phaseRuns,
-    restoreEpochId,
-    label,
-  });
-  const priorIds = new Set(
-    rows(beforeRuns, `${label} before Runs`).map((run) => run.id),
-  );
-  const current = rows(afterRuns, `${label} after Runs`).filter(
-    (run) => !priorIds.has(run.id),
-  );
-  const freshnessRuns = current.filter(
-    (run) => run.runKind === C2ZC_IDLE_RUN_KIND,
-  );
-  if (freshnessRuns.length !== 1) {
-    throw new Error(
-      `${label} must contain exactly one post-baseline Freshness Run`,
-    );
-  }
-  const observedIdle = freshnessRuns[0];
-  if (observedIdle.semanticEpochId !== restoreEpochId) {
-    throw new Error(
-      `${label} sole post-baseline Freshness Run must be bound to current E1`,
-    );
-  }
-  if (idleRun && observedIdle.id !== idleRun.id) {
-    throw new Error(
-      `${label} idle Freshness identity does not match the observed Run`,
-    );
-  }
-  const validatedIdle = assertC2ZcIdleCheckpointRun(
-    observedIdle,
-    restoreEpochId,
-    `${label} idle Freshness`,
-  );
-  if (phases.length !== C2ZC_PHASE_RUN_KINDS.length) {
-    throw new Error(
-      `${label} maintenance phase rows must remain exactly Verify -> Rebuild -> Verify`,
-    );
-  }
-  if (compareInstants(phases[2].completedAt, validatedIdle.createdAt) >= 0) {
-    throw new Error(
-      `${label} idle Freshness must start after confirmation Verify completedAt`,
-    );
-  }
-  const markerAppliedAt = parseInstant(
-    markerAfter.appliedAt,
-    `${label} marker appliedAt`,
-  );
-  const idleLifecycleFields = [
-    "createdAt",
-    "startedAt",
-    "taskCreatedAt",
-    "taskStartedAt",
-    "lastAttemptStartedAt",
-    "lastAttemptCompletedAt",
-    "taskCompletedAt",
-    "completedAt",
-  ];
-  for (const field of idleLifecycleFields) {
-    if (
-      compareInstants(
-        markerAppliedAt,
-        parseInstant(validatedIdle[field], `${label} idle Freshness ${field}`),
-      ) < 0
-    ) {
-      throw new Error(
-        `${label} marker must be after idle Task/Attempt lifecycle`,
-      );
-    }
-  }
-  if (compareInstants(markerAppliedAt, validatedIdle.completedAt) < 0) {
-    throw new Error(
-      `${label} marker must be applied after idle Freshness completedAt`,
-    );
-  }
-  return { phaseRuns: phases, idleRun: validatedIdle };
-}
-
-/** Validate exact current-E1 Verify -> Rebuild -> confirmation Verify. */
-export function assertC2ZcOpenPhaseTimeline({
-  markerBefore,
-  markerAfter,
-  beforeEpochs,
-  afterEpochs,
-  beforeRuns,
-  afterRuns,
-  phaseRuns,
-  restoreEpochId,
-  label = "C2-ZC normal open",
-}) {
-  if (markerBefore !== null) {
-    throw new Error(`${label} must begin before the C2-ZC marker is applied`);
-  }
-  if (
-    markerAfter?.migrationId !== C2ZC_CUTOVER_MIGRATION_ID ||
-    Number(markerAfter?.contractVersion) !== C2ZC_CUTOVER_CONTRACT_VERSION
-  ) {
-    throw new Error(`${label} did not observe the v1 C2-ZC marker`);
-  }
-  const markerAppliedAt = parseInstant(
-    markerAfter.appliedAt,
-    `${label} marker appliedAt`,
-  );
-  const before = rows(beforeEpochs, `${label} before Epochs`);
-  const after = rows(afterEpochs, `${label} after Epochs`);
-  if (before.length !== 2 || after.length !== 2) {
-    throw new Error(`${label} must retain exactly E0 and E1`);
-  }
-  sameEpochLineage(before, after, label);
-  if (
-    !after.find(
-      (epoch) => epoch.id === restoreEpochId && epoch.reason === "restore",
-    )
-  ) {
-    throw new Error(`${label} is not bound to the current restore E1`);
-  }
-  const restoreEpoch = after.find((epoch) => epoch.id === restoreEpochId);
-  const restoreCreatedAt = parseInstant(
-    restoreEpoch.createdAt,
-    `${label} E1 createdAt`,
-  );
-  const phases = rows(phaseRuns, `${label} phase Runs`);
-  if (phases.length !== C2ZC_PHASE_RUN_KINDS.length) {
-    throw new Error(
-      `${label} must contain exactly current-E1 Verify/Rebuild/Verify`,
-    );
-  }
-  const ids = new Set();
-  let previousCreatedAt = null;
-  let previousCompletedAt = null;
-  for (const [index, run] of phases.entries()) {
-    if (run.runKind !== C2ZC_PHASE_RUN_KINDS[index]) {
-      throw new Error(
-        `${label} phase order must be Verify -> Rebuild -> confirmation Verify`,
-      );
-    }
-    if (
-      typeof run.id !== "string" ||
-      run.id.trim() === "" ||
-      ids.has(run.id) ||
-      run.status !== "completed" ||
-      run.semanticEpochId !== restoreEpochId
-    ) {
-      throw new Error(
-        `${label} phase Runs must be unique, completed, and bound to E1`,
-      );
-    }
-    ids.add(run.id);
-    const createdAt = parseInstant(
-      run.createdAt,
-      `${label} phase ${index + 1} createdAt`,
-    );
-    const completedAt = parseInstant(
-      run.completedAt,
-      `${label} phase ${index + 1} completedAt`,
-    );
-    if (
-      compareInstants(createdAt, completedAt) >= 0 ||
-      compareInstants(createdAt, restoreCreatedAt) < 0
-    ) {
-      throw new Error(`${label} phase timestamps are invalid for E1`);
-    }
-    if (
-      previousCreatedAt &&
-      (compareInstants(createdAt, previousCreatedAt) <= 0 ||
-        compareInstants(createdAt, previousCompletedAt) <= 0 ||
-        compareInstants(completedAt, previousCompletedAt) <= 0)
-    ) {
-      throw new Error(
-        `${label} phase timestamps must be strict and non-overlapping`,
-      );
-    }
-    previousCreatedAt = createdAt;
-    previousCompletedAt = completedAt;
-  }
-  const priorIds = new Set(
-    rows(beforeRuns, `${label} before Runs`).map((run) => run.id),
-  );
-  const current = rows(afterRuns, `${label} after Runs`);
-  if (
-    current.some(
-      (run) =>
-        run.runKind === "backfill" && run.semanticEpochId === restoreEpochId,
-    )
-  ) {
-    throw new Error(`${label} must not mint an E1 Backfill`);
-  }
-  const fresh = current.filter(
-    (run) => !priorIds.has(run.id) && C2ZC_AUTOMATIC_RUN_KINDS.has(run.runKind),
-  );
-  if (fresh.length !== phases.length || fresh.some((run) => !ids.has(run.id))) {
-    throw new Error(
-      `${label} must add exactly the three current-E1 phase Runs`,
-    );
-  }
-  if (
-    compareInstants(
-      markerAppliedAt,
-      phases[2].completedAt,
-      `${label} marker appliedAt`,
-      `${label} confirmation Verify completedAt`,
-    ) <= 0
-  ) {
-    throw new Error(
-      `${label} marker must be applied after confirmation Verify completedAt`,
-    );
-  }
-  return phases;
-}
-
-function assertC2ZcRestartPhaseRows(phaseRuns, restoreEpoch, label) {
-  const phases = rows(phaseRuns, `${label} phase Runs`);
-  if (phases.length !== C2ZC_PHASE_RUN_KINDS.length) {
-    throw new Error(
-      `${label} must preserve exactly Verify -> Rebuild -> Verify`,
-    );
-  }
-  const epochCreatedAt = parseInstant(
-    restoreEpoch.createdAt,
-    `${label} E1 createdAt`,
-  );
-  const ids = new Set();
-  let previousCreatedAt = null;
-  let previousCompletedAt = null;
-  for (const [index, run] of phases.entries()) {
-    if (
-      run.runKind !== C2ZC_PHASE_RUN_KINDS[index] ||
-      typeof run.id !== "string" ||
-      run.id.trim() === "" ||
-      ids.has(run.id) ||
-      run.status !== "completed" ||
-      run.semanticEpochId !== restoreEpoch.id ||
-      typeof run.workKey !== "string" ||
-      run.workKey.trim() === ""
-    ) {
-      throw new Error(`${label} persisted phase Run contract is invalid`);
-    }
-    ids.add(run.id);
-    const createdAt = parseInstant(
-      run.createdAt,
-      `${label} phase ${index + 1} createdAt`,
-    );
-    const completedAt = parseInstant(
-      run.completedAt,
-      `${label} phase ${index + 1} completedAt`,
-    );
-    if (
-      compareInstants(createdAt, epochCreatedAt) < 0 ||
-      compareInstants(createdAt, completedAt) >= 0 ||
-      (previousCreatedAt &&
-        (compareInstants(createdAt, previousCreatedAt) <= 0 ||
-          compareInstants(createdAt, previousCompletedAt) <= 0 ||
-          compareInstants(completedAt, previousCompletedAt) <= 0))
-    ) {
-      throw new Error(`${label} persisted phase Run timestamps are invalid`);
-    }
-    previousCreatedAt = createdAt;
-    previousCompletedAt = completedAt;
-  }
-  return phases;
-}
-
-function normalizeC2ZcRunContract(run) {
-  const fields = [
-    "id",
-    "runKind",
-    "projectId",
-    "workKey",
-    "status",
-    "semanticEpochId",
-    "consumerId",
-    "surfacePathId",
-    "scopeJson",
-    "createdAt",
-    "startedAt",
-    "completedAt",
-    "specJson",
-    "specDigest",
-    "snapshotDigest",
-    "coverageJson",
-    "outcomeSummaryJson",
-    "terminalReasonCode",
-    "catalogDigest",
-    "registryDigest",
-    "version",
-    "supersededByRunId",
-    "requestId",
-    "idempotencyDomain",
-    "requestPayloadDigest",
-    "actorId",
-    "taskKind",
-    "taskStatus",
-    "taskCount",
-    "attemptCount",
-    "taskAttemptCount",
-    "lastAttemptStatus",
-    "lastAttemptNumber",
-    "maxAttemptNumber",
-    "taskInputJson",
-    "taskCreatedAt",
-    "taskStartedAt",
-    "taskCompletedAt",
-    "lastAttemptStartedAt",
-    "lastAttemptCompletedAt",
-  ];
-  const normalized = Object.fromEntries(
-    fields.map((field) => [
-      field,
-      c2zcJsonColumn(field)
-        ? normalizeC2ZcJsonValue(run?.[field] ?? null)
-        : (run?.[field] ?? null),
-    ]),
-  );
-  normalized.tasks = Array.isArray(run?.tasks)
-    ? [...run.tasks]
-        .map((task) => ({
-          id: task?.id ?? null,
-          runId: task?.runId ?? null,
-          taskKind: task?.taskKind ?? null,
-          status: task?.status ?? null,
-          attemptCount: task?.attemptCount ?? null,
-          priority: task?.priority ?? null,
-          leaseOwner: task?.leaseOwner ?? null,
-          leaseExpiresAt: task?.leaseExpiresAt ?? null,
-          heartbeatAt: task?.heartbeatAt ?? null,
-          errorMessage: task?.errorMessage ?? null,
-          inputJson: normalizeC2ZcJsonValue(task?.inputJson ?? null),
-          outputJson: normalizeC2ZcJsonValue(task?.outputJson ?? null),
-          createdAt: task?.createdAt ?? null,
-          startedAt: task?.startedAt ?? null,
-          completedAt: task?.completedAt ?? null,
-          version: task?.version ?? null,
-          attempts: Array.isArray(task?.attempts)
-            ? [...task.attempts]
-                .map((attempt) => ({
-                  id: attempt?.id ?? null,
-                  taskId: attempt?.taskId ?? null,
-                  attemptNumber: attempt?.attemptNumber ?? null,
-                  status: attempt?.status ?? null,
-                  startedAt: attempt?.startedAt ?? null,
-                  completedAt: attempt?.completedAt ?? null,
-                  errorMessage: attempt?.errorMessage ?? null,
-                  outputJson: normalizeC2ZcJsonValue(
-                    attempt?.outputJson ?? null,
-                  ),
-                  failureCode: attempt?.failureCode ?? null,
-                  retryDisposition: attempt?.retryDisposition ?? null,
-                  policyVersion: attempt?.policyVersion ?? null,
-                  nextAttemptAt: attempt?.nextAttemptAt ?? null,
-                }))
-                .sort(compareC2ZcIdentityRows)
-            : null,
-        }))
-        .sort(compareC2ZcIdentityRows)
-    : null;
-  return normalized;
-}
-
-const C2ZC_TYPED_ARTIFACT_ARRAYS = Object.freeze([
-  "proposalSets",
-  "proposals",
-  "proposalRevisions",
-  "proposalDecisions",
-  "applyCommits",
-  "applyOperations",
-  "applications",
-  "commitJournals",
-  "codexEntries",
-]);
-
-/**
- * Normalize durable JSON columns without discarding any row or nullable
- * value.  Restart comparisons use this representation so SQLite's JSON text
- * key order cannot hide a changed typed artifact, while every non-JSON
- * column, including timestamps and linkage IDs, remains exact.
- */
-function normalizeC2ZcTypedRow(row) {
-  if (!row || typeof row !== "object" || Array.isArray(row)) return row;
-  return Object.fromEntries(
-    Object.entries(row)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, value]) => {
-        return [
-          key,
-          c2zcJsonColumn(key) ? normalizeC2ZcJsonValue(value) : value,
-        ];
-      }),
-  );
-}
-
-function c2zcJsonColumn(key) {
-  return (
-    typeof key === "string" &&
-    (key.endsWith("Json") ||
-      key === "aliases" ||
-      key === "excludedAliases" ||
-      key === "tagsCache" ||
-      key === "readings")
-  );
-}
-
-function normalizeC2ZcJsonValue(value) {
-  let parsed = value;
-  if (typeof value === "string") {
-    try {
-      parsed = JSON.parse(value);
-    } catch {
-      // Keep malformed JSON as text; the contract validator reports the
-      // corruption instead of allowing normalization to erase it.
-      return value;
-    }
-  }
-  if (Array.isArray(parsed)) return parsed.map(normalizeC2ZcJsonValue);
-  if (parsed !== null && typeof parsed === "object") {
-    return Object.fromEntries(
-      Object.entries(parsed)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, child]) => [key, normalizeC2ZcJsonValue(child)]),
-    );
-  }
-  return parsed;
-}
-
-function compareC2ZcIdentityRows(left, right) {
-  const identityFields = [
-    "id",
-    "edgeId",
-    "changeSetId",
-    "eventId",
-    "proposalSetId",
-    "proposalId",
-    "revisionId",
-    "decisionId",
-    "commitId",
-    "operationId",
-    "applicationId",
-    "journalId",
-    "entryId",
-    "runId",
-    "consumerKind",
-    "consumerKey",
-    "sourceObjectIdentity",
-    "findingIdentity",
-    "observedAt",
-    "canonicalSequence",
-    "eventOrdinal",
-  ];
-  const identity = (row) =>
-    identityFields.map((field) => String(row?.[field] ?? "")).join("\u0000");
-  const leftIdentity = identity(left);
-  const rightIdentity = identity(right);
-  return leftIdentity.localeCompare(rightIdentity);
-}
-
-function sortedC2ZcRows(value) {
-  if (!Array.isArray(value)) return value ?? null;
-  return [...value].map(normalizeC2ZcTypedRow).sort(compareC2ZcIdentityRows);
+async function closeLaunch(harness, launch, reason) {
+  if (!launch) return;
+  await harness.close(launch.app, launch.page, reason);
 }
 
 /**
- * Normalize every durable post-marker row used by the restart proof.  JSON
- * text is parsed and object keys are canonicalized, while arrays are sorted
- * by stable row identity; lifecycle timestamps and digest strings remain
- * exact values.  This is an equality ledger, not a projection or a count.
- */
-export function normalizeC2ZcPostMarkerLedger(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") return snapshot ?? null;
-  const typed = snapshot.typedArtifacts ?? {};
-  return {
-    marker: normalizeC2ZcTypedRow(snapshot.marker),
-    markerRows: sortedC2ZcRows(snapshot.markerRows),
-    epochs: sortedC2ZcRows(snapshot.epochs),
-    runs: Array.isArray(snapshot.runs)
-      ? [...snapshot.runs]
-          .map(normalizeC2ZcRunContract)
-          .sort(compareC2ZcIdentityRows)
-      : (snapshot.runs ?? null),
-    genericRows: sortedC2ZcRows(snapshot.genericRows),
-    dependencyEdges: sortedC2ZcRows(snapshot.dependencyEdges),
-    legacyProjection:
-      snapshot.legacyProjection && typeof snapshot.legacyProjection === "object"
-        ? {
-            freshness: sortedC2ZcRows(snapshot.legacyProjection.freshness),
-            dependencies: sortedC2ZcRows(
-              snapshot.legacyProjection.dependencies,
-            ),
-          }
-        : (snapshot.legacyProjection ?? null),
-    findingLifecycle: sortedC2ZcRows(snapshot.findingLifecycle),
-    findingObservations: sortedC2ZcRows(snapshot.findingObservations),
-    inboxEntries: sortedC2ZcRows(snapshot.inboxEntries),
-    unresolvedFindings: sortedC2ZcRows(snapshot.unresolvedFindings),
-    inboxFindings: sortedC2ZcRows(snapshot.inboxFindings),
-    feedAndCursor: normalizeC2ZcTypedRow(snapshot.feedAndCursor),
-    feedEvents: sortedC2ZcRows(snapshot.feedEvents),
-    changeSets: sortedC2ZcRows(snapshot.changeSets),
-    typedArtifacts: Object.fromEntries(
-      C2ZC_TYPED_ARTIFACT_ARRAYS.map((name) => [
-        name,
-        sortedC2ZcRows(typed[name]),
-      ]),
-    ),
-    pendingRuns: sortedC2ZcRows(snapshot.pendingRuns),
-    projectSettled: snapshot.projectSettled ?? null,
-  };
-}
-
-/**
- * Require the complete typed writer artifact graph for one post-marker
- * Application.  This is intentionally stronger than checking Run/Task
- * counts: each durable row is selected by its stable identity and all
- * proposal/review/prepare/apply/entry/feed links are checked.
- */
-export function assertC2ZcTypedArtifactSnapshot(
-  snapshot,
-  application,
-  label = "C2-ZC typed Application artifacts",
-) {
-  if (
-    !application ||
-    typeof application !== "object" ||
-    [
-      "projectId",
-      "runId",
-      "taskId",
-      "attemptId",
-      "proposalSetId",
-      "proposalId",
-      "revisionId",
-      "entryId",
-      "commitId",
-      "applicationId",
-    ].some(
-      (field) =>
-        typeof application[field] !== "string" ||
-        application[field].trim() === "",
-    )
-  ) {
-    throw new Error(`${label} application identity is missing`);
-  }
-  const typed = snapshot?.typedArtifacts;
-  if (!typed || typeof typed !== "object" || Array.isArray(typed)) {
-    throw new Error(`${label} complete typed artifact snapshot is missing`);
-  }
-  const arrays = Object.fromEntries(
-    C2ZC_TYPED_ARTIFACT_ARRAYS.map((name) => {
-      const value = typed[name];
-      if (!Array.isArray(value)) {
-        throw new Error(`${label}.${name} must be an array`);
-      }
-      return [name, value.map(normalizeC2ZcTypedRow)];
-    }),
-  );
-  const findExactly = (name, predicate, identity) => {
-    const matches = arrays[name].filter(predicate);
-    if (matches.length !== 1) {
-      throw new Error(
-        `${label} requires exactly one ${name} row for ${identity}; found ${matches.length}`,
-      );
-    }
-    return matches[0];
-  };
-  const proposalSet = findExactly(
-    "proposalSets",
-    (row) => row.proposalSetId === application.proposalSetId,
-    application.proposalSetId,
-  );
-  if (
-    proposalSet.runId !== application.runId ||
-    proposalSet.projectId !== application.projectId ||
-    proposalSet.status !== "draft" ||
-    proposalSet.setKind !== "c2-zc.post-marker.review@1"
-  ) {
-    throw new Error(`${label} ProposalSet binding/status is invalid`);
-  }
-  const proposal = findExactly(
-    "proposals",
-    (row) => row.proposalId === application.proposalId,
-    application.proposalId,
-  );
-  if (
-    proposal.proposalSetId !== application.proposalSetId ||
-    proposal.kind !== "codex.entry.create" ||
-    proposal.status !== "approved" ||
-    proposal.currentRevisionId !== application.revisionId
-  ) {
-    throw new Error(`${label} Proposal binding/status is invalid`);
-  }
-  const revision = findExactly(
-    "proposalRevisions",
-    (row) => row.revisionId === application.revisionId,
-    application.revisionId,
-  );
-  if (
-    revision.proposalId !== application.proposalId ||
-    Number(revision.revisionNumber) !== 1 ||
-    !["enveloped", "legacy-unbound"].includes(revision.originKind) ||
-    revision.createdBy !== "system" ||
-    typeof revision.reconciliationEnvelopeDigest !== "string"
-  ) {
-    throw new Error(`${label} Proposal revision binding is invalid`);
-  }
-  const decision = findExactly(
-    "proposalDecisions",
-    (row) =>
-      row.proposalId === application.proposalId &&
-      row.revisionId === application.revisionId,
-    application.proposalId,
-  );
-  if (
-    decision.decision !== "approved" ||
-    decision.createdBy !== "c2-zc-product-journey" ||
-    decision.actorKind !== "human"
-  ) {
-    throw new Error(`${label} human decision is invalid`);
-  }
-  const commit = findExactly(
-    "applyCommits",
-    (row) => row.commitId === application.commitId,
-    application.commitId,
-  );
-  if (
-    commit.projectId !== application.projectId ||
-    commit.runId !== application.runId ||
-    commit.proposalSetId !== application.proposalSetId ||
-    commit.requestId !== `${application.runId}-apply-request` ||
-    commit.status !== "applied" ||
-    typeof commit.planDigest !== "string" ||
-    typeof commit.preparedPlanJson !== "object" ||
-    commit.preparedPolicyVersion === null ||
-    typeof commit.authorityDigest !== "string" ||
-    commit.sessionId !== C2ZC_PRODUCT_JOURNEY_ID
-  ) {
-    throw new Error(`${label} prepared/applied Commit binding is invalid`);
-  }
-  const operation = findExactly(
-    "applyOperations",
-    (row) => row.commitId === application.commitId,
-    application.commitId,
-  );
-  if (
-    Number(operation.operationIndex) !== 0 ||
-    operation.operationKind !== "codex.entry.create" ||
-    operation.resultEntityKind !== "codex_entry" ||
-    operation.resultEntityId !== application.entryId ||
-    operation.status !== "applied"
-  ) {
-    throw new Error(`${label} applied operation binding is invalid`);
-  }
-  const appliedApplication = findExactly(
-    "applications",
-    (row) => row.applicationId === application.applicationId,
-    application.applicationId,
-  );
-  if (
-    appliedApplication.commitId !== application.commitId ||
-    appliedApplication.proposalId !== application.proposalId ||
-    appliedApplication.revisionId !== application.revisionId ||
-    appliedApplication.appliedEntityKind !== "codex_entry" ||
-    appliedApplication.appliedEntityId !== application.entryId ||
-    appliedApplication.applicationKind !== "normal" ||
-    appliedApplication.compensatesApplicationId !== null
-  ) {
-    throw new Error(`${label} Application linkage is invalid`);
-  }
-  const journal = findExactly(
-    "commitJournals",
-    (row) => row.commitId === application.commitId,
-    application.commitId,
-  );
-  if (
-    journal.projectId !== application.projectId ||
-    journal.beforeJson !== null ||
-    !journal.afterJson
-  ) {
-    throw new Error(`${label} Commit journal is incomplete`);
-  }
-  const entry = findExactly(
-    "codexEntries",
-    (row) => row.entryId === application.entryId,
-    application.entryId,
-  );
-  if (
-    entry.projectId !== application.projectId ||
-    typeof entry.name !== "string" ||
-    entry.name.trim() === "" ||
-    typeof entry.content !== "string"
-  ) {
-    throw new Error(`${label} Codex entry binding is invalid`);
-  }
-  const matchingFeedEvents = rows(
-    snapshot?.feedEvents,
-    `${label} Feed events`,
-  ).filter((event) =>
-    parseArray(
-      event.applicationIdsJson ?? "[]",
-      `${label} Feed application IDs`,
-    ).includes(application.applicationId),
-  );
-  if (matchingFeedEvents.length !== 1) {
-    throw new Error(`${label} must bind exactly one Feed event to Application`);
-  }
-  const matchingChangeSets = rows(
-    snapshot?.changeSets,
-    `${label} Change Sets`,
-  ).filter(
-    (changeSet) =>
-      changeSet.projectId === application.projectId &&
-      parseArray(
-        changeSet.eventIdsJson,
-        `${label} Change Set event IDs`,
-      ).includes(matchingFeedEvents[0].eventId),
-  );
-  if (matchingChangeSets.length !== 1) {
-    throw new Error(
-      `${label} must bind the Application Feed event to one Change Set`,
-    );
-  }
-  return {
-    ...arrays,
-    feedEvents: [normalizeC2ZcTypedRow(matchingFeedEvents[0])],
-    changeSets: [normalizeC2ZcTypedRow(matchingChangeSets[0])],
-  };
-}
-
-/** Validate marker, epoch, and phase Run identity across restart. */
-export function assertC2ZcRestartInvariants({
-  open,
-  restart,
-  phaseRunIds,
-  idleRunId,
-  baselineRuns = [],
-  label = "C2-ZC restart",
-}) {
-  const left = open?.marker;
-  const right = restart?.marker;
-  if (
-    left?.migrationId !== C2ZC_CUTOVER_MIGRATION_ID ||
-    Number(left?.contractVersion) !== C2ZC_CUTOVER_CONTRACT_VERSION ||
-    right?.migrationId !== left.migrationId ||
-    Number(right?.contractVersion) !== Number(left.contractVersion) ||
-    right?.appliedAt !== left.appliedAt
-  ) {
-    throw new Error(`${label} changed marker appliedAt/version across restart`);
-  }
-  parseInstant(left.appliedAt, `${label} marker appliedAt`);
-  const openEpochs = rows(open?.epochs, `${label} open Epochs`);
-  const restartEpochs = rows(restart?.epochs, `${label} restart Epochs`);
-  if (openEpochs.length !== 2 || restartEpochs.length !== 2) {
-    throw new Error(
-      `${label} must preserve E0 and E1 without minting a new epoch`,
-    );
-  }
-  sameEpochLineage(openEpochs, restartEpochs, label);
-  const ids = rows(phaseRunIds, `${label} phase Run IDs`);
-  if (new Set(ids).size !== ids.length)
-    throw new Error(`${label} phase Run IDs must be unique`);
-  const openRuns = rows(open?.runs, `${label} open Runs`);
-  const restartRuns = rows(restart?.runs, `${label} restart Runs`);
-  const openIds = new Set(
-    openRuns
-      .filter((run) => C2ZC_AUTOMATIC_RUN_KINDS.has(run.runKind))
-      .map((run) => run.id),
-  );
-  const restartIds = new Set(
-    restartRuns
-      .filter((run) => C2ZC_AUTOMATIC_RUN_KINDS.has(run.runKind))
-      .map((run) => run.id),
-  );
-  if (
-    openIds.size !== restartIds.size ||
-    [...openIds].some((id) => !restartIds.has(id)) ||
-    ids.some((id) => !openIds.has(id) || !restartIds.has(id))
-  ) {
-    throw new Error(
-      `${label} did not preserve phase Run IDs without rerunning them`,
-    );
-  }
-  const baselineIds = new Set(
-    rows(baselineRuns, `${label} baseline Runs`).map((run) => run.id),
-  );
-  const openFreshnessIds = new Set(
-    openRuns
-      .filter(
-        (run) => run.runKind === C2ZC_IDLE_RUN_KIND && !baselineIds.has(run.id),
-      )
-      .map((run) => run.id),
-  );
-  const restartFreshnessIds = new Set(
-    restartRuns
-      .filter(
-        (run) => run.runKind === C2ZC_IDLE_RUN_KIND && !baselineIds.has(run.id),
-      )
-      .map((run) => run.id),
-  );
-  if (
-    openFreshnessIds.size !== 1 ||
-    restartFreshnessIds.size !== 1 ||
-    [...openFreshnessIds].some((id) => !restartFreshnessIds.has(id))
-  ) {
-    throw new Error(
-      `${label} post-baseline Freshness Run identities changed across restart`,
-    );
-  }
-  if (typeof idleRunId !== "string" || idleRunId.trim() === "") {
-    throw new Error(`${label} requires the current-E1 idle Freshness Run ID`);
-  }
-  const openIdle = openRuns.filter((run) => run.id === idleRunId);
-  const restartIdle = restartRuns.filter((run) => run.id === idleRunId);
-  if (
-    openIdle.length !== 1 ||
-    restartIdle.length !== 1 ||
-    openIdle[0]?.runKind !== C2ZC_IDLE_RUN_KIND ||
-    restartIdle[0]?.runKind !== C2ZC_IDLE_RUN_KIND ||
-    openIdle[0]?.semanticEpochId !== restartEpochs[1]?.id ||
-    restartIdle[0]?.semanticEpochId !== restartEpochs[1]?.id
-  ) {
-    throw new Error(
-      `${label} did not preserve the current-E1 idle Freshness Run ID`,
-    );
-  }
-  const openIdleIds = new Set(
-    openRuns
-      .filter(
-        (run) =>
-          run.runKind === C2ZC_IDLE_RUN_KIND &&
-          run.semanticEpochId === restartEpochs[1]?.id,
-      )
-      .map((run) => run.id),
-  );
-  const restartIdleIds = new Set(
-    restartRuns
-      .filter(
-        (run) =>
-          run.runKind === C2ZC_IDLE_RUN_KIND &&
-          run.semanticEpochId === restartEpochs[1]?.id,
-      )
-      .map((run) => run.id),
-  );
-  if (
-    openIdleIds.size !== 1 ||
-    restartIdleIds.size !== 1 ||
-    [...openIdleIds].some((id) => !restartIdleIds.has(id))
-  ) {
-    throw new Error(
-      `${label} reran or minted a second current-E1 idle Freshness Run`,
-    );
-  }
-  const restartPhaseRuns = ids.map((id) =>
-    restartRuns.find((run) => run.id === id),
-  );
-  assertC2ZcRestartPhaseRows(
-    restartPhaseRuns,
-    restartEpochs[1],
-    `${label} restart`,
-  );
-  const restartIdleRun = restartIdle[0];
-  assertC2ZcIdleCheckpointRun(
-    restartIdleRun,
-    restartEpochs[1].id,
-    `${label} restart idle Freshness`,
-  );
-  for (const id of [...ids, idleRunId]) {
-    const openRun = openRuns.find((run) => run.id === id);
-    const restartRun = restartRuns.find((run) => run.id === id);
-    if (
-      !openRun ||
-      !restartRun ||
-      canonicalJson(normalizeC2ZcRunContract(openRun)) !==
-        canonicalJson(normalizeC2ZcRunContract(restartRun))
-    ) {
-      throw new Error(
-        `${label} persisted Run contract changed across restart for ${id}`,
-      );
-    }
-  }
-  if (
-    restartRuns.some(
-      (run) =>
-        run.runKind === "backfill" &&
-        run.semanticEpochId === restartEpochs[1].id,
-    )
-  ) {
-    throw new Error(`${label} minted an E1 Backfill during restart`);
-  }
-  return restart;
-}
-
-/** Validate direct post-marker project_create birth. */
-export function assertC2ZcPostMarkerProjectBirth({
-  marker,
-  epochs,
-  label = "C2-ZC post-marker project",
-}) {
-  if (
-    marker?.migrationId !== C2ZC_CUTOVER_MIGRATION_ID ||
-    Number(marker?.contractVersion) !== C2ZC_CUTOVER_CONTRACT_VERSION
-  ) {
-    throw new Error(
-      `${label} requires the applied v1 C2-ZC marker and exactly one initial epoch`,
-    );
-  }
-  parseInstant(marker.appliedAt, `${label} marker appliedAt`);
-  return initialEpoch(epochs, label);
-}
-
-/**
- * Bind the post-marker typed Application, its producer evidence, and the
- * restart boundary into one acceptance contract.  The compatibility
- * projection is compared as complete row/value snapshots; a count-only
- * observation is deliberately insufficient.
- */
-export function assertC2ZcPostMarkerRestartInvariants({
-  beforeMutation,
-  afterMutation,
-  restart,
-  application,
-  label = "C2-ZC post-marker Application",
-}) {
-  if (!application || typeof application.applicationId !== "string") {
-    throw new Error(`${label} is missing the typed Application identity`);
-  }
-  for (const [phase, snapshot] of [
-    ["before mutation", beforeMutation],
-    ["after mutation", afterMutation],
-    ["restart", restart],
-  ]) {
-    assertC2ZcMarkerExactlyOnce(snapshot, `${label} ${phase} marker`);
-    assertC2ZcFindingInboxEmpty(snapshot, `${label} ${phase} Findings/Inbox`);
-    if (phase === "before mutation") {
-      assertC2ZcPostMarkerProjectBirth(snapshot);
-    } else {
-      assertC2ZcPostMarkerProjectSettled(snapshot, `${label} ${phase}`);
-    }
-    assertC2ZcFeedCursorSettled(
-      snapshot,
-      { epochId: snapshot.epochs[0]?.id },
-      `${label} ${phase} Change Feed cursor`,
-    );
-  }
-  if (
-    canonicalJson(beforeMutation.markerRows) !==
-      canonicalJson(afterMutation.markerRows) ||
-    canonicalJson(afterMutation.markerRows) !==
-      canonicalJson(restart.markerRows) ||
-    canonicalJson(beforeMutation.epochs) !==
-      canonicalJson(afterMutation.epochs) ||
-    canonicalJson(afterMutation.epochs) !== canonicalJson(restart.epochs) ||
-    beforeMutation.epochs.length !== 1 ||
-    afterMutation.epochs.length !== 1 ||
-    restart.epochs.length !== 1
-  ) {
-    throw new Error(`${label} changed marker or Semantic Epoch continuity`);
-  }
-  assertC2ZcLegacyProjectionStable(
-    beforeMutation.legacyProjection,
-    afterMutation.legacyProjection,
-    `${label} changed Legacy projection after the typed mutation`,
-  );
-  assertC2ZcLegacyProjectionStable(
-    afterMutation.legacyProjection,
-    restart.legacyProjection,
-    `${label} changed Legacy projection across restart`,
-  );
-  if (
-    afterMutation.genericRows.length !== 1 ||
-    restart.genericRows.length !== 1
-  ) {
-    throw new Error(`${label} must expose exactly one complete Generic row`);
-  }
-  assertC2ZcGenericFreshnessStorage(
-    afterMutation,
-    {
-      projectId: application.projectId,
-      applicationId: application.applicationId,
-      epochId: afterMutation.epochs[0].id,
-    },
-    `${label} after mutation Generic storage/provenance`,
-  );
-  assertC2ZcGenericFreshnessStorage(
-    restart,
-    {
-      projectId: application.projectId,
-      applicationId: application.applicationId,
-      epochId: restart.epochs[0].id,
-    },
-    `${label} restart Generic storage/provenance`,
-  );
-  assertC2ZcTypedArtifactSnapshot(
-    afterMutation,
-    application,
-    `${label} after mutation typed artifacts`,
-  );
-  assertC2ZcTypedArtifactSnapshot(
-    restart,
-    application,
-    `${label} restart typed artifacts`,
-  );
-  if (
-    canonicalJson(normalizeC2ZcPostMarkerLedger(afterMutation)) !==
-    canonicalJson(normalizeC2ZcPostMarkerLedger(restart))
-  ) {
-    throw new Error(
-      `${label} normalized durable ledger changed across restart`,
-    );
-  }
-  for (const [phase, snapshot] of [
-    ["after mutation", afterMutation],
-    ["restart", restart],
-  ]) {
-    const run = rows(snapshot.runs, `${label} ${phase} Runs`).find(
-      (candidate) => candidate.id === application.runId,
-    );
-    if (!run || run.status !== "completed") {
-      throw new Error(
-        `${label} ${phase} did not retain the completed typed producer Run`,
-      );
-    }
-    const task = rows(run.tasks, `${label} ${phase} typed Run tasks`).find(
-      (candidate) => candidate.id === application.taskId,
-    );
-    if (
-      !task ||
-      task.status !== "completed" ||
-      rows(task.attempts, `${label} ${phase} typed Run attempts`).length !==
-        1 ||
-      task.attempts[0]?.id !== application.attemptId ||
-      task.attempts[0]?.status !== "completed"
-    ) {
-      throw new Error(
-        `${label} ${phase} typed Task/Attempt is not durably complete`,
-      );
-    }
-  }
-  return restart;
-}
-
-/**
- * Exercise the production Settings restore, normal scheduler open, restart,
- * and direct post-marker project_create. No cutover IPC or marker write is
- * available to this runner; those remain main/N-API production ownership.
- */
-async function runC2ZcAuthorityLane(
-  harness,
-  configureWorkspace,
-  {
-    postMarker = false,
-    journeyId = C2ZC_PRODUCT_JOURNEY_ID,
-    bootstrapPhasePrefix = null,
-  } = {},
-) {
-  const phasePrefix = bootstrapPhasePrefix ?? journeyId;
-  const fixturePhase = bootstrapPhasePrefix
-    ? "bootstrap-restore-fixture"
-    : "restore-fixture";
-  let restoreSnapshot = null;
-  let openSnapshot = null;
-  let projectId = null;
-  let secondaryProjectId = null;
-  let primaryTypedFeedMutation = null;
-  let primaryBeforeHoldSnapshot = null;
-  let secondaryBeforeHoldSnapshot = null;
-  let heldTwoProjectGate = null;
-  let openBeforeRuns = null;
-  let openBeforeEpochs = null;
-  let openPhaseRuns = null;
-  let markerPersistenceRestartEvidence = null;
-  const scenario = await runRestoreVerifyRebuildVerifyScenario(
-    harness,
-    configureWorkspace,
-    {
-      id: phasePrefix,
-      restorePhase: bootstrapPhasePrefix ? "bootstrap-restore" : "restore",
-      openPhase: bootstrapPhasePrefix ? "bootstrap-open" : "open",
-      restartPhase: bootstrapPhasePrefix ? "bootstrap-restart" : "restart",
-      fixturePhase,
-      restoreEnvironment: {
-        setup: "disabled",
-        freshness: "disabled",
-      },
-      // The secondary project is created by the typed project_create route
-      // during the setup-disabled restore phase. Resolve the hold only after
-      // that durable identity exists; the helper masks it again for restart.
-      openEnvironment: async () => {
-        if (!secondaryProjectId) {
-          throw new Error(
-            "C2-ZC Freshness hold cannot resolve before the secondary project exists",
-          );
-        }
-        return { freshnessHoldProjectId: secondaryProjectId };
-      },
-      restoreThroughSettingsUi: restoreBackupThroughSettingsUi,
-      onFixture: ({ fixtureEvidence, fixturePhase: emittedFixturePhase }) => {
-        assertC2ZcRestoreBackupFixture(fixtureEvidence.backupContract);
-        harness.recordTimeline(`${phasePrefix}/${emittedFixturePhase}`, {
-          projectId: fixtureEvidence.backupContract.projectId,
-          epochIds: fixtureEvidence.backupContract.epochs.map(
-            (epoch) => epoch.id,
-          ),
-          backfillRunId: fixtureEvidence.backupContract.backfill?.id,
-          edgeId: fixtureEvidence.backupContract.edge?.id,
-          derivedState: fixtureEvidence.backupContract.derivedState,
-          fixtureOperations: fixtureEvidence.backupContract.fixtureOperations,
-        });
-      },
-      onRestore: async ({ context, setup, beforeRuns, beforeEpochs }) => {
-        const observed = await readAuthoritySnapshot(
-          harness,
-          context.page,
-          context.projectId,
-        );
-        const e1 = assertC2ZcRestoreStageIsolation({
-          setup,
-          marker: observed.marker,
-          beforeEpochs,
-          afterEpochs: observed.epochs,
-          beforeRuns,
-          afterRuns: observed.runs,
-        });
-        assertC2ZcFindingInboxEmpty(observed, "C2-ZC restore stage");
-        assertC2ZcGenericRowsComplete(observed, "C2-ZC restore stage");
-        projectId = context.projectId;
-        primaryTypedFeedMutation = await createPrimaryTypedFeedMutation(
-          harness,
-          context.page,
-          projectId,
-        );
-        primaryBeforeHoldSnapshot = await readAuthoritySnapshot(
-          harness,
-          context.page,
-          projectId,
-        );
-        if (
-          primaryBeforeHoldSnapshot.feedAndCursor.feedHead <
-          primaryTypedFeedMutation.canonicalSequence
-        ) {
-          throw new Error(
-            "C2-ZC primary typed mutation did not become a durable Feed head",
-          );
-        }
-        restoreSnapshot = {
-          marker: observed.marker,
-          markerRows: observed.markerRows,
-          epochs: observed.epochs,
-          runs: observed.runs,
-          verifyRunId: observed.verifyRunId,
-          verifyCoverage: observed.verifyCoverage,
-          semanticIndexCounts: observed.semanticIndexCounts,
-          genericRows: observed.genericRows,
-          genericCount: observed.genericCount,
-          legacyProjection: observed.legacyProjection,
-          legacyCount: observed.legacyCount,
-          findingLifecycle: observed.findingLifecycle,
-          unresolvedFindings: observed.unresolvedFindings,
-          inboxEntries: observed.inboxEntries,
-          inboxFindings: observed.inboxFindings,
-          pendingRuns: observed.pendingRuns,
-          feedAndCursor: observed.feedAndCursor,
-          projectSettled: observed.projectSettled,
-        };
-        // Create a second project while the setup-disabled restore document is
-        // still open. Its typed project-create event is therefore present
-        // before the normal scheduler starts, giving the main Freshness owner
-        // a real two-project gate to cross (A can settle while B remains
-        // cursor-incomplete; the marker must still be absent).
-        secondaryProjectId = await createProjectAfterRestoredBinding(
-          harness,
-          context.page,
-          context.workspace,
-          {
-            title: "C2-ZC two-project incomplete-cursor project",
-          },
-        );
-        secondaryBeforeHoldSnapshot = await readAuthoritySnapshot(
-          harness,
-          context.page,
-          secondaryProjectId,
-        );
-        if (secondaryBeforeHoldSnapshot.epochs.length !== 0) {
-          throw new Error(
-            "C2-ZC secondary project_create must remain epochless before normal maintenance",
-          );
-        }
-        assertC2ZcProjectCreateFeedEvidence(
-          secondaryBeforeHoldSnapshot,
-          { projectId: secondaryProjectId, requireUnacked: true },
-          "C2-ZC post-create secondary project_create",
-        );
-        assertC2ZcNoIncrementalFreshnessWrites(
-          secondaryBeforeHoldSnapshot,
-          "C2-ZC post-create secondary",
-        );
-        assertC2ZcNoFreshnessCursorWrite(
-          secondaryBeforeHoldSnapshot,
-          "C2-ZC post-create secondary",
-        );
-        context.record(`${phasePrefix}/restore-stage-isolated`, {
-          setup,
-          epochIds: observed.epochs.map((epoch) => epoch.id),
-          restoreEpochId: e1.id,
-          marker: observed.marker,
-          runIds: observed.runs.map((run) => run.id),
-        });
-      },
-      onOpen: async ({
-        context,
-        beforeRuns,
-        beforeEpochs,
-        phaseRuns,
-        openLaunch,
-      }) => {
-        if (
-          !secondaryProjectId ||
-          !secondaryBeforeHoldSnapshot ||
-          !primaryTypedFeedMutation ||
-          !primaryBeforeHoldSnapshot
-        ) {
-          throw new Error("C2-ZC two-project hold fixture is missing");
-        }
-        // Project B is born during the setup-disabled restore, so its normal
-        // project_create path intentionally has no Semantic Epoch. Let the
-        // ordinary maintenance owner create the initial Epoch and complete
-        // Backfill -> Verify -> Rebuild -> confirmation Verify before asking
-        // the Freshness owner to hold B.
-        await harness.waitUntil(
-          async () => {
-            const value = await readAuthoritySnapshot(
-              harness,
-              context.page,
-              secondaryProjectId,
-            );
-            try {
-              return assertC2ZcSecondaryMaintenanceReadiness({
-                projectId: secondaryProjectId,
-                afterCreate: secondaryBeforeHoldSnapshot,
-                atHold: value,
-                label: "C2-ZC secondary normal maintenance",
-              });
-            } catch {
-              return null;
-            }
-          },
-          "C2-ZC secondary normal maintenance readiness",
-          C2ZC_WAIT_MS,
-          250,
-        );
-        const binding = await captureC2ZcWorkspaceBinding(
-          harness,
-          context.page,
-          context.workspace,
-          "C2-ZC hold gate",
-        );
-        // This is the causal checkpoint: the main sidecar has actually
-        // selected B, performed the ordinary cutover attempt, and returned a
-        // pre-marker held-Freshness event. It is never a post-marker receipt.
-        if (typeof harness.awaitHeldFreshness !== "function") {
-          throw new Error(
-            "C2-ZC canonical journey requires the awaitHeldFreshness harness API",
-          );
-        }
-        const heldRequestNonce = randomUUID();
-        const heldPhase = `${phasePrefix}/open-held-freshness`;
-        const heldBinding = {
-          authorityId: binding.authorityId,
-          generation: binding.generation,
-        };
-        const preMarkerHeldEvidence = await harness.awaitHeldFreshness(
-          openLaunch.app,
-          heldPhase,
-          {
-            previousSequence:
-              openLaunch.heldFreshnessArtifact?.receipt.sequence ?? 0,
-            requestNonce: heldRequestNonce,
-            workspaceBinding: heldBinding,
-          },
-        );
-        const validatedPreMarkerHeldEvidence = assertC2ZcPreMarkerHeldEvidence(
-          preMarkerHeldEvidence,
-          {
-            requestNonce: heldRequestNonce,
-            phase: heldPhase,
-            workspaceBinding: heldBinding,
-            secondaryProjectId,
-            projectInventory: [context.projectId, secondaryProjectId].sort(),
-            label: "C2-ZC pre-marker held Freshness",
-          },
-        );
-        const held = validatedPreMarkerHeldEvidence.event;
-        const heldProjects = new Map(
-          held.state.projects.map((project) => [project.projectId, project]),
-        );
-        const heldPrimary = heldProjects.get(context.projectId);
-        const heldSecondary = heldProjects.get(secondaryProjectId);
-        if (!heldPrimary || !heldSecondary) {
-          throw new Error(
-            "C2-ZC hold receipt did not include both workspace projects",
-          );
-        }
-        const cursorIsSettled = (project) =>
-          project.cursor.acknowledgedThrough === project.feedHead &&
-          project.cursor.activeRunId === null &&
-          project.cursor.reservedThrough === null &&
-          project.cursor.semanticEpochId === null &&
-          project.cursor.lastError === null;
-        if (cursorIsSettled(heldSecondary)) {
-          throw new Error(
-            "C2-ZC hold receipt incorrectly reported the secondary cursor as settled",
-          );
-        }
-        if (!cursorIsSettled(heldPrimary)) {
-          throw new Error(
-            "C2-ZC hold receipt did not show the primary project settled before the held candidate",
-          );
-        }
-        const secondaryDuringHold = await readAuthoritySnapshot(
-          harness,
-          context.page,
-          secondaryProjectId,
-        );
-        assertC2ZcSecondaryMaintenanceReadiness({
-          projectId: secondaryProjectId,
-          afterCreate: secondaryBeforeHoldSnapshot,
-          atHold: secondaryDuringHold,
-          label: "C2-ZC held secondary maintenance",
-        });
-        const primaryDuringHold = await readAuthoritySnapshot(
-          harness,
-          context.page,
-          context.projectId,
-        );
-        assertC2ZcProjectCreateFeedEvidence(
-          secondaryBeforeHoldSnapshot,
-          { projectId: secondaryProjectId, requireUnacked: true },
-          "C2-ZC held B project_create",
-        );
-        const causalHold = assertC2ZcPreMarkerCausalEvidence({
-          primarySnapshot: primaryDuringHold,
-          secondaryBeforeHold: secondaryBeforeHoldSnapshot,
-          secondaryDuringHold,
-          preMarkerHeldEvidence,
-          primaryProjectId: context.projectId,
-          secondaryProjectId,
-          primaryEventId: primaryTypedFeedMutation.eventId,
-          primaryEpochId: primaryBeforeHoldSnapshot.epochs.at(-1)?.id,
-          verifyRuns: phaseRuns.filter(
-            (run) => run.runKind === "dependency-verify",
-          ),
-          requestNonce: heldRequestNonce,
-          phase: heldPhase,
-          workspaceBinding: heldBinding,
-          label: "C2-ZC causal A/B hold",
-        });
-        if (primaryDuringHold.markerRows.length !== 0) {
-          throw new Error(
-            "C2-ZC hold gate observed a marker before every project converged",
-          );
-        }
-        if (
-          primaryDuringHold.epochs.length !== 2 ||
-          primaryDuringHold.epochs.at(-1)?.id !==
-            primaryBeforeHoldSnapshot.epochs.at(-1)?.id ||
-          primaryDuringHold.feedAndCursor.feedHead <
-            primaryTypedFeedMutation.canonicalSequence
-        ) {
-          throw new Error(
-            "C2-ZC hold receipt did not show primary A at current restore Epoch with its typed Feed head",
-          );
-        }
-        assertC2ZcFeedCursorSettled(
-          primaryDuringHold,
-          { epochId: primaryDuringHold.epochs.at(-1)?.id },
-          "C2-ZC held primary current-Epoch cursor",
-        );
-        assertC2ZcNonIdleFreshnessProducer(
-          primaryDuringHold,
-          {
-            projectId: context.projectId,
-            epochId: primaryDuringHold.epochs.at(-1)?.id,
-            eventId: primaryTypedFeedMutation.eventId,
-          },
-          "C2-ZC held primary current-Epoch Freshness producer",
-        );
-        if (primaryDuringHold.projectSettled !== true) {
-          throw new Error(
-            "C2-ZC held primary project is not fully settled/readiness-clean",
-          );
-        }
-        assertC2ZcProjectCreateFeedEvidence(
-          secondaryDuringHold,
-          { projectId: secondaryProjectId, requireUnacked: true },
-          "C2-ZC held B project_create during hold",
-        );
-        assertC2ZcFindingInboxEmpty(
-          primaryDuringHold,
-          "C2-ZC pre-marker primary Findings/Inbox",
-        );
-        assertC2ZcGenericRowsComplete(
-          primaryDuringHold,
-          "C2-ZC pre-marker primary Generic",
-        );
-        assertC2ZcLegacyProjectionStable(
-          restoreSnapshot.legacyProjection,
-          primaryDuringHold.legacyProjection,
-          "C2-ZC restore-to-hold Legacy projection",
-        );
-        const verifyRuns = phaseRuns.filter(
-          (run) => run.runKind === "dependency-verify",
-        );
-        if (verifyRuns.length !== 2) {
-          throw new Error("C2-ZC open must retain both production Verify Runs");
-        }
-        for (const [index, verifyRun] of verifyRuns.entries()) {
-          assertC2ZcVerifyCoverage(verifyRun, `C2-ZC open Verify ${index + 1}`);
-          assertC2ZcSemanticIndexZero(
-            verifyRun,
-            `C2-ZC open Verify ${index + 1} Semantic Index`,
-          );
-        }
-        const incompleteGate = await waitForTwoProjectConvergenceGate(
-          harness,
-          context.page,
-          context.projectId,
-          secondaryProjectId,
-        );
-        heldTwoProjectGate = incompleteGate;
-        context.record(`${phasePrefix}/two-project-cursor-gate`, {
-          primaryProjectId: context.projectId,
-          secondaryProjectId,
-          preMarkerHeldEvidence: preMarkerHeldEvidence.receipt,
-          preMarkerHeldEvidenceSha256: preMarkerHeldEvidence.sha256,
-          causalPrimaryFeedEventId: causalHold.primaryEvent.eventId,
-          causalSecondaryFeedEventIds: causalHold.secondaryEvents.map(
-            (event) => event.eventId,
-          ),
-          markerRowsWhileIncomplete: incompleteGate.primary.markerRows,
-          primaryFeedAndCursor: incompleteGate.primary.feedAndCursor,
-          secondaryFeedAndCursor: incompleteGate.secondary.feedAndCursor,
-        });
-        openBeforeRuns = beforeRuns;
-        openBeforeEpochs = beforeEpochs;
-        openPhaseRuns = phaseRuns;
-      },
-      onRestart: async ({ context }) => {
-        // The shared scenario invokes this production launch with an empty
-        // environment transaction, which actively masks the hold and all
-        // other seam variables before spawning Electron.
-        const markerSnapshot = await waitForMarker(
-          harness,
-          context.page,
-          context.projectId,
-        );
-        const runs = await readC2ZcRunLedger(
-          harness,
-          context.page,
-          context.projectId,
-          await context.runs(),
-        );
-        const epochs = await context.epochs();
-        assertC2ZcMarkerExactlyOnce(markerSnapshot, "C2-ZC restart marker");
-        assertC2ZcFindingInboxEmpty(
-          markerSnapshot,
-          "C2-ZC restart Findings/Inbox",
-        );
-        assertC2ZcGenericRowsComplete(markerSnapshot, "C2-ZC restart Generic");
-        assertC2ZcFeedCursorSettled(
-          markerSnapshot,
-          {
-            epochId: epochs.at(-1)?.id,
-          },
-          "C2-ZC restart Change Feed cursor",
-        );
-        const verifyRuns = openPhaseRuns.filter(
-          (run) => run.runKind === "dependency-verify",
-        );
-        for (const [index, verifyRun] of verifyRuns.entries()) {
-          assertC2ZcVerifyCoverage(
-            verifyRun,
-            `C2-ZC restart Verify ${index + 1}`,
-          );
-          assertC2ZcSemanticIndexZero(
-            verifyRun,
-            `C2-ZC restart Verify ${index + 1} Semantic Index`,
-          );
-        }
-        if (
-          verifyRuns.length !== 2 ||
-          markerSnapshot.verifyRunId !== verifyRuns.at(-1)?.id ||
-          canonicalJson(markerSnapshot.semanticIndexCounts) !==
-            canonicalJson(C2ZC_SEMANTIC_INDEX_ZERO_COUNTS)
-        ) {
-          throw new Error(
-            "C2-ZC restart snapshot is missing the final Verify authority evidence",
-          );
-        }
-        const secondaryConverged = await harness.waitUntil(
-          async () => {
-            const value = await readAuthoritySnapshot(
-              harness,
-              context.page,
-              secondaryProjectId,
-            );
-            if (value.markerRows.length !== 1) return null;
-            try {
-              assertC2ZcMarkerExactlyOnce(
-                value,
-                "C2-ZC two-project converged secondary marker",
-              );
-              assertC2ZcFindingInboxEmpty(
-                value,
-                "C2-ZC two-project converged secondary Findings/Inbox",
-              );
-              assertC2ZcPostMarkerProjectSettled(
-                value,
-                "C2-ZC two-project converged secondary project",
-              );
-              assertC2ZcFeedCursorSettled(
-                value,
-                { epochId: value.epochs.at(-1)?.id },
-                "C2-ZC two-project converged secondary cursor",
-              );
-              assertC2ZcProjectCreateFeedEvidence(
-                value,
-                { projectId: secondaryProjectId, requireUnacked: false },
-                "C2-ZC two-project converged secondary project_create",
-              );
-              return value;
-            } catch {
-              return null;
-            }
-          },
-          "C2-ZC two-project secondary convergence",
-          C2ZC_WAIT_MS,
-          250,
-        );
-        if (!openPhaseRuns || !openBeforeRuns || !openBeforeEpochs) {
-          throw new Error("C2-ZC open phase evidence was not retained");
-        }
-        // The marker is only checked after the held receipt was observed,
-        // the hold was masked by the restart launch, and B actually settled.
-        if (!heldTwoProjectGate) {
-          throw new Error("C2-ZC held two-project gate was not retained");
-        }
-        assertC2ZcTwoProjectConvergenceGate({
-          primarySettled: heldTwoProjectGate.primary,
-          secondaryIncomplete: heldTwoProjectGate.secondary,
-          markerRowsWhileIncomplete: [],
-          convergedPrimary: markerSnapshot,
-          convergedSecondary: secondaryConverged,
-          label: "C2-ZC two-project convergence gate",
-        });
-        const workspaceCutoverReceipt = assertC2ZcWorkspaceCutoverReceipt({
-          markerBefore: restoreSnapshot,
-          markerAfter: markerSnapshot,
-          projects: [
-            {
-              projectId: context.projectId,
-              before: heldTwoProjectGate.primary ?? primaryBeforeHoldSnapshot,
-              after: markerSnapshot,
-            },
-            {
-              projectId: secondaryProjectId,
-              before: secondaryBeforeHoldSnapshot,
-              after: secondaryConverged,
-            },
-          ],
-          projectInventory: markerSnapshot.projectInventory,
-          rustBoundaryEvidence: harness.c2zcRustAcceptanceEvidence ?? null,
-          label: "C2-ZC workspace cutover receipt",
-        });
-        assertC2ZcLegacyProjectionStable(
-          restoreSnapshot.legacyProjection,
-          markerSnapshot.legacyProjection,
-          "C2-ZC restore-to-marker Legacy projection",
-        );
-        const totalOrder = assertC2ZcOpenTotalOrder({
-          markerBefore: restoreSnapshot.marker,
-          markerAfter: markerSnapshot.marker,
-          beforeEpochs: openBeforeEpochs,
-          afterEpochs: epochs,
-          beforeRuns: openBeforeRuns,
-          afterRuns: runs,
-          phaseRuns: openPhaseRuns,
-          restoreEpochId: restoreSnapshot.epochs[1].id,
-        });
-        const beforeRuns = openBeforeRuns;
-        openSnapshot = {
-          ...markerSnapshot,
-          beforeRuns,
-          phaseRuns: totalOrder.phaseRuns,
-          idleRun: totalOrder.idleRun,
-        };
-        context.record(`${phasePrefix}/authority-activated`, {
-          marker: markerSnapshot.marker,
-          epochIds: epochs.map((epoch) => epoch.id),
-          phaseRunIds: totalOrder.phaseRuns.map((run) => run.id),
-          idleRunId: totalOrder.idleRun.id,
-          genericCount: markerSnapshot.genericCount,
-          legacyCount: markerSnapshot.legacyCount,
-          electronEvidenceScope: {
-            owner: "Electron main plus typed N-API Freshness routes",
-            genericStorageAndProvenance: "exercised",
-            canonicalRead: "not-exercised-in-this-Electron-journey",
-          },
-          rustBoundaryEvidence: harness.c2zcRustAcceptanceEvidence
-            ? {
-                receiptPath: harness.c2zcRustAcceptanceEvidence.receiptPath,
-                receiptSha256: harness.c2zcRustAcceptanceEvidence.receiptSha256,
-              }
-            : null,
-          workspaceCutoverReceipt,
-        });
-        context.record(`${phasePrefix}/authority-marker-created`, {
-          marker: markerSnapshot.marker,
-          epochIds: epochs.map((epoch) => epoch.id),
-          phaseRunIds: openSnapshot.phaseRuns.map((run) => run.id),
-          idleRunId: openSnapshot.idleRun.id,
-        });
-      },
-    },
-  );
-  if (!projectId || !restoreSnapshot || !openSnapshot || !scenario.restart) {
-    throw new Error(
-      "C2-ZC shared restore scenario did not complete all authority phases",
-    );
-  }
-
-  // The split scenario's first restart is where the held secondary project
-  // converges and the shared marker is created.  Keep one additional masked
-  // production launch at that boundary so the Legacy projection is compared
-  // against a genuinely subsequent restart, rather than comparing two
-  // snapshots collected during the same process lifetime.
-  const markerPersistencePhase = `${phasePrefix}/${
-    bootstrapPhasePrefix
-      ? "bootstrap-restart-persistence"
-      : "restart-persistence"
-  }`;
-  let markerPersistenceLaunch = await withLaunchEnvironmentForTest(
-    { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
-    () => harness.launch(markerPersistencePhase),
-  );
-  let markerPersistenceSnapshot;
-  try {
-    markerPersistenceSnapshot = await harness.waitUntil(
-      async () => {
-        const value = await readAuthoritySnapshot(
-          harness,
-          markerPersistenceLaunch.page,
-          projectId,
-        );
-        if (
-          value.markerRows.length !== 1 ||
-          value.epochs.length !== 2 ||
-          value.projectSettled !== true
-        ) {
-          return null;
-        }
-        try {
-          assertC2ZcMarkerExactlyOnce(
-            value,
-            "C2-ZC marker persistence restart",
-          );
-          assertC2ZcFindingInboxEmpty(
-            value,
-            "C2-ZC marker persistence restart Findings/Inbox",
-          );
-          assertC2ZcGenericRowsComplete(
-            value,
-            "C2-ZC marker persistence restart Generic",
-          );
-          assertC2ZcFeedCursorSettled(
-            value,
-            { epochId: value.epochs.at(-1)?.id },
-            "C2-ZC marker persistence restart Change Feed cursor",
-          );
-          assertC2ZcLegacyProjectionStable(
-            openSnapshot.legacyProjection,
-            value.legacyProjection,
-            "C2-ZC marker persistence restart Legacy projection",
-          );
-          assertC2ZcRestartInvariants({
-            open: openSnapshot,
-            restart: {
-              marker: value.marker,
-              epochs: value.epochs,
-              runs: value.runs,
-            },
-            phaseRunIds: openSnapshot.phaseRuns.map((run) => run.id),
-            idleRunId: openSnapshot.idleRun.id,
-            baselineRuns: openSnapshot.beforeRuns,
-            label: "C2-ZC marker persistence restart",
-          });
-          return value;
-        } catch {
-          return null;
-        }
-      },
-      "C2-ZC marker persistence restart",
-      C2ZC_WAIT_MS,
-      250,
-    );
-    const launchReceipt = markerPersistenceLaunch.launchReceipt;
-    const receiptArtifact = {
-      path: launchReceipt?.path ?? null,
-      realPath: launchReceipt?.realPath ?? null,
-      sha256: launchReceipt?.sha256 ?? null,
-    };
-    const launchEvidence = {
-      phase: markerPersistencePhase,
-      launchId: markerPersistenceLaunch.launchId,
-      receipt: launchReceipt?.receipt ?? null,
-      receiptNonce: launchReceipt?.receipt?.nonce ?? null,
-      receiptSha256: launchReceipt?.sha256 ?? null,
-      receiptArtifact,
-      realpathSha256Binding: receiptArtifact,
-      marker: markerPersistenceSnapshot.marker,
-      legacyProjectionDigest: sha256Canonical(
-        markerPersistenceSnapshot.legacyProjection,
-      ),
-      functionalSeamsMasked: true,
-    };
-    if (
-      !launchEvidence.launchId ||
-      !launchEvidence.receipt ||
-      typeof launchEvidence.receiptNonce !== "string" ||
-      typeof launchEvidence.receiptSha256 !== "string" ||
-      launchEvidence.receiptNonce !== launchEvidence.receipt.nonce ||
-      launchEvidence.marker === null ||
-      typeof launchEvidence.legacyProjectionDigest !== "string" ||
-      typeof receiptArtifact.path !== "string" ||
-      typeof receiptArtifact.realPath !== "string" ||
-      receiptArtifact.realPath !== receiptArtifact.path ||
-      receiptArtifact.sha256 !== launchEvidence.receiptSha256
-    ) {
-      throw new Error(
-        "C2-ZC marker persistence restart did not retain its launch receipt identity/hash/path binding",
-      );
-    }
-    markerPersistenceRestartEvidence = launchEvidence;
-    harness.recordTimeline(`${phasePrefix}/marker-persisted-after-restart`, {
-      projectId,
-      marker: markerPersistenceSnapshot.marker,
-      epochIds: markerPersistenceSnapshot.epochs.map((epoch) => epoch.id),
-      legacyProjection: markerPersistenceSnapshot.legacyProjection,
-      launchEvidence,
-    });
-  } finally {
-    await harness.close(
-      markerPersistenceLaunch.app,
-      markerPersistenceLaunch.page,
-      markerPersistencePhase,
-    );
-    markerPersistenceLaunch = null;
-  }
-
-  if (!postMarker) {
-    return {
-      projectId,
-      secondaryProjectId,
-      markerPersistenceRestart: markerPersistenceRestartEvidence,
-    };
-  }
-
-  const postMarkerJourneyId =
-    journeyId === C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID
-      ? journeyId
-      : C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID;
-  const postMarkerOpenPhase = `${postMarkerJourneyId}/open`;
-  let postMarkerOpenLaunch = await withLaunchEnvironmentForTest({}, () =>
-    harness.launch(postMarkerOpenPhase),
-  );
-  try {
-    const postMarkerOpenSnapshot = await harness.waitUntil(
-      async () => {
-        const value = await readAuthoritySnapshot(
-          harness,
-          postMarkerOpenLaunch.page,
-          projectId,
-        );
-        if (value.markerRows.length !== 1) return null;
-        try {
-          assertC2ZcMarkerExactlyOnce(value, "C2-ZC post-marker open marker");
-          assertC2ZcFindingInboxEmpty(
-            value,
-            "C2-ZC post-marker open Findings/Inbox",
-          );
-          assertC2ZcFeedCursorSettled(
-            value,
-            { epochId: value.epochs.at(-1)?.id },
-            "C2-ZC post-marker open Change Feed cursor",
-          );
-          assertC2ZcLegacyProjectionStable(
-            markerPersistenceSnapshot.legacyProjection,
-            value.legacyProjection,
-            "C2-ZC post-marker open Legacy projection",
-          );
-          return value;
-        } catch {
-          return null;
-        }
-      },
-      "C2-ZC post-marker open",
-      C2ZC_WAIT_MS,
-      250,
-    );
-    harness.recordTimeline(`${postMarkerJourneyId}/open`, {
-      projectId,
-      marker: postMarkerOpenSnapshot.marker,
-      epochIds: postMarkerOpenSnapshot.epochs.map((epoch) => epoch.id),
-      legacyProjectionDigest: sha256Canonical(
-        postMarkerOpenSnapshot.legacyProjection,
-      ),
-    });
-  } finally {
-    await harness.close(
-      postMarkerOpenLaunch.app,
-      postMarkerOpenLaunch.page,
-      postMarkerOpenPhase,
-    );
-    postMarkerOpenLaunch = null;
-  }
-
-  const postMarkerPhase = `${postMarkerJourneyId}/new-project`;
-  let launched = await withLaunchEnvironmentForTest({}, () =>
-    harness.launch(postMarkerPhase),
-  );
-  try {
-    const newProjectId = await createProjectAfterFreshLaunch(
-      harness,
-      launched.page,
-      scenario.workspace,
-    );
-    const beforeMutation = await harness.waitUntil(
-      async () => {
-        const value = await readAuthoritySnapshot(
-          harness,
-          launched.page,
-          newProjectId,
-        );
-        if (value.markerRows.length !== 1 || value.epochs.length !== 1)
-          return null;
-        try {
-          assertC2ZcPostMarkerProjectBirth(value);
-          assertC2ZcFeedCursorSettled(value, { epochId: value.epochs[0].id });
-          return value;
-        } catch {
-          return null;
-        }
-      },
-      "C2-ZC post-marker project settled before typed mutation",
-      C2ZC_WAIT_MS,
-      250,
-    );
-    const epoch = assertC2ZcPostMarkerProjectBirth(beforeMutation);
-    const application = await createPostMarkerTypedApplication(
-      harness,
-      launched.page,
-      scenario.workspace,
-      newProjectId,
-    );
-    harness.recordTimeline(`${postMarkerJourneyId}/typed-application-applied`, {
-      projectId: newProjectId,
-      runId: application.runId,
-      taskId: application.taskId,
-      attemptId: application.attemptId,
-      commitId: application.commitId,
-      applicationId: application.applicationId,
-    });
-    const afterMutation = await harness.waitUntil(
-      async () => {
-        const value = await readAuthoritySnapshot(
-          harness,
-          launched.page,
-          newProjectId,
-        );
-        if (value.markerRows.length !== 1 || value.epochs.length !== 1)
-          return null;
-        try {
-          assertC2ZcPostMarkerProjectSettled(
-            value,
-            "C2-ZC post-marker project after mutation",
-          );
-          assertC2ZcFeedCursorSettled(value, { epochId: value.epochs[0].id });
-          assertC2ZcGenericFreshnessStorage(
-            value,
-            {
-              projectId: newProjectId,
-              applicationId: application.applicationId,
-              epochId: value.epochs[0].id,
-            },
-            "C2-ZC post-marker typed Application Generic storage/provenance",
-          );
-          return value;
-        } catch {
-          return null;
-        }
-      },
-      "C2-ZC post-marker typed Application Generic Freshness",
-      C2ZC_WAIT_MS,
-      250,
-    );
-    if (
-      canonicalJson(beforeMutation.epochs) !==
-      canonicalJson(afterMutation.epochs)
-    ) {
-      throw new Error(
-        "C2-ZC post-marker typed Application changed Semantic Epoch lineage",
-      );
-    }
-    if (
-      canonicalJson(beforeMutation.markerRows) !==
-      canonicalJson(afterMutation.markerRows)
-    ) {
-      throw new Error(
-        "C2-ZC post-marker typed Application changed the cutover marker",
-      );
-    }
-    assertC2ZcLegacyProjectionStable(
-      beforeMutation.legacyProjection,
-      afterMutation.legacyProjection,
-      "C2-ZC post-marker typed Application Legacy projection",
-    );
-    await harness.close(launched.app, launched.page, postMarkerPhase);
-    launched = null;
-
-    const postMarkerRestartPhase = `${postMarkerJourneyId}/restart`;
-    const restarted = await withLaunchEnvironmentForTest({}, () =>
-      harness.launch(postMarkerRestartPhase),
-    );
-    let restartSnapshot;
-    try {
-      restartSnapshot = await harness.waitUntil(
-        async () => {
-          const value = await readAuthoritySnapshot(
-            harness,
-            restarted.page,
-            newProjectId,
-          );
-          if (value.markerRows.length !== 1 || value.epochs.length !== 1)
-            return null;
-          try {
-            assertC2ZcPostMarkerRestartInvariants({
-              beforeMutation,
-              afterMutation,
-              restart: value,
-              application,
-              label: "C2-ZC post-marker typed Application",
-            });
-            return value;
-          } catch {
-            return null;
-          }
-        },
-        "C2-ZC post-marker typed Application restart",
-        C2ZC_WAIT_MS,
-        250,
-      );
-      harness.recordTimeline(`${postMarkerJourneyId}/restart`, {
-        projectId: newProjectId,
-        runId: application.runId,
-        commitId: application.commitId,
-        applicationId: application.applicationId,
-        marker: restartSnapshot.marker,
-        epochId: restartSnapshot.epochs[0].id,
-        markerRowCount: restartSnapshot.markerRows.length,
-        epochCount: restartSnapshot.epochs.length,
-      });
-    } finally {
-      await harness.close(
-        restarted.app,
-        restarted.page,
-        postMarkerRestartPhase,
-      );
-    }
-    harness.recordTimeline(`${postMarkerJourneyId}/new-project`, {
-      projectId: newProjectId,
-      epochId: epoch.id,
-      epochCount: beforeMutation.epochs.length,
-      markerRowCount: beforeMutation.markerRows.length,
-      legacyRows: beforeMutation.legacyProjection,
-    });
-  } finally {
-    if (launched) {
-      await harness.close(launched.app, launched.page, postMarkerPhase);
-    }
-  }
-  return {
-    projectId,
-    secondaryProjectId,
-    markerPersistenceRestart: markerPersistenceRestartEvidence,
-  };
-}
-
-/**
- * Run the canonical cutover lane with its own catalog/result namespace.
- * The implementation is shared with the post-marker bootstrap, but this
- * wrapper keeps the canonical journey contract explicit to its caller.
+ * Run the complete stateful lifecycle.  `options.restoreFixture` is the
+ * narrow programmatic injection; `GRIMODEX_C2ZC_RESTORE_FIXTURE` carries the
+ * same `{path, manifest}` object for the product runner.
  */
 export async function runC2ZcCanonicalAuthorityJourney(
   harness,
   configureWorkspace,
   options = {},
 ) {
-  return runC2ZcAuthorityLane(harness, configureWorkspace, options);
-}
-
-/**
- * Run the independent post-marker lifecycle lane. It deliberately repeats
- * the prerequisite restore/authority activation in its own namespaced launch
- * sequence so its artifact cannot hide a missing canonical cutover result.
- */
-async function runC2ZcPostMarkerAuthorityLane(harness, configureWorkspace) {
-  return runC2ZcAuthorityLane(harness, configureWorkspace, {
-    postMarker: true,
-    journeyId: C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID,
-    bootstrapPhasePrefix: C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID,
+  const fixture = await loadC2ZcRestoreFixtureInput(options.restoreFixture);
+  const rustOutcome = options.rustOutcome;
+  const rustAcceptance =
+    options.candidate ??
+    harness.c2zcRustAcceptanceEvidence?.candidate ??
+    harness.c2zcRustAcceptanceEvidence?.receipt?.candidate;
+  assertC2ZcFixtureCandidateBinding(fixture.manifest.candidate, rustAcceptance);
+  const workspace = harness.workspacePath(C2ZC_PRODUCT_JOURNEY_ID);
+  await configureWorkspace(harness, workspace);
+  const staged = await stageC2ZcRestoreFixture(workspace, fixture);
+  harness.recordTimeline?.(`${C2ZC_PRODUCT_JOURNEY_ID}/restore-fixture`, {
+    backupName: fixture.manifest.artifacts.fixture.path,
+    manifestVersion: fixture.manifest.manifestVersion,
+    fixtureSha256: fixture.manifest.fixtureSha256,
+    fixtureSizeBytes: fixture.manifest.fixtureSizeBytes,
+    stagedPath: staged.targetPath,
   });
-}
 
-export async function runC2ZcPostMarkerLifecycleJourney(
-  harness,
-  configureWorkspace,
-) {
-  return runC2ZcPostMarkerAuthorityLane(harness, configureWorkspace);
+  let restoreLaunch = null;
+  let projectId = fixture.manifest.semantic.projectId;
+  let restoredSnapshot;
+  try {
+    restoreLaunch = await harness.launch(`${C2ZC_PRODUCT_JOURNEY_ID}/restore`);
+    projectId = await waitForProjectId(harness, restoreLaunch.page, projectId);
+    const beforeRestore = await readC2ZcAuthoritySnapshot(
+      harness,
+      restoreLaunch.page,
+      projectId,
+    );
+    await restoreBackupThroughSettingsUi(
+      { page: restoreLaunch.page, harness },
+      fixture.manifest.artifacts.fixture.path,
+    );
+    projectId = await waitForProjectId(
+      harness,
+      restoreLaunch.page,
+      fixture.manifest.semantic.projectId,
+      { requireExpected: true },
+    );
+    restoredSnapshot = await harness.waitUntil(
+      async () => {
+        const snapshot = await readC2ZcAuthoritySnapshot(
+          harness,
+          restoreLaunch.page,
+          projectId,
+        );
+        try {
+          restoredEpoch(snapshot.epochs, "C2-ZC restored Settings UI image");
+          return snapshot;
+        } catch {
+          return null;
+        }
+      },
+      "C2-ZC restored E1 observation",
+      C2ZC_WAIT_MS,
+      250,
+    );
+    restoredEpoch(restoredSnapshot.epochs, "C2-ZC restored Settings UI image");
+    harness.recordTimeline?.(`${C2ZC_PRODUCT_JOURNEY_ID}/restore`, {
+      projectId,
+      beforeRunCount: beforeRestore.runs.length,
+      restoredEpoch: restoredSnapshot.currentEpochId,
+      restoreObservedThrough: "production-settings-ui",
+    });
+  } finally {
+    await closeLaunch(
+      harness,
+      restoreLaunch,
+      `${C2ZC_PRODUCT_JOURNEY_ID}/restore`,
+    );
+  }
+
+  let openLaunch = null;
+  let openSnapshot;
+  let lifecycle;
+  try {
+    openLaunch = await harness.launch(`${C2ZC_PRODUCT_JOURNEY_ID}/open`);
+    projectId = await waitForProjectId(harness, openLaunch.page, projectId);
+    const settled = await waitForLifecycle(
+      harness,
+      openLaunch.page,
+      projectId,
+      {
+        restoreEpochId: restoredSnapshot.currentEpochId,
+        rustOutcome,
+      },
+    );
+    openSnapshot = settled.snapshot;
+    lifecycle = settled.lifecycle;
+    harness.recordTimeline?.(`${C2ZC_PRODUCT_JOURNEY_ID}/open`, {
+      projectId,
+      verifyRunIds: [lifecycle.firstVerify.id, lifecycle.finalVerify.id],
+      rebuildRunId: lifecycle.rebuild?.id ?? null,
+      freshnessRunId: lifecycle.freshness.id,
+      markerCount: openSnapshot.markerRows.length,
+    });
+  } finally {
+    await closeLaunch(harness, openLaunch, `${C2ZC_PRODUCT_JOURNEY_ID}/open`);
+  }
+
+  let restartLaunch = null;
+  let firstRestartSnapshot;
+  let afterTypedWrite;
+  let application;
+  try {
+    restartLaunch = await harness.launch(`${C2ZC_PRODUCT_JOURNEY_ID}/restart`);
+    projectId = await waitForProjectId(harness, restartLaunch.page, projectId);
+    firstRestartSnapshot = await harness.waitUntil(
+      async () => {
+        const snapshot = await readC2ZcAuthoritySnapshot(
+          harness,
+          restartLaunch.page,
+          projectId,
+        );
+        try {
+          assertC2ZcMarkerExactlyOnce(snapshot);
+          assertC2ZcRestartInvariants({
+            before: openSnapshot,
+            restart: snapshot,
+          });
+          return snapshot;
+        } catch {
+          return null;
+        }
+      },
+      "C2-ZC first restart authority invariants",
+      C2ZC_WAIT_MS,
+      250,
+    );
+    harness.recordTimeline?.(`${C2ZC_PRODUCT_JOURNEY_ID}/restart`, {
+      projectId,
+      markerCount: firstRestartSnapshot.markerRows.length,
+      epochCount: firstRestartSnapshot.epochs.length,
+    });
+    application = await createTypedApplicationAfterMarker(
+      harness,
+      restartLaunch.page,
+      workspace,
+      projectId,
+    );
+    afterTypedWrite = await harness.waitUntil(
+      async () => {
+        const snapshot = await readC2ZcAuthoritySnapshot(
+          harness,
+          restartLaunch.page,
+          projectId,
+        );
+        try {
+          assertC2ZcGenericFreshnessStorage(snapshot, {
+            projectId,
+            applicationId: application.applicationId,
+            epochId: snapshot.currentEpochId,
+          });
+          return snapshot;
+        } catch {
+          return null;
+        }
+      },
+      "C2-ZC typed write Generic storage",
+      C2ZC_WAIT_MS,
+      250,
+    );
+    harness.recordTimeline?.(`${C2ZC_PRODUCT_JOURNEY_ID}/typed-write`, {
+      projectId,
+      applicationId: application.applicationId,
+      producerRunId: application.runId,
+    });
+  } finally {
+    await closeLaunch(
+      harness,
+      restartLaunch,
+      `${C2ZC_PRODUCT_JOURNEY_ID}/typed-write`,
+    );
+  }
+
+  let finalLaunch = null;
+  let finalSnapshot;
+  try {
+    finalLaunch = await harness.launch(
+      `${C2ZC_PRODUCT_JOURNEY_ID}/restart-persistence`,
+    );
+    projectId = await waitForProjectId(harness, finalLaunch.page, projectId);
+    finalSnapshot = await harness.waitUntil(
+      async () => {
+        const snapshot = await readC2ZcAuthoritySnapshot(
+          harness,
+          finalLaunch.page,
+          projectId,
+        );
+        try {
+          assertC2ZcFinalRestartPersistence({
+            before: afterTypedWrite,
+            restart: snapshot,
+            application,
+          });
+          return snapshot;
+        } catch {
+          return null;
+        }
+      },
+      "C2-ZC final restart persistence",
+      C2ZC_WAIT_MS,
+      250,
+    );
+    harness.recordTimeline?.(`${C2ZC_PRODUCT_JOURNEY_ID}/restart-persistence`, {
+      projectId,
+      markerCount: finalSnapshot.markerRows.length,
+      applicationId: application.applicationId,
+      noLegacyFallback: C2ZC_CANONICAL_FRESHNESS_CONTRACT.noLegacyFallback,
+    });
+  } finally {
+    await closeLaunch(
+      harness,
+      finalLaunch,
+      `${C2ZC_PRODUCT_JOURNEY_ID}/restart-persistence`,
+    );
+  }
+
+  return {
+    journeyId: C2ZC_PRODUCT_JOURNEY_ID,
+    projectId,
+    restoreFixture: {
+      backupName: fixture.manifest.artifacts.fixture.path,
+      manifestVersion: fixture.manifest.manifestVersion,
+      manifestPath: fixture.manifestPath,
+      fixtureSha256: fixture.manifest.fixtureSha256,
+      fixtureSizeBytes: fixture.manifest.fixtureSizeBytes,
+      stagedPath: staged.targetPath,
+    },
+    lifecycle: {
+      verifyRunIds: [lifecycle.firstVerify.id, lifecycle.finalVerify.id],
+      rebuildRunId: lifecycle.rebuild?.id ?? null,
+      freshnessRunId: lifecycle.freshness.id,
+    },
+    markerCount: finalSnapshot.markerRows.length,
+    application,
+  };
 }

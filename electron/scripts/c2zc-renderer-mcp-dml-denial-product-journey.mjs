@@ -61,6 +61,8 @@ export const C2ZC_RENDERER_DML_TIMELINE_EVENT =
 
 export const C2ZC_RENDERER_MCP_DML_DENIAL_CATALOG_ENTRY = Object.freeze({
   id: C2ZC_RENDERER_MCP_DML_DENIAL_ID,
+  required: true,
+  acceptanceRole: "auxiliary",
   domains: Object.freeze(["narrative-maintenance", "sqlite"]),
   interactions: Object.freeze(["narrative-maintenance->sqlite"]),
   contracts: Object.freeze(["c2-zc:boundary-dml-denial"]),

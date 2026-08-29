@@ -100,41 +100,27 @@ export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG = freezeEntries(
 export const NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG = freezeEntries([
   {
     id: "c2-zc-canonical-authority-cutover",
+    required: true,
+    acceptanceRole: "required",
     domains: ["narrative-maintenance"],
     interactions: ["narrative-maintenance->sqlite"],
     contracts: ["c2-zc:canonical-authority-cutover"],
     capabilities: ["electron", "napi"],
     description:
-      "restore -> durable workspace binding -> A/B hold -> Generic authority activation -> masked restart",
+      "offline restore fixture -> production Settings UI restore -> durable Verify/conditional Rebuild/confirmation Verify/Freshness -> marker -> typed Generic write -> restart persistence",
     phases: [
       "c2-zc-canonical-authority-cutover/restore-fixture",
       "c2-zc-canonical-authority-cutover/restore",
       "c2-zc-canonical-authority-cutover/open",
       "c2-zc-canonical-authority-cutover/restart",
+      "c2-zc-canonical-authority-cutover/typed-write",
       "c2-zc-canonical-authority-cutover/restart-persistence",
     ],
   },
   {
-    id: "c2-zc-post-marker-lifecycle",
-    domains: ["narrative-maintenance", "sqlite"],
-    interactions: ["narrative-maintenance->sqlite"],
-    contracts: ["c2-zc:post-marker-lifecycle"],
-    capabilities: ["electron", "napi"],
-    description:
-      "post-marker project birth -> typed Application -> Generic storage/provenance -> masked restart",
-    phases: [
-      "c2-zc-post-marker-lifecycle/bootstrap-restore-fixture",
-      "c2-zc-post-marker-lifecycle/bootstrap-restore",
-      "c2-zc-post-marker-lifecycle/bootstrap-open",
-      "c2-zc-post-marker-lifecycle/bootstrap-restart",
-      "c2-zc-post-marker-lifecycle/bootstrap-restart-persistence",
-      "c2-zc-post-marker-lifecycle/open",
-      "c2-zc-post-marker-lifecycle/new-project",
-      "c2-zc-post-marker-lifecycle/restart",
-    ],
-  },
-  {
     id: "c2-zc-renderer-mcp-dml-denial",
+    required: true,
+    acceptanceRole: "auxiliary",
     domains: ["narrative-maintenance", "sqlite"],
     interactions: ["narrative-maintenance->sqlite"],
     contracts: ["c2-zc:boundary-dml-denial"],

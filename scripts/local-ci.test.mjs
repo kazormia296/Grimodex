@@ -70,13 +70,129 @@ function completeCandidate(overrides = {}) {
   };
 }
 
+function c2zcFixtureManifest(candidate, fixtureBytes) {
+  const digest = `sha256:${createHash("sha256")
+    .update(fixtureBytes)
+    .digest("hex")}`;
+  const artifact = {
+    path: "c2zc-restore-fixture.backup.db",
+    sha256: digest,
+    sizeBytes: fixtureBytes.length,
+  };
+  return {
+    manifestVersion: 1,
+    contractVersion: 1,
+    schemaVersion: 34,
+    databaseSchemaVersion: 34,
+    c2zcMarkerPresent: false,
+    candidate: {
+      requested: candidate.requestedHead,
+      resolvedHeadSha: candidate.resolvedHeadSha,
+      resolvedTreeSha: candidate.resolvedHeadTreeSha,
+      headSha: candidate.resolvedHeadSha,
+      treeSha: candidate.resolvedHeadTreeSha,
+      clean: candidate.worktreeClean,
+      statusSha256: `sha256:${candidate.worktreeStatusHash}`,
+    },
+    builderVersion: "c2zc-restore-fixture-builder/v1",
+    builderCommand: ["cargo", "run", "c2zc-restore-fixture", "build"],
+    exactBuilderCommand: ["cargo", "run", "c2zc-restore-fixture", "build"],
+    artifacts: {
+      fixture: artifact,
+      database: {
+        path: "c2zc-restore-fixture.db",
+        sha256: digest,
+        sizeBytes: fixtureBytes.length,
+      },
+    },
+    fixtureSha256: digest,
+    fixtureSizeBytes: fixtureBytes.length,
+    semantic: {
+      projectId: "fixture-project",
+      sceneId: "fixture-scene",
+      ownerRunId: "fixture-owner-run",
+      projectCount: 1,
+      e0Count: 1,
+      completedBackfillCount: 1,
+      dependencyEdgeCount: 1,
+      edgeStateCount: 0,
+      ownerFreshnessCount: 0,
+      cursorSettled: true,
+      semanticIndexRows: 0,
+      sceneSourceRevision: "v0",
+      edgeSourceObjectIdentity: "project:scene:fixture-scene",
+      edgeReadSetJson: "[]",
+      project: {},
+      projectDigest: digest,
+      scene: {},
+      sceneDigest: digest,
+      epoch: {},
+      epochDigest: digest,
+      backfill: {},
+      backfillDigest: digest,
+      edge: {},
+      edgeDigest: digest,
+      feedCursor: {},
+      feedCursorDigest: digest,
+      derivedStateGap: {},
+      semanticIndex: {},
+      expectedRestoreLifecycle: {},
+      contentsDigest: digest,
+    },
+  };
+}
+
+function c2zcFixtureEvidence(candidate) {
+  const fixtureBytes = Buffer.from("offline-fixture", "utf8");
+  const fixtureManifest = c2zcFixtureManifest(candidate, fixtureBytes);
+  const fixturePath =
+    ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.backup.db";
+  const databasePath =
+    ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.db";
+  const manifestPath =
+    ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.manifest.json";
+  const fixture = {
+    path: fixturePath,
+    realPath: `/repo/${fixturePath}`,
+    size: fixtureBytes.length,
+    sha256: fixtureManifest.fixtureSha256,
+  };
+  const database = {
+    path: databasePath,
+    realPath: `/repo/${databasePath}`,
+    size: fixtureBytes.length,
+    sha256: fixtureManifest.artifacts.database.sha256,
+  };
+  const manifest = {
+    path: manifestPath,
+    realPath: `/repo/${manifestPath}`,
+    size: 1,
+    sha256: `sha256:${"b".repeat(64)}`,
+  };
+  return {
+    path: fixture.path,
+    manifestPath: manifest.path,
+    manifest,
+    artifacts: { fixture, database },
+    fixtureManifest,
+    manifestVersion: fixtureManifest.manifestVersion,
+    fixtureSha256: fixtureManifest.fixtureSha256,
+    fixtureSizeBytes: fixtureManifest.fixtureSizeBytes,
+    candidate: fixtureManifest.candidate,
+  };
+}
+
 function exactRustGateOutput(gateId) {
   const fullTestName =
     gateId === "c2-zc-dml-native-owned-table-denial"
       ? "execute::tests::c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes"
       : gateId === "c2-zc-readiness-corruption-fail-closed"
         ? "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed"
-        : "canonical_read_has_no_legacy_fallback_after_generic_cutover";
+        : gateId === "c2-zc-liveness-restore-lock-binding"
+          ? "same_project_receipt_cannot_cross_database_authority"
+          : gateId === "c2-zc-native-restore-lock-release"
+            ? "narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence"
+            : "canonical_read_has_no_legacy_fallback_after_generic_cutover";
   return `test ${fullTestName} ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n`;
 }
 
@@ -122,6 +238,47 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
       `${jobId} must map to a stage in the full local profile`,
     );
   }
+});
+
+test("C2-ZC fixture builder is candidate-bound and rejects a missing Cargo manifest path", async () => {
+  const registry = await readRegistry();
+  const fixtureStage = registry.stages["c2-zc-restore-fixture-builder"];
+  assert.ok(fixtureStage);
+  assert.deepEqual(
+    registry.profiles.full.slice(
+      registry.profiles.full.indexOf("c2-zc-rust-acceptance-gate"),
+      registry.profiles.full.indexOf("c2-zc-restore-fixture-builder") + 1,
+    ),
+    ["c2-zc-rust-acceptance-gate", "c2-zc-restore-fixture-builder"],
+  );
+  for (const command of fixtureStage.commands) {
+    const manifestPathIndex = command.args.indexOf("--manifest-path");
+    assert.equal(manifestPathIndex >= 0, true);
+    assert.equal(command.args[manifestPathIndex + 1], "src-tauri/Cargo.toml");
+    assert.ok(command.args.includes("--repo-root"));
+    assert.ok(command.args.includes("--candidate"));
+  }
+  assert.ok(
+    fixtureStage.commands
+      .find((command) => command.args.includes("build"))
+      .args.includes("__C2ZC_RESTORE_FIXTURE_OUTPUT_DIR__"),
+  );
+  assert.ok(
+    fixtureStage.commands
+      .find((command) => command.args.includes("verify"))
+      .args.includes("__C2ZC_RESTORE_FIXTURE_MANIFEST__"),
+  );
+
+  const mutated = structuredClone(registry);
+  const buildCommand = mutated.stages[
+    "c2-zc-restore-fixture-builder"
+  ].commands.find((command) => command.args.includes("build"));
+  const manifestPathIndex = buildCommand.args.indexOf("--manifest-path");
+  buildCommand.args.splice(manifestPathIndex, 2);
+  assert.throws(
+    () => validateLocalCiRegistry(mutated),
+    /manifest-path.*src-tauri\/Cargo\.toml/i,
+  );
 });
 
 test("quick and full profiles resolve deterministic command plans", async () => {
@@ -271,7 +428,11 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
   );
   assert.ok(rustIndex >= 0);
   assert.ok(sharedRustIndex >= 0 && sharedRustIndex < rustIndex);
-  assert.ok(rustIndex < productIndex);
+  const fixtureIndex = full.stages.findIndex(
+    (stage) => stage.id === "c2-zc-restore-fixture-builder",
+  );
+  assert.ok(fixtureIndex >= 0);
+  assert.ok(rustIndex < fixtureIndex && fixtureIndex < productIndex);
 
   const temporaryRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-local-ci-c2zc-receipt-"),
@@ -328,7 +489,7 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
     productCommand.env.GRIMODEX_C2ZC_RUST_RECEIPT_SHA256,
     receipt.receiptSha256,
   );
-  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 3);
+  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 5);
   assert.equal(C2ZC_RUST_ACCEPTANCE_GATES[0].argv.command, "cargo");
   assert.match(
     C2ZC_RUST_ACCEPTANCE_GATES[0].argv.args.join(" "),
@@ -361,6 +522,153 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
   assert.equal(
     C2ZC_RUST_ACCEPTANCE_GATES[2].contract.proof,
     "direct persisted Rebuild evidence corruption blocks readiness",
+  );
+});
+
+test("local Full builds and verifies an external C2-ZC fixture before passing its manifest to product journeys", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-c2zc-fixture-wiring-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const nativePath = path.join(temporaryRoot, "custom", "grimodex-node.node");
+  const mainPath = path.join(temporaryRoot, "dist-electron", "main.cjs");
+  const rendererPath = path.join(temporaryRoot, "dist", "index.html");
+  await Promise.all([
+    mkdir(path.dirname(nativePath), { recursive: true }),
+    mkdir(path.dirname(mainPath), { recursive: true }),
+    mkdir(path.dirname(rendererPath), { recursive: true }),
+    writeFile(nativePath, "native"),
+    writeFile(mainPath, "main"),
+    writeFile(rendererPath, "renderer"),
+  ]);
+
+  const registry = await readRegistry();
+  registry.stages["electron-product-journeys"] = {
+    label: "C2-ZC product journeys",
+    env: {
+      GRIMODEX_PRODUCT_JOURNEY_SET: "c2-zc",
+      GRIMODEX_PRODUCT_JOURNEY_IDS: "",
+      GRIMODEX_NODE_PATH: nativePath,
+    },
+    commands: [
+      {
+        label: "Build MCP journey dependency",
+        command: "pnpm",
+        args: ["mcp:build"],
+      },
+      {
+        label: "Run every product journey",
+        command: "pnpm",
+        args: ["electron:product-journeys"],
+      },
+    ],
+  };
+  const full = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const fixtureStage = full.stages.find(
+    (stage) => stage.id === "c2-zc-restore-fixture-builder",
+  );
+  const productStage = full.stages.find(
+    (stage) => stage.id === "electron-product-journeys",
+  );
+  const candidate = completeCandidate();
+  const fixtureBytes = Buffer.from("offline-fixture", "utf8");
+  const executed = [];
+  const result = await runLocalCiPlan(
+    { ...full, stages: [fixtureStage, productStage] },
+    {
+      candidate,
+      root: temporaryRoot,
+      executeCommand: async (command) => {
+        executed.push(command);
+        if (command.args.includes("build")) {
+          const outputDir =
+            command.args[command.args.indexOf("--output-dir") + 1];
+          const manifest = c2zcFixtureManifest(candidate, fixtureBytes);
+          await mkdir(outputDir, { recursive: true });
+          await writeFile(
+            path.join(outputDir, manifest.artifacts.fixture.path),
+            fixtureBytes,
+          );
+          await writeFile(
+            path.join(outputDir, manifest.artifacts.database.path),
+            fixtureBytes,
+          );
+          await writeFile(
+            path.join(outputDir, "c2zc-restore-fixture.manifest.json"),
+            `${JSON.stringify(manifest, null, 2)}\n`,
+          );
+        }
+        return { durationMs: 1, exitCode: 0, signal: null };
+      },
+    },
+  );
+
+  assert.equal(result.status, "passed");
+  const fixtureCommands = executed.filter((command) =>
+    command.args.includes("c2zc-restore-fixture"),
+  );
+  assert.equal(fixtureCommands.length, 2);
+  for (const command of fixtureCommands) {
+    const manifestPathIndex = command.args.indexOf("--manifest-path");
+    assert.equal(command.args[manifestPathIndex + 1], "src-tauri/Cargo.toml");
+    assert.equal(
+      command.args[command.args.indexOf("--repo-root") + 1],
+      temporaryRoot,
+    );
+  }
+  const fixtureBuild = fixtureCommands.find((command) =>
+    command.args.includes("build"),
+  );
+  const fixtureVerify = fixtureCommands.find((command) =>
+    command.args.includes("verify"),
+  );
+  assert.equal(
+    fixtureBuild.args[fixtureBuild.args.indexOf("--expected-head") + 1],
+    candidate.resolvedHeadSha,
+  );
+  assert.equal(
+    fixtureBuild.args[fixtureBuild.args.indexOf("--expected-tree") + 1],
+    candidate.resolvedHeadTreeSha,
+  );
+  const outputDir =
+    fixtureBuild.args[fixtureBuild.args.indexOf("--output-dir") + 1];
+  assert.equal(path.relative(temporaryRoot, outputDir).startsWith(".."), true);
+  assert.equal(
+    fixtureVerify.args[fixtureVerify.args.indexOf("--manifest") + 1],
+    path.join(outputDir, "c2zc-restore-fixture.manifest.json"),
+  );
+
+  const productCommand = executed.find(
+    (command) => command.label === "Run every product journey",
+  );
+  const fixtureInput = JSON.parse(
+    productCommand.env.GRIMODEX_C2ZC_RESTORE_FIXTURE,
+  );
+  assert.equal(
+    fixtureInput.path,
+    path.join(outputDir, "c2zc-restore-fixture.backup.db"),
+  );
+  assert.equal(
+    fixtureInput.manifest,
+    path.join(outputDir, "c2zc-restore-fixture.manifest.json"),
+  );
+  assert.ok(result.c2zcRestoreFixture);
+  assert.equal(
+    result.c2zcRestoreFixture.path,
+    ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.backup.db",
+  );
+  assert.equal(
+    result.c2zcRestoreFixture.manifestPath,
+    ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.manifest.json",
+  );
+  await assert.rejects(
+    readFile(fixtureInput.path),
+    /ENOENT/,
+    "the repo-external working fixture is removed after the product stage",
   );
 });
 
@@ -843,7 +1151,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   await mkdir(artifactRoot, { recursive: true });
   const journeyIds = PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id);
   const results = {
-    version: 4,
+    version: 5,
     status: "passed",
     catalogDigest: PRODUCT_JOURNEY_CATALOG_DIGEST,
     catalogJourneyIds: journeyIds,
@@ -1130,6 +1438,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     candidate,
     status: "passed",
     productJourneyEvidence: acceptedEvidence,
+    c2zcRestoreFixture: c2zcFixtureEvidence(candidate),
   };
   assert.doesNotThrow(() =>
     verifyLocalCiReceipt(acceptedLocalReceipt, {

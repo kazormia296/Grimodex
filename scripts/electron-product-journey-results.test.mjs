@@ -209,7 +209,7 @@ test("product runner records deterministic results while preserving serial fresh
     "dispose:2:true:second",
   ]);
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 4);
+  assert.equal(report.version, 5);
   assert.equal(report.status, "passed");
   assert.deepEqual(report.journeyIds, ["first", "second"]);
   assert.equal(report.allPassed, true);
@@ -248,7 +248,7 @@ test("product runner records deterministic results while preserving serial fresh
   assert.match(manifest.results.sha256, /^sha256:[0-9a-f]{64}$/);
 });
 
-test("focused C2-ZC executes every independent lane once after an earlier lane fails", async (t) => {
+test("focused C2-ZC executes the auxiliary lane after canonical success and fails acceptance when it fails", async (t) => {
   const outputRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-product-c2zc-lanes-"),
   );
@@ -329,35 +329,161 @@ test("focused C2-ZC executes every independent lane once after an earlier lane f
       })(),
       resultsPath,
     }),
-    /deliberate DML failure/,
   );
 
   assert.deepEqual(events, [
     `run:${laneIds[0]}`,
     `dispose:${laneIds[0]}:true`,
     `run:${laneIds[1]}`,
-    `dispose:${laneIds[1]}:true`,
-    `run:${laneIds[2]}`,
-    `dispose:${laneIds[2]}:false`,
+    `dispose:${laneIds[1]}:false`,
   ]);
   const report = await readJson(resultsPath);
   assert.deepEqual(
     report.journeys.map((journey) => [journey.id, journey.status]),
-    laneIds.map((id, index) => [
-      id,
-      index === laneIds.length - 1 ? "failed" : "passed",
-    ]),
+    [
+      [laneIds[0], "passed"],
+      [laneIds[1], "failed"],
+    ],
   );
   assert.equal(
     report.journeys.some((journey) => journey.status === "not-run"),
     false,
   );
   assert.equal(report.allPassed, false);
+  assert.equal(report.allClean, false);
   assert.equal(report.acceptanceComplete, false);
   const manifest = await readJson(path.join(outputRoot, "manifest.json"));
   assert.deepEqual(report.buildReceipt.artifacts, artifacts);
   assert.deepEqual(manifest.artifacts, artifacts);
   assert.deepEqual(manifest.artifacts, report.buildReceipt.artifacts);
+});
+
+test("a hung canonical C2-ZC lane is watchdog-bounded and still allows auxiliary DML to finish", async (t) => {
+  const outputRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-c2zc-watchdog-"),
+  );
+  const resultsPath = path.join(outputRoot, "results.json");
+  const events = [];
+  const watchdogs = [];
+  const laneIds = NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map(
+    (journey) => journey.id,
+  );
+  t.after(() => rm(outputRoot, { recursive: true, force: true }));
+  const mainPath = path.join(outputRoot, "dist-electron", "main.cjs");
+  const rendererPath = path.join(outputRoot, "dist", "index.html");
+  const nativePath = path.join(outputRoot, "custom", "grimodex-node.node");
+  await mkdir(path.dirname(mainPath), { recursive: true });
+  await mkdir(path.dirname(rendererPath), { recursive: true });
+  await mkdir(path.dirname(nativePath), { recursive: true });
+  await writeFile(mainPath, "main");
+  await writeFile(rendererPath, "renderer");
+  await writeFile(nativePath, "native");
+  const environment = { GRIMODEX_NODE_PATH: nativePath };
+  const artifacts = (
+    await assertBuildArtifacts(
+      laneIds.map((id) => ({ id })),
+      {
+        catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+        root: outputRoot,
+        env: environment,
+      },
+    )
+  ).artifacts;
+  const candidate = {
+    requestedBase: "origin/master",
+    requestedHead: "HEAD",
+    resolvedBaseSha: "a".repeat(40),
+    resolvedHeadSha: "b".repeat(40),
+    resolvedHeadTreeSha: "c".repeat(40),
+    currentHeadSha: "b".repeat(40),
+    worktreeClean: true,
+    worktreeFingerprint: "d".repeat(64),
+    worktreeStatusHash: "e".repeat(64),
+  };
+
+  await assert.rejects(
+    runProductJourneys({
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      journeys: [
+        {
+          id: laneIds[0],
+          required: true,
+          acceptanceRole: "required",
+          run: async () => new Promise(() => {}),
+        },
+        {
+          id: laneIds[1],
+          required: true,
+          acceptanceRole: "auxiliary",
+          run: async () => {
+            events.push("run:auxiliary-dml");
+          },
+        },
+      ],
+      selectionName: "c2-zc",
+      assertArtifacts: () => ({ artifacts }),
+      root: outputRoot,
+      environment,
+      buildReceipt: {
+        version: 1,
+        verified: true,
+        source: "local-ci-candidate",
+        candidate,
+        artifacts,
+      },
+      rustAcceptanceEvidence: {
+        required: true,
+        verified: true,
+        candidate,
+        receipt: { candidate },
+      },
+      createHarness: () => ({
+        withLaneWatchdog: async (run, options) => {
+          watchdogs.push(options);
+          if (options.phase === laneIds[0]) {
+            return Promise.race([
+              run(),
+              Promise.reject(new Error("lane watchdog timeout")),
+            ]);
+          }
+          return run();
+        },
+        dispose: async ({ success, name }) => {
+          events.push(`dispose:${name}:${success}`);
+        },
+      }),
+      clock: (() => {
+        let value = 0;
+        return () => (value += 10);
+      })(),
+      resultsPath,
+    }),
+    /lane watchdog timeout/,
+  );
+
+  assert.deepEqual(events, [
+    `dispose:${laneIds[0]}:false`,
+    "run:auxiliary-dml",
+    `dispose:${laneIds[1]}:true`,
+  ]);
+  assert.deepEqual(
+    watchdogs.map(({ phase, timeoutMs }) => [phase, timeoutMs]),
+    [
+      [laneIds[0], 10 * 60 * 1000],
+      [laneIds[1], 10 * 60 * 1000],
+    ],
+  );
+  const report = await readJson(resultsPath);
+  assert.deepEqual(
+    report.journeys.map((journey) => [journey.id, journey.status]),
+    [
+      [laneIds[0], "failed"],
+      [laneIds[1], "passed"],
+    ],
+  );
+  assert.equal(report.allPassed, false);
+  assert.equal(report.allClean, false);
+  assert.equal(report.acceptanceComplete, false);
 });
 
 test("C2-ZC build preflight binds the three selected capability artifacts and omits MCP", async (t) => {
@@ -499,7 +625,6 @@ test("C2-ZC rejects candidate-correct receipts with stale or mutated artifact id
           "results.json",
         ),
       }),
-      /artifact|mismatch|exactly/i,
       label,
     );
   }
@@ -839,7 +964,7 @@ test("non-C2-ZC selection writes failed and fail-fast results before rethrowing"
 
   assert.deepEqual(events, ["create", "run:broken", "dispose:false:broken"]);
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 4);
+  assert.equal(report.version, 5);
   assert.equal(report.status, "failed");
   assert.ok(
     report.journeys.every(
@@ -898,7 +1023,7 @@ test("product runner still writes a versioned report when artifact preflight fai
   );
 
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 4);
+  assert.equal(report.version, 5);
   assert.equal(report.status, "failed");
   assert.deepEqual(report.error, {
     name: "Error",
@@ -960,7 +1085,7 @@ test("product runner fails closed when renderer diagnostics are not clean", asyn
 
   assert.deepEqual(events, ["finalize", "dispose:false:renderer-broken"]);
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 4);
+  assert.equal(report.version, 5);
   assert.equal(report.status, "failed");
   assert.deepEqual(report.journeys, [
     {

@@ -16,6 +16,7 @@
       "electron-native",
       "rust",
       "c2-zc-rust-acceptance-gate",
+      "c2-zc-restore-fixture-builder",
       "migration-recovery-gate",
       "electron-runtime-performance",
       "electron-product-journeys"
@@ -440,7 +441,7 @@
       ]
     },
     "c2-zc-rust-acceptance-gate": {
-      "label": "Candidate-bound C2-ZC dual Rust receipts",
+      "label": "Candidate-bound C2-ZC Rust acceptance receipt",
       "env": {
         "GRIMODEX_C2ZC_RUST_RECEIPT_PATH": ".artifacts/local-ci/c2-zc-rust-acceptance.json",
         "GRIMODEX_C2ZC_RUST_REQUESTED_BASE": "origin/master",
@@ -454,6 +455,63 @@
             "scripts/c2zc-rust-acceptance-receipt.mjs",
             "--output",
             ".artifacts/local-ci/c2-zc-rust-acceptance.json"
+          ],
+          "cwd": "."
+        }
+      ]
+    },
+    "c2-zc-restore-fixture-builder": {
+      "label": "Candidate-bound C2-ZC offline restore fixture",
+      "commands": [
+        {
+          "label": "Build C2-ZC offline restore fixture",
+          "command": "cargo",
+          "args": [
+            "run",
+            "-p",
+            "grimodex-db",
+            "--manifest-path",
+            "src-tauri/Cargo.toml",
+            "--features",
+            "c2zc-fixture-builder",
+            "--bin",
+            "c2zc-restore-fixture",
+            "--",
+            "build",
+            "--repo-root",
+            ".",
+            "--output-dir",
+            "__C2ZC_RESTORE_FIXTURE_OUTPUT_DIR__",
+            "--candidate",
+            "HEAD",
+            "--expected-head",
+            "__C2ZC_RESTORE_FIXTURE_EXPECTED_HEAD__",
+            "--expected-tree",
+            "__C2ZC_RESTORE_FIXTURE_EXPECTED_TREE__"
+          ],
+          "cwd": "."
+        },
+        {
+          "label": "Verify C2-ZC offline restore fixture",
+          "command": "cargo",
+          "args": [
+            "run",
+            "-p",
+            "grimodex-db",
+            "--manifest-path",
+            "src-tauri/Cargo.toml",
+            "--features",
+            "c2zc-fixture-builder",
+            "--bin",
+            "c2zc-restore-fixture",
+            "--",
+            "verify",
+            "--manifest",
+            "__C2ZC_RESTORE_FIXTURE_MANIFEST__",
+            "--repo-root",
+            ".",
+            "--candidate",
+            "HEAD"
           ],
           "cwd": "."
         }

@@ -4,13 +4,17 @@ import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import {
+  copyFile,
   mkdir,
+  mkdtemp,
   readFile,
   readdir,
   realpath,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
@@ -28,6 +32,12 @@ import {
   assertProductJourneyArtifactEvidence,
 } from "../electron/scripts/product-journeys.mjs";
 import {
+  assertC2ZcFixtureCandidateBinding,
+  C2ZC_PRODUCT_JOURNEY_ID,
+  assertC2ZcRestoreFixtureManifest,
+  loadC2ZcRestoreFixtureInput,
+} from "../electron/scripts/c2zc-canonical-product-journey.mjs";
+import {
   C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
   C2ZC_RUST_ACCEPTANCE_GATE_IDS,
   C2ZC_RUST_ACCEPTANCE_RECEIPT_PATH,
@@ -41,9 +51,18 @@ const repoRoot = path.resolve(
 const registryPath = path.join(repoRoot, "scripts/local-ci-registry.json");
 const execFileAsync = promisify(execFile);
 const LOCAL_CI_RECEIPT_VERSION = 3;
-const PRODUCT_JOURNEY_RESULTS_VERSION = 4;
+const PRODUCT_JOURNEY_RESULTS_VERSION = 5;
 const PRODUCT_JOURNEY_ARTIFACT_DIR = ".artifacts/product-journeys";
 const C2ZC_RUST_ACCEPTANCE_GATE_STAGE = "c2-zc-rust-acceptance-gate";
+const C2ZC_RESTORE_FIXTURE_STAGE = "c2-zc-restore-fixture-builder";
+const C2ZC_RESTORE_FIXTURE_ENV = "GRIMODEX_C2ZC_RESTORE_FIXTURE";
+const C2ZC_RESTORE_FIXTURE_OUTPUT_PLACEHOLDER =
+  "__C2ZC_RESTORE_FIXTURE_OUTPUT_DIR__";
+const C2ZC_RESTORE_FIXTURE_MANIFEST_PLACEHOLDER =
+  "__C2ZC_RESTORE_FIXTURE_MANIFEST__";
+const C2ZC_RESTORE_FIXTURE_BACKUP_NAME = "c2zc-restore-fixture.backup.db";
+const C2ZC_RESTORE_FIXTURE_DATABASE_NAME = "c2zc-restore-fixture.db";
+const C2ZC_RESTORE_FIXTURE_MANIFEST_NAME = "c2zc-restore-fixture.manifest.json";
 const C2ZC_RUST_REQUESTED_BASE_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_BASE";
 const C2ZC_RUST_REQUESTED_HEAD_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD";
 const C2ZC_RUST_CANDIDATE_JSON_ENV = "GRIMODEX_C2ZC_RUST_CANDIDATE_JSON";
@@ -153,6 +172,49 @@ function validateWorkingDirectory(value, label) {
   }
 }
 
+function validateC2ZcRestoreFixtureStage(stage) {
+  const label = `local CI stage ${C2ZC_RESTORE_FIXTURE_STAGE}`;
+  const operations = stage.commands.map(fixtureCommandOperation);
+  if (
+    operations.length !== 2 ||
+    operations.filter((operation) => operation === "build").length !== 1 ||
+    operations.filter((operation) => operation === "verify").length !== 1
+  ) {
+    throw new Error(
+      `${label} must define exactly one build and one verify command`,
+    );
+  }
+  for (const [index, command] of stage.commands.entries()) {
+    const commandLabel = `${label} command ${index}`;
+    const manifestPathIndex = command.args.indexOf("--manifest-path");
+    if (
+      manifestPathIndex === -1 ||
+      command.args[manifestPathIndex + 1] !== "src-tauri/Cargo.toml"
+    ) {
+      throw new Error(
+        `${commandLabel} must pin --manifest-path src-tauri/Cargo.toml`,
+      );
+    }
+    for (const option of ["--repo-root", "--candidate"]) {
+      if (!command.args.includes(option)) {
+        throw new Error(`${commandLabel} must include ${option}`);
+      }
+    }
+    const operation = operations[index];
+    const requiredOptions =
+      operation === "build"
+        ? ["--output-dir", "--expected-head", "--expected-tree"]
+        : ["--manifest"];
+    for (const option of requiredOptions) {
+      if (!command.args.includes(option)) {
+        throw new Error(
+          `${commandLabel} ${operation} command is missing ${option}`,
+        );
+      }
+    }
+  }
+}
+
 export function validateLocalCiRegistry(registry) {
   if (!isPlainObject(registry) || registry.version !== 1) {
     throw new Error("local CI registry version must be 1");
@@ -193,6 +255,9 @@ export function validateLocalCiRegistry(registry) {
       ) {
         throw new Error(`${label} comparison must be boolean`);
       }
+    }
+    if (stageId === C2ZC_RESTORE_FIXTURE_STAGE) {
+      validateC2ZcRestoreFixtureStage(stage);
     }
   }
 
@@ -523,6 +588,189 @@ function resolveC2ZcRustAcceptanceReceiptPath(plan, { root = repoRoot } = {}) {
   return path.resolve(root, configured ?? C2ZC_RUST_ACCEPTANCE_RECEIPT_PATH);
 }
 
+function fixtureCommandOperation(command) {
+  if (command.args?.includes("build")) return "build";
+  if (command.args?.includes("verify")) return "verify";
+  return null;
+}
+
+function assertOutsideRepository(root, candidatePath, label) {
+  const relative = path.relative(
+    path.resolve(root),
+    path.resolve(candidatePath),
+  );
+  if (
+    relative === "" ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== "..") ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error(`${label} must be outside the candidate repository`);
+  }
+}
+
+async function createC2ZcRestoreFixtureContext(root, plan, candidate) {
+  if (!candidate) {
+    throw new Error(
+      "C2-ZC restore fixture builder requires a resolved candidate binding",
+    );
+  }
+  const outputDir = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-c2zc-restore-fixture-"),
+  );
+  try {
+    assertOutsideRepository(root, outputDir, "C2-ZC restore fixture output");
+  } catch (error) {
+    await rm(outputDir, { recursive: true, force: true });
+    throw error;
+  }
+  return {
+    outputDir,
+    fixturePath: path.join(outputDir, C2ZC_RESTORE_FIXTURE_BACKUP_NAME),
+    databasePath: path.join(outputDir, C2ZC_RESTORE_FIXTURE_DATABASE_NAME),
+    manifestPath: path.join(outputDir, C2ZC_RESTORE_FIXTURE_MANIFEST_NAME),
+    candidate,
+    plan,
+    input: null,
+    evidence: null,
+  };
+}
+
+function replaceCommandArgument(args, option, value, label) {
+  const index = args.indexOf(option);
+  if (index === -1 || index === args.length - 1) {
+    throw new Error(`${label} is missing ${option}`);
+  }
+  const replaced = [...args];
+  replaced[index + 1] = value;
+  return replaced;
+}
+
+async function bindC2ZcRestoreFixtureCommand(
+  command,
+  stageId,
+  { root, plan, candidate, context = null } = {},
+) {
+  if (stageId !== C2ZC_RESTORE_FIXTURE_STAGE) {
+    return { command, context };
+  }
+  const operation = fixtureCommandOperation(command);
+  if (!operation) {
+    throw new Error(
+      "C2-ZC restore fixture stage must declare build and verify commands",
+    );
+  }
+  const nextContext =
+    context ?? (await createC2ZcRestoreFixtureContext(root, plan, candidate));
+  let args = [...command.args];
+  args = replaceCommandArgument(
+    args,
+    "--repo-root",
+    path.resolve(root),
+    "C2-ZC restore fixture command",
+  );
+  args = replaceCommandArgument(
+    args,
+    "--candidate",
+    plan.comparison.head,
+    "C2-ZC restore fixture command",
+  );
+  if (operation === "build") {
+    args = replaceCommandArgument(
+      args,
+      "--output-dir",
+      nextContext.outputDir,
+      "C2-ZC restore fixture build command",
+    );
+    args = replaceCommandArgument(
+      args,
+      "--expected-head",
+      candidate.resolvedHeadSha,
+      "C2-ZC restore fixture build command",
+    );
+    args = replaceCommandArgument(
+      args,
+      "--expected-tree",
+      candidate.resolvedHeadTreeSha,
+      "C2-ZC restore fixture build command",
+    );
+  } else {
+    args = replaceCommandArgument(
+      args,
+      "--manifest",
+      nextContext.manifestPath,
+      "C2-ZC restore fixture verify command",
+    );
+  }
+  return { command: { ...command, args }, context: nextContext };
+}
+
+async function captureC2ZcRestoreFixtureEvidence(context, root) {
+  if (!context?.input?.manifestPath) {
+    throw new Error("C2-ZC restore fixture was not loaded after verification");
+  }
+  const evidenceDirectory = path.join(
+    root,
+    ".artifacts",
+    "local-ci",
+    "c2-zc-restore-fixture",
+  );
+  await mkdir(evidenceDirectory, { recursive: true });
+  const fixtureEvidencePath = path.join(
+    evidenceDirectory,
+    C2ZC_RESTORE_FIXTURE_BACKUP_NAME,
+  );
+  const databaseEvidencePath = path.join(
+    evidenceDirectory,
+    C2ZC_RESTORE_FIXTURE_DATABASE_NAME,
+  );
+  const manifestEvidencePath = path.join(
+    evidenceDirectory,
+    C2ZC_RESTORE_FIXTURE_MANIFEST_NAME,
+  );
+  await copyFile(context.fixturePath, fixtureEvidencePath);
+  await copyFile(context.databasePath, databaseEvidencePath);
+  await copyFile(context.manifestPath, manifestEvidencePath);
+  const verifiedCopy = await loadC2ZcRestoreFixtureInput({
+    path: fixtureEvidencePath,
+    manifest: manifestEvidencePath,
+  });
+  assertC2ZcFixtureCandidateBinding(
+    verifiedCopy.manifest.candidate,
+    context.candidate,
+    "C2-ZC copied restore fixture candidate",
+  );
+  const [fixture, database, manifest] = await Promise.all([
+    resolveArtifactEvidence(fixtureEvidencePath, { root }),
+    resolveArtifactEvidence(databaseEvidencePath, { root }),
+    resolveArtifactEvidence(manifestEvidencePath, { root }),
+  ]);
+  return {
+    path: fixture.path,
+    manifestPath: manifest.path,
+    manifest,
+    artifacts: { fixture, database },
+    fixtureManifest: verifiedCopy.manifest,
+    manifestVersion: verifiedCopy.manifest.manifestVersion,
+    fixtureSha256: verifiedCopy.manifest.fixtureSha256,
+    fixtureSizeBytes: verifiedCopy.manifest.fixtureSizeBytes,
+    candidate: verifiedCopy.manifest.candidate,
+  };
+}
+
+async function validateC2ZcRestoreFixtureContext(context) {
+  const input = await loadC2ZcRestoreFixtureInput({
+    path: context.fixturePath,
+    manifest: context.manifestPath,
+  });
+  assertC2ZcFixtureCandidateBinding(
+    input.manifest.candidate,
+    context.candidate,
+    "C2-ZC restore fixture candidate",
+  );
+  context.input = input;
+  return input;
+}
+
 function reportRequiresC2ZcRustAcceptance(report) {
   return report?.acceptanceRequired === true;
 }
@@ -627,6 +875,23 @@ function assertStringArrayEqual(actual, expected, label) {
   }
 }
 
+function requiredProductJourneyIds(catalog, report = null) {
+  const fromCatalog = catalog
+    .filter(
+      (journey) =>
+        journey.required !== false && journey.acceptanceRole !== "diagnostic",
+    )
+    .map((journey) => journey.id);
+  if (Array.isArray(report?.requiredJourneyIds)) {
+    assertStringArrayEqual(
+      report.requiredJourneyIds,
+      fromCatalog,
+      "product journey required IDs",
+    );
+  }
+  return fromCatalog;
+}
+
 function assertPassedProductJourneyResult(
   report,
   {
@@ -639,7 +904,7 @@ function assertPassedProductJourneyResult(
     !isPlainObject(report) ||
     report.version !== PRODUCT_JOURNEY_RESULTS_VERSION
   ) {
-    throw new Error("product journey results version 4 is required");
+    throw new Error("product journey results version 5 is required");
   }
   if (report.status !== "passed") {
     throw new Error("product journey results must have passed status");
@@ -658,6 +923,7 @@ function assertPassedProductJourneyResult(
     expectedIds,
     "product journey results",
   );
+  const requiredIds = requiredProductJourneyIds(catalog, report);
   if (report.allPassed !== true || report.allClean !== true) {
     throw new Error(
       "product journey results must record allPassed and allClean",
@@ -705,14 +971,16 @@ function assertPassedProductJourneyResult(
     !Array.isArray(report.journeys) ||
     report.journeys.length !== expectedIds.length ||
     report.journeys.some(
-      (journey, index) =>
-        journey?.id !== expectedIds[index] ||
-        journey.status !== "passed" ||
-        journey.cleanPass !== true,
+      (journey, index) => journey?.id !== expectedIds[index],
+    ) ||
+    report.journeys.some(
+      (journey) =>
+        requiredIds.includes(journey?.id) &&
+        (journey.status !== "passed" || journey.cleanPass !== true),
     )
   ) {
     throw new Error(
-      "product journey results must contain all passed clean journeys",
+      "product journey results must contain all required passed clean journeys",
     );
   }
   return expectedIds;
@@ -747,6 +1015,13 @@ function assertPassedProductJourneyManifest(
     expectedIds,
     "product journey manifest",
   );
+  if (report) {
+    assertStringArrayEqual(
+      manifest.requiredJourneyIds ?? requiredProductJourneyIds(catalog, report),
+      requiredProductJourneyIds(catalog, report),
+      "product journey manifest required IDs",
+    );
+  }
   if (!isPlainObject(manifest.results) || !Array.isArray(manifest.artifacts)) {
     throw new Error(
       "product journey audit manifest is missing artifact entries",
@@ -816,6 +1091,15 @@ function assertPassedProductJourneyManifest(
       "product journey audit manifest build receipt does not match results",
     );
   }
+  if (
+    report &&
+    JSON.stringify(manifest.requiredJourneyIds ?? report.journeyIds) !==
+      JSON.stringify(report.requiredJourneyIds ?? report.journeyIds)
+  ) {
+    throw new Error(
+      "product journey audit manifest required IDs do not match results",
+    );
+  }
 }
 
 function assertArtifactIdentity(
@@ -849,6 +1133,78 @@ function assertArtifactIdentity(
   ) {
     throw new Error(`${label} artifact size is invalid`);
   }
+}
+
+function assertC2ZcRestoreFixtureEvidenceShape(
+  evidence,
+  label,
+  { candidate = null } = {},
+) {
+  if (!isPlainObject(evidence)) {
+    throw new Error(`${label} must include verified fixture evidence`);
+  }
+  for (const [field, value] of [
+    ["path", evidence.path],
+    ["manifestPath", evidence.manifestPath],
+  ]) {
+    if (
+      typeof value !== "string" ||
+      value.length === 0 ||
+      value.includes("\0") ||
+      path.isAbsolute(value) ||
+      value.split(/[\\/]/u).includes("..")
+    ) {
+      throw new Error(`${label} ${field} must be a repository-relative path`);
+    }
+  }
+  if (evidence.manifestPath !== evidence.manifest?.path) {
+    throw new Error(`${label} manifest path is not bound to its artifact`);
+  }
+  if (evidence.path !== evidence.artifacts?.fixture?.path) {
+    throw new Error(`${label} fixture path is not bound to its artifact`);
+  }
+  assertArtifactIdentity(evidence.manifest, `${label} manifest`, {
+    requireSize: true,
+  });
+  assertArtifactIdentity(evidence.artifacts?.fixture, `${label} fixture`, {
+    requireSize: true,
+  });
+  assertArtifactIdentity(evidence.artifacts?.database, `${label} database`, {
+    requireSize: true,
+  });
+  if (
+    !isPlainObject(evidence.fixtureManifest) ||
+    evidence.manifestVersion !== evidence.fixtureManifest.manifestVersion ||
+    evidence.fixtureSha256 !== evidence.fixtureManifest.fixtureSha256 ||
+    evidence.fixtureSizeBytes !== evidence.fixtureManifest.fixtureSizeBytes
+  ) {
+    throw new Error(`${label} manifest summary is not bound to its contents`);
+  }
+  assertC2ZcRestoreFixtureManifest(
+    evidence.fixtureManifest,
+    `${label} manifest contents`,
+  );
+  if (
+    evidence.fixtureSha256 !== evidence.artifacts.fixture.sha256 ||
+    evidence.fixtureSizeBytes !== evidence.artifacts.fixture.size
+  ) {
+    throw new Error(
+      `${label} fixture digest or size is not bound to its bytes`,
+    );
+  }
+  assertC2ZcFixtureCandidateBinding(
+    evidence.fixtureManifest.candidate,
+    evidence.candidate,
+    `${label} candidate`,
+  );
+  if (candidate) {
+    assertC2ZcFixtureCandidateBinding(
+      evidence.fixtureManifest.candidate,
+      candidate,
+      `${label} Rust candidate`,
+    );
+  }
+  return evidence;
 }
 
 function assertBuildArtifactIdentity(identity, label) {
@@ -1088,6 +1444,8 @@ export async function collectProductJourneyEvidence(
   return {
     catalogDigest: report.catalogDigest,
     journeyIds,
+    requiredJourneyIds:
+      report.requiredJourneyIds ?? requiredProductJourneyIds(selection.catalog),
     allPassed: true,
     allClean: true,
     results: resultEvidence,
@@ -1125,6 +1483,12 @@ function verifyProductJourneyEvidence(
     receiptEvidence.journeyIds,
     expectedIds,
     "Full receipt product journey evidence",
+  );
+  const requiredIds = requiredProductJourneyIds(catalog, receiptEvidence);
+  assertStringArrayEqual(
+    receiptEvidence.requiredJourneyIds ?? requiredIds,
+    requiredIds,
+    "Full receipt required product journey evidence",
   );
   if (receiptEvidence.allPassed !== true || receiptEvidence.allClean !== true) {
     throw new Error(
@@ -1230,6 +1594,7 @@ function verifyProductJourneyEvidence(
       "buildReceipt",
       "acceptanceComplete",
       "c2zcRustAcceptance",
+      "requiredJourneyIds",
     ]) {
       if (
         JSON.stringify(receiptEvidence[field]) !==
@@ -1278,6 +1643,13 @@ export function verifyLocalCiReceipt(
   }
   verifyCandidateBinding(receipt.candidate, candidate);
   if (profile === "full") {
+    if (receipt.productJourneyEvidence?.acceptanceRequired === true) {
+      assertC2ZcRestoreFixtureEvidenceShape(
+        receipt.c2zcRestoreFixture,
+        "Full receipt C2-ZC restore fixture",
+        { candidate },
+      );
+    }
     verifyProductJourneyEvidence(
       receipt.productJourneyEvidence,
       currentProductJourneyEvidence,
@@ -1415,18 +1787,39 @@ function productJourneyCatalogForCommand(command) {
 async function bindC2ZcProductJourneyCommand(
   command,
   stageId,
-  { root, plan, candidate, buildStagePassed = false },
+  {
+    root,
+    plan,
+    candidate,
+    buildStagePassed = false,
+    restoreFixtureInput = null,
+  },
 ) {
   if (stageId !== "electron-product-journeys") return command;
   const configuredPath = command.env?.[C2ZC_RUST_RECEIPT_PATH_ENV];
+  const selectedCatalog = productJourneyCatalogForCommand(command);
+  const isC2ZcSelection = selectedCatalog.some(
+    (journey) => journey.id === C2ZC_PRODUCT_JOURNEY_ID,
+  );
   const boundEnv = {
     ...command.env,
     [C2ZC_RUST_REQUESTED_BASE_ENV]: plan.comparison.base,
     [C2ZC_RUST_REQUESTED_HEAD_ENV]: plan.comparison.head,
   };
+  if (
+    isC2ZcSelection &&
+    (command.args?.includes("electron:product-journeys") ||
+      command.label === "Run every product journey")
+  ) {
+    boundEnv[C2ZC_RESTORE_FIXTURE_ENV] = restoreFixtureInput
+      ? JSON.stringify({
+          path: restoreFixtureInput.path,
+          manifest: restoreFixtureInput.manifestPath,
+        })
+      : "";
+  }
   delete boundEnv[PRODUCT_JOURNEY_BUILD_RECEIPT_ENV];
   if (candidate && buildStagePassed) {
-    const selectedCatalog = productJourneyCatalogForCommand(command);
     try {
       const artifacts = (
         await assertBuildArtifacts(selectedCatalog, {
@@ -1491,6 +1884,7 @@ export async function runLocalCiPlan(
   const started = performance.now();
   const stages = [];
   let failedStage = null;
+  let c2zcRestoreFixtureContext = null;
 
   for (const stage of plan.stages) {
     if (failedStage) {
@@ -1530,17 +1924,34 @@ export async function runLocalCiPlan(
     const commands = [];
     let failedCommand = null;
     for (const command of stage.commands) {
-      const rustBoundCommand = bindC2ZcRustGateCommand(command, stage.id, {
-        plan,
-        candidate,
-      });
-      const boundCommand = await bindC2ZcProductJourneyCommand(
-        rustBoundCommand,
+      const fixtureBinding = await bindC2ZcRestoreFixtureCommand(
+        command,
         stage.id,
         {
           root,
           plan,
           candidate,
+          context: c2zcRestoreFixtureContext,
+        },
+      );
+      c2zcRestoreFixtureContext = fixtureBinding.context;
+      const rustBoundCommand = bindC2ZcRustGateCommand(command, stage.id, {
+        plan,
+        candidate,
+      });
+      const boundCommand = await bindC2ZcProductJourneyCommand(
+        {
+          ...rustBoundCommand,
+          ...(fixtureBinding.command === command
+            ? {}
+            : { args: fixtureBinding.command.args }),
+        },
+        stage.id,
+        {
+          root,
+          plan,
+          candidate,
+          restoreFixtureInput: c2zcRestoreFixtureContext?.input,
           buildStagePassed:
             stage.id === "electron-product-journeys" &&
             commands.length > 0 &&
@@ -1565,7 +1976,27 @@ export async function runLocalCiPlan(
           signal: null,
         };
       }
-      const status = execution.exitCode === 0 ? "passed" : "failed";
+      let status = execution.exitCode === 0 ? "passed" : "failed";
+      if (status === "passed" && stage.id === C2ZC_RESTORE_FIXTURE_STAGE) {
+        try {
+          const operation = fixtureCommandOperation(boundCommand);
+          await validateC2ZcRestoreFixtureContext(c2zcRestoreFixtureContext);
+          if (operation === "verify") {
+            c2zcRestoreFixtureContext.evidence =
+              await captureC2ZcRestoreFixtureEvidence(
+                c2zcRestoreFixtureContext,
+                root,
+              );
+          }
+        } catch (error) {
+          execution = {
+            ...execution,
+            error: error instanceof Error ? error.message : String(error),
+            exitCode: 1,
+          };
+          status = "failed";
+        }
+      }
       commands.push({ ...boundCommand, ...execution, status });
       notify({
         command: boundCommand,
@@ -1585,7 +2016,25 @@ export async function runLocalCiPlan(
       commands,
     });
     notify({ stage, status, type: "stage-end" });
+    if (
+      stage.id === "electron-product-journeys" &&
+      c2zcRestoreFixtureContext?.outputDir
+    ) {
+      await rm(c2zcRestoreFixtureContext.outputDir, {
+        recursive: true,
+        force: true,
+      });
+      c2zcRestoreFixtureContext.outputDir = null;
+    }
     if (status === "failed") failedStage = stage.id;
+  }
+
+  if (c2zcRestoreFixtureContext?.outputDir) {
+    await rm(c2zcRestoreFixtureContext.outputDir, {
+      recursive: true,
+      force: true,
+    });
+    c2zcRestoreFixtureContext.outputDir = null;
   }
 
   return {
@@ -1598,6 +2047,7 @@ export async function runLocalCiPlan(
     finishedAt: new Date().toISOString(),
     durationMs: Math.round(performance.now() - started),
     status: dryRun ? "planned" : failedStage ? "failed" : "passed",
+    c2zcRestoreFixture: c2zcRestoreFixtureContext?.evidence ?? null,
     productJourneyEvidence,
     releaseOnlyJobs: plan.releaseOnlyJobs,
     stages,
