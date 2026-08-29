@@ -366,9 +366,7 @@ fn sql_starts_with_keyword(sql: &str, keyword: &str) -> bool {
         && trimmed[keyword.len()..]
             .chars()
             .next()
-            .map_or(true, |character| {
-                !character.is_ascii_alphanumeric() && character != '_'
-            })
+            .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_')
 }
 
 fn untrusted_sql_needs_reserved_project_setting_guard(sql: &str) -> bool {

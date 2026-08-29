@@ -2179,7 +2179,7 @@ pub fn publish_scan_staging_project(
                 "visibility": "visible",
             });
             let append = append_canonical_and_narrative_change_in_tx(
-                &tx,
+                tx,
                 &payload.project_id,
                 &payload.session_id,
                 &AppendChangeEvent {
@@ -2227,7 +2227,7 @@ pub fn publish_scan_staging_project(
             )?;
 
             let semantic_epoch_id = mint_c2zc_scan_publish_project_birth_epoch_in_tx(
-                &tx,
+                tx,
                 &payload.project_id,
                 &payload.request_id,
                 &payload.session_id,
@@ -2255,7 +2255,7 @@ pub fn publish_scan_staging_project(
                     "undoJournalId": null,
                 },
             });
-            insert_idempotent_response(&tx, &idempotency_request, &payload.project_id, &response)?;
+            insert_idempotent_response(tx, &idempotency_request, &payload.project_id, &response)?;
             Ok(response)
         })
     })
