@@ -10,9 +10,11 @@
 //! candidate checkout.
 
 use std::fs::{self, File, OpenOptions};
+use std::fmt;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -66,10 +68,11 @@ type FixtureCursorRow = (
     Option<String>,
     String,
 );
+type BeforeManifestPublishHook = Arc<dyn Fn(&Path) -> Result<()> + Send + Sync>;
 
 /// Inputs for a fixture build.  `repo_root` and `output_dir` are intentionally
 /// separate so a generated artifact can never dirty the candidate checkout.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct FixtureBuildOptions {
     pub repo_root: PathBuf,
     pub output_dir: PathBuf,
@@ -79,6 +82,25 @@ pub struct FixtureBuildOptions {
     /// The exact argv supplied to the builder.  The CLI passes its real argv;
     /// library callers may provide a stable invocation string for a manifest.
     pub builder_command: Vec<String>,
+    before_manifest_publish_hook: Option<BeforeManifestPublishHook>,
+}
+
+impl fmt::Debug for FixtureBuildOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FixtureBuildOptions")
+            .field("repo_root", &self.repo_root)
+            .field("output_dir", &self.output_dir)
+            .field("candidate", &self.candidate)
+            .field("expected_head_sha", &self.expected_head_sha)
+            .field("expected_tree_sha", &self.expected_tree_sha)
+            .field("builder_command", &self.builder_command)
+            .field(
+                "before_manifest_publish_hook",
+                &self.before_manifest_publish_hook.is_some(),
+            )
+            .finish()
+    }
 }
 
 impl FixtureBuildOptions {
@@ -90,6 +112,7 @@ impl FixtureBuildOptions {
             expected_head_sha: None,
             expected_tree_sha: None,
             builder_command: std::env::args().collect(),
+            before_manifest_publish_hook: None,
         }
     }
 
@@ -112,9 +135,20 @@ impl FixtureBuildOptions {
         self.builder_command = command;
         self
     }
+
+    /// Install a deterministic support hook invoked immediately before the
+    /// final candidate recheck.  This is intentionally a library-only test
+    /// seam; the CLI never installs one.
+    pub fn with_before_manifest_publish_hook<F>(mut self, hook: F) -> Self
+    where
+        F: Fn(&Path) -> Result<()> + Send + Sync + 'static,
+    {
+        self.before_manifest_publish_hook = Some(Arc::new(hook));
+        self
+    }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CandidateBinding {
     pub requested: String,
@@ -141,7 +175,7 @@ pub struct FixtureArtifacts {
     pub database: ArtifactDigest,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SemanticSnapshot {
     pub project_id: String,
@@ -172,8 +206,11 @@ pub struct SemanticSnapshot {
     pub feed_cursor: Value,
     pub feed_cursor_digest: String,
     pub derived_state_gap: Value,
+    pub derived_state_gap_digest: String,
     pub semantic_index: Value,
+    pub semantic_index_digest: String,
     pub expected_restore_lifecycle: Value,
+    pub expected_restore_lifecycle_digest: String,
     pub contents_digest: String,
 }
 
@@ -251,7 +288,7 @@ pub fn build_offline_restore_fixture(options: FixtureBuildOptions) -> Result<Fix
     let command = if options.builder_command.is_empty() {
         vec!["c2zc-restore-fixture".to_string()]
     } else {
-        options.builder_command
+        options.builder_command.clone()
     };
     let manifest = FixtureManifest {
         manifest_version: C2ZC_RESTORE_FIXTURE_MANIFEST_VERSION,
@@ -271,6 +308,28 @@ pub fn build_offline_restore_fixture(options: FixtureBuildOptions) -> Result<Fix
         fixture_size_bytes: fixture_digest.1,
         semantic,
     };
+    let recheck_result = (|| -> Result<()> {
+        if let Some(hook) = options.before_manifest_publish_hook.as_ref() {
+            hook(&candidate.root).context("running pre-publication fixture hook")?;
+        }
+        let final_candidate = resolve_candidate(&options).map_err(|error| {
+            anyhow::anyhow!(
+                "C2ZC_FIXTURE_CANDIDATE_RECHECK_FAILED: {error:#}"
+            )
+        })?;
+        anyhow::ensure!(
+            final_candidate.binding == manifest.candidate,
+            "C2ZC_FIXTURE_CANDIDATE_CHANGED_BEFORE_MANIFEST: initial={:?} final={:?}",
+            manifest.candidate,
+            final_candidate.binding
+        );
+        Ok(())
+    })();
+    if let Err(error) = recheck_result {
+        cleanup_unpublished_artifacts(&[&database_path, &backup_path, &manifest_path])
+            .context("cleaning unpublished fixture artifacts after candidate recheck failure")?;
+        return Err(error);
+    }
     write_immutable_manifest(&manifest_path, &manifest)?;
     verify_manifest(&manifest_path)?;
     Ok(FixtureBuildResult {
@@ -316,6 +375,7 @@ pub fn verify_manifest(manifest_path: &Path) -> Result<FixtureManifest> {
         !manifest.c2zc_marker_present,
         "C2ZC_FIXTURE_MARKER_PRESENT: fixture is already activated"
     );
+    validate_semantic_payload_digests(&manifest.semantic)?;
     anyhow::ensure!(
         manifest.candidate.clean,
         "C2ZC_FIXTURE_CANDIDATE_DIRTY: manifest candidate is not clean"
@@ -720,33 +780,10 @@ fn collect_semantic_snapshot_from_connection(
     let backfill_digest = digest_json(&backfill);
     let edge_digest = digest_json(&edge);
     let feed_cursor_digest = digest_json(&feed_cursor);
-    let contents = json!({
-        "projectId": PROJECT_ID,
-        "sceneId": SCENE_ID,
-        "ownerRunId": OWNER_RUN_ID,
-        "projectCount": project_count,
-        "sceneCount": scene_count,
-        "e0Count": e0_count,
-        "completedBackfillCount": completed_backfill_count,
-        "dependencyEdgeCount": edge_count,
-        "edgeStateCount": edge_state_count,
-        "ownerFreshnessCount": owner_freshness_count,
-        "cursorSettled": cursor_settled,
-        "semanticIndexRows": semantic_index_rows,
-        "sceneSourceRevision": scene_source_revision,
-        "edgeSourceObjectIdentity": edge_source_object_identity,
-        "edgeReadSetJson": edge_read_set_json,
-        "project": project,
-        "scene": scene,
-        "epoch": epoch,
-        "backfill": backfill,
-        "edge": edge,
-        "feedCursor": feed_cursor,
-        "derivedStateGap": derived_state_gap,
-        "semanticIndex": semantic_index,
-        "expectedRestoreLifecycle": expected_restore_lifecycle,
-    });
-    Ok(SemanticSnapshot {
+    let derived_state_gap_digest = digest_json(&derived_state_gap);
+    let semantic_index_digest = digest_json(&semantic_index);
+    let expected_restore_lifecycle_digest = digest_json(&expected_restore_lifecycle);
+    let mut semantic = SemanticSnapshot {
         project_id: PROJECT_ID.to_string(),
         scene_id: SCENE_ID.to_string(),
         owner_run_id: OWNER_RUN_ID.to_string(),
@@ -775,10 +812,108 @@ fn collect_semantic_snapshot_from_connection(
         feed_cursor,
         feed_cursor_digest,
         derived_state_gap,
+        derived_state_gap_digest,
         semantic_index,
+        semantic_index_digest,
         expected_restore_lifecycle,
-        contents_digest: digest_json(&contents),
+        expected_restore_lifecycle_digest,
+        contents_digest: String::new(),
+    };
+    semantic.contents_digest = digest_json(&semantic_contents_payload(&semantic));
+    Ok(semantic)
+}
+
+fn semantic_contents_payload(semantic: &SemanticSnapshot) -> Value {
+    json!({
+        "projectId": &semantic.project_id,
+        "sceneId": &semantic.scene_id,
+        "ownerRunId": &semantic.owner_run_id,
+        "projectCount": semantic.project_count,
+        "sceneCount": semantic.scene_count,
+        "e0Count": semantic.e0_count,
+        "completedBackfillCount": semantic.completed_backfill_count,
+        "dependencyEdgeCount": semantic.dependency_edge_count,
+        "edgeStateCount": semantic.edge_state_count,
+        "ownerFreshnessCount": semantic.owner_freshness_count,
+        "cursorSettled": semantic.cursor_settled,
+        "semanticIndexRows": semantic.semantic_index_rows,
+        "sceneSourceRevision": &semantic.scene_source_revision,
+        "edgeSourceObjectIdentity": &semantic.edge_source_object_identity,
+        "edgeReadSetJson": &semantic.edge_read_set_json,
+        "project": &semantic.project,
+        "scene": &semantic.scene,
+        "epoch": &semantic.epoch,
+        "backfill": &semantic.backfill,
+        "edge": &semantic.edge,
+        "feedCursor": &semantic.feed_cursor,
+        "derivedStateGap": &semantic.derived_state_gap,
+        "semanticIndex": &semantic.semantic_index,
+        "expectedRestoreLifecycle": &semantic.expected_restore_lifecycle,
     })
+}
+
+fn validate_semantic_payload_digests(semantic: &SemanticSnapshot) -> Result<()> {
+    let checks = [
+        (
+            "project",
+            semantic.project_digest.as_str(),
+            digest_json(&semantic.project),
+        ),
+        (
+            "scene",
+            semantic.scene_digest.as_str(),
+            digest_json(&semantic.scene),
+        ),
+        (
+            "epoch",
+            semantic.epoch_digest.as_str(),
+            digest_json(&semantic.epoch),
+        ),
+        (
+            "backfill",
+            semantic.backfill_digest.as_str(),
+            digest_json(&semantic.backfill),
+        ),
+        (
+            "edge",
+            semantic.edge_digest.as_str(),
+            digest_json(&semantic.edge),
+        ),
+        (
+            "feedCursor",
+            semantic.feed_cursor_digest.as_str(),
+            digest_json(&semantic.feed_cursor),
+        ),
+        (
+            "derivedStateGap",
+            semantic.derived_state_gap_digest.as_str(),
+            digest_json(&semantic.derived_state_gap),
+        ),
+        (
+            "semanticIndex",
+            semantic.semantic_index_digest.as_str(),
+            digest_json(&semantic.semantic_index),
+        ),
+        (
+            "expectedRestoreLifecycle",
+            semantic.expected_restore_lifecycle_digest.as_str(),
+            digest_json(&semantic.expected_restore_lifecycle),
+        ),
+        (
+            "contents",
+            semantic.contents_digest.as_str(),
+            digest_json(&semantic_contents_payload(semantic)),
+        ),
+    ];
+    for (label, actual, expected) in checks {
+        anyhow::ensure!(
+            actual == expected,
+            "C2ZC_FIXTURE_SEMANTIC_DIGEST_{label}: manifest payload digest mismatch: expected={} actual={}",
+            expected,
+            actual
+        );
+    }
+    Ok(())
 }
 
 fn validate_fixture_semantics(semantic: &SemanticSnapshot) -> Result<()> {
@@ -849,6 +984,7 @@ fn validate_fixture_semantics(semantic: &SemanticSnapshot) -> Result<()> {
 }
 
 fn validate_backup(path: &Path, semantic: &SemanticSnapshot) -> Result<()> {
+    validate_semantic_payload_digests(semantic)?;
     let connection = Connection::open(path).context("opening generated fixture backup")?;
     quick_check_connection(&connection)?;
     let schema_version: i32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -866,7 +1002,7 @@ fn validate_backup(path: &Path, semantic: &SemanticSnapshot) -> Result<()> {
     )?;
     let copied = collect_semantic_snapshot_from_connection(&connection, &edge_id)?;
     anyhow::ensure!(
-        copied.contents_digest == semantic.contents_digest,
+        copied == *semantic,
         "C2ZC_FIXTURE_BACKUP_SEMANTIC_MISMATCH: generated backup differs from live snapshot"
     );
     Ok(())
@@ -896,6 +1032,7 @@ fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
 }
 
 fn validate_backup_semantics(conn: &Connection, expected: &SemanticSnapshot) -> Result<String> {
+    validate_semantic_payload_digests(expected)?;
     let edge_id: String = conn.query_row(
         "SELECT id FROM narrative_dependency_edges
           WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
@@ -909,12 +1046,8 @@ fn validate_backup_semantics(conn: &Connection, expected: &SemanticSnapshot) -> 
     let actual = collect_semantic_snapshot_from_connection(conn, &edge_id)?;
     validate_fixture_semantics(&actual)?;
     anyhow::ensure!(
-        actual.contents_digest == expected.contents_digest
-            && actual.epoch_digest == expected.epoch_digest
-            && actual.backfill_digest == expected.backfill_digest
-            && actual.edge_digest == expected.edge_digest
-            && actual.feed_cursor_digest == expected.feed_cursor_digest,
-        "C2ZC_FIXTURE_SEMANTIC_DIGEST_MISMATCH"
+        actual == *expected,
+        "C2ZC_FIXTURE_SEMANTIC_DIGEST_MISMATCH: manifest semantics differ from restored database"
     );
     Ok(edge_id)
 }
@@ -1246,6 +1379,25 @@ fn prepare_output_dir(candidate_root: &Path, output: &Path) -> Result<PathBuf> {
     );
     anyhow::ensure!(output.is_dir(), "C2ZC_FIXTURE_OUTPUT_NOT_DIRECTORY");
     Ok(output)
+}
+
+fn cleanup_unpublished_artifacts(paths: &[&Path]) -> Result<()> {
+    for path in paths {
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        anyhow::ensure!(
+            metadata.file_type().is_file(),
+            "C2ZC_FIXTURE_CLEANUP_TARGET_NOT_REGULAR: {}",
+            path.display()
+        );
+        reject_symlink_components(path)?;
+        fs::remove_file(path)
+            .with_context(|| format!("removing unpublished fixture artifact '{}'", path.display()))?;
+    }
+    Ok(())
 }
 
 fn ensure_absent_artifact(path: &Path) -> Result<()> {
