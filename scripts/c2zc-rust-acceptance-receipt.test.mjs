@@ -335,6 +335,24 @@ test("C2-ZC Rust receipt parses only one valid production Verify outcome sentine
       })),
       "",
     ],
+    [
+      "diagnostic prefix",
+      `diagnostic-prefix ${valid}`,
+      "",
+    ],
+    [
+      "leading space",
+      ` ${valid}`,
+      "",
+    ],
+    [
+      "diagnostic suffix",
+      valid.replace(
+        VERIFY_OUTCOME_JSON,
+        `${VERIFY_OUTCOME_JSON} diagnostic-suffix`,
+      ),
+      "",
+    ],
   ]) {
     await assert.rejects(
       runWithVerifyStdout(stdout, stderr),

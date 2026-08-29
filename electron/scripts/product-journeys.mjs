@@ -105,6 +105,11 @@ const REQUIRED_LIFECYCLE_TRANSITION_PHASES = [
   "authority-commit",
   "new-scope-hydrated",
 ];
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function log(message) {
   console.log(`[electron:product] ${message}`);
 }

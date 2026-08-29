@@ -22,6 +22,7 @@ import {
   resolveMcpArtifactPath,
   resolveProductJourneyArtifact,
   resolveSelectedProductJourneys,
+  refreshProductJourneyOutcome,
   runProductJourneys,
 } from "../electron/scripts/product-journeys.mjs";
 import { NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG } from "../electron/scripts/product-journey-catalog.mjs";
@@ -37,6 +38,33 @@ function deterministicClock(values) {
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
 }
+
+test("required C2-ZC Verify outcome binding fails closed without throwing", () => {
+  for (const c2zcRustAcceptance of [
+    {
+      required: true,
+      verified: true,
+      receipt: {},
+    },
+    {
+      required: true,
+      verified: true,
+      verifyOutcome: { verifyContractVersion: "9" },
+      receipt: { verifyOutcome: { verifyContractVersion: "8" } },
+    },
+  ]) {
+    const report = {
+      acceptanceRequired: true,
+      status: "passed",
+      journeyIds: ["journey"],
+      requiredJourneyIds: ["journey"],
+      journeys: [{ id: "journey", status: "passed", cleanPass: true }],
+      c2zcRustAcceptance,
+    };
+    assert.doesNotThrow(() => refreshProductJourneyOutcome(report));
+    assert.equal(report.rustAcceptanceComplete, false);
+  }
+});
 
 test("runner MCP artifact resolution honors override, CARGO_TARGET_DIR, and default with identity evidence", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-product-mcp-"));

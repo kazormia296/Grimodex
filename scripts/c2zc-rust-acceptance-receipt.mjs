@@ -348,7 +348,7 @@ function sentinelValues(value) {
   if (typeof value !== "string") return [];
   return [
     ...value.matchAll(
-      /C2ZC_RUST_VERIFY_OUTCOME=([^\r\n]*)/gu,
+      /^C2ZC_RUST_VERIFY_OUTCOME=([^\r\n]*)\r?$/gmu,
     ),
   ].map((match) => match[1]);
 }
