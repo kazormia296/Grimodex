@@ -2409,6 +2409,8 @@ export async function withOperationTimeout(
   let timerId;
   let abortListener;
   let timedOut = false;
+  let abortedEarly = false;
+  let earlyExit = false;
   const operationPromise = Promise.resolve().then(() => {
     if (signal?.aborted) {
       throw operationAbortError({
@@ -2427,16 +2429,19 @@ export async function withOperationTimeout(
       signal,
     });
   });
-  // A timed-out Electron launch can still resolve with an app handle after
-  // the caller has observed the timeout. Give the owner a chance to adopt and
+  // An Electron launch can still resolve with an app handle after the caller
+  // has observed a timeout or abort. Give the owner a chance to adopt and
   // clean that late resource immediately; never let the callback rejection
   // become an unhandled rejection.
   void operationPromise
     .then(
       (value) => {
-        if (timedOut && typeof onLateResolve === "function") {
+        if ((timedOut || abortedEarly) && typeof onLateResolve === "function") {
           void Promise.resolve()
-            .then(() => onLateResolve(value))
+            .then(() => {
+              if (!earlyExit) return undefined;
+              return onLateResolve(value);
+            })
             .catch(() => undefined);
         }
         return value;
@@ -2460,7 +2465,8 @@ export async function withOperationTimeout(
   });
   const abortPromise = signal
     ? new Promise((_, reject) => {
-        abortListener = () =>
+        abortListener = () => {
+          abortedEarly = true;
           reject(
             operationAbortError({
               phase: normalizedPhase,
@@ -2470,6 +2476,7 @@ export async function withOperationTimeout(
               reason: signal.reason ?? "abort",
             }),
           );
+        };
         if (signal.aborted) abortListener();
         else signal.addEventListener("abort", abortListener, { once: true });
       })
@@ -2491,6 +2498,7 @@ export async function withOperationTimeout(
     });
     return value;
   } catch (error) {
+    earlyExit = timedOut || abortedEarly;
     const status = timedOut ? "timeout" : "failed";
     await operationJournalRecord(journal, {
       phase: normalizedPhase,
@@ -2973,6 +2981,7 @@ export function createProductJourneyHarness({
   const pendingDiagnosticWork = new Set();
   const mainDiagnosticTrackers = new Map();
   const receiptStates = new Map();
+  const launchContexts = new Map();
   const authorityTimeline = [];
   const recordedLifecycleEvents = new Set();
   const ownedWorkspaces = new Set();
@@ -3040,6 +3049,14 @@ export function createProductJourneyHarness({
     }
   }
 
+  async function killAppProcess(app, appProcess = appChildProcesses.get(app)) {
+    await killProcessTree(appProcess).catch(() => undefined);
+    if (appProcess) forgetChild(appProcess);
+    if (appChildProcesses.get(app) === appProcess) {
+      appChildProcesses.delete(app);
+    }
+  }
+
   async function closeActiveResources(reason) {
     const app = lastResources.app;
     const page = lastResources.page;
@@ -3096,12 +3113,17 @@ export function createProductJourneyHarness({
 
   async function handleLateElectronLaunch(app, phase, launchId) {
     if (!app || typeof app !== "object") return;
+    const launchContext = launchContexts.get(launchId);
     let appProcess = null;
     try {
       appProcess = typeof app.process === "function" ? app.process() : null;
     } catch {
       // Even if the late app cannot expose its child handle, close the app
       // itself and preserve the original launch timeout.
+    }
+    if (launchContext) {
+      launchContext.app = app;
+      launchContext.appProcess = appProcess;
     }
     trackChild(appProcess);
     appChildProcesses.set(app, appProcess);
@@ -3137,10 +3159,14 @@ export function createProductJourneyHarness({
         PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
       ).catch(() => undefined);
     }
-    await killTrackedChildren();
+    await killAppProcess(app, appProcess);
+    launchContexts.delete(launchId);
   }
 
-  async function handleOperationTimeout(error) {
+  async function handleOperationTimeout(
+    error,
+    { phase = null, launchId = null } = {},
+  ) {
     if (laneWatchdogController) {
       if (!laneWatchdogController.signal.aborted) {
         laneWatchdogController.abort("timeout");
@@ -3149,6 +3175,14 @@ export function createProductJourneyHarness({
     }
     if (!harnessAbortController.signal.aborted) {
       harnessAbortController.abort("timeout");
+    }
+    const launchContext = launchId ? launchContexts.get(launchId) : null;
+    if (launchContext && !launchContext.app) {
+      await captureFailureOnce(
+        operationPhase(phase ?? launchContext.phase).replaceAll(/[\\/]/gu, "-"),
+      ).catch(() => undefined);
+      void error;
+      return;
     }
     await captureFailureWithCleanup(
       operationPhase(lastResources.phase).replaceAll(/[\\/]/gu, "-"),
@@ -3851,9 +3885,18 @@ export function createProductJourneyHarness({
     installSignalHandlers();
     await rm(retainedRendererPath, { force: true });
     const launchId = `launch-${randomUUID()}`;
+    const launchContext = {
+      phase,
+      launchId,
+      app: null,
+      appProcess: null,
+    };
+    launchContexts.set(launchId, launchContext);
     recordTimeline("launch-requested", { phase, launchId });
-    lastResources.phase = phase;
-    lastResources.launchId = launchId;
+    if (!lastResources.app) {
+      lastResources.phase = phase;
+      lastResources.launchId = launchId;
+    }
     const env = { ...process.env };
     delete env.ELECTRON_RENDERER_URL;
     env.GRIMODEX_USER_DATA_DIR = userDataDir;
@@ -3892,10 +3935,13 @@ export function createProductJourneyHarness({
         command: "electron-launch",
         args: { executablePath: electronBin, args: electronArgs },
         timeoutMs: launchTimeoutMs,
+        onTimeout: (error) =>
+          handleOperationTimeout(error, { phase, launchId }),
         onLateResolve: (lateApp) =>
           handleLateElectronLaunch(lateApp, phase, launchId),
       },
     );
+    launchContext.app = app;
     lastResources.app = app;
     lastResources.page = null;
     lastResources.phase = phase;
@@ -3903,6 +3949,7 @@ export function createProductJourneyHarness({
     lastResources.receiptArtifact = null;
     lastResources.heldFreshnessArtifact = null;
     const appProcess = typeof app.process === "function" ? app.process() : null;
+    launchContext.appProcess = appProcess;
     trackChild(appProcess);
     appChildProcesses.set(app, appProcess);
     const browserContext =
@@ -4042,7 +4089,7 @@ export function createProductJourneyHarness({
       );
       lastResources.heldFreshnessArtifact = receiptState.heldFreshnessArtifact;
       recordTimeline("renderer-bridge-ready", { launchId });
-      return {
+      const result = {
         app,
         page,
         launchId,
@@ -4059,6 +4106,8 @@ export function createProductJourneyHarness({
           byteLength: receiptState.artifact?.byteLength ?? null,
         },
       };
+      launchContexts.delete(launchId);
+      return result;
     } catch (error) {
       throw error;
     }

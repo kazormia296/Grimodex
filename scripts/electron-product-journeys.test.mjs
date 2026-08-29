@@ -46,6 +46,7 @@ import {
   MAIN_PROCESS_NOISE_ALLOWLIST,
   runWithLaneWatchdog,
   waitUntil,
+  withOperationTimeout,
 } from "../electron/scripts/product-journey-harness.mjs";
 import {
   configureWorkspace,
@@ -3498,4 +3499,145 @@ test("killProcessTree addresses descendants after an exited direct child", async
     process.kill = originalKill;
   }
   assert.deepEqual(groupSignals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("late launch resolution after an AbortSignal invokes the cleanup hook", async () => {
+  const controller = new AbortController();
+  let resolveLaunch;
+  const launchResult = new Promise((resolve) => {
+    resolveLaunch = resolve;
+  });
+  let observedLateApp;
+  let resolveLateApp;
+  const lateAppObserved = new Promise((resolve) => {
+    resolveLateApp = resolve;
+  });
+  const lateApp = { id: "late-after-abort" };
+
+  const pending = withOperationTimeout("electron-launch", () => launchResult, {
+    phase: "observability/aborted-launch",
+    command: "electron-launch",
+    requestId: "request-aborted-launch",
+    timeoutMs: 1_000,
+    signal: controller.signal,
+    onLateResolve: (app) => {
+      observedLateApp = app;
+      resolveLateApp(app);
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort("lane-watchdog");
+  await assert.rejects(pending, (error) => {
+    assert.match(error.message, /aborted/);
+    assert.match(error.message, /observability\/aborted-launch/);
+    assert.match(error.message, /request-aborted-launch/);
+    return true;
+  });
+
+  resolveLaunch(lateApp);
+  await Promise.race([
+    lateAppObserved,
+    new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error("late resolve hook was not called")),
+        250,
+      ),
+    ),
+  ]);
+  assert.equal(observedLateApp, lateApp);
+});
+
+test("late old launch cleanup does not touch an active replacement app", async (t) => {
+  const makeChild = (pid) => {
+    const child = new EventEmitter();
+    child.pid = pid;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.killSignals = [];
+    child.kill = (signal) => {
+      child.killSignals.push(signal);
+      child.exitCode = 0;
+      return true;
+    };
+    return child;
+  };
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    evaluate: async () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const replacementChild = makeChild(424249);
+  const oldChild = makeChild(424250);
+  const replacementApp = {
+    context: () => null,
+    firstWindow: async () => page,
+    process: () => replacementChild,
+  };
+  const oldApp = {
+    context: () => null,
+    firstWindow: async () => {
+      throw new Error("old launch must not reach firstWindow");
+    },
+    process: () => oldChild,
+  };
+  let resolveOldLaunch;
+  const oldLaunch = new Promise((resolve) => {
+    resolveOldLaunch = resolve;
+  });
+  let launchCount = 0;
+  const closeCalls = [];
+  const oldClosed = new Promise((resolve) => {
+    oldApp.resolveClosed = resolve;
+  });
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    operationTimeoutMs: 20,
+    launchTimeoutMs: 30,
+    electronLauncher: {
+      launch: async () => (launchCount++ === 0 ? replacementApp : oldLaunch),
+    },
+    closeApp: async (app) => {
+      closeCalls.push(app);
+      app.closed = true;
+      if (app === oldApp) app.resolveClosed();
+    },
+  });
+  t.after(async () => {
+    resolveOldLaunch?.(oldApp);
+    await harness.dispose({ success: false, name: "replacement-active" });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+  });
+
+  const replacement = await harness.launch("observability/replacement-active");
+  await assert.rejects(
+    harness.launch("observability/old-launch"),
+    /timed out.*observability\/old-launch/i,
+  );
+  assert.equal(replacementApp.closed, undefined);
+  assert.deepEqual(replacementChild.killSignals, []);
+
+  resolveOldLaunch(oldApp);
+  await Promise.race([
+    oldClosed,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("old app was not closed")), 500),
+    ),
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(oldApp.closed, true);
+  assert.deepEqual(oldChild.killSignals, ["SIGTERM"]);
+  assert.deepEqual(replacementChild.killSignals, []);
+  assert.equal(closeCalls.filter((app) => app === replacementApp).length, 0);
+  assert.equal(closeCalls.filter((app) => app === oldApp).length, 1);
+
+  await harness
+    .close(
+      replacement.app,
+      replacement.page,
+      "observability/replacement-active",
+    )
+    .catch(() => undefined);
 });
