@@ -11,8 +11,8 @@ use std::sync::{Mutex, OnceLock};
 
 use grimodex_core::{LAST_PUBLIC_RELEASE_SCHEMA_VERSION, SCHEMA_VERSION};
 use grimodex_db::domain_writes::{
-    create_scan_staging_project, publish_scan_staging_project,
-    CreateScanStagingProjectPayload, ScanStagingProjectPublishPayload,
+    create_scan_staging_project, publish_scan_staging_project, CreateScanStagingProjectPayload,
+    ScanStagingProjectPublishPayload,
 };
 use grimodex_db::migration_supervisor::{self, WorkspaceOpenDbOutcome};
 use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
@@ -23,13 +23,12 @@ use grimodex_db::narrative_extraction::{
     bootstrap_legacy_dependency_backfill_for_project, canonical_application_freshness,
     canonical_verify_outcome_digest, current_maintenance_coordinates, cut_over_workspace_freshness,
     digest_plan, ensure_test_schema, inspect_workspace_cutover_readiness,
-    inspect_workspace_cutover_readiness_with_liveness,
-    narrative_extraction_append_human_decision, narrative_extraction_apply_commit,
-    narrative_extraction_create_run, narrative_extraction_prepare_commit,
-    narrative_extraction_save_proposal_set, production_verify_check_coverage,
-    rebuild_narrative_derived_state_for_project, record_live_scheduler_heartbeat,
-    run_dependency_verify_for_project, run_incremental_freshness_cycle,
-    run_incremental_freshness_cycle_with_liveness_capability,
+    inspect_workspace_cutover_readiness_with_liveness, narrative_extraction_append_human_decision,
+    narrative_extraction_apply_commit, narrative_extraction_create_run,
+    narrative_extraction_prepare_commit, narrative_extraction_save_proposal_set,
+    production_verify_check_coverage, rebuild_narrative_derived_state_for_project,
+    record_live_scheduler_heartbeat, run_dependency_verify_for_project,
+    run_incremental_freshness_cycle, run_incremental_freshness_cycle_with_liveness_capability,
     verify_narrative_dependency_graph_for_project, AppendDecisionPayload, ApplyCommitPayload,
     CanonicalFreshnessAuthority, CommitApplicationRef, CommitOperation, CreateRunPayload,
     CreateTaskSeed, DependencyGraphVerifyReport, PrepareCommitPayload, ProposalSeed,
@@ -218,7 +217,10 @@ fn hidden_scan_staging_project_is_outside_cutover_scope_until_publish() {
     assert_eq!(evidence.project_ids, vec![PROJECT_ID.to_string()]);
     db.with_conn(|conn| {
         let readiness = inspect_workspace_cutover_readiness_with_liveness(conn, Some(&evidence))?;
-        assert!(readiness.ready, "hidden staging must not block cutover: {readiness:?}");
+        assert!(
+            readiness.ready,
+            "hidden staging must not block cutover: {readiness:?}"
+        );
         assert_eq!(readiness.durable.projects.len(), 1);
         assert_eq!(readiness.durable.projects[0].project_id, PROJECT_ID);
 
