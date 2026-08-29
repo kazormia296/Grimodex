@@ -43,7 +43,8 @@ use grimodex_db::domain_writes::{
     self, ApplyAiTreePlanPayload, CodexRenameApplyPayload, CodexRenameUndoPayload,
     CreateScanStagingProjectPayload, ProjectCreatePayload, ProjectDeletePayload,
     ProjectPatchPayload, ReplaceAuthorshipLanePayload, SetEntityTagsPayload, TreeNodeCreatePayload,
-    TreeNodeDeletePayload, TreeNodePatchPayload, UndoAiTreePlanPayload,
+    ScanStagingProjectPublishPayload, TreeNodeDeletePayload, TreeNodePatchPayload,
+    UndoAiTreePlanPayload,
 };
 use grimodex_db::editor_stickies;
 use grimodex_db::events::EventSink;
@@ -4380,6 +4381,23 @@ impl Backend {
             let payload: CreateScanStagingProjectPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
                 domain_writes::create_scan_staging_project(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn scan_staging_project_publish(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: ScanStagingProjectPublishPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&domain_writes::publish_scan_staging_project(
+                    db, payload,
+                )?)?)
             })
         })
         .await

@@ -2,6 +2,7 @@ import { db } from "@/db/client";
 import { projectSettings, projects } from "@/db/schema";
 import { and, eq, lte } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 import { deleteProject } from "@/features/project/api";
 import { SCAN_IMPORT_STATE_KEY, SCAN_IMPORT_STAGING } from "./scanImportState";
 
@@ -25,6 +26,22 @@ export async function createScanStagingProject(input: {
       title: input.title,
       language: input.language,
       createdAt: now,
+    },
+  });
+}
+
+/**
+ * Publish a completed Scan import through the typed import-authority writer.
+ * Native Rust removes the staging marker only after the canonical event,
+ * Change Feed, and any C2-ZC birth Epoch have committed.
+ */
+export async function publishScanStagingProject(
+  projectId: string,
+): Promise<void> {
+  await invoke("scan_staging_project_publish", {
+    payload: {
+      projectId,
+      ...createCanonicalWriteContext("import"),
     },
   });
 }

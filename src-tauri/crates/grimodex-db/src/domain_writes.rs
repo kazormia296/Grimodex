@@ -25,7 +25,10 @@ use crate::narrative_extraction::change_feed::{
     require_replay_lineage_in_project, scene_text_impact, AppendNarrativeChangeTransactionInput,
     NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
 };
-use crate::narrative_extraction::mint_c2zc_project_birth_epoch_in_tx;
+use crate::narrative_extraction::{
+    mint_c2zc_project_birth_epoch_in_tx, mint_c2zc_scan_publish_project_birth_epoch_in_tx,
+    with_immediate_transaction,
+};
 
 fn json_pointer_segment(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
@@ -1325,6 +1328,20 @@ pub struct CreateScanStagingProjectPayload {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ScanStagingProjectPublishPayload {
+    pub project_id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectCreatePayload {
     pub project_id: String,
     pub request_id: String,
@@ -2072,6 +2089,175 @@ pub fn create_scan_staging_project(
         )?;
         tx.commit()?;
         Ok(())
+    })
+}
+
+/// Publish a Scan staging Project through the one trusted import writer.
+///
+/// The staging marker is the visibility boundary: all audit, Narrative Change
+/// Feed, C2-ZC birth Epoch, marker removal, and the retry receipt share one
+/// immediate SQLite transaction. A failed marker/authority/feed check thus
+/// cannot expose a partially published Project.
+pub fn publish_scan_staging_project(
+    db: &Database,
+    payload: ScanStagingProjectPublishPayload,
+) -> anyhow::Result<Value> {
+    for (value, field) in [
+        (&payload.project_id, "projectId"),
+        (&payload.request_id, "requestId"),
+        (&payload.session_id, "sessionId"),
+        (&payload.event_uid, "eventUid"),
+    ] {
+        require_non_empty(value, field)?;
+    }
+    anyhow::ensure!(
+        payload.origin == NarrativeChangeOrigin::Import
+            && payload.original_transaction_id.is_none()
+            && payload.undo_journal_id.is_none(),
+        "Scan staging publish requires import origin without replay lineage"
+    );
+    let request_hash =
+        canonical_write_payload_fingerprint("scan_staging_project_publish", &payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "scan_staging_project_publish",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "SCAN_STAGING_PROJECT_PUBLISH_REQUEST_CONFLICT",
+    };
+
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |tx| {
+            if let Some(response) = load_idempotent_response(tx, &idempotency_request)? {
+                return Ok(response);
+            }
+
+            let project_exists: Option<i64> = tx
+                .query_row(
+                    "SELECT 1 FROM projects WHERE id = ?1",
+                    params![payload.project_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            anyhow::ensure!(
+                project_exists.is_some(),
+                "scan staging project '{}' was not created",
+                payload.project_id
+            );
+
+            let staging_marker: Option<String> = tx
+                .query_row(
+                    "SELECT value FROM project_settings
+                  WHERE project_id = ?1 AND key = 'scan.import.state'",
+                    params![payload.project_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match staging_marker.as_deref() {
+                None => anyhow::bail!(
+                "NEX_C2ZC_SCAN_PUBLISH_STAGING_MARKER_MISSING: project '{}' has no staging marker",
+                payload.project_id
+            ),
+                Some("staging") => {}
+                Some(value) => anyhow::bail!(
+                "NEX_C2ZC_SCAN_PUBLISH_STAGING_MARKER_MISMATCH: project '{}' has marker '{value}'",
+                payload.project_id
+            ),
+            }
+
+            let timestamp = chrono::Utc::now().timestamp_millis();
+            let canonical_payload = json!({
+                "projectId": payload.project_id,
+                "requestId": payload.request_id,
+                "sessionId": payload.session_id,
+            });
+            let before = json!({
+                "id": payload.project_id,
+                "visibility": "hidden",
+            });
+            let after = json!({
+                "id": payload.project_id,
+                "visibility": "visible",
+            });
+            let append = append_canonical_and_narrative_change_in_tx(
+                &tx,
+                &payload.project_id,
+                &payload.session_id,
+                &AppendChangeEvent {
+                    event_uid: payload.event_uid.clone(),
+                    scene_id: None,
+                    domain: "scan".to_string(),
+                    op_type: "scan.import.publish".to_string(),
+                    entity_type: Some("project".to_string()),
+                    entity_id: Some(payload.project_id.clone()),
+                    payload: canonical_payload.to_string(),
+                    timestamp,
+                },
+                &AppendNarrativeChangeTransactionInput {
+                    project_id: payload.project_id.clone(),
+                    request_id: payload.request_id.clone(),
+                    source_domain: "scan.import.publish".to_string(),
+                    source_change_event_uid: payload.event_uid.clone(),
+                    cause_kind: NarrativeChangeCauseKind::Forward,
+                    origin: payload.origin,
+                    original_transaction_id: None,
+                    commit_id: None,
+                    journal_id: None,
+                    undo_journal_id: None,
+                    application_ids: Vec::new(),
+                    occurred_at: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    events: vec![NarrativeChangeEventInput {
+                        object_key: json!({
+                            "kind": "project",
+                            "projectId": payload.project_id,
+                        }),
+                        change_kind: "metadata".to_string(),
+                        mutation_kind: "update".to_string(),
+                        before_version: None,
+                        before_digest: Some(narrative_snapshot_digest(&before)?),
+                        after_version: None,
+                        after_digest: Some(narrative_snapshot_digest(&after)?),
+                        changed_paths: vec!["/visibility".to_string()],
+                        text_impact: None,
+                        structural_impact: Some(json!({
+                            "changedPaths": ["/visibility"],
+                        })),
+                    }],
+                },
+            )?;
+
+            let semantic_epoch_id = mint_c2zc_scan_publish_project_birth_epoch_in_tx(
+                &tx,
+                &payload.project_id,
+                &payload.request_id,
+                &payload.session_id,
+                &payload.event_uid,
+            )?;
+            let removed = tx.execute(
+                "DELETE FROM project_settings
+              WHERE project_id = ?1
+                AND key = 'scan.import.state'
+                AND value = 'staging'",
+                params![payload.project_id],
+            )?;
+            anyhow::ensure!(
+            removed == 1,
+            "NEX_C2ZC_SCAN_PUBLISH_STAGING_MARKER_MISSING: project '{}' staging marker disappeared",
+            payload.project_id
+        );
+
+            let response = json!({
+                "projectId": payload.project_id,
+                "semanticEpochId": semantic_epoch_id,
+                "__writeReceipt": {
+                    "changeEventUid": payload.event_uid,
+                    "maintenanceTransactionId": append.narrative.transaction_id,
+                    "undoJournalId": null,
+                },
+            });
+            insert_idempotent_response(&tx, &idempotency_request, &payload.project_id, &response)?;
+            Ok(response)
+        })
     })
 }
 
@@ -5527,6 +5713,8 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
 mod tests {
     use std::path::Path;
 
+    use crate::narrative_extraction::{discover_durable_maintenance_work, AutomaticRunKind};
+
     use super::*;
 
     fn tree_create_payload(
@@ -5679,6 +5867,46 @@ mod tests {
             created_at: "2026-08-13T00:00:00.000Z".to_string(),
             updated_at: "2026-08-13T00:00:00.000Z".to_string(),
         }
+    }
+
+    fn scan_publish_payload(
+        project_id: &str,
+        request_id: &str,
+        event_uid: &str,
+    ) -> ScanStagingProjectPublishPayload {
+        ScanStagingProjectPublishPayload {
+            project_id: project_id.to_string(),
+            request_id: request_id.to_string(),
+            session_id: "scan-session".to_string(),
+            event_uid: event_uid.to_string(),
+            origin: NarrativeChangeOrigin::Import,
+            original_transaction_id: None,
+            undo_journal_id: None,
+        }
+    }
+
+    fn scan_publish_side_effect_counts(
+        db: &Database,
+        project_id: &str,
+        request_id: &str,
+    ) -> (i64, i64, i64, i64) {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM change_events
+                     WHERE project_id = ?1 AND op_type = 'scan.import.publish'),
+                   (SELECT COUNT(*) FROM narrative_change_transactions
+                     WHERE project_id = ?1 AND source_domain = 'scan.import.publish'),
+                   (SELECT COUNT(*) FROM narrative_semantic_epochs
+                     WHERE project_id = ?1),
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE domain = 'scan_staging_project_publish' AND request_id = ?2)",
+                params![project_id, request_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .map_err(Into::into)
+        })
+        .expect("inspect Scan publish side effects")
     }
 
     fn project_patch_payload(
@@ -6815,6 +7043,342 @@ mod tests {
             Ok(())
         })
         .expect("read marker");
+    }
+
+    #[test]
+    fn scan_staging_project_publish_is_atomic_and_replays_the_same_receipt_and_epoch() {
+        let db = fixture();
+        create_scan_staging_project(
+            &db,
+            CreateScanStagingProjectPayload {
+                id: "scan-pre-marker".to_string(),
+                title: "Imported before cutover".to_string(),
+                language: "en".to_string(),
+                created_at: "2026-08-30T00:00:00.000Z".to_string(),
+            },
+        )
+        .expect("create pre-marker staging project");
+        let pre_marker = scan_publish_payload(
+            "scan-pre-marker",
+            "scan-pre-marker-request",
+            "scan-pre-marker-event",
+        );
+        let pre_response = publish_scan_staging_project(&db, pre_marker.clone())
+            .expect("publish pre-marker staging project");
+        assert_eq!(pre_response["projectId"], "scan-pre-marker");
+        assert_eq!(pre_response["semanticEpochId"], Value::Null);
+        assert!(pre_response["__writeReceipt"]["maintenanceTransactionId"]
+            .as_str()
+            .is_some());
+        let pre_replay =
+            publish_scan_staging_project(&db, pre_marker).expect("replay pre-marker publish");
+        assert_eq!(pre_replay, pre_response);
+        assert_eq!(
+            scan_publish_side_effect_counts(&db, "scan-pre-marker", "scan-pre-marker-request"),
+            (1, 1, 0, 1)
+        );
+        let pre_work = discover_durable_maintenance_work(&db, "scan-pre-marker", "before-cutover")
+            .expect("discover published pre-marker project")
+            .expect("published marker removal makes Scan project eligible");
+        assert_eq!(pre_work.run_kind, AutomaticRunKind::Backfill);
+        assert_eq!(pre_work.semantic_epoch_id, None);
+
+        db.with_conn(|conn| Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z"))
+            .expect("activate C2-ZC marker");
+        create_scan_staging_project(
+            &db,
+            CreateScanStagingProjectPayload {
+                id: "scan-current".to_string(),
+                title: "Imported after cutover".to_string(),
+                language: "ja".to_string(),
+                created_at: "2026-08-30T00:01:00.000Z".to_string(),
+            },
+        )
+        .expect("create current-marker staging project");
+        let current_marker =
+            scan_publish_payload("scan-current", "scan-current-request", "scan-current-event");
+        let current_response = publish_scan_staging_project(&db, current_marker.clone())
+            .expect("publish current-marker staging project");
+        let epoch_id = current_response["semanticEpochId"]
+            .as_str()
+            .expect("current-marker publish returns an Epoch");
+        assert!(!epoch_id.is_empty());
+        let current_replay = publish_scan_staging_project(&db, current_marker)
+            .expect("replay current-marker publish");
+        assert_eq!(current_replay, current_response);
+        assert_eq!(
+            scan_publish_side_effect_counts(&db, "scan-current", "scan-current-request"),
+            (1, 1, 1, 1)
+        );
+        db.with_conn(|conn| {
+            let marker: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM project_settings
+                      WHERE project_id = 'scan-current' AND key = 'scan.import.state'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            assert_eq!(marker, None, "marker removal is the visibility publication");
+            let (event_payload, event_entity_type, event_entity_id): (String, String, String) =
+                conn.query_row(
+                    "SELECT payload, entity_type, entity_id FROM change_events
+                      WHERE project_id = 'scan-current'
+                        AND op_type = 'scan.import.publish'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+            assert_eq!(event_entity_type, "project");
+            assert_eq!(event_entity_id, "scan-current");
+            assert_eq!(
+                serde_json::from_str::<Value>(&event_payload)?,
+                json!({
+                    "projectId": "scan-current",
+                    "requestId": "scan-current-request",
+                    "sessionId": "scan-session",
+                })
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("verify Scan publish ledgers");
+    }
+
+    #[test]
+    fn scan_staging_project_publish_rejects_missing_or_mismatched_marker_without_authority() {
+        let db = fixture();
+        create_scan_staging_project(
+            &db,
+            CreateScanStagingProjectPayload {
+                id: "scan-marker-failure".to_string(),
+                title: "Marker failure".to_string(),
+                language: "ja".to_string(),
+                created_at: "2026-08-30T00:00:00.000Z".to_string(),
+            },
+        )
+        .expect("create staging project");
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM project_settings
+                  WHERE project_id = 'scan-marker-failure'
+                    AND key = 'scan.import.state'",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("remove marker for missing-marker case");
+        let missing_error = publish_scan_staging_project(
+            &db,
+            scan_publish_payload(
+                "scan-marker-failure",
+                "scan-marker-missing-request",
+                "scan-marker-missing-event",
+            ),
+        )
+        .expect_err("missing marker must remain hidden");
+        assert!(missing_error
+            .to_string()
+            .contains("NEX_C2ZC_SCAN_PUBLISH_STAGING_MARKER_MISSING"));
+        assert_eq!(
+            scan_publish_side_effect_counts(
+                &db,
+                "scan-marker-failure",
+                "scan-marker-missing-request"
+            ),
+            (0, 0, 0, 0)
+        );
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-marker-failure', 'scan.import.state', 'not-staging')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed mismatched marker");
+        let mismatch_error = publish_scan_staging_project(
+            &db,
+            scan_publish_payload(
+                "scan-marker-failure",
+                "scan-marker-mismatch-request",
+                "scan-marker-mismatch-event",
+            ),
+        )
+        .expect_err("mismatched marker must remain hidden");
+        assert!(mismatch_error
+            .to_string()
+            .contains("NEX_C2ZC_SCAN_PUBLISH_STAGING_MARKER_MISMATCH"));
+        db.with_conn(|conn| {
+            let marker: String = conn.query_row(
+                "SELECT value FROM project_settings
+                  WHERE project_id = 'scan-marker-failure'
+                    AND key = 'scan.import.state'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(marker, "not-staging");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("verify mismatched marker remains");
+        assert_eq!(
+            scan_publish_side_effect_counts(
+                &db,
+                "scan-marker-failure",
+                "scan-marker-mismatch-request"
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn scan_staging_project_publish_rolls_back_for_future_marker_epoch_conflict_and_feed_failure() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    Database::C2_ZC_CUTOVER_MIGRATION_ID,
+                    Database::C2_ZC_CUTOVER_CONTRACT_VERSION + 1,
+                    "2026-08-30T00:00:00.000Z",
+                ],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed unsupported C2-ZC marker");
+        create_scan_staging_project(
+            &db,
+            CreateScanStagingProjectPayload {
+                id: "scan-future-marker".to_string(),
+                title: "Future marker".to_string(),
+                language: "ja".to_string(),
+                created_at: "2026-08-30T00:00:00.000Z".to_string(),
+            },
+        )
+        .expect("create future-marker staging project");
+        let future_error = publish_scan_staging_project(
+            &db,
+            scan_publish_payload(
+                "scan-future-marker",
+                "scan-future-request",
+                "scan-future-event",
+            ),
+        )
+        .expect_err("future marker must fail closed");
+        assert!(future_error
+            .to_string()
+            .contains("NEX_C2ZC_SCAN_PUBLISH_MARKER_UNSUPPORTED"));
+        assert_eq!(
+            scan_publish_side_effect_counts(&db, "scan-future-marker", "scan-future-request"),
+            (0, 0, 0, 0)
+        );
+
+        let db = fixture();
+        db.with_conn(|conn| Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z"))
+            .expect("activate C2-ZC marker");
+        create_scan_staging_project(
+            &db,
+            CreateScanStagingProjectPayload {
+                id: "scan-epoch-conflict".to_string(),
+                title: "Epoch conflict".to_string(),
+                language: "ja".to_string(),
+                created_at: "2026-08-30T00:00:00.000Z".to_string(),
+            },
+        )
+        .expect("create epoch-conflict staging project");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('scan-existing-epoch', 'scan-epoch-conflict', 0, 'initial', ?1)",
+                ["2026-08-30T00:00:00.000Z"],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed duplicate Epoch");
+        let conflict_error = publish_scan_staging_project(
+            &db,
+            scan_publish_payload(
+                "scan-epoch-conflict",
+                "scan-epoch-conflict-request",
+                "scan-epoch-conflict-event",
+            ),
+        )
+        .expect_err("duplicate Epoch must fail closed");
+        assert!(conflict_error
+            .to_string()
+            .contains("NEX_C2ZC_SCAN_PUBLISH_EPOCH_CONFLICT"));
+        assert_eq!(
+            scan_publish_side_effect_counts(
+                &db,
+                "scan-epoch-conflict",
+                "scan-epoch-conflict-request"
+            ),
+            (0, 0, 1, 0)
+        );
+        db.with_conn(|conn| {
+            let marker: String = conn.query_row(
+                "SELECT value FROM project_settings
+                  WHERE project_id = 'scan-epoch-conflict'
+                    AND key = 'scan.import.state'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(marker, "staging");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("verify epoch-conflict project remains hidden");
+
+        let db = fixture();
+        db.with_conn(|conn| Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z"))
+            .expect("activate C2-ZC marker");
+        create_scan_staging_project(
+            &db,
+            CreateScanStagingProjectPayload {
+                id: "scan-feed-failure".to_string(),
+                title: "Feed failure".to_string(),
+                language: "ja".to_string(),
+                created_at: "2026-08-30T00:00:00.000Z".to_string(),
+            },
+        )
+        .expect("create feed-failure staging project");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_scan_publish_feed
+                   BEFORE INSERT ON narrative_change_transactions
+                   BEGIN SELECT RAISE(ABORT, 'forced scan publish feed failure'); END;",
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("install feed failure trigger");
+        let feed_error = publish_scan_staging_project(
+            &db,
+            scan_publish_payload(
+                "scan-feed-failure",
+                "scan-feed-failure-request",
+                "scan-feed-failure-event",
+            ),
+        )
+        .expect_err("feed failure must roll back Scan publish");
+        assert!(feed_error
+            .to_string()
+            .contains("forced scan publish feed failure"));
+        assert_eq!(
+            scan_publish_side_effect_counts(&db, "scan-feed-failure", "scan-feed-failure-request"),
+            (0, 0, 0, 0)
+        );
+        db.with_conn(|conn| {
+            let marker: String = conn.query_row(
+                "SELECT value FROM project_settings
+                  WHERE project_id = 'scan-feed-failure'
+                    AND key = 'scan.import.state'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(marker, "staging");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("verify feed-failure project remains hidden");
     }
 
     #[test]

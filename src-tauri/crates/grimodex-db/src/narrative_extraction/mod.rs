@@ -171,6 +171,7 @@ pub use c2zc_canonical_cutover::{
 };
 pub(crate) use c2zc_canonical_cutover::{
     mint_c2zc_import_project_birth_epoch_in_tx, mint_c2zc_project_birth_epoch_in_tx,
+    mint_c2zc_scan_publish_project_birth_epoch_in_tx,
 };
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
 pub use incremental_freshness::{
@@ -222,6 +223,7 @@ pub(crate) use restore_rebuild::{
     rebuild_repair_dependency_edges_in_tx, rebuild_verify_dependency_edges,
     rotate_epoch_for_restore_in_tx, RebuildVerifyReport,
 };
+pub(crate) use task_leases::with_immediate_transaction;
 pub use terminal_failure::{
     project_terminal_failure_for_run, resolve_terminal_failure_for_run,
     TerminalFailureProjectionOutcome, TerminalFailureResolutionOutcome,
@@ -567,8 +569,18 @@ pub fn narrative_extraction_set_human_field_lock(
 /// own phase discovery or dispatch.
 pub fn narrative_extraction_bootstrap_legacy_backfill(db: &Database) {
     let project_ids: Vec<String> = match db.with_conn(|conn| {
-        let mut statement =
-            conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, id ASC")?;
+        let mut statement = conn.prepare(
+            "SELECT projects.id
+               FROM projects
+              WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM project_settings
+                     WHERE project_settings.project_id = projects.id
+                       AND project_settings.key = 'scan.import.state'
+                       AND project_settings.value = 'staging'
+              )
+              ORDER BY projects.created_at ASC, projects.id ASC",
+        )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)

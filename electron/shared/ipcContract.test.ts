@@ -58,6 +58,33 @@ function mutationIdentity(requestId: string, projectId = "p1") {
   } as const;
 }
 
+function scanPublishIdentity(
+  requestId = "scan-publish-request-1",
+  projectId = "project-1",
+) {
+  return {
+    projectId,
+    requestId,
+    sessionId: "scan-publish-session-1",
+    eventUid: "scan-publish-event-1",
+    origin: "import",
+    authorityRoute: "import-apply",
+    caller: "import-session",
+    controls: [
+      "import-policy",
+      "source-package-evidence",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
+    provenance: null,
+    writesAuthorityProtectedField: false,
+    originalTransactionId: null,
+    undoJournalId: null,
+  } as const;
+}
+
 /** 必須キー欠落ケースを組み立てる（テスト用の最小 omit）。 */
 function omitKey<T extends Record<string, unknown>>(
   source: T,
@@ -2727,6 +2754,16 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       .fn()
       .mockResolvedValue(JSON.stringify(codexRenameUndoResult));
     const scanStagingProjectCreate = vi.fn().mockResolvedValue(undefined);
+    const scanStagingProjectPublish = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        projectId: "project-1",
+        semanticEpochId: null,
+        __writeReceipt: {
+          changeEventUid: "scan-publish-event-1",
+          maintenanceTransactionId: "scan-publish-transaction-1",
+        },
+      }),
+    );
     const projectDelete = vi.fn().mockResolvedValue(undefined);
     const mapWriteReceipt = {
       changeEventUid: "map-event-1",
@@ -2741,6 +2778,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       entityTagsSet: entityTagsSet as never,
       codexRenameUndo: codexRenameUndo as never,
       scanStagingProjectCreate: scanStagingProjectCreate as never,
+      scanStagingProjectPublish: scanStagingProjectPublish as never,
       projectDelete: projectDelete as never,
       mapWriteBundle: mapWriteBundle as never,
     });
@@ -2836,6 +2874,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         scanStagingProjectCreate,
       ],
       [
+        "scan_staging_project_publish",
+        { payload: scanPublishIdentity() },
+        scanStagingProjectPublish,
+      ],
+      [
         "project_delete",
         {
           payload: {
@@ -2873,10 +2916,54 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
             ? codexRenameUndoResult
             : command === "map_write_bundle"
               ? mapWriteReceipt
-              : null,
+              : command === "scan_staging_project_publish"
+                ? {
+                    projectId: "project-1",
+                    semanticEpochId: null,
+                    __writeReceipt: {
+                      changeEventUid: "scan-publish-event-1",
+                      maintenanceTransactionId: "scan-publish-transaction-1",
+                    },
+                  }
+                : null,
       });
       expect(method).toHaveBeenCalledExactlyOnceWith(args.payload);
     }
+  });
+
+  it("scan_staging_project_publish は exact import-apply authority を要求する", async () => {
+    const scanStagingProjectPublish = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify({ projectId: "project-1" }));
+    const { backend } = fakeBackend({
+      scanStagingProjectPublish: scanStagingProjectPublish as never,
+    });
+
+    await expect(
+      dispatchInvoke(
+        "scan_staging_project_publish",
+        { payload: scanPublishIdentity() },
+        { backend, shell: noShell },
+      ),
+    ).resolves.toEqual({ ok: true, value: { projectId: "project-1" } });
+    expect(scanStagingProjectPublish).toHaveBeenCalledExactlyOnceWith(
+      scanPublishIdentity(),
+    );
+
+    const rejected = await dispatchInvoke(
+      "scan_staging_project_publish",
+      {
+        payload: {
+          ...scanPublishIdentity("scan-publish-request-2"),
+          origin: "human",
+          authorityRoute: "human-direct",
+          caller: "manual-wrapper",
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(rejected.ok).toBe(false);
+    expect(scanStagingProjectPublish).toHaveBeenCalledOnce();
   });
 
   it("project_create は canonical identity と全Project入力を明示写像する", async () => {
@@ -3056,6 +3143,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "entity_tags_set",
       "project_delete",
       "scan_staging_project_create",
+      "scan_staging_project_publish",
       "map_write_bundle",
     ]) {
       const oldNative = await dispatchInvoke(
@@ -3090,23 +3178,25 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
                       createdAt: "now",
                     },
                   }
-                : command === "project_delete"
-                  ? {
-                      payload: mutationIdentity(
-                        "project-delete-request-2",
-                        "project-1",
-                      ),
-                    }
-                  : {
-                      payload: {
-                        kind: "erase-ai-branch",
-                        projectId: "project-1",
-                        branchId: "branch-1",
-                        spanIds: [],
-                        stickyPositionIds: [],
-                        stickyIds: [],
+                : command === "scan_staging_project_publish"
+                  ? { payload: scanPublishIdentity("scan-publish-unavailable") }
+                  : command === "project_delete"
+                    ? {
+                        payload: mutationIdentity(
+                          "project-delete-request-2",
+                          "project-1",
+                        ),
+                      }
+                    : {
+                        payload: {
+                          kind: "erase-ai-branch",
+                          projectId: "project-1",
+                          branchId: "branch-1",
+                          spanIds: [],
+                          stickyPositionIds: [],
+                          stickyIds: [],
+                        },
                       },
-                    },
         { backend: fakeBackend().backend, shell: noShell },
       );
       expect(oldNative).toMatchObject({
@@ -5037,6 +5127,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "save_post_effect_annotations",
       "save_scene_body_bundle",
       "scan_staging_project_create",
+      "scan_staging_project_publish",
       "scene_event_link",
       "scene_event_link_batch",
       "scene_event_unlink",

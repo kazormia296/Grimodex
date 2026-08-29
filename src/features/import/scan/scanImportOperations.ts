@@ -21,10 +21,7 @@ import {
   updateProject,
 } from "@/features/project/api";
 import { useProjectStore } from "@/features/project/projectStore";
-import {
-  deleteProjectSetting,
-  setProjectSetting,
-} from "@/features/settings/api";
+import { setProjectSetting } from "@/features/settings/api";
 import { seedProjectSettingsFromDefaults } from "@/features/settings/migration";
 import { fieldValueToProseMirror } from "../importApi";
 import type { ImportedNode } from "../importTypes";
@@ -37,8 +34,10 @@ import type {
   ScanRelationImportPlan,
 } from "./scanImportPlan";
 import { deriveScanImportId } from "./scanImportPlan";
-import { SCAN_IMPORT_STATE_KEY } from "./scanImportState";
-import { createScanStagingProject } from "./scanStagingProject";
+import {
+  createScanStagingProject,
+  publishScanStagingProject,
+} from "./scanStagingProject";
 import type {
   ScanImportApplyOperations,
   ScanImportStageResult,
@@ -420,7 +419,7 @@ export function createScanImportOperations(): ScanImportApplyOperations {
       );
     },
     async publishStagingProject(projectId) {
-      await deleteProjectSetting(projectId, SCAN_IMPORT_STATE_KEY);
+      await publishScanStagingProject(projectId);
       await useProjectStore.getState().refreshProjects();
       await useProjectStore.getState().loadProject(projectId);
       scheduleImeExportRefresh(projectId);

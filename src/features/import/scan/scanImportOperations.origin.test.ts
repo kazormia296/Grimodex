@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   saveSceneContent: vi.fn(),
   getProject: vi.fn(),
   createScanStagingProject: vi.fn(),
+  publishScanStagingProject: vi.fn(),
+  deleteProjectSetting: vi.fn(),
 }));
 
 vi.mock("@/features/codex/api", () => ({
@@ -67,7 +69,7 @@ vi.mock("@/features/project/projectStore", () => ({
   },
 }));
 vi.mock("@/features/settings/api", () => ({
-  deleteProjectSetting: vi.fn(),
+  deleteProjectSetting: mocks.deleteProjectSetting,
   setProjectSetting: vi.fn(),
 }));
 vi.mock("@/features/settings/migration", () => ({
@@ -79,6 +81,7 @@ vi.mock("../importApi", () => ({
 }));
 vi.mock("./scanStagingProject", () => ({
   createScanStagingProject: mocks.createScanStagingProject,
+  publishScanStagingProject: mocks.publishScanStagingProject,
 }));
 
 import {
@@ -244,5 +247,14 @@ describe("Scan canonical writer origin", () => {
       "ja",
       { origin: "import" },
     );
+  });
+
+  it("publishes a Scan staging project through the typed import writer", async () => {
+    const operations = createScanImportOperations();
+
+    await operations.publishStagingProject(projectId);
+
+    expect(mocks.publishScanStagingProject).toHaveBeenCalledWith(projectId);
+    expect(mocks.deleteProjectSetting).not.toHaveBeenCalled();
   });
 });

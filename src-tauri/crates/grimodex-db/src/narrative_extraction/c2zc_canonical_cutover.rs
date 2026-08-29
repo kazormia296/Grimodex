@@ -637,7 +637,13 @@ pub(crate) fn is_generic_freshness_canonical(conn: &Connection) -> Result<bool> 
 #[derive(Clone, Copy)]
 enum C2zcProjectBirthAuthority<'a> {
     ProjectCreate,
-    ImportApply { import_session_id: &'a str },
+    ImportApply {
+        import_session_id: &'a str,
+    },
+    ScanPublish {
+        request_id: &'a str,
+        session_id: &'a str,
+    },
 }
 
 impl C2zcProjectBirthAuthority<'_> {
@@ -645,6 +651,7 @@ impl C2zcProjectBirthAuthority<'_> {
         match self {
             Self::ProjectCreate => "NEX_C2ZC_PROJECT_BIRTH_MARKER_UNSUPPORTED",
             Self::ImportApply { .. } => "NEX_C2ZC_IMPORT_PROJECT_BIRTH_MARKER_UNSUPPORTED",
+            Self::ScanPublish { .. } => "NEX_C2ZC_SCAN_PUBLISH_MARKER_UNSUPPORTED",
         }
     }
 
@@ -652,6 +659,7 @@ impl C2zcProjectBirthAuthority<'_> {
         match self {
             Self::ProjectCreate => "NEX_C2ZC_PROJECT_BIRTH_EVENT_MISSING",
             Self::ImportApply { .. } => "NEX_C2ZC_IMPORT_PROJECT_BIRTH_EVENT_MISSING",
+            Self::ScanPublish { .. } => "NEX_C2ZC_SCAN_PUBLISH_EVENT_MISSING",
         }
     }
 
@@ -659,6 +667,7 @@ impl C2zcProjectBirthAuthority<'_> {
         match self {
             Self::ProjectCreate => "NEX_C2ZC_PROJECT_BIRTH_EPOCH_CONFLICT",
             Self::ImportApply { .. } => "NEX_C2ZC_IMPORT_PROJECT_BIRTH_EPOCH_CONFLICT",
+            Self::ScanPublish { .. } => "NEX_C2ZC_SCAN_PUBLISH_EPOCH_CONFLICT",
         }
     }
 
@@ -666,6 +675,7 @@ impl C2zcProjectBirthAuthority<'_> {
         match self {
             Self::ProjectCreate => "project.create",
             Self::ImportApply { .. } => "import.session.apply",
+            Self::ScanPublish { .. } => "scan.import.publish",
         }
     }
 }
@@ -704,6 +714,30 @@ pub(crate) fn mint_c2zc_import_project_birth_epoch_in_tx(
         import_apply_event_uid,
         "importApplyEventUid",
         C2zcProjectBirthAuthority::ImportApply { import_session_id },
+    )
+}
+
+/// Bind a Project published by the Scan staging writer to its first Semantic
+/// Epoch. Scan has a separate canonical event identity from Import Apply:
+/// only the exact publish event payload can establish this birth authority.
+pub(crate) fn mint_c2zc_scan_publish_project_birth_epoch_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    request_id: &str,
+    session_id: &str,
+    scan_publish_event_uid: &str,
+) -> Result<Option<String>> {
+    require_non_blank(request_id, "requestId")?;
+    require_non_blank(session_id, "sessionId")?;
+    mint_c2zc_project_birth_epoch_for_canonical_event_in_tx(
+        conn,
+        project_id,
+        scan_publish_event_uid,
+        "scanPublishEventUid",
+        C2zcProjectBirthAuthority::ScanPublish {
+            request_id,
+            session_id,
+        },
     )
 }
 
@@ -751,6 +785,46 @@ fn mint_c2zc_project_birth_epoch_for_canonical_event_in_tx(
                     AND json_extract(payload, '$.sessionId') = ?3
                )",
             params![project_id, event_uid, import_session_id],
+            |row| row.get(0),
+        )?,
+        C2zcProjectBirthAuthority::ScanPublish {
+            request_id,
+            session_id,
+        } => conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM change_events
+                  WHERE project_id = ?1
+                    AND event_uid = ?2
+                    AND domain = 'scan'
+                    AND op_type = 'scan.import.publish'
+                    AND entity_type = 'project'
+                    AND entity_id = ?1
+                    AND session_id = ?4
+                    AND json_valid(payload)
+                    AND json_type(payload) = 'object'
+                    AND json_type(payload, '$.projectId') = 'text'
+                    AND json_extract(payload, '$.projectId') = ?1
+                    AND json_type(payload, '$.requestId') = 'text'
+                    AND json_extract(payload, '$.requestId') = ?3
+                    AND json_type(payload, '$.sessionId') = 'text'
+                    AND json_extract(payload, '$.sessionId') = ?4
+                    AND NOT EXISTS (
+                        SELECT 1 FROM json_each(payload)
+                         WHERE key NOT IN (
+                             'projectId', 'requestId', 'sessionId',
+                             'authorityRoute', 'authorityCaller', 'authorityEvidence'
+                         )
+                    )
+                    AND (
+                        json_type(payload, '$.authorityRoute') IS NULL
+                        OR json_extract(payload, '$.authorityRoute') = 'import-apply'
+                    )
+                    AND (
+                        json_type(payload, '$.authorityCaller') IS NULL
+                        OR json_extract(payload, '$.authorityCaller') = 'import-session'
+                    )
+               )",
+            params![project_id, event_uid, request_id, session_id],
             |row| row.get(0),
         )?,
     };
@@ -1295,5 +1369,53 @@ mod tests {
             })
         })
         .expect("verify mismatched Import authority event is rejected");
+    }
+
+    #[test]
+    fn scan_publish_birth_requires_its_exact_canonical_event_payload() {
+        let db = migrated_db();
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z")?;
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES (?1, ?2)",
+                    params!["scan-project", "Scan project"],
+                )?;
+                conn.execute(
+                    "INSERT INTO change_events (
+                         event_uid, project_id, scene_id, domain, op_type,
+                         entity_type, entity_id, payload, session_id, sequence,
+                         timestamp, prev_hash, hash
+                     ) VALUES (?1, ?2, NULL, 'scan', 'scan.import.publish',
+                               'project', ?2, ?3, ?4, 1, 0, '', '')",
+                    params![
+                        "scan-event",
+                        "scan-project",
+                        r#"{"projectId":"scan-project","requestId":"scan-request","sessionId":"scan-session","extra":true}"#,
+                        "scan-session",
+                    ],
+                )?;
+
+                let error = mint_c2zc_scan_publish_project_birth_epoch_in_tx(
+                    conn,
+                    "scan-project",
+                    "scan-request",
+                    "scan-session",
+                    "scan-event",
+                )
+                .expect_err("extra payload fields must not mint a Scan birth Epoch");
+                assert!(error
+                    .to_string()
+                    .contains("NEX_C2ZC_SCAN_PUBLISH_EVENT_MISSING"));
+                let epoch_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE project_id = ?1",
+                    ["scan-project"],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(epoch_count, 0);
+                Ok(())
+            })
+        })
+        .expect("verify exact Scan publish authority event validation");
     }
 }

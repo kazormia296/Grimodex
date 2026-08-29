@@ -1753,6 +1753,9 @@ pub fn discover_before_cutover_maintenance_work_with_coordinates(
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            if is_scan_staging_project_in_tx(conn, project_id)? {
+                return Ok(None);
+            }
             let Some(current_epoch_id) =
                 super::semantic_epoch::get_current_epoch(conn, project_id)?.map(|epoch| epoch.id)
             else {
@@ -1799,12 +1802,34 @@ pub fn discover_durable_maintenance_work_with_coordinates(
     })
 }
 
+fn is_scan_staging_project_in_tx(conn: &Connection, project_id: &str) -> anyhow::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+              FROM project_settings
+             WHERE project_id = ?1
+               AND key = 'scan.import.state'
+               AND value = 'staging'
+        )",
+        params![project_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
 pub(crate) fn discover_durable_maintenance_work_in_tx(
     conn: &Connection,
     project_id: &str,
     reason: &str,
     coordinates: Option<&MaintenanceContractCoordinates>,
 ) -> anyhow::Result<Option<DesiredWork>> {
+    if is_scan_staging_project_in_tx(conn, project_id)? {
+        // Scan staging Projects are intentionally hidden until the publish
+        // writer removes the exact marker. No wake, including BeforeCutover
+        // and workspace-opened, may mint maintenance authority for them.
+        return Ok(None);
+    }
+
     let (current_epoch_id, latest, active, completed_backfill, latest_completed_rebuild) = {
         let current_epoch_id =
             super::semantic_epoch::get_current_epoch(conn, project_id)?.map(|epoch| epoch.id);
@@ -2230,7 +2255,7 @@ fn foreground_owned_run_matches_work(
 fn is_backfill_wake(reason: &str) -> bool {
     matches!(
         reason,
-        "workspace-opened" | "legacy-backfill-required" | "durable-wake"
+        "workspace-opened" | "legacy-backfill-required" | "durable-wake" | "before-cutover"
     )
 }
 
@@ -4651,6 +4676,84 @@ mod tests {
             })
             .expect("count post-cursor findings");
         assert_eq!(finding_count, 0);
+    }
+
+    #[test]
+    fn pre_marker_visible_project_enters_backfill_on_before_cutover_without_reopen() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('pre-marker-project', 'Visible')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed visible pre-marker project");
+
+        let work = discover_durable_maintenance_work(&db, "pre-marker-project", "before-cutover")
+            .expect("discover BeforeCutover maintenance")
+            .expect("visible epoch-less project must enter Backfill without reopen");
+        assert_eq!(work.run_kind, AutomaticRunKind::Backfill);
+        assert_eq!(work.reasons, ["before-cutover"]);
+        assert_eq!(work.semantic_epoch_id, None);
+    }
+
+    #[test]
+    fn hidden_scan_staging_project_is_not_discovered_until_marker_is_removed() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('scan-staging-project', 'Hidden')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-staging-project', 'scan.import.state', 'staging')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed hidden Scan staging project");
+
+        crate::narrative_extraction::narrative_extraction_bootstrap_legacy_backfill(&db);
+        for reason in ["workspace-opened", "before-cutover"] {
+            assert_eq!(
+                discover_durable_maintenance_work(&db, "scan-staging-project", reason)
+                    .expect("discover hidden staging project"),
+                None,
+                "hidden staging project must not be eligible for {reason}"
+            );
+        }
+        db.with_conn(|conn| {
+            let counts: (i64, i64) = conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM narrative_semantic_epochs
+                      WHERE project_id = 'scan-staging-project'),
+                    (SELECT COUNT(*) FROM narrative_extraction_runs
+                      WHERE project_id = 'scan-staging-project')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(counts, (0, 0));
+            conn.execute(
+                "DELETE FROM project_settings
+                  WHERE project_id = 'scan-staging-project'
+                    AND key = 'scan.import.state'
+                    AND value = 'staging'",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("remove Scan staging marker");
+
+        let visible_work =
+            discover_durable_maintenance_work(&db, "scan-staging-project", "before-cutover")
+                .expect("discover visible project")
+                .expect("marker removal makes the project eligible");
+        assert_eq!(visible_work.run_kind, AutomaticRunKind::Backfill);
+        assert_eq!(visible_work.semantic_epoch_id, None);
     }
 
     fn recovery_shape(

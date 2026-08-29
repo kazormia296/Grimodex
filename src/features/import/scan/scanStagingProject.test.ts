@@ -7,7 +7,10 @@ const { invokeMock } = vi.hoisted(() => ({
 vi.mock("@/db/client", () => ({ db: {} }));
 vi.mock("@/lib/tauri", () => ({ invoke: invokeMock }));
 
-import { createScanStagingProject } from "./scanStagingProject";
+import {
+  createScanStagingProject,
+  publishScanStagingProject,
+} from "./scanStagingProject";
 
 describe("createScanStagingProject", () => {
   beforeEach(() => {
@@ -31,6 +34,32 @@ describe("createScanStagingProject", () => {
         title: "Imported novel",
         language: "en",
         createdAt: expect.any(String),
+      },
+    });
+  });
+
+  it("publishes through the typed Scan writer with exact import authority", async () => {
+    await publishScanStagingProject("project-1");
+
+    expect(invokeMock).toHaveBeenCalledOnce();
+    const [command, payload] = invokeMock.mock.calls[0]!;
+    expect(command).toBe("scan_staging_project_publish");
+    expect(payload).toMatchObject({
+      payload: {
+        projectId: "project-1",
+        origin: "import",
+        authorityRoute: "import-apply",
+        caller: "import-session",
+        controls: expect.arrayContaining([
+          "import-policy",
+          "source-package-evidence",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ]),
+        originalTransactionId: null,
+        undoJournalId: null,
       },
     });
   });

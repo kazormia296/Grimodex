@@ -196,6 +196,49 @@ afterEach(() => {
 });
 
 describe("registerIpcRouter fail-soft logging", () => {
+  it("binds Scan staging publication only to the import authority route", () => {
+    const bound = bindRendererAuthorityForIpc("scan_staging_project_publish", {
+      payload: {
+        projectId: "p1",
+        requestId: "scan-request-1",
+        sessionId: "renderer-session",
+        eventUid: "scan-event-1",
+        origin: "import",
+        originalTransactionId: null,
+        undoJournalId: null,
+      },
+    });
+
+    expect(bound.payload).toMatchObject({
+      origin: "import",
+      authorityRoute: "import-apply",
+      caller: "import-session",
+      controls: [
+        "import-policy",
+        "source-package-evidence",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
+    });
+
+    const forged = bindRendererAuthorityForIpc("scan_staging_project_publish", {
+      payload: {
+        projectId: "p1",
+        requestId: "scan-request-2",
+        sessionId: "renderer-session",
+        eventUid: "scan-event-2",
+        origin: "human",
+      },
+    });
+    expect((forged.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "",
+    );
+  });
+
   it("binds strict renderer authority from the main-owned command policy", () => {
     const bound = bindRendererAuthorityForIpc("tree_node_create", {
       payload: {

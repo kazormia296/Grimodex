@@ -435,6 +435,7 @@ export interface NapiBackendLike {
   codexRenameUndo?(payload: unknown): Promise<string>;
   codexRenameApply?(payload: unknown): Promise<string>;
   scanStagingProjectCreate?(payload: unknown): Promise<void>;
+  scanStagingProjectPublish?(payload: unknown): Promise<string>;
   projectCreate?(payload: unknown): Promise<string>;
   projectPatch?(payload: unknown): Promise<string>;
   projectDelete?(payload: unknown): Promise<void>;
@@ -3175,6 +3176,21 @@ function requireScanStagingProjectCreatePayload(
   if (language !== "ja" && language !== "en") {
     throw new Error(
       `invalid args \`language\` for command \`${command}\`: expected ja or en`,
+    );
+  }
+  return payload;
+}
+
+function requireScanStagingProjectPublishPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "scan_staging_project_publish";
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "import-apply",
+  ]);
+  if (payload.origin !== "import") {
+    throw new Error(
+      `invalid args \`origin\` for command \`${command}\`: Scan publication is import-only`,
     );
   }
   return payload;
@@ -6125,6 +6141,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       )(requireScanStagingProjectCreatePayload(a));
       return null;
     },
+  },
+  scan_staging_project_publish: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.scanStagingProjectPublish,
+          "scanStagingProjectPublish",
+        )(requireScanStagingProjectPublishPayload(a)),
+      ),
   },
   project_create: {
     run: async (b, a) =>

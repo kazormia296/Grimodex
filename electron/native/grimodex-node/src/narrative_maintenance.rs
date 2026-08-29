@@ -85,7 +85,18 @@ pub(crate) fn discover_all(
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
 ) -> anyhow::Result<DiscoveryResult> {
     let project_ids = db.with_conn(|conn| {
-        let mut statement = conn.prepare("SELECT id FROM projects ORDER BY id ASC")?;
+        let mut statement = conn.prepare(
+            "SELECT projects.id
+               FROM projects
+              WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM project_settings
+                     WHERE project_settings.project_id = projects.id
+                       AND project_settings.key = 'scan.import.state'
+                       AND project_settings.value = 'staging'
+              )
+              ORDER BY projects.id ASC",
+        )?;
         let mut project_ids = Vec::new();
         for row in statement.query_map([], |row| row.get::<_, String>(0))? {
             project_ids.push(row?);
@@ -237,6 +248,41 @@ mod tests {
         assert!(json.get("graphContractDigest").is_none());
         assert!(json.get("ruleRegistryDigest").is_none());
         assert!(json.get("producerGenerationSetDigest").is_none());
+    }
+
+    #[test]
+    fn native_discovery_excludes_hidden_scan_staging_projects() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('scan-staging-project', 'Hidden')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-staging-project', 'scan.import.state', 'staging')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed hidden Scan staging project");
+
+        let discovered = discover_all(
+            &db,
+            MaintenanceWorkspaceBinding {
+                authority_id: "authority:test".to_string(),
+                generation: 1,
+            },
+            WakeReason::WorkspaceOpened,
+            None,
+        )
+        .expect("discover workspace maintenance");
+        assert!(discovered
+            .pages
+            .iter()
+            .flat_map(|page| page.work.iter())
+            .all(|work| work.project_id != "scan-staging-project"));
     }
 
     #[test]
