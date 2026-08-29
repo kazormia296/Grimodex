@@ -137,6 +137,8 @@ const C2ZC_RESTORE_FIXTURE_SEMANTIC_KEYS = Object.freeze([
   "feedCursorDigest",
   "derivedStateGap",
   "derivedStateGapDigest",
+  "expectedRestoreGap",
+  "expectedRestoreGapDigest",
   "semanticIndex",
   "semanticIndexDigest",
   "expectedRestoreLifecycle",
@@ -234,6 +236,7 @@ function semanticContentsPayload(semantic) {
     edge: semantic.edge,
     feedCursor: semantic.feedCursor,
     derivedStateGap: semantic.derivedStateGap,
+    expectedRestoreGap: semantic.expectedRestoreGap,
     semanticIndex: semantic.semanticIndex,
     expectedRestoreLifecycle: semantic.expectedRestoreLifecycle,
   };
@@ -998,6 +1001,7 @@ function assertC2ZcFixtureSemantic(semantic, label) {
     "edgeDigest",
     "feedCursorDigest",
     "derivedStateGapDigest",
+    "expectedRestoreGapDigest",
     "semanticIndexDigest",
     "expectedRestoreLifecycleDigest",
     "contentsDigest",
@@ -1014,6 +1018,7 @@ function assertC2ZcFixtureSemantic(semantic, label) {
     "edge",
     "feedCursor",
     "derivedStateGap",
+    "expectedRestoreGap",
     "semanticIndex",
     "expectedRestoreLifecycle",
   ]) {
@@ -1021,6 +1026,201 @@ function assertC2ZcFixtureSemantic(semantic, label) {
       throw new Error(`${label}.${field} must be an object`);
     }
   }
+  const project = semantic.project;
+  assertExactKeys(
+    project,
+    [
+      "id",
+      "title",
+      "genre",
+      "pov",
+      "tense",
+      "language",
+      "createdAt",
+      "updatedAt",
+    ],
+    `${label}.project`,
+  );
+  if (
+    project.id !== semantic.projectId ||
+    project.title !== "C2-ZC offline restore fixture" ||
+    project.genre !== "fixture" ||
+    project.pov !== null ||
+    project.tense !== null ||
+    project.language !== "en"
+  ) {
+    throw new Error(`${label}.project does not match the fixture source`);
+  }
+  assertCanonicalTimestamp(project.createdAt, `${label}.project.createdAt`);
+  assertCanonicalTimestamp(project.updatedAt, `${label}.project.updatedAt`);
+  if (project.createdAt !== project.updatedAt) {
+    throw new Error(`${label}.project timestamps are not the fixture seed`);
+  }
+
+  const scene = semantic.scene;
+  assertExactKeys(
+    scene,
+    [
+      "id",
+      "projectId",
+      "nodeType",
+      "title",
+      "synopsis",
+      "status",
+      "content",
+      "version",
+      "updatedAt",
+    ],
+    `${label}.scene`,
+  );
+  if (
+    scene.id !== semantic.sceneId ||
+    scene.projectId !== semantic.projectId ||
+    scene.nodeType !== "scene" ||
+    scene.title !== "Offline restore scene" ||
+    scene.synopsis !== "A canonical source used by the restore gap fixture." ||
+    scene.status !== "draft" ||
+    scene.content !== "{}"
+  ) {
+    throw new Error(`${label}.scene does not match the fixture source`);
+  }
+  assertPositiveInteger(scene.version, `${label}.scene.version`);
+  assertCanonicalTimestamp(scene.updatedAt, `${label}.scene.updatedAt`);
+  if (semantic.sceneSourceRevision !== `v${scene.version}@${scene.updatedAt}`) {
+    throw new Error(`${label}.scene source revision is not bound to the seed`);
+  }
+
+  assertExactKeys(semantic.epoch, ["rows"], `${label}.epoch`);
+  const epochRows = rows(semantic.epoch.rows, `${label}.epoch.rows`);
+  if (epochRows.length !== 1) {
+    throw new Error(`${label}.epoch must contain exactly one E0 row`);
+  }
+  const epoch = epochRows[0];
+  assertExactKeys(
+    epoch,
+    [
+      "id",
+      "projectId",
+      "epochNumber",
+      "reason",
+      "triggeredByChangeEventUid",
+      "createdAt",
+    ],
+    `${label}.epoch.rows[0]`,
+  );
+  requireText(epoch.id, `${label}.epoch.rows[0].id`);
+  if (
+    epoch.projectId !== semantic.projectId ||
+    epoch.epochNumber !== 0 ||
+    epoch.reason !== "initial" ||
+    epoch.triggeredByChangeEventUid !== null
+  ) {
+    throw new Error(`${label}.epoch is not the fixture E0`);
+  }
+  assertCanonicalTimestamp(epoch.createdAt, `${label}.epoch.rows[0].createdAt`);
+
+  assertExactKeys(semantic.backfill, ["rows"], `${label}.backfill`);
+  const backfillRows = rows(semantic.backfill.rows, `${label}.backfill.rows`);
+  if (backfillRows.length !== 1) {
+    throw new Error(`${label}.backfill must contain exactly one Run`);
+  }
+  const backfill = backfillRows[0];
+  assertExactKeys(
+    backfill,
+    [
+      "id",
+      "projectId",
+      "runKind",
+      "workKey",
+      "specJson",
+      "specDigest",
+      "status",
+      "semanticEpochId",
+      "createdAt",
+      "startedAt",
+      "completedAt",
+      "outcomeSummaryJson",
+      "taskCount",
+      "attemptCount",
+    ],
+    `${label}.backfill.rows[0]`,
+  );
+  if (
+    backfill.id !== semantic.backfillRunId ||
+    backfill.projectId !== semantic.projectId ||
+    backfill.runKind !== "backfill" ||
+    backfill.workKey !== "legacy-dependency-backfill:v3" ||
+    backfill.status !== "completed" ||
+    backfill.semanticEpochId !== epoch.id
+  ) {
+    throw new Error(`${label}.backfill is not the canonical completed Run`);
+  }
+  const backfillSpec = parseObject(
+    backfill.specJson,
+    `${label}.backfill.rows[0].specJson`,
+  );
+  assertExactKeys(
+    backfillSpec,
+    ["backfillAlgorithmVersion"],
+    `${label}.backfill spec`,
+  );
+  if (backfillSpec.backfillAlgorithmVersion !== "3") {
+    throw new Error(`${label}.backfill spec is not v3`);
+  }
+  assertFixtureSha256(backfill.specDigest, `${label}.backfill.specDigest`);
+  if (backfill.specDigest !== digestJson(backfillSpec)) {
+    throw new Error(`${label}.backfill spec digest does not match`);
+  }
+  for (const field of ["createdAt", "startedAt", "completedAt"]) {
+    assertCanonicalTimestamp(backfill[field], `${label}.backfill.${field}`);
+  }
+  assertNonNegativeInteger(backfill.taskCount, `${label}.backfill.taskCount`);
+  assertNonNegativeInteger(
+    backfill.attemptCount,
+    `${label}.backfill.attemptCount`,
+  );
+  const backfillOutcome = parseObject(
+    backfill.outcomeSummaryJson,
+    `${label}.backfill.rows[0].outcomeSummaryJson`,
+  );
+  assertExactKeys(
+    backfillOutcome,
+    [
+      "maintenancePhase",
+      "backfillAlgorithmVersion",
+      "semanticEpochId",
+      "summary",
+    ],
+    `${label}.backfill outcome`,
+  );
+  if (
+    backfillOutcome.maintenancePhase !== "backfill-complete" ||
+    backfillOutcome.backfillAlgorithmVersion !== "3" ||
+    backfillOutcome.semanticEpochId !== epoch.id
+  ) {
+    throw new Error(`${label}.backfill outcome is not complete`);
+  }
+  assertExactKeys(
+    backfillOutcome.summary,
+    [
+      "epoch_created",
+      "contributions_created",
+      "edges_created",
+      "applications_without_run_id",
+    ],
+    `${label}.backfill outcome summary`,
+  );
+  if (
+    backfillOutcome.summary.epoch_created !== false ||
+    backfillOutcome.summary.contributions_created !== 1 ||
+    backfillOutcome.summary.edges_created !== 1 ||
+    backfillOutcome.summary.applications_without_run_id !== 0
+  ) {
+    throw new Error(
+      `${label}.backfill outcome summary is not the fixture result`,
+    );
+  }
+
   const application = semantic.application;
   assertExactKeys(
     application,
@@ -1168,6 +1368,134 @@ function assertC2ZcFixtureSemantic(semantic, label) {
   }
   requireText(semantic.edge.id, `${label}.edge.id`);
   assertCanonicalTimestamp(semantic.edge.createdAt, `${label}.edge.createdAt`);
+  assertExactKeys(
+    semantic.expectedRestoreGap,
+    [
+      "edgeIdsWithoutCurrentEpochState",
+      "consumerKeysWithoutCurrentEpochFreshness",
+    ],
+    `${label}.expectedRestoreGap`,
+  );
+  const expectedGapEdges = rows(
+    semantic.expectedRestoreGap.edgeIdsWithoutCurrentEpochState,
+    `${label}.expectedRestoreGap.edgeIdsWithoutCurrentEpochState`,
+  );
+  const expectedGapConsumers = rows(
+    semantic.expectedRestoreGap.consumerKeysWithoutCurrentEpochFreshness,
+    `${label}.expectedRestoreGap.consumerKeysWithoutCurrentEpochFreshness`,
+  );
+  if (
+    expectedGapEdges.length !== 2 ||
+    semantic.dependencyEdgeCount !== expectedGapEdges.length
+  ) {
+    throw new Error(`${label}.expectedRestoreGap edge count does not match`);
+  }
+  if (expectedGapConsumers.length !== 2) {
+    throw new Error(`${label}.expectedRestoreGap consumer count is invalid`);
+  }
+  const orderedExpectedGapEdges = [...expectedGapEdges].sort((left, right) =>
+    left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+  );
+  if (stableJson(expectedGapEdges) !== stableJson(orderedExpectedGapEdges)) {
+    throw new Error(`${label}.expectedRestoreGap edges are not ordered`);
+  }
+  const orderedExpectedGapConsumers = [...expectedGapConsumers].sort(
+    (left, right) => {
+      const kindOrder =
+        left.consumerKind < right.consumerKind
+          ? -1
+          : left.consumerKind > right.consumerKind
+            ? 1
+            : 0;
+      return kindOrder !== 0
+        ? kindOrder
+        : left.consumerKey < right.consumerKey
+          ? -1
+          : left.consumerKey > right.consumerKey
+            ? 1
+            : 0;
+    },
+  );
+  if (
+    stableJson(expectedGapConsumers) !== stableJson(orderedExpectedGapConsumers)
+  ) {
+    throw new Error(`${label}.expectedRestoreGap consumers are not ordered`);
+  }
+  for (const [index, expectedEdge] of expectedGapEdges.entries()) {
+    assertExactKeys(
+      expectedEdge,
+      ["id", "consumerKind", "consumerKey"],
+      `${label}.expectedRestoreGap.edge[${index}]`,
+    );
+    requireText(
+      expectedEdge.id,
+      `${label}.expectedRestoreGap.edge[${index}].id`,
+    );
+    requireText(
+      expectedEdge.consumerKind,
+      `${label}.expectedRestoreGap.edge[${index}].consumerKind`,
+    );
+    requireText(
+      expectedEdge.consumerKey,
+      `${label}.expectedRestoreGap.edge[${index}].consumerKey`,
+    );
+  }
+  for (const [index, expectedConsumer] of expectedGapConsumers.entries()) {
+    assertExactKeys(
+      expectedConsumer,
+      ["consumerKind", "consumerKey"],
+      `${label}.expectedRestoreGap.consumer[${index}]`,
+    );
+    requireText(
+      expectedConsumer.consumerKind,
+      `${label}.expectedRestoreGap.consumer[${index}].consumerKind`,
+    );
+    requireText(
+      expectedConsumer.consumerKey,
+      `${label}.expectedRestoreGap.consumer[${index}].consumerKey`,
+    );
+  }
+  const expectedApplicationEdge = expectedGapEdges.filter(
+    (candidate) =>
+      candidate.consumerKind === C2ZC_FRESHNESS_CONSUMER_KIND &&
+      candidate.consumerKey === semantic.applicationId,
+  );
+  if (
+    expectedApplicationEdge.length !== 1 ||
+    expectedApplicationEdge[0].id !== semantic.edge.id
+  ) {
+    throw new Error(`${label}.expectedRestoreGap Application edge is invalid`);
+  }
+  const expectedApplicationConsumer = expectedGapConsumers.filter(
+    (candidate) =>
+      candidate.consumerKind === C2ZC_FRESHNESS_CONSUMER_KIND &&
+      candidate.consumerKey === semantic.applicationId,
+  );
+  if (expectedApplicationConsumer.length !== 1) {
+    throw new Error(
+      `${label}.expectedRestoreGap Application consumer is invalid`,
+    );
+  }
+  const expectedProposalRevision = expectedGapEdges.filter(
+    (candidate) =>
+      candidate.consumerKind === "proposal-revision" &&
+      candidate.consumerKey === semantic.application.revisionId,
+  );
+  if (expectedProposalRevision.length !== 1) {
+    throw new Error(
+      `${label}.expectedRestoreGap proposal-revision edge is invalid`,
+    );
+  }
+  const expectedProposalConsumer = expectedGapConsumers.filter(
+    (candidate) =>
+      candidate.consumerKind === "proposal-revision" &&
+      candidate.consumerKey === semantic.application.revisionId,
+  );
+  if (expectedProposalConsumer.length !== 1) {
+    throw new Error(
+      `${label}.expectedRestoreGap proposal-revision consumer is invalid`,
+    );
+  }
   const legacy = semantic.legacyProjection;
   assertExactKeys(
     legacy,
@@ -1324,6 +1652,11 @@ function assertC2ZcFixtureSemantic(semantic, label) {
       "derivedStateGap",
       semantic.derivedStateGapDigest,
       semantic.derivedStateGap,
+    ],
+    [
+      "expectedRestoreGap",
+      semantic.expectedRestoreGapDigest,
+      semantic.expectedRestoreGap,
     ],
     ["semanticIndex", semantic.semanticIndexDigest, semantic.semanticIndex],
     [
@@ -1906,6 +2239,9 @@ export async function readC2ZcAuthoritySnapshot(harness, page, projectId) {
                 leaseExpiresAt: feedCursorRow.leaseExpiresAt,
                 lastError: feedCursorRow.lastError,
                 updatedAt: feedCursorRow.updatedAt,
+                reservedThrough: feedCursorRow.reservedThrough,
+                activeRunId: feedCursorRow.activeRunId,
+                semanticEpochId: feedCursorRow.semanticEpochId,
               },
       }
     : null;
@@ -2079,6 +2415,9 @@ export function assertC2ZcRestoreLifecycleOrder(
     expectedRestoreLifecycle,
     `${label}.expectedRestoreLifecycle`,
   );
+  if (rustOutcome === undefined || rustOutcome === null) {
+    throw new Error(`${label} requires the verified Rust Verify outcome`);
+  }
   if (!marker) throw new Error(`${label} requires a persisted marker`);
   const markerRow = assertC2ZcMarkerExactlyOnce(
     { markerRows: [marker] },
@@ -2153,13 +2492,31 @@ export function assertC2ZcRestoreLifecycleOrder(
   if (fixtureSemantic !== undefined) {
     assertC2ZcFixtureSemantic(fixtureSemantic, `${label} fixture semantic`);
     const expectedApplication = fixtureSemantic.applicationId;
+    const expectedGap = fixtureSemantic.expectedRestoreGap;
+    const expectedEdgeIds = expectedGap.edgeIdsWithoutCurrentEpochState.map(
+      (edge) => edge.id,
+    );
+    const expectedConsumerPairs =
+      expectedGap.consumerKeysWithoutCurrentEpochFreshness.map((consumer) => [
+        consumer.consumerKind,
+        consumer.consumerKey,
+      ]);
+    const expectedLegacyGap = `application:${expectedApplication}:generic-freshness-missing`;
+    const targetLegacyGaps =
+      firstReport.legacyMirrorMigrationParity.incomplete.filter(
+        (entry) =>
+          typeof entry === "string" &&
+          entry.startsWith(`application:${expectedApplication}:`),
+      );
     if (
-      firstReport.edgeIdsWithoutCurrentEpochState.length !== 1 ||
+      stableJson(firstReport.edgeIdsWithoutCurrentEpochState) !==
+        stableJson(expectedEdgeIds) ||
       stableJson(firstReport.consumerKeysWithoutCurrentEpochFreshness) !==
-        stableJson([[C2ZC_FRESHNESS_CONSUMER_KIND, expectedApplication]]) ||
+        stableJson(expectedConsumerPairs) ||
       !firstReport.legacyMirrorMigrationParity.incomplete.includes(
-        `application:${expectedApplication}:generic-freshness-missing`,
-      )
+        expectedLegacyGap,
+      ) ||
+      targetLegacyGaps.some((entry) => entry !== expectedLegacyGap)
     ) {
       throw new Error(
         `${label} first Verify does not identify the fixture Application gap`,
@@ -2889,6 +3246,11 @@ export async function runC2ZcCanonicalAuthorityJourney(
   const fixture = await loadC2ZcRestoreFixtureInput(options.restoreFixture);
   const rustOutcome =
     options.rustOutcome ?? harness.c2zcRustAcceptanceEvidence?.verifyOutcome;
+  if (!isObject(rustOutcome)) {
+    throw new Error(
+      "C2-ZC canonical lifecycle requires the verified Rust Verify outcome",
+    );
+  }
   const rustAcceptance =
     options.candidate ??
     harness.c2zcRustAcceptanceEvidence?.candidate ??

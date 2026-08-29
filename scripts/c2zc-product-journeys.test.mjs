@@ -29,7 +29,9 @@ import {
   assertC2ZcRestoreFixtureManifest,
   assertC2ZcRestoreFixtureInput,
   assertC2ZcRestoreLifecycleOrder,
+  assertC2ZcFeedCursorSettled,
   assertC2ZcVerifyCoverage,
+  readC2ZcAuthoritySnapshot,
 } from "../electron/scripts/c2zc-canonical-product-journey.mjs";
 import {
   createC2ZcFixtureManifest,
@@ -94,6 +96,43 @@ test("canonical lifecycle has the single ordered phase contract", () => {
     C2ZC_CANONICAL_PRODUCT_JOURNEY_PHASES.length,
   );
   assert.equal(NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[1].phases.length, 1);
+});
+
+test("live authority snapshots preserve every cursor reservation and run field", async () => {
+  const row = {
+    feedHead: 4,
+    cursorProjectId: "project-e1",
+    consumerId: "narrative-incremental-freshness/v1",
+    acknowledgedThrough: 4,
+    reservedThrough: 4,
+    activeRunId: "freshness-run-active",
+    semanticEpochId: "e1",
+    lastError: null,
+    leaseOwner: "worker-1",
+    leaseExpiresAt: "2026-08-29T00:01:00.000Z",
+    updatedAt: "2026-08-29T00:00:30.000Z",
+  };
+  const harness = {
+    invokeOk: async (_page, command, request) => {
+      if (command === "narrative_maintenance_inbox_list") return [];
+      if (request.sql.includes("FROM narrative_change_events")) {
+        return { rows: [row] };
+      }
+      return { rows: [] };
+    },
+  };
+  const snapshot = await readC2ZcAuthoritySnapshot(
+    harness,
+    { id: "page" },
+    "project-e1",
+  );
+  assert.equal(snapshot.feedCursor.cursor.reservedThrough, row.reservedThrough);
+  assert.equal(snapshot.feedCursor.cursor.activeRunId, row.activeRunId);
+  assert.equal(snapshot.feedCursor.cursor.semanticEpochId, row.semanticEpochId);
+  assert.throws(
+    () => assertC2ZcFeedCursorSettled(snapshot, { epochId: "e1" }),
+    /cursor|acknowledged|active|epoch/i,
+  );
 });
 
 test("selection binding requires the canonical lane and preserves catalog order", () => {
@@ -421,10 +460,15 @@ function productionVerifyReport({ first = false } = {}) {
     edgeIdsWithCrossProjectConsumer: [],
     edgeIdsWithMalformedKeys: [],
     edgeStateIdsOutsideCurrentEpoch: [],
-    edgeIdsWithoutCurrentEpochState: first ? ["edge-e1"] : [],
+    edgeIdsWithoutCurrentEpochState: first
+      ? ["edge-e1", "proposal-edge-e1"]
+      : [],
     findingObservationIdsOutsideCurrentEpoch: [],
     consumerKeysWithoutCurrentEpochFreshness: first
-      ? [["application", "application-e1"]]
+      ? [
+          ["application", "application-e1"],
+          ["proposal-revision", "owner-e1-revision"],
+        ]
       : [],
     duplicateEdgeIdsToDeactivate: [],
     edgeIdsWithUnresolvableConsumerScope: [],
@@ -440,7 +484,10 @@ function productionVerifyReport({ first = false } = {}) {
           completed: false,
           passed: false,
           issues: [],
-          incomplete: ["application:application-e1:generic-freshness-missing"],
+          incomplete: [
+            "application:application-e1:generic-freshness-missing",
+            "application:unrelated-application:generic-freshness-missing",
+          ],
         }
       : complete,
     cursorAndFeedHeadConsistency: complete,
@@ -667,12 +714,28 @@ test("fixture manifest is a non-vacuous Application/Legacy image with exact dige
       value.semantic.derivedStateGap.legacyProjectionPresent = false;
       refreshC2ZcFixtureSemanticDigests(value.semantic);
     },
+    (value) => {
+      value.semantic.project = {};
+      refreshC2ZcFixtureSemanticDigests(value.semantic);
+    },
+    (value) => {
+      value.semantic.scene = {};
+      refreshC2ZcFixtureSemanticDigests(value.semantic);
+    },
+    (value) => {
+      value.semantic.epoch = {};
+      refreshC2ZcFixtureSemanticDigests(value.semantic);
+    },
+    (value) => {
+      value.semantic.backfill = {};
+      refreshC2ZcFixtureSemanticDigests(value.semantic);
+    },
   ]) {
     const mutated = structuredClone(manifest);
     mutate(mutated);
     assert.throws(
       () => assertC2ZcRestoreFixtureManifest(mutated),
-      /Application|Legacy|edge|digest|derived|consumer/i,
+      /Application|Legacy|project|scene|epoch|backfill|edge|digest|derived|consumer/i,
     );
   }
 });
@@ -693,6 +756,49 @@ test("project inventory is exactly one restored fixture project", () => {
   assert.throws(
     () => assertC2ZcProjectInventory({ projectInventory: [] }, "project-e1"),
     /project|inventory/i,
+  );
+});
+
+test("initial Verify accepts unrelated vectors but still requires the fixture targets", () => {
+  const fixture = strictLifecycleRuns();
+  assert.doesNotThrow(() =>
+    assertC2ZcRestoreLifecycleOrder(fixture.runs, {
+      currentEpochId: "e1",
+      restoreEpochId: "e1",
+      expectedRestoreLifecycle: fixture.expectedRestoreLifecycle,
+      marker: fixture.marker,
+      rustOutcome: fixture.rustOutcome,
+      fixtureSemantic: fixtureSemantic(),
+    }),
+  );
+
+  const wrongEdge = structuredClone(fixture);
+  wrongEdge.runs[0].outcomeSummaryJson.report.edgeIdsWithoutCurrentEpochState =
+    ["unrelated-edge"];
+  assert.throws(
+    () =>
+      assertC2ZcRestoreLifecycleOrder(wrongEdge.runs, {
+        currentEpochId: "e1",
+        restoreEpochId: "e1",
+        expectedRestoreLifecycle: wrongEdge.expectedRestoreLifecycle,
+        marker: wrongEdge.marker,
+        rustOutcome: wrongEdge.rustOutcome,
+        fixtureSemantic: fixtureSemantic(),
+      }),
+    /edge|fixture|target/i,
+  );
+
+  const missingRustOutcome = structuredClone(fixture);
+  assert.throws(
+    () =>
+      assertC2ZcRestoreLifecycleOrder(missingRustOutcome.runs, {
+        currentEpochId: "e1",
+        restoreEpochId: "e1",
+        expectedRestoreLifecycle: missingRustOutcome.expectedRestoreLifecycle,
+        marker: missingRustOutcome.marker,
+        fixtureSemantic: fixtureSemantic(),
+      }),
+    /Rust|outcome|13/i,
   );
 });
 

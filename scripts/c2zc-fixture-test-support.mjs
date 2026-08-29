@@ -24,13 +24,28 @@ export function createC2ZcFixtureSemantic({
   applicationId = "application-e1",
   applyRunId = "owner-e1",
   backfillRunId = "backfill-e1",
-  sceneSourceRevision = "v1@fixture",
+  sceneSourceRevision = "v1@2026-08-29T00:00:01.000Z",
 } = {}) {
   const edgeSourceObjectIdentity = `project:scene:${sceneId}`;
   const edgeReadSetJson = JSON.stringify([sceneSourceRevision]);
   const eventId = `${applyRunId}-event`;
   const createdAt = "2026-08-29T00:00:01.000Z";
   const completedAt = "2026-08-29T00:00:02.000Z";
+  const sceneUpdatedAt = sceneSourceRevision.slice(
+    sceneSourceRevision.indexOf("@") + 1,
+  );
+  const backfillSpec = { backfillAlgorithmVersion: "3" };
+  const backfillOutcome = {
+    maintenancePhase: "backfill-complete",
+    backfillAlgorithmVersion: "3",
+    semanticEpochId: "e0",
+    summary: {
+      epoch_created: false,
+      contributions_created: 1,
+      edges_created: 1,
+      applications_without_run_id: 0,
+    },
+  };
   const semantic = {
     projectId,
     sceneId,
@@ -53,8 +68,27 @@ export function createC2ZcFixtureSemantic({
     sceneSourceRevision,
     edgeSourceObjectIdentity,
     edgeReadSetJson,
-    project: { id: projectId, title: "Fixture project" },
-    scene: { id: sceneId, projectId },
+    project: {
+      id: projectId,
+      title: "C2-ZC offline restore fixture",
+      genre: "fixture",
+      pov: null,
+      tense: null,
+      language: "en",
+      createdAt,
+      updatedAt: createdAt,
+    },
+    scene: {
+      id: sceneId,
+      projectId,
+      nodeType: "scene",
+      title: "Offline restore scene",
+      synopsis: "A canonical source used by the restore gap fixture.",
+      status: "draft",
+      content: "{}",
+      version: 1,
+      updatedAt: sceneUpdatedAt,
+    },
     epoch: {
       rows: [
         {
@@ -67,7 +101,26 @@ export function createC2ZcFixtureSemantic({
         },
       ],
     },
-    backfill: { rows: [{ id: backfillRunId, projectId, status: "completed" }] },
+    backfill: {
+      rows: [
+        {
+          id: backfillRunId,
+          projectId,
+          runKind: "backfill",
+          workKey: "legacy-dependency-backfill:v3",
+          specJson: JSON.stringify(backfillSpec),
+          specDigest: fixtureDigest(backfillSpec),
+          status: "completed",
+          semanticEpochId: "e0",
+          createdAt,
+          startedAt: createdAt,
+          completedAt,
+          outcomeSummaryJson: JSON.stringify(backfillOutcome),
+          taskCount: 0,
+          attemptCount: 0,
+        },
+      ],
+    },
     application: {
       id: applicationId,
       commitId: `${applyRunId}-commit`,
@@ -118,6 +171,27 @@ export function createC2ZcFixtureSemantic({
       generatedByTransactionId: null,
       createdAt,
       owningRunId: backfillRunId,
+    },
+    expectedRestoreGap: {
+      edgeIdsWithoutCurrentEpochState: [
+        {
+          id: "edge-e1",
+          consumerKind: "application",
+          consumerKey: applicationId,
+        },
+        {
+          id: "proposal-edge-e1",
+          consumerKind: "proposal-revision",
+          consumerKey: `${applyRunId}-revision`,
+        },
+      ],
+      consumerKeysWithoutCurrentEpochFreshness: [
+        { consumerKind: "application", consumerKey: applicationId },
+        {
+          consumerKind: "proposal-revision",
+          consumerKey: `${applyRunId}-revision`,
+        },
+      ],
     },
     feedCursor: {
       feedHead: 1,
@@ -187,6 +261,7 @@ function semanticContentsPayload(semantic) {
     edge: semantic.edge,
     feedCursor: semantic.feedCursor,
     derivedStateGap: semantic.derivedStateGap,
+    expectedRestoreGap: semantic.expectedRestoreGap,
     semanticIndex: semantic.semanticIndex,
     expectedRestoreLifecycle: semantic.expectedRestoreLifecycle,
   };
@@ -203,6 +278,7 @@ export function refreshC2ZcFixtureSemanticDigests(semantic) {
     "edge",
     "feedCursor",
     "derivedStateGap",
+    "expectedRestoreGap",
     "semanticIndex",
     "expectedRestoreLifecycle",
   ]) {
