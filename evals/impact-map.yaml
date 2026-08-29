@@ -335,7 +335,63 @@ rules:
       - scripts/c2-5b-product-journeys.test.mjs
       - scripts/c2zc-product-journeys.test.mjs
       - scripts/c2zc-renderer-mcp-dml-denial.test.mjs
+      - scripts/c2zc-rust-acceptance-receipt.mjs
+      - scripts/c2zc-rust-acceptance-receipt.test.mjs
+      - scripts/local-ci-registry.json
+      - scripts/local-ci.mjs
+      - scripts/local-ci.test.mjs
+      - scripts/quality/impact-map.mjs
+      - scripts/quality/impact-map.test.mjs
       - scripts/product-journey-phase1.test.mjs
+    acceptanceGates:
+      - id: c2-zc-canonical-no-legacy-fallback
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --test
+            - narrative_c2zc_canonical_cutover
+            - canonical_read_has_no_legacy_fallback_after_generic_cutover
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/tests/narrative_c2zc_canonical_cutover.rs
+          test: canonical_read_has_no_legacy_fallback_after_generic_cutover
+          fullTestName: canonical_read_has_no_legacy_fallback_after_generic_cutover
+          readFunction: canonical_application_freshness
+          noLegacyFallback: true
+        source: src-tauri/crates/grimodex-db/tests/narrative_c2zc_canonical_cutover.rs
+        test: canonical_read_has_no_legacy_fallback_after_generic_cutover
+        fullTestName: canonical_read_has_no_legacy_fallback_after_generic_cutover
+        requiresReceipt: true
+      - id: c2-zc-dml-native-owned-table-denial
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --lib
+            - execute::tests::c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/src/execute.rs
+          test: c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes
+          fullTestName: execute::tests::c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes
+          origin: SqlOrigin::McpGeneric
+        source: src-tauri/crates/grimodex-db/src/execute.rs
+        test: c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes
+        fullTestName: execute::tests::c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes
+        requiresReceipt: true
     requirements:
       - GDX-POLICY-001
       - GDX-TRACE-001

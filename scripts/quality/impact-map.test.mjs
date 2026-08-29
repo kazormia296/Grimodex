@@ -13,7 +13,12 @@ import {
   formatImpactSummary,
   parseImpactMap,
   selectImpact,
+  validateAcceptanceGateRegistration,
 } from "./impact-map.mjs";
+import {
+  C2ZC_RUST_ACCEPTANCE_GATES,
+  C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND,
+} from "../c2zc-rust-acceptance-receipt.mjs";
 
 test("the AI routing light suite executes browser transport contracts", () => {
   const commandText = JSON.stringify(
@@ -674,4 +679,65 @@ test("an invalid comparison base is reported instead of silently trusting a part
 
   assert.equal(changed.complete, false);
   assert.match(changed.reason, /diff/i);
+});
+
+test("C2-ZC impact registration is structured and rejects gate command/test/receipt/order mutations", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const rule = map.rules.find(
+    (candidate) => candidate.id === "narrative-maintenance-product-journeys",
+  );
+  assert.ok(rule?.acceptanceGates);
+  assert.deepEqual(
+    rule.acceptanceGates.map((gate) => gate.id),
+    C2ZC_RUST_ACCEPTANCE_GATES.map((gate) => gate.id),
+  );
+  assert.doesNotThrow(() => validateAcceptanceGateRegistration({ map }));
+
+  for (const mutate of [
+    (gates) => {
+      gates[0].argv.args[0] = "run";
+    },
+    (gates) => {
+      gates[0].contract.test = "other_test";
+    },
+    (gates) => {
+      gates[0].requiresReceipt = false;
+    },
+    (gates) => gates.reverse(),
+  ]) {
+    const mutatedMap = structuredClone(map);
+    const mutatedRule = mutatedMap.rules.find(
+      (candidate) => candidate.id === rule.id,
+    );
+    mutate(mutatedRule.acceptanceGates);
+    assert.throws(
+      () => validateAcceptanceGateRegistration({ map: mutatedMap }),
+      /acceptance|gate|command|test|receipt|order/i,
+    );
+  }
+
+  const mutatedRegistry = {
+    stages: {
+      "c2-zc-rust-acceptance-gate": {
+        commands: [
+          {
+            command: C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND.command,
+            args: ["scripts/changed-receipt-runner.mjs"],
+          },
+        ],
+      },
+    },
+  };
+  assert.throws(
+    () =>
+      validateAcceptanceGateRegistration({
+        map,
+        localCiRegistry: mutatedRegistry,
+      }),
+    /registry|runner|command|receipt/i,
+  );
 });

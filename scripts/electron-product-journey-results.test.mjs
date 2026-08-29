@@ -159,6 +159,7 @@ test("product runner records deterministic results while preserving serial fresh
   t.after(() => rm(outputRoot, { recursive: true, force: true }));
 
   await runProductJourneys({
+    catalog: [{ id: "first" }, { id: "second" }],
     journeys: [
       {
         id: "first",
@@ -281,6 +282,7 @@ test("product runner persists a journey evidence result and binds results path/h
     },
   };
   await runProductJourneys({
+    catalog: [{ id: "dml-evidence" }],
     journeys: [
       {
         id: "dml-evidence",
@@ -334,6 +336,7 @@ test("product runner writes the failed and fail-fast results before rethrowing",
 
   await assert.rejects(
     runProductJourneys({
+      catalog: [{ id: "broken" }, { id: "never" }],
       journeys: [
         {
           id: "broken",
@@ -421,6 +424,7 @@ test("product runner still writes a versioned report when artifact preflight fai
 
   await assert.rejects(
     runProductJourneys({
+      catalog: [{ id: "never" }],
       journeys: [{ id: "never", run: async () => undefined }],
       assertArtifacts: () => {
         throw new Error("missing build");
@@ -474,6 +478,7 @@ test("product runner fails closed when renderer diagnostics are not clean", asyn
 
   await assert.rejects(
     runProductJourneys({
+      catalog: [{ id: "renderer-broken" }],
       journeys: [{ id: "renderer-broken", run: async () => undefined }],
       assertArtifacts: () => undefined,
       createHarness: () => ({

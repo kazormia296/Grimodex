@@ -261,10 +261,7 @@ export const C2ZC_RENDERER_MCP_DML_DENIAL_CATALOG_ENTRY = Object.freeze({
   id: C2ZC_RENDERER_MCP_DML_DENIAL_ID,
   domains: Object.freeze(["narrative-maintenance", "sqlite"]),
   interactions: Object.freeze(["narrative-maintenance->sqlite"]),
-  contracts: Object.freeze([
-    "c2-zc:renderer-dml-denial",
-    "c2-zc:mcp-generic-rust-dml-denial",
-  ]),
+  contracts: Object.freeze(["c2-zc:boundary-dml-denial"]),
   capabilities: Object.freeze(["electron", "napi"]),
   description:
     "renderer db_execute zero-row DML denial across C2-ZC tables; McpGeneric remains Rust-only",
@@ -364,6 +361,42 @@ function nullableLedgerIdentifier(value, label) {
   return value;
 }
 
+function assertC2ZcNativeWorkspaceBinding(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    JSON.stringify(Object.keys(value).sort()) !==
+      JSON.stringify(["authorityId", "authorityInstanceId", "generation"]) ||
+    typeof value.authorityId !== "string" ||
+    value.authorityId.trim() !== value.authorityId ||
+    value.authorityId.length === 0 ||
+    value.authorityId.includes("\u0000") ||
+    !Number.isSafeInteger(value.generation) ||
+    value.generation <= 0 ||
+    typeof value.authorityInstanceId !== "string" ||
+    !/^[1-9][0-9]*$/.test(value.authorityInstanceId)
+  ) {
+    throw new Error(
+      "narrative_extraction_capture_workspace_binding returned an invalid binding",
+    );
+  }
+  return Object.freeze({
+    authorityId: value.authorityId,
+    generation: value.generation,
+    authorityInstanceId: value.authorityInstanceId,
+  });
+}
+
+/** Project the exact Native binding to the two fields accepted by quiescence. */
+export function assertC2ZcRendererWorkspaceBinding(value) {
+  const nativeBinding = assertC2ZcNativeWorkspaceBinding(value);
+  return {
+    authorityId: nativeBinding.authorityId,
+    generation: nativeBinding.generation,
+  };
+}
+
 function requireWorkspaceBinding(value) {
   if (
     !value ||
@@ -378,14 +411,12 @@ function requireWorkspaceBinding(value) {
     !Number.isSafeInteger(value.generation) ||
     value.generation <= 0
   ) {
-    throw new Error(
-      "narrative_extraction_capture_workspace_binding returned an invalid binding",
-    );
+    throw new Error("C2-ZC quiescence returned an invalid binding projection");
   }
-  return {
+  return Object.freeze({
     authorityId: value.authorityId,
     generation: value.generation,
-  };
+  });
 }
 
 async function readWorkspaceLedger(harness, page) {
@@ -2392,7 +2423,7 @@ export async function runC2ZcRendererMcpDmlDenialJourney(harness) {
       path: workspace,
     });
 
-    const binding = requireWorkspaceBinding(
+    const binding = assertC2ZcRendererWorkspaceBinding(
       await harness.invokeOk(
         launched.page,
         "narrative_extraction_capture_workspace_binding",

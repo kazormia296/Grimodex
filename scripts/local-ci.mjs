@@ -21,6 +21,12 @@ import {
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG_DIGEST,
 } from "../electron/scripts/product-journey-catalog.mjs";
+import {
+  C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
+  C2ZC_RUST_ACCEPTANCE_GATE_IDS,
+  C2ZC_RUST_ACCEPTANCE_RECEIPT_PATH,
+  verifyC2ZcRustAcceptanceReceipt,
+} from "./c2zc-rust-acceptance-receipt.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -37,6 +43,11 @@ const PRODUCT_JOURNEY_BUILD_ARTIFACT_NAMES = [
   "N-API native module",
   "MCP sidecar",
 ];
+const C2ZC_RUST_ACCEPTANCE_GATE_STAGE = "c2-zc-rust-acceptance-gate";
+const C2ZC_RUST_REQUESTED_BASE_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_BASE";
+const C2ZC_RUST_REQUESTED_HEAD_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD";
+const C2ZC_RUST_CANDIDATE_JSON_ENV = "GRIMODEX_C2ZC_RUST_CANDIDATE_JSON";
+const C2ZC_RUST_RECEIPT_PATH_ENV = "GRIMODEX_C2ZC_RUST_RECEIPT_PATH";
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -443,6 +454,41 @@ function resolveProductJourneyArtifactDirectory(
   return path.resolve(root, configured ?? PRODUCT_JOURNEY_ARTIFACT_DIR);
 }
 
+function resolveC2ZcRustAcceptanceReceiptPath(plan, { root = repoRoot } = {}) {
+  const stage = plan.stages.find(
+    (candidate) => candidate.id === "electron-product-journeys",
+  );
+  const configured = stage?.commands
+    .map((command) => command.env?.[C2ZC_RUST_RECEIPT_PATH_ENV])
+    .find((value) => value !== undefined && value !== "");
+  return path.resolve(root, configured ?? C2ZC_RUST_ACCEPTANCE_RECEIPT_PATH);
+}
+
+function reportRequiresC2ZcRustAcceptance(report) {
+  return report?.acceptanceRequired === true;
+}
+
+function assertC2ZcRustAcceptanceEvidenceShape(evidence, label) {
+  if (
+    !isPlainObject(evidence) ||
+    evidence.verified !== true ||
+    typeof evidence.receiptPath !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/u.test(evidence.receiptSha256 ?? "") ||
+    !isPlainObject(evidence.candidate) ||
+    !isPlainObject(evidence.receipt) ||
+    evidence.receipt.schema !== "grimodex.c2zc.rust-acceptance-receipt" ||
+    evidence.receipt.version !== 1 ||
+    !Array.isArray(evidence.gates) ||
+    JSON.stringify(evidence.gates.map((gate) => gate?.id)) !==
+      JSON.stringify(C2ZC_RUST_ACCEPTANCE_GATE_IDS) ||
+    JSON.stringify(evidence.gates) !== JSON.stringify(evidence.receipt.gates) ||
+    JSON.stringify(evidence.candidate) !==
+      JSON.stringify(evidence.receipt.candidate)
+  ) {
+    throw new Error(`${label} must include both ordered Rust acceptance gates`);
+  }
+}
+
 function assertStringArrayEqual(actual, expected, label) {
   if (
     !Array.isArray(actual) ||
@@ -482,6 +528,21 @@ function assertPassedProductJourneyResult(report) {
     );
   }
   if (
+    report.acceptanceRequired === true &&
+    (report.acceptanceComplete !== true ||
+      !isPlainObject(report.c2zcRustAcceptance))
+  ) {
+    throw new Error(
+      "C2-ZC product journey results must include complete Rust acceptance evidence",
+    );
+  }
+  if (report.acceptanceRequired === true) {
+    assertC2ZcRustAcceptanceEvidenceShape(
+      report.c2zcRustAcceptance,
+      "C2-ZC product journey results",
+    );
+  }
+  if (
     !Array.isArray(report.journeys) ||
     report.journeys.length !== expectedIds.length ||
     report.journeys.some(
@@ -498,7 +559,11 @@ function assertPassedProductJourneyResult(report) {
   return expectedIds;
 }
 
-function assertPassedProductJourneyManifest(manifest, expectedIds) {
+function assertPassedProductJourneyManifest(
+  manifest,
+  expectedIds,
+  report = null,
+) {
   if (!isPlainObject(manifest) || manifest.version !== 1) {
     throw new Error("product journey audit manifest version 1 is required");
   }
@@ -543,6 +608,21 @@ function assertPassedProductJourneyManifest(manifest, expectedIds) {
       "product journey audit manifest must declare exactly the canonical build artifacts",
     );
   }
+  if (report?.acceptanceRequired === true) {
+    if (
+      manifest.acceptanceRequired !== true ||
+      manifest.acceptanceComplete !== true ||
+      !isPlainObject(manifest.c2zcRustAcceptance)
+    ) {
+      throw new Error(
+        "C2-ZC product journey manifest must include complete Rust acceptance evidence",
+      );
+    }
+    assertC2ZcRustAcceptanceEvidenceShape(
+      manifest.c2zcRustAcceptance,
+      "C2-ZC product journey manifest",
+    );
+  }
 }
 
 function assertArtifactIdentity(
@@ -575,7 +655,7 @@ function assertArtifactIdentity(
 /** Collect and validate the immutable product-journey evidence for a Full receipt. */
 export async function collectProductJourneyEvidence(
   plan,
-  { root = repoRoot } = {},
+  { candidate = null, root = repoRoot } = {},
 ) {
   const artifactRoot = resolveProductJourneyArtifactDirectory(plan, { root });
   const resultsPath = path.join(artifactRoot, "results.json");
@@ -596,7 +676,7 @@ export async function collectProductJourneyEvidence(
   const report = JSON.parse(await readFile(resultsPath, "utf8"));
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   const journeyIds = assertPassedProductJourneyResult(report);
-  assertPassedProductJourneyManifest(manifest, journeyIds);
+  assertPassedProductJourneyManifest(manifest, journeyIds, report);
   if (
     manifest.results.path !== "results.json" ||
     manifest.results.realPath !== resultEvidence.realPath ||
@@ -634,6 +714,76 @@ export async function collectProductJourneyEvidence(
     left.path.localeCompare(right.path),
   );
 
+  let c2zcRustAcceptance = null;
+  if (reportRequiresC2ZcRustAcceptance(report)) {
+    const currentCandidate =
+      candidate ??
+      (await resolveLocalCiCandidate(plan, {
+        root,
+      }));
+    const reported = report.c2zcRustAcceptance;
+    if (
+      !isPlainObject(reported) ||
+      reported.verified !== true ||
+      typeof reported.receiptPath !== "string" ||
+      typeof reported.receiptSha256 !== "string" ||
+      !Array.isArray(reported.gates)
+    ) {
+      throw new Error(
+        "C2-ZC product journey results must bind a verified Rust acceptance receipt",
+      );
+    }
+    const expectedReceiptPath = resolveC2ZcRustAcceptanceReceiptPath(plan, {
+      root,
+    });
+    if (path.resolve(root, reported.receiptPath) !== expectedReceiptPath) {
+      throw new Error(
+        "C2-ZC product journey results use an unexpected Rust receipt path",
+      );
+    }
+    const verifiedRustReceipt = await verifyC2ZcRustAcceptanceReceipt({
+      root,
+      candidate: currentCandidate,
+      catalogDigest: C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
+      receiptPath: reported.receiptPath,
+      receiptSha256: reported.receiptSha256,
+    });
+    c2zcRustAcceptance = {
+      required: true,
+      verified: true,
+      receiptPath: verifiedRustReceipt.receiptPath,
+      receiptSha256: verifiedRustReceipt.receiptSha256,
+      candidate: verifiedRustReceipt.receipt.candidate,
+      gates: verifiedRustReceipt.receipt.gates,
+      receipt: verifiedRustReceipt.receipt,
+    };
+    if (
+      c2zcRustAcceptance.receiptPath !== reported.receiptPath ||
+      c2zcRustAcceptance.receiptSha256 !== reported.receiptSha256 ||
+      JSON.stringify(c2zcRustAcceptance.receipt) !==
+        JSON.stringify(reported.receipt) ||
+      JSON.stringify(c2zcRustAcceptance.receipt.candidate) !==
+        JSON.stringify(reported.candidate) ||
+      JSON.stringify(c2zcRustAcceptance.receipt.gates) !==
+        JSON.stringify(reported.gates)
+    ) {
+      throw new Error(
+        "C2-ZC product journey results do not match the verified Rust receipt",
+      );
+    }
+    if (
+      !isPlainObject(manifest.c2zcRustAcceptance) ||
+      manifest.c2zcRustAcceptance.receiptPath !== reported.receiptPath ||
+      manifest.c2zcRustAcceptance.receiptSha256 !== reported.receiptSha256 ||
+      manifest.c2zcRustAcceptance.verified !== true ||
+      JSON.stringify(manifest.c2zcRustAcceptance) !== JSON.stringify(reported)
+    ) {
+      throw new Error(
+        "C2-ZC product journey manifest does not bind the verified Rust receipt",
+      );
+    }
+  }
+
   return {
     catalogDigest: PRODUCT_JOURNEY_CATALOG_DIGEST,
     journeyIds,
@@ -643,6 +793,9 @@ export async function collectProductJourneyEvidence(
     manifest: manifestEvidence,
     artifacts,
     artifactDigest: digestJson(artifacts),
+    acceptanceRequired: report.acceptanceRequired === true,
+    acceptanceComplete: report.acceptanceComplete === true,
+    c2zcRustAcceptance,
   };
 }
 
@@ -664,6 +817,18 @@ function verifyProductJourneyEvidence(receiptEvidence, currentEvidence) {
   if (receiptEvidence.allPassed !== true || receiptEvidence.allClean !== true) {
     throw new Error(
       "Full receipt product journey evidence must be passed and clean.",
+    );
+  }
+  if (receiptEvidence.acceptanceRequired === true) {
+    if (
+      receiptEvidence.acceptanceComplete !== true ||
+      !isPlainObject(receiptEvidence.c2zcRustAcceptance)
+    ) {
+      throw new Error("Full receipt C2-ZC acceptance evidence is incomplete.");
+    }
+    assertC2ZcRustAcceptanceEvidenceShape(
+      receiptEvidence.c2zcRustAcceptance,
+      "Full receipt C2-ZC acceptance evidence",
     );
   }
   for (const field of ["results", "manifest"]) {
@@ -693,6 +858,9 @@ function verifyProductJourneyEvidence(receiptEvidence, currentEvidence) {
       "allPassed",
       "allClean",
       "artifactDigest",
+      "acceptanceRequired",
+      "acceptanceComplete",
+      "c2zcRustAcceptance",
     ]) {
       if (
         JSON.stringify(receiptEvidence[field]) !==
@@ -836,6 +1004,52 @@ function notRunCommand(command, reason) {
   };
 }
 
+function bindC2ZcRustGateCommand(command, stageId, { plan, candidate }) {
+  if (stageId !== C2ZC_RUST_ACCEPTANCE_GATE_STAGE || !candidate) {
+    return command;
+  }
+  return {
+    ...command,
+    env: {
+      ...command.env,
+      [C2ZC_RUST_REQUESTED_BASE_ENV]: plan.comparison.base,
+      [C2ZC_RUST_REQUESTED_HEAD_ENV]: plan.comparison.head,
+      [C2ZC_RUST_CANDIDATE_JSON_ENV]: JSON.stringify(candidate),
+    },
+  };
+}
+
+async function bindC2ZcProductJourneyCommand(command, stageId, { root, plan }) {
+  if (stageId !== "electron-product-journeys") return command;
+  const configuredPath = command.env?.[C2ZC_RUST_RECEIPT_PATH_ENV];
+  const boundEnv = {
+    ...command.env,
+    [C2ZC_RUST_REQUESTED_BASE_ENV]: plan.comparison.base,
+    [C2ZC_RUST_REQUESTED_HEAD_ENV]: plan.comparison.head,
+  };
+  if (typeof configuredPath !== "string" || configuredPath.length === 0) {
+    return { ...command, env: boundEnv };
+  }
+  let receiptSha256;
+  try {
+    receiptSha256 = (
+      await readFile(`${path.resolve(root, configuredPath)}.sha256`, "utf8")
+    ).trim();
+  } catch {
+    return { ...command, env: boundEnv };
+  }
+  if (!/^sha256:[0-9a-f]{64}$/u.test(receiptSha256)) {
+    return { ...command, env: boundEnv };
+  }
+  return {
+    ...command,
+    env: {
+      ...boundEnv,
+      GRIMODEX_C2ZC_RUST_RECEIPT_SHA256: receiptSha256,
+    },
+  };
+}
+
 export async function runLocalCiPlan(
   plan,
   {
@@ -844,6 +1058,7 @@ export async function runLocalCiPlan(
     executeCommand: execute = (entry) => executeCommand(entry),
     notify = () => {},
     productJourneyEvidence = null,
+    root = repoRoot,
   } = {},
 ) {
   const startedAt = new Date().toISOString();
@@ -889,16 +1104,25 @@ export async function runLocalCiPlan(
     const commands = [];
     let failedCommand = null;
     for (const command of stage.commands) {
+      const rustBoundCommand = bindC2ZcRustGateCommand(command, stage.id, {
+        plan,
+        candidate,
+      });
+      const boundCommand = await bindC2ZcProductJourneyCommand(
+        rustBoundCommand,
+        stage.id,
+        { root, plan },
+      );
       if (failedCommand) {
         commands.push(
-          notRunCommand(command, `Fail-fast after ${failedCommand}.`),
+          notRunCommand(boundCommand, `Fail-fast after ${failedCommand}.`),
         );
         continue;
       }
-      notify({ command, stage, type: "command-start" });
+      notify({ command: boundCommand, stage, type: "command-start" });
       let execution;
       try {
-        execution = await execute(command);
+        execution = await execute(boundCommand);
       } catch (error) {
         execution = {
           durationMs: 0,
@@ -908,9 +1132,15 @@ export async function runLocalCiPlan(
         };
       }
       const status = execution.exitCode === 0 ? "passed" : "failed";
-      commands.push({ ...command, ...execution, status });
-      notify({ command, execution, stage, status, type: "command-end" });
-      if (status === "failed") failedCommand = command.label;
+      commands.push({ ...boundCommand, ...execution, status });
+      notify({
+        command: boundCommand,
+        execution,
+        stage,
+        status,
+        type: "command-end",
+      });
+      if (status === "failed") failedCommand = boundCommand.label;
     }
     const status = failedCommand ? "failed" : "passed";
     stages.push({
@@ -1030,7 +1260,7 @@ async function main() {
     const receipt = JSON.parse(await readFile(reportPath, "utf8"));
     const currentProductJourneyEvidence =
       plan.profile === "full"
-        ? await collectProductJourneyEvidence(plan)
+        ? await collectProductJourneyEvidence(plan, { candidate })
         : null;
     verifyLocalCiReceipt(receipt, {
       profile: plan.profile,
@@ -1044,6 +1274,7 @@ async function main() {
   const result = await runLocalCiPlan(plan, {
     candidate,
     dryRun: args.dryRun,
+    root: repoRoot,
     notify(event) {
       if (event.type === "stage-start") {
         process.stdout.write(
@@ -1066,8 +1297,12 @@ async function main() {
     try {
       verifyCandidateBinding(result.candidate, finishedCandidate);
       if (plan.profile === "full" && result.status === "passed") {
-        result.productJourneyEvidence =
-          await collectProductJourneyEvidence(plan);
+        result.productJourneyEvidence = await collectProductJourneyEvidence(
+          plan,
+          {
+            candidate: finishedCandidate,
+          },
+        );
         verifyLocalCiReceipt(result, {
           profile: plan.profile,
           candidate: finishedCandidate,

@@ -1479,7 +1479,14 @@ export const PRODUCT_JOURNEY_ELECTRON_PHASES = Object.freeze([
   "c2-zc-canonical-authority-cutover/open",
   "c2-zc-canonical-authority-cutover/restart",
   "c2-zc-canonical-authority-cutover/restart-persistence",
-  "c2-zc-canonical-authority-cutover/new-project",
+  "c2-zc-post-marker-lifecycle/bootstrap-restore-fixture",
+  "c2-zc-post-marker-lifecycle/bootstrap-restore",
+  "c2-zc-post-marker-lifecycle/bootstrap-open",
+  "c2-zc-post-marker-lifecycle/bootstrap-restart",
+  "c2-zc-post-marker-lifecycle/bootstrap-restart-persistence",
+  "c2-zc-post-marker-lifecycle/open",
+  "c2-zc-post-marker-lifecycle/new-project",
+  "c2-zc-post-marker-lifecycle/restart",
   ...C2ZC_RENDERER_DML_PHASE_ALLOWLIST,
 ]);
 
@@ -1525,6 +1532,7 @@ export const MAIN_PROCESS_NOISE_ALLOWLIST = Object.freeze([
     phases: Object.freeze([
       "c2-5b-restore-verify-rebuild-verify/open",
       "c2-zc-canonical-authority-cutover/restore",
+      "c2-zc-post-marker-lifecycle/bootstrap-restore",
     ]),
     reason:
       "Observed on Ubuntu Xvfb during the trusted production renderer reload after Settings backup restore; only the exact C2-5B open or C2-ZC restore phase is allowed.",

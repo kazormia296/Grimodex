@@ -10,6 +10,7 @@ import process from "node:process";
 import { rootDir } from "./build.mjs";
 import {
   digestProductJourneyCatalog,
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG_DIGEST,
 } from "./product-journey-catalog.mjs";
@@ -20,8 +21,15 @@ import { createNarrativeMaintenanceProductJourneys } from "./narrative-maintenan
 import {
   C2ZC_PRODUCT_JOURNEY_ID,
   runC2ZcCanonicalAuthorityJourney,
+  runC2ZcPostMarkerLifecycleJourney,
 } from "./c2zc-canonical-product-journey.mjs";
 import { runC2ZcRendererMcpDmlDenialJourney } from "./c2zc-renderer-mcp-dml-denial-product-journey.mjs";
+import {
+  C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
+  C2ZC_RUST_ACCEPTANCE_RECEIPT_PATH,
+  resolveC2ZcRustAcceptanceCandidate,
+  verifyC2ZcRustAcceptanceReceipt,
+} from "../../scripts/c2zc-rust-acceptance-receipt.mjs";
 
 const mainCjs = path.join(rootDir, "dist-electron", "main.cjs");
 const DEFAULT_SCENE_TITLE = "シーン 1";
@@ -53,6 +61,13 @@ const PRODUCT_JOURNEY_MODEL = "product-journey-model";
 const PENDING_SAVE_AUTOSAVE_DELAY_MS = 60_000;
 const PRODUCT_JOURNEY_RESULTS_VERSION = 4;
 const PRODUCT_JOURNEY_AUDIT_MANIFEST_VERSION = 1;
+const C2ZC_RUST_RECEIPT_PATH_ENV = "GRIMODEX_C2ZC_RUST_RECEIPT_PATH";
+const C2ZC_RUST_RECEIPT_SHA256_ENV = "GRIMODEX_C2ZC_RUST_RECEIPT_SHA256";
+const C2ZC_RUST_BASE_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_BASE";
+const C2ZC_RUST_HEAD_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD";
+const C2ZC_PRODUCT_JOURNEY_IDS = Object.freeze(
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
+);
 const REQUIRED_LIFECYCLE_TRANSITION_PHASES = [
   "switch-requested",
   "quiescence-started",
@@ -402,13 +417,18 @@ export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS =
 /** C2-ZC production reachability is a distinct acceptance journey. */
 export const NARRATIVE_C2ZC_PRODUCT_JOURNEYS = [
   {
+    id: "c2-zc-renderer-mcp-dml-denial",
+    run: runC2ZcRendererMcpDmlDenialJourney,
+  },
+  {
     id: C2ZC_PRODUCT_JOURNEY_ID,
     run: (harness) =>
       runC2ZcCanonicalAuthorityJourney(harness, configureWorkspace),
   },
   {
-    id: "c2-zc-renderer-mcp-dml-denial",
-    run: runC2ZcRendererMcpDmlDenialJourney,
+    id: "c2-zc-post-marker-lifecycle",
+    run: (harness) =>
+      runC2ZcPostMarkerLifecycleJourney(harness, configureWorkspace),
   },
 ];
 
@@ -2219,6 +2239,78 @@ export function resolveSelectedProductJourneys(
   return journeys.filter((journey) => requestedIds.has(journey.id));
 }
 
+/**
+ * Bind the executable selection to the immutable catalog before any artifact
+ * preflight.  A fail-fast subset must never be reported as if another lane
+ * ran, and duplicate/unknown IDs must not disappear in a filtered result.
+ */
+export function assertProductJourneySelectionBinding({
+  catalog,
+  journeys,
+  requireAll = false,
+  selectionName = "",
+}) {
+  if (!Array.isArray(catalog) || !Array.isArray(journeys)) {
+    throw new Error("product journey catalog and selection must be arrays");
+  }
+  const catalogJourneyIds = catalog.map((journey) => journey?.id);
+  const journeyIds = journeys.map((journey) => journey?.id);
+  if (
+    catalogJourneyIds.some((id) => typeof id !== "string" || id.length === 0) ||
+    new Set(catalogJourneyIds).size !== catalogJourneyIds.length
+  ) {
+    throw new Error(
+      "product journey catalog contains invalid or duplicate IDs",
+    );
+  }
+  if (
+    journeyIds.some((id) => typeof id !== "string" || id.length === 0) ||
+    new Set(journeyIds).size !== journeyIds.length
+  ) {
+    throw new Error(
+      "product journey selection contains invalid or duplicate IDs",
+    );
+  }
+  const catalogIds = new Set(catalogJourneyIds);
+  if (journeyIds.some((id) => !catalogIds.has(id))) {
+    throw new Error(
+      "product journey selection contains an ID absent from catalog",
+    );
+  }
+  if (
+    requireAll &&
+    JSON.stringify(journeyIds) !== JSON.stringify(catalogJourneyIds)
+  ) {
+    throw new Error(
+      "Full product journey execution requires all canonical product journey IDs in catalog order",
+    );
+  }
+  if (selectionName === "c2-zc") {
+    if (
+      JSON.stringify(catalogJourneyIds) !==
+      JSON.stringify(C2ZC_PRODUCT_JOURNEY_IDS)
+    ) {
+      throw new Error(
+        "c2-zc selection must use the exact three-lane C2-ZC catalog",
+      );
+    }
+    if (
+      JSON.stringify(journeyIds) !== JSON.stringify(C2ZC_PRODUCT_JOURNEY_IDS)
+    ) {
+      throw new Error(
+        "c2-zc selection requires all atomic lanes in catalog order",
+      );
+    }
+  }
+  return {
+    catalogJourneyIds: [...catalogJourneyIds],
+    journeyIds: [...journeyIds],
+    requireAll,
+    selectionName,
+    complete: journeyIds.length === catalogJourneyIds.length,
+  };
+}
+
 function serializeError(error) {
   return {
     name: error instanceof Error ? error.name : "Error",
@@ -2267,11 +2359,60 @@ function normalizeArtifactEvidence(value) {
   return [];
 }
 
+function hasC2ZcAcceptanceJourney(journeys) {
+  const selectedIds = new Set(journeys.map((journey) => journey?.id));
+  return C2ZC_PRODUCT_JOURNEY_IDS.every((id) => selectedIds.has(id));
+}
+
+function requiresC2ZcRustAcceptance({ journeys, selectionName }) {
+  return selectionName === "c2-zc" || hasC2ZcAcceptanceJourney(journeys);
+}
+
+async function readC2ZcRustAcceptanceEvidence({ required }) {
+  const configuredPath =
+    process.env[C2ZC_RUST_RECEIPT_PATH_ENV] ??
+    (required ? C2ZC_RUST_ACCEPTANCE_RECEIPT_PATH : null);
+  if (!configuredPath) {
+    if (required) {
+      throw new Error(
+        `${C2ZC_RUST_RECEIPT_PATH_ENV} is required for complete C2-ZC acceptance`,
+      );
+    }
+    return {
+      required: false,
+      verified: false,
+      reason: "not-required",
+    };
+  }
+  const candidate = await resolveC2ZcRustAcceptanceCandidate({
+    root: rootDir,
+    requestedBase: process.env[C2ZC_RUST_BASE_ENV] ?? "origin/master",
+    requestedHead: process.env[C2ZC_RUST_HEAD_ENV] ?? "HEAD",
+  });
+  const verified = await verifyC2ZcRustAcceptanceReceipt({
+    root: rootDir,
+    candidate,
+    catalogDigest: C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
+    receiptPath: configuredPath,
+    receiptSha256: process.env[C2ZC_RUST_RECEIPT_SHA256_ENV] ?? null,
+  });
+  return {
+    required,
+    verified: true,
+    receiptPath: verified.receiptPath,
+    receiptSha256: verified.receiptSha256,
+    candidate: verified.receipt.candidate,
+    gates: verified.receipt.gates,
+    receipt: verified.receipt,
+  };
+}
+
 function refreshReportOutcome(report) {
   report.allPassed =
     report.status === "passed" &&
     report.journeys.length === report.journeyIds.length &&
-    report.journeys.every((journey) => journey.status === "passed");
+    report.journeys.every((journey) => journey.status === "passed") &&
+    (report.acceptanceRequired !== true || report.acceptanceComplete === true);
   report.allClean =
     report.allPassed &&
     report.journeys.every((journey) => journey.cleanPass === true);
@@ -2287,6 +2428,9 @@ async function writeAuditManifest(outputPath, report, artifactEvidence) {
     journeyIds: [...report.journeyIds],
     allPassed: report.allPassed === true,
     allClean: report.allClean === true,
+    acceptanceRequired: report.acceptanceRequired === true,
+    acceptanceComplete: report.acceptanceComplete === true,
+    c2zcRustAcceptance: report.c2zcRustAcceptance ?? null,
     results: {
       path: path.basename(outputPath),
       realPath: results.realPath,
@@ -2332,6 +2476,7 @@ export async function runProductJourneys({
   clock = () => performance.now(),
   expectedCatalogDigest = process.env.GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST,
   requireAll = process.env.GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL === "true",
+  selectionName = process.env.GRIMODEX_PRODUCT_JOURNEY_SET ?? "",
   resultsPath,
 } = {}) {
   const outputPath = resolveResultsPath(resultsPath);
@@ -2345,6 +2490,19 @@ export async function runProductJourneys({
     catalogDigest,
     catalogJourneyIds: catalog.map((journey) => journey.id),
     journeyIds: journeys.map((journey) => journey.id),
+    acceptanceRequired: requiresC2ZcRustAcceptance({
+      journeys,
+      selectionName,
+    }),
+    acceptanceComplete: false,
+    c2zcRustAcceptance: null,
+    selectionBinding: {
+      catalogJourneyIds: catalog.map((journey) => journey.id),
+      journeyIds: journeys.map((journey) => journey.id),
+      requireAll,
+      selectionName,
+      complete: false,
+    },
     allPassed: false,
     allClean: false,
     journeys: [],
@@ -2352,15 +2510,12 @@ export async function runProductJourneys({
   let artifactEvidence = [];
 
   try {
-    if (
-      requireAll &&
-      JSON.stringify(report.journeyIds) !==
-        JSON.stringify(report.catalogJourneyIds)
-    ) {
-      throw new Error(
-        "Full product journey execution requires all canonical product journey IDs in catalog order",
-      );
-    }
+    report.selectionBinding = assertProductJourneySelectionBinding({
+      catalog,
+      journeys,
+      requireAll,
+      selectionName,
+    });
     if (
       expectedCatalogDigest !== undefined &&
       expectedCatalogDigest !== catalogDigest
@@ -2369,6 +2524,12 @@ export async function runProductJourneys({
         `product journey catalog digest mismatch: expected ${expectedCatalogDigest}, observed ${catalogDigest}`,
       );
     }
+    report.c2zcRustAcceptance = await readC2ZcRustAcceptanceEvidence({
+      required: report.acceptanceRequired,
+    });
+    report.acceptanceComplete =
+      report.acceptanceRequired !== true ||
+      report.c2zcRustAcceptance.verified === true;
     const preflight =
       assertArtifacts ??
       ((selectedJourneys) =>
@@ -2397,6 +2558,7 @@ export async function runProductJourneys({
     let journeyResultIndex = -1;
     try {
       harness = factory();
+      harness.c2zcRustAcceptanceEvidence = report.c2zcRustAcceptance;
       const journeyResult = await journey.run(harness);
       durationMs = elapsedMilliseconds(clock, startedAt);
       const diagnostics = normalizeProductJourneyDiagnostics(
@@ -2503,9 +2665,13 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
     { requireAll },
   );
   runProductJourneys({
-    catalog: PRODUCT_JOURNEY_CATALOG,
+    catalog:
+      process.env.GRIMODEX_PRODUCT_JOURNEY_SET === "c2-zc"
+        ? NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG
+        : PRODUCT_JOURNEY_CATALOG,
     journeys: selectedJourneys,
     requireAll,
+    selectionName: process.env.GRIMODEX_PRODUCT_JOURNEY_SET ?? "",
   }).then(
     () => log("PASS — product journeys completed"),
     (error) => {

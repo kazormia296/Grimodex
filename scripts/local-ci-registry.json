@@ -15,6 +15,7 @@
       "electron",
       "electron-native",
       "rust",
+      "c2-zc-rust-acceptance-gate",
       "migration-recovery-gate",
       "electron-runtime-performance",
       "electron-product-journeys"
@@ -438,6 +439,26 @@
         }
       ]
     },
+    "c2-zc-rust-acceptance-gate": {
+      "label": "Candidate-bound C2-ZC dual Rust receipts",
+      "env": {
+        "GRIMODEX_C2ZC_RUST_RECEIPT_PATH": ".artifacts/local-ci/c2-zc-rust-acceptance.json",
+        "GRIMODEX_C2ZC_RUST_REQUESTED_BASE": "origin/master",
+        "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD": "HEAD"
+      },
+      "commands": [
+        {
+          "label": "Run exact C2-ZC Rust acceptance gates",
+          "command": "node",
+          "args": [
+            "scripts/c2zc-rust-acceptance-receipt.mjs",
+            "--output",
+            ".artifacts/local-ci/c2-zc-rust-acceptance.json"
+          ],
+          "cwd": "."
+        }
+      ]
+    },
     "migration-recovery-gate": {
       "label": "Migration recovery checks",
       "env": {
@@ -562,7 +583,10 @@
         "GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR": ".artifacts/product-journeys",
         "GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL": "true",
         "GRIMODEX_PRODUCT_JOURNEY_IDS": "",
-        "GRIMODEX_PRODUCT_JOURNEY_SET": ""
+        "GRIMODEX_PRODUCT_JOURNEY_SET": "",
+        "GRIMODEX_C2ZC_RUST_RECEIPT_PATH": ".artifacts/local-ci/c2-zc-rust-acceptance.json",
+        "GRIMODEX_C2ZC_RUST_REQUESTED_BASE": "origin/master",
+        "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD": "HEAD"
       },
       "commands": [
         {

@@ -2071,19 +2071,42 @@ export function assertRestoreFixtureEvidence(
  * renderer-facing Edge writer exists; its owner Run and every persisted field
  * are validated immediately after a renderer relaunch.
  */
-async function seedRestoreFixtureEvidence(harness, workspace, id) {
-  let fixtureLaunch = await withLaunchEnvironment(
+export async function launchRestoreFixtureForJourney(
+  harness,
+  id,
+  { fixturePhase = "restore-fixture" } = {},
+) {
+  if (typeof id !== "string" || id.trim() === "") {
+    throw new Error("restore fixture launcher requires a journey id");
+  }
+  if (typeof fixturePhase !== "string" || fixturePhase.trim() === "") {
+    throw new Error("restore fixture launcher requires a phase");
+  }
+  const phase = `${id}/${fixturePhase}`;
+  const launched = await withLaunchEnvironment(
     {
       setup: "disabled",
       ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
     },
-    () => harness.launch(`${id}/restore-fixture`),
+    () => harness.launch(phase),
   );
+  return { ...launched, phase };
+}
+
+async function seedRestoreFixtureEvidence(
+  harness,
+  workspace,
+  id,
+  { fixturePhase = "restore-fixture" } = {},
+) {
+  let fixtureLaunch = await launchRestoreFixtureForJourney(harness, id, {
+    fixturePhase,
+  });
   const closeFixtureLaunch = async () => {
     const launched = fixtureLaunch;
     if (!launched) return;
     fixtureLaunch = null;
-    await harness.close(launched.app, launched.page, `${id}/restore-fixture`);
+    await harness.close(launched.app, launched.page, launched.phase);
   };
   try {
     let context = await contextForLaunch(
@@ -2265,13 +2288,9 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
         },
       ],
     );
-    fixtureLaunch = await withLaunchEnvironment(
-      {
-        setup: "disabled",
-        ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
-      },
-      () => harness.launch(`${id}/restore-fixture`),
-    );
+    fixtureLaunch = await launchRestoreFixtureForJourney(harness, id, {
+      fixturePhase,
+    });
     context = await contextForLaunch(
       harness,
       fixtureLaunch,
@@ -3089,6 +3108,7 @@ export async function runRestoreVerifyRebuildVerifyScenario(
     restartEnvironment = {},
     requirePreRestoreMaintenanceSettled = true,
     restoreThroughSettingsUi = restoreBackupThroughSettingsUi,
+    fixturePhase = "restore-fixture",
     onFixture = null,
     onRestore = null,
     onOpen = null,
@@ -3104,11 +3124,13 @@ export async function runRestoreVerifyRebuildVerifyScenario(
     harness,
     workspace,
     id,
+    { fixturePhase },
   );
   await onFixture?.({
     id,
     workspace,
     fixtureEvidence,
+    fixturePhase,
   });
   const preLaunchRuns = await readRunSnapshot(workspace);
   const restoreLaunch = await withLaunchEnvironment(

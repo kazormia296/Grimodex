@@ -146,6 +146,26 @@ test("DML acceptance delegates quiescence to the canonical core harness", async 
   assert.doesNotMatch(source, /C2ZC_RUNTIME_QUIESCENCE/);
 });
 
+test("DML quiescence projects the exact Native binding from three keys", () => {
+  const binding = dmlContract.assertC2ZcRendererWorkspaceBinding({
+    authorityId: "authority-c2zc",
+    generation: 7,
+    authorityInstanceId: "11",
+  });
+  assert.deepEqual(binding, {
+    authorityId: "authority-c2zc",
+    generation: 7,
+  });
+  assert.throws(
+    () =>
+      dmlContract.assertC2ZcRendererWorkspaceBinding({
+        authorityId: "authority-c2zc",
+        generation: 7,
+      }),
+    /authorityInstanceId|invalid binding/i,
+  );
+});
+
 test("quiescence stability window is strictly longer than scheduler rediscovery", () => {
   assert.ok(
     C2ZC_RENDERER_QUIESCENCE_MIN_STABLE_MS >
@@ -1224,7 +1244,11 @@ test("catalog, runner, impact map, and contract command are wired", async () => 
   assert.match(runnerSource, /c2-zc-renderer-mcp-dml-denial/);
   assert.deepEqual(
     resolveProductJourneyImpactCatalog("c2-zc").map((journey) => journey.id),
-    ["c2-zc-canonical-authority-cutover", "c2-zc-renderer-mcp-dml-denial"],
+    [
+      "c2-zc-renderer-mcp-dml-denial",
+      "c2-zc-canonical-authority-cutover",
+      "c2-zc-post-marker-lifecycle",
+    ],
   );
   assert.match(
     impactManifest,
@@ -1672,7 +1696,11 @@ test("journey executes its real renderer contract without requiring a dependency
         if (command === "open_workspace") return { path: args.path };
         if (command === "narrative_extraction_capture_workspace_binding") {
           assert.equal(args.expectedWorkspacePath, workspace);
-          return { authorityId: "authority-1", generation: 1 };
+          return {
+            authorityId: "authority-1",
+            generation: 1,
+            authorityInstanceId: "1",
+          };
         }
         assert.equal(command, "db_execute");
         if (args.method === "all") {

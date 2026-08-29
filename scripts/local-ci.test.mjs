@@ -33,6 +33,11 @@ import {
   validateLocalCiRegistry,
   verifyLocalCiReceipt,
 } from "./local-ci.mjs";
+import {
+  C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
+  C2ZC_RUST_ACCEPTANCE_GATES,
+  createC2ZcRustAcceptanceReceipt,
+} from "./c2zc-rust-acceptance-receipt.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -62,6 +67,14 @@ function completeCandidate(overrides = {}) {
       "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     ...overrides,
   };
+}
+
+function exactRustGateOutput(gateId) {
+  const fullTestName =
+    gateId === "c2-zc-dml-native-owned-table-denial"
+      ? "execute::tests::c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes"
+      : "canonical_read_has_no_legacy_fallback_after_generic_cutover";
+  return `test ${fullTestName} ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n`;
 }
 
 function completeProductJourneyEvidence(overrides = {}) {
@@ -237,6 +250,154 @@ test("local Full product stage masks both inherited journey subset selectors", a
     assert.equal(env.GRIMODEX_PRODUCT_JOURNEY_IDS, "");
     assert.equal(env.GRIMODEX_PRODUCT_JOURNEY_SET, "");
   }
+});
+
+test("local Full orders the candidate-bound Rust gate before Electron journeys and binds its receipt hash", async (t) => {
+  const registry = await readRegistry();
+  const full = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const rustIndex = full.stages.findIndex(
+    (stage) => stage.id === "c2-zc-rust-acceptance-gate",
+  );
+  const sharedRustIndex = full.stages.findIndex((stage) => stage.id === "rust");
+  const productIndex = full.stages.findIndex(
+    (stage) => stage.id === "electron-product-journeys",
+  );
+  assert.ok(rustIndex >= 0);
+  assert.ok(sharedRustIndex >= 0 && sharedRustIndex < rustIndex);
+  assert.ok(rustIndex < productIndex);
+
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-c2zc-receipt-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const candidate = completeCandidate();
+  const receipt = await createC2ZcRustAcceptanceReceipt({
+    root: temporaryRoot,
+    candidate,
+    catalogDigest: C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
+    resolveCandidate: async () => candidate,
+    execute: async (_command, { gate }) => ({
+      exitCode: 0,
+      signal: null,
+      stdout: exactRustGateOutput(gate.id),
+      stderr: "",
+    }),
+  });
+  const executed = [];
+  const plan = {
+    ...full,
+    stages: [full.stages[rustIndex], full.stages[productIndex]],
+  };
+  const result = await runLocalCiPlan(plan, {
+    candidate,
+    root: temporaryRoot,
+    executeCommand: async (command) => {
+      executed.push(command);
+      return { durationMs: 1, exitCode: 0, signal: null };
+    },
+  });
+
+  assert.equal(result.status, "passed");
+  assert.equal(executed.length, 3);
+  const rustCommand = executed.find(
+    (command) =>
+      command.command === "node" &&
+      command.args[0].includes("c2zc-rust-acceptance-receipt"),
+  );
+  assert.ok(rustCommand);
+  assert.deepEqual(
+    JSON.parse(rustCommand.env.GRIMODEX_C2ZC_RUST_CANDIDATE_JSON),
+    candidate,
+  );
+  assert.equal(
+    rustCommand.env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE,
+    "origin/master",
+  );
+  assert.equal(rustCommand.env.GRIMODEX_C2ZC_RUST_REQUESTED_HEAD, "HEAD");
+  const productCommand = executed.find(
+    (command) => command.label === "Run every product journey",
+  );
+  assert.equal(
+    productCommand.env.GRIMODEX_C2ZC_RUST_RECEIPT_SHA256,
+    receipt.receiptSha256,
+  );
+  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 2);
+  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES[0].argv.command, "cargo");
+  assert.match(
+    C2ZC_RUST_ACCEPTANCE_GATES[0].argv.args.join(" "),
+    /canonical_read_has_no_legacy_fallback_after_generic_cutover/,
+  );
+  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES[0].contract.noLegacyFallback, true);
+});
+
+test("local CI binds custom comparison base/head into both Rust and product journey commands", async (t) => {
+  const registry = await readRegistry();
+  const base = "upstream/release-candidate";
+  const head = "feature/c2zc-review";
+  const full = buildLocalCiPlan(registry, {
+    profile: "full",
+    base,
+    head,
+  });
+  const rustStage = full.stages.find(
+    (stage) => stage.id === "c2-zc-rust-acceptance-gate",
+  );
+  const productStage = full.stages.find(
+    (stage) => stage.id === "electron-product-journeys",
+  );
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-custom-comparison-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const candidate = completeCandidate({
+    requestedBase: base,
+    requestedHead: head,
+  });
+  const receipt = await createC2ZcRustAcceptanceReceipt({
+    root: temporaryRoot,
+    candidate,
+    catalogDigest: C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
+    resolveCandidate: async () => candidate,
+    execute: async (_command, { gate }) => ({
+      exitCode: 0,
+      signal: null,
+      stdout: exactRustGateOutput(gate.id),
+      stderr: "",
+    }),
+  });
+  const executed = [];
+  await runLocalCiPlan(
+    {
+      ...full,
+      stages: [rustStage, productStage],
+    },
+    {
+      candidate,
+      root: temporaryRoot,
+      executeCommand: async (command) => {
+        executed.push(command);
+        return { durationMs: 1, exitCode: 0, signal: null };
+      },
+    },
+  );
+  const rustCommand = executed.find((command) =>
+    command.args?.[0]?.includes("c2zc-rust-acceptance-receipt"),
+  );
+  const productCommand = executed.find(
+    (command) => command.label === "Run every product journey",
+  );
+  assert.equal(rustCommand.env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE, base);
+  assert.equal(rustCommand.env.GRIMODEX_C2ZC_RUST_REQUESTED_HEAD, head);
+  assert.equal(productCommand.env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE, base);
+  assert.equal(productCommand.env.GRIMODEX_C2ZC_RUST_REQUESTED_HEAD, head);
+  assert.equal(
+    productCommand.env.GRIMODEX_C2ZC_RUST_RECEIPT_SHA256,
+    receipt.receiptSha256,
+  );
 });
 
 test("local CI argument parsing supports comparison, resume, and dry-run", () => {
@@ -463,6 +624,27 @@ test("Full receipts require bound product journey results and artifact evidence"
   );
 });
 
+test("Full receipts fail closed when a C2-ZC-complete result omits its Rust receipt binding", () => {
+  const candidate = completeCandidate();
+  const receipt = {
+    version: 3,
+    profile: "full",
+    coverage: { completeness: "complete", fromStage: null },
+    candidate,
+    status: "passed",
+    productJourneyEvidence: completeProductJourneyEvidence({
+      acceptanceRequired: true,
+      acceptanceComplete: true,
+      c2zcRustAcceptance: null,
+    }),
+  };
+
+  assert.throws(
+    () => verifyLocalCiReceipt(receipt, { profile: "full", candidate }),
+    /C2-ZC|Rust|acceptance|evidence/i,
+  );
+});
+
 test("Full product journey evidence binds result and manifest bytes to the receipt", async (t) => {
   const temporaryRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-local-ci-product-evidence-"),
@@ -657,6 +839,119 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   await assert.rejects(
     collectProductJourneyEvidence(plan, { root: temporaryRoot }),
     /ENOENT|regular file|artifact/i,
+  );
+
+  await writeFile(nativePath, "native module", "utf8");
+  const rustReceipt = await createC2ZcRustAcceptanceReceipt({
+    root: temporaryRoot,
+    candidate,
+    catalogDigest: C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
+    resolveCandidate: async () => candidate,
+    execute: async (_command, { gate }) => ({
+      exitCode: 0,
+      signal: null,
+      stdout: exactRustGateOutput(gate.id),
+      stderr: "",
+    }),
+  });
+  const rustEvidence = {
+    required: true,
+    verified: true,
+    receiptPath: rustReceipt.receiptPath,
+    receiptSha256: rustReceipt.receiptSha256,
+    candidate,
+    gates: rustReceipt.receipt.gates,
+    receipt: rustReceipt.receipt,
+  };
+  const acceptedReport = {
+    ...results,
+    acceptanceRequired: true,
+    acceptanceComplete: true,
+    c2zcRustAcceptance: rustEvidence,
+  };
+  const acceptedResultsText = `${JSON.stringify(acceptedReport, null, 2)}\n`;
+  const acceptedResultsSha256 = `sha256:${createHash("sha256")
+    .update(acceptedResultsText)
+    .digest("hex")}`;
+  const acceptedManifest = {
+    ...JSON.parse(manifestText),
+    acceptanceRequired: true,
+    acceptanceComplete: true,
+    c2zcRustAcceptance: rustEvidence,
+  };
+  acceptedManifest.results = {
+    ...acceptedManifest.results,
+    sha256: acceptedResultsSha256,
+  };
+  await writeFile(resultsPath, acceptedResultsText, "utf8");
+  await writeFile(
+    manifestPath,
+    `${JSON.stringify(acceptedManifest, null, 2)}\n`,
+    "utf8",
+  );
+  const acceptedEvidence = await collectProductJourneyEvidence(plan, {
+    candidate,
+    root: temporaryRoot,
+  });
+  assert.equal(acceptedEvidence.acceptanceRequired, true);
+  assert.equal(acceptedEvidence.acceptanceComplete, true);
+  assert.equal(
+    acceptedEvidence.c2zcRustAcceptance.receiptSha256,
+    rustReceipt.receiptSha256,
+  );
+  const acceptedLocalReceipt = {
+    version: 3,
+    profile: "full",
+    coverage: { completeness: "complete", fromStage: null },
+    candidate,
+    status: "passed",
+    productJourneyEvidence: acceptedEvidence,
+  };
+  assert.doesNotThrow(() =>
+    verifyLocalCiReceipt(acceptedLocalReceipt, {
+      profile: "full",
+      candidate,
+    }),
+  );
+  for (const mutate of [
+    (evidence) => delete evidence.c2zcRustAcceptance.receipt,
+    (evidence) => evidence.c2zcRustAcceptance.gates.pop(),
+    (evidence) => {
+      evidence.c2zcRustAcceptance.candidate = {
+        ...evidence.c2zcRustAcceptance.candidate,
+        currentHeadSha: "f".repeat(40),
+      };
+    },
+  ]) {
+    const mutatedEvidence = structuredClone(acceptedEvidence);
+    mutate(mutatedEvidence);
+    assert.throws(
+      () =>
+        verifyLocalCiReceipt(
+          {
+            ...acceptedLocalReceipt,
+            productJourneyEvidence: mutatedEvidence,
+          },
+          { profile: "full", candidate },
+        ),
+      /Rust acceptance gates|candidate|evidence/i,
+    );
+  }
+  const tamperedManifest = {
+    ...acceptedManifest,
+    c2zcRustAcceptance: {
+      ...rustEvidence,
+      receiptSha256: `sha256:${"0".repeat(64)}`,
+    },
+  };
+  await writeFile(
+    manifestPath,
+    `${JSON.stringify(tamperedManifest, null, 2)}\n`,
+    "utf8",
+  );
+  await assert.rejects(
+    collectProductJourneyEvidence(plan, { candidate, root: temporaryRoot }),
+    /does not bind|match|receipt/i,
   );
 });
 

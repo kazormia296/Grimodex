@@ -99,25 +99,10 @@ export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG = freezeEntries(
  */
 export const NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG = freezeEntries([
   {
-    id: "c2-zc-canonical-authority-cutover",
-    domains: ["narrative-maintenance"],
-    interactions: ["narrative-maintenance->sqlite"],
-    contracts: [
-      "c2-zc:canonical-authority-cutover",
-      "c2-zc:post-marker-lifecycle",
-    ],
-    capabilities: ["electron", "napi"],
-    description:
-      "main scheduler -> N-API freshness cycle -> Generic authority cutover -> restart/new-project continuity",
-  },
-  {
     id: "c2-zc-renderer-mcp-dml-denial",
     domains: ["narrative-maintenance", "sqlite"],
     interactions: ["narrative-maintenance->sqlite"],
-    contracts: [
-      "c2-zc:renderer-dml-denial",
-      "c2-zc:mcp-generic-rust-dml-denial",
-    ],
+    contracts: ["c2-zc:boundary-dml-denial"],
     capabilities: ["electron", "napi"],
     description:
       "renderer db_execute zero-row DML denial across C2-ZC tables; McpGeneric remains Rust-only",
@@ -134,6 +119,41 @@ export const NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG = freezeEntries([
         "c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes",
       origin: "SqlOrigin::McpGeneric",
     },
+  },
+  {
+    id: "c2-zc-canonical-authority-cutover",
+    domains: ["narrative-maintenance"],
+    interactions: ["narrative-maintenance->sqlite"],
+    contracts: ["c2-zc:canonical-authority-cutover"],
+    capabilities: ["electron", "napi"],
+    description:
+      "restore -> durable workspace binding -> A/B hold -> Generic authority activation -> masked restart",
+    phases: [
+      "c2-zc-canonical-authority-cutover/restore-fixture",
+      "c2-zc-canonical-authority-cutover/restore",
+      "c2-zc-canonical-authority-cutover/open",
+      "c2-zc-canonical-authority-cutover/restart",
+      "c2-zc-canonical-authority-cutover/restart-persistence",
+    ],
+  },
+  {
+    id: "c2-zc-post-marker-lifecycle",
+    domains: ["narrative-maintenance", "sqlite"],
+    interactions: ["narrative-maintenance->sqlite"],
+    contracts: ["c2-zc:post-marker-lifecycle"],
+    capabilities: ["electron", "napi"],
+    description:
+      "post-marker project birth -> typed Application -> Generic storage/provenance -> masked restart",
+    phases: [
+      "c2-zc-post-marker-lifecycle/bootstrap-restore-fixture",
+      "c2-zc-post-marker-lifecycle/bootstrap-restore",
+      "c2-zc-post-marker-lifecycle/bootstrap-open",
+      "c2-zc-post-marker-lifecycle/bootstrap-restart",
+      "c2-zc-post-marker-lifecycle/bootstrap-restart-persistence",
+      "c2-zc-post-marker-lifecycle/open",
+      "c2-zc-post-marker-lifecycle/new-project",
+      "c2-zc-post-marker-lifecycle/restart",
+    ],
   },
 ]);
 

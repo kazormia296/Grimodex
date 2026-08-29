@@ -9,6 +9,10 @@ import {
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
   withLaunchEnvironmentForTest,
 } from "./narrative-maintenance-product-journeys.mjs";
+import {
+  C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
+  C2ZC_RUST_ACCEPTANCE_GATES,
+} from "../../scripts/c2zc-rust-acceptance-receipt.mjs";
 
 const C2ZC_CUTOVER_MIGRATION_ID = "narrative-c2-canonical-freshness-v1";
 const C2ZC_CUTOVER_CONTRACT_VERSION = 1;
@@ -50,12 +54,6 @@ export const C2ZC_CANONICAL_FRESHNESS_CONTRACT = Object.freeze({
   ]),
   noLegacyFallback: true,
   missingGenericError: "NEX_C2ZC_GENERIC_FRESHNESS_MISSING",
-  rustReceiptComposition: Object.freeze({
-    source:
-      "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs",
-    readFunction: "canonical_application_freshness",
-    status: "composed-by-shared-rust-receipt",
-  }),
 });
 const C2ZC_WAIT_MS = 60_000;
 const C2ZC_PHASE_RUN_KINDS = Object.freeze([
@@ -92,13 +90,29 @@ const C2ZC_SETTLING_RUN_KINDS = new Set([
 ]);
 
 export const C2ZC_PRODUCT_JOURNEY_ID = "c2-zc-canonical-authority-cutover";
-export const C2ZC_PRODUCT_JOURNEY_PHASES = Object.freeze([
+export const C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID =
+  "c2-zc-post-marker-lifecycle";
+export const C2ZC_CANONICAL_PRODUCT_JOURNEY_PHASES = Object.freeze([
   `${C2ZC_PRODUCT_JOURNEY_ID}/restore-fixture`,
   `${C2ZC_PRODUCT_JOURNEY_ID}/restore`,
   `${C2ZC_PRODUCT_JOURNEY_ID}/open`,
   `${C2ZC_PRODUCT_JOURNEY_ID}/restart`,
   `${C2ZC_PRODUCT_JOURNEY_ID}/restart-persistence`,
-  `${C2ZC_PRODUCT_JOURNEY_ID}/new-project`,
+]);
+export const C2ZC_POST_MARKER_PRODUCT_JOURNEY_PHASES = Object.freeze([
+  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/bootstrap-restore-fixture`,
+  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/bootstrap-restore`,
+  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/bootstrap-open`,
+  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/bootstrap-restart`,
+  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/bootstrap-restart-persistence`,
+  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/open`,
+  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/new-project`,
+  `${C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID}/restart`,
+]);
+/** @deprecated Use the phase list belonging to the selected atomic lane. */
+export const C2ZC_PRODUCT_JOURNEY_PHASES = Object.freeze([
+  ...C2ZC_CANONICAL_PRODUCT_JOURNEY_PHASES,
+  ...C2ZC_POST_MARKER_PRODUCT_JOURNEY_PHASES,
 ]);
 
 const C2ZC_WORKSPACE_LIFECYCLE_PHASES = Object.freeze([
@@ -276,12 +290,16 @@ export function assertC2ZcSemanticIndexZero(
 }
 
 /** A marker is a one-way activation fact, never a count-only observation. */
+function markerRowsFromSnapshot(snapshot) {
+  if (snapshot === null || snapshot === undefined) return [];
+  if (Array.isArray(snapshot)) return snapshot;
+  if (Array.isArray(snapshot?.markerRows)) return snapshot.markerRows;
+  if (snapshot?.marker) return [snapshot.marker];
+  return [];
+}
+
 export function assertC2ZcMarkerExactlyOnce(snapshot, label = "C2-ZC marker") {
-  const markerRows = Array.isArray(snapshot?.markerRows)
-    ? snapshot.markerRows
-    : snapshot?.marker
-      ? [snapshot.marker]
-      : [];
+  const markerRows = markerRowsFromSnapshot(snapshot);
   if (markerRows.length !== 1) {
     throw new Error(`${label} must contain exactly one persisted marker row`);
   }
@@ -551,6 +569,16 @@ export function assertC2ZcGenericFreshnessStorage(
       `${label} requires project, Application, and Epoch identities`,
     );
   }
+  assertC2ZcGenericRowsComplete(snapshot, label, {
+    expectedGenericConsumers: [
+      {
+        projectId,
+        consumerKind: C2ZC_FRESHNESS_CONSUMER_KIND,
+        consumerKey: applicationId,
+        semanticEpochId: epochId,
+      },
+    ],
+  });
   const genericRows = snapshot?.genericRows ?? snapshot?.generic ?? [];
   const targetRows = rows(genericRows, `${label} Generic rows`).filter(
     (candidate) =>
@@ -1135,21 +1163,139 @@ export function assertC2ZcNonIdleFreshnessProducer(
   );
 }
 
-// Compatibility export for the focused contract tests. Runtime journey code
-// uses the storage/provenance name above and never claims to execute the Rust
-// canonical_application_freshness read through Electron.
-export const assertC2ZcCanonicalFreshnessEvidence =
-  assertC2ZcGenericFreshnessStorage;
+function genericConsumerIdentity(consumer, label, index, currentEpochId) {
+  if (
+    !consumer ||
+    typeof consumer.projectId !== "string" ||
+    consumer.projectId.trim() === "" ||
+    consumer.consumerKind !== C2ZC_FRESHNESS_CONSUMER_KIND ||
+    typeof consumer.consumerKey !== "string" ||
+    consumer.consumerKey.trim() === "" ||
+    typeof consumer.semanticEpochId !== "string" ||
+    consumer.semanticEpochId.trim() === ""
+  ) {
+    throw new Error(`${label} expected consumer ${index} is invalid`);
+  }
+  if (
+    currentEpochId !== undefined &&
+    consumer.semanticEpochId !== currentEpochId
+  ) {
+    throw new Error(`${label} expected consumer ${index} is not current-Epoch`);
+  }
+  return `${consumer.projectId}\0${consumer.consumerKind}\0${consumer.consumerKey}`;
+}
+
+function canonicalGenericConsumerSet(consumers, label, currentEpochId) {
+  if (!Array.isArray(consumers)) {
+    throw new Error(`${label} expected Generic consumer set is missing`);
+  }
+  const keys = consumers.map((consumer, index) =>
+    genericConsumerIdentity(consumer, label, index, currentEpochId),
+  );
+  if (new Set(keys).size !== keys.length) {
+    throw new Error(`${label} expected consumer set contains a duplicate`);
+  }
+  return keys.sort();
+}
+
+function deriveC2ZcGenericConsumers(
+  snapshot,
+  label,
+  expectedGenericConsumers = null,
+) {
+  const currentEpochId = snapshot?.epochs?.at(-1)?.id;
+  const snapshotProjectId = snapshot?.projectId;
+  const derivedByCanonicalKey = new Map();
+  if (Array.isArray(snapshot?.dependencyEdges)) {
+    for (const [index, edge] of snapshot.dependencyEdges.entries()) {
+      if (
+        edge?.consumerKind !== C2ZC_FRESHNESS_CONSUMER_KIND ||
+        (snapshotProjectId !== undefined &&
+          edge.projectId !== snapshotProjectId)
+      ) {
+        continue;
+      }
+      const consumer = {
+        projectId: edge.projectId,
+        consumerKind: edge.consumerKind,
+        consumerKey: edge.consumerKey,
+        semanticEpochId: currentEpochId,
+      };
+      const canonicalKey = genericConsumerIdentity(
+        consumer,
+        label,
+        index,
+        currentEpochId,
+      );
+      // Multiple source edges can point to one Application. Generic storage
+      // is consumer-keyed, so derive that consumer exactly once while still
+      // rejecting duplicate declarations in expectedGenericConsumers below.
+      if (!derivedByCanonicalKey.has(canonicalKey)) {
+        derivedByCanonicalKey.set(canonicalKey, consumer);
+      }
+    }
+  }
+  const derived = [...derivedByCanonicalKey.values()];
+  const derivedKeys = canonicalGenericConsumerSet(
+    derived,
+    label,
+    currentEpochId,
+  );
+  if (Object.hasOwn(snapshot ?? {}, "expectedGenericConsumers")) {
+    const reportedKeys = canonicalGenericConsumerSet(
+      snapshot.expectedGenericConsumers,
+      label,
+      currentEpochId,
+    );
+    if (canonicalJson(reportedKeys) !== canonicalJson(derivedKeys)) {
+      throw new Error(
+        `${label} expected Generic consumer set does not exactly match dependency Edges`,
+      );
+    }
+  }
+  if (expectedGenericConsumers !== null) {
+    const requestedKeys = canonicalGenericConsumerSet(
+      expectedGenericConsumers,
+      label,
+      currentEpochId,
+    );
+    if (canonicalJson(requestedKeys) !== canonicalJson(derivedKeys)) {
+      throw new Error(
+        `${label} requested Generic consumer set does not exactly match dependency Edges`,
+      );
+    }
+  }
+  return derived;
+}
 
 /** Ensure the snapshot carries every durable Generic Consumer Freshness value. */
 export function assertC2ZcGenericRowsComplete(
   snapshot,
   label = "C2-ZC Generic Consumer Freshness",
+  { expectedGenericConsumers = null } = {},
 ) {
   const genericRows = rows(
     snapshot?.genericRows ?? snapshot?.generic ?? [],
     `${label} rows`,
   );
+  const currentEpochId = snapshot?.epochs?.at(-1)?.id;
+  const snapshotProjectId = snapshot?.projectId;
+  const expectedConsumers = deriveC2ZcGenericConsumers(
+    snapshot,
+    label,
+    expectedGenericConsumers,
+  );
+  const expectedKeys = new Set(
+    expectedConsumers.map((consumer) =>
+      genericConsumerIdentity(consumer, label, "derived", currentEpochId),
+    ),
+  );
+  if (genericRows.length !== expectedConsumers.length) {
+    throw new Error(
+      `${label} rows do not exactly match the expected consumer set`,
+    );
+  }
+  const observedKeys = new Set();
   for (const [index, row] of genericRows.entries()) {
     assertExactKeys(
       row,
@@ -1192,95 +1338,363 @@ export function assertC2ZcGenericRowsComplete(
       ]).has(row.buildAction) ||
       typeof row.semanticEpochId !== "string" ||
       row.semanticEpochId.trim() === "" ||
-      (row.lastEvaluatedRunId === null
-        ? row.evidenceFreshness !== "unknown" || row.buildAction !== "manual"
-        : typeof row.lastEvaluatedRunId !== "string" ||
-          row.lastEvaluatedRunId.trim() === "") ||
-      (row.dependencySetDigest !== null &&
-        !dependencyDigestMatchesExpected(
-          row.dependencySetDigest,
-          Array.isArray(snapshot?.dependencyEdges)
-            ? snapshot.dependencyEdges
-                .filter(
-                  (edge) =>
-                    edge.projectId === row.projectId &&
-                    edge.consumerKind === row.consumerKind &&
-                    edge.consumerKey === row.consumerKey,
-                )
-                .map((edge) => edge.sourceObjectIdentity)
-            : null,
-        )) ||
+      (snapshotProjectId !== undefined &&
+        row.projectId !== snapshotProjectId) ||
+      (currentEpochId !== undefined &&
+        row.semanticEpochId !== currentEpochId) ||
+      typeof row.lastEvaluatedRunId !== "string" ||
+      row.lastEvaluatedRunId.trim() === "" ||
+      typeof row.dependencySetDigest !== "string" ||
+      !dependencyDigestMatchesExpected(
+        row.dependencySetDigest,
+        Array.isArray(snapshot?.dependencyEdges)
+          ? snapshot.dependencyEdges
+              .filter(
+                (edge) =>
+                  edge.projectId === row.projectId &&
+                  edge.consumerKind === row.consumerKind &&
+                  edge.consumerKey === row.consumerKey,
+              )
+              .map((edge) => edge.sourceObjectIdentity)
+          : null,
+      ) ||
       typeof row.updatedAt !== "string"
     ) {
       throw new Error(`${label} row ${index} has incomplete durable values`);
     }
-    parseInstant(row.updatedAt, `${label} row ${index} updatedAt`);
-    if (row.lastEvaluatedRunId !== null) {
-      const producer = rows(snapshot?.runs, `${label} producer Runs`).find(
-        (run) => run.id === row.lastEvaluatedRunId,
+    const key = `${row.projectId}\0${row.consumerKind}\0${row.consumerKey}`;
+    if (!expectedKeys.has(key) || observedKeys.has(key)) {
+      throw new Error(
+        `${label} row ${index} is not an exact expected consumer`,
       );
-      if (!producer) {
-        throw new Error(
-          `${label} row ${index} references a missing producer Run`,
-        );
-      }
-      if (producer.runKind === "freshness-evaluation") {
-        assertC2ZcIncrementalPublisherProvenance(
-          snapshot,
-          row,
-          producer,
-          {
-            projectId: row.projectId,
-            applicationId: row.consumerKey,
-            epochId: row.semanticEpochId,
-          },
-          `${label} row ${index}`,
-        );
-      } else if (
-        producer.runKind !== "semantic-index-rebuild" ||
-        producer.status !== "completed" ||
-        producer.semanticEpochId !== row.semanticEpochId
-      ) {
-        throw new Error(
-          `${label} row ${index} has an invalid producer Run kind`,
-        );
-      } else {
-        assertC2ZcRebuildPublisherProvenance(
-          snapshot,
-          row,
-          producer,
-          {
-            projectId: row.projectId,
-            epochId: row.semanticEpochId,
-          },
-          `${label} row ${index}`,
-        );
-      }
+    }
+    const expectedConsumer = expectedConsumers.find(
+      (consumer) =>
+        consumer.projectId === row.projectId &&
+        consumer.consumerKind === row.consumerKind &&
+        consumer.consumerKey === row.consumerKey,
+    );
+    if (
+      !expectedConsumer ||
+      expectedConsumer.semanticEpochId !== row.semanticEpochId
+    ) {
+      throw new Error(
+        `${label} row ${index} is not bound to the current expected Epoch`,
+      );
+    }
+    observedKeys.add(key);
+    parseInstant(row.updatedAt, `${label} row ${index} updatedAt`);
+    const producer = rows(snapshot?.runs, `${label} producer Runs`).find(
+      (run) => run.id === row.lastEvaluatedRunId,
+    );
+    if (!producer) {
+      throw new Error(
+        `${label} row ${index} references a missing producer Run`,
+      );
+    }
+    if (producer.runKind === "freshness-evaluation") {
+      assertC2ZcIncrementalPublisherProvenance(
+        snapshot,
+        row,
+        producer,
+        {
+          projectId: row.projectId,
+          applicationId: row.consumerKey,
+          epochId: row.semanticEpochId,
+        },
+        `${label} row ${index}`,
+      );
+    } else if (
+      producer.runKind !== "semantic-index-rebuild" ||
+      producer.status !== "completed" ||
+      producer.semanticEpochId !== row.semanticEpochId
+    ) {
+      throw new Error(`${label} row ${index} has an invalid producer Run kind`);
+    } else {
+      assertC2ZcRebuildPublisherProvenance(
+        snapshot,
+        row,
+        producer,
+        {
+          projectId: row.projectId,
+          epochId: row.semanticEpochId,
+        },
+        `${label} row ${index}`,
+      );
     }
   }
   return genericRows;
 }
 
-/** A new post-marker Project must settle all maintenance work, not just mint E0. */
-export function assertC2ZcPostMarkerProjectSettled(
+/**
+ * Validate the shared settled-project boundary. The cutover lane may contain
+ * both restored E0 and current E1, while a newly-created post-marker project
+ * must retain exactly its initial E0. Epoch/pending checks alone are
+ * intentionally insufficient: a completed Run without the production Verify
+ * payload can otherwise look settled. A project with no current application
+ * consumers is valid; its Generic table must then be exactly empty. The
+ * post-marker typed Application path applies its separate one-row requirement
+ * after the typed producer is created.
+ */
+function assertC2ZcSettledProject(
   snapshot,
-  label = "C2-ZC post-marker project",
+  label,
+  { requireSingleInitialEpoch = false } = {},
 ) {
-  if (snapshot?.epochs?.length !== 1) {
-    throw new Error(`${label} must retain exactly one initial Epoch`);
+  assertC2ZcMarkerExactlyOnce(snapshot, `${label} marker`);
+  const epochs = rows(snapshot?.epochs, `${label} Epochs`);
+  if (
+    (requireSingleInitialEpoch && epochs.length !== 1) ||
+    (!requireSingleInitialEpoch && epochs.length === 0)
+  ) {
+    throw new Error(
+      requireSingleInitialEpoch
+        ? `${label} must retain exactly one initial Epoch`
+        : `${label} must retain a current Semantic Epoch`,
+    );
   }
-  const pending = snapshot?.pendingRuns ?? snapshot?.pendingOrRunningRuns ?? [];
-  if (!Array.isArray(pending) || pending.length !== 0) {
+  const pending = snapshot?.pendingRuns ?? snapshot?.pendingOrRunningRuns;
+  if (!Array.isArray(pending)) {
+    throw new Error(`${label} is missing its pending or running Run evidence`);
+  }
+  if (pending.length !== 0) {
     throw new Error(
       `${label} is not settled: pending or running maintenance remains`,
     );
   }
-  if (snapshot?.projectSettled === false) {
+  if (snapshot?.projectSettled !== true) {
     throw new Error(`${label} did not reach the settled project boundary`);
   }
+  const verifyRunId = snapshot?.verifyRunId;
+  if (typeof verifyRunId !== "string" || verifyRunId.trim() === "") {
+    throw new Error(`${label} requires a completed current-Epoch Verify Run`);
+  }
+  const currentEpochId = epochs.at(-1)?.id;
+  const verifyRun = rows(snapshot?.runs, `${label} Runs`).find(
+    (run) => run.id === verifyRunId,
+  );
+  if (
+    !verifyRun ||
+    verifyRun.runKind !== "dependency-verify" ||
+    verifyRun.status !== "completed" ||
+    verifyRun.semanticEpochId !== currentEpochId
+  ) {
+    throw new Error(
+      `${label} verifyRunId must identify a completed current-Epoch Verify Run`,
+    );
+  }
+  assertC2ZcVerifyCoverage(verifyRun, `${label} Verify`);
+  assertC2ZcSemanticIndexZero(verifyRun, `${label} Verify Semantic Index`);
   assertC2ZcGenericRowsComplete(snapshot, label);
+  assertC2ZcFeedCursorSettled(
+    snapshot,
+    { epochId: currentEpochId },
+    `${label} Change Feed cursor`,
+  );
   assertC2ZcFindingInboxEmpty(snapshot, label);
-  return snapshot.epochs[0];
+  const repairRuns = rows(snapshot.runs, `${label} Runs`).filter(
+    (run) => run.runKind === "dependency-repair",
+  );
+  if (repairRuns.length !== 0) {
+    throw new Error(`${label} must not contain a dependency-repair Run`);
+  }
+  return requireSingleInitialEpoch ? epochs[0] : epochs.at(-1);
+}
+
+/** A post-marker project must settle with its one initial Epoch. */
+export function assertC2ZcPostMarkerProjectSettled(
+  snapshot,
+  label = "C2-ZC post-marker project",
+) {
+  return assertC2ZcSettledProject(snapshot, label, {
+    requireSingleInitialEpoch: true,
+  });
+}
+
+/**
+ * Bind the workspace-wide cutover proof to every project observation. The
+ * project snapshots are deliberately read separately (SQLite reads are not
+ * presented as one atomic Electron transaction); atomicity remains bound to
+ * the candidate-bound shared-Rust receipt supplied in `atomicityEvidence`.
+ */
+export function assertC2ZcWorkspaceCutoverReceipt({
+  markerBefore,
+  markerAfter,
+  projects,
+  projectSnapshots,
+  projectInventory,
+  quiescenceReceipt,
+  atomicityEvidence,
+  label = "C2-ZC workspace cutover",
+}) {
+  const beforeRows = markerRowsFromSnapshot(markerBefore);
+  if (beforeRows.length !== 0) {
+    throw new Error(`${label} must observe no marker before activation`);
+  }
+  const afterSnapshot = markerAfter?.markerRows
+    ? markerAfter
+    : { marker: markerAfter, markerRows: markerAfter ? [markerAfter] : [] };
+  const marker = assertC2ZcMarkerExactlyOnce(
+    afterSnapshot,
+    `${label} marker after activation`,
+  );
+  const rustReceipt = atomicityEvidence?.receipt ?? null;
+  if (
+    atomicityEvidence == null ||
+    atomicityEvidence.verified !== true ||
+    typeof atomicityEvidence.receiptPath !== "string" ||
+    atomicityEvidence.receiptPath.trim() === "" ||
+    !C2ZC_SHA256_DIGEST.test(atomicityEvidence.receiptSha256 ?? "") ||
+    rustReceipt === null ||
+    rustReceipt.schema !== "grimodex.c2zc.rust-acceptance-receipt" ||
+    rustReceipt.version !== 1 ||
+    rustReceipt.catalogDigest !== C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST ||
+    !Array.isArray(rustReceipt.gates) ||
+    rustReceipt.gates.length !== C2ZC_RUST_ACCEPTANCE_GATES.length ||
+    rustReceipt.gates.some(
+      (gate, index) =>
+        canonicalJson({
+          id: gate?.id,
+          argv: gate?.argv,
+          contract: gate?.contract,
+          source: gate?.source,
+          test: gate?.test,
+          fullTestName: gate?.fullTestName,
+          requiresReceipt: gate?.requiresReceipt,
+        }) !== canonicalJson(C2ZC_RUST_ACCEPTANCE_GATES[index]) ||
+        gate?.exitStatus !== 0 ||
+        gate?.signal !== null ||
+        gate?.testCount !== 1 ||
+        gate?.passedCount !== 1 ||
+        gate?.failedCount !== 0,
+    ) ||
+    (atomicityEvidence.gates !== undefined &&
+      canonicalJson(atomicityEvidence.gates) !==
+        canonicalJson(rustReceipt.gates)) ||
+    (atomicityEvidence.candidate !== undefined &&
+      canonicalJson(atomicityEvidence.candidate) !==
+        canonicalJson(rustReceipt.candidate))
+  ) {
+    throw new Error(
+      `${label} atomicity evidence is not a candidate-bound shared-Rust receipt`,
+    );
+  }
+  const entries = projects ?? projectSnapshots;
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error(
+      `${label} requires every project snapshot after activation`,
+    );
+  }
+  if (!Array.isArray(projectInventory) || projectInventory.length === 0) {
+    throw new Error(`${label} requires the exact projects-table inventory`);
+  }
+  const inventoryIds = projectInventory.map((project, index) => {
+    const projectId =
+      typeof project === "string"
+        ? project
+        : (project?.projectId ?? project?.id);
+    if (typeof projectId !== "string" || projectId.trim() === "") {
+      throw new Error(
+        `${label} projects-table inventory row ${index} is invalid`,
+      );
+    }
+    return projectId;
+  });
+  if (new Set(inventoryIds).size !== inventoryIds.length) {
+    throw new Error(`${label} projects-table inventory contains duplicates`);
+  }
+  const qState = quiescenceReceipt?.state ?? quiescenceReceipt;
+  const qProjects = qState?.projects;
+  const qProjectIds =
+    qState?.projectIds ??
+    (Array.isArray(qProjects)
+      ? qProjects.map((project) => project?.projectId)
+      : null);
+  if (
+    !Array.isArray(qProjects) ||
+    !Array.isArray(qProjectIds) ||
+    qProjectIds.some((projectId) => typeof projectId !== "string") ||
+    new Set(qProjectIds).size !== qProjectIds.length ||
+    canonicalJson(qProjectIds) !==
+      canonicalJson(qProjects.map((project) => project?.projectId))
+  ) {
+    throw new Error(`${label} quiescence receipt project set is invalid`);
+  }
+  const qByProjectId = new Map(
+    qProjects.map((project) => [project.projectId, project]),
+  );
+  if (
+    canonicalJson([...inventoryIds].sort()) !==
+    canonicalJson([...qProjectIds].sort())
+  ) {
+    throw new Error(
+      `${label} projects-table inventory and quiescence project set differ`,
+    );
+  }
+  const ids = new Set();
+  for (const [index, entry] of entries.entries()) {
+    const before = entry?.before ?? entry?.beforeSnapshot ?? null;
+    const after = entry?.after ?? entry?.afterSnapshot ?? entry?.snapshot;
+    const projectId = entry?.projectId ?? after?.projectId;
+    if (
+      typeof projectId !== "string" ||
+      projectId.trim() === "" ||
+      ids.has(projectId) ||
+      !after
+    ) {
+      throw new Error(`${label} project observation ${index} is invalid`);
+    }
+    ids.add(projectId);
+    const qProject = qByProjectId.get(projectId);
+    const currentEpochId = after.epochs?.at(-1)?.id;
+    if (
+      !qProject ||
+      typeof currentEpochId !== "string" ||
+      currentEpochId.trim() === "" ||
+      qProject.currentEpochId !== currentEpochId ||
+      qProject.projectId !== projectId
+    ) {
+      throw new Error(
+        `${label} project ${projectId} nested snapshot/current Epoch does not match quiescence receipt`,
+      );
+    }
+    if (after.projectId !== projectId) {
+      throw new Error(
+        `${label} nested project snapshot ${projectId} crossed identity`,
+      );
+    }
+    assertC2ZcSettledProject(after, `${label} project ${projectId}`);
+    if (!before || !before.legacyProjection || !after.legacyProjection) {
+      throw new Error(
+        `${label} project ${projectId} requires before/after Legacy projection snapshots`,
+      );
+    }
+    assertC2ZcLegacyProjectionStable(
+      before.legacyProjection,
+      after.legacyProjection,
+      `${label} project ${projectId} Legacy projection`,
+    );
+    const markerRows = markerRowsFromSnapshot(after);
+    if (canonicalJson(markerRows) !== canonicalJson([marker])) {
+      throw new Error(
+        `${label} project ${projectId} does not observe the shared marker exactly once`,
+      );
+    }
+  }
+  if (
+    canonicalJson([...ids].sort()) !==
+      canonicalJson([...inventoryIds].sort()) ||
+    canonicalJson([...ids].sort()) !== canonicalJson([...qProjectIds].sort())
+  ) {
+    throw new Error(
+      `${label} project snapshots omit or add a workspace project`,
+    );
+  }
+  return {
+    marker,
+    projectIds: [...ids],
+    atomicityEvidence,
+  };
 }
 
 /** Validate the released Change Feed cursor against the observed feed head. */
@@ -1983,34 +2397,54 @@ function settledWorkspaceLifecycleTransition(events, workspace) {
   return matching ?? null;
 }
 
-async function waitForC2ZcWorkspaceAuthority(harness, page, workspace) {
-  if (typeof harness.readLifecycleTrace !== "function") {
-    throw new Error(
-      "C2-ZC post-marker project requires the lifecycle trace boundary",
-    );
+function assertC2ZcWorkspaceBinding(binding, workspace, label) {
+  if (
+    !binding ||
+    typeof binding !== "object" ||
+    typeof binding.authorityId !== "string" ||
+    binding.authorityId.trim() === "" ||
+    !Number.isSafeInteger(binding.generation) ||
+    binding.generation <= 0 ||
+    typeof binding.authorityInstanceId !== "string" ||
+    binding.authorityInstanceId.trim() === ""
+  ) {
+    throw new Error(`${label} returned an invalid Native workspace binding`);
   }
-  if (typeof harness.waitUntil !== "function") {
-    throw new Error(
-      "C2-ZC post-marker project requires the lifecycle settling wait boundary",
-    );
+  if (typeof workspace !== "string" || workspace.trim() === "") {
+    throw new Error(`${label} requires an exact workspace path`);
   }
-  return harness.waitUntil(
-    async () => {
-      const transition = settledWorkspaceLifecycleTransition(
-        await harness.readLifecycleTrace(page),
-        workspace,
-      );
-      if (!transition) {
-        throw new Error(
-          "C2-ZC post-marker workspace authority transition is not settled",
-        );
-      }
-      return transition;
-    },
-    "C2-ZC post-marker workspace authority settlement",
-    C2ZC_WAIT_MS,
-    100,
+  return Object.freeze({
+    authorityId: binding.authorityId,
+    generation: binding.generation,
+    authorityInstanceId: binding.authorityInstanceId,
+  });
+}
+
+/** Restore/reload binds the existing workspace; it is not a workspace switch. */
+async function captureC2ZcWorkspaceBinding(harness, page, workspace, label) {
+  const binding = await harness.invokeOk(
+    page,
+    "narrative_extraction_capture_workspace_binding",
+    { expectedWorkspacePath: workspace },
   );
+  return assertC2ZcWorkspaceBinding(binding, workspace, label);
+}
+
+/**
+ * A fresh launch may emit a workspace transition. It remains supplemental:
+ * startup event capture cannot replace the durable Native binding proof and
+ * must never block project_create.
+ */
+function observeC2ZcWorkspaceLifecycleSupplement(harness, page, workspace) {
+  if (typeof harness.readLifecycleTrace !== "function") {
+    return Promise.resolve(null);
+  }
+  // Defer even the read invocation so project_create is the first operation
+  // after the durable binding; this is context capture, not a gate.
+  return Promise.resolve()
+    .then(() => harness.readLifecycleTrace(page))
+    .then((events) => settledWorkspaceLifecycleTransition(events, workspace))
+    .catch(() => null);
 }
 
 async function queryRows(harness, page, sql, params = []) {
@@ -2166,22 +2600,54 @@ export async function readC2ZcRunLedger(harness, page, projectId, runs) {
   });
 }
 
-export async function createProjectAfterCutover(
+async function createProjectWithC2ZcWorkspaceBinding(
   harness,
   page,
   workspace,
   {
     idPrefix = "c2-zc-journey-project",
     title = "C2-ZC post-marker project",
+    label = "C2-ZC project",
+    observeLifecycle = false,
   } = {},
 ) {
   if (typeof workspace !== "string" || workspace.trim() === "") {
-    throw new Error(
-      "C2-ZC post-marker project requires an open workspace path",
-    );
+    throw new Error(`${label} requires an open workspace path`);
   }
-  await waitForC2ZcWorkspaceAuthority(harness, page, workspace);
-  const projectId = `${idPrefix}-${randomUUID()}`;
+  const binding = await captureC2ZcWorkspaceBinding(
+    harness,
+    page,
+    workspace,
+    label,
+  );
+  let projectId = null;
+  if (observeLifecycle) {
+    // This trace is diagnostic context only. Do not await it or put a timeout
+    // gate in front of the durable Native binding and project_create.
+    void observeC2ZcWorkspaceLifecycleSupplement(harness, page, workspace)
+      .then((lifecycleSupplement) => {
+        if (typeof harness.recordTimeline === "function") {
+          harness.recordTimeline("c2-zc-workspace-lifecycle-supplement", {
+            label,
+            projectId,
+            binding,
+            lifecycleSupplement,
+            lifecycleIsSupplemental: true,
+          });
+        }
+      })
+      .catch(() => {});
+  }
+  if (typeof harness.recordTimeline === "function") {
+    harness.recordTimeline("c2-zc-project-create-binding", {
+      label,
+      projectId,
+      binding,
+      lifecycleSupplement: null,
+      lifecycleIsSupplemental: true,
+    });
+  }
+  projectId = `${idPrefix}-${randomUUID()}`;
   const now = new Date().toISOString();
   await harness.invokeOk(page, "project_create", {
     payload: {
@@ -2205,7 +2671,52 @@ export async function createProjectAfterCutover(
       updatedAt: now,
     },
   });
+  if (typeof harness.recordTimeline === "function") {
+    harness.recordTimeline("c2-zc-project-created-with-binding", {
+      label,
+      projectId,
+      binding,
+      lifecycleSupplement: null,
+      lifecycleIsSupplemental: true,
+    });
+  }
   return projectId;
+}
+
+/**
+ * Restore/reload keeps the same workspace.  The project birth is authorized
+ * by the durable Native workspace binding; a document-local lifecycle trace
+ * is intentionally not a prerequisite.
+ */
+export async function createProjectAfterRestoredBinding(
+  harness,
+  page,
+  workspace,
+  options = {},
+) {
+  return createProjectWithC2ZcWorkspaceBinding(harness, page, workspace, {
+    ...options,
+    label: options.label ?? "C2-ZC restored workspace binding",
+    observeLifecycle: false,
+  });
+}
+
+/**
+ * A true post-marker fresh launch may expose a lifecycle transition, but the
+ * durable binding remains the authority proof and project_create never waits
+ * on the supplemental trace.
+ */
+export async function createProjectAfterFreshLaunch(
+  harness,
+  page,
+  workspace,
+  options = {},
+) {
+  return createProjectWithC2ZcWorkspaceBinding(harness, page, workspace, {
+    ...options,
+    label: options.label ?? "C2-ZC fresh workspace binding",
+    observeLifecycle: true,
+  });
 }
 
 /**
@@ -2317,9 +2828,16 @@ export async function createPrimaryTypedFeedMutation(harness, page, projectId) {
   };
 }
 
+/**
+ * Read a convergence observation from several independent SQL queries.  This
+ * helper is deliberately not an atomic transaction/snapshot; transactional
+ * authority and marker guarantees are asserted by the shared-Rust evidence
+ * bound in `assertC2ZcWorkspaceCutoverReceipt`.
+ */
 async function readAuthoritySnapshot(harness, page, projectId) {
   const [
     markerRows,
+    projectInventoryRows,
     epochs,
     runRows,
     genericRows,
@@ -2351,6 +2869,14 @@ async function readAuthoritySnapshot(harness, page, projectId) {
          FROM schema_data_migrations
         WHERE migration_id = ?`,
       [C2ZC_CUTOVER_MIGRATION_ID],
+    ),
+    queryRows(
+      harness,
+      page,
+      `SELECT id AS projectId
+         FROM projects
+        ORDER BY id`,
+      [],
     ),
     queryRows(
       harness,
@@ -2804,8 +3330,32 @@ async function readAuthoritySnapshot(harness, page, projectId) {
     );
   }
   const feedRow = feedAndCursorRows[0] ?? {};
+  const currentEpochId = epochs.at(-1)?.id ?? null;
+  const expectedGenericConsumers = dependencyEdges
+    .filter(
+      (edge) =>
+        edge.consumerKind === C2ZC_FRESHNESS_CONSUMER_KIND &&
+        edge.projectId === projectId,
+    )
+    .reduce((consumers, edge) => {
+      const key = `${edge.projectId}\0${edge.consumerKind}\0${edge.consumerKey}`;
+      if (!consumers.some((consumer) => consumer.key === key)) {
+        consumers.push({
+          key,
+          projectId: edge.projectId,
+          consumerKind: edge.consumerKind,
+          consumerKey: edge.consumerKey,
+          semanticEpochId: currentEpochId,
+        });
+      }
+      return consumers;
+    }, [])
+    .map(({ key: _key, ...consumer }) => consumer);
   return {
     projectId,
+    projectInventory: projectInventoryRows.map(({ projectId: id }) => ({
+      projectId: id,
+    })),
     marker: markerRows[0] ?? null,
     markerRows,
     epochs,
@@ -2815,6 +3365,7 @@ async function readAuthoritySnapshot(harness, page, projectId) {
     semanticIndexCounts,
     genericRows,
     genericCount: genericRows.length,
+    expectedGenericConsumers,
     dependencyEdges,
     legacyProjection,
     legacyCount: legacyFreshness.length + legacyDependencies.length,
@@ -2875,10 +3426,11 @@ export async function createPostMarkerTypedApplication(
   workspace,
   projectId,
 ) {
-  const workspaceBinding = await harness.invokeOk(
+  const workspaceBinding = await captureC2ZcWorkspaceBinding(
+    harness,
     page,
-    "narrative_extraction_capture_workspace_binding",
-    { expectedWorkspacePath: workspace },
+    workspace,
+    "C2-ZC post-marker typed Application",
   );
   const runId = `c2-zc-post-marker-run-${randomUUID()}`;
   const taskId = `${runId}-task`;
@@ -4876,7 +5428,11 @@ export function assertC2ZcPostMarkerRestartInvariants({
   ]) {
     assertC2ZcMarkerExactlyOnce(snapshot, `${label} ${phase} marker`);
     assertC2ZcFindingInboxEmpty(snapshot, `${label} ${phase} Findings/Inbox`);
-    assertC2ZcPostMarkerProjectSettled(snapshot, `${label} ${phase}`);
+    if (phase === "before mutation") {
+      assertC2ZcPostMarkerProjectBirth(snapshot);
+    } else {
+      assertC2ZcPostMarkerProjectSettled(snapshot, `${label} ${phase}`);
+    }
     assertC2ZcFeedCursorSettled(
       snapshot,
       { epochId: snapshot.epochs[0]?.id },
@@ -4985,10 +5541,19 @@ export function assertC2ZcPostMarkerRestartInvariants({
  * and direct post-marker project_create. No cutover IPC or marker write is
  * available to this runner; those remain main/N-API production ownership.
  */
-export async function runC2ZcCanonicalAuthorityJourney(
+async function runC2ZcAuthorityLane(
   harness,
   configureWorkspace,
+  {
+    postMarker = false,
+    journeyId = C2ZC_PRODUCT_JOURNEY_ID,
+    bootstrapPhasePrefix = null,
+  } = {},
 ) {
+  const phasePrefix = bootstrapPhasePrefix ?? journeyId;
+  const fixturePhase = bootstrapPhasePrefix
+    ? "bootstrap-restore-fixture"
+    : "restore-fixture";
   let restoreSnapshot = null;
   let openSnapshot = null;
   let projectId = null;
@@ -5005,10 +5570,11 @@ export async function runC2ZcCanonicalAuthorityJourney(
     harness,
     configureWorkspace,
     {
-      id: C2ZC_PRODUCT_JOURNEY_ID,
-      restorePhase: "restore",
-      openPhase: "open",
-      restartPhase: "restart",
+      id: phasePrefix,
+      restorePhase: bootstrapPhasePrefix ? "bootstrap-restore" : "restore",
+      openPhase: bootstrapPhasePrefix ? "bootstrap-open" : "open",
+      restartPhase: bootstrapPhasePrefix ? "bootstrap-restart" : "restart",
+      fixturePhase,
       restoreEnvironment: {
         setup: "disabled",
         freshness: "disabled",
@@ -5025,9 +5591,9 @@ export async function runC2ZcCanonicalAuthorityJourney(
         return { freshnessHoldProjectId: secondaryProjectId };
       },
       restoreThroughSettingsUi: restoreBackupThroughSettingsUi,
-      onFixture: ({ fixtureEvidence }) => {
+      onFixture: ({ fixtureEvidence, fixturePhase: emittedFixturePhase }) => {
         assertC2ZcRestoreBackupFixture(fixtureEvidence.backupContract);
-        harness.recordTimeline("c2-zc-pre-cutover-backup-ready", {
+        harness.recordTimeline(`${phasePrefix}/${emittedFixturePhase}`, {
           projectId: fixtureEvidence.backupContract.projectId,
           epochIds: fixtureEvidence.backupContract.epochs.map(
             (epoch) => epoch.id,
@@ -5098,7 +5664,7 @@ export async function runC2ZcCanonicalAuthorityJourney(
         // before the normal scheduler starts, giving the main Freshness owner
         // a real two-project gate to cross (A can settle while B remains
         // cursor-incomplete; the marker must still be absent).
-        secondaryProjectId = await createProjectAfterCutover(
+        secondaryProjectId = await createProjectAfterRestoredBinding(
           harness,
           context.page,
           context.workspace,
@@ -5129,7 +5695,7 @@ export async function runC2ZcCanonicalAuthorityJourney(
           secondaryBeforeHoldSnapshot,
           "C2-ZC post-create secondary",
         );
-        context.record("c2-zc-restore-stage-isolated", {
+        context.record(`${phasePrefix}/restore-stage-isolated`, {
           setup,
           epochIds: observed.epochs.map((epoch) => epoch.id),
           restoreEpochId: e1.id,
@@ -5179,27 +5745,18 @@ export async function runC2ZcCanonicalAuthorityJourney(
           C2ZC_WAIT_MS,
           250,
         );
-        const binding = await harness.invokeOk(
+        const binding = await captureC2ZcWorkspaceBinding(
+          harness,
           context.page,
-          "narrative_extraction_capture_workspace_binding",
-          { expectedWorkspacePath: context.workspace },
+          context.workspace,
+          "C2-ZC hold gate",
         );
-        if (
-          !binding ||
-          typeof binding.authorityId !== "string" ||
-          !Number.isSafeInteger(binding.generation) ||
-          binding.generation <= 0
-        ) {
-          throw new Error(
-            "C2-ZC hold gate received an invalid workspace binding",
-          );
-        }
         // This is the causal checkpoint: native has actually selected B,
         // performed the ordinary cutover attempt, and returned NOT_READY. A
         // merely absent marker or an idle DB snapshot cannot satisfy it.
         const heldReceipt = await harness.awaitQuiescence(
           openLaunch.app,
-          `${C2ZC_PRODUCT_JOURNEY_ID}/open-held-quiescence`,
+          `${phasePrefix}/open-held-quiescence`,
           {
             previousSequence:
               openLaunch.quiescenceArtifact?.receipt.sequence ?? 0,
@@ -5355,7 +5912,7 @@ export async function runC2ZcCanonicalAuthorityJourney(
           secondaryProjectId,
         );
         heldTwoProjectGate = incompleteGate;
-        context.record("c2-zc-two-project-cursor-gate", {
+        context.record(`${phasePrefix}/two-project-cursor-gate`, {
           primaryProjectId: context.projectId,
           secondaryProjectId,
           holdReceipt: heldReceipt.receipt,
@@ -5480,6 +6037,26 @@ export async function runC2ZcCanonicalAuthorityJourney(
           convergedSecondary: secondaryConverged,
           label: "C2-ZC two-project convergence gate",
         });
+        const workspaceCutoverReceipt = assertC2ZcWorkspaceCutoverReceipt({
+          markerBefore: restoreSnapshot,
+          markerAfter: markerSnapshot,
+          projects: [
+            {
+              projectId: context.projectId,
+              before: heldTwoProjectGate.primary ?? primaryBeforeHoldSnapshot,
+              after: markerSnapshot,
+            },
+            {
+              projectId: secondaryProjectId,
+              before: secondaryBeforeHoldSnapshot,
+              after: secondaryConverged,
+            },
+          ],
+          projectInventory: markerSnapshot.projectInventory,
+          quiescenceReceipt: heldReceipt.receipt,
+          atomicityEvidence: harness.c2zcRustAcceptanceEvidence ?? null,
+          label: "C2-ZC workspace cutover receipt",
+        });
         assertC2ZcLegacyProjectionStable(
           restoreSnapshot.legacyProjection,
           markerSnapshot.legacyProjection,
@@ -5502,7 +6079,7 @@ export async function runC2ZcCanonicalAuthorityJourney(
           phaseRuns: totalOrder.phaseRuns,
           idleRun: totalOrder.idleRun,
         };
-        context.record("c2-zc-canonical-authority-activated", {
+        context.record(`${phasePrefix}/authority-activated`, {
           marker: markerSnapshot.marker,
           epochIds: epochs.map((epoch) => epoch.id),
           phaseRunIds: totalOrder.phaseRuns.map((run) => run.id),
@@ -5511,12 +6088,18 @@ export async function runC2ZcCanonicalAuthorityJourney(
           legacyCount: markerSnapshot.legacyCount,
           electronEvidenceScope: {
             owner: "Electron main plus typed N-API Freshness routes",
-            canonicalRead: "composed later by the shared Rust receipt",
+            genericStorageAndProvenance: "exercised",
+            canonicalRead: "not-exercised-in-this-Electron-journey",
           },
-          rustCanonicalReadContract:
-            C2ZC_CANONICAL_FRESHNESS_CONTRACT.rustReceiptComposition,
+          rustAcceptanceReceipt: harness.c2zcRustAcceptanceEvidence
+            ? {
+                receiptPath: harness.c2zcRustAcceptanceEvidence.receiptPath,
+                receiptSha256: harness.c2zcRustAcceptanceEvidence.receiptSha256,
+              }
+            : null,
+          workspaceCutoverReceipt,
         });
-        context.record("c2-zc-canonical-authority-marker-created", {
+        context.record(`${phasePrefix}/authority-marker-created`, {
           marker: markerSnapshot.marker,
           epochIds: epochs.map((epoch) => epoch.id),
           phaseRunIds: openSnapshot.phaseRuns.map((run) => run.id),
@@ -5536,7 +6119,11 @@ export async function runC2ZcCanonicalAuthorityJourney(
   // production launch at that boundary so the Legacy projection is compared
   // against a genuinely subsequent restart, rather than comparing two
   // snapshots collected during the same process lifetime.
-  const markerPersistencePhase = `${C2ZC_PRODUCT_JOURNEY_ID}/restart-persistence`;
+  const markerPersistencePhase = `${phasePrefix}/${
+    bootstrapPhasePrefix
+      ? "bootstrap-restart-persistence"
+      : "restart-persistence"
+  }`;
   let markerPersistenceLaunch = await withLaunchEnvironmentForTest(
     { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
     () => harness.launch(markerPersistencePhase),
@@ -5639,7 +6226,7 @@ export async function runC2ZcCanonicalAuthorityJourney(
       );
     }
     markerPersistenceRestartEvidence = launchEvidence;
-    harness.recordTimeline("c2-zc-marker-persisted-after-restart", {
+    harness.recordTimeline(`${phasePrefix}/marker-persisted-after-restart`, {
       projectId,
       marker: markerPersistenceSnapshot.marker,
       epochIds: markerPersistenceSnapshot.epochs.map((epoch) => epoch.id),
@@ -5655,12 +6242,79 @@ export async function runC2ZcCanonicalAuthorityJourney(
     markerPersistenceLaunch = null;
   }
 
-  const postMarkerPhase = `${C2ZC_PRODUCT_JOURNEY_ID}/new-project`;
+  if (!postMarker) {
+    return {
+      projectId,
+      secondaryProjectId,
+      markerPersistenceRestart: markerPersistenceRestartEvidence,
+    };
+  }
+
+  const postMarkerJourneyId =
+    journeyId === C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID
+      ? journeyId
+      : C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID;
+  const postMarkerOpenPhase = `${postMarkerJourneyId}/open`;
+  let postMarkerOpenLaunch = await withLaunchEnvironmentForTest({}, () =>
+    harness.launch(postMarkerOpenPhase),
+  );
+  try {
+    const postMarkerOpenSnapshot = await harness.waitUntil(
+      async () => {
+        const value = await readAuthoritySnapshot(
+          harness,
+          postMarkerOpenLaunch.page,
+          projectId,
+        );
+        if (value.markerRows.length !== 1) return null;
+        try {
+          assertC2ZcMarkerExactlyOnce(value, "C2-ZC post-marker open marker");
+          assertC2ZcFindingInboxEmpty(
+            value,
+            "C2-ZC post-marker open Findings/Inbox",
+          );
+          assertC2ZcFeedCursorSettled(
+            value,
+            { epochId: value.epochs.at(-1)?.id },
+            "C2-ZC post-marker open Change Feed cursor",
+          );
+          assertC2ZcLegacyProjectionStable(
+            markerPersistenceSnapshot.legacyProjection,
+            value.legacyProjection,
+            "C2-ZC post-marker open Legacy projection",
+          );
+          return value;
+        } catch {
+          return null;
+        }
+      },
+      "C2-ZC post-marker open",
+      C2ZC_WAIT_MS,
+      250,
+    );
+    harness.recordTimeline(`${postMarkerJourneyId}/open`, {
+      projectId,
+      marker: postMarkerOpenSnapshot.marker,
+      epochIds: postMarkerOpenSnapshot.epochs.map((epoch) => epoch.id),
+      legacyProjectionDigest: sha256Canonical(
+        postMarkerOpenSnapshot.legacyProjection,
+      ),
+    });
+  } finally {
+    await harness.close(
+      postMarkerOpenLaunch.app,
+      postMarkerOpenLaunch.page,
+      postMarkerOpenPhase,
+    );
+    postMarkerOpenLaunch = null;
+  }
+
+  const postMarkerPhase = `${postMarkerJourneyId}/new-project`;
   let launched = await withLaunchEnvironmentForTest({}, () =>
     harness.launch(postMarkerPhase),
   );
   try {
-    const newProjectId = await createProjectAfterCutover(
+    const newProjectId = await createProjectAfterFreshLaunch(
       harness,
       launched.page,
       scenario.workspace,
@@ -5676,10 +6330,6 @@ export async function runC2ZcCanonicalAuthorityJourney(
           return null;
         try {
           assertC2ZcPostMarkerProjectBirth(value);
-          assertC2ZcPostMarkerProjectSettled(
-            value,
-            "C2-ZC post-marker project before mutation",
-          );
           assertC2ZcFeedCursorSettled(value, { epochId: value.epochs[0].id });
           return value;
         } catch {
@@ -5697,7 +6347,7 @@ export async function runC2ZcCanonicalAuthorityJourney(
       scenario.workspace,
       newProjectId,
     );
-    harness.recordTimeline("c2-zc-post-marker-typed-application-applied", {
+    harness.recordTimeline(`${postMarkerJourneyId}/typed-application-applied`, {
       projectId: newProjectId,
       runId: application.runId,
       taskId: application.taskId,
@@ -5762,8 +6412,9 @@ export async function runC2ZcCanonicalAuthorityJourney(
     await harness.close(launched.app, launched.page, postMarkerPhase);
     launched = null;
 
+    const postMarkerRestartPhase = `${postMarkerJourneyId}/restart`;
     const restarted = await withLaunchEnvironmentForTest({}, () =>
-      harness.launch(postMarkerPhase),
+      harness.launch(postMarkerRestartPhase),
     );
     let restartSnapshot;
     try {
@@ -5793,7 +6444,7 @@ export async function runC2ZcCanonicalAuthorityJourney(
         C2ZC_WAIT_MS,
         250,
       );
-      harness.recordTimeline("c2-zc-post-marker-typed-application-restarted", {
+      harness.recordTimeline(`${postMarkerJourneyId}/restart`, {
         projectId: newProjectId,
         runId: application.runId,
         commitId: application.commitId,
@@ -5804,9 +6455,13 @@ export async function runC2ZcCanonicalAuthorityJourney(
         epochCount: restartSnapshot.epochs.length,
       });
     } finally {
-      await harness.close(restarted.app, restarted.page, postMarkerPhase);
+      await harness.close(
+        restarted.app,
+        restarted.page,
+        postMarkerRestartPhase,
+      );
     }
-    harness.recordTimeline("c2-zc-post-marker-project-created", {
+    harness.recordTimeline(`${postMarkerJourneyId}/new-project`, {
       projectId: newProjectId,
       epochId: epoch.id,
       epochCount: beforeMutation.epochs.length,
@@ -5823,4 +6478,37 @@ export async function runC2ZcCanonicalAuthorityJourney(
     secondaryProjectId,
     markerPersistenceRestart: markerPersistenceRestartEvidence,
   };
+}
+
+/**
+ * Run the canonical cutover lane with its own catalog/result namespace.
+ * The implementation is shared with the post-marker bootstrap, but this
+ * wrapper keeps the canonical journey contract explicit to its caller.
+ */
+export async function runC2ZcCanonicalAuthorityJourney(
+  harness,
+  configureWorkspace,
+  options = {},
+) {
+  return runC2ZcAuthorityLane(harness, configureWorkspace, options);
+}
+
+/**
+ * Run the independent post-marker lifecycle lane. It deliberately repeats
+ * the prerequisite restore/authority activation in its own namespaced launch
+ * sequence so its artifact cannot hide a missing canonical cutover result.
+ */
+async function runC2ZcPostMarkerAuthorityLane(harness, configureWorkspace) {
+  return runC2ZcAuthorityLane(harness, configureWorkspace, {
+    postMarker: true,
+    journeyId: C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID,
+    bootstrapPhasePrefix: C2ZC_POST_MARKER_PRODUCT_JOURNEY_ID,
+  });
+}
+
+export async function runC2ZcPostMarkerLifecycleJourney(
+  harness,
+  configureWorkspace,
+) {
+  return runC2ZcPostMarkerAuthorityLane(harness, configureWorkspace);
 }
