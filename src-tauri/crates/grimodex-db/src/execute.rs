@@ -357,13 +357,27 @@ fn restore_renderer_sql_policy(
     }
 }
 
-fn untrusted_sql_needs_reserved_project_setting_guard(conn: &Connection, sql: &str) -> bool {
-    // SQLite's own readonly classification handles comments, EXPLAIN, WITH,
-    // trigger-side-effect writes, and future syntax without a handwritten SQL
-    // parser. Invalid or otherwise unclassifiable SQL stays fail-closed.
-    conn.prepare(sql)
-        .map(|statement| !statement.readonly())
-        .unwrap_or(true)
+fn sql_starts_with_keyword(sql: &str, keyword: &str) -> bool {
+    let trimmed = sql.trim_start();
+    let Some(prefix) = trimmed.get(..keyword.len()) else {
+        return false;
+    };
+    prefix.eq_ignore_ascii_case(keyword)
+        && trimmed[keyword.len()..]
+            .chars()
+            .next()
+            .map_or(true, |character| {
+                !character.is_ascii_alphanumeric() && character != '_'
+            })
+}
+
+fn untrusted_sql_needs_reserved_project_setting_guard(sql: &str) -> bool {
+    // Only an explicitly read-only first keyword skips the marker guard. A
+    // leading comment, WITH clause, PRAGMA, malformed statement, or future
+    // syntax stays fail-closed and receives the full untrusted policy.
+    !["select", "values", "explain"]
+        .iter()
+        .any(|keyword| sql_starts_with_keyword(sql, keyword))
 }
 
 fn with_untrusted_sql_policy<T, F>(
@@ -611,7 +625,7 @@ impl Database {
         let sql_started = Instant::now();
         let result = if origin.is_untrusted() {
             let reserved_project_setting_guard_requested = statements.iter().any(|statement| {
-                untrusted_sql_needs_reserved_project_setting_guard(&conn, &statement.sql)
+                untrusted_sql_needs_reserved_project_setting_guard(&statement.sql)
             });
             with_untrusted_sql_policy(&conn, reserved_project_setting_guard_requested, |conn| {
                 Self::execute_batch_tx_with_conn(conn, statements)
@@ -817,7 +831,7 @@ impl Database {
         let sql_started = Instant::now();
         let result = if origin.is_untrusted() {
             let reserved_project_setting_guard_requested =
-                untrusted_sql_needs_reserved_project_setting_guard(&conn, sql);
+                untrusted_sql_needs_reserved_project_setting_guard(sql);
             with_untrusted_sql_policy(&conn, reserved_project_setting_guard_requested, |conn| {
                 Self::execute_with_conn(conn, sql, params, method)
             })
@@ -1314,6 +1328,11 @@ mod tests {
     #[test]
     fn renderer_sql_only_allows_narrow_read_only_pragmas_and_deferred_fk_batch() {
         let db = test_db();
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "foreign_keys", true)?;
+            Ok(())
+        })
+        .expect("enable foreign key enforcement for pragma guard regression");
         let rows = db
             .execute_renderer("PRAGMA user_version", &[], "get")
             .expect("read-only pragma");
@@ -1327,6 +1346,14 @@ mod tests {
                 .to_string()
                 .contains("RENDERER_SQL_SECURITY: denied PRAGMA foreign_keys"),
             "unexpected error: {error}"
+        );
+
+        let foreign_keys: i64 = db
+            .with_conn(|conn| Ok(conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?))
+            .expect("read foreign key setting after rejected pragma");
+        assert_eq!(
+            foreign_keys, 1,
+            "rejected PRAGMA must not change the connection"
         );
 
         db.execute(
@@ -1790,7 +1817,7 @@ mod tests {
                         method: "all".to_string(),
                     },
                     BatchStatement {
-                        sql: "-- leading comment\nSELECT 2 AS value".to_string(),
+                        sql: "SELECT 2 AS value".to_string(),
                         params: vec![],
                         method: "all".to_string(),
                     },
@@ -1818,10 +1845,10 @@ mod tests {
         db.with_conn(|conn| {
             let cases = [
                 ("SELECT 1", false),
-                ("-- leading comment\nSELECT 1", false),
+                ("-- leading comment\nSELECT 1", true),
                 (
                     "WITH values_cte AS (SELECT 1) SELECT * FROM values_cte",
-                    false,
+                    true,
                 ),
                 ("EXPLAIN SELECT 1", false),
                 (
@@ -1845,7 +1872,7 @@ mod tests {
             ];
             for (sql, expected_guard) in cases {
                 assert_eq!(
-                    untrusted_sql_needs_reserved_project_setting_guard(conn, sql),
+                    untrusted_sql_needs_reserved_project_setting_guard(sql),
                     expected_guard,
                     "unexpected readonly probe result for {sql:?}"
                 );
