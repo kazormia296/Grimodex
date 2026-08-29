@@ -167,7 +167,7 @@ function exactRustGateOutput(gateId) {
             ? "narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence"
             : gateId === "c2-zc-production-verify-coverage"
               ? "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run"
-            : "canonical_read_has_no_legacy_fallback_after_generic_cutover";
+              : "canonical_read_has_no_legacy_fallback_after_generic_cutover";
   const sentinel =
     gateId === "c2-zc-production-verify-coverage"
       ? `C2ZC_RUST_VERIFY_OUTCOME=${JSON.stringify(VERIFY_OUTCOME)}\n\n`

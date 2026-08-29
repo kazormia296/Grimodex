@@ -308,9 +308,7 @@ function assertVerifyCoverage(coverage) {
     );
   }
   if (coverage.missing.length !== 0) {
-    throw new Error(
-      "C2-ZC Rust Verify checkCoverage missing must be empty",
-    );
+    throw new Error("C2-ZC Rust Verify checkCoverage missing must be empty");
   }
   for (const [label, values] of [
     ["required", coverage.required],
@@ -334,9 +332,7 @@ function assertVerifyCoverage(coverage) {
       );
     }
   }
-  if (
-    canonicalJson(coverage.required) !== canonicalJson(coverage.covered)
-  ) {
+  if (canonicalJson(coverage.required) !== canonicalJson(coverage.covered)) {
     throw new Error(
       "C2-ZC Rust Verify checkCoverage required and covered mismatch",
     );
@@ -346,11 +342,9 @@ function assertVerifyCoverage(coverage) {
 
 function sentinelValues(value) {
   if (typeof value !== "string") return [];
-  return [
-    ...value.matchAll(
-      /^C2ZC_RUST_VERIFY_OUTCOME=([^\r\n]*)\r?$/gmu,
-    ),
-  ].map((match) => match[1]);
+  return [...value.matchAll(/^C2ZC_RUST_VERIFY_OUTCOME=([^\r\n]*)\r?$/gmu)].map(
+    (match) => match[1],
+  );
 }
 
 /** Parse the Rust-owned production Verify outcome from the exact gate stdout. */
@@ -860,8 +854,7 @@ function assertReceiptContract(receipt, { candidate, catalogDigest }) {
       );
     }
   }
-  const verifyGate =
-    receipt.gates[C2ZC_RUST_ACCEPTANCE_GATES.length - 1];
+  const verifyGate = receipt.gates[C2ZC_RUST_ACCEPTANCE_GATES.length - 1];
   const parsedVerifyOutcome = parseC2ZcRustVerifyOutcome(
     verifyGate.stdout,
     verifyGate.stderr,

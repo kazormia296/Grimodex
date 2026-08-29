@@ -261,90 +261,96 @@ test("C2-ZC Rust receipt parses only one valid production Verify outcome sentine
       valid.replace(/C2ZC_RUST_VERIFY_OUTCOME=.*\n/u, ""),
       `C2ZC_RUST_VERIFY_OUTCOME=${VERIFY_OUTCOME_JSON}\n`,
     ],
-    [
-      "malformed",
-      valid.replace(VERIFY_OUTCOME_JSON, "{"),
-      "",
-    ],
+    ["malformed", valid.replace(VERIFY_OUTCOME_JSON, "{"), ""],
     [
       "incomplete",
-      valid.replace(VERIFY_OUTCOME_JSON, JSON.stringify({
-        ...VERIFY_OUTCOME,
-        checkCoverage: { ...VERIFY_OUTCOME.checkCoverage, complete: false },
-      })),
+      valid.replace(
+        VERIFY_OUTCOME_JSON,
+        JSON.stringify({
+          ...VERIFY_OUTCOME,
+          checkCoverage: { ...VERIFY_OUTCOME.checkCoverage, complete: false },
+        }),
+      ),
       "",
     ],
     [
       "wrong count",
-      valid.replace(VERIFY_OUTCOME_JSON, JSON.stringify({
-        ...VERIFY_OUTCOME,
-        checkCoverage: {
-          ...VERIFY_OUTCOME.checkCoverage,
-          required: VERIFY_OUTCOME.checkCoverage.required.slice(0, 12),
-        },
-      })),
+      valid.replace(
+        VERIFY_OUTCOME_JSON,
+        JSON.stringify({
+          ...VERIFY_OUTCOME,
+          checkCoverage: {
+            ...VERIFY_OUTCOME.checkCoverage,
+            required: VERIFY_OUTCOME.checkCoverage.required.slice(0, 12),
+          },
+        }),
+      ),
       "",
     ],
     [
       "duplicate check",
-      valid.replace(VERIFY_OUTCOME_JSON, JSON.stringify({
-        ...VERIFY_OUTCOME,
-        checkCoverage: {
-          ...VERIFY_OUTCOME.checkCoverage,
-          covered: [
-            ...VERIFY_OUTCOME.checkCoverage.covered.slice(0, 12),
-            VERIFY_OUTCOME.checkCoverage.covered[0],
-          ],
-        },
-      })),
+      valid.replace(
+        VERIFY_OUTCOME_JSON,
+        JSON.stringify({
+          ...VERIFY_OUTCOME,
+          checkCoverage: {
+            ...VERIFY_OUTCOME.checkCoverage,
+            covered: [
+              ...VERIFY_OUTCOME.checkCoverage.covered.slice(0, 12),
+              VERIFY_OUTCOME.checkCoverage.covered[0],
+            ],
+          },
+        }),
+      ),
       "",
     ],
     [
       "nonempty missing",
-      valid.replace(VERIFY_OUTCOME_JSON, JSON.stringify({
-        ...VERIFY_OUTCOME,
-        checkCoverage: {
-          ...VERIFY_OUTCOME.checkCoverage,
-          missing: ["unexpected-check"],
-        },
-      })),
+      valid.replace(
+        VERIFY_OUTCOME_JSON,
+        JSON.stringify({
+          ...VERIFY_OUTCOME,
+          checkCoverage: {
+            ...VERIFY_OUTCOME.checkCoverage,
+            missing: ["unexpected-check"],
+          },
+        }),
+      ),
       "",
     ],
     [
       "required covered mismatch",
-      valid.replace(VERIFY_OUTCOME_JSON, JSON.stringify({
-        ...VERIFY_OUTCOME,
-        checkCoverage: {
-          ...VERIFY_OUTCOME.checkCoverage,
-          covered: [
-            "different-check",
-            ...VERIFY_OUTCOME.checkCoverage.covered.slice(1),
-          ],
-        },
-      })),
+      valid.replace(
+        VERIFY_OUTCOME_JSON,
+        JSON.stringify({
+          ...VERIFY_OUTCOME,
+          checkCoverage: {
+            ...VERIFY_OUTCOME.checkCoverage,
+            covered: [
+              "different-check",
+              ...VERIFY_OUTCOME.checkCoverage.covered.slice(1),
+            ],
+          },
+        }),
+      ),
       "",
     ],
     [
       "required covered order mismatch",
-      valid.replace(VERIFY_OUTCOME_JSON, JSON.stringify({
-        ...VERIFY_OUTCOME,
-        checkCoverage: {
-          ...VERIFY_OUTCOME.checkCoverage,
-          covered: [...VERIFY_OUTCOME.checkCoverage.covered].reverse(),
-        },
-      })),
+      valid.replace(
+        VERIFY_OUTCOME_JSON,
+        JSON.stringify({
+          ...VERIFY_OUTCOME,
+          checkCoverage: {
+            ...VERIFY_OUTCOME.checkCoverage,
+            covered: [...VERIFY_OUTCOME.checkCoverage.covered].reverse(),
+          },
+        }),
+      ),
       "",
     ],
-    [
-      "diagnostic prefix",
-      `diagnostic-prefix ${valid}`,
-      "",
-    ],
-    [
-      "leading space",
-      ` ${valid}`,
-      "",
-    ],
+    ["diagnostic prefix", `diagnostic-prefix ${valid}`, ""],
+    ["leading space", ` ${valid}`, ""],
     [
       "diagnostic suffix",
       valid.replace(
