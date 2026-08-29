@@ -292,6 +292,31 @@ test("offline restore fixture interface is narrow and fail-closed", () => {
   }
 });
 
+test("restore fixture accepts the canonical initial scene version boundary", () => {
+  const semantic = createC2ZcFixtureSemantic({
+    sceneSourceRevision: "v0@2026-08-29T00:00:01.000Z",
+  });
+  semantic.scene.version = 0;
+  refreshC2ZcFixtureSemanticDigests(semantic);
+  assert.doesNotThrow(() =>
+    assertC2ZcRestoreFixtureManifest(createC2ZcFixtureManifest({ semantic })),
+  );
+
+  for (const version of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const invalidSemantic = structuredClone(semantic);
+    invalidSemantic.scene.version = version;
+    refreshC2ZcFixtureSemanticDigests(invalidSemantic);
+    assert.throws(
+      () =>
+        assertC2ZcRestoreFixtureManifest(
+          createC2ZcFixtureManifest({ semantic: invalidSemantic }),
+        ),
+      /scene\.version|integer/,
+      `scene.version=${String(version)} must be rejected`,
+    );
+  }
+});
+
 test("Verify coverage compares values from the Rust outcome without a JS check catalogue", () => {
   const rustOutcome = {
     checkCoverage: {

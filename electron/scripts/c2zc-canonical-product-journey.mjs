@@ -1084,7 +1084,7 @@ function assertC2ZcFixtureSemantic(semantic, label) {
   ) {
     throw new Error(`${label}.scene does not match the fixture source`);
   }
-  assertPositiveInteger(scene.version, `${label}.scene.version`);
+  assertNonNegativeInteger(scene.version, `${label}.scene.version`);
   assertCanonicalTimestamp(scene.updatedAt, `${label}.scene.updatedAt`);
   if (semantic.sceneSourceRevision !== `v${scene.version}@${scene.updatedAt}`) {
     throw new Error(`${label}.scene source revision is not bound to the seed`);
