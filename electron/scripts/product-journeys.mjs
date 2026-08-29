@@ -3004,6 +3004,17 @@ export async function runProductJourneys({
       harness = factory();
       harness.c2zcRustAcceptanceEvidence = report.c2zcRustAcceptance;
       const runJourney = () => journey.run(harness);
+      const c2zcWatchdogRequired =
+        selectionName === "c2-zc" &&
+        C2ZC_PRODUCT_JOURNEY_IDS.includes(journey.id);
+      if (
+        c2zcWatchdogRequired &&
+        typeof harness.withLaneWatchdog !== "function"
+      ) {
+        throw new Error(
+          `C2-ZC lane ${journey.id} requires harness.withLaneWatchdog`,
+        );
+      }
       const journeyResult =
         typeof harness.withLaneWatchdog === "function"
           ? await harness.withLaneWatchdog(runJourney, {

@@ -39,6 +39,10 @@ import {
   C2ZC_RUST_ACCEPTANCE_GATES,
   createC2ZcRustAcceptanceReceipt,
 } from "./c2zc-rust-acceptance-receipt.mjs";
+import {
+  createC2ZcFixtureManifest,
+  createC2ZcFixtureSemantic,
+} from "./c2zc-fixture-test-support.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -74,17 +78,7 @@ function c2zcFixtureManifest(candidate, fixtureBytes) {
   const digest = `sha256:${createHash("sha256")
     .update(fixtureBytes)
     .digest("hex")}`;
-  const artifact = {
-    path: "c2zc-restore-fixture.backup.db",
-    sha256: digest,
-    sizeBytes: fixtureBytes.length,
-  };
-  return {
-    manifestVersion: 1,
-    contractVersion: 1,
-    schemaVersion: 34,
-    databaseSchemaVersion: 34,
-    c2zcMarkerPresent: false,
+  return createC2ZcFixtureManifest({
     candidate: {
       requested: candidate.requestedHead,
       resolvedHeadSha: candidate.resolvedHeadSha,
@@ -94,52 +88,21 @@ function c2zcFixtureManifest(candidate, fixtureBytes) {
       clean: candidate.worktreeClean,
       statusSha256: `sha256:${candidate.worktreeStatusHash}`,
     },
-    builderVersion: "c2zc-restore-fixture-builder/v1",
-    builderCommand: ["cargo", "run", "c2zc-restore-fixture", "build"],
-    exactBuilderCommand: ["cargo", "run", "c2zc-restore-fixture", "build"],
-    artifacts: {
-      fixture: artifact,
-      database: {
-        path: "c2zc-restore-fixture.db",
-        sha256: digest,
-        sizeBytes: fixtureBytes.length,
-      },
-    },
-    fixtureSha256: digest,
-    fixtureSizeBytes: fixtureBytes.length,
-    semantic: {
+    semantic: createC2ZcFixtureSemantic({
       projectId: "fixture-project",
       sceneId: "fixture-scene",
-      ownerRunId: "fixture-owner-run",
-      projectCount: 1,
-      e0Count: 1,
-      completedBackfillCount: 1,
-      dependencyEdgeCount: 1,
-      edgeStateCount: 0,
-      ownerFreshnessCount: 0,
-      cursorSettled: true,
-      semanticIndexRows: 0,
+      applicationId: "fixture-application",
+      applyRunId: "fixture-owner-run",
+      backfillRunId: "fixture-backfill-run",
       sceneSourceRevision: "v0",
-      edgeSourceObjectIdentity: "project:scene:fixture-scene",
-      edgeReadSetJson: "[]",
-      project: {},
-      projectDigest: digest,
-      scene: {},
-      sceneDigest: digest,
-      epoch: {},
-      epochDigest: digest,
-      backfill: {},
-      backfillDigest: digest,
-      edge: {},
-      edgeDigest: digest,
-      feedCursor: {},
-      feedCursorDigest: digest,
-      derivedStateGap: {},
-      semanticIndex: {},
-      expectedRestoreLifecycle: {},
-      contentsDigest: digest,
-    },
-  };
+    }),
+    fixtureSha256: digest,
+    fixtureSizeBytes: fixtureBytes.length,
+    schemaVersion: 34,
+    fixturePath: "c2zc-restore-fixture.backup.db",
+    databasePath: "c2zc-restore-fixture.db",
+    builderCommand: ["cargo", "run", "c2zc-restore-fixture", "build"],
+  });
 }
 
 function c2zcFixtureEvidence(candidate) {

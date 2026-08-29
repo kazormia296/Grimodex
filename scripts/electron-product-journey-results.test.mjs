@@ -254,6 +254,7 @@ test("focused C2-ZC executes the auxiliary lane after canonical success and fail
   );
   const resultsPath = path.join(outputRoot, "results.json");
   const events = [];
+  const watchdogs = [];
   const laneIds = NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map(
     (journey) => journey.id,
   );
@@ -319,6 +320,10 @@ test("focused C2-ZC executes the auxiliary lane after canonical success and fail
         receipt: { candidate },
       },
       createHarness: () => ({
+        withLaneWatchdog: async (run, options) => {
+          watchdogs.push(options);
+          return run();
+        },
         dispose: async ({ success, name }) => {
           events.push(`dispose:${name}:${success}`);
         },
@@ -337,6 +342,10 @@ test("focused C2-ZC executes the auxiliary lane after canonical success and fail
     `run:${laneIds[1]}`,
     `dispose:${laneIds[1]}:false`,
   ]);
+  assert.deepEqual(
+    watchdogs.map(({ phase, timeoutMs }) => [phase, timeoutMs]),
+    laneIds.map((id) => [id, 10 * 60 * 1000]),
+  );
   const report = await readJson(resultsPath);
   assert.deepEqual(
     report.journeys.map((journey) => [journey.id, journey.status]),
@@ -697,7 +706,10 @@ test("C2-ZC rehashes configured artifacts after every lane before acceptance", a
         candidate,
         receipt: { candidate },
       },
-      createHarness: () => ({ dispose: async () => {} }),
+      createHarness: () => ({
+        withLaneWatchdog: async (run) => run(),
+        dispose: async () => {},
+      }),
       resultsPath: path.join(root, "results.json"),
     }),
     /artifact|mismatch/i,
