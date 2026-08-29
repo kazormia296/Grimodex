@@ -80,15 +80,15 @@ test("C2-ZC is registered as a distinct product journey and contract boundary", 
   assert.deepEqual(
     NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
     [
-      "c2-zc-renderer-mcp-dml-denial",
       "c2-zc-canonical-authority-cutover",
       "c2-zc-post-marker-lifecycle",
+      "c2-zc-renderer-mcp-dml-denial",
     ],
   );
-  assert.deepEqual(NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[1].contracts, [
+  assert.deepEqual(NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[0].contracts, [
     "c2-zc:canonical-authority-cutover",
   ]);
-  assert.deepEqual(NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[2].contracts, [
+  assert.deepEqual(NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[1].contracts, [
     "c2-zc:post-marker-lifecycle",
   ]);
   assert.ok(
@@ -99,17 +99,17 @@ test("C2-ZC is registered as a distinct product journey and contract boundary", 
   assert.deepEqual(
     resolveProductJourneySet("c2-zc").map((journey) => journey.id),
     [
-      "c2-zc-renderer-mcp-dml-denial",
       "c2-zc-canonical-authority-cutover",
       "c2-zc-post-marker-lifecycle",
+      "c2-zc-renderer-mcp-dml-denial",
     ],
   );
   assert.deepEqual(
     resolveProductJourneyImpactCatalog("c2-zc").map((journey) => journey.id),
     [
-      "c2-zc-renderer-mcp-dml-denial",
       "c2-zc-canonical-authority-cutover",
       "c2-zc-post-marker-lifecycle",
+      "c2-zc-renderer-mcp-dml-denial",
     ],
   );
   assert.deepEqual(
@@ -117,6 +117,32 @@ test("C2-ZC is registered as a distinct product journey and contract boundary", 
     PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
   );
   assert.equal(NARRATIVE_C2ZC_PRODUCT_JOURNEYS.length, 3);
+});
+
+test("C2-ZC keeps representative DML denial auxiliary to the critical path", () => {
+  const dml = NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[2];
+  assert.deepEqual(
+    NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
+    [
+      "c2-zc-canonical-authority-cutover",
+      "c2-zc-post-marker-lifecycle",
+      "c2-zc-renderer-mcp-dml-denial",
+    ],
+  );
+  assert.deepEqual(dml.phases, [
+    "c2-zc-renderer-mcp-dml-denial/representative",
+  ]);
+  assert.match(dml.description, /one-launch/);
+  assert.match(dml.description, /one representative real renderer IPC/);
+  assert.match(dml.description, /unchanged row/);
+  assert.match(
+    dml.description,
+    /all-table, MCP, typed-positive, and direct-corruption proofs are bound to Rust acceptance gates/,
+  );
+  assert.equal(
+    dml.mcpGeneric.canonicalRustTest,
+    "c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes",
+  );
 });
 
 test("C2-ZC catalog keeps each acceptance contract in one atomic journey", () => {
@@ -152,7 +178,7 @@ test("C2-ZC catalog keeps each acceptance contract in one atomic journey", () =>
     "c2-zc-post-marker-lifecycle/new-project",
     "c2-zc-post-marker-lifecycle/restart",
   ]);
-  const canonical = NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[1];
+  const canonical = NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[0];
   assert.deepEqual(canonical.phases, C2ZC_CANONICAL_PRODUCT_JOURNEY_PHASES);
   assert.equal(
     canonical.canonicalRustEvidence,
@@ -160,7 +186,7 @@ test("C2-ZC catalog keeps each acceptance contract in one atomic journey", () =>
     "the catalog must not self-attest the shared-Rust canonical read",
   );
   assert.deepEqual(
-    NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[2].phases,
+    NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG[1].phases,
     C2ZC_POST_MARKER_PRODUCT_JOURNEY_PHASES,
   );
 });
@@ -668,10 +694,28 @@ test("C2-ZC Electron evidence never aliases storage as an exercised canonical re
     "the catalog must not claim the shared-Rust canonical read ran",
   );
   assert.match(receiptModule, /canonical_application_freshness/);
+  assert.match(receiptModule, /c2-zc-readiness-corruption-fail-closed/);
+  assert.match(
+    receiptModule,
+    /narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed/,
+  );
+  assert.match(
+    receiptModule,
+    /direct persisted Rebuild evidence corruption blocks readiness/,
+  );
   assert.match(impactMap, /acceptanceGates:/);
   assert.doesNotMatch(impactMap, /^\s+acceptanceGate:/m);
   assert.match(impactMap, /c2-zc-canonical-no-legacy-fallback/);
   assert.match(impactMap, /c2-zc-dml-native-owned-table-denial/);
+  assert.match(impactMap, /c2-zc-readiness-corruption-fail-closed/);
+  assert.match(
+    impactMap,
+    /narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed/,
+  );
+  assert.match(
+    impactMap,
+    /direct persisted Rebuild evidence corruption blocks readiness/,
+  );
   assert.match(
     impactMap,
     /- --manifest-path[\s\S]+?- src-tauri\/Cargo\.toml[\s\S]+?- -p[\s\S]+?- grimodex-db/,

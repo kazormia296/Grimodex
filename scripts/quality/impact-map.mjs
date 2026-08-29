@@ -338,7 +338,7 @@ function assertStructuredAcceptanceGates(rawGates, ruleId) {
   }
   if (rawGates.length !== C2ZC_RUST_ACCEPTANCE_GATES.length) {
     throw new Error(
-      `rule ${ruleId} acceptanceGates must contain the two ordered Rust gates`,
+      `rule ${ruleId} acceptanceGates must contain the three ordered Rust gates`,
     );
   }
   for (const [index, rawGate] of rawGates.entries()) {

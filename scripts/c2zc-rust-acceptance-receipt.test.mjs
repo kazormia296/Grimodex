@@ -45,7 +45,47 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 `,
+  "c2-zc-readiness-corruption-fail-closed": `test narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+`,
 };
+
+test("C2-ZC Rust receipt includes the readiness-corruption gate after DML", () => {
+  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 3);
+  assert.deepEqual(C2ZC_RUST_ACCEPTANCE_GATES[2], {
+    id: "c2-zc-readiness-corruption-fail-closed",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
+      test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+      fullTestName:
+        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+      proof: "direct persisted Rebuild evidence corruption blocks readiness",
+    },
+    source:
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
+    test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+    fullTestName:
+      "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+    requiresReceipt: true,
+  });
+});
 
 function gateExecution(overrides = {}) {
   return {
@@ -74,7 +114,7 @@ async function createReceipt({
   });
 }
 
-test("C2-ZC Rust receipt binds both exact gate commands and candidate", async (t) => {
+test("C2-ZC Rust receipt binds all exact gate commands and candidate", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-c2zc-rust-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const currentCandidate = candidate();

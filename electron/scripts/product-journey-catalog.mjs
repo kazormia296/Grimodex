@@ -99,28 +99,6 @@ export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG = freezeEntries(
  */
 export const NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG = freezeEntries([
   {
-    id: "c2-zc-renderer-mcp-dml-denial",
-    domains: ["narrative-maintenance", "sqlite"],
-    interactions: ["narrative-maintenance->sqlite"],
-    contracts: ["c2-zc:boundary-dml-denial"],
-    capabilities: ["electron", "napi"],
-    description:
-      "renderer db_execute zero-row DML denial across C2-ZC tables; McpGeneric remains Rust-only",
-    phases: [
-      "c2-zc-renderer-mcp-dml-denial/open",
-      "c2-zc-renderer-mcp-dml-denial/restart",
-    ],
-    mcpGeneric: {
-      productionToolName: null,
-      productionRoute: null,
-      status: "not-exposed",
-      canonicalRustSource: "src-tauri/crates/grimodex-db/src/execute.rs",
-      canonicalRustTest:
-        "c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes",
-      origin: "SqlOrigin::McpGeneric",
-    },
-  },
-  {
     id: "c2-zc-canonical-authority-cutover",
     domains: ["narrative-maintenance"],
     interactions: ["narrative-maintenance->sqlite"],
@@ -154,6 +132,25 @@ export const NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG = freezeEntries([
       "c2-zc-post-marker-lifecycle/new-project",
       "c2-zc-post-marker-lifecycle/restart",
     ],
+  },
+  {
+    id: "c2-zc-renderer-mcp-dml-denial",
+    domains: ["narrative-maintenance", "sqlite"],
+    interactions: ["narrative-maintenance->sqlite"],
+    contracts: ["c2-zc:boundary-dml-denial"],
+    capabilities: ["electron", "napi"],
+    description:
+      "one-launch, one representative real renderer IPC db_execute DML denial with an unchanged row; all-table, MCP, typed-positive, and direct-corruption proofs are bound to Rust acceptance gates",
+    phases: ["c2-zc-renderer-mcp-dml-denial/representative"],
+    mcpGeneric: {
+      productionToolName: null,
+      productionRoute: null,
+      status: "not-exposed",
+      canonicalRustSource: "src-tauri/crates/grimodex-db/src/execute.rs",
+      canonicalRustTest:
+        "c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes",
+      origin: "SqlOrigin::McpGeneric",
+    },
   },
 ]);
 

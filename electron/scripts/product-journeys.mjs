@@ -31,7 +31,6 @@ import {
   verifyC2ZcRustAcceptanceReceipt,
 } from "../../scripts/c2zc-rust-acceptance-receipt.mjs";
 
-const mainCjs = path.join(rootDir, "dist-electron", "main.cjs");
 const DEFAULT_SCENE_TITLE = "シーン 1";
 const SCENES_PANEL_TITLE = "シーン";
 const CREATE_BUTTON_TITLE = "新規作成";
@@ -72,6 +71,15 @@ const PRODUCT_JOURNEY_BUILD_RECEIPT_KEYS = [
   "verified",
   "source",
   "candidate",
+  "artifacts",
+];
+const PRODUCT_JOURNEY_ARTIFACT_KEYS = [
+  "name",
+  "path",
+  "requestedPath",
+  "realPath",
+  "size",
+  "sha256",
 ];
 const PRODUCT_JOURNEY_CANDIDATE_KEYS = [
   "requestedBase",
@@ -97,11 +105,6 @@ const REQUIRED_LIFECYCLE_TRANSITION_PHASES = [
   "authority-commit",
   "new-scope-hydrated",
 ];
-const DEFAULT_PRODUCT_JOURNEY_ARTIFACT_DIR = path.join(
-  rootDir,
-  ".artifacts",
-  "product-journeys",
-);
 function log(message) {
   console.log(`[electron:product] ${message}`);
 }
@@ -147,25 +150,30 @@ function resolveConfiguredPath(
 
 export function resolveMcpArtifactPath({
   root = rootDir,
-  overridePath = process.env.GRIMODEX_MCP_PATH,
-  cargoTargetDir = process.env.CARGO_TARGET_DIR,
+  overridePath,
+  cargoTargetDir,
   platform = process.platform,
+  env = process.env,
 } = {}) {
   const pathApi = platform === "win32" ? path.win32 : path;
   const executableName =
     platform === "win32" ? "grimodex-mcp.exe" : "grimodex-mcp";
-  const override = resolveConfiguredPath(overridePath, {
+  const configuredOverridePath =
+    overridePath === undefined ? env.GRIMODEX_MCP_PATH : overridePath;
+  const configuredCargoTargetDir =
+    cargoTargetDir === undefined ? env.CARGO_TARGET_DIR : cargoTargetDir;
+  const override = resolveConfiguredPath(configuredOverridePath, {
     root,
     label: "GRIMODEX_MCP_PATH",
     pathApi,
   });
   if (override !== undefined) {
-    if (!pathApi.isAbsolute(overridePath)) {
+    if (!pathApi.isAbsolute(configuredOverridePath)) {
       throw new Error("GRIMODEX_MCP_PATH must be an absolute path");
     }
     return override;
   }
-  const configuredTarget = resolveConfiguredPath(cargoTargetDir, {
+  const configuredTarget = resolveConfiguredPath(configuredCargoTargetDir, {
     root,
     label: "CARGO_TARGET_DIR",
     pathApi,
@@ -177,7 +185,7 @@ export function resolveMcpArtifactPath({
 
 export async function resolveProductJourneyArtifact(
   requestedPath,
-  { executable = false } = {},
+  { executable = false, root = rootDir, platform = process.platform } = {},
 ) {
   if (
     typeof requestedPath !== "string" ||
@@ -188,19 +196,20 @@ export async function resolveProductJourneyArtifact(
       "artifact path must be a non-empty string without NUL bytes",
     );
   }
-  const absoluteRequestedPath = path.resolve(requestedPath);
+  const absoluteRequestedPath = path.resolve(root, requestedPath);
   const canonicalPath = await realpath(absoluteRequestedPath);
   const metadata = await stat(canonicalPath);
   if (!metadata.isFile()) {
     throw new Error(`artifact is not a regular file: ${absoluteRequestedPath}`);
   }
-  if (executable && process.platform !== "win32") {
+  if (executable && platform !== "win32") {
     await access(canonicalPath, constants.X_OK);
   }
   return {
     path: absoluteRequestedPath,
     requestedPath: absoluteRequestedPath,
     realPath: canonicalPath,
+    size: metadata.size,
     sha256: await hashFile(canonicalPath),
   };
 }
@@ -210,6 +219,8 @@ export async function resolveMcpArtifact(options = {}) {
   try {
     return await resolveProductJourneyArtifact(requestedPath, {
       executable: true,
+      root: options.root ?? rootDir,
+      platform: options.platform ?? process.platform,
     });
   } catch (error) {
     throw new Error(`missing MCP product journey artifact: ${requestedPath}`, {
@@ -218,47 +229,103 @@ export async function resolveMcpArtifact(options = {}) {
   }
 }
 
-export async function assertBuildArtifacts(
+const PRODUCT_JOURNEY_ARTIFACT_NAMES = Object.freeze({
+  electronMain: "Electron main",
+  renderer: "renderer",
+  native: "N-API native module",
+  mcp: "MCP sidecar",
+});
+
+/**
+ * Resolve the exact executable artifact set for a catalog selection.  The
+ * catalog, rather than the runner implementation, is the authority for
+ * capability requirements; this keeps a focused C2-ZC run free of an
+ * accidental MCP dependency.
+ */
+export function resolveProductJourneyArtifactRequests(
   journeys,
-  { catalog = PRODUCT_JOURNEY_CATALOG } = {},
+  {
+    catalog = PRODUCT_JOURNEY_CATALOG,
+    root = rootDir,
+    env = process.env,
+    platform = process.platform,
+  } = {},
 ) {
-  const selectedIds = new Set(journeys.map((journey) => journey.id));
-  const requiresMcp = catalog.some(
-    (journey) =>
-      selectedIds.has(journey.id) && journey.capabilities.includes("mcp"),
+  const selectedIds = new Set(
+    (Array.isArray(journeys) ? journeys : []).map((journey) => journey?.id),
   );
-  const requests = [
-    { name: "Electron main", path: mainCjs },
-    { name: "renderer", path: path.join(rootDir, "dist", "index.html") },
-    {
-      name: "N-API native module",
+  const selectedCatalog = catalog.filter((journey) =>
+    selectedIds.has(journey?.id),
+  );
+  const capabilities = new Set(
+    selectedCatalog.flatMap((journey) =>
+      Array.isArray(journey?.capabilities) ? journey.capabilities : [],
+    ),
+  );
+  const requests = [];
+  if (capabilities.has("electron")) {
+    requests.push(
+      {
+        name: PRODUCT_JOURNEY_ARTIFACT_NAMES.electronMain,
+        path: path.join(root, "dist-electron", "main.cjs"),
+      },
+      {
+        name: PRODUCT_JOURNEY_ARTIFACT_NAMES.renderer,
+        path: path.join(root, "dist", "index.html"),
+      },
+    );
+  }
+  if (capabilities.has("napi")) {
+    requests.push({
+      name: PRODUCT_JOURNEY_ARTIFACT_NAMES.native,
       path:
-        resolveConfiguredPath(process.env.GRIMODEX_NODE_PATH, {
-          root: rootDir,
+        resolveConfiguredPath(env.GRIMODEX_NODE_PATH, {
+          root,
           label: "GRIMODEX_NODE_PATH",
         }) ??
         path.join(
-          rootDir,
+          root,
           "electron",
           "native",
           "grimodex-node",
           "grimodex-node.node",
         ),
-    },
-  ];
-  if (requiresMcp) {
-    requests.push({
-      name: "MCP sidecar",
-      path: resolveMcpArtifactPath(),
     });
   }
+  if (capabilities.has("mcp")) {
+    requests.push({
+      name: PRODUCT_JOURNEY_ARTIFACT_NAMES.mcp,
+      path: resolveMcpArtifactPath({ root, env, platform }),
+      executable: true,
+    });
+  }
+  return requests;
+}
+
+export async function assertBuildArtifacts(
+  journeys,
+  {
+    catalog = PRODUCT_JOURNEY_CATALOG,
+    root = rootDir,
+    env = process.env,
+    platform = process.platform,
+  } = {},
+) {
+  const requests = resolveProductJourneyArtifactRequests(journeys, {
+    catalog,
+    root,
+    env,
+    platform,
+  });
   const artifacts = [];
   for (const request of requests) {
     try {
       artifacts.push({
         name: request.name,
         ...(await resolveProductJourneyArtifact(request.path, {
-          executable: request.name === "MCP sidecar",
+          executable: request.executable === true,
+          root,
+          platform,
         })),
       });
     } catch (error) {
@@ -438,10 +505,6 @@ export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS =
 /** C2-ZC production reachability is a distinct acceptance journey. */
 export const NARRATIVE_C2ZC_PRODUCT_JOURNEYS = [
   {
-    id: "c2-zc-renderer-mcp-dml-denial",
-    run: runC2ZcRendererMcpDmlDenialJourney,
-  },
-  {
     id: C2ZC_PRODUCT_JOURNEY_ID,
     run: (harness) =>
       runC2ZcCanonicalAuthorityJourney(harness, configureWorkspace),
@@ -450,6 +513,10 @@ export const NARRATIVE_C2ZC_PRODUCT_JOURNEYS = [
     id: "c2-zc-post-marker-lifecycle",
     run: (harness) =>
       runC2ZcPostMarkerLifecycleJourney(harness, configureWorkspace),
+  },
+  {
+    id: "c2-zc-renderer-mcp-dml-denial",
+    run: runC2ZcRendererMcpDmlDenialJourney,
   },
 ];
 
@@ -2359,12 +2426,15 @@ function normalizeProductJourneyDiagnostics(diagnostics) {
   };
 }
 
-function resolveResultsPath(resultsPath) {
-  if (resultsPath) return path.resolve(rootDir, resultsPath);
+function resolveResultsPath(
+  resultsPath,
+  { root = rootDir, environment = process.env } = {},
+) {
+  if (resultsPath) return path.resolve(root, resultsPath);
   const artifactDir =
-    process.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ??
-    DEFAULT_PRODUCT_JOURNEY_ARTIFACT_DIR;
-  return path.resolve(rootDir, artifactDir, "results.json");
+    environment.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ??
+    path.join(root, ".artifacts", "product-journeys");
+  return path.resolve(root, artifactDir, "results.json");
 }
 
 async function writeResults(resultsPath, report) {
@@ -2380,6 +2450,121 @@ function normalizeArtifactEvidence(value) {
   return [];
 }
 
+function artifactIdentityKeysMatch(identity) {
+  return (
+    identity &&
+    typeof identity === "object" &&
+    !Array.isArray(identity) &&
+    JSON.stringify(Object.keys(identity).sort()) ===
+      JSON.stringify([...PRODUCT_JOURNEY_ARTIFACT_KEYS].sort())
+  );
+}
+
+function isValidProductJourneyArtifact(identity) {
+  return (
+    artifactIdentityKeysMatch(identity) &&
+    typeof identity.name === "string" &&
+    identity.name.length > 0 &&
+    typeof identity.path === "string" &&
+    identity.path.length > 0 &&
+    typeof identity.requestedPath === "string" &&
+    identity.requestedPath.length > 0 &&
+    typeof identity.realPath === "string" &&
+    identity.realPath.length > 0 &&
+    !identity.path.includes("\0") &&
+    !identity.requestedPath.includes("\0") &&
+    !identity.realPath.includes("\0") &&
+    Number.isSafeInteger(identity.size) &&
+    identity.size >= 0 &&
+    /^sha256:[0-9a-f]{64}$/u.test(String(identity.sha256 ?? ""))
+  );
+}
+
+function artifactIdentityEqual(left, right) {
+  return (
+    isValidProductJourneyArtifact(left) &&
+    isValidProductJourneyArtifact(right) &&
+    PRODUCT_JOURNEY_ARTIFACT_KEYS.every((field) => left[field] === right[field])
+  );
+}
+
+function assertProductJourneyArtifactSet(
+  actual,
+  expected,
+  label = "product journey artifacts",
+) {
+  if (!Array.isArray(actual) || !Array.isArray(expected)) {
+    throw new Error(`${label} must be an artifact array`);
+  }
+  if (actual.length !== expected.length) {
+    throw new Error(
+      `${label} must contain exactly ${expected.length} artifacts (received ${actual.length})`,
+    );
+  }
+  const expectedNames = expected.map((artifact) => artifact.name);
+  const actualNames = actual.map((artifact) => artifact?.name);
+  if (
+    new Set(actualNames).size !== actualNames.length ||
+    JSON.stringify(actualNames) !== JSON.stringify(expectedNames)
+  ) {
+    throw new Error(
+      `${label} names/set mismatch: expected ${expectedNames.join(", ")}, received ${actualNames.join(", ")}`,
+    );
+  }
+  for (const [index, artifact] of actual.entries()) {
+    if (!isValidProductJourneyArtifact(artifact)) {
+      throw new Error(`${label} entry ${index} has invalid identity`);
+    }
+    if (!artifactIdentityEqual(artifact, expected[index])) {
+      throw new Error(
+        `${label} entry ${artifact.name} path/realPath/size/sha256 mismatch`,
+      );
+    }
+  }
+  return actual;
+}
+
+export function assertProductJourneyArtifactEvidence(actual, expected, label) {
+  return assertProductJourneyArtifactSet(actual, expected, label);
+}
+
+async function resolveAndVerifyProductJourneyArtifacts(
+  journeys,
+  {
+    catalog = PRODUCT_JOURNEY_CATALOG,
+    root = rootDir,
+    env = process.env,
+    platform = process.platform,
+    preflightArtifacts,
+  } = {},
+) {
+  const requests = resolveProductJourneyArtifactRequests(journeys, {
+    catalog,
+    root,
+    env,
+    platform,
+  });
+  const resolved = [];
+  for (const request of requests) {
+    resolved.push({
+      name: request.name,
+      ...(await resolveProductJourneyArtifact(request.path, {
+        executable: request.executable === true,
+        root,
+        platform,
+      })),
+    });
+  }
+  if (preflightArtifacts !== undefined) {
+    assertProductJourneyArtifactSet(
+      normalizeArtifactEvidence(preflightArtifacts),
+      resolved,
+      "product journey preflight artifacts",
+    );
+  }
+  return resolved;
+}
+
 function hasC2ZcAcceptanceJourney(journeys) {
   const selectedIds = new Set(journeys.map((journey) => journey?.id));
   return C2ZC_PRODUCT_JOURNEY_IDS.every((id) => selectedIds.has(id));
@@ -2389,26 +2574,12 @@ function requiresC2ZcRustAcceptance({ journeys, selectionName }) {
   return selectionName === "c2-zc" || hasC2ZcAcceptanceJourney(journeys);
 }
 
-export function readProductJourneyBuildReceipt() {
-  const raw = process.env[PRODUCT_JOURNEY_BUILD_RECEIPT_ENV];
+export function readProductJourneyBuildReceipt(environment = process.env) {
+  const raw = environment[PRODUCT_JOURNEY_BUILD_RECEIPT_ENV];
   if (!raw) return null;
   try {
     const receipt = JSON.parse(raw);
-    if (
-      !receipt ||
-      typeof receipt !== "object" ||
-      Array.isArray(receipt) ||
-      JSON.stringify(Object.keys(receipt).sort()) !==
-        JSON.stringify([...PRODUCT_JOURNEY_BUILD_RECEIPT_KEYS].sort()) ||
-      receipt.version !== 1 ||
-      receipt.verified !== true ||
-      receipt.source !== "local-ci-candidate" ||
-      !isValidProductJourneyCandidate(receipt.candidate) ||
-      receipt.candidate.worktreeClean !== true ||
-      receipt.candidate.resolvedHeadSha !== receipt.candidate.currentHeadSha
-    ) {
-      return null;
-    }
+    assertProductJourneyBuildReceipt(receipt);
     return receipt;
   } catch {
     return null;
@@ -2461,9 +2632,71 @@ function productJourneyCandidatesEqual(left, right) {
   );
 }
 
-async function readC2ZcRustAcceptanceEvidence({ required }) {
+function assertProductJourneyBuildReceipt(
+  receipt,
+  {
+    candidate = null,
+    artifacts = null,
+    label = "product journey build receipt",
+  } = {},
+) {
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    Array.isArray(receipt) ||
+    JSON.stringify(Object.keys(receipt).sort()) !==
+      JSON.stringify([...PRODUCT_JOURNEY_BUILD_RECEIPT_KEYS].sort()) ||
+    receipt.version !== 1 ||
+    receipt.verified !== true ||
+    receipt.source !== "local-ci-candidate" ||
+    !isValidProductJourneyCandidate(receipt.candidate) ||
+    receipt.candidate.worktreeClean !== true ||
+    receipt.candidate.resolvedHeadSha !== receipt.candidate.currentHeadSha ||
+    !Array.isArray(receipt.artifacts) ||
+    receipt.artifacts.length === 0
+  ) {
+    throw new Error(`${label} must include exact verified artifact identities`);
+  }
+  assertProductJourneyArtifactSet(
+    receipt.artifacts,
+    receipt.artifacts,
+    `${label} artifacts`,
+  );
+  if (
+    candidate &&
+    !productJourneyCandidatesEqual(receipt.candidate, candidate)
+  ) {
+    throw new Error(`${label} is bound to a different candidate`);
+  }
+  if (artifacts) {
+    assertProductJourneyArtifactSet(
+      receipt.artifacts,
+      artifacts,
+      `${label} artifacts`,
+    );
+  }
+  return receipt;
+}
+
+function assertProductJourneyBuildReceiptArtifacts(
+  buildReceipt,
+  resolvedArtifacts,
+  { required = false, candidate = null } = {},
+) {
+  if (!required && !buildReceipt) return;
+  assertProductJourneyBuildReceipt(buildReceipt, {
+    candidate,
+    artifacts: resolvedArtifacts,
+  });
+}
+
+async function readC2ZcRustAcceptanceEvidence({
+  required,
+  root = rootDir,
+  environment = process.env,
+}) {
   const configuredPath =
-    process.env[C2ZC_RUST_RECEIPT_PATH_ENV] ??
+    environment[C2ZC_RUST_RECEIPT_PATH_ENV] ??
     (required ? C2ZC_RUST_ACCEPTANCE_RECEIPT_PATH : null);
   if (!configuredPath) {
     if (required) {
@@ -2478,16 +2711,16 @@ async function readC2ZcRustAcceptanceEvidence({ required }) {
     };
   }
   const candidate = await resolveC2ZcRustAcceptanceCandidate({
-    root: rootDir,
-    requestedBase: process.env[C2ZC_RUST_BASE_ENV] ?? "origin/master",
-    requestedHead: process.env[C2ZC_RUST_HEAD_ENV] ?? "HEAD",
+    root,
+    requestedBase: environment[C2ZC_RUST_BASE_ENV] ?? "origin/master",
+    requestedHead: environment[C2ZC_RUST_HEAD_ENV] ?? "HEAD",
   });
   const verified = await verifyC2ZcRustAcceptanceReceipt({
-    root: rootDir,
+    root,
     candidate,
     catalogDigest: C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
     receiptPath: configuredPath,
-    receiptSha256: process.env[C2ZC_RUST_RECEIPT_SHA256_ENV] ?? null,
+    receiptSha256: environment[C2ZC_RUST_RECEIPT_SHA256_ENV] ?? null,
   });
   if (!productJourneyCandidatesEqual(candidate, verified.receipt.candidate)) {
     throw new Error(
@@ -2523,7 +2756,10 @@ export function refreshProductJourneyOutcome(report) {
     report.acceptanceRequired !== true ||
     (report.buildReceipt?.verified === true &&
       isValidProductJourneyCandidate(report.buildReceipt.candidate) &&
-      report.buildReceipt.candidate.worktreeClean === true);
+      report.buildReceipt.candidate.worktreeClean === true &&
+      Array.isArray(report.buildReceipt.artifacts) &&
+      report.buildReceipt.artifacts.length > 0 &&
+      report.buildReceipt.artifacts.every(isValidProductJourneyArtifact));
   const candidateBindingComplete =
     report.acceptanceRequired !== true ||
     (productJourneyCandidatesEqual(
@@ -2552,8 +2788,13 @@ export function refreshProductJourneyOutcome(report) {
   return report;
 }
 
-async function writeAuditManifest(outputPath, report, artifactEvidence) {
-  const results = await resolveProductJourneyArtifact(outputPath);
+async function writeAuditManifest(
+  outputPath,
+  report,
+  artifactEvidence,
+  { root = rootDir } = {},
+) {
+  const results = await resolveProductJourneyArtifact(outputPath, { root });
   const manifestPath = path.join(path.dirname(outputPath), "manifest.json");
   const manifest = {
     version: PRODUCT_JOURNEY_AUDIT_MANIFEST_VERSION,
@@ -2582,11 +2823,16 @@ async function writeAuditManifest(outputPath, report, artifactEvidence) {
   return manifestPath;
 }
 
-async function writeFailureReport(outputPath, report, artifactEvidence) {
+async function writeFailureReport(
+  outputPath,
+  report,
+  artifactEvidence,
+  { root = rootDir } = {},
+) {
   refreshProductJourneyOutcome(report);
   await writeResults(outputPath, report);
   try {
-    await writeAuditManifest(outputPath, report, artifactEvidence);
+    await writeAuditManifest(outputPath, report, artifactEvidence, { root });
   } catch (error) {
     // Preserve the bounded journey diagnostics and the original failure. The
     // manifest error is visible without replacing the useful failure record.
@@ -2613,9 +2859,13 @@ export async function runProductJourneys({
   expectedCatalogDigest = process.env.GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST,
   requireAll = process.env.GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL === "true",
   selectionName = process.env.GRIMODEX_PRODUCT_JOURNEY_SET ?? "",
+  root = rootDir,
+  environment = process.env,
+  rustAcceptanceEvidence = null,
+  buildReceipt = null,
   resultsPath,
 } = {}) {
-  const outputPath = resolveResultsPath(resultsPath);
+  const outputPath = resolveResultsPath(resultsPath, { root, environment });
   const catalogDigest =
     catalog === PRODUCT_JOURNEY_CATALOG
       ? PRODUCT_JOURNEY_CATALOG_DIGEST
@@ -2631,7 +2881,7 @@ export async function runProductJourneys({
       selectionName,
     }),
     rustAcceptanceComplete: false,
-    buildReceipt: readProductJourneyBuildReceipt(),
+    buildReceipt: buildReceipt ?? readProductJourneyBuildReceipt(environment),
     acceptanceComplete: false,
     c2zcRustAcceptance: null,
     selectionBinding: {
@@ -2662,9 +2912,13 @@ export async function runProductJourneys({
         `product journey catalog digest mismatch: expected ${expectedCatalogDigest}, observed ${catalogDigest}`,
       );
     }
-    report.c2zcRustAcceptance = await readC2ZcRustAcceptanceEvidence({
-      required: report.acceptanceRequired,
-    });
+    report.c2zcRustAcceptance =
+      rustAcceptanceEvidence ??
+      (await readC2ZcRustAcceptanceEvidence({
+        required: report.acceptanceRequired,
+        root,
+        environment,
+      }));
     report.rustAcceptanceComplete =
       report.acceptanceRequired !== true ||
       (report.c2zcRustAcceptance.required === true &&
@@ -2672,15 +2926,46 @@ export async function runProductJourneys({
     const preflight =
       assertArtifacts ??
       ((selectedJourneys) =>
-        assertBuildArtifacts(selectedJourneys, { catalog }));
+        assertBuildArtifacts(selectedJourneys, {
+          catalog,
+          root,
+          env: environment,
+        }));
     artifactEvidence = await preflight(journeys);
+    const resolvedArtifacts = await resolveAndVerifyProductJourneyArtifacts(
+      journeys,
+      {
+        catalog,
+        root,
+        env: environment,
+        preflightArtifacts: artifactEvidence,
+      },
+    );
+    if (report.acceptanceRequired === true) {
+      assertProductJourneyBuildReceiptArtifacts(
+        report.buildReceipt,
+        resolvedArtifacts,
+        {
+          required: true,
+          candidate: report.c2zcRustAcceptance?.candidate,
+        },
+      );
+    } else if (report.buildReceipt) {
+      assertProductJourneyBuildReceiptArtifacts(
+        report.buildReceipt,
+        resolvedArtifacts,
+        {
+          candidate: report.c2zcRustAcceptance?.candidate,
+        },
+      );
+    }
   } catch (error) {
     report.status = "failed";
     report.error = serializeError(error);
     report.journeys.push(
       ...notRunResults(journeys, "Artifact preflight failed."),
     );
-    await writeFailureReport(outputPath, report, artifactEvidence);
+    await writeFailureReport(outputPath, report, artifactEvidence, { root });
     throw error;
   }
 
@@ -2688,8 +2973,10 @@ export async function runProductJourneys({
     createHarness ??
     (() =>
       createProductJourneyHarness({
-        mainCjs,
+        mainCjs: path.join(root, "dist-electron", "main.cjs"),
       }));
+  const continueAfterJourneyFailure = selectionName === "c2-zc";
+  let firstJourneyFailure = null;
   for (const [index, journey] of journeys.entries()) {
     const startedAt = clock();
     let durationMs = null;
@@ -2741,12 +3028,6 @@ export async function runProductJourneys({
       } else {
         report.journeys.push(failedResult);
       }
-      report.journeys.push(
-        ...notRunResults(
-          journeys.slice(index + 1),
-          `Fail-fast after ${journey.id}.`,
-        ),
-      );
       if (harness) {
         try {
           await harness.dispose({ success: false, name: journey.id });
@@ -2774,22 +3055,75 @@ export async function runProductJourneys({
           );
         }
       }
-      await writeFailureReport(outputPath, report, artifactEvidence);
-      throw new Error(`${journey.id}: ${error?.stack ?? error}`, {
-        cause: error,
-      });
+      const wrappedError = new Error(
+        `${journey.id}: ${error?.stack ?? error}`,
+        {
+          cause: error,
+        },
+      );
+      if (continueAfterJourneyFailure) {
+        firstJourneyFailure ??= wrappedError;
+        await writeResults(outputPath, report);
+        log(`${journey.id}: FAIL (continuing focused C2-ZC lanes)`);
+        continue;
+      }
+      report.journeys.push(
+        ...notRunResults(
+          journeys.slice(index + 1),
+          `Fail-fast after ${journey.id}.`,
+        ),
+      );
+      await writeFailureReport(outputPath, report, artifactEvidence, { root });
+      throw wrappedError;
     }
+  }
+  try {
+    // Re-read every configured artifact after the last lane.  This closes the
+    // window in which a build output could be replaced while journeys were
+    // running, before any acceptance bit or audit manifest is emitted.
+    artifactEvidence = await resolveAndVerifyProductJourneyArtifacts(journeys, {
+      catalog,
+      root,
+      env: environment,
+      preflightArtifacts: artifactEvidence,
+    });
+    if (report.acceptanceRequired === true) {
+      assertProductJourneyBuildReceiptArtifacts(
+        report.buildReceipt,
+        artifactEvidence,
+        {
+          required: true,
+          candidate: report.c2zcRustAcceptance?.candidate,
+        },
+      );
+    } else if (report.buildReceipt) {
+      assertProductJourneyBuildReceiptArtifacts(
+        report.buildReceipt,
+        artifactEvidence,
+        {
+          candidate: report.c2zcRustAcceptance?.candidate,
+        },
+      );
+    }
+  } catch (error) {
+    report.status = "failed";
+    report.error = serializeError(error);
+    await writeFailureReport(outputPath, report, artifactEvidence, { root });
+    throw error;
   }
   refreshProductJourneyOutcome(report);
   await writeResults(outputPath, report);
   try {
-    await writeAuditManifest(outputPath, report, artifactEvidence);
+    await writeAuditManifest(outputPath, report, artifactEvidence, { root });
   } catch (error) {
     report.status = "failed";
     report.error = serializeError(error);
     refreshProductJourneyOutcome(report);
     await writeResults(outputPath, report);
     throw error;
+  }
+  if (firstJourneyFailure) {
+    throw firstJourneyFailure;
   }
   return report;
 }

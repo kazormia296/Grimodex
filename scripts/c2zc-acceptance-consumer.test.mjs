@@ -72,21 +72,6 @@ test("DML consumer never invokes core quiescence request/read methods", async ()
   assert.deepEqual(calls, { awaitQuiescence: 0, readQuiescence: 0 });
 });
 
-test("DML consumer rejects protected renderer ledger drift during a denial", () => {
-  const transition = dmlContract.classifyDmlSnapshotTransition({
-    before: [{ id: "same" }],
-    after: [{ id: "same" }],
-    settledAfter: [{ id: "same" }],
-    beforeLedger: { projects: ["A"], feedHead: 1 },
-    afterLedger: { projects: ["A"], feedHead: 2 },
-    settledAfterLedger: { projects: ["A"], feedHead: 2 },
-    beforeFingerprint: "stable",
-    afterFingerprint: "stable",
-  });
-  assert.equal(transition.ledgerChangedDuringProbe, true);
-  assert.equal(transition.ok, false);
-});
-
 function heldEvidenceFixture() {
   const requestNonce = "00000000-0000-4000-8000-000000000021";
   const phase = "c2-zc-canonical-authority-cutover/open-held-freshness";
@@ -399,6 +384,16 @@ test("candidate-bound acceptance rejects a Rust/build candidate mismatch", () =>
       verified: true,
       source: "local-ci-candidate",
       candidate: rustCandidate,
+      artifacts: [
+        {
+          name: "fixture",
+          path: "/tmp/fixture",
+          requestedPath: "/tmp/fixture",
+          realPath: "/tmp/fixture",
+          size: 0,
+          sha256: `sha256:${"0".repeat(64)}`,
+        },
+      ],
     },
   };
   productRunner.refreshProductJourneyOutcome(report);
@@ -435,6 +430,16 @@ test("standalone build receipts are exact, clean-candidate evidence only", () =>
     verified: true,
     source: "local-ci-candidate",
     candidate,
+    artifacts: [
+      {
+        name: "fixture",
+        path: "/tmp/fixture",
+        requestedPath: "/tmp/fixture",
+        realPath: "/tmp/fixture",
+        size: 0,
+        sha256: `sha256:${"0".repeat(64)}`,
+      },
+    ],
   };
   const envKey = "GRIMODEX_PRODUCT_JOURNEY_BUILD_RECEIPT";
   const previous = process.env[envKey];
@@ -449,6 +454,11 @@ test("standalone build receipts are exact, clean-candidate evidence only", () =>
   };
   withReceipt(receipt, () => {
     assert.deepEqual(productRunner.readProductJourneyBuildReceipt(), receipt);
+  });
+  const legacyReceipt = { ...receipt };
+  delete legacyReceipt.artifacts;
+  withReceipt(legacyReceipt, () => {
+    assert.equal(productRunner.readProductJourneyBuildReceipt(), null);
   });
   withReceipt({ ...receipt, foreignKey: true }, () => {
     assert.equal(productRunner.readProductJourneyBuildReceipt(), null);

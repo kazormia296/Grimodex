@@ -393,6 +393,29 @@ rules:
         test: c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes
         fullTestName: execute::tests::c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes
         requiresReceipt: true
+      - id: c2-zc-readiness-corruption-fail-closed
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --lib
+            - narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs
+          test: rebuild_outcome_tamper_and_missing_evidence_fail_closed
+          fullTestName: narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed
+          proof: direct persisted Rebuild evidence corruption blocks readiness
+        source: src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs
+        test: rebuild_outcome_tamper_and_missing_evidence_fail_closed
+        fullTestName: narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed
+        requiresReceipt: true
     requirements:
       - GDX-POLICY-001
       - GDX-TRACE-001

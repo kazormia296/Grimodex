@@ -695,6 +695,38 @@ test("C2-ZC impact registration is structured and rejects gate command/test/rece
     rule.acceptanceGates.map((gate) => gate.id),
     C2ZC_RUST_ACCEPTANCE_GATES.map((gate) => gate.id),
   );
+  assert.deepEqual(rule.acceptanceGates[2], {
+    id: "c2-zc-readiness-corruption-fail-closed",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
+      test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+      fullTestName:
+        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+      proof: "direct persisted Rebuild evidence corruption blocks readiness",
+    },
+    source:
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
+    test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+    fullTestName:
+      "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+    requiresReceipt: true,
+  });
   assert.doesNotThrow(() => validateAcceptanceGateRegistration({ map }));
 
   for (const mutate of [

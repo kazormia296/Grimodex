@@ -16,6 +16,68 @@ import {
 
 const C2ZC_CUTOVER_MIGRATION_ID = "narrative-c2-canonical-freshness-v1";
 const C2ZC_CUTOVER_CONTRACT_VERSION = 1;
+const C2ZC_SYSTEM_WORK_KEYS = Object.freeze([
+  "trigger",
+  "canonicalWorkKey",
+  "authorityId",
+  "generation",
+  "productJourneyBarrierId",
+  "correlation",
+]);
+
+function c2zcSystemWorkMarker(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  let marker = value.systemWork;
+  if (marker === undefined && value.specJson !== undefined) {
+    const spec = parseObject(value.specJson, `${label} specJson`);
+    marker = spec.systemWork;
+  }
+  if (marker === undefined && value.spec !== undefined) {
+    const spec = parseObject(value.spec, `${label} spec`);
+    marker = spec.systemWork;
+  }
+  if (marker === undefined || marker === null) return null;
+  if (!marker || typeof marker !== "object" || Array.isArray(marker)) {
+    throw new Error(`${label} marker must be an object`);
+  }
+  assertExactKeys(marker, C2ZC_SYSTEM_WORK_KEYS, label);
+  if (marker.trigger !== "workspace-opened") {
+    throw new Error(`${label} trigger is invalid`);
+  }
+  for (const key of [
+    "canonicalWorkKey",
+    "authorityId",
+    "productJourneyBarrierId",
+    "correlation",
+  ]) {
+    if (
+      typeof marker[key] !== "string" ||
+      marker[key].length === 0 ||
+      marker[key].trim() !== marker[key] ||
+      marker[key].includes("\u0000")
+    ) {
+      throw new Error(`${label} ${key} is invalid`);
+    }
+  }
+  if (!Number.isSafeInteger(marker.generation) || marker.generation <= 0) {
+    throw new Error(`${label} generation is invalid`);
+  }
+  if (
+    typeof value.runKind === "string" &&
+    typeof value.projectId === "string" &&
+    typeof value.workKey === "string"
+  ) {
+    const base = `narrative-maintenance:v1/${value.runKind}/${value.projectId}/${value.workKey}`;
+    const expected =
+      value.semanticEpochId === undefined || value.semanticEpochId === null
+        ? base
+        : `${base}/epoch/${value.semanticEpochId}`;
+    if (marker.canonicalWorkKey !== expected) {
+      throw new Error(`${label} canonicalWorkKey is not bound to the Run`);
+    }
+  }
+  return Object.freeze({ ...marker });
+}
 const C2ZC_FRESHNESS_CONSUMER_KIND = "application";
 export const C2ZC_VERIFY_CHECK_NAMES = Object.freeze([
   "producer-and-generation-consistency",
@@ -686,28 +748,9 @@ function assertC2ZcRebuildPublisherProvenance(
     throw new Error(`${label} Rebuild publisher identity is invalid`);
   }
   const spec = parseObject(producer.specJson, `${label} Rebuild Run specJson`);
-  let baseSpec = spec;
-  if (Object.hasOwn(spec, "systemWork")) {
-    const marker = spec.systemWork;
-    if (!marker || typeof marker !== "object" || Array.isArray(marker)) {
-      throw new Error(`${label} Rebuild systemWork marker is malformed`);
-    }
-    const markerKeys = Object.keys(marker).sort();
-    const allowedMarkerKeys = [
-      "canonicalWorkKey",
-      "correlation",
-      "generation",
-      "kind",
-      "owner",
-      "projectId",
-      "trigger",
-    ].sort();
-    if (markerKeys.some((key) => !allowedMarkerKeys.includes(key))) {
-      throw new Error(`${label} Rebuild systemWork marker has unknown fields`);
-    }
-    baseSpec = { ...spec };
-    delete baseSpec.systemWork;
-  }
+  const marker = c2zcSystemWorkMarker(producer, `${label} Rebuild systemWork`);
+  const baseSpec = { ...spec };
+  if (marker) delete baseSpec.systemWork;
   if (
     canonicalJson(baseSpec) !== "{}" ||
     producer.specDigest !== sha256Json(baseSpec)
@@ -857,29 +900,11 @@ function assertC2ZcIncrementalPublisherProvenance(
     producer.specJson,
     `${label} publisher Run specJson`,
   );
-  if (Object.hasOwn(spec, "systemWork")) {
-    const systemWork = parseObject(
-      spec.systemWork,
-      `${label} publisher Run systemWork`,
-    );
-    if (
-      Object.keys(systemWork).some(
-        (key) =>
-          ![
-            "canonicalWorkKey",
-            "correlation",
-            "generation",
-            "kind",
-            "owner",
-            "projectId",
-            "trigger",
-          ].includes(key),
-      )
-    ) {
-      throw new Error(`${label} publisher Run systemWork has unknown fields`);
-    }
-    delete spec.systemWork;
-  }
+  const marker = c2zcSystemWorkMarker(
+    producer,
+    `${label} publisher Run systemWork`,
+  );
+  if (marker) delete spec.systemWork;
   assertExactKeys(
     spec,
     [

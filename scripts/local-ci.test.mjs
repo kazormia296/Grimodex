@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   access,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -73,7 +74,9 @@ function exactRustGateOutput(gateId) {
   const fullTestName =
     gateId === "c2-zc-dml-native-owned-table-denial"
       ? "execute::tests::c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes"
-      : "canonical_read_has_no_legacy_fallback_after_generic_cutover";
+      : gateId === "c2-zc-readiness-corruption-fail-closed"
+        ? "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed"
+        : "canonical_read_has_no_legacy_fallback_after_generic_cutover";
   return `test ${fullTestName} ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n`;
 }
 
@@ -325,13 +328,172 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
     productCommand.env.GRIMODEX_C2ZC_RUST_RECEIPT_SHA256,
     receipt.receiptSha256,
   );
-  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 2);
+  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 3);
   assert.equal(C2ZC_RUST_ACCEPTANCE_GATES[0].argv.command, "cargo");
   assert.match(
     C2ZC_RUST_ACCEPTANCE_GATES[0].argv.args.join(" "),
     /canonical_read_has_no_legacy_fallback_after_generic_cutover/,
   );
   assert.equal(C2ZC_RUST_ACCEPTANCE_GATES[0].contract.noLegacyFallback, true);
+  assert.equal(
+    C2ZC_RUST_ACCEPTANCE_GATES[2].id,
+    "c2-zc-readiness-corruption-fail-closed",
+  );
+  assert.deepEqual(C2ZC_RUST_ACCEPTANCE_GATES[2].argv.args, [
+    "test",
+    "--manifest-path",
+    "src-tauri/Cargo.toml",
+    "-p",
+    "grimodex-db",
+    "--lib",
+    "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+    "--",
+    "--exact",
+  ]);
+  assert.equal(
+    C2ZC_RUST_ACCEPTANCE_GATES[2].source,
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
+  );
+  assert.equal(
+    C2ZC_RUST_ACCEPTANCE_GATES[2].fullTestName,
+    "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+  );
+  assert.equal(
+    C2ZC_RUST_ACCEPTANCE_GATES[2].contract.proof,
+    "direct persisted Rebuild evidence corruption blocks readiness",
+  );
+});
+
+test("local CI records the selected C2-ZC build artifact identities in the product receipt", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-c2zc-artifacts-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const buildRoot = path.join(temporaryRoot, "build");
+  const mainPath = path.join(buildRoot, "dist-electron", "main.cjs");
+  const rendererPath = path.join(buildRoot, "dist", "index.html");
+  const nativePath = path.join(buildRoot, "custom", "grimodex-node.node");
+  await Promise.all([
+    mkdir(path.dirname(mainPath), { recursive: true }),
+    mkdir(path.dirname(rendererPath), { recursive: true }),
+    mkdir(path.dirname(nativePath), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(mainPath, "main"),
+    writeFile(rendererPath, "renderer"),
+    writeFile(nativePath, "native"),
+  ]);
+  const registry = await readRegistry();
+  registry.stages["electron-product-journeys"] = {
+    label: "C2-ZC product journeys",
+    env: {
+      GRIMODEX_PRODUCT_JOURNEY_SET: "c2-zc",
+      GRIMODEX_PRODUCT_JOURNEY_IDS: "",
+      GRIMODEX_NODE_PATH: nativePath,
+    },
+    commands: [
+      { label: "build", command: "build", args: [], cwd: "." },
+      { label: "journeys", command: "journeys", args: [], cwd: "." },
+    ],
+  };
+  const full = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const productStage = full.stages.find(
+    (stage) => stage.id === "electron-product-journeys",
+  );
+  const candidate = completeCandidate({
+    requestedBase: "upstream/release-candidate",
+    requestedHead: "feature/c2zc-review",
+  });
+  const executed = [];
+  await runLocalCiPlan(
+    { ...full, stages: [productStage] },
+    {
+      candidate,
+      root: buildRoot,
+      executeCommand: async (command) => {
+        executed.push(command);
+        return { durationMs: 1, exitCode: 0, signal: null };
+      },
+    },
+  );
+  const receipt = JSON.parse(
+    executed[1].env.GRIMODEX_PRODUCT_JOURNEY_BUILD_RECEIPT,
+  );
+  assert.deepEqual(receipt.candidate, candidate);
+  assert.deepEqual(
+    receipt.artifacts.map((artifact) => artifact.name),
+    ["Electron main", "renderer", "N-API native module"],
+  );
+  assert.ok(
+    receipt.artifacts.every((artifact) => Number.isSafeInteger(artifact.size)),
+  );
+  assert.equal(
+    receipt.artifacts.find(
+      (artifact) => artifact.name === "N-API native module",
+    ).realPath,
+    await realpath(nativePath),
+  );
+});
+
+test("local CI does not self-attest a product build receipt before the build command passes", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-build-stage-binding-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const mainPath = path.join(temporaryRoot, "dist-electron", "main.cjs");
+  const rendererPath = path.join(temporaryRoot, "dist", "index.html");
+  const nativePath = path.join(temporaryRoot, "custom", "grimodex-node.node");
+  await Promise.all([
+    mkdir(path.dirname(mainPath), { recursive: true }),
+    mkdir(path.dirname(rendererPath), { recursive: true }),
+    mkdir(path.dirname(nativePath), { recursive: true }),
+    writeFile(mainPath, "main"),
+    writeFile(rendererPath, "renderer"),
+    writeFile(nativePath, "native"),
+  ]);
+  const registry = await readRegistry();
+  registry.stages["electron-product-journeys"] = {
+    label: "C2-ZC product journeys",
+    env: {
+      GRIMODEX_PRODUCT_JOURNEY_SET: "c2-zc",
+      GRIMODEX_PRODUCT_JOURNEY_IDS: "",
+      GRIMODEX_NODE_PATH: nativePath,
+    },
+    commands: [
+      { label: "build", command: "build", args: [], cwd: "." },
+      { label: "journeys", command: "journeys", args: [], cwd: "." },
+    ],
+  };
+  const full = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const productStage = full.stages.find(
+    (stage) => stage.id === "electron-product-journeys",
+  );
+  const result = await runLocalCiPlan(
+    { ...full, stages: [productStage] },
+    {
+      candidate: completeCandidate(),
+      root: temporaryRoot,
+      executeCommand: async (command) =>
+        command.label === "build"
+          ? { durationMs: 1, exitCode: 1, signal: null }
+          : { durationMs: 1, exitCode: 0, signal: null },
+    },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.stages[0].commands[1].status, "not-run");
+  assert.equal(
+    result.stages[0].commands[1].env.GRIMODEX_PRODUCT_JOURNEY_BUILD_RECEIPT,
+    undefined,
+  );
 });
 
 test("local CI binds custom comparison base/head into both Rust and product journey commands", async (t) => {
@@ -658,13 +820,17 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   const resultsPath = path.join(artifactRoot, "results.json");
   const manifestPath = path.join(artifactRoot, "manifest.json");
   const buildRoot = path.join(temporaryRoot, "build");
-  const mainPath = path.join(buildRoot, "main.cjs");
-  const rendererPath = path.join(buildRoot, "index.html");
+  const mainPath = path.join(temporaryRoot, "dist-electron", "main.cjs");
+  const rendererPath = path.join(temporaryRoot, "dist", "index.html");
   const nativePath = path.join(buildRoot, "grimodex-node.node");
   const mcpRequestedPath = path.join(buildRoot, "grimodex-mcp");
   const mcpTargetA = path.join(buildRoot, "grimodex-mcp-a");
   const mcpTargetB = path.join(buildRoot, "grimodex-mcp-b");
-  await mkdir(buildRoot, { recursive: true });
+  await Promise.all([
+    mkdir(buildRoot, { recursive: true }),
+    mkdir(path.dirname(mainPath), { recursive: true }),
+    mkdir(path.dirname(rendererPath), { recursive: true }),
+  ]);
   await Promise.all([
     writeFile(mainPath, "electron main", "utf8"),
     writeFile(rendererPath, "renderer", "utf8"),
@@ -672,6 +838,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     writeFile(mcpTargetA, "mcp sidecar A", "utf8"),
     writeFile(mcpTargetB, "mcp sidecar B", "utf8"),
   ]);
+  await Promise.all([chmod(mcpTargetA, 0o755), chmod(mcpTargetB, 0o755)]);
   await symlink(path.basename(mcpTargetA), mcpRequestedPath);
   await mkdir(artifactRoot, { recursive: true });
   const journeyIds = PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id);
@@ -701,7 +868,14 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     const sha256 = `sha256:${createHash("sha256")
       .update(await readFile(realPath))
       .digest("hex")}`;
-    return { name, path: requestedPath, requestedPath, realPath, sha256 };
+    return {
+      name,
+      path: requestedPath,
+      requestedPath,
+      realPath,
+      size: (await readFile(realPath)).byteLength,
+      sha256,
+    };
   };
   const buildArtifacts = await Promise.all([
     buildArtifact("Electron main", mainPath),
@@ -740,6 +914,8 @@ test("Full product journey evidence binds result and manifest bytes to the recei
             env: {
               GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR:
                 ".artifacts/product-journeys",
+              GRIMODEX_NODE_PATH: nativePath,
+              GRIMODEX_MCP_PATH: mcpRequestedPath,
             },
           },
         ],
@@ -784,7 +960,35 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   );
   await assert.rejects(
     collectProductJourneyEvidence(plan, { root: temporaryRoot }),
-    /exactly the canonical build artifacts/i,
+    /exactly .*build artifacts|missing/i,
+  );
+  await writeFile(manifestPath, manifestText, "utf8");
+
+  const reorderedManifest = JSON.parse(manifestText);
+  reorderedManifest.artifacts.reverse();
+  await writeFile(
+    manifestPath,
+    `${JSON.stringify(reorderedManifest, null, 2)}\n`,
+    "utf8",
+  );
+  await assert.rejects(
+    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    /exactly|order|artifact/i,
+    "manifest artifact order mutation must be rejected",
+  );
+  await writeFile(manifestPath, manifestText, "utf8");
+
+  const staleSizeManifest = JSON.parse(manifestText);
+  staleSizeManifest.artifacts[0].size += 1;
+  await writeFile(
+    manifestPath,
+    `${JSON.stringify(staleSizeManifest, null, 2)}\n`,
+    "utf8",
+  );
+  await assert.rejects(
+    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    /size|artifact/i,
+    "manifest artifact size mutation must be rejected",
   );
   await writeFile(manifestPath, manifestText, "utf8");
 
@@ -819,14 +1023,14 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   );
   await assert.rejects(
     collectProductJourneyEvidence(plan, { root: temporaryRoot }),
-    /changed after preflight/i,
+    /changed after preflight|artifact.*mismatch/i,
   );
   await writeFile(manifestPath, manifestText, "utf8");
 
   await writeFile(mainPath, "electron main tampered", "utf8");
   await assert.rejects(
     collectProductJourneyEvidence(plan, { root: temporaryRoot }),
-    /changed after preflight/i,
+    /changed after preflight|artifact.*mismatch/i,
   );
   await writeFile(mainPath, "electron main", "utf8");
 
@@ -834,7 +1038,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   await symlink(path.basename(mcpTargetB), mcpRequestedPath);
   await assert.rejects(
     collectProductJourneyEvidence(plan, { root: temporaryRoot }),
-    /changed after preflight/i,
+    /changed after preflight|artifact.*mismatch/i,
   );
   await rm(mcpRequestedPath);
   await symlink(path.basename(mcpTargetA), mcpRequestedPath);
@@ -876,6 +1080,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
       verified: true,
       source: "local-ci-candidate",
       candidate,
+      artifacts: buildArtifacts,
     },
     acceptanceComplete: true,
     c2zcRustAcceptance: rustEvidence,
@@ -893,6 +1098,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
       verified: true,
       source: "local-ci-candidate",
       candidate,
+      artifacts: buildArtifacts,
     },
     acceptanceComplete: true,
     c2zcRustAcceptance: rustEvidence,
@@ -949,6 +1155,21 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     (evidence) => {
       evidence.buildReceipt.foreignKey = "must-reject";
     },
+    (evidence) => {
+      delete evidence.buildReceipt.artifacts;
+    },
+    (evidence) => {
+      evidence.artifacts[0].sha256 = `sha256:${"f".repeat(64)}`;
+    },
+    (evidence) => {
+      evidence.buildReceipt.artifacts[0].sha256 = `sha256:${"f".repeat(64)}`;
+    },
+    (evidence) => {
+      evidence.results.sha256 = `sha256:${"f".repeat(64)}`;
+    },
+    (evidence) => {
+      evidence.manifest.sha256 = `sha256:${"f".repeat(64)}`;
+    },
   ]) {
     const mutatedEvidence = structuredClone(acceptedEvidence);
     mutate(mutatedEvidence);
@@ -961,7 +1182,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
           },
           { profile: "full", candidate },
         ),
-      /Rust acceptance gates|candidate|evidence/i,
+      /Rust acceptance gates|candidate|evidence|artifact/i,
     );
   }
   const tamperedManifest = {

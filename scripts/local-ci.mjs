@@ -18,9 +18,15 @@ import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  digestProductJourneyCatalog,
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG,
-  PRODUCT_JOURNEY_CATALOG_DIGEST,
 } from "../electron/scripts/product-journey-catalog.mjs";
+import {
+  assertBuildArtifacts,
+  assertProductJourneyArtifactEvidence,
+} from "../electron/scripts/product-journeys.mjs";
 import {
   C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
   C2ZC_RUST_ACCEPTANCE_GATE_IDS,
@@ -37,12 +43,6 @@ const execFileAsync = promisify(execFile);
 const LOCAL_CI_RECEIPT_VERSION = 3;
 const PRODUCT_JOURNEY_RESULTS_VERSION = 4;
 const PRODUCT_JOURNEY_ARTIFACT_DIR = ".artifacts/product-journeys";
-const PRODUCT_JOURNEY_BUILD_ARTIFACT_NAMES = [
-  "Electron main",
-  "renderer",
-  "N-API native module",
-  "MCP sidecar",
-];
 const C2ZC_RUST_ACCEPTANCE_GATE_STAGE = "c2-zc-rust-acceptance-gate";
 const C2ZC_RUST_REQUESTED_BASE_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_BASE";
 const C2ZC_RUST_REQUESTED_HEAD_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD";
@@ -55,6 +55,20 @@ const PRODUCT_JOURNEY_BUILD_RECEIPT_KEYS = [
   "verified",
   "source",
   "candidate",
+  "artifacts",
+];
+const PRODUCT_JOURNEY_BUILD_ARTIFACT_KEYS = [
+  "name",
+  "path",
+  "requestedPath",
+  "realPath",
+  "size",
+  "sha256",
+];
+const PRODUCT_JOURNEY_CATALOGS = [
+  PRODUCT_JOURNEY_CATALOG,
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
 ];
 const PRODUCT_JOURNEY_CANDIDATE_KEYS = [
   "requestedBase",
@@ -67,6 +81,31 @@ const PRODUCT_JOURNEY_CANDIDATE_KEYS = [
   "worktreeFingerprint",
   "worktreeStatusHash",
 ];
+
+function buildArtifactNamesForJourneyIds(
+  journeyIds,
+  catalog = PRODUCT_JOURNEY_CATALOG,
+) {
+  const selectedIds = new Set(journeyIds);
+  const capabilities = new Set(
+    catalog
+      .filter((journey) => selectedIds.has(journey.id))
+      .flatMap((journey) => journey.capabilities ?? []),
+  );
+  const names = [];
+  if (capabilities.has("electron")) {
+    names.push("Electron main", "renderer");
+  }
+  if (capabilities.has("napi")) names.push("N-API native module");
+  if (capabilities.has("mcp")) names.push("MCP sidecar");
+  return names;
+}
+
+function productJourneyCatalogForDigest(catalogDigest) {
+  return PRODUCT_JOURNEY_CATALOGS.find(
+    (catalog) => digestProductJourneyCatalog(catalog) === catalogDigest,
+  );
+}
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -440,6 +479,7 @@ async function resolveArtifactEvidence(filePath, { root }) {
   return {
     path: relativePath(root, requestedPath),
     realPath,
+    size: metadata.size,
     sha256: await hashFile(realPath),
   };
 }
@@ -504,14 +544,14 @@ function assertC2ZcRustAcceptanceEvidenceShape(evidence, label) {
     JSON.stringify(evidence.candidate) !==
       JSON.stringify(evidence.receipt.candidate)
   ) {
-    throw new Error(`${label} must include both ordered Rust acceptance gates`);
+    throw new Error(`${label} must include all ordered Rust acceptance gates`);
   }
 }
 
 function assertProductJourneyBuildReceiptShape(
   evidence,
   label,
-  { candidate = null } = {},
+  { candidate = null, artifactNames = null } = {},
 ) {
   if (
     !isPlainObject(evidence) ||
@@ -525,8 +565,10 @@ function assertProductJourneyBuildReceiptShape(
       JSON.stringify([...PRODUCT_JOURNEY_CANDIDATE_KEYS].sort()) ||
     typeof evidence.candidate.requestedBase !== "string" ||
     evidence.candidate.requestedBase.length === 0 ||
+    evidence.candidate.requestedBase.includes("\0") ||
     typeof evidence.candidate.requestedHead !== "string" ||
     evidence.candidate.requestedHead.length === 0 ||
+    evidence.candidate.requestedHead.includes("\0") ||
     !/^[0-9a-f]{40,64}$/u.test(evidence.candidate.resolvedBaseSha ?? "") ||
     !/^[0-9a-f]{40,64}$/u.test(evidence.candidate.resolvedHeadSha ?? "") ||
     !/^[0-9a-f]{40,64}$/u.test(evidence.candidate.resolvedHeadTreeSha ?? "") ||
@@ -546,6 +588,33 @@ function assertProductJourneyBuildReceiptShape(
       }
     }
   }
+  if (!Array.isArray(evidence.artifacts) || evidence.artifacts.length === 0) {
+    throw new Error(`${label} must include exact build artifact identities`);
+  }
+  const artifactNamesInReceipt = evidence.artifacts.map(
+    (artifact) => artifact?.name,
+  );
+  if (new Set(artifactNamesInReceipt).size !== artifactNamesInReceipt.length) {
+    throw new Error(`${label} build artifact names must be unique`);
+  }
+  if (artifactNames !== null) {
+    const actualNames = evidence.artifacts.map((artifact) => artifact?.name);
+    if (
+      JSON.stringify(actualNames) !== JSON.stringify(artifactNames) ||
+      new Set(actualNames).size !== actualNames.length
+    ) {
+      throw new Error(
+        `${label} build artifact names/set do not match selection`,
+      );
+    }
+    for (const [index, artifact] of evidence.artifacts.entries()) {
+      assertBuildArtifactIdentity(artifact, `${label} build artifact ${index}`);
+    }
+  } else {
+    for (const [index, artifact] of evidence.artifacts.entries()) {
+      assertBuildArtifactIdentity(artifact, `${label} build artifact ${index}`);
+    }
+  }
   return evidence;
 }
 
@@ -558,7 +627,14 @@ function assertStringArrayEqual(actual, expected, label) {
   }
 }
 
-function assertPassedProductJourneyResult(report) {
+function assertPassedProductJourneyResult(
+  report,
+  {
+    catalog = PRODUCT_JOURNEY_CATALOG,
+    expectedArtifactNames = null,
+    expectedArtifacts = null,
+  } = {},
+) {
   if (
     !isPlainObject(report) ||
     report.version !== PRODUCT_JOURNEY_RESULTS_VERSION
@@ -568,10 +644,10 @@ function assertPassedProductJourneyResult(report) {
   if (report.status !== "passed") {
     throw new Error("product journey results must have passed status");
   }
-  if (report.catalogDigest !== PRODUCT_JOURNEY_CATALOG_DIGEST) {
-    throw new Error("product journey results catalog digest is not canonical");
+  if (report.catalogDigest !== digestProductJourneyCatalog(catalog)) {
+    throw new Error("product journey results catalog digest is not selected");
   }
-  const expectedIds = PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id);
+  const expectedIds = catalog.map((journey) => journey.id);
   assertStringArrayEqual(
     report.catalogJourneyIds,
     expectedIds,
@@ -596,7 +672,19 @@ function assertPassedProductJourneyResult(report) {
     assertProductJourneyBuildReceiptShape(
       report.buildReceipt,
       "C2-ZC product journey results",
+      {
+        artifactNames:
+          expectedArtifactNames ??
+          buildArtifactNamesForJourneyIds(report.journeyIds),
+      },
     );
+    if (expectedArtifacts) {
+      assertProductJourneyArtifactEvidence(
+        report.buildReceipt.artifacts,
+        expectedArtifacts,
+        "C2-ZC product journey results build artifacts",
+      );
+    }
   }
   if (
     report.acceptanceRequired === true &&
@@ -634,14 +722,18 @@ function assertPassedProductJourneyManifest(
   manifest,
   expectedIds,
   report = null,
-  { candidate = null } = {},
+  {
+    candidate = null,
+    catalog = PRODUCT_JOURNEY_CATALOG,
+    expectedArtifacts = null,
+  } = {},
 ) {
   if (!isPlainObject(manifest) || manifest.version !== 1) {
     throw new Error("product journey audit manifest version 1 is required");
   }
   if (
     manifest.status !== "passed" ||
-    manifest.catalogDigest !== PRODUCT_JOURNEY_CATALOG_DIGEST ||
+    manifest.catalogDigest !== digestProductJourneyCatalog(catalog) ||
     manifest.allPassed !== true ||
     manifest.allClean !== true ||
     manifest.rustAcceptanceComplete !== true
@@ -661,24 +753,25 @@ function assertPassedProductJourneyManifest(
     );
   }
   const artifactNames = manifest.artifacts.map((artifact, index) => {
-    assertArtifactIdentity(
+    assertBuildArtifactIdentity(
       artifact,
       `product journey manifest entry ${index}`,
-      { requireRequestedPath: true },
     );
-    if (typeof artifact.name !== "string" || artifact.name.length === 0) {
-      throw new Error(
-        `product journey manifest entry ${index} must name its build artifact`,
-      );
-    }
     return artifact.name;
   });
-  if (
-    JSON.stringify([...artifactNames].sort()) !==
-    JSON.stringify([...PRODUCT_JOURNEY_BUILD_ARTIFACT_NAMES].sort())
-  ) {
+  const expectedArtifactNames =
+    expectedArtifacts?.map((artifact) => artifact.name) ??
+    buildArtifactNamesForJourneyIds(expectedIds, catalog);
+  if (JSON.stringify(artifactNames) !== JSON.stringify(expectedArtifactNames)) {
     throw new Error(
-      "product journey audit manifest must declare exactly the canonical build artifacts",
+      "product journey audit manifest must declare exactly the selected build artifacts in order",
+    );
+  }
+  if (expectedArtifacts) {
+    assertProductJourneyArtifactEvidence(
+      manifest.artifacts,
+      expectedArtifacts,
+      "product journey audit manifest build artifacts",
     );
   }
   if (report?.acceptanceRequired === true) {
@@ -700,7 +793,10 @@ function assertPassedProductJourneyManifest(
     assertProductJourneyBuildReceiptShape(
       manifest.buildReceipt,
       "C2-ZC product journey manifest",
-      { candidate },
+      {
+        candidate,
+        artifactNames: expectedArtifactNames,
+      },
     );
   }
   if (
@@ -725,7 +821,7 @@ function assertPassedProductJourneyManifest(
 function assertArtifactIdentity(
   identity,
   label,
-  { requireRequestedPath = false } = {},
+  { requireRequestedPath = false, requireSize = false } = {},
 ) {
   if (
     !isPlainObject(identity) ||
@@ -747,6 +843,62 @@ function assertArtifactIdentity(
   ) {
     throw new Error(`${label} artifact requested path is invalid`);
   }
+  if (
+    requireSize &&
+    (!Number.isSafeInteger(identity.size) || identity.size < 0)
+  ) {
+    throw new Error(`${label} artifact size is invalid`);
+  }
+}
+
+function assertBuildArtifactIdentity(identity, label) {
+  if (
+    !isPlainObject(identity) ||
+    JSON.stringify(Object.keys(identity).sort()) !==
+      JSON.stringify([...PRODUCT_JOURNEY_BUILD_ARTIFACT_KEYS].sort()) ||
+    typeof identity.name !== "string" ||
+    identity.name.length === 0 ||
+    typeof identity.path !== "string" ||
+    typeof identity.requestedPath !== "string" ||
+    typeof identity.realPath !== "string" ||
+    identity.path.length === 0 ||
+    identity.requestedPath.length === 0 ||
+    identity.realPath.length === 0 ||
+    identity.path.includes("\0") ||
+    identity.requestedPath.includes("\0") ||
+    identity.realPath.includes("\0") ||
+    !Number.isSafeInteger(identity.size) ||
+    identity.size < 0 ||
+    !/^sha256:[0-9a-f]{64}$/u.test(identity.sha256 ?? "")
+  ) {
+    throw new Error(`${label} build artifact identity is invalid`);
+  }
+  return identity;
+}
+
+function productJourneyCommandForPlan(plan) {
+  const stage = plan.stages.find(
+    (candidate) => candidate.id === "electron-product-journeys",
+  );
+  return stage?.commands?.at(-1) ?? null;
+}
+
+function productJourneySelectionForPlan(plan, report) {
+  const command = productJourneyCommandForPlan(plan);
+  const catalog = productJourneyCatalogForCommand(command ?? { env: {} });
+  const selectedIds = new Set(report.journeyIds ?? []);
+  const journeys = catalog.filter((journey) => selectedIds.has(journey.id));
+  if (journeys.length !== selectedIds.size) {
+    throw new Error(
+      "product journey results include IDs absent from the local CI selection catalog",
+    );
+  }
+  return {
+    catalog,
+    command,
+    environment: { ...process.env, ...(command?.env ?? {}) },
+    journeys,
+  };
 }
 
 /** Collect and validate the immutable product-journey evidence for a Full receipt. */
@@ -772,22 +924,47 @@ export async function collectProductJourneyEvidence(
 
   const report = JSON.parse(await readFile(resultsPath, "utf8"));
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const selection = productJourneySelectionForPlan(plan, report);
+  const expectedBuildArtifacts = (
+    await assertBuildArtifacts(selection.journeys, {
+      catalog: selection.catalog,
+      root,
+      env: selection.environment,
+    })
+  ).artifacts;
+  const expectedArtifactNames = expectedBuildArtifacts.map(
+    (artifact) => artifact.name,
+  );
   const currentCandidate = reportRequiresC2ZcRustAcceptance(report)
     ? (candidate ??
       (await resolveLocalCiCandidate(plan, {
         root,
       })))
     : null;
-  const journeyIds = assertPassedProductJourneyResult(report);
+  const journeyIds = assertPassedProductJourneyResult(report, {
+    catalog: selection.catalog,
+    expectedArtifactNames,
+    expectedArtifacts: expectedBuildArtifacts,
+  });
   if (reportRequiresC2ZcRustAcceptance(report)) {
     assertProductJourneyBuildReceiptShape(
       report.buildReceipt,
       "C2-ZC product journey results",
-      { candidate: currentCandidate },
+      {
+        candidate: currentCandidate,
+        artifactNames: expectedArtifactNames,
+      },
+    );
+    assertProductJourneyArtifactEvidence(
+      report.buildReceipt.artifacts,
+      expectedBuildArtifacts,
+      "C2-ZC product journey results build artifacts",
     );
   }
   assertPassedProductJourneyManifest(manifest, journeyIds, report, {
     candidate: currentCandidate,
+    catalog: selection.catalog,
+    expectedArtifacts: expectedBuildArtifacts,
   });
   if (
     manifest.results.path !== "results.json" ||
@@ -802,7 +979,10 @@ export async function collectProductJourneyEvidence(
   const buildArtifacts = [];
   for (const [index, artifact] of manifest.artifacts.entries()) {
     const label = `product journey manifest entry ${index}`;
-    assertArtifactIdentity(artifact, label, { requireRequestedPath: true });
+    assertArtifactIdentity(artifact, label, {
+      requireRequestedPath: true,
+      requireSize: true,
+    });
     const currentPath = await resolveArtifactEvidence(artifact.path, { root });
     const currentRequestedPath = await resolveArtifactEvidence(
       artifact.requestedPath,
@@ -814,13 +994,27 @@ export async function collectProductJourneyEvidence(
       currentPath.realPath !== artifact.realPath ||
       currentRequestedPath.realPath !== artifact.realPath ||
       currentPath.sha256 !== artifact.sha256 ||
-      currentRequestedPath.sha256 !== artifact.sha256
+      currentRequestedPath.sha256 !== artifact.sha256 ||
+      currentPath.size !== artifact.size ||
+      currentRequestedPath.size !== artifact.size
     ) {
       throw new Error(
         `product journey manifest artifact ${artifact.name ?? artifact.path} changed after preflight`,
       );
     }
-    buildArtifacts.push(currentPath);
+    buildArtifacts.push({
+      ...artifact,
+      realPath: currentPath.realPath,
+      size: currentPath.size,
+      sha256: currentPath.sha256,
+    });
+  }
+  if (reportRequiresC2ZcRustAcceptance(report)) {
+    assertProductJourneyArtifactEvidence(
+      report.buildReceipt?.artifacts,
+      buildArtifacts,
+      "C2-ZC product journey build receipt artifacts",
+    );
   }
   const artifacts = [...files, ...buildArtifacts].sort((left, right) =>
     left.path.localeCompare(right.path),
@@ -892,7 +1086,7 @@ export async function collectProductJourneyEvidence(
   }
 
   return {
-    catalogDigest: PRODUCT_JOURNEY_CATALOG_DIGEST,
+    catalogDigest: report.catalogDigest,
     journeyIds,
     allPassed: true,
     allClean: true,
@@ -916,12 +1110,17 @@ function verifyProductJourneyEvidence(
   if (!isPlainObject(receiptEvidence)) {
     throw new Error("Full receipt product journey evidence is required.");
   }
-  if (receiptEvidence.catalogDigest !== PRODUCT_JOURNEY_CATALOG_DIGEST) {
+  const catalog = productJourneyCatalogForDigest(receiptEvidence.catalogDigest);
+  if (!catalog) {
     throw new Error(
-      "Full receipt product journey catalog digest is not canonical.",
+      "Full receipt product journey catalog digest is not recognized.",
     );
   }
-  const expectedIds = PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id);
+  const expectedIds = catalog.map((journey) => journey.id);
+  const expectedBuildArtifactNames =
+    receiptEvidence.acceptanceRequired === true
+      ? buildArtifactNamesForJourneyIds(receiptEvidence.journeyIds, catalog)
+      : null;
   assertStringArrayEqual(
     receiptEvidence.journeyIds,
     expectedIds,
@@ -944,7 +1143,10 @@ function verifyProductJourneyEvidence(
     assertProductJourneyBuildReceiptShape(
       receiptEvidence.buildReceipt,
       "Full receipt C2-ZC build evidence",
-      { candidate },
+      {
+        candidate,
+        artifactNames: expectedBuildArtifactNames,
+      },
     );
     assertC2ZcRustAcceptanceEvidenceShape(
       receiptEvidence.c2zcRustAcceptance,
@@ -970,6 +1172,51 @@ function verifyProductJourneyEvidence(
       artifact,
       `Full receipt product journey artifact ${index}`,
     );
+  }
+  if (receiptEvidence.acceptanceRequired === true) {
+    if (
+      digestJson(receiptEvidence.artifacts) !== receiptEvidence.artifactDigest
+    ) {
+      throw new Error(
+        "Full receipt product journey artifact digest does not match its entries.",
+      );
+    }
+    const namedArtifacts = receiptEvidence.artifacts.filter(
+      (artifact) => typeof artifact?.name === "string",
+    );
+    const namedArtifactsByName = new Map(
+      namedArtifacts.map((artifact) => [artifact.name, artifact]),
+    );
+    if (
+      namedArtifacts.length !== expectedBuildArtifactNames.length ||
+      namedArtifactsByName.size !== namedArtifacts.length ||
+      expectedBuildArtifactNames.some((name) => !namedArtifactsByName.has(name))
+    ) {
+      throw new Error(
+        "Full receipt product journey evidence must include exactly the selected build artifacts.",
+      );
+    }
+    assertProductJourneyArtifactEvidence(
+      expectedBuildArtifactNames.map((name) => namedArtifactsByName.get(name)),
+      receiptEvidence.buildReceipt.artifacts,
+      "Full receipt product journey build artifact evidence",
+    );
+    for (const field of ["results", "manifest"]) {
+      const referencedArtifact = receiptEvidence.artifacts.find(
+        (artifact) => artifact.path === receiptEvidence[field].path,
+      );
+      if (
+        !referencedArtifact ||
+        referencedArtifact.realPath !== receiptEvidence[field].realPath ||
+        referencedArtifact.sha256 !== receiptEvidence[field].sha256 ||
+        (receiptEvidence[field].size !== undefined &&
+          referencedArtifact.size !== receiptEvidence[field].size)
+      ) {
+        throw new Error(
+          `Full receipt product journey ${field} is not bound to artifact evidence.`,
+        );
+      }
+    }
   }
   if (currentEvidence) {
     for (const field of [
@@ -1142,10 +1389,33 @@ function bindC2ZcRustGateCommand(command, stageId, { plan, candidate }) {
   };
 }
 
+function productJourneyCatalogForCommand(command) {
+  const name = command.env?.GRIMODEX_PRODUCT_JOURNEY_SET ?? "";
+  if (name === "c2-zc") return NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG;
+  if (name === "c2-5b") {
+    return NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG;
+  }
+  if (name !== "") return [];
+  const serializedIds = command.env?.GRIMODEX_PRODUCT_JOURNEY_IDS;
+  if (typeof serializedIds !== "string" || serializedIds === "") {
+    return PRODUCT_JOURNEY_CATALOG;
+  }
+  try {
+    const ids = JSON.parse(serializedIds);
+    if (!Array.isArray(ids)) return [];
+    const selected = new Set(ids);
+    return PRODUCT_JOURNEY_CATALOG.filter((journey) =>
+      selected.has(journey.id),
+    );
+  } catch {
+    return [];
+  }
+}
+
 async function bindC2ZcProductJourneyCommand(
   command,
   stageId,
-  { root, plan, candidate },
+  { root, plan, candidate, buildStagePassed = false },
 ) {
   if (stageId !== "electron-product-journeys") return command;
   const configuredPath = command.env?.[C2ZC_RUST_RECEIPT_PATH_ENV];
@@ -1154,13 +1424,34 @@ async function bindC2ZcProductJourneyCommand(
     [C2ZC_RUST_REQUESTED_BASE_ENV]: plan.comparison.base,
     [C2ZC_RUST_REQUESTED_HEAD_ENV]: plan.comparison.head,
   };
-  if (candidate) {
-    boundEnv[PRODUCT_JOURNEY_BUILD_RECEIPT_ENV] = JSON.stringify({
-      version: 1,
-      verified: true,
-      source: "local-ci-candidate",
-      candidate,
-    });
+  delete boundEnv[PRODUCT_JOURNEY_BUILD_RECEIPT_ENV];
+  if (candidate && buildStagePassed) {
+    const selectedCatalog = productJourneyCatalogForCommand(command);
+    try {
+      const artifacts = (
+        await assertBuildArtifacts(selectedCatalog, {
+          catalog: selectedCatalog,
+          root,
+          env: { ...process.env, ...command.env },
+        })
+      ).artifacts;
+      if (artifacts.length === 0) {
+        throw new Error(
+          "product journey build stage resolved no capability artifacts",
+        );
+      }
+      boundEnv[PRODUCT_JOURNEY_BUILD_RECEIPT_ENV] = JSON.stringify({
+        version: 1,
+        verified: true,
+        source: "local-ci-candidate",
+        candidate,
+        artifacts,
+      });
+    } catch {
+      // A receipt is only an attestation after every preceding build command
+      // passed and the exact selected artifacts were captured.  The product
+      // runner will fail closed if this command still executes without one.
+    }
   }
   if (typeof configuredPath !== "string" || configuredPath.length === 0) {
     return { ...command, env: boundEnv };
@@ -1246,7 +1537,15 @@ export async function runLocalCiPlan(
       const boundCommand = await bindC2ZcProductJourneyCommand(
         rustBoundCommand,
         stage.id,
-        { root, plan, candidate },
+        {
+          root,
+          plan,
+          candidate,
+          buildStagePassed:
+            stage.id === "electron-product-journeys" &&
+            commands.length > 0 &&
+            commands.every((entry) => entry.status === "passed"),
+        },
       );
       if (failedCommand) {
         commands.push(

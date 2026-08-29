@@ -111,6 +111,32 @@ export const C2ZC_RUST_ACCEPTANCE_GATES = Object.freeze([
       origin: "SqlOrigin::McpGeneric",
     },
   }),
+  freezeGate({
+    id: "c2-zc-readiness-corruption-fail-closed",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
+      test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+      fullTestName:
+        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+      proof: "direct persisted Rebuild evidence corruption blocks readiness",
+    },
+  }),
 ]);
 export const C2ZC_RUST_ACCEPTANCE_GATE_IDS = Object.freeze(
   C2ZC_RUST_ACCEPTANCE_GATES.map((gate) => gate.id),
@@ -542,7 +568,7 @@ function assertReceiptContract(receipt, { candidate, catalogDigest }) {
     receipt.gates.length !== C2ZC_RUST_ACCEPTANCE_GATES.length
   ) {
     throw new Error(
-      "C2-ZC Rust receipt must contain exactly the two ordered acceptance gates",
+      "C2-ZC Rust receipt must contain exactly the three ordered acceptance gates",
     );
   }
   for (const [index, gate] of receipt.gates.entries()) {
