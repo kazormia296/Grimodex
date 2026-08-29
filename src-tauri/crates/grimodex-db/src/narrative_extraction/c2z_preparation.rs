@@ -23,7 +23,8 @@ use super::incremental_freshness::MAX_ATTEMPTS_PER_BATCH;
 use super::legacy_backfill::{is_valid_completed_backfill_marker, CompletedBackfillMarker};
 use super::maintenance_lifecycle::load_completed_maintenance_run_in_tx;
 use super::maintenance_runtime::{
-    load_durable_maintenance_runs, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+    is_scan_staging_project_in_tx, load_durable_maintenance_runs, REBUILD_DERIVED_WORK_KEY,
+    VERIFY_WORK_KEY_PREFIX,
 };
 use super::maintenance_runtime::{
     select_latest_relevant_run_for_readiness, validate_phase_success_outcome,
@@ -754,6 +755,20 @@ pub fn inspect_workspace_cutover_readiness(conn: &Connection) -> Result<Workspac
     let project_ids = statement
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+    let project_ids = project_ids
+        .into_iter()
+        .map(|project_id| -> Result<Option<String>> {
+            if is_scan_staging_project_in_tx(conn, &project_id)? {
+                Ok(None)
+            } else {
+                Ok(Some(project_id))
+            }
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     if project_ids.is_empty() {
         return Ok(WorkspaceCutoverReadiness {
             state: ReadinessState::Incomplete,

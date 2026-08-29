@@ -15,6 +15,7 @@ export {
   ScanImportApplyError,
   type ScanImportApplyOperations,
   type ScanImportApplyResult,
+  type ScanImportPublishReceipt,
   type ScanImportStage,
   type ScanImportStageResult,
 } from "./applyScanImportPlan";

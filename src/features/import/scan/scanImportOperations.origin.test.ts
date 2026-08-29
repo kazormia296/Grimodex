@@ -254,7 +254,37 @@ describe("Scan canonical writer origin", () => {
 
     await operations.publishStagingProject(projectId);
 
-    expect(mocks.publishScanStagingProject).toHaveBeenCalledWith(projectId);
+    expect(mocks.publishScanStagingProject).toHaveBeenCalledWith(
+      projectId,
+      expect.objectContaining({
+        origin: "import",
+        authorityRoute: "import-apply",
+        requestId: expect.any(String),
+        eventUid: expect.any(String),
+      }),
+    );
     expect(mocks.deleteProjectSetting).not.toHaveBeenCalled();
+  });
+
+  it("creates a fresh canonical context for each independent publish invocation", async () => {
+    const operations = createScanImportOperations();
+
+    await operations.publishStagingProject(projectId);
+    await operations.publishStagingProject(projectId);
+
+    const firstContext = mocks.publishScanStagingProject.mock.calls[0]?.[1];
+    const secondContext = mocks.publishScanStagingProject.mock.calls[1]?.[1];
+    expect(firstContext).toBeDefined();
+    expect(secondContext).toBeDefined();
+    expect(secondContext).not.toBe(firstContext);
+    expect(secondContext).toEqual(
+      expect.objectContaining({
+        origin: "import",
+        authorityRoute: "import-apply",
+        requestId: expect.any(String),
+        eventUid: expect.any(String),
+      }),
+    );
+    expect(secondContext.requestId).not.toBe(firstContext.requestId);
   });
 });

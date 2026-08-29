@@ -10,6 +10,10 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use grimodex_core::{LAST_PUBLIC_RELEASE_SCHEMA_VERSION, SCHEMA_VERSION};
+use grimodex_db::domain_writes::{
+    create_scan_staging_project, publish_scan_staging_project,
+    CreateScanStagingProjectPayload, ScanStagingProjectPublishPayload,
+};
 use grimodex_db::migration_supervisor::{self, WorkspaceOpenDbOutcome};
 use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::narrative_extraction::maintenance_skip_evidence::{
@@ -18,7 +22,8 @@ use grimodex_db::narrative_extraction::maintenance_skip_evidence::{
 use grimodex_db::narrative_extraction::{
     bootstrap_legacy_dependency_backfill_for_project, canonical_application_freshness,
     canonical_verify_outcome_digest, current_maintenance_coordinates, cut_over_workspace_freshness,
-    digest_plan, ensure_test_schema, inspect_workspace_cutover_readiness_with_liveness,
+    digest_plan, ensure_test_schema, inspect_workspace_cutover_readiness,
+    inspect_workspace_cutover_readiness_with_liveness,
     narrative_extraction_append_human_decision, narrative_extraction_apply_commit,
     narrative_extraction_create_run, narrative_extraction_prepare_commit,
     narrative_extraction_save_proposal_set, production_verify_check_coverage,
@@ -45,6 +50,7 @@ use sha2::{Digest, Sha256};
 mod release_schema_fixture;
 
 const PROJECT_ID: &str = "project-c2zc";
+const HIDDEN_SCAN_PROJECT_ID: &str = "scan-staging-c2zc";
 const EPOCH_ID: &str = "epoch-c2zc";
 const APPLICATION_ID: &str = "application-c2zc";
 const SOURCE_IDENTITY: &str = "project:scene:scene-c2zc";
@@ -167,6 +173,106 @@ fn database_only_liveness_never_becomes_cutover_evidence() {
         Ok::<_, anyhow::Error>(())
     })
     .expect("readiness report");
+}
+
+#[test]
+fn hidden_scan_staging_project_is_outside_cutover_scope_until_publish() {
+    let _test_guard = serialize_liveness_test();
+    let db = fixture_db();
+    db.with_conn(seed_cutover_ready_application)
+        .expect("seed cutover fixture");
+
+    create_scan_staging_project(
+        &db,
+        CreateScanStagingProjectPayload {
+            id: HIDDEN_SCAN_PROJECT_ID.to_string(),
+            title: "Hidden Scan staging project".to_string(),
+            language: "ja".to_string(),
+            created_at: NOW.to_string(),
+        },
+    )
+    .expect("create hidden Scan staging project");
+
+    db.with_conn(|conn| {
+        let hidden_epoch_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE project_id = ?1",
+            [HIDDEN_SCAN_PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        let hidden_run_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+            [HIDDEN_SCAN_PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(hidden_epoch_count, 0);
+        assert_eq!(hidden_run_count, 0);
+
+        let durable = inspect_workspace_cutover_readiness(conn)?;
+        assert_eq!(durable.projects.len(), 1);
+        assert_eq!(durable.projects[0].project_id, PROJECT_ID);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("hidden staging project must not enter durable cutover scope");
+
+    let evidence = scheduler_heartbeat(&db, "c2zc-hidden-staging-authority", 90);
+    assert_eq!(evidence.project_ids, vec![PROJECT_ID.to_string()]);
+    db.with_conn(|conn| {
+        let readiness = inspect_workspace_cutover_readiness_with_liveness(conn, Some(&evidence))?;
+        assert!(readiness.ready, "hidden staging must not block cutover: {readiness:?}");
+        assert_eq!(readiness.durable.projects.len(), 1);
+        assert_eq!(readiness.durable.projects[0].project_id, PROJECT_ID);
+
+        let hidden_epoch_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE project_id = ?1",
+            [HIDDEN_SCAN_PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        let hidden_run_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+            [HIDDEN_SCAN_PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(hidden_epoch_count, 0);
+        assert_eq!(hidden_run_count, 0);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("hidden staging liveness/readiness");
+
+    publish_scan_staging_project(
+        &db,
+        ScanStagingProjectPublishPayload {
+            project_id: HIDDEN_SCAN_PROJECT_ID.to_string(),
+            request_id: "scan-publish-scope-request".to_string(),
+            session_id: "scan-publish-scope-session".to_string(),
+            event_uid: "scan-publish-scope-event".to_string(),
+            origin: NarrativeChangeOrigin::Import,
+            original_transaction_id: None,
+            undo_journal_id: None,
+        },
+    )
+    .expect("publish hidden Scan staging project");
+
+    db.with_conn(|conn| {
+        let marker: Option<String> = conn
+            .query_row(
+                "SELECT value FROM project_settings
+                 WHERE project_id = ?1 AND key = 'scan.import.state'",
+                [HIDDEN_SCAN_PROJECT_ID],
+                |row| row.get(0),
+            )
+            .optional()?;
+        assert_eq!(marker, None);
+
+        let durable = inspect_workspace_cutover_readiness(conn)?;
+        assert!(!durable.ready);
+        assert_eq!(durable.projects.len(), 2);
+        assert!(durable
+            .projects
+            .iter()
+            .any(|project| project.project_id == HIDDEN_SCAN_PROJECT_ID));
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("published project must re-enter cutover scope");
 }
 
 #[test]

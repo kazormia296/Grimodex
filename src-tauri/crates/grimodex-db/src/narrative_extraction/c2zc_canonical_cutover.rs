@@ -33,7 +33,8 @@ use super::evaluator::{BuildAction, EvidenceFreshness};
 use super::incremental_freshness::SuccessfulIncrementalFreshnessCycle;
 use super::maintenance_lifecycle::load_completed_maintenance_run_in_tx;
 use super::maintenance_runtime::{
-    NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION, REBUILD_DERIVED_WORK_KEY,
+    is_scan_staging_project_in_tx, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
+    REBUILD_DERIVED_WORK_KEY,
 };
 use super::reconciliation_envelope::SourceBasisRow;
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
@@ -933,7 +934,18 @@ fn workspace_project_ids(conn: &Connection) -> Result<Vec<String>> {
     let project_ids = statement
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(project_ids)
+    drop(statement);
+    project_ids
+        .into_iter()
+        .map(|project_id| -> Result<Option<String>> {
+            if is_scan_staging_project_in_tx(conn, &project_id)? {
+                Ok(None)
+            } else {
+                Ok(Some(project_id))
+            }
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|project_ids| project_ids.into_iter().flatten().collect())
 }
 
 fn validate_scheduler_liveness(

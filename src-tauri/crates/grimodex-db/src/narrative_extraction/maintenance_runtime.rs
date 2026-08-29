@@ -45,6 +45,12 @@ use super::restore_rebuild::{
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
 
+/// Exact renderer-owned marker used to hide an in-progress Scan publication.
+/// C2-ZC inventory selectors reuse this predicate so maintenance and cutover
+/// cannot drift on which Projects are visible during staging.
+pub(crate) const SCAN_IMPORT_STATE_KEY: &str = "scan.import.state";
+pub(crate) const SCAN_IMPORT_STAGING_VALUE: &str = "staging";
+
 /// The only Run Kinds that an automatic maintenance planner may describe.
 /// Human-only destructive work is deliberately not representable here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1802,16 +1808,19 @@ pub fn discover_durable_maintenance_work_with_coordinates(
     })
 }
 
-fn is_scan_staging_project_in_tx(conn: &Connection, project_id: &str) -> anyhow::Result<bool> {
+pub(crate) fn is_scan_staging_project_in_tx(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<bool> {
     conn.query_row(
         "SELECT EXISTS(
             SELECT 1
               FROM project_settings
              WHERE project_id = ?1
-               AND key = 'scan.import.state'
-               AND value = 'staging'
+               AND key = ?2
+               AND value = ?3
         )",
-        params![project_id],
+        params![project_id, SCAN_IMPORT_STATE_KEY, SCAN_IMPORT_STAGING_VALUE],
         |row| row.get(0),
     )
     .map_err(Into::into)

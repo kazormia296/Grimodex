@@ -12,7 +12,10 @@ import {
   setEventParticipants,
 } from "@/features/chronicle/api";
 import { createNode, listNodes, saveSceneContent } from "@/features/tree/api";
-import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+} from "@/features/native-writes/writeContext";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import {
@@ -40,6 +43,7 @@ import {
 } from "./scanStagingProject";
 import type {
   ScanImportApplyOperations,
+  ScanImportPublishReceipt,
   ScanImportStageResult,
 } from "./applyScanImportPlan";
 
@@ -418,8 +422,15 @@ export function createScanImportOperations(): ScanImportApplyOperations {
         metadata.sourceFingerprint,
       );
     },
-    async publishStagingProject(projectId) {
-      await publishScanStagingProject(projectId);
+    async publishStagingProject(projectId): Promise<ScanImportPublishReceipt> {
+      // One apply operation owns one canonical publish identity. The publish
+      // adapter retains this context while replaying an ambiguous transport
+      // outcome; each separately invoked operation gets a fresh identity.
+      const publishContext: CanonicalWriteContext =
+        createCanonicalWriteContext("import");
+      return publishScanStagingProject(projectId, publishContext);
+    },
+    async refreshPublishedProject(projectId, _receipt) {
       await useProjectStore.getState().refreshProjects();
       await useProjectStore.getState().loadProject(projectId);
       scheduleImeExportRefresh(projectId);
