@@ -222,6 +222,294 @@ export const C2ZC_RUST_ACCEPTANCE_GATES = Object.freeze([
         "production Verify persists and validates exact 13/13 check coverage",
     },
   }),
+  freezeGate({
+    id: "c2-zc-project-create-event-bound-e0",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "domain_writes::tests::project_create_mints_one_event_bound_initial_epoch_after_c2zc_marker",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source: "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+      test: "project_create_mints_one_event_bound_initial_epoch_after_c2zc_marker",
+      fullTestName:
+        "domain_writes::tests::project_create_mints_one_event_bound_initial_epoch_after_c2zc_marker",
+      proof: "post-marker project_create mints one event-bound initial epoch",
+    },
+  }),
+  freezeGate({
+    id: "c2-zc-import-apply-event-bound-e0",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "import_session_commit",
+        "post_marker_import_binds_one_initial_epoch_to_the_import_apply_event",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source: "src-tauri/crates/grimodex-db/tests/import_session_commit.rs",
+      test: "post_marker_import_binds_one_initial_epoch_to_the_import_apply_event",
+      fullTestName:
+        "post_marker_import_binds_one_initial_epoch_to_the_import_apply_event",
+      proof: "post-marker import apply binds one initial epoch to its event",
+    },
+  }),
+  freezeGate({
+    id: "c2-zc-scan-staging-publish-atomic-replay",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "domain_writes::tests::scan_staging_project_publish_is_atomic_and_replays_the_same_receipt_and_epoch",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source: "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+      test: "scan_staging_project_publish_is_atomic_and_replays_the_same_receipt_and_epoch",
+      fullTestName:
+        "domain_writes::tests::scan_staging_project_publish_is_atomic_and_replays_the_same_receipt_and_epoch",
+      proof:
+        "Scan staging publish is atomic and replays the same receipt and epoch",
+    },
+  }),
+  freezeGate({
+    id: "c2-zc-hidden-staging-cutover-scope",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_c2zc_canonical_cutover",
+        "hidden_scan_staging_project_is_outside_cutover_scope_until_publish",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/tests/narrative_c2zc_canonical_cutover.rs",
+      test: "hidden_scan_staging_project_is_outside_cutover_scope_until_publish",
+      fullTestName:
+        "hidden_scan_staging_project_is_outside_cutover_scope_until_publish",
+      proof:
+        "hidden Scan staging stays outside cutover scope until publish and re-enters after publish",
+    },
+  }),
+  freezeGate({
+    id: "c2-zc-hidden-staging-discovery-exclusion",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::maintenance_runtime::tests::hidden_scan_staging_project_is_not_discovered_until_marker_is_removed",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs",
+      test: "hidden_scan_staging_project_is_not_discovered_until_marker_is_removed",
+      fullTestName:
+        "narrative_extraction::maintenance_runtime::tests::hidden_scan_staging_project_is_not_discovered_until_marker_is_removed",
+      proof: "hidden Scan staging projects stay out of discovery until publish",
+    },
+  }),
+  freezeGate({
+    id: "c2-zc-pre-marker-before-cutover-liveness",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::maintenance_runtime::tests::pre_marker_visible_project_enters_backfill_on_before_cutover_without_reopen",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs",
+      test: "pre_marker_visible_project_enters_backfill_on_before_cutover_without_reopen",
+      fullTestName:
+        "narrative_extraction::maintenance_runtime::tests::pre_marker_visible_project_enters_backfill_on_before_cutover_without_reopen",
+      proof:
+        "pre-marker BeforeCutover discovery enters Backfill without reopen",
+    },
+  }),
+  freezeGate({
+    id: "c2-zc-native-discovery-hidden-staging-exclusion",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "electron/native/grimodex-node/Cargo.toml",
+        "--lib",
+        "narrative_maintenance::tests::native_discovery_excludes_hidden_scan_staging_projects",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source: "electron/native/grimodex-node/src/narrative_maintenance.rs",
+      test: "native_discovery_excludes_hidden_scan_staging_projects",
+      fullTestName:
+        "narrative_maintenance::tests::native_discovery_excludes_hidden_scan_staging_projects",
+      proof:
+        "native maintenance discovery excludes hidden Scan staging projects",
+    },
+  }),
+  freezeGate({
+    id: "c2-zc-web-cutover-marker-rejection",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "web_editor_handoff",
+        "rejects_current_future_and_foreign_c2zc_cutover_markers_before_publishing",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source: "src-tauri/crates/grimodex-db/tests/web_editor_handoff.rs",
+      test: "rejects_current_future_and_foreign_c2zc_cutover_markers_before_publishing",
+      fullTestName:
+        "rejects_current_future_and_foreign_c2zc_cutover_markers_before_publishing",
+      proof: "Web handoff rejects current, future, and foreign C2-ZC markers",
+    },
+  }),
+  freezeGate({
+    id: "c2-zc-web-nonempty-semantic-epoch-rejection",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "web_editor_handoff",
+        "rejects_non_empty_semantic_epoch_before_publishing_and_cleans_candidate",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source: "src-tauri/crates/grimodex-db/tests/web_editor_handoff.rs",
+      test: "rejects_non_empty_semantic_epoch_before_publishing_and_cleans_candidate",
+      fullTestName:
+        "rejects_non_empty_semantic_epoch_before_publishing_and_cleans_candidate",
+      proof:
+        "Web handoff rejects a non-empty semantic epoch and cleans the candidate",
+    },
+  }),
+  freezeGate({
+    id: "c2-zc-web-poisoned-schema-data-migrations-rejection",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "web_editor_handoff",
+        "rejects_empty_poisoned_schema_data_migrations_before_publishing",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source: "src-tauri/crates/grimodex-db/tests/web_editor_handoff.rs",
+      test: "rejects_empty_poisoned_schema_data_migrations_before_publishing",
+      fullTestName:
+        "rejects_empty_poisoned_schema_data_migrations_before_publishing",
+      proof:
+        "Web handoff rejects an empty poisoned schema_data_migrations schema",
+    },
+  }),
+  freezeGate({
+    id: "c2-zc-web-poisoned-semantic-epoch-schema-rejection",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "web_editor_handoff",
+        "rejects_empty_poisoned_semantic_epoch_schema_before_publishing",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source: "src-tauri/crates/grimodex-db/tests/web_editor_handoff.rs",
+      test: "rejects_empty_poisoned_semantic_epoch_schema_before_publishing",
+      fullTestName:
+        "rejects_empty_poisoned_semantic_epoch_schema_before_publishing",
+      proof: "Web handoff rejects an empty poisoned semantic epoch schema",
+    },
+  }),
 ]);
 export const C2ZC_RUST_ACCEPTANCE_GATE_IDS = Object.freeze(
   C2ZC_RUST_ACCEPTANCE_GATES.map((gate) => gate.id),
@@ -854,7 +1142,15 @@ function assertReceiptContract(receipt, { candidate, catalogDigest }) {
       );
     }
   }
-  const verifyGate = receipt.gates[C2ZC_RUST_ACCEPTANCE_GATES.length - 1];
+  const verifyGates = receipt.gates.filter(
+    ({ id }) => id === C2ZC_RUST_VERIFY_OUTCOME_GATE_ID,
+  );
+  if (verifyGates.length !== 1) {
+    throw new Error(
+      "C2-ZC Rust receipt must contain exactly one production Verify gate",
+    );
+  }
+  const [verifyGate] = verifyGates;
   const parsedVerifyOutcome = parseC2ZcRustVerifyOutcome(
     verifyGate.stdout,
     verifyGate.stderr,

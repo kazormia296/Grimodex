@@ -156,18 +156,9 @@ const VERIFY_OUTCOME = {
 };
 
 function exactRustGateOutput(gateId) {
-  const fullTestName =
-    gateId === "c2-zc-dml-native-owned-table-denial"
-      ? "execute::tests::c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes"
-      : gateId === "c2-zc-readiness-corruption-fail-closed"
-        ? "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed"
-        : gateId === "c2-zc-liveness-restore-lock-binding"
-          ? "same_project_receipt_cannot_cross_database_authority"
-          : gateId === "c2-zc-native-restore-lock-release"
-            ? "narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence"
-            : gateId === "c2-zc-production-verify-coverage"
-              ? "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run"
-              : "canonical_read_has_no_legacy_fallback_after_generic_cutover";
+  const gate = C2ZC_RUST_ACCEPTANCE_GATES.find(({ id }) => id === gateId);
+  assert.ok(gate, `unknown C2-ZC Rust gate: ${gateId}`);
+  const { fullTestName } = gate;
   const sentinel =
     gateId === "c2-zc-production-verify-coverage"
       ? `C2ZC_RUST_VERIFY_OUTCOME=${JSON.stringify(VERIFY_OUTCOME)}\n\n`
@@ -468,7 +459,7 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
     productCommand.env.GRIMODEX_C2ZC_RUST_RECEIPT_SHA256,
     receipt.receiptSha256,
   );
-  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 6);
+  assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 17);
   assert.equal(C2ZC_RUST_ACCEPTANCE_GATES[0].argv.command, "cargo");
   assert.match(
     C2ZC_RUST_ACCEPTANCE_GATES[0].argv.args.join(" "),
