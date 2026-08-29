@@ -31,14 +31,14 @@ import {
   NARRATIVE_MAINTENANCE_RECEIPT_MAX_BYTES,
   NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
   NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
-  NARRATIVE_MAINTENANCE_QUIESCENCE_MAX_BYTES,
-  NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE,
-  NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE,
-  NARRATIVE_MAINTENANCE_QUIESCENCE_TYPE,
+  NARRATIVE_MAINTENANCE_HELD_FRESHNESS_MAX_BYTES,
+  NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+  NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE,
+  NARRATIVE_MAINTENANCE_HELD_FRESHNESS_TYPE,
   assertNarrativeMaintenanceCiReceipt,
-  assertNarrativeMaintenanceCiQuiescenceReceipt,
+  assertNarrativeMaintenanceCiHeldFreshnessReceipt,
   expectedNarrativeMaintenanceCiReceipt,
-  readNarrativeMaintenanceCiQuiescence,
+  readNarrativeMaintenanceCiHeldFreshness,
   narrativeMaintenanceReceiptRoot,
   MAIN_PROCESS_NOISE_ALLOWLIST,
 } from "../electron/scripts/product-journey-harness.mjs";
@@ -80,7 +80,9 @@ test("package.json exposes the runner and canonical product journey contracts", 
 
 const RECEIPT_NONCE = "00000000-0000-4000-8000-000000000001";
 const RECEIPT_STALE_NONCE = "00000000-0000-4000-8000-000000000002";
-const QUIESCENCE_REQUEST_NONCE = "00000000-0000-4000-8000-000000000003";
+const HELD_FRESHNESS_REQUEST_NONCE = "00000000-0000-4000-8000-000000000003";
+const HELD_FRESHNESS_INITIAL_REQUEST_NONCE =
+  "00000000-0000-4000-8000-000000000006";
 
 function canonicalReceiptText(value) {
   return JSON.stringify(
@@ -105,14 +107,14 @@ function canonicalValueText(value) {
   return JSON.stringify(value);
 }
 
-function quiescenceReceipt(
+function heldFreshnessReceipt(
   sequence = 1,
   nonce = RECEIPT_NONCE,
-  requestNonce = QUIESCENCE_REQUEST_NONCE,
-  phase = "quiescence-file",
+  requestNonce = HELD_FRESHNESS_REQUEST_NONCE,
+  phase = "held-freshness-file",
   requestedAt = "1970-01-01T00:00:00.000Z",
   observedAt = requestedAt,
-  freshnessHoldProjectId = null,
+  freshnessHoldProjectId = "project-hold",
 ) {
   const state = {
     authorityId: "authority-1",
@@ -127,7 +129,7 @@ function quiescenceReceipt(
     .digest("hex")}`;
   return {
     version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
-    type: NARRATIVE_MAINTENANCE_QUIESCENCE_TYPE,
+    type: NARRATIVE_MAINTENANCE_HELD_FRESHNESS_TYPE,
     nonce,
     requestNonce,
     phase,
@@ -136,22 +138,12 @@ function quiescenceReceipt(
     observedAt,
     monotonicObservedAtMs: sequence,
     workspaceBinding: { authorityId: "authority-1", generation: 1 },
-    discovery: {
-      discoveryGeneration: 1,
-      empty: true,
-      inFlight: false,
-      timerScheduled: false,
-      pendingRetry: false,
-      pendingEvent: false,
-      wakeAckPending: false,
-      wakeOutboxDrainInFlight: false,
-      wakeOutboxDrainSucceeded: true,
-      wakeOutboxDrainFailed: false,
-      wakeOutboxPendingRows: false,
-      queueIdle: true,
-    },
     freshness: {
-      cycleGeneration: sequence,
+      cycleGeneration: sequence + 1,
+      requestBarrierCycleGeneration: sequence,
+      requestPublishedAtMs: Math.max(0, Date.parse(requestedAt) + sequence),
+      cycleStartedAtMs: Math.max(1, Date.parse(requestedAt) + sequence + 1),
+      observedAtMs: Math.max(1, Date.parse(requestedAt) + sequence + 1),
       inFlight: false,
       hasMore: false,
       noWrite: true,
@@ -243,15 +235,15 @@ test("production env does not require an active maintenance receipt", () => {
   );
 });
 
-test("quiescence receipt is exact, digest-bound, nonce-bound, and size-bounded", () => {
-  const receipt = quiescenceReceipt();
+test("held-Freshness receipt is exact, digest-bound, nonce-bound, and size-bounded", () => {
+  const receipt = heldFreshnessReceipt();
   assert.deepEqual(
-    assertNarrativeMaintenanceCiQuiescenceReceipt(receipt, RECEIPT_NONCE, 1),
+    assertNarrativeMaintenanceCiHeldFreshnessReceipt(receipt, RECEIPT_NONCE, 1),
     receipt,
   );
   assert.ok(
     Buffer.byteLength(canonicalValueText(receipt), "utf8") <=
-      NARRATIVE_MAINTENANCE_QUIESCENCE_MAX_BYTES,
+      NARRATIVE_MAINTENANCE_HELD_FRESHNESS_MAX_BYTES,
   );
   for (const [label, candidate] of [
     ["wrong nonce", { ...receipt, nonce: RECEIPT_STALE_NONCE }],
@@ -267,7 +259,7 @@ test("quiescence receipt is exact, digest-bound, nonce-bound, and size-bounded",
   ]) {
     assert.throws(
       () =>
-        assertNarrativeMaintenanceCiQuiescenceReceipt(
+        assertNarrativeMaintenanceCiHeldFreshnessReceipt(
           candidate,
           RECEIPT_NONCE,
           1,
@@ -283,23 +275,26 @@ test("quiescence receipt is exact, digest-bound, nonce-bound, and size-bounded",
               : new RegExp(label.replace(" ", ".*"), "i"),
     );
   }
-  const heldReceipt = quiescenceReceipt(
+  const heldReceipt = heldFreshnessReceipt(
     1,
     RECEIPT_NONCE,
-    QUIESCENCE_REQUEST_NONCE,
-    "quiescence-held",
+    HELD_FRESHNESS_REQUEST_NONCE,
+    "held-freshness-held",
     "1970-01-01T00:00:00.000Z",
     "1970-01-01T00:00:00.000Z",
     "project-hold",
   );
   assert.equal(
-    assertNarrativeMaintenanceCiQuiescenceReceipt(heldReceipt, RECEIPT_NONCE, 1)
-      .freshness.heldProjectId,
+    assertNarrativeMaintenanceCiHeldFreshnessReceipt(
+      heldReceipt,
+      RECEIPT_NONCE,
+      1,
+    ).freshness.heldProjectId,
     "project-hold",
   );
   assert.throws(
     () =>
-      assertNarrativeMaintenanceCiQuiescenceReceipt(
+      assertNarrativeMaintenanceCiHeldFreshnessReceipt(
         {
           ...heldReceipt,
           freshness: { ...heldReceipt.freshness, cutoverNotReady: false },
@@ -311,7 +306,7 @@ test("quiescence receipt is exact, digest-bound, nonce-bound, and size-bounded",
   );
 });
 
-test("harness accepts a file quiescence sequence independently of stdout", async (t) => {
+test("harness accepts a file held-Freshness sequence independently of stdout", async (t) => {
   const previousCi = process.env.CI;
   const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
   const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
@@ -349,20 +344,30 @@ test("harness accepts a file quiescence sequence independently of stdout", async
           { mode: 0o600 },
         );
         await writeFile(
-          path.join(nonceDir, NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE),
+          path.join(
+            nonceDir,
+            NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+          ),
           canonicalValueText({
             version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
-            type: NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE,
+            type: NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE,
             nonce: expected.nonce,
-            requestNonce: QUIESCENCE_REQUEST_NONCE,
-            phase: "quiescence-file",
+            requestNonce: HELD_FRESHNESS_INITIAL_REQUEST_NONCE,
+            phase: "held-freshness-file",
+            workspaceBinding: { authorityId: "authority-1", generation: 1 },
             requestedAt: "1970-01-01T00:00:00.000Z",
           }),
           { mode: 0o600 },
         );
         await writeFile(
-          path.join(nonceDir, "quiescence-0000000001.json"),
-          canonicalValueText(quiescenceReceipt()),
+          path.join(nonceDir, "held-freshness-0000000001.json"),
+          canonicalValueText(
+            heldFreshnessReceipt(
+              1,
+              RECEIPT_NONCE,
+              HELD_FRESHNESS_INITIAL_REQUEST_NONCE,
+            ),
+          ),
           { mode: 0o600 },
         );
         return app;
@@ -371,7 +376,7 @@ test("harness accepts a file quiescence sequence independently of stdout", async
     closeApp: async () => undefined,
   });
   t.after(async () => {
-    await harness.dispose({ success: true, name: "quiescence-file" });
+    await harness.dispose({ success: true, name: "held-freshness-file" });
     if (previousCi === undefined) delete process.env.CI;
     else process.env.CI = previousCi;
     if (previousOwner === undefined) {
@@ -385,12 +390,70 @@ test("harness accepts a file quiescence sequence independently of stdout", async
       process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
     }
   });
-  const launched = await harness.launch("quiescence-file");
-  assert.equal(launched.quiescenceArtifact.receipt.sequence, 1);
+  const launched = await harness.launch("held-freshness-file");
+  assert.equal(launched.heldFreshnessArtifact.receipt.sequence, 1);
+  const firstHeldFreshnessPath = path.join(
+    harness.receiptRoot,
+    RECEIPT_NONCE,
+    "held-freshness-0000000001.json",
+  );
+  const firstHeldFreshness = JSON.parse(
+    await readFile(firstHeldFreshnessPath, "utf8"),
+  );
+  const initialRequest = JSON.parse(
+    await readFile(
+      path.join(
+        harness.receiptRoot,
+        RECEIPT_NONCE,
+        NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+      ),
+      "utf8",
+    ),
+  );
+  await writeFile(
+    firstHeldFreshnessPath,
+    canonicalValueText({
+      ...firstHeldFreshness,
+      observedAt: "1970-01-01T00:00:00.003Z",
+      freshness: {
+        ...firstHeldFreshness.freshness,
+        observedAtMs: firstHeldFreshness.freshness.observedAtMs + 1,
+      },
+    }),
+    { mode: 0o600 },
+  );
   await assert.rejects(
-    harness.awaitQuiescence(
+    harness.awaitHeldFreshness(
       launched.app,
-      "quiescence-file/missing-request-nonce",
+      "held-freshness-file/mutated-history",
+      {
+        previousSequence: 1,
+        requestNonce: "00000000-0000-4000-8000-000000000007",
+        authorityId: "authority-1",
+        generation: 1,
+        workspaceBinding: { authorityId: "authority-1", generation: 1 },
+      },
+    ),
+    /changed|immutable|digest|sha/i,
+  );
+  await writeFile(
+    firstHeldFreshnessPath,
+    canonicalValueText(firstHeldFreshness),
+    { mode: 0o600 },
+  );
+  await writeFile(
+    path.join(
+      harness.receiptRoot,
+      RECEIPT_NONCE,
+      NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+    ),
+    canonicalValueText(initialRequest),
+    { mode: 0o600 },
+  );
+  await assert.rejects(
+    harness.awaitHeldFreshness(
+      launched.app,
+      "held-freshness-file/missing-request-nonce",
       {
         previousSequence: 1,
         authorityId: "authority-1",
@@ -400,13 +463,14 @@ test("harness accepts a file quiescence sequence independently of stdout", async
     /caller-generated request nonce/i,
   );
   await assert.rejects(
-    harness.awaitQuiescence(
+    harness.awaitHeldFreshness(
       launched.app,
-      "quiescence-file/missing-previous-sequence",
+      "held-freshness-file/missing-previous-sequence",
       {
-        requestNonce: QUIESCENCE_REQUEST_NONCE,
+        requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
         authorityId: "authority-1",
         generation: 1,
+        workspaceBinding: { authorityId: "authority-1", generation: 1 },
       },
     ),
     /previousSequence/i,
@@ -418,7 +482,7 @@ test("harness accepts a file quiescence sequence independently of stdout", async
         path.join(
           harness.receiptRoot,
           RECEIPT_NONCE,
-          NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE,
+          NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
         ),
         "utf8",
       ),
@@ -427,10 +491,10 @@ test("harness accepts a file quiescence sequence independently of stdout", async
       path.join(
         harness.receiptRoot,
         RECEIPT_NONCE,
-        "quiescence-0000000002.json",
+        "held-freshness-0000000002.json",
       ),
       canonicalValueText(
-        quiescenceReceipt(
+        heldFreshnessReceipt(
           2,
           RECEIPT_NONCE,
           request.requestNonce,
@@ -442,40 +506,47 @@ test("harness accepts a file quiescence sequence independently of stdout", async
       { mode: 0o600 },
     );
   })();
-  const fresh = await harness.awaitQuiescence(
+  const fresh = await harness.awaitHeldFreshness(
     launched.app,
-    "quiescence-file/fresh",
+    "held-freshness-file/fresh",
     {
       previousSequence: 1,
-      requestNonce: QUIESCENCE_REQUEST_NONCE,
+      requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
       authorityId: "authority-1",
       generation: 1,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
     },
   );
   await secondReceipt;
   assert.equal(fresh.receipt.sequence, 2);
   assert.equal(
     (
-      await harness.readQuiescence(launched.app, "quiescence-file/fresh", {
-        previousSequence: 1,
-        requestNonce: QUIESCENCE_REQUEST_NONCE,
-        authorityId: "authority-1",
-        generation: 1,
-      })
+      await harness.readHeldFreshness(
+        launched.app,
+        "held-freshness-file/fresh",
+        {
+          previousSequence: 1,
+          requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
+          authorityId: "authority-1",
+          generation: 1,
+          workspaceBinding: { authorityId: "authority-1", generation: 1 },
+        },
+      )
     ).receipt.sequence,
     2,
   );
   assert.equal(
     (
-      await readNarrativeMaintenanceCiQuiescence(
+      await readNarrativeMaintenanceCiHeldFreshness(
         harness.receiptRoot,
         expectedNarrativeMaintenanceCiReceipt(process.env),
-        "quiescence-file/fresh",
+        "held-freshness-file/fresh",
         {
           previousSequence: 1,
-          requestNonce: QUIESCENCE_REQUEST_NONCE,
+          requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
           authorityId: "authority-1",
           generation: 1,
+          workspaceBinding: { authorityId: "authority-1", generation: 1 },
         },
       )
     ).receipt.sequence,
@@ -484,7 +555,7 @@ test("harness accepts a file quiescence sequence independently of stdout", async
   const requestPath = path.join(
     harness.receiptRoot,
     RECEIPT_NONCE,
-    NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE,
+    NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
   );
   const request = JSON.parse(await readFile(requestPath, "utf8"));
   await writeFile(
@@ -496,24 +567,25 @@ test("harness accepts a file quiescence sequence independently of stdout", async
     { mode: 0o600 },
   );
   await assert.rejects(
-    readNarrativeMaintenanceCiQuiescence(
+    readNarrativeMaintenanceCiHeldFreshness(
       harness.receiptRoot,
       expectedNarrativeMaintenanceCiReceipt(process.env),
-      "quiescence-file/fresh",
+      "held-freshness-file/fresh",
       {
         previousSequence: 1,
-        requestNonce: QUIESCENCE_REQUEST_NONCE,
+        requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
         authorityId: "authority-1",
         generation: 1,
+        workspaceBinding: { authorityId: "authority-1", generation: 1 },
       },
     ),
     /stale request|binding/i,
   );
-  await harness.close(launched.app, launched.page, "quiescence-file");
+  await harness.close(launched.app, launched.page, "held-freshness-file");
   assert.deepEqual(await readdir(harness.receiptRoot), []);
 });
 
-test("harness tolerates the current quiescence temp until atomic rename", async (t) => {
+test("harness tolerates the current held-Freshness temp until atomic rename", async (t) => {
   const previousCi = process.env.CI;
   const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
   const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
@@ -552,26 +624,30 @@ test("harness tolerates the current quiescence temp until atomic rename", async 
         );
         const request = {
           version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
-          type: NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE,
+          type: NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE,
           nonce: expected.nonce,
-          requestNonce: QUIESCENCE_REQUEST_NONCE,
-          phase: "quiescence-temp",
+          requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
+          phase: "held-freshness-temp",
           requestedAt: "1970-01-01T00:00:00.000Z",
+          workspaceBinding: { authorityId: "authority-1", generation: 1 },
         };
         await writeFile(
-          path.join(nonceDir, NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE),
+          path.join(
+            nonceDir,
+            NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+          ),
           canonicalValueText(request),
           { mode: 0o600 },
         );
         const temporaryPath = path.join(
           nonceDir,
-          "quiescence-0000000001.json.tmp",
+          "held-freshness-0000000001.json.tmp",
         );
         const finalPath = temporaryPath.slice(0, -4);
         await writeFile(
           temporaryPath,
           canonicalValueText(
-            quiescenceReceipt(
+            heldFreshnessReceipt(
               1,
               expected.nonce,
               request.requestNonce,
@@ -590,7 +666,7 @@ test("harness tolerates the current quiescence temp until atomic rename", async 
     closeApp: async () => undefined,
   });
   t.after(async () => {
-    await harness.dispose({ success: true, name: "quiescence-temp" });
+    await harness.dispose({ success: true, name: "held-freshness-temp" });
     if (previousCi === undefined) delete process.env.CI;
     else process.env.CI = previousCi;
     if (previousOwner === undefined) {
@@ -605,12 +681,12 @@ test("harness tolerates the current quiescence temp until atomic rename", async 
     }
   });
 
-  const launched = await harness.launch("quiescence-temp");
-  assert.equal(launched.quiescenceArtifact.receipt.sequence, 1);
-  await harness.close(launched.app, launched.page, "quiescence-temp");
+  const launched = await harness.launch("held-freshness-temp");
+  assert.equal(launched.heldFreshnessArtifact.receipt.sequence, 1);
+  await harness.close(launched.app, launched.page, "held-freshness-temp");
 });
 
-test("harness retries only the current quiescence temp and reports a stuck temp", async (t) => {
+test("harness retries only the current held-Freshness temp and reports a stuck temp", async (t) => {
   const previousCi = process.env.CI;
   const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
   const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
@@ -648,20 +724,24 @@ test("harness retries only the current quiescence temp and reports a stuck temp"
           { mode: 0o600 },
         );
         await writeFile(
-          path.join(nonceDir, NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE),
+          path.join(
+            nonceDir,
+            NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+          ),
           canonicalValueText({
             version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
-            type: NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE,
+            type: NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE,
             nonce: expected.nonce,
-            requestNonce: QUIESCENCE_REQUEST_NONCE,
-            phase: "quiescence-retry",
+            requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
+            phase: "held-freshness-retry",
             requestedAt: "1970-01-01T00:00:00.000Z",
+            workspaceBinding: { authorityId: "authority-1", generation: 1 },
           }),
           { mode: 0o600 },
         );
         await writeFile(
-          path.join(nonceDir, "quiescence-0000000001.json"),
-          canonicalValueText(quiescenceReceipt()),
+          path.join(nonceDir, "held-freshness-0000000001.json"),
+          canonicalValueText(heldFreshnessReceipt()),
           { mode: 0o600 },
         );
         return app;
@@ -670,7 +750,7 @@ test("harness retries only the current quiescence temp and reports a stuck temp"
     closeApp: async () => undefined,
   });
   t.after(async () => {
-    await harness.dispose({ success: true, name: "quiescence-retry" });
+    await harness.dispose({ success: true, name: "held-freshness-retry" });
     if (previousCi === undefined) delete process.env.CI;
     else process.env.CI = previousCi;
     if (previousOwner === undefined) {
@@ -685,22 +765,25 @@ test("harness retries only the current quiescence temp and reports a stuck temp"
     }
   });
 
-  const launched = await harness.launch("quiescence-retry");
+  const launched = await harness.launch("held-freshness-retry");
   const nextRequestNonce = "00000000-0000-4000-8000-000000000004";
   const transientWrite = (async () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     const nonceDir = path.join(harness.receiptRoot, RECEIPT_NONCE);
     const request = JSON.parse(
       await readFile(
-        path.join(nonceDir, NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE),
+        path.join(nonceDir, NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE),
         "utf8",
       ),
     );
-    const temporaryPath = path.join(nonceDir, "quiescence-0000000002.json.tmp");
+    const temporaryPath = path.join(
+      nonceDir,
+      "held-freshness-0000000002.json.tmp",
+    );
     await writeFile(
       temporaryPath,
       canonicalValueText(
-        quiescenceReceipt(
+        heldFreshnessReceipt(
           2,
           RECEIPT_NONCE,
           nextRequestNonce,
@@ -714,14 +797,15 @@ test("harness retries only the current quiescence temp and reports a stuck temp"
     await new Promise((resolve) => setTimeout(resolve, 20));
     await rename(temporaryPath, temporaryPath.slice(0, -4));
   })();
-  const fresh = await harness.awaitQuiescence(
+  const fresh = await harness.awaitHeldFreshness(
     launched.app,
-    "quiescence-retry",
+    "held-freshness-retry",
     {
       previousSequence: 1,
       requestNonce: nextRequestNonce,
       authorityId: "authority-1",
       generation: 1,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
     },
   );
   await transientWrite;
@@ -731,21 +815,21 @@ test("harness retries only the current quiescence temp and reports a stuck temp"
   const stuckTempPath = path.join(
     harness.receiptRoot,
     RECEIPT_NONCE,
-    "quiescence-0000000003.json.tmp",
+    "held-freshness-0000000003.json.tmp",
   );
   const stuckWrite = (async () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     const nonceDir = path.dirname(stuckTempPath);
     const request = JSON.parse(
       await readFile(
-        path.join(nonceDir, NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE),
+        path.join(nonceDir, NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE),
         "utf8",
       ),
     );
     await writeFile(
       stuckTempPath,
       canonicalValueText(
-        quiescenceReceipt(
+        heldFreshnessReceipt(
           3,
           RECEIPT_NONCE,
           stuckRequestNonce,
@@ -758,17 +842,18 @@ test("harness retries only the current quiescence temp and reports a stuck temp"
     );
   })();
   await assert.rejects(
-    harness.awaitQuiescence(launched.app, "quiescence-retry/stuck", {
+    harness.awaitHeldFreshness(launched.app, "held-freshness-retry/stuck", {
       previousSequence: 2,
       requestNonce: stuckRequestNonce,
       authorityId: "authority-1",
       generation: 1,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
     }),
     /partial\/stuck/i,
   );
   await stuckWrite;
   await rm(stuckTempPath, { force: true });
-  await harness.close(launched.app, launched.page, "quiescence-retry");
+  await harness.close(launched.app, launched.page, "held-freshness-retry");
   assert.deepEqual(await readdir(harness.receiptRoot), []);
 });
 

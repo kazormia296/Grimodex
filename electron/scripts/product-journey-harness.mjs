@@ -14,7 +14,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { mkdtempSync } from "node:fs";
+import { closeSync, fsyncSync, mkdtempSync, openSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -58,6 +58,14 @@ export const NARRATIVE_MAINTENANCE_QUIESCENCE_MAX_BYTES = 16_384;
 export const NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_MAX_BYTES = 4_096;
 export const NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE =
   "quiescence-request.json";
+export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_TYPE =
+  "grimodex:narrative-maintenance-ci-held-freshness";
+export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE =
+  "grimodex:narrative-maintenance-ci-held-freshness-request";
+export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_MAX_BYTES = 16_384;
+export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_MAX_BYTES = 4_096;
+export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE =
+  "held-freshness-request.json";
 const NARRATIVE_MAINTENANCE_SETUP_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_SETUP";
 const NARRATIVE_MAINTENANCE_FRESHNESS_ENV =
@@ -215,6 +223,24 @@ const QUIESCENCE_FRESHNESS_KEYS = [
   "timerScheduled",
   "nextCycleGuardStateDigest",
 ];
+// The held-Freshness sidecar is a direct callback observation. Its causal
+// clock is part of the exact core schema; keep it separate from the legacy
+// composite quiescence validator.
+const HELD_FRESHNESS_FRESHNESS_KEYS = [
+  "cycleGeneration",
+  "requestBarrierCycleGeneration",
+  "requestPublishedAtMs",
+  "cycleStartedAtMs",
+  "observedAtMs",
+  "inFlight",
+  "hasMore",
+  "noWrite",
+  "heldProjectId",
+  "cutoverNotReady",
+  "wakePending",
+  "timerScheduled",
+  "nextCycleGuardStateDigest",
+];
 const QUIESCENCE_RECEIPT_KEYS = [
   "version",
   "type",
@@ -231,6 +257,32 @@ const QUIESCENCE_RECEIPT_KEYS = [
   "state",
   "stateDigest",
 ];
+
+function syncNarrativeMaintenanceDirectoryStrict(nonceDir) {
+  if (process.platform === "win32") {
+    throw new Error(
+      "strict held Freshness request directory fsync is unavailable on win32",
+    );
+  }
+  let descriptor = null;
+  try {
+    descriptor = openSync(nonceDir, "r");
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = null;
+  } catch (error) {
+    if (descriptor !== null) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        // Preserve the strict fsync failure as the cause below.
+      }
+    }
+    throw new Error("strict held Freshness request directory fsync failed", {
+      cause: error,
+    });
+  }
+}
 
 function assertExactKeys(value, expected, label) {
   if (
@@ -540,6 +592,183 @@ export function assertNarrativeMaintenanceCiQuiescenceReceipt(
   return receipt;
 }
 
+const HELD_FRESHNESS_RECEIPT_KEYS = [
+  "version",
+  "type",
+  "nonce",
+  "requestNonce",
+  "phase",
+  "requestedAt",
+  "sequence",
+  "observedAt",
+  "monotonicObservedAtMs",
+  "workspaceBinding",
+  "freshness",
+  "state",
+  "stateDigest",
+];
+
+export function assertNarrativeMaintenanceCiHeldFreshnessRequest(
+  request,
+  expectedNonce,
+) {
+  assertExactKeys(
+    request,
+    [
+      "version",
+      "type",
+      "nonce",
+      "requestNonce",
+      "phase",
+      "requestedAt",
+      "workspaceBinding",
+    ],
+    "held Freshness request",
+  );
+  if (
+    request.version !== NARRATIVE_MAINTENANCE_RECEIPT_VERSION ||
+    request.type !== NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE ||
+    request.nonce !== expectedNonce ||
+    !UUID_V4.test(request.nonce) ||
+    !UUID_V4.test(request.requestNonce) ||
+    typeof request.phase !== "string" ||
+    request.phase.length === 0 ||
+    request.phase.length > 256 ||
+    request.phase.trim() !== request.phase ||
+    request.phase.includes("\u0000") ||
+    typeof request.requestedAt !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(
+      request.requestedAt,
+    ) ||
+    !Number.isFinite(Date.parse(request.requestedAt))
+  ) {
+    throw new Error("held Freshness request fields are invalid");
+  }
+  assertQuiescenceBinding(
+    request.workspaceBinding,
+    "held Freshness request binding",
+  );
+  return request;
+}
+
+/** Validate one immutable main-owned held-Freshness sidecar. */
+export function assertNarrativeMaintenanceCiHeldFreshnessReceipt(
+  receipt,
+  expectedNonce,
+  expectedSequence = null,
+  expectedRequest = null,
+) {
+  assertExactKeys(
+    receipt,
+    HELD_FRESHNESS_RECEIPT_KEYS,
+    "held Freshness receipt",
+  );
+  if (
+    receipt.version !== NARRATIVE_MAINTENANCE_RECEIPT_VERSION ||
+    receipt.type !== NARRATIVE_MAINTENANCE_HELD_FRESHNESS_TYPE ||
+    receipt.nonce !== expectedNonce ||
+    !UUID_V4.test(receipt.nonce) ||
+    !Number.isSafeInteger(receipt.sequence) ||
+    receipt.sequence <= 0 ||
+    typeof receipt.observedAt !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(
+      receipt.observedAt,
+    ) ||
+    !Number.isSafeInteger(receipt.monotonicObservedAtMs) ||
+    receipt.monotonicObservedAtMs < 0
+  ) {
+    throw new Error("held Freshness receipt header is invalid");
+  }
+  if (
+    !UUID_V4.test(receipt.requestNonce) ||
+    typeof receipt.phase !== "string" ||
+    receipt.phase.length === 0 ||
+    receipt.phase.length > 256 ||
+    receipt.phase.trim() !== receipt.phase ||
+    receipt.phase.includes("\u0000") ||
+    typeof receipt.requestedAt !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(
+      receipt.requestedAt,
+    ) ||
+    Date.parse(receipt.observedAt) < Date.parse(receipt.requestedAt)
+  ) {
+    throw new Error("held Freshness receipt request echo is invalid");
+  }
+  if (
+    expectedRequest !== null &&
+    (receipt.requestNonce !== expectedRequest.requestNonce ||
+      receipt.phase !== expectedRequest.phase ||
+      receipt.requestedAt !== expectedRequest.requestedAt ||
+      canonicalJson(receipt.workspaceBinding) !==
+        canonicalJson(expectedRequest.workspaceBinding))
+  ) {
+    throw new Error(
+      "held Freshness receipt request echo does not match request",
+    );
+  }
+  if (expectedSequence !== null && receipt.sequence !== expectedSequence) {
+    throw new Error("held Freshness receipt sequence is not contiguous");
+  }
+  assertQuiescenceBinding(
+    receipt.workspaceBinding,
+    "held Freshness receipt binding",
+  );
+  assertExactKeys(
+    receipt.freshness,
+    HELD_FRESHNESS_FRESHNESS_KEYS,
+    "held Freshness receipt freshness",
+  );
+  if (
+    !Number.isSafeInteger(receipt.freshness.cycleGeneration) ||
+    receipt.freshness.cycleGeneration <= 0 ||
+    !Number.isSafeInteger(receipt.freshness.requestBarrierCycleGeneration) ||
+    receipt.freshness.requestBarrierCycleGeneration <= 0 ||
+    receipt.freshness.requestBarrierCycleGeneration >=
+      receipt.freshness.cycleGeneration ||
+    !Number.isSafeInteger(receipt.freshness.requestPublishedAtMs) ||
+    receipt.freshness.requestPublishedAtMs < 0 ||
+    !Number.isSafeInteger(receipt.freshness.cycleStartedAtMs) ||
+    receipt.freshness.cycleStartedAtMs < 0 ||
+    !Number.isSafeInteger(receipt.freshness.observedAtMs) ||
+    receipt.freshness.observedAtMs < 0 ||
+    receipt.freshness.observedAtMs <= Date.parse(receipt.requestedAt) ||
+    receipt.freshness.requestPublishedAtMs < Date.parse(receipt.requestedAt) ||
+    receipt.freshness.cycleStartedAtMs <=
+      receipt.freshness.requestPublishedAtMs ||
+    receipt.freshness.cycleStartedAtMs > receipt.freshness.observedAtMs ||
+    receipt.freshness.inFlight !== false ||
+    receipt.freshness.hasMore !== false ||
+    receipt.freshness.noWrite !== true ||
+    typeof receipt.freshness.heldProjectId !== "string" ||
+    receipt.freshness.heldProjectId.trim() !==
+      receipt.freshness.heldProjectId ||
+    receipt.freshness.heldProjectId.length === 0 ||
+    receipt.freshness.cutoverNotReady !== true ||
+    receipt.freshness.wakePending !== false ||
+    typeof receipt.freshness.timerScheduled !== "boolean" ||
+    (receipt.freshness.nextCycleGuardStateDigest !== null &&
+      typeof receipt.freshness.nextCycleGuardStateDigest !== "string") ||
+    receipt.freshness.timerScheduled !==
+      (receipt.freshness.nextCycleGuardStateDigest !== null)
+  ) {
+    throw new Error("held Freshness receipt is not a held no-write event");
+  }
+  const state = assertQuiescenceState(receipt.state);
+  if (
+    receipt.workspaceBinding.authorityId !== state.authorityId ||
+    receipt.workspaceBinding.generation !== state.generation ||
+    receipt.stateDigest !== state.stateDigest ||
+    state.marker !== null ||
+    receipt.freshness.heldProjectId !== state.heldProjectId ||
+    state.freshnessHoldProjectId !== receipt.freshness.heldProjectId
+  ) {
+    throw new Error(
+      "held Freshness receipt binding or marker evidence is invalid",
+    );
+  }
+  return receipt;
+}
+
 function canonicalJson(value) {
   if (Array.isArray(value)) {
     return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
@@ -641,7 +870,12 @@ async function inspectNarrativeMaintenanceReceipt(
   root,
   expected,
   phase,
-  { allowMissing = true, allowTransientTemp = false } = {},
+  {
+    allowMissing = true,
+    allowTransientTemp = false,
+    seenHeldFreshnessRequestNonces = null,
+    heldFreshnessRequestNonceBySequence = null,
+  } = {},
 ) {
   const rootReal = await realpath(root);
   const entries = await receiptRootEntries(rootReal);
@@ -693,16 +927,48 @@ async function inspectNarrativeMaintenanceReceipt(
   const temporaryEntries = childEntries.filter((entry) =>
     entry.name.endsWith(".tmp"),
   );
-  const requestEntry = childEntries.find(
+  const heldFreshnessRequestEntry = childEntries.find(
+    (entry) => entry.name === NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+  );
+  const legacyQuiescenceRequestEntry = childEntries.find(
     (entry) => entry.name === NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE,
   );
-  const quiescenceEntries = childEntries.filter((entry) =>
+  if (heldFreshnessRequestEntry && legacyQuiescenceRequestEntry) {
+    throw new Error(
+      `mixed held-Freshness and legacy request artifacts for ${phase}`,
+    );
+  }
+  const requestEntry =
+    heldFreshnessRequestEntry ?? legacyQuiescenceRequestEntry;
+  const heldFreshnessEntries = childEntries.filter((entry) =>
+    /^held-freshness-\d{10}\.json$/u.test(entry.name),
+  );
+  const legacyQuiescenceEntries = childEntries.filter((entry) =>
     /^quiescence-\d{10}\.json$/u.test(entry.name),
   );
+  if (heldFreshnessEntries.length > 0 && legacyQuiescenceEntries.length > 0) {
+    throw new Error(
+      `mixed held-Freshness and legacy receipt artifacts for ${phase}`,
+    );
+  }
+  if (
+    (heldFreshnessRequestEntry && legacyQuiescenceEntries.length > 0) ||
+    (legacyQuiescenceRequestEntry && heldFreshnessEntries.length > 0)
+  ) {
+    throw new Error(
+      `mixed held-Freshness and legacy protocol artifacts for ${phase}`,
+    );
+  }
+  const sequenceEntries =
+    heldFreshnessEntries.length > 0
+      ? heldFreshnessEntries
+      : legacyQuiescenceEntries;
   const allowedEntries = new Set([
     "receipt.json",
+    NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
     NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE,
-    ...quiescenceEntries.map((entry) => entry.name),
+    ...heldFreshnessEntries.map((entry) => entry.name),
+    ...legacyQuiescenceEntries.map((entry) => entry.name),
     ...temporaryEntries.map((entry) => entry.name),
   ]);
   if (childEntries.some((entry) => !allowedEntries.has(entry.name))) {
@@ -718,23 +984,32 @@ async function inspectNarrativeMaintenanceReceipt(
     }
   }
   if (temporaryEntries.length > 0) {
-    const expectedQuiescenceTemp = `quiescence-${String(
-      quiescenceEntries.length + 1,
+    const expectedHeldFreshnessTemp = `held-freshness-${String(
+      heldFreshnessEntries.length + 1,
     ).padStart(10, "0")}.json.tmp`;
-    const currentQuiescenceTemp =
+    const currentHeldFreshnessTemp =
       temporaryEntries.length === 1 &&
-      temporaryEntries[0].name === expectedQuiescenceTemp;
+      temporaryEntries[0].name === expectedHeldFreshnessTemp;
+    const expectedLegacyTemp = `quiescence-${String(
+      legacyQuiescenceEntries.length + 1,
+    ).padStart(10, "0")}.json.tmp`;
+    const currentLegacyTemp =
+      temporaryEntries.length === 1 &&
+      temporaryEntries[0].name === expectedLegacyTemp;
     const currentLaunchTemp =
       temporaryEntries.length === 1 &&
       temporaryEntries[0].name === "receipt.tmp";
     const transientTempAllowed =
-      (allowMissing && (currentQuiescenceTemp || currentLaunchTemp)) ||
-      (allowTransientTemp && currentQuiescenceTemp);
+      (allowMissing &&
+        (currentHeldFreshnessTemp || currentLegacyTemp || currentLaunchTemp)) ||
+      (allowTransientTemp && (currentHeldFreshnessTemp || currentLegacyTemp));
     if (
       temporaryEntries.length > 1 ||
       temporaryEntries.some(
         (entry) =>
-          entry.name !== "receipt.tmp" && entry.name !== expectedQuiescenceTemp,
+          entry.name !== "receipt.tmp" &&
+          entry.name !== expectedHeldFreshnessTemp &&
+          entry.name !== expectedLegacyTemp,
       ) ||
       !transientTempAllowed
     ) {
@@ -742,15 +1017,15 @@ async function inspectNarrativeMaintenanceReceipt(
         `narrative maintenance receipt nonce contains a partial artifact for ${phase}`,
       );
     }
-    // Both launch and quiescence writers expose one bounded temp file only
+    // Launch and held-Freshness writers expose one bounded temp file only
     // while an atomic rename is pending. Treat it as transient during the
     // normal polling window; the deadline path reports a stuck partial.
     return null;
   }
   if (!launchEntry) {
-    if (quiescenceEntries.length > 0) {
+    if (sequenceEntries.length > 0) {
       throw new Error(
-        `quiescence artifacts appeared before the launch receipt for ${phase}`,
+        `held-Freshness artifacts appeared before the launch receipt for ${phase}`,
       );
     }
     // receipt.tmp is intentionally tolerated while the atomic launch writer
@@ -759,34 +1034,48 @@ async function inspectNarrativeMaintenanceReceipt(
   }
   let request = null;
   if (requestEntry) {
-    const requestPath = path.join(
-      nonceReal,
-      NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE,
-    );
+    const isHeldFreshnessRequest = heldFreshnessRequestEntry !== undefined;
+    const requestFile = isHeldFreshnessRequest
+      ? NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE
+      : NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE;
+    const requestMaxBytes = isHeldFreshnessRequest
+      ? NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_MAX_BYTES
+      : NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_MAX_BYTES;
+    const requestPath = path.join(nonceReal, requestFile);
     const requestMetadata = await lstat(requestPath);
     if (
       !requestMetadata.isFile() ||
       requestMetadata.isSymbolicLink() ||
-      requestMetadata.size > NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_MAX_BYTES
+      requestMetadata.size > requestMaxBytes
     ) {
-      throw new Error(`quiescence request is not a bounded regular file`);
+      throw new Error(
+        `${isHeldFreshnessRequest ? "held-Freshness" : "legacy"} request is not a bounded regular file`,
+      );
     }
     const requestBytes = await readFile(requestPath);
-    if (
-      requestBytes.byteLength >
-      NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_MAX_BYTES
-    ) {
-      throw new Error(`quiescence request exceeds its byte bound`);
+    if (requestBytes.byteLength > requestMaxBytes) {
+      throw new Error(
+        `${isHeldFreshnessRequest ? "held-Freshness" : "legacy"} request exceeds its byte bound`,
+      );
     }
     const requestText = requestBytes.toString("utf8");
     try {
       request = JSON.parse(requestText);
     } catch (error) {
-      throw new Error(`quiescence request is not JSON`, { cause: error });
+      throw new Error(
+        `${isHeldFreshnessRequest ? "held-Freshness" : "legacy"} request is not JSON`,
+        { cause: error },
+      );
     }
-    assertNarrativeMaintenanceCiQuiescenceRequest(request, expected.nonce);
+    if (isHeldFreshnessRequest) {
+      assertNarrativeMaintenanceCiHeldFreshnessRequest(request, expected.nonce);
+    } else {
+      assertNarrativeMaintenanceCiQuiescenceRequest(request, expected.nonce);
+    }
     if (canonicalJson(request) !== requestText) {
-      throw new Error(`quiescence request is not canonical JSON`);
+      throw new Error(
+        `${isHeldFreshnessRequest ? "held-Freshness" : "legacy"} request is not canonical JSON`,
+      );
     }
   }
   const receiptPath = path.join(nonceReal, "receipt.json");
@@ -815,18 +1104,26 @@ async function inspectNarrativeMaintenanceReceipt(
     throw new Error(`narrative maintenance receipt is not canonical JSON`);
   }
 
-  const sortedQuiescenceEntries = [...quiescenceEntries].sort((left, right) =>
+  const sortedSequenceEntries = [...sequenceEntries].sort((left, right) =>
     left.name.localeCompare(right.name),
   );
-  if (sortedQuiescenceEntries.length > 0 && request === null) {
-    throw new Error(`quiescence receipt request is missing for ${phase}`);
+  if (sortedSequenceEntries.length > 0 && request === null) {
+    throw new Error(`held-Freshness receipt request is missing for ${phase}`);
   }
-  const quiescenceArtifacts = [];
-  for (const [index, entry] of sortedQuiescenceEntries.entries()) {
-    const expectedName = `quiescence-${String(index + 1).padStart(10, "0")}.json`;
+  const heldFreshnessArtifacts = [];
+  const legacyQuiescenceArtifacts = [];
+  const isHeldFreshnessSequence = heldFreshnessEntries.length > 0;
+  let previousHeldFreshness = null;
+  const observedHeldFreshnessRequestNonces = new Set();
+  const observedHeldFreshnessRequestNonceBySequence = new Map();
+  for (const [index, entry] of sortedSequenceEntries.entries()) {
+    const expectedPrefix = isHeldFreshnessSequence
+      ? "held-freshness"
+      : "quiescence";
+    const expectedName = `${expectedPrefix}-${String(index + 1).padStart(10, "0")}.json`;
     if (entry.name !== expectedName) {
       throw new Error(
-        `quiescence receipt sequence is not contiguous for ${phase}`,
+        `held-Freshness receipt sequence is not contiguous for ${phase}`,
       );
     }
     const artifactPath = path.join(nonceReal, entry.name);
@@ -834,51 +1131,117 @@ async function inspectNarrativeMaintenanceReceipt(
     if (
       !metadata.isFile() ||
       metadata.isSymbolicLink() ||
-      metadata.size > NARRATIVE_MAINTENANCE_QUIESCENCE_MAX_BYTES
+      metadata.size >
+        (isHeldFreshnessSequence
+          ? NARRATIVE_MAINTENANCE_HELD_FRESHNESS_MAX_BYTES
+          : NARRATIVE_MAINTENANCE_QUIESCENCE_MAX_BYTES)
     ) {
-      throw new Error(`quiescence receipt is not a bounded regular file`);
+      throw new Error(
+        `${isHeldFreshnessSequence ? "held-Freshness" : "legacy"} receipt is not a bounded regular file`,
+      );
     }
     const artifactBytes = await readFile(artifactPath);
-    if (artifactBytes.byteLength > NARRATIVE_MAINTENANCE_QUIESCENCE_MAX_BYTES) {
-      throw new Error(`quiescence receipt exceeds its byte bound`);
+    if (
+      artifactBytes.byteLength >
+      (isHeldFreshnessSequence
+        ? NARRATIVE_MAINTENANCE_HELD_FRESHNESS_MAX_BYTES
+        : NARRATIVE_MAINTENANCE_QUIESCENCE_MAX_BYTES)
+    ) {
+      throw new Error(
+        `${isHeldFreshnessSequence ? "held-Freshness" : "legacy"} receipt exceeds its byte bound`,
+      );
     }
     const artifactText = artifactBytes.toString("utf8");
-    let quiescence;
+    let heldFreshness;
     try {
-      quiescence = JSON.parse(artifactText);
+      heldFreshness = JSON.parse(artifactText);
     } catch (error) {
-      throw new Error(`quiescence receipt is not JSON`, { cause: error });
+      throw new Error(`held-Freshness receipt is not JSON`, { cause: error });
     }
-    assertNarrativeMaintenanceCiQuiescenceReceipt(
-      quiescence,
-      expected.nonce,
-      index + 1,
-    );
-    if (canonicalJson(quiescence) !== artifactText) {
-      throw new Error(`quiescence receipt is not canonical JSON`);
+    if (isHeldFreshnessSequence) {
+      assertNarrativeMaintenanceCiHeldFreshnessReceipt(
+        heldFreshness,
+        expected.nonce,
+        index + 1,
+      );
+      if (
+        previousHeldFreshness !== null &&
+        (heldFreshness.freshness.cycleGeneration <=
+          previousHeldFreshness.freshness.cycleGeneration ||
+          heldFreshness.monotonicObservedAtMs <=
+            previousHeldFreshness.monotonicObservedAtMs ||
+          heldFreshness.freshness.observedAtMs <=
+            previousHeldFreshness.freshness.observedAtMs)
+      ) {
+        throw new Error(
+          `held-Freshness receipt observations are not strictly increasing for ${phase}`,
+        );
+      }
+      const sequence = index + 1;
+      const requestNonce = heldFreshness.requestNonce;
+      const knownRequestNonce =
+        heldFreshnessRequestNonceBySequence?.get(sequence) ?? null;
+      if (
+        (knownRequestNonce !== null && knownRequestNonce !== requestNonce) ||
+        (knownRequestNonce === null &&
+          (observedHeldFreshnessRequestNonces.has(requestNonce) ||
+            seenHeldFreshnessRequestNonces?.has(requestNonce)))
+      ) {
+        throw new Error(
+          `held-Freshness receipt request nonce is a duplicate/replay for ${phase}`,
+        );
+      }
+      observedHeldFreshnessRequestNonces.add(requestNonce);
+      observedHeldFreshnessRequestNonceBySequence.set(sequence, requestNonce);
+      previousHeldFreshness = heldFreshness;
+    } else {
+      assertNarrativeMaintenanceCiQuiescenceReceipt(
+        heldFreshness,
+        expected.nonce,
+        index + 1,
+      );
     }
-    quiescenceArtifacts.push({
-      receipt: quiescence,
+    if (canonicalJson(heldFreshness) !== artifactText) {
+      throw new Error(`held-Freshness receipt is not canonical JSON`);
+    }
+    const artifact = {
+      receipt: heldFreshness,
       path: artifactPath,
       realPath: await realpath(artifactPath),
       sha256: receiptArtifactDigest(artifactBytes),
       byteLength: artifactBytes.byteLength,
-    });
+    };
+    if (!isContainedPath(nonceReal, artifact.realPath)) {
+      throw new Error(
+        `held-Freshness receipt escaped its nonce directory for ${phase}`,
+      );
+    }
+    if (isHeldFreshnessSequence) heldFreshnessArtifacts.push(artifact);
+    else legacyQuiescenceArtifacts.push(artifact);
   }
-  const latestQuiescence =
-    quiescenceArtifacts[quiescenceArtifacts.length - 1] ?? null;
+  if (isHeldFreshnessSequence) {
+    for (const [
+      sequence,
+      requestNonce,
+    ] of observedHeldFreshnessRequestNonceBySequence) {
+      heldFreshnessRequestNonceBySequence?.set(sequence, requestNonce);
+      seenHeldFreshnessRequestNonces?.add(requestNonce);
+    }
+  }
+  const latestHeldFreshness =
+    heldFreshnessArtifacts[heldFreshnessArtifacts.length - 1] ?? null;
   if (
-    latestQuiescence &&
+    latestHeldFreshness &&
     (request === null ||
-      latestQuiescence.receipt.requestNonce !== request.requestNonce ||
-      latestQuiescence.receipt.phase !== request.phase ||
-      latestQuiescence.receipt.requestedAt !== request.requestedAt)
+      latestHeldFreshness.receipt.requestNonce !== request.requestNonce ||
+      latestHeldFreshness.receipt.phase !== request.phase ||
+      latestHeldFreshness.receipt.requestedAt !== request.requestedAt)
   ) {
     // Historical immutable sequences may belong to an earlier request. The
     // await API, which owns the current request, rejects them until a fresh
     // sequence echoes the current caller nonce/phase.
     if (request === null) {
-      throw new Error(`quiescence receipt request is missing for ${phase}`);
+      throw new Error(`held-Freshness receipt request is missing for ${phase}`);
     }
   }
   return {
@@ -887,31 +1250,66 @@ async function inspectNarrativeMaintenanceReceipt(
     realPath: await realpath(receiptPath),
     sha256: receiptArtifactDigest(bytes),
     byteLength: bytes.byteLength,
-    quiescenceArtifacts,
+    heldFreshnessArtifacts,
+    quiescenceArtifacts: legacyQuiescenceArtifacts,
     request,
-    quiescenceArtifact: latestQuiescence,
+    heldFreshnessArtifact: latestHeldFreshness,
+    quiescenceArtifact:
+      legacyQuiescenceArtifacts[legacyQuiescenceArtifacts.length - 1] ?? null,
   };
 }
 
+function assertHeldFreshnessArtifactHistoryStable(
+  previousArtifacts,
+  currentArtifacts,
+  phase,
+) {
+  if (!Array.isArray(previousArtifacts) || previousArtifacts.length === 0) {
+    return;
+  }
+  if (!Array.isArray(currentArtifacts)) {
+    throw new Error(`held-Freshness receipt history is missing for ${phase}`);
+  }
+  const currentBySequence = new Map(
+    currentArtifacts.map((artifact) => [artifact?.receipt?.sequence, artifact]),
+  );
+  for (const previous of previousArtifacts) {
+    const sequence = previous?.receipt?.sequence;
+    const current = currentBySequence.get(sequence);
+    if (
+      !current ||
+      previous.sha256 !== current.sha256 ||
+      previous.byteLength !== current.byteLength ||
+      previous.realPath !== current.realPath
+    ) {
+      throw new Error(
+        `held-Freshness receipt history changed at sequence ${String(sequence)} for ${phase}`,
+      );
+    }
+  }
+}
+
 /**
- * Read the latest immutable main-owned quiescence sequence without waiting
+ * Read the latest immutable main-owned held-Freshness sequence without waiting
  * for a new one. Callers still supply the launch ACK expectation, so this
  * helper cannot accidentally read a stale nonce or a production artifact.
  */
-export async function readNarrativeMaintenanceCiQuiescence(
+export async function readNarrativeMaintenanceCiHeldFreshness(
   root,
   expected,
   phase,
   {
     previousSequence = null,
     requestNonce = null,
-    authorityId = null,
-    generation = null,
+    workspaceBinding = null,
+    previousHeldFreshnessArtifacts = null,
+    seenHeldFreshnessRequestNonces = null,
+    heldFreshnessRequestNonceBySequence = null,
   } = {},
 ) {
   if (expected === null) {
     throw new Error(
-      `cannot read a CI quiescence receipt during production phase ${phase}`,
+      `cannot read a CI held-Freshness receipt during production phase ${phase}`,
     );
   }
   if (
@@ -919,41 +1317,56 @@ export async function readNarrativeMaintenanceCiQuiescence(
     previousSequence < 0 ||
     typeof requestNonce !== "string" ||
     !UUID_V4.test(requestNonce) ||
-    typeof authorityId !== "string" ||
-    authorityId.length === 0 ||
-    authorityId.trim() !== authorityId ||
-    !Number.isSafeInteger(generation) ||
-    generation <= 0
+    workspaceBinding === null
   ) {
     throw new Error(
-      "quiescence read requires previousSequence, request nonce, and expected authority binding",
+      "held-Freshness read requires previousSequence, request nonce, and expected workspace binding",
     );
   }
+  assertQuiescenceBinding(
+    workspaceBinding,
+    "held-Freshness read workspace binding",
+  );
   const artifact = await inspectNarrativeMaintenanceReceipt(
     root,
     expected,
     phase,
-    { allowMissing: false },
+    {
+      allowMissing: false,
+      seenHeldFreshnessRequestNonces,
+      heldFreshnessRequestNonceBySequence,
+    },
   );
-  const latest = artifact?.quiescenceArtifact ?? null;
+  const latest = artifact?.heldFreshnessArtifact ?? null;
   if (!latest) {
-    throw new Error(`quiescence read found no immutable sequence for ${phase}`);
+    throw new Error(
+      `held-Freshness read found no immutable sequence for ${phase}`,
+    );
   }
+  assertHeldFreshnessArtifactHistoryStable(
+    previousHeldFreshnessArtifacts,
+    artifact.heldFreshnessArtifacts,
+    phase,
+  );
   if (latest.receipt.sequence <= previousSequence) {
     throw new Error(
-      `quiescence read sequence ${latest.receipt.sequence} is not newer than ${previousSequence}`,
+      `held-Freshness read sequence ${latest.receipt.sequence} is not newer than ${previousSequence}`,
     );
   }
   if (
     latest.receipt.requestNonce !== requestNonce ||
     latest.receipt.phase !== phase ||
     !artifact.request ||
+    artifact.request.requestNonce !== requestNonce ||
+    artifact.request.phase !== phase ||
     latest.receipt.requestedAt !== artifact.request.requestedAt ||
-    latest.receipt.workspaceBinding.authorityId !== authorityId ||
-    latest.receipt.workspaceBinding.generation !== generation
+    canonicalJson(artifact.request.workspaceBinding) !==
+      canonicalJson(workspaceBinding) ||
+    canonicalJson(latest.receipt.workspaceBinding) !==
+      canonicalJson(workspaceBinding)
   ) {
     throw new Error(
-      `quiescence read rejected stale request or authority binding for ${phase}`,
+      `held-Freshness read rejected stale request or workspace binding for ${phase}`,
     );
   }
   return latest;
@@ -967,9 +1380,16 @@ async function awaitNarrativeMaintenanceReceipt(state, phase) {
       state.root,
       state.expected,
       phase,
+      {
+        seenHeldFreshnessRequestNonces: state.seenHeldFreshnessRequestNonces,
+        heldFreshnessRequestNonceBySequence:
+          state.heldFreshnessRequestNonceBySequence,
+      },
     );
     if (artifact) {
       state.artifact = artifact;
+      state.heldFreshnessArtifacts = artifact.heldFreshnessArtifacts;
+      state.heldFreshnessArtifact = artifact.heldFreshnessArtifact;
       state.quiescenceArtifacts = artifact.quiescenceArtifacts;
       state.quiescenceArtifact = artifact.quiescenceArtifact;
       state.receiptCount = 1;
@@ -1000,7 +1420,12 @@ async function reverifyNarrativeMaintenanceReceipt(state, phase) {
     state.root,
     state.expected,
     phase,
-    { allowMissing: false },
+    {
+      allowMissing: false,
+      seenHeldFreshnessRequestNonces: state.seenHeldFreshnessRequestNonces,
+      heldFreshnessRequestNonceBySequence:
+        state.heldFreshnessRequestNonceBySequence,
+    },
   );
   if (state.expected === null) return null;
   if (!artifact || artifact.sha256 !== state.artifact?.sha256) {
@@ -1008,22 +1433,29 @@ async function reverifyNarrativeMaintenanceReceipt(state, phase) {
       `narrative maintenance receipt changed or disappeared for ${phase}`,
     );
   }
+  assertHeldFreshnessArtifactHistoryStable(
+    state.heldFreshnessArtifacts,
+    artifact.heldFreshnessArtifacts,
+    phase,
+  );
+  state.heldFreshnessArtifacts = artifact.heldFreshnessArtifacts;
+  state.heldFreshnessArtifact = artifact.heldFreshnessArtifact;
   state.quiescenceArtifacts = artifact.quiescenceArtifacts;
   state.quiescenceArtifact = artifact.quiescenceArtifact;
   return artifact;
 }
 
-async function writeNarrativeMaintenanceQuiescenceRequest(
+async function writeNarrativeMaintenanceHeldFreshnessRequest(
   state,
-  { requestNonce, phase },
+  { requestNonce, phase, workspaceBinding },
 ) {
   if (state.expected === null) {
     throw new Error(
-      "cannot write a quiescence request for a production launch",
+      "cannot write a held-Freshness request for a production launch",
     );
   }
   if (!UUID_V4.test(requestNonce)) {
-    throw new Error("quiescence request nonce must be a UUIDv4");
+    throw new Error("held-Freshness request nonce must be a UUIDv4");
   }
   if (
     typeof phase !== "string" ||
@@ -1032,45 +1464,49 @@ async function writeNarrativeMaintenanceQuiescenceRequest(
     phase.trim() !== phase ||
     phase.includes("\u0000")
   ) {
-    throw new Error("quiescence request phase is invalid");
+    throw new Error("held-Freshness request phase is invalid");
   }
   const request = {
     version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
-    type: NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE,
+    type: NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE,
     nonce: state.expected.nonce,
     requestNonce,
     phase,
     requestedAt: new Date().toISOString(),
+    workspaceBinding,
   };
-  assertNarrativeMaintenanceCiQuiescenceRequest(request, state.expected.nonce);
+  assertNarrativeMaintenanceCiHeldFreshnessRequest(
+    request,
+    state.expected.nonce,
+  );
   const nonceDir = path.join(state.root, state.expected.nonce);
   const requestPath = path.join(
     nonceDir,
-    NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE,
+    NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
   );
   const temporaryPath = `${requestPath}.tmp`;
   const encoded = canonicalJson(request);
   if (
     Buffer.byteLength(encoded, "utf8") >
-    NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_MAX_BYTES
+    NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_MAX_BYTES
   ) {
-    throw new Error("quiescence request exceeds its byte bound");
+    throw new Error("held-Freshness request exceeds its byte bound");
   }
   let nonceMetadata;
   try {
     nonceMetadata = await lstat(nonceDir);
   } catch (error) {
-    throw new Error("quiescence request nonce directory is missing", {
+    throw new Error("held-Freshness request nonce directory is missing", {
       cause: error,
     });
   }
   if (!nonceMetadata.isDirectory() || nonceMetadata.isSymbolicLink()) {
-    throw new Error("quiescence request nonce directory is not regular");
+    throw new Error("held-Freshness request nonce directory is not regular");
   }
   const nonceReal = await realpath(nonceDir);
   const rootReal = await realpath(state.root);
   if (nonceReal !== nonceDir || !isContainedPath(rootReal, nonceReal)) {
-    throw new Error("quiescence request nonce directory escaped its root");
+    throw new Error("held-Freshness request nonce directory escaped its root");
   }
   const handle = await open(temporaryPath, "wx", 0o600);
   try {
@@ -1080,55 +1516,57 @@ async function writeNarrativeMaintenanceQuiescenceRequest(
     await handle.close();
   }
   await rename(temporaryPath, requestPath);
+  syncNarrativeMaintenanceDirectoryStrict(nonceDir);
   return request;
 }
 
-async function awaitNarrativeMaintenanceQuiescence(
+async function awaitNarrativeMaintenanceHeldFreshness(
   state,
   phase,
-  { previousSequence = null, requestNonce, authorityId, generation } = {},
+  { previousSequence = null, requestNonce, workspaceBinding } = {},
 ) {
   if (state.expected === null) {
     throw new Error(
-      `cannot await a CI quiescence receipt during production phase ${phase}`,
+      `cannot await a CI held-Freshness receipt during production phase ${phase}`,
     );
   }
   if (typeof requestNonce !== "string") {
     throw new Error(
-      "quiescence wait requires a caller-generated request nonce",
+      "held-Freshness wait requires a caller-generated request nonce",
     );
   }
   if (
     !Number.isSafeInteger(previousSequence) ||
     previousSequence < 0 ||
-    typeof authorityId !== "string" ||
-    authorityId.length === 0 ||
-    authorityId.trim() !== authorityId ||
-    !Number.isSafeInteger(generation) ||
-    generation <= 0
+    workspaceBinding === null
   ) {
     throw new Error(
-      "quiescence wait requires previousSequence and expected authority binding",
+      "held-Freshness wait requires previousSequence and expected workspace binding",
     );
   }
-  if (state.quiescenceBinding) {
+  assertQuiescenceBinding(
+    workspaceBinding,
+    "held-Freshness wait workspace binding",
+  );
+  if (state.heldFreshnessBinding) {
     if (
-      state.quiescenceBinding.authorityId !== authorityId ||
-      state.quiescenceBinding.generation !== generation
+      canonicalJson(state.heldFreshnessBinding) !==
+      canonicalJson(workspaceBinding)
     ) {
       throw new Error(
-        "quiescence wait rejected an authority/generation swap within one launch",
+        "held-Freshness wait rejected a workspace binding swap within one launch",
       );
     }
   }
-  state.quiescenceBinding = { authorityId, generation };
+  state.heldFreshnessBinding = workspaceBinding;
   // Bind the request to the immutable launch ACK before writing it. This
   // prevents a stale/partially replaced launch from accepting a fresh barrier
   // request under the wrong seam nonce.
   await reverifyNarrativeMaintenanceReceipt(state, `${phase}/before-request`);
-  const request = await writeNarrativeMaintenanceQuiescenceRequest(state, {
+  const request = await writeNarrativeMaintenanceHeldFreshnessRequest(state, {
     requestNonce,
     phase,
+    workspaceBinding,
   });
   const deadline = Date.now() + state.launchTimeoutMs;
   let sawPartial = false;
@@ -1137,20 +1575,33 @@ async function awaitNarrativeMaintenanceQuiescence(
       state.root,
       state.expected,
       phase,
-      { allowMissing: false, allowTransientTemp: true },
+      {
+        allowMissing: false,
+        allowTransientTemp: true,
+        seenHeldFreshnessRequestNonces: state.seenHeldFreshnessRequestNonces,
+        heldFreshnessRequestNonceBySequence:
+          state.heldFreshnessRequestNonceBySequence,
+      },
     );
-    const latest = artifact?.quiescenceArtifact ?? null;
+    if (artifact) {
+      assertHeldFreshnessArtifactHistoryStable(
+        state.heldFreshnessArtifacts,
+        artifact.heldFreshnessArtifacts,
+        phase,
+      );
+    }
+    const latest = artifact?.heldFreshnessArtifact ?? null;
     if (
       latest &&
       latest.receipt.sequence > previousSequence &&
       latest.receipt.requestNonce === request.requestNonce &&
       latest.receipt.phase === request.phase &&
       latest.receipt.requestedAt === request.requestedAt &&
-      latest.receipt.workspaceBinding.authorityId === authorityId &&
-      latest.receipt.workspaceBinding.generation === generation
+      canonicalJson(latest.receipt.workspaceBinding) ===
+        canonicalJson(workspaceBinding)
     ) {
-      state.quiescenceArtifacts = artifact.quiescenceArtifacts;
-      state.quiescenceArtifact = latest;
+      state.heldFreshnessArtifacts = artifact.heldFreshnessArtifacts;
+      state.heldFreshnessArtifact = latest;
       return latest;
     }
     // Inspect the nonce directory before the deadline decision as well.  A
@@ -1167,7 +1618,7 @@ async function awaitNarrativeMaintenanceQuiescence(
     }
     if (Date.now() > deadline) {
       throw new Error(
-        `missing${sawPartial ? " or partial/stuck" : ""} fresh narrative maintenance quiescence receipt after sequence ${previousSequence} for ${phase}`,
+        `missing${sawPartial ? " or partial/stuck" : ""} fresh narrative maintenance held-Freshness receipt after sequence ${previousSequence} for ${phase}`,
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1766,7 +2217,7 @@ export function createProductJourneyHarness({
     phase: null,
     launchId: null,
     receiptArtifact: null,
-    quiescenceArtifact: null,
+    heldFreshnessArtifact: null,
   };
 
   function recordTimeline(event, details = {}) {
@@ -2358,9 +2809,13 @@ export function createProductJourneyHarness({
       expected: expectedReceipt,
       launchTimeoutMs,
       artifact: null,
+      heldFreshnessArtifacts: [],
+      heldFreshnessArtifact: null,
+      heldFreshnessBinding: null,
+      seenHeldFreshnessRequestNonces: new Set(),
+      heldFreshnessRequestNonceBySequence: new Map(),
       quiescenceArtifacts: [],
       quiescenceArtifact: null,
-      quiescenceBinding: null,
       receiptCount: 0,
     };
     await requireCleanNarrativeMaintenanceReceiptRoot(receiptState.root, phase);
@@ -2383,7 +2838,7 @@ export function createProductJourneyHarness({
     lastResources.phase = phase;
     lastResources.launchId = launchId;
     lastResources.receiptArtifact = null;
-    lastResources.quiescenceArtifact = null;
+    lastResources.heldFreshnessArtifact = null;
     receiptStates.set(app, receiptState);
     const appProcess = typeof app.process === "function" ? app.process() : null;
     // stdout remains diagnostics-only.  The acceptance receipt is read from
@@ -2404,13 +2859,14 @@ export function createProductJourneyHarness({
           sha256: receiptState.artifact.sha256,
           byteLength: receiptState.artifact.byteLength,
         });
-        if (receiptState.quiescenceArtifact) {
-          lastResources.quiescenceArtifact = receiptState.quiescenceArtifact;
-          recordTimeline("main-maintenance-quiescence", {
+        if (receiptState.heldFreshnessArtifact) {
+          lastResources.heldFreshnessArtifact =
+            receiptState.heldFreshnessArtifact;
+          recordTimeline("main-maintenance-held-freshness", {
             launchId,
-            ...receiptState.quiescenceArtifact.receipt,
-            sha256: receiptState.quiescenceArtifact.sha256,
-            byteLength: receiptState.quiescenceArtifact.byteLength,
+            ...receiptState.heldFreshnessArtifact.receipt,
+            sha256: receiptState.heldFreshnessArtifact.sha256,
+            byteLength: receiptState.heldFreshnessArtifact.byteLength,
           });
         }
       }
@@ -2469,13 +2925,14 @@ export function createProductJourneyHarness({
         receiptState,
         `${phase}/bridge`,
       );
-      lastResources.quiescenceArtifact = receiptState.quiescenceArtifact;
+      lastResources.heldFreshnessArtifact = receiptState.heldFreshnessArtifact;
       recordTimeline("renderer-bridge-ready", { launchId });
       return {
         app,
         page,
         launchId,
         receiptArtifact: receiptState.artifact,
+        heldFreshnessArtifact: receiptState.heldFreshnessArtifact,
         quiescenceArtifact: receiptState.quiescenceArtifact,
         launchReceipt: {
           launchId,
@@ -2524,13 +2981,13 @@ export function createProductJourneyHarness({
       lastResources.phase = null;
       lastResources.launchId = null;
       lastResources.receiptArtifact = null;
-      lastResources.quiescenceArtifact = null;
+      lastResources.heldFreshnessArtifact = null;
     }
   }
 
-  async function awaitQuiescence(
+  async function awaitHeldFreshness(
     app = lastResources.app,
-    phaseOrOptions = lastResources.phase ?? "quiescence",
+    phaseOrOptions = lastResources.phase ?? "held-freshness",
     options = {},
   ) {
     const phase =
@@ -2540,19 +2997,19 @@ export function createProductJourneyHarness({
     const requestOptions =
       typeof phaseOrOptions === "string" ? options : phaseOrOptions;
     if (typeof phase !== "string" || phase.trim() !== phase || phase === "") {
-      throw new Error("quiescence wait requires a phase");
+      throw new Error("held-Freshness wait requires a phase");
     }
     const state = receiptStates.get(app);
     if (!state) {
       throw new Error(`no active product-journey launch for ${phase}`);
     }
-    const artifact = await awaitNarrativeMaintenanceQuiescence(
+    const artifact = await awaitNarrativeMaintenanceHeldFreshness(
       state,
       phase,
       requestOptions ?? {},
     );
-    lastResources.quiescenceArtifact = artifact;
-    recordTimeline("main-maintenance-quiescence", {
+    lastResources.heldFreshnessArtifact = artifact;
+    recordTimeline("main-maintenance-held-freshness", {
       ...artifact.receipt,
       sha256: artifact.sha256,
       byteLength: artifact.byteLength,
@@ -2560,9 +3017,9 @@ export function createProductJourneyHarness({
     return artifact;
   }
 
-  async function readQuiescence(
+  async function readHeldFreshness(
     app = lastResources.app,
-    phaseOrOptions = lastResources.phase ?? "quiescence",
+    phaseOrOptions = lastResources.phase ?? "held-freshness",
     options = {},
   ) {
     const phase =
@@ -2572,17 +3029,23 @@ export function createProductJourneyHarness({
     const readOptions =
       typeof phaseOrOptions === "string" ? options : phaseOrOptions;
     if (typeof phase !== "string" || phase.trim() !== phase || phase === "") {
-      throw new Error("quiescence read requires a phase");
+      throw new Error("held-Freshness read requires a phase");
     }
     const state = receiptStates.get(app);
     if (!state) {
       throw new Error(`no active product-journey launch for ${phase}`);
     }
-    return readNarrativeMaintenanceCiQuiescence(
+    return readNarrativeMaintenanceCiHeldFreshness(
       state.root,
       state.expected,
       phase,
-      readOptions ?? {},
+      {
+        ...(readOptions ?? {}),
+        previousHeldFreshnessArtifacts: state.heldFreshnessArtifacts,
+        seenHeldFreshnessRequestNonces: state.seenHeldFreshnessRequestNonces,
+        heldFreshnessRequestNonceBySequence:
+          state.heldFreshnessRequestNonceBySequence,
+      },
     );
   }
 
@@ -2694,8 +3157,8 @@ export function createProductJourneyHarness({
     executeFixtureOperations,
     launch,
     close,
-    awaitQuiescence,
-    readQuiescence,
+    awaitHeldFreshness,
+    readHeldFreshness,
     invokeOk,
     waitUntil,
     recordTimeline,

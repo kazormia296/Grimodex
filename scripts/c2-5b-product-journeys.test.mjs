@@ -2009,6 +2009,39 @@ test("transient and terminal validators reject fallback and same-millisecond fal
 });
 
 test("every actual C2-5B Electron launch phase is registered for diagnostics", async () => {
+  const journeyId = "c2-5b-restore-verify-rebuild-verify";
+  const expectedPhase = `${journeyId}/restore-fixture`;
+  const launches = [];
+  const harness = {
+    async launch(phase) {
+      launches.push(phase);
+      return { app: {}, page: {}, phase };
+    },
+  };
+  const previousCi = process.env.CI;
+  process.env.CI = "true";
+  let launched;
+  try {
+    launched =
+      await narrativeMaintenanceProductJourneys.launchRestoreFixtureForJourney(
+        harness,
+        journeyId,
+      );
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+  }
+  assert.deepEqual(
+    launches,
+    [expectedPhase],
+    "the delegated launcher must retain the C2-5B restore-fixture suffix",
+  );
+  assert.equal(launched.phase, expectedPhase);
+  assert.ok(
+    NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES.includes(expectedPhase),
+    "the emitted phase must remain in the diagnostics registry",
+  );
+
   assert.equal(
     new Set(NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES).size,
     NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES.length,
@@ -2044,8 +2077,13 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
   );
   assert.match(
     fixtureHelperBody,
-    /harness\.launch\(`\$\{id\}\/restore-fixture`\)/,
-    "restore fixture helper must launch its exact registered restore-fixture phase",
+    /\{\s*fixturePhase = "restore-fixture"\s*\}\s*=\s*\{\}/s,
+    "restore fixture helper must retain the exact C2-5B restore-fixture default",
+  );
+  assert.match(
+    fixtureHelperBody,
+    /launchRestoreFixtureForJourney\(\s*harness,\s*id,\s*\{\s*fixturePhase,\s*\}\s*\)/s,
+    "restore fixture helper must delegate phase construction to the shared launcher",
   );
   assert.ok(
     restoreJourneyBody,
@@ -2058,7 +2096,7 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
   );
   assert.match(
     restoreJourneyBody,
-    /seedRestoreFixtureEvidence\(\s*harness,\s*workspace,\s*id,\s*\)/,
+    /seedRestoreFixtureEvidence\(\s*harness,\s*workspace,\s*id,\s*\{\s*fixturePhase\s*\}\s*,?\s*\)/,
     "restore journey must seed its own restore-fixture caller",
   );
   assert.match(

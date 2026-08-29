@@ -123,4 +123,31 @@ describe("C2-5B production maintenance bootstrap", () => {
       }
     }
   });
+
+  it("does not wire maintenance or scheduler observations into CI evidence", () => {
+    const scheduler = fakeScheduler();
+    const coordinator = fakeCoordinator();
+    const createScheduler = vi.fn(
+      (_backend: unknown, _options?: unknown) => scheduler,
+    );
+    const createCoordinator = vi.fn(
+      (_backend: unknown, _scheduler: unknown, _options?: unknown) =>
+        coordinator,
+    );
+
+    bootstrapNarrativeMaintenance(null, activeSeam(), {
+      createScheduler: createScheduler as never,
+      createCoordinator: createCoordinator as never,
+    });
+
+    const schedulerOptions = createScheduler.mock.calls[0]?.[1] as
+      | Record<string, unknown>
+      | undefined;
+    const coordinatorOptions = createCoordinator.mock.calls[0]?.[2] as
+      | Record<string, unknown>
+      | undefined;
+    expect(schedulerOptions).not.toHaveProperty("onCycleSettled");
+    expect(schedulerOptions).not.toHaveProperty("runtimeStateReader");
+    expect(coordinatorOptions).toBeUndefined();
+  });
 });

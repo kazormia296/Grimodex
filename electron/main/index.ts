@@ -64,12 +64,12 @@ import {
 } from "./productJourneyAi.js";
 import {
   configureNarrativeMaintenanceCiSeam,
-  createNarrativeMaintenanceCiQuiescenceWriter,
+  createNarrativeMaintenanceCiHeldFreshnessWriter,
   shouldFailFastNarrativeMaintenanceCiLaunch,
   shouldDisableNarrativeFreshnessForLaunch,
   writeNarrativeMaintenanceCiReceipt,
   type NarrativeMaintenanceCiBackend,
-  type NarrativeMaintenanceCiQuiescenceWriter,
+  type NarrativeMaintenanceCiHeldFreshnessWriter,
 } from "./narrativeMaintenanceCiSeam.js";
 
 const WEB_EDITOR_HANDOFF_EVENT = "web-editor-handoff:requested";
@@ -92,7 +92,7 @@ async function initializeNarrativeMaintenanceStartup(
   narrativeMaintenanceCiSeam: Awaited<
     ReturnType<typeof configureNarrativeMaintenanceCiSeam>
   >;
-  narrativeMaintenanceCiQuiescenceWriter: NarrativeMaintenanceCiQuiescenceWriter | null;
+  narrativeMaintenanceCiHeldFreshnessWriter: NarrativeMaintenanceCiHeldFreshnessWriter | null;
 } | null> {
   const failFast = shouldFailFastNarrativeMaintenanceCiLaunch({
     isPackaged: app.isPackaged,
@@ -122,14 +122,17 @@ async function initializeNarrativeMaintenanceStartup(
       isPackaged: app.isPackaged,
       userDataDir,
     });
-    const narrativeMaintenanceCiQuiescenceWriter =
-      createNarrativeMaintenanceCiQuiescenceWriter(narrativeMaintenanceCiSeam, {
-        userDataDir,
-      });
+    const narrativeMaintenanceCiHeldFreshnessWriter =
+      createNarrativeMaintenanceCiHeldFreshnessWriter(
+        narrativeMaintenanceCiSeam,
+        {
+          userDataDir,
+        },
+      );
     return {
       initializedBackend,
       narrativeMaintenanceCiSeam,
-      narrativeMaintenanceCiQuiescenceWriter,
+      narrativeMaintenanceCiHeldFreshnessWriter,
     };
   } catch (error) {
     if (!failFast) throw error;
@@ -226,7 +229,7 @@ if (!gotSingleInstanceLock) {
     const {
       initializedBackend,
       narrativeMaintenanceCiSeam,
-      narrativeMaintenanceCiQuiescenceWriter,
+      narrativeMaintenanceCiHeldFreshnessWriter,
     } = startup;
     const backend = wrapBackendForProductJourneyAi(
       initializedBackend,
@@ -476,13 +479,15 @@ if (!gotSingleInstanceLock) {
       },
       onCycleCompleted: (observation) => {
         void Promise.resolve(
-          narrativeMaintenanceCiQuiescenceWriter?.recordFreshness(observation),
+          narrativeMaintenanceCiHeldFreshnessWriter?.recordFreshness(
+            observation,
+          ),
         ).catch((error: unknown) => {
-          // Quiescence is a CI-only acceptance artifact. A failed observer
+          // Held Freshness is a CI-only acceptance artifact. A failed observer
           // must remain diagnostic and never become an unhandled rejection in
           // an otherwise healthy production scheduler.
           console.warn(
-            "[narrative-freshness] quiescence receipt failed:",
+            "[narrative-freshness] held-freshness receipt failed:",
             error,
           );
         });
@@ -491,11 +496,7 @@ if (!gotSingleInstanceLock) {
     // Main-only system-work seam. Trigger discovery is owned by this process;
     // renderer/preload never supplies project scope, paths, or phase data.
     const { scheduler: narrativeMaintenance, coordinator } =
-      bootstrapNarrativeMaintenance(backend, narrativeMaintenanceCiSeam, {
-        quiescenceWriter: narrativeMaintenanceCiQuiescenceWriter,
-        freshnessStateReader: () =>
-          narrativeFreshness.getQuiescenceState?.() ?? null,
-      });
+      bootstrapNarrativeMaintenance(backend, narrativeMaintenanceCiSeam);
     narrativeMaintenanceTriggers = coordinator;
     licenseValidation.start();
     if (!shouldDisableNarrativeFreshnessForLaunch(narrativeMaintenanceCiSeam)) {
@@ -510,7 +511,7 @@ if (!gotSingleInstanceLock) {
       narrativeFreshness.dispose();
       narrativeMaintenanceTriggers?.dispose();
       narrativeMaintenance?.dispose();
-      narrativeMaintenanceCiQuiescenceWriter?.dispose();
+      narrativeMaintenanceCiHeldFreshnessWriter?.dispose();
       cliAi.disposeAll();
       void codexApp.dispose();
       void externalMount.disposeAll();

@@ -8,8 +8,13 @@
  */
 import {
   constants as fsConstants,
+  closeSync,
+  fstatSync,
+  fsyncSync,
+  linkSync,
   lstatSync,
-  renameSync,
+  openSync,
+  readSync,
   unlinkSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
@@ -18,7 +23,6 @@ import {
   lstat,
   mkdir,
   open,
-  readFile,
   readdir,
   realpath,
   rename,
@@ -110,72 +114,60 @@ export interface NarrativeMaintenanceCiReceiptArtifact {
   readonly byteLength: number;
 }
 
-export const NARRATIVE_MAINTENANCE_QUIESCENCE_TYPE =
-  "grimodex:narrative-maintenance-ci-quiescence";
-export const NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE =
-  "grimodex:narrative-maintenance-ci-quiescence-request";
-export const NARRATIVE_MAINTENANCE_QUIESCENCE_MAX_BYTES = 16_384;
-export const NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_MAX_BYTES = 4_096;
-export const NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE =
-  "quiescence-request.json";
+/** Distinct CI-only evidence for one completed Held Freshness callback. */
+export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_TYPE =
+  "grimodex:narrative-maintenance-ci-held-freshness";
+export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE =
+  "grimodex:narrative-maintenance-ci-held-freshness-request";
+export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_MAX_BYTES = 16_384;
+export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_MAX_BYTES = 4_096;
+export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE =
+  "held-freshness-request.json";
 
-export interface NarrativeMaintenanceCiQuiescenceWriter {
-  /** Observe the post-discovery main coordinator state. */
+/** @deprecated Compatibility names; the emitted protocol is Held Freshness. */
+export const NARRATIVE_MAINTENANCE_QUIESCENCE_TYPE =
+  NARRATIVE_MAINTENANCE_HELD_FRESHNESS_TYPE;
+export const NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE =
+  NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE;
+export const NARRATIVE_MAINTENANCE_QUIESCENCE_MAX_BYTES =
+  NARRATIVE_MAINTENANCE_HELD_FRESHNESS_MAX_BYTES;
+export const NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_MAX_BYTES =
+  NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_MAX_BYTES;
+export const NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE =
+  NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE;
+
+export interface NarrativeMaintenanceCiHeldFreshnessWriter {
+  /**
+   * Compatibility no-op. Held evidence has no maintenance/coordinator owner.
+   * A null binding is ordinary invalidation and must never throw.
+   */
   recordMaintenance(observation: unknown): Promise<unknown | null>;
-  /** Observe the post-cycle main maintenance queue/scheduler state. */
+  /** Compatibility no-op; scheduler state is not evidence for this protocol. */
   recordScheduler(observation: unknown): Promise<unknown | null>;
-  /** Observe the post-cycle main freshness state. */
+  /** Observe one completed periodic Freshness callback. */
   recordFreshness(observation: unknown): Promise<unknown | null>;
-  /** Install the main-only runtime recheck after scheduler construction. */
+  /** Compatibility no-op; runtime state is not re-read by the writer. */
   setRuntimeStateReader(reader: NarrativeMaintenanceCiRuntimeStateReader): void;
   dispose(): void;
 }
 
-export interface NarrativeMaintenanceCiRuntimeStateReaderResult {
-  /** Monotonic main-owned mutation epoch for all three state machines. */
-  readonly mutationRevision: number;
-  readonly maintenance: {
-    readonly mutationRevision: number;
-    readonly workspaceBinding: {
-      readonly authorityId: string;
-      readonly generation: number;
-    } | null;
-    readonly discoveryInFlight: boolean;
-    readonly timerScheduled: boolean;
-    readonly pendingRetry: boolean;
-    readonly pendingEvent: boolean;
-    readonly wakeAckPending: boolean;
-    readonly wakeOutboxDrainInFlight?: boolean;
-    readonly wakeOutboxDrainSucceeded?: boolean;
-    readonly wakeOutboxDrainFailed?: boolean;
-    readonly wakeOutboxPendingRows?: boolean;
-  } | null;
-  readonly scheduler: {
-    readonly mutationRevision: number;
-    readonly workspaceBinding: {
-      readonly authorityId: string;
-      readonly generation: number;
-    } | null;
-    readonly queueIdle: boolean;
-    readonly inFlight: boolean;
-    readonly hasMore: boolean;
-    readonly timerScheduled: boolean;
-  } | null;
-  readonly freshness: {
-    readonly mutationRevision: number;
-    readonly inFlight: boolean;
-    readonly hasMore: boolean;
-    readonly wakePending: boolean;
-    readonly timerScheduled: boolean;
-    readonly nextCycleGuardStateDigest: string | null;
-    readonly heldProjectId: string | null;
-    readonly cutoverNotReady: boolean;
-    readonly quiescenceState: unknown;
-  } | null;
+export interface NarrativeMaintenanceCiHeldFreshnessWriterOptions {
+  readonly userDataDir: string;
+  /** Test-only proof that the durable barrier was armed synchronously. */
+  readonly afterRequestBarrierForTest?: () => void;
+  /**
+   * Test-only synchronous interposition immediately before no-replace
+   * publication. Production callers never provide this hook.
+   */
+  readonly beforePublishForTest?: (finalPath: string) => void;
 }
 
-export type NarrativeMaintenanceCiRuntimeStateReader =
-  () => NarrativeMaintenanceCiRuntimeStateReaderResult | null;
+/** @deprecated Use NarrativeMaintenanceCiHeldFreshnessWriter. */
+export type NarrativeMaintenanceCiQuiescenceWriter =
+  NarrativeMaintenanceCiHeldFreshnessWriter;
+
+/** @deprecated The held-Freshness writer no longer reads runtime state. */
+export type NarrativeMaintenanceCiRuntimeStateReader = () => unknown;
 
 /**
  * The setup marker belongs to one product-journey configure launch only. It
@@ -595,22 +587,49 @@ const QUIESCENCE_MARKER_KEYS = [
   "contractVersion",
   "appliedAt",
 ] as const;
-const QUIESCENCE_REQUEST_KEYS = [
+const HELD_FRESHNESS_REQUEST_KEYS = [
   "version",
   "type",
   "nonce",
   "requestNonce",
   "phase",
   "requestedAt",
+  "workspaceBinding",
 ] as const;
 
-type QuiescenceRequest = {
+type HeldFreshnessRequest = {
   readonly version: typeof NARRATIVE_MAINTENANCE_RECEIPT_VERSION;
-  readonly type: typeof NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE;
+  readonly type: typeof NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE;
   readonly nonce: string;
   readonly requestNonce: string;
   readonly phase: string;
   readonly requestedAt: string;
+  readonly workspaceBinding: QuiescenceBinding;
+};
+
+type HeldFreshnessRequestVisibility = {
+  /** Bytes captured from the descriptor opened at callback invocation. */
+  readonly bytes: Buffer;
+  readonly contentSha256: string;
+  readonly dev: number;
+  readonly ino: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+  /** The nonce directory is part of the publication boundary. */
+  readonly directoryDev: number;
+  readonly directoryIno: number;
+  readonly directoryMtimeMs: number;
+  readonly directoryCtimeMs: number;
+};
+
+type HeldFreshnessDirectoryMetadata = {
+  readonly dev: number;
+  readonly ino: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+  readonly isDirectory: () => boolean;
+  readonly isSymbolicLink: () => boolean;
 };
 
 function exactKeys(
@@ -625,85 +644,8 @@ function exactKeys(
     JSON.stringify(Object.keys(value).sort()) !==
       JSON.stringify([...expected].sort())
   ) {
-    throw new Error(`${label} has unexpected keys`);
+    throw new Error(label + " has unexpected keys");
   }
-}
-
-function exactKeysWithOptional(
-  value: unknown,
-  required: readonly string[],
-  optional: readonly string[],
-  label: string,
-): asserts value is Record<string, unknown> {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    required.some((key) => !Object.hasOwn(value, key)) ||
-    Object.keys(value).some(
-      (key) => !required.includes(key) && !optional.includes(key),
-    )
-  ) {
-    throw new Error(`${label} has unexpected keys`);
-  }
-}
-
-async function readNarrativeMaintenanceCiQuiescenceRequest(
-  nonceDir: string,
-  seamNonce: string,
-): Promise<QuiescenceRequest | null> {
-  const requestPath = path.join(
-    nonceDir,
-    NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE,
-  );
-  let metadata;
-  try {
-    metadata = await lstat(requestPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
-    throw error;
-  }
-  if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    throw new Error("quiescence request is not a regular file");
-  }
-  if (metadata.size > NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_MAX_BYTES) {
-    throw new Error("quiescence request exceeds its byte bound");
-  }
-  const bytes = await readFile(requestPath);
-  if (bytes.byteLength > NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_MAX_BYTES) {
-    throw new Error("quiescence request exceeds its byte bound");
-  }
-  const text = bytes.toString("utf8");
-  let value: unknown;
-  try {
-    value = JSON.parse(text) as unknown;
-  } catch (error) {
-    throw new Error("quiescence request is not JSON", { cause: error });
-  }
-  exactKeys(value, QUIESCENCE_REQUEST_KEYS, "quiescence request");
-  if (
-    value.version !== NARRATIVE_MAINTENANCE_RECEIPT_VERSION ||
-    value.type !== NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_TYPE ||
-    value.nonce !== seamNonce ||
-    typeof value.nonce !== "string" ||
-    !UUID_V4.test(value.nonce) ||
-    typeof value.requestNonce !== "string" ||
-    !UUID_V4.test(value.requestNonce) ||
-    typeof value.phase !== "string" ||
-    value.phase.length === 0 ||
-    value.phase.length > 256 ||
-    value.phase.trim() !== value.phase ||
-    value.phase.includes("\u0000") ||
-    typeof value.requestedAt !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value.requestedAt) ||
-    !Number.isFinite(Date.parse(value.requestedAt))
-  ) {
-    throw new Error("quiescence request has invalid fields");
-  }
-  if (canonicalJson(value) !== text) {
-    throw new Error("quiescence request is not canonical JSON");
-  }
-  return value as QuiescenceRequest;
 }
 
 function requireQuiescenceBinding(
@@ -720,7 +662,7 @@ function requireQuiescenceBinding(
     !Number.isSafeInteger(generation) ||
     (generation as number) <= 0
   ) {
-    throw new Error(`${label} is invalid`);
+    throw new Error(label + " is invalid");
   }
   return {
     authorityId: value.authorityId,
@@ -734,7 +676,7 @@ function requireNullableSafeInteger(
 ): number | null {
   if (value === null) return null;
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw new Error(`${label} must be a non-negative safe integer or null`);
+    throw new Error(label + " must be a non-negative safe integer or null");
   }
   return value as number;
 }
@@ -750,7 +692,7 @@ function requireNullableIdentifier(
     value.trim() !== value ||
     value.includes("\u0000")
   ) {
-    throw new Error(`${label} must be a trimmed non-empty identifier or null`);
+    throw new Error(label + " must be a trimmed non-empty identifier or null");
   }
   return value;
 }
@@ -785,7 +727,7 @@ function requireQuiescenceState(value: unknown): QuiescenceState {
     exactKeys(
       project,
       QUIESCENCE_PROJECT_KEYS,
-      `quiescenceState.projects[${index}]`,
+      "quiescenceState.projects[" + index + "]",
     );
     const projectId = project.projectId;
     const currentEpochId = project.currentEpochId;
@@ -815,27 +757,27 @@ function requireQuiescenceState(value: unknown): QuiescenceState {
     exactKeys(
       cursor,
       QUIESCENCE_CURSOR_KEYS,
-      `quiescenceState.projects[${index}].cursor`,
+      "quiescenceState.projects[" + index + "].cursor",
     );
     requireNullableSafeInteger(
       (cursor as Record<string, unknown>).acknowledgedThrough,
-      `quiescenceState.projects[${index}].cursor.acknowledgedThrough`,
+      "quiescenceState.projects[" + index + "].cursor.acknowledgedThrough",
     );
     requireNullableSafeInteger(
       (cursor as Record<string, unknown>).reservedThrough,
-      `quiescenceState.projects[${index}].cursor.reservedThrough`,
+      "quiescenceState.projects[" + index + "].cursor.reservedThrough",
     );
     requireNullableIdentifier(
       (cursor as Record<string, unknown>).activeRunId,
-      `quiescenceState.projects[${index}].cursor.activeRunId`,
+      "quiescenceState.projects[" + index + "].cursor.activeRunId",
     );
     requireNullableIdentifier(
       (cursor as Record<string, unknown>).semanticEpochId,
-      `quiescenceState.projects[${index}].cursor.semanticEpochId`,
+      "quiescenceState.projects[" + index + "].cursor.semanticEpochId",
     );
     requireNullableIdentifier(
       (cursor as Record<string, unknown>).lastError,
-      `quiescenceState.projects[${index}].cursor.lastError`,
+      "quiescenceState.projects[" + index + "].cursor.lastError",
     );
   }
   if (value.marker !== null) {
@@ -844,21 +786,23 @@ function requireQuiescenceState(value: unknown): QuiescenceState {
       value.marker.migrationId !== "narrative-c2-canonical-freshness-v1" ||
       value.marker.contractVersion !== 1 ||
       typeof value.marker.appliedAt !== "string" ||
-      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(
         value.marker.appliedAt,
       )
     ) {
       throw new Error("quiescenceState.marker is invalid");
     }
   }
-  if (!/^sha256:[0-9a-f]{64}$/.test(String(value.stateDigest))) {
+  if (!/^sha256:[0-9a-f]{64}$/u.test(String(value.stateDigest))) {
     throw new Error("quiescenceState.stateDigest is invalid");
   }
   const withoutDigest = { ...value };
   delete withoutDigest.stateDigest;
-  const expectedDigest = `sha256:${createHash("sha256")
-    .update(canonicalJson(withoutDigest), "utf8")
-    .digest("hex")}`;
+  const expectedDigest =
+    "sha256:" +
+    createHash("sha256")
+      .update(canonicalJson(withoutDigest), "utf8")
+      .digest("hex");
   if (expectedDigest !== value.stateDigest) {
     throw new Error("quiescenceState.stateDigest does not bind its state");
   }
@@ -875,73 +819,428 @@ function sameQuiescenceBinding(
   );
 }
 
-function quiescenceSequenceFile(sequence: number): string {
-  return `quiescence-${String(sequence).padStart(10, "0")}.json`;
+function heldFreshnessSequenceFile(sequence: number): string {
+  return "held-freshness-" + String(sequence).padStart(10, "0") + ".json";
 }
 
-async function writeNarrativeMaintenanceCiQuiescence(
+function parseHeldFreshnessRequest(
+  snapshot: HeldFreshnessRequestVisibility,
+  seamNonce: string,
+): HeldFreshnessRequest {
+  const text = snapshot.bytes.toString("utf8");
+  let value: unknown;
+  try {
+    value = JSON.parse(text) as unknown;
+  } catch (error) {
+    throw new Error("held Freshness request is not JSON", { cause: error });
+  }
+  exactKeys(value, HELD_FRESHNESS_REQUEST_KEYS, "held Freshness request");
+  if (
+    value.version !== NARRATIVE_MAINTENANCE_RECEIPT_VERSION ||
+    value.type !== NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE ||
+    value.nonce !== seamNonce ||
+    typeof value.nonce !== "string" ||
+    !UUID_V4.test(value.nonce) ||
+    typeof value.requestNonce !== "string" ||
+    !UUID_V4.test(value.requestNonce) ||
+    typeof value.phase !== "string" ||
+    value.phase.length === 0 ||
+    value.phase.length > 256 ||
+    value.phase.trim() !== value.phase ||
+    value.phase.includes("\u0000") ||
+    typeof value.requestedAt !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value.requestedAt) ||
+    !Number.isFinite(Date.parse(value.requestedAt))
+  ) {
+    throw new Error("held Freshness request has invalid fields");
+  }
+  const workspaceBinding = requireQuiescenceBinding(
+    value.workspaceBinding,
+    "held Freshness request workspaceBinding",
+  );
+  if (canonicalJson(value) !== text) {
+    throw new Error("held Freshness request is not canonical JSON");
+  }
+  return { ...(value as HeldFreshnessRequest), workspaceBinding };
+}
+
+function noFollowReadOnlyFlags(): number {
+  return (
+    fsConstants.O_RDONLY |
+    (process.platform === "win32" ? 0 : (fsConstants.O_NOFOLLOW ?? 0))
+  );
+}
+
+/**
+ * Read exactly the byte count obtained from fstat without following a later
+ * path lookup.  A second descriptor/stat check rejects append/truncate races
+ * that occur while this descriptor is being read.
+ */
+function readHeldFreshnessRequestSnapshot(
+  requestPath: string,
+  directory: HeldFreshnessDirectoryMetadata,
+): HeldFreshnessRequestVisibility | null {
+  let descriptor: number | null = null;
+  try {
+    // O_NOFOLLOW is unavailable on win32.  Reject the path itself before the
+    // open so a contained symlink/junction cannot redirect the descriptor to
+    // an outside regular JSON file on that platform.
+    const pathMetadata = lstatSync(requestPath);
+    if (
+      !pathMetadata.isFile() ||
+      pathMetadata.isSymbolicLink() ||
+      pathMetadata.size < 0 ||
+      pathMetadata.size > NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_MAX_BYTES
+    ) {
+      return null;
+    }
+    descriptor = openSync(requestPath, noFollowReadOnlyFlags());
+    const metadata = fstatSync(descriptor);
+    if (
+      !metadata.isFile() ||
+      !sameHeldFreshnessFileMetadata(pathMetadata, metadata) ||
+      metadata.size < 0 ||
+      metadata.size > NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_MAX_BYTES
+    ) {
+      return null;
+    }
+    const bytes = Buffer.alloc(metadata.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const bytesRead = readSync(
+        descriptor,
+        bytes,
+        offset,
+        bytes.byteLength - offset,
+        null,
+      );
+      if (bytesRead === 0) return null;
+      offset += bytesRead;
+    }
+    const afterRead = fstatSync(descriptor);
+    if (
+      !afterRead.isFile() ||
+      !sameHeldFreshnessFileMetadata(metadata, afterRead)
+    ) {
+      return null;
+    }
+    // The descriptor remains the source of truth for bytes.  This final path
+    // metadata check only detects a replacement of request.json while the
+    // descriptor was being read; it deliberately does not reopen the path.
+    const afterReadPath = lstatSync(requestPath);
+    if (
+      !afterReadPath.isFile() ||
+      afterReadPath.isSymbolicLink() ||
+      !sameHeldFreshnessFileMetadata(afterReadPath, afterRead)
+    ) {
+      return null;
+    }
+    return {
+      bytes,
+      contentSha256: createHash("sha256").update(bytes).digest("hex"),
+      dev: metadata.dev,
+      ino: metadata.ino,
+      size: metadata.size,
+      mtimeMs: metadata.mtimeMs,
+      ctimeMs: metadata.ctimeMs,
+      directoryDev: directory.dev,
+      directoryIno: directory.ino,
+      directoryMtimeMs: directory.mtimeMs,
+      directoryCtimeMs: directory.ctimeMs,
+    };
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+}
+
+function sameHeldFreshnessFileMetadata(
+  left: {
+    readonly dev: number;
+    readonly ino: number;
+    readonly size: number;
+    readonly mtimeMs: number;
+    readonly ctimeMs: number;
+  },
+  right: {
+    readonly dev: number;
+    readonly ino: number;
+    readonly size: number;
+    readonly mtimeMs: number;
+    readonly ctimeMs: number;
+  },
+): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
+
+type HeldFreshnessRequestBarrier = {
+  readonly fingerprint: HeldFreshnessRequestVisibility;
+  readonly requestPublishedAtMs: number;
+  readonly requestBarrierCycleGeneration: number;
+};
+
+function sameHeldFreshnessRequestFingerprint(
+  left: HeldFreshnessRequestVisibility,
+  right: HeldFreshnessRequestVisibility,
+): boolean {
+  return (
+    sameHeldFreshnessFileMetadata(left, right) &&
+    left.contentSha256 === right.contentSha256 &&
+    left.bytes.equals(right.bytes) &&
+    left.directoryDev === right.directoryDev &&
+    left.directoryIno === right.directoryIno &&
+    left.directoryMtimeMs === right.directoryMtimeMs &&
+    left.directoryCtimeMs === right.directoryCtimeMs
+  );
+}
+
+/**
+ * Establish the only accepted request publication boundary. A directory
+ * fsync is intentionally strict: if the host cannot durably sync the nonce
+ * directory, the callback cannot produce evidence. The timestamp is captured
+ * only after fsync succeeds, and therefore is never inferred from metadata.
+ */
+function syncNarrativeMaintenanceDirectoryStrict(nonceDir: string): number {
+  if (process.platform === "win32") {
+    throw new Error(
+      "strict held Freshness request directory fsync is unavailable on win32",
+    );
+  }
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(nonceDir, fsConstants.O_RDONLY);
+    fsyncSync(descriptor);
+    const requestPublishedAtMs = Date.now();
+    closeSync(descriptor);
+    descriptor = null;
+    return requestPublishedAtMs;
+  } catch (error) {
+    if (descriptor !== null) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        // Preserve the strict fsync failure as the cause below.
+      }
+    }
+    throw new Error("strict held Freshness request directory fsync failed", {
+      cause: error,
+    });
+  }
+}
+
+function syncHeldFreshnessRequestAndDirectoryStrict(
+  nonceDir: string,
+  snapshot: HeldFreshnessRequestVisibility,
+): number {
+  const requestPath = path.join(
+    nonceDir,
+    NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+  );
+  let descriptor: number | null = null;
+  try {
+    const pathMetadata = lstatSync(requestPath);
+    if (
+      !pathMetadata.isFile() ||
+      pathMetadata.isSymbolicLink() ||
+      !sameHeldFreshnessFileMetadata(snapshot, pathMetadata)
+    ) {
+      throw new Error("held Freshness request changed before fsync");
+    }
+    descriptor = openSync(requestPath, noFollowReadOnlyFlags());
+    const metadata = fstatSync(descriptor);
+    if (
+      !metadata.isFile() ||
+      !sameHeldFreshnessFileMetadata(snapshot, metadata)
+    ) {
+      throw new Error("held Freshness request changed during fsync");
+    }
+    fsyncSync(descriptor);
+    const afterSync = fstatSync(descriptor);
+    if (
+      !afterSync.isFile() ||
+      !sameHeldFreshnessFileMetadata(snapshot, afterSync)
+    ) {
+      throw new Error("held Freshness request changed after fsync");
+    }
+    closeSync(descriptor);
+    descriptor = null;
+    return syncNarrativeMaintenanceDirectoryStrict(nonceDir);
+  } catch (error) {
+    if (descriptor !== null) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        // Preserve the strict fsync failure as the cause below.
+      }
+    }
+    throw new Error("strict held Freshness request durability failed", {
+      cause: error,
+    });
+  }
+}
+
+/**
+ * Re-read the durable request immediately before publication.  The final
+ * path is opened with O_NOFOLLOW and its bytes are hashed from that same
+ * descriptor; an atomic replacement or in-place mutation therefore cannot
+ * turn an invocation-time snapshot into a different request.
+ */
+function heldFreshnessRequestStillCurrent(
+  nonceDir: string,
+  snapshot: HeldFreshnessRequestVisibility,
+): boolean {
+  try {
+    const directory = lstatSync(nonceDir);
+    if (
+      !directory.isDirectory() ||
+      directory.isSymbolicLink() ||
+      directory.dev !== snapshot.directoryDev ||
+      directory.ino !== snapshot.directoryIno
+    ) {
+      return false;
+    }
+    const requestPath = path.join(
+      nonceDir,
+      NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+    );
+    const current = readHeldFreshnessRequestSnapshot(requestPath, directory);
+    if (current === null) return false;
+    return (
+      sameHeldFreshnessFileMetadata(snapshot, current) &&
+      current.contentSha256 === snapshot.contentSha256 &&
+      current.bytes.equals(snapshot.bytes)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Capture request visibility before the Freshness callback enters its async
+ * queue.  A request renamed after callback invocation belongs to a later
+ * cycle even if the queued operation has not reached its reader yet.  The
+ * async reader still rechecks the durable mtime and file identity below.
+ */
+function captureHeldFreshnessRequestVisibility(
+  userDataDir: string,
+  seamNonce: string,
+): HeldFreshnessRequestVisibility | null {
+  try {
+    const nonce = requireUuidV4(seamNonce, "held Freshness receipt nonce");
+    const root = receiptRootPath(userDataDir);
+    const nonceDir = path.join(root, nonce);
+    const requestPath = path.join(
+      nonceDir,
+      NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+    );
+    if (
+      !isContainedPath(root, nonceDir) ||
+      !isContainedPath(nonceDir, requestPath)
+    ) {
+      return null;
+    }
+    const directory = lstatSync(nonceDir);
+    if (!directory.isDirectory() || directory.isSymbolicLink()) return null;
+    const snapshot = readHeldFreshnessRequestSnapshot(requestPath, directory);
+    if (snapshot === null) return null;
+    const afterReadDirectory = lstatSync(nonceDir);
+    if (
+      !afterReadDirectory.isDirectory() ||
+      afterReadDirectory.isSymbolicLink() ||
+      afterReadDirectory.dev !== directory.dev ||
+      afterReadDirectory.ino !== directory.ino ||
+      afterReadDirectory.mtimeMs !== directory.mtimeMs ||
+      afterReadDirectory.ctimeMs !== directory.ctimeMs
+    ) {
+      return null;
+    }
+    return snapshot;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    return null;
+  }
+}
+
+async function writeHeldFreshnessEvidence(
   seam: Extract<NarrativeMaintenanceCiSeam, { active: true }>,
   userDataDir: string,
   payload: Record<string, unknown>,
   sequence: number,
-  canPublish?: () => boolean,
+  requestSnapshot: HeldFreshnessRequestVisibility,
+  beforePublishForTest?: (finalPath: string) => void,
 ): Promise<{
   receipt: Record<string, unknown>;
   sha256: string;
   byteLength: number;
 } | null> {
   const root = await requireReceiptRoot(userDataDir);
-  const nonce = requireUuidV4(seam.nonce, "quiescence receipt nonce");
+  const nonce = requireUuidV4(seam.nonce, "held Freshness receipt nonce");
   const nonceDir = path.join(root, nonce);
-  if (!isContainedPath(root, nonceDir)) {
-    throw new Error("quiescence receipt nonce escaped its root");
+  if (
+    !isContainedPath(root, nonceDir) ||
+    !isContainedPath(nonceDir, path.join(nonceDir, "receipt.json"))
+  ) {
+    throw new Error("held Freshness receipt nonce escaped its root");
   }
   const nonceMetadata = await lstat(nonceDir);
   if (!nonceMetadata.isDirectory() || nonceMetadata.isSymbolicLink()) {
-    throw new Error("quiescence receipt nonce is not a regular directory");
+    throw new Error("held Freshness receipt nonce is not a regular directory");
   }
   const nonceReal = await realpath(nonceDir);
   if (nonceReal !== nonceDir || !isContainedPath(root, nonceReal)) {
-    throw new Error("quiescence receipt nonce escaped its root");
+    throw new Error("held Freshness receipt nonce escaped its root");
   }
   const launchReceipt = path.join(nonceDir, "receipt.json");
   const launchMetadata = await lstat(launchReceipt);
   if (!launchMetadata.isFile() || launchMetadata.isSymbolicLink()) {
-    throw new Error("quiescence receipt launch ACK is missing");
+    throw new Error("held Freshness receipt launch ACK is missing");
   }
   const encoded = canonicalJson(payload);
   const byteLength = Buffer.byteLength(encoded, "utf8");
-  if (byteLength > NARRATIVE_MAINTENANCE_QUIESCENCE_MAX_BYTES) {
-    throw new Error("quiescence receipt exceeds its byte bound");
+  if (byteLength > NARRATIVE_MAINTENANCE_HELD_FRESHNESS_MAX_BYTES) {
+    throw new Error("held Freshness receipt exceeds its byte bound");
   }
-  const basename = quiescenceSequenceFile(sequence);
-  const temporaryPath = path.join(nonceDir, `${basename}.tmp`);
+  const basename = heldFreshnessSequenceFile(sequence);
+  const temporaryPath = path.join(nonceDir, basename + ".tmp");
   const finalPath = path.join(nonceDir, basename);
+  if (
+    !isContainedPath(nonceDir, temporaryPath) ||
+    !isContainedPath(nonceDir, finalPath)
+  ) {
+    throw new Error("held Freshness receipt path escaped its nonce directory");
+  }
   const existingEntries = await readdir(nonceDir, { withFileTypes: true });
   const expectedPrevious = new Set(
     Array.from({ length: sequence - 1 }, (_, index) =>
-      quiescenceSequenceFile(index + 1),
+      heldFreshnessSequenceFile(index + 1),
     ),
   );
   for (const entry of existingEntries) {
     if (
       entry.name === "receipt.json" ||
-      entry.name === NARRATIVE_MAINTENANCE_QUIESCENCE_REQUEST_FILE
+      entry.name === NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE
     ) {
       continue;
     }
     if (
-      !/^quiescence-\d{10}\.json$/u.test(entry.name) ||
+      !/^held-freshness-\d{10}\.json$/u.test(entry.name) ||
       entry.isSymbolicLink() ||
       !entry.isFile() ||
       !expectedPrevious.has(entry.name)
     ) {
-      throw new Error("quiescence receipt nonce has unexpected entries");
+      throw new Error("held Freshness receipt nonce has unexpected entries");
     }
     expectedPrevious.delete(entry.name);
   }
   if (expectedPrevious.size > 0) {
-    throw new Error("quiescence receipt sequence is not contiguous");
+    throw new Error("held Freshness receipt sequence is not contiguous");
   }
   const handle = await open(
     temporaryPath,
@@ -954,26 +1253,11 @@ async function writeNarrativeMaintenanceCiQuiescence(
   } finally {
     await handle.close();
   }
-  // The final check and rename must not yield to the main event loop. A timer,
-  // native completion callback, or trigger event can otherwise change the
-  // runtime state between an async recheck and publication. The caller also
-  // supplies a monotonic revision guard so an ABA transition cannot be
-  // mistaken for the same quiescent observation.
-  let publishAllowed = true;
-  try {
-    publishAllowed = canPublish?.() ?? true;
-  } catch {
-    publishAllowed = false;
-  }
-  if (publishAllowed) {
-    try {
-      lstatSync(finalPath);
-      publishAllowed = false;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
-    }
-  }
-  if (!publishAllowed) {
+  // Recheck the request only after the evidence bytes are durable and
+  // immediately before the no-replace publication. Creating the temporary
+  // hard-link source changes directory metadata, so the recheck binds the
+  // directory identity (dev/ino) and exact request bytes instead.
+  if (!heldFreshnessRequestStillCurrent(nonceDir, requestSnapshot)) {
     try {
       unlinkSync(temporaryPath);
     } catch (error) {
@@ -981,548 +1265,119 @@ async function writeNarrativeMaintenanceCiQuiescence(
     }
     return null;
   }
-  renameSync(temporaryPath, finalPath);
-  await chmod(finalPath, 0o600);
+  beforePublishForTest?.(finalPath);
+  let published = false;
+  try {
+    // link(2) is the no-replace primitive: unlike lstat+rename, it cannot
+    // overwrite a competitor that appears between the check and publish.
+    linkSync(temporaryPath, finalPath);
+    published = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+  }
+  if (!published) {
+    try {
+      unlinkSync(temporaryPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+    }
+    syncNarrativeMaintenanceDirectoryStrict(nonceDir);
+    return null;
+  }
+  unlinkSync(temporaryPath);
+  syncNarrativeMaintenanceDirectoryStrict(nonceDir);
   return {
     receipt: payload,
-    sha256: `sha256:${createHash("sha256").update(encoded, "utf8").digest("hex")}`,
+    sha256:
+      "sha256:" + createHash("sha256").update(encoded, "utf8").digest("hex"),
     byteLength,
   };
 }
 
 /**
- * Combine the main coordinator and freshness scheduler observations into a
- * CI-only immutable sidecar.  The writer never crosses renderer/preload/IPC;
- * a fresh sequence exists only after both main-owned state machines have
- * reached their explicit quiescent boundary for the same authority digest.
+ * Compatibility export for the main bootstrap. The implementation is the
+ * held-Freshness event writer; no composite maintenance barrier is exposed.
  */
+export function createNarrativeMaintenanceCiHeldFreshnessWriter(
+  seam: NarrativeMaintenanceCiSeam,
+  options: NarrativeMaintenanceCiHeldFreshnessWriterOptions,
+): NarrativeMaintenanceCiHeldFreshnessWriter | null {
+  return createHeldFreshnessWriter(seam, options);
+}
+
+/** @deprecated Use createNarrativeMaintenanceCiHeldFreshnessWriter. */
 export function createNarrativeMaintenanceCiQuiescenceWriter(
   seam: NarrativeMaintenanceCiSeam,
-  { userDataDir }: { userDataDir: string },
-): NarrativeMaintenanceCiQuiescenceWriter | null {
+  options: NarrativeMaintenanceCiHeldFreshnessWriterOptions,
+): NarrativeMaintenanceCiHeldFreshnessWriter | null {
+  return createNarrativeMaintenanceCiHeldFreshnessWriter(seam, options);
+}
+
+function createHeldFreshnessWriter(
+  seam: NarrativeMaintenanceCiSeam,
+  {
+    userDataDir,
+    afterRequestBarrierForTest,
+    beforePublishForTest,
+  }: NarrativeMaintenanceCiHeldFreshnessWriterOptions,
+): NarrativeMaintenanceCiHeldFreshnessWriter | null {
   if (!seam.active) return null;
   let disposed = false;
   let sequence = 0;
-  let lastEmittedKey: string | null = null;
+  let lastCycleGeneration = 0;
+  // A request nonce identifies one caller request for the lifetime of this
+  // launch.  Remember every successfully published nonce so A -> B -> A
+  // cannot replay evidence merely because A was not the immediately previous
+  // request.
+  const seenRequestNonces = new Set<string>();
+  let requestBarrier: HeldFreshnessRequestBarrier | null = null;
   let lastMonotonicObservedAtMs = 0;
-  let latestMaintenance: {
-    readonly discoveryGeneration: number;
-    readonly observedAtMs: number;
-    readonly workspaceBinding: QuiescenceBinding;
-    readonly discoveryEmpty: true;
-    readonly discoveryInFlight: false;
-    readonly timerScheduled: false;
-    readonly pendingRetry: false;
-    readonly pendingEvent: false;
-    readonly wakeAckPending: false;
-    readonly wakeOutboxDrainInFlight: false;
-    readonly wakeOutboxDrainSucceeded: true;
-    readonly wakeOutboxDrainFailed: false;
-    readonly wakeOutboxPendingRows: false;
-  } | null = null;
-  let latestScheduler: {
-    readonly cycleGeneration: number;
-    readonly observedAtMs: number;
-    readonly workspaceBinding: QuiescenceBinding;
-    readonly queueIdle: true;
-    readonly inFlight: false;
-    readonly hasMore: false;
-    readonly timerScheduled: false;
-  } | null = null;
-  let latestFreshness: {
-    readonly cycleGeneration: number;
-    readonly observedAtMs: number;
-    readonly inFlight: false;
-    readonly hasMore: false;
-    readonly noWrite: true;
-    readonly heldProjectId: string | null;
-    readonly cutoverNotReady: boolean;
-    readonly wakePending: false;
-    readonly timerScheduled: boolean;
-    readonly nextCycleGuardStateDigest: string | null;
-    readonly quiescenceState: QuiescenceState;
-  } | null = null;
   let writeChain: Promise<unknown> = Promise.resolve();
-  let runtimeStateReader: NarrativeMaintenanceCiRuntimeStateReader | null =
-    null;
-
-  const requireObservedAtMs = (value: unknown, label: string): number => {
-    if (!Number.isSafeInteger(value) || (value as number) < 0) {
-      throw new Error(`${label} must be a non-negative safe integer`);
-    }
-    return value as number;
-  };
-
-  const runtimeIsQuiescent = (
-    state: QuiescenceState,
-  ): { quiescent: boolean; mutationRevision: number | null } => {
-    if (!runtimeStateReader) return { quiescent: true, mutationRevision: 0 };
-    const runtime = runtimeStateReader();
-    const mutationRevision = runtime?.mutationRevision;
-    if (
-      !Number.isSafeInteger(mutationRevision) ||
-      (mutationRevision as number) < 0
-    ) {
-      return { quiescent: false, mutationRevision: null };
-    }
-    if (!runtime?.maintenance || !runtime.scheduler || !runtime.freshness) {
-      return { quiescent: false, mutationRevision: mutationRevision as number };
-    }
-    const stateBinding = requireQuiescenceBinding(
-      { authorityId: state.authorityId, generation: state.generation },
-      "quiescenceState workspaceBinding",
-    );
-    const maintenanceBinding = runtime.maintenance.workspaceBinding;
-    const schedulerBinding = runtime.scheduler.workspaceBinding;
-    if (
-      maintenanceBinding === null ||
-      schedulerBinding === null ||
-      !sameQuiescenceBinding(maintenanceBinding, stateBinding) ||
-      !sameQuiescenceBinding(schedulerBinding, stateBinding)
-    ) {
-      return { quiescent: false, mutationRevision: mutationRevision as number };
-    }
-    const runtimeState = runtime.freshness.quiescenceState;
-    if (
-      runtimeState === null ||
-      typeof runtimeState !== "object" ||
-      Array.isArray(runtimeState) ||
-      (runtimeState as Record<string, unknown>).stateDigest !==
-        state.stateDigest
-    ) {
-      return { quiescent: false, mutationRevision: mutationRevision as number };
-    }
-    const runtimeHeldProjectId = runtime.freshness.heldProjectId ?? null;
-    const runtimeCutoverNotReady = runtime.freshness.cutoverNotReady ?? false;
-    const runtimeWakeOutboxDrainInFlight =
-      runtime.maintenance.wakeOutboxDrainInFlight ?? false;
-    const runtimeWakeOutboxDrainSucceeded =
-      runtime.maintenance.wakeOutboxDrainSucceeded ?? true;
-    const runtimeWakeOutboxDrainFailed =
-      runtime.maintenance.wakeOutboxDrainFailed ?? false;
-    const runtimeWakeOutboxPendingRows =
-      runtime.maintenance.wakeOutboxPendingRows ?? false;
-    return {
-      quiescent:
-        runtime.maintenance.discoveryInFlight ===
-          latestMaintenance?.discoveryInFlight &&
-        runtime.maintenance.timerScheduled ===
-          latestMaintenance?.timerScheduled &&
-        runtime.maintenance.pendingRetry === latestMaintenance?.pendingRetry &&
-        runtime.maintenance.pendingEvent === latestMaintenance?.pendingEvent &&
-        runtime.maintenance.wakeAckPending ===
-          latestMaintenance?.wakeAckPending &&
-        runtimeWakeOutboxDrainInFlight ===
-          latestMaintenance?.wakeOutboxDrainInFlight &&
-        runtimeWakeOutboxDrainSucceeded ===
-          latestMaintenance?.wakeOutboxDrainSucceeded &&
-        runtimeWakeOutboxDrainFailed ===
-          latestMaintenance?.wakeOutboxDrainFailed &&
-        runtimeWakeOutboxPendingRows ===
-          latestMaintenance?.wakeOutboxPendingRows &&
-        runtime.scheduler.queueIdle === latestScheduler?.queueIdle &&
-        runtime.scheduler.inFlight === latestScheduler?.inFlight &&
-        runtime.scheduler.hasMore === latestScheduler?.hasMore &&
-        runtime.scheduler.timerScheduled === latestScheduler?.timerScheduled &&
-        runtime.freshness.inFlight === latestFreshness?.inFlight &&
-        runtime.freshness.hasMore === latestFreshness?.hasMore &&
-        runtimeHeldProjectId === latestFreshness?.heldProjectId &&
-        runtimeCutoverNotReady === latestFreshness?.cutoverNotReady &&
-        runtime.freshness.wakePending === latestFreshness?.wakePending &&
-        runtime.freshness.timerScheduled === latestFreshness?.timerScheduled &&
-        runtime.freshness.nextCycleGuardStateDigest ===
-          latestFreshness?.nextCycleGuardStateDigest &&
-        runtime.maintenance.discoveryInFlight === false &&
-        runtime.maintenance.timerScheduled === false &&
-        runtime.maintenance.pendingRetry === false &&
-        runtime.maintenance.pendingEvent === false &&
-        runtime.maintenance.wakeAckPending === false &&
-        runtimeWakeOutboxDrainInFlight === false &&
-        runtimeWakeOutboxDrainSucceeded === true &&
-        runtimeWakeOutboxDrainFailed === false &&
-        runtimeWakeOutboxPendingRows === false &&
-        runtime.scheduler.queueIdle === true &&
-        runtime.scheduler.inFlight === false &&
-        runtime.scheduler.hasMore === false &&
-        runtime.scheduler.timerScheduled === false &&
-        runtime.freshness.inFlight === false &&
-        runtime.freshness.hasMore === false &&
-        runtime.freshness.wakePending === false &&
-        runtime.freshness.timerScheduled ===
-          (runtime.freshness.nextCycleGuardStateDigest !== null) &&
-        (!runtime.freshness.timerScheduled ||
-          runtime.freshness.nextCycleGuardStateDigest === state.stateDigest) &&
-        runtime.freshness.quiescenceState !== null,
-      mutationRevision: mutationRevision as number,
-    };
-  };
-
-  const maybeEmit = async (): Promise<unknown | null> => {
-    if (
-      disposed ||
-      !latestMaintenance ||
-      !latestScheduler ||
-      !latestFreshness
-    ) {
-      return null;
-    }
-    const state = latestFreshness.quiescenceState;
-    const stateBinding = requireQuiescenceBinding(
-      { authorityId: state.authorityId, generation: state.generation },
-      "quiescenceState workspaceBinding",
-    );
-    if (
-      !sameQuiescenceBinding(
-        latestMaintenance.workspaceBinding,
-        stateBinding,
-      ) ||
-      !sameQuiescenceBinding(latestScheduler.workspaceBinding, stateBinding)
-    ) {
-      return null;
-    }
-    if (
-      state.authorityId !== stateBinding.authorityId ||
-      state.generation !== stateBinding.generation ||
-      latestFreshness.hasMore ||
-      latestFreshness.inFlight ||
-      !latestFreshness.noWrite ||
-      latestFreshness.wakePending ||
-      !latestMaintenance.discoveryEmpty ||
-      latestMaintenance.discoveryInFlight ||
-      latestMaintenance.timerScheduled ||
-      latestMaintenance.pendingRetry ||
-      latestMaintenance.pendingEvent ||
-      latestMaintenance.wakeAckPending ||
-      latestMaintenance.wakeOutboxDrainInFlight ||
-      !latestMaintenance.wakeOutboxDrainSucceeded ||
-      latestMaintenance.wakeOutboxDrainFailed ||
-      latestMaintenance.wakeOutboxPendingRows ||
-      !latestScheduler.queueIdle ||
-      latestScheduler.inFlight ||
-      latestScheduler.hasMore ||
-      latestScheduler.timerScheduled
-    ) {
-      return null;
-    }
-    const heldProjectId = latestFreshness.heldProjectId;
-    const heldCycle = heldProjectId !== null;
-    if (
-      latestFreshness.cutoverNotReady !== heldCycle ||
-      state.freshnessHoldProjectId !== heldProjectId ||
-      state.heldProjectId !== heldProjectId ||
-      (heldCycle && state.marker !== null)
-    ) {
-      return null;
-    }
-    if (
-      latestFreshness.timerScheduled !==
-        (latestFreshness.nextCycleGuardStateDigest !== null) ||
-      (latestFreshness.timerScheduled &&
-        latestFreshness.nextCycleGuardStateDigest !== state.stateDigest)
-    ) {
-      return null;
-    }
-    const initialRuntime = runtimeIsQuiescent(state);
-    if (!initialRuntime.quiescent || initialRuntime.mutationRevision === null) {
-      return null;
-    }
-    const request = await readNarrativeMaintenanceCiQuiescenceRequest(
-      path.join(
-        await requireReceiptRoot(userDataDir),
-        requireUuidV4(seam.nonce, "quiescence receipt nonce"),
-      ),
-      seam.nonce,
-    );
-    if (request === null) return null;
-    const requestedAtMs = Date.parse(request.requestedAt);
-    if (
-      !Number.isFinite(requestedAtMs) ||
-      latestMaintenance.observedAtMs < requestedAtMs ||
-      latestScheduler.observedAtMs < requestedAtMs ||
-      latestFreshness.observedAtMs < requestedAtMs
-    ) {
-      // A request is a causal barrier, not a label for an old idle state. All
-      // three main-owned observations must have been produced at or after the
-      // caller's request timestamp before a new immutable sequence is issued.
-      return null;
-    }
-    const key = `${latestMaintenance.discoveryGeneration}:${latestScheduler.cycleGeneration}:${latestFreshness.cycleGeneration}:${state.stateDigest}`;
-    const requestKey = `${request.requestNonce}:${request.phase}:${request.requestedAt}`;
-    if (`${key}:${requestKey}` === lastEmittedKey) return null;
-    const nextSequence = sequence + 1;
-    const now = Math.floor(performance.now());
-    lastMonotonicObservedAtMs = Math.max(now, lastMonotonicObservedAtMs + 1);
-    const receipt = {
-      version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
-      type: NARRATIVE_MAINTENANCE_QUIESCENCE_TYPE,
-      nonce: seam.nonce,
-      requestNonce: request.requestNonce,
-      phase: request.phase,
-      requestedAt: request.requestedAt,
-      sequence: nextSequence,
-      observedAt: new Date().toISOString(),
-      monotonicObservedAtMs: lastMonotonicObservedAtMs,
-      workspaceBinding: latestMaintenance.workspaceBinding,
-      discovery: {
-        discoveryGeneration: latestMaintenance.discoveryGeneration,
-        empty: true,
-        inFlight: false,
-        timerScheduled: false,
-        pendingRetry: false,
-        pendingEvent: false,
-        wakeAckPending: false,
-        wakeOutboxDrainInFlight: false,
-        wakeOutboxDrainSucceeded: true,
-        wakeOutboxDrainFailed: false,
-        wakeOutboxPendingRows: false,
-        queueIdle: true,
-      },
-      freshness: {
-        cycleGeneration: latestFreshness.cycleGeneration,
-        inFlight: false,
-        hasMore: false,
-        noWrite: true,
-        heldProjectId,
-        cutoverNotReady: latestFreshness.cutoverNotReady,
-        wakePending: false,
-        timerScheduled: latestFreshness.timerScheduled,
-        nextCycleGuardStateDigest: latestFreshness.nextCycleGuardStateDigest,
-      },
-      state,
-      stateDigest: state.stateDigest,
-    } satisfies Record<string, unknown>;
-    const artifact = await writeNarrativeMaintenanceCiQuiescence(
-      seam,
-      userDataDir,
-      receipt,
-      nextSequence,
-      () => {
-        const finalRuntime = runtimeIsQuiescent(state);
-        return (
-          finalRuntime.quiescent &&
-          finalRuntime.mutationRevision === initialRuntime.mutationRevision
-        );
-      },
-    );
-    if (artifact === null) return null;
-    sequence = nextSequence;
-    lastEmittedKey = `${key}:${requestKey}`;
-    return artifact;
-  };
 
   const enqueue = (
     operation: () => Promise<unknown | null>,
   ): Promise<unknown | null> => {
-    writeChain = writeChain.then(operation, operation);
-    return writeChain;
+    const next = writeChain.then(operation, operation);
+    writeChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  };
+
+  const requireObservedAtMs = (value: unknown): number => {
+    if (!Number.isSafeInteger(value) || (value as number) < 0) {
+      throw new Error(
+        "held Freshness observedAtMs must be a non-negative safe integer",
+      );
+    }
+    return value as number;
   };
 
   return {
-    recordMaintenance(observation: unknown): Promise<unknown | null> {
-      return enqueue(async () => {
-        const previousMaintenance = latestMaintenance;
-        // A malformed or non-quiescent callback must invalidate the prior
-        // signal. Otherwise a later freshness callback could accidentally
-        // combine a new request with stale coordinator state.
-        latestMaintenance = null;
-        exactKeysWithOptional(
-          observation,
-          [
-            "discoveryGeneration",
-            "observedAtMs",
-            "workspaceBinding",
-            "discoveryEmpty",
-            "discoveryInFlight",
-            "timerScheduled",
-            "pendingRetry",
-            "pendingEvent",
-            "wakeAckPending",
-          ],
-          [
-            "wakeOutboxDrainInFlight",
-            "wakeOutboxDrainSucceeded",
-            "wakeOutboxDrainFailed",
-            "wakeOutboxPendingRows",
-          ],
-          "maintenance quiescence observation",
-        );
-        const record = observation as Record<string, unknown>;
-        const observedAtMs = requireObservedAtMs(
-          record.observedAtMs,
-          "maintenance quiescence observation observedAtMs",
-        );
-        const binding = requireQuiescenceBinding(
-          record.workspaceBinding,
-          "maintenance quiescence observation workspaceBinding",
-        );
-        const discoveryGeneration = record.discoveryGeneration;
-        const wakeOutboxKeys = [
-          "wakeOutboxDrainInFlight",
-          "wakeOutboxDrainSucceeded",
-          "wakeOutboxDrainFailed",
-          "wakeOutboxPendingRows",
-        ];
-        const hasWakeOutboxState = wakeOutboxKeys.some((key) =>
-          Object.hasOwn(record, key),
-        );
-        if (
-          hasWakeOutboxState &&
-          wakeOutboxKeys.some((key) => !Object.hasOwn(record, key))
-        ) {
-          latestMaintenance = null;
-          return null;
-        }
-        const wakeOutboxDrainInFlight = hasWakeOutboxState
-          ? record.wakeOutboxDrainInFlight
-          : false;
-        const wakeOutboxDrainSucceeded = hasWakeOutboxState
-          ? record.wakeOutboxDrainSucceeded
-          : true;
-        const wakeOutboxDrainFailed = hasWakeOutboxState
-          ? record.wakeOutboxDrainFailed
-          : false;
-        const wakeOutboxPendingRows = hasWakeOutboxState
-          ? record.wakeOutboxPendingRows
-          : false;
-        if (
-          !Number.isSafeInteger(discoveryGeneration) ||
-          (discoveryGeneration as number) <= 0 ||
-          typeof record.discoveryEmpty !== "boolean" ||
-          typeof record.discoveryInFlight !== "boolean" ||
-          typeof record.timerScheduled !== "boolean" ||
-          typeof record.pendingRetry !== "boolean" ||
-          typeof record.pendingEvent !== "boolean" ||
-          typeof record.wakeAckPending !== "boolean" ||
-          typeof wakeOutboxDrainInFlight !== "boolean" ||
-          typeof wakeOutboxDrainSucceeded !== "boolean" ||
-          typeof wakeOutboxDrainFailed !== "boolean" ||
-          typeof wakeOutboxPendingRows !== "boolean"
-        ) {
-          latestMaintenance = null;
-          return null;
-        }
-        if (
-          record.discoveryEmpty !== true ||
-          record.discoveryInFlight !== false ||
-          record.timerScheduled !== false ||
-          record.pendingRetry !== false ||
-          record.pendingEvent !== false ||
-          record.wakeAckPending !== false ||
-          wakeOutboxDrainInFlight !== false ||
-          wakeOutboxDrainSucceeded !== true ||
-          wakeOutboxDrainFailed !== false ||
-          wakeOutboxPendingRows !== false
-        ) {
-          latestMaintenance = null;
-          return null;
-        }
-        if (
-          previousMaintenance &&
-          (discoveryGeneration as number) <
-            previousMaintenance.discoveryGeneration
-        ) {
-          return null;
-        }
-        latestMaintenance = {
-          discoveryGeneration: discoveryGeneration as number,
-          observedAtMs,
-          workspaceBinding: binding,
-          discoveryEmpty: true,
-          discoveryInFlight: false,
-          timerScheduled: false,
-          pendingRetry: false,
-          pendingEvent: false,
-          wakeAckPending: false,
-          wakeOutboxDrainInFlight: false,
-          wakeOutboxDrainSucceeded: true,
-          wakeOutboxDrainFailed: false,
-          wakeOutboxPendingRows: false,
-        };
-        return maybeEmit();
-      });
+    recordMaintenance(): Promise<unknown | null> {
+      return enqueue(async () => null);
     },
-    recordScheduler(observation: unknown): Promise<unknown | null> {
-      return enqueue(async () => {
-        const previousScheduler = latestScheduler;
-        latestScheduler = null;
-        exactKeys(
-          observation,
-          [
-            "cycleGeneration",
-            "observedAtMs",
-            "workspaceBinding",
-            "cycleAccepted",
-            "queueIdle",
-            "inFlight",
-            "hasMore",
-            "timerScheduled",
-          ],
-          "maintenance scheduler quiescence observation",
-        );
-        const record = observation as Record<string, unknown>;
-        const observedAtMs = requireObservedAtMs(
-          record.observedAtMs,
-          "maintenance scheduler quiescence observation observedAtMs",
-        );
-        const binding = requireQuiescenceBinding(
-          record.workspaceBinding,
-          "maintenance scheduler quiescence observation workspaceBinding",
-        );
-        const cycleGeneration = record.cycleGeneration;
-        if (
-          !Number.isSafeInteger(cycleGeneration) ||
-          (cycleGeneration as number) <= 0 ||
-          typeof record.queueIdle !== "boolean" ||
-          typeof record.inFlight !== "boolean" ||
-          typeof record.hasMore !== "boolean" ||
-          typeof record.timerScheduled !== "boolean" ||
-          typeof record.cycleAccepted !== "boolean"
-        ) {
-          latestScheduler = null;
-          return null;
-        }
-        if (
-          record.cycleAccepted !== true ||
-          record.queueIdle !== true ||
-          record.inFlight !== false ||
-          record.hasMore !== false ||
-          record.timerScheduled !== false
-        ) {
-          latestScheduler = null;
-          return null;
-        }
-        if (
-          previousScheduler &&
-          (cycleGeneration as number) < previousScheduler.cycleGeneration
-        ) {
-          return null;
-        }
-        latestScheduler = {
-          cycleGeneration: cycleGeneration as number,
-          observedAtMs,
-          workspaceBinding: binding,
-          queueIdle: true,
-          inFlight: false,
-          hasMore: false,
-          timerScheduled: false,
-        };
-        return maybeEmit();
-      });
+    recordScheduler(): Promise<unknown | null> {
+      return enqueue(async () => null);
     },
     recordFreshness(observation: unknown): Promise<unknown | null> {
-      return enqueue(async () => {
-        const previousFreshness = latestFreshness;
-        latestFreshness = null;
-        const rawRecord = observation as Record<string, unknown>;
-        const normalizedObservation: Record<string, unknown> = {
-          ...rawRecord,
-          heldProjectId: rawRecord.heldProjectId ?? null,
-          cutoverNotReady: rawRecord.cutoverNotReady ?? false,
-        };
+      const requestVisibility = captureHeldFreshnessRequestVisibility(
+        userDataDir,
+        seam.nonce,
+      );
+      let armedBarrierForInvocation = false;
+
+      // Arm the durability barrier before returning to the event loop. The
+      // Freshness scheduler has already reserved its next timer and does not
+      // await this callback; deferring fsync into the async write queue would
+      // allow that next native cycle to start before the barrier exists.
+      try {
         exactKeys(
-          normalizedObservation,
+          observation,
           [
             "cycleGeneration",
+            "cycleStartedAtMs",
             "observedAtMs",
             "inFlight",
             "hasMore",
@@ -1534,95 +1389,257 @@ export function createNarrativeMaintenanceCiQuiescenceWriter(
             "nextCycleGuardStateDigest",
             "quiescenceState",
           ],
-          "freshness quiescence observation",
+          "held Freshness observation",
         );
-        const record = normalizedObservation;
-        const observedAtMs = requireObservedAtMs(
-          record.observedAtMs,
-          "freshness quiescence observation observedAtMs",
-        );
-        const cycleGeneration = record.cycleGeneration;
+        const candidateGeneration = observation.cycleGeneration;
         if (
-          !Number.isSafeInteger(cycleGeneration) ||
-          (cycleGeneration as number) <= 0 ||
-          typeof record.inFlight !== "boolean" ||
-          typeof record.hasMore !== "boolean" ||
-          typeof record.noWrite !== "boolean" ||
-          (record.heldProjectId !== null &&
-            (typeof record.heldProjectId !== "string" ||
-              record.heldProjectId.trim() !== record.heldProjectId ||
-              record.heldProjectId.length === 0)) ||
-          typeof record.cutoverNotReady !== "boolean" ||
-          typeof record.wakePending !== "boolean" ||
-          typeof record.timerScheduled !== "boolean" ||
-          (record.nextCycleGuardStateDigest !== null &&
-            typeof record.nextCycleGuardStateDigest !== "string")
+          !disposed &&
+          requestVisibility !== null &&
+          Number.isSafeInteger(candidateGeneration) &&
+          (candidateGeneration as number) > 0 &&
+          (candidateGeneration as number) > lastCycleGeneration &&
+          (requestBarrier === null ||
+            !sameHeldFreshnessRequestFingerprint(
+              requestBarrier.fingerprint,
+              requestVisibility,
+            ))
         ) {
-          latestFreshness = null;
+          requestBarrier = null;
+          parseHeldFreshnessRequest(requestVisibility, seam.nonce);
+          const root = receiptRootPath(userDataDir);
+          const nonce = requireUuidV4(
+            seam.nonce,
+            "held Freshness receipt nonce",
+          );
+          const nonceDir = path.join(root, nonce);
+          if (
+            !isContainedPath(root, nonceDir) ||
+            !heldFreshnessRequestStillCurrent(nonceDir, requestVisibility)
+          ) {
+            throw new Error(
+              "held Freshness request changed before durable barrier",
+            );
+          }
+          const requestPublishedAtMs =
+            syncHeldFreshnessRequestAndDirectoryStrict(
+              nonceDir,
+              requestVisibility,
+            );
+          if (!heldFreshnessRequestStillCurrent(nonceDir, requestVisibility)) {
+            throw new Error(
+              "held Freshness request changed after durable barrier",
+            );
+          }
+          requestBarrier = {
+            fingerprint: requestVisibility,
+            requestPublishedAtMs,
+            requestBarrierCycleGeneration: candidateGeneration as number,
+          };
+          armedBarrierForInvocation = true;
+          afterRequestBarrierForTest?.();
+        }
+      } catch {
+        requestBarrier = null;
+      }
+      return enqueue(async () => {
+        if (disposed) return null;
+        try {
+          exactKeys(
+            observation,
+            [
+              "cycleGeneration",
+              "cycleStartedAtMs",
+              "observedAtMs",
+              "inFlight",
+              "hasMore",
+              "noWrite",
+              "heldProjectId",
+              "cutoverNotReady",
+              "wakePending",
+              "timerScheduled",
+              "nextCycleGuardStateDigest",
+              "quiescenceState",
+            ],
+            "held Freshness observation",
+          );
+          const record = observation;
+          const cycleGeneration = record.cycleGeneration as number;
+          const cycleStartedAtMs = requireObservedAtMs(record.cycleStartedAtMs);
+          const observedAtMs = requireObservedAtMs(record.observedAtMs);
+          if (
+            !Number.isSafeInteger(cycleGeneration) ||
+            (cycleGeneration as number) <= 0 ||
+            (cycleGeneration as number) <= lastCycleGeneration
+          ) {
+            return null;
+          }
+          lastCycleGeneration = cycleGeneration as number;
+          if (
+            typeof record.inFlight !== "boolean" ||
+            typeof record.hasMore !== "boolean" ||
+            typeof record.noWrite !== "boolean" ||
+            typeof record.cutoverNotReady !== "boolean" ||
+            typeof record.wakePending !== "boolean" ||
+            typeof record.timerScheduled !== "boolean" ||
+            (record.heldProjectId !== null &&
+              (typeof record.heldProjectId !== "string" ||
+                record.heldProjectId.length === 0 ||
+                record.heldProjectId.trim() !== record.heldProjectId ||
+                record.heldProjectId.includes("\u0000"))) ||
+            (record.nextCycleGuardStateDigest !== null &&
+              typeof record.nextCycleGuardStateDigest !== "string")
+          ) {
+            return null;
+          }
+          if (
+            record.inFlight !== false ||
+            record.hasMore !== false ||
+            record.noWrite !== true ||
+            record.wakePending !== false ||
+            record.heldProjectId === null ||
+            record.cutoverNotReady !== true
+          ) {
+            return null;
+          }
+          const state = requireQuiescenceState(record.quiescenceState);
+          const heldProjectId = record.heldProjectId as string;
+          if (
+            state.marker !== null ||
+            seam.freshnessHoldProjectId !== heldProjectId ||
+            state.freshnessHoldProjectId !== heldProjectId ||
+            state.heldProjectId !== heldProjectId
+          ) {
+            return null;
+          }
+          if (
+            record.timerScheduled !==
+              (record.nextCycleGuardStateDigest !== null) ||
+            (record.timerScheduled &&
+              record.nextCycleGuardStateDigest !== state.stateDigest)
+          ) {
+            return null;
+          }
+          const root = await requireReceiptRoot(userDataDir);
+          const nonce = requireUuidV4(
+            seam.nonce,
+            "held Freshness receipt nonce",
+          );
+          const nonceDir = path.join(root, nonce);
+          if (!isContainedPath(root, nonceDir)) return null;
+          if (requestVisibility === null) {
+            requestBarrier = null;
+            return null;
+          }
+          // Parse only the immutable invocation-time bytes.  Never perform a
+          // later path read for the request; the durable path is rechecked
+          // immediately before publication below.
+          const request = parseHeldFreshnessRequest(
+            requestVisibility,
+            seam.nonce,
+          );
+          const requestedAtMs = Date.parse(request.requestedAt);
+          if (!Number.isFinite(requestedAtMs)) {
+            return null;
+          }
+          if (armedBarrierForInvocation) {
+            if (
+              !heldFreshnessRequestStillCurrent(nonceDir, requestVisibility)
+            ) {
+              requestBarrier = null;
+            }
+            return null;
+          }
+          if (
+            requestBarrier === null ||
+            !sameHeldFreshnessRequestFingerprint(
+              requestBarrier.fingerprint,
+              requestVisibility,
+            )
+          ) {
+            requestBarrier = null;
+            return null;
+          }
+          const { requestPublishedAtMs, requestBarrierCycleGeneration } =
+            requestBarrier;
+          if (
+            cycleGeneration <= requestBarrierCycleGeneration ||
+            cycleStartedAtMs <= requestPublishedAtMs ||
+            cycleStartedAtMs > observedAtMs ||
+            observedAtMs <= requestPublishedAtMs
+          ) {
+            return null;
+          }
+          const stateBinding = requireQuiescenceBinding(
+            { authorityId: state.authorityId, generation: state.generation },
+            "held Freshness state workspaceBinding",
+          );
+          if (!sameQuiescenceBinding(request.workspaceBinding, stateBinding)) {
+            return null;
+          }
+          if (seenRequestNonces.has(request.requestNonce)) return null;
+          const nextSequence = sequence + 1;
+          const now = Math.floor(performance.now());
+          lastMonotonicObservedAtMs = Math.max(
+            now,
+            lastMonotonicObservedAtMs + 1,
+          );
+          const receipt = {
+            version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+            type: NARRATIVE_MAINTENANCE_HELD_FRESHNESS_TYPE,
+            nonce: seam.nonce,
+            requestNonce: request.requestNonce,
+            phase: request.phase,
+            requestedAt: request.requestedAt,
+            sequence: nextSequence,
+            observedAt: new Date().toISOString(),
+            monotonicObservedAtMs: lastMonotonicObservedAtMs,
+            workspaceBinding: request.workspaceBinding,
+            freshness: {
+              cycleGeneration,
+              requestBarrierCycleGeneration,
+              requestPublishedAtMs,
+              cycleStartedAtMs,
+              observedAtMs,
+              inFlight: false,
+              hasMore: false,
+              noWrite: true,
+              heldProjectId,
+              cutoverNotReady: true,
+              wakePending: false,
+              timerScheduled: record.timerScheduled,
+              nextCycleGuardStateDigest: record.nextCycleGuardStateDigest as
+                | string
+                | null,
+            },
+            state,
+            stateDigest: state.stateDigest,
+          } satisfies Record<string, unknown>;
+          const artifact = await writeHeldFreshnessEvidence(
+            seam,
+            userDataDir,
+            receipt,
+            nextSequence,
+            requestVisibility,
+            beforePublishForTest,
+          );
+          if (artifact === null) {
+            requestBarrier = null;
+            return null;
+          }
+          sequence = nextSequence;
+          seenRequestNonces.add(request.requestNonce);
+          return artifact;
+        } catch {
+          requestBarrier = null;
           return null;
         }
-        if (
-          record.inFlight !== false ||
-          record.hasMore !== false ||
-          record.noWrite !== true ||
-          record.wakePending !== false ||
-          record.cutoverNotReady !== (record.heldProjectId !== null)
-        ) {
-          latestFreshness = null;
-          return null;
-        }
-        const state = requireQuiescenceState(record.quiescenceState);
-        if (
-          state.freshnessHoldProjectId !== record.heldProjectId ||
-          state.heldProjectId !== record.heldProjectId
-        ) {
-          return null;
-        }
-        if (
-          record.timerScheduled !==
-            (record.nextCycleGuardStateDigest !== null) ||
-          (record.timerScheduled &&
-            record.nextCycleGuardStateDigest !== state.stateDigest)
-        ) {
-          return null;
-        }
-        if (
-          previousFreshness &&
-          (cycleGeneration as number) < previousFreshness.cycleGeneration
-        ) {
-          return null;
-        }
-        latestFreshness = {
-          cycleGeneration: cycleGeneration as number,
-          observedAtMs,
-          inFlight: false,
-          hasMore: false,
-          noWrite: true,
-          heldProjectId: record.heldProjectId as string | null,
-          cutoverNotReady: record.cutoverNotReady as boolean,
-          wakePending: false,
-          timerScheduled: record.timerScheduled as boolean,
-          nextCycleGuardStateDigest: record.nextCycleGuardStateDigest as
-            | string
-            | null,
-          quiescenceState: state,
-        };
-        return maybeEmit();
       });
     },
     dispose(): void {
       disposed = true;
-      latestMaintenance = null;
-      latestScheduler = null;
-      latestFreshness = null;
     },
-    setRuntimeStateReader(
-      reader: NarrativeMaintenanceCiRuntimeStateReader,
-    ): void {
-      if (typeof reader !== "function") {
-        throw new Error("quiescence runtime state reader must be a function");
-      }
-      runtimeStateReader = reader;
+    setRuntimeStateReader(): void {
+      // Compatibility API; no runtime state reader participates in evidence.
     },
   };
 }

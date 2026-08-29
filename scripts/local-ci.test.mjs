@@ -683,6 +683,8 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     journeyIds,
     allPassed: true,
     allClean: true,
+    rustAcceptanceComplete: true,
+    buildReceipt: null,
     journeys: journeyIds.map((id) => ({
       id,
       status: "passed",
@@ -715,6 +717,8 @@ test("Full product journey evidence binds result and manifest bytes to the recei
       journeyIds,
       allPassed: true,
       allClean: true,
+      rustAcceptanceComplete: true,
+      buildReceipt: null,
       results: {
         path: "results.json",
         realPath: resultsPath,
@@ -866,6 +870,13 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   const acceptedReport = {
     ...results,
     acceptanceRequired: true,
+    rustAcceptanceComplete: true,
+    buildReceipt: {
+      version: 1,
+      verified: true,
+      source: "local-ci-candidate",
+      candidate,
+    },
     acceptanceComplete: true,
     c2zcRustAcceptance: rustEvidence,
   };
@@ -876,6 +887,13 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   const acceptedManifest = {
     ...JSON.parse(manifestText),
     acceptanceRequired: true,
+    rustAcceptanceComplete: true,
+    buildReceipt: {
+      version: 1,
+      verified: true,
+      source: "local-ci-candidate",
+      candidate,
+    },
     acceptanceComplete: true,
     c2zcRustAcceptance: rustEvidence,
   };
@@ -921,6 +939,15 @@ test("Full product journey evidence binds result and manifest bytes to the recei
         ...evidence.c2zcRustAcceptance.candidate,
         currentHeadSha: "f".repeat(40),
       };
+    },
+    (evidence) => {
+      evidence.buildReceipt.candidate = {
+        ...evidence.buildReceipt.candidate,
+        currentHeadSha: "f".repeat(40),
+      };
+    },
+    (evidence) => {
+      evidence.buildReceipt.foreignKey = "must-reject";
     },
   ]) {
     const mutatedEvidence = structuredClone(acceptedEvidence);

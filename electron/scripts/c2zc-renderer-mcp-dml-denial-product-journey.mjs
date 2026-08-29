@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 
@@ -83,11 +83,11 @@ function quoteIdentifier(identifier) {
   return `"${identifier.replaceAll('"', '""')}"`;
 }
 
-// A renderer-visible quiescence observation must cover every persisted
+// A renderer-visible durable-settlement observation must cover every persisted
 // maintenance writer state, including future non-interpretation Run kinds.
 // Keeping the predicate writer-oriented avoids silently missing a new
 // maintenance kind while leaving ordinary interpretation Runs out of scope.
-export const C2ZC_RENDERER_QUIESCENCE_QUERIES = Object.freeze({
+export const C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES = Object.freeze({
   projects: `SELECT id
                FROM projects
               ORDER BY id`,
@@ -249,13 +249,13 @@ export const C2ZC_RENDERER_QUIESCENCE_QUERIES = Object.freeze({
 
 export const C2ZC_RENDERER_DML_EVIDENCE_VERSION = 2;
 export const C2ZC_RENDERER_DML_TIMELINE_EVENT =
-  "c2-zc-renderer-dml-quiescence-settled";
+  "c2-zc-renderer-dml-durable-renderer-settlement";
 
-const C2ZC_RENDERER_QUIESCENCE_WAIT_MS = 60_000;
-const C2ZC_RENDERER_QUIESCENCE_INTERVAL_MS = 100;
-export const C2ZC_RENDERER_QUIESCENCE_REDISCOVERY_DELAY_MS = 250;
-export const C2ZC_RENDERER_QUIESCENCE_MIN_STABLE_MS = 500;
-export const C2ZC_RENDERER_QUIESCENCE_MAX_SAMPLE_GAP_MS = 500;
+const C2ZC_RENDERER_SETTLEMENT_WAIT_MS = 60_000;
+const C2ZC_RENDERER_SETTLEMENT_INTERVAL_MS = 100;
+export const C2ZC_RENDERER_SETTLEMENT_REDISCOVERY_DELAY_MS = 250;
+export const C2ZC_RENDERER_SETTLEMENT_MIN_STABLE_MS = 500;
+export const C2ZC_RENDERER_SETTLEMENT_MAX_SAMPLE_GAP_MS = 500;
 
 export const C2ZC_RENDERER_MCP_DML_DENIAL_CATALOG_ENTRY = Object.freeze({
   id: C2ZC_RENDERER_MCP_DML_DENIAL_ID,
@@ -388,7 +388,7 @@ function assertC2ZcNativeWorkspaceBinding(value) {
   });
 }
 
-/** Project the exact Native binding to the two fields accepted by quiescence. */
+/** Project the exact Native binding to the two fields used by held evidence. */
 export function assertC2ZcRendererWorkspaceBinding(value) {
   const nativeBinding = assertC2ZcNativeWorkspaceBinding(value);
   return {
@@ -411,7 +411,9 @@ function requireWorkspaceBinding(value) {
     !Number.isSafeInteger(value.generation) ||
     value.generation <= 0
   ) {
-    throw new Error("C2-ZC quiescence returned an invalid binding projection");
+    throw new Error(
+      "C2-ZC held evidence returned an invalid binding projection",
+    );
   }
   return Object.freeze({
     authorityId: value.authorityId,
@@ -425,31 +427,31 @@ async function readWorkspaceLedger(harness, page) {
       readRows(
         harness,
         page,
-        C2ZC_RENDERER_QUIESCENCE_QUERIES.projects,
+        C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.projects,
         "workspace projects",
       ),
       readRows(
         harness,
         page,
-        C2ZC_RENDERER_QUIESCENCE_QUERIES.feed,
+        C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.feed,
         "workspace Change Feed",
       ),
       readRows(
         harness,
         page,
-        C2ZC_RENDERER_QUIESCENCE_QUERIES.freshnessCursors,
+        C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.freshnessCursors,
         "workspace Freshness cursors",
       ),
       readRows(
         harness,
         page,
-        C2ZC_RENDERER_QUIESCENCE_QUERIES.epochs,
+        C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.epochs,
         "workspace Semantic Epochs",
       ),
       readRows(
         harness,
         page,
-        C2ZC_RENDERER_QUIESCENCE_QUERIES.marker,
+        C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.marker,
         "workspace cutover marker",
       ),
     ]);
@@ -592,10 +594,10 @@ async function readWorkspaceLedger(harness, page) {
   };
 }
 
-export function assertQuiescenceLedgerMatches(receipt, ledger, label) {
+export function assertRendererLedgerMatches(receipt, ledger, label) {
   const state = receipt?.state;
   if (!state || !Array.isArray(state.projects)) {
-    throw new Error(`${label} is missing core quiescence state.projects`);
+    throw new Error(`${label} is missing the observed state.projects ledger`);
   }
   if (canonicalJson(state.projects) !== canonicalJson(ledger.projects)) {
     throw new Error(
@@ -1876,9 +1878,9 @@ export function inspectDurableTerminalLedger({
   };
 }
 
-export function validateDurableQuiescenceObservation(
+export function validateDurableRendererSettlementObservation(
   observation,
-  label = "durable quiescence",
+  label = "durable renderer settlement",
 ) {
   if (!observation || observation.settled !== true) {
     throw new Error(`${label} is not settled`);
@@ -1922,14 +1924,20 @@ export function validateDurableQuiescenceObservation(
   return observation;
 }
 
-async function readRendererQuiescenceObservation(harness, page, workspace) {
+async function readRendererDurableSettlementObservation(
+  harness,
+  page,
+  workspace,
+) {
   const rows = {};
-  for (const [name, sql] of Object.entries(C2ZC_RENDERER_QUIESCENCE_QUERIES)) {
+  for (const [name, sql] of Object.entries(
+    C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES,
+  )) {
     rows[name] = await readRows(
       harness,
       page,
       sql,
-      `C2-ZC renderer quiescence ${name}`,
+      `C2-ZC renderer settlement ${name}`,
     );
   }
 
@@ -1941,7 +1949,7 @@ async function readRendererQuiescenceObservation(harness, page, workspace) {
       ? Number(harness.monotonicNow())
       : performance.now();
   if (!Number.isFinite(monotonicMs)) {
-    throw new Error("C2-ZC renderer quiescence clock is not monotonic");
+    throw new Error("C2-ZC renderer settlement clock is not monotonic");
   }
   const feedAndCursor = readFeedAndCursorState(
     rows.feed,
@@ -1979,7 +1987,7 @@ async function readRendererQuiescenceObservation(harness, page, workspace) {
   return observation;
 }
 
-function quiescenceDiagnostic(observation) {
+function rendererSettlementDiagnostic(observation) {
   return {
     settled: observation.settled,
     feedCursorMismatches: observation.feedAndCursor.mismatches,
@@ -1993,7 +2001,7 @@ function quiescenceDiagnostic(observation) {
   };
 }
 
-function quiescenceEvidence(observation) {
+function rendererSettlementEvidence(observation) {
   return {
     observedAt: observation.observedAt,
     monotonicMs: observation.monotonicMs,
@@ -2009,7 +2017,7 @@ function quiescenceEvidence(observation) {
   };
 }
 
-function observationFingerprint(observation) {
+function rendererSettlementFingerprint(observation) {
   return JSON.stringify({
     feedAndCursor: observation.feedAndCursor,
     active: observation.active,
@@ -2022,7 +2030,7 @@ function observationFingerprint(observation) {
  * the polling transport makes the delayed-writer and unstable-fingerprint
  * contracts testable without launching Electron.
  */
-export function assessDurableQuiescenceSamples(samples) {
+export function assessDurableRendererSettlementSamples(samples) {
   if (!Array.isArray(samples) || samples.length === 0) return null;
   let segment = [];
   let fingerprint = null;
@@ -2052,7 +2060,7 @@ export function assessDurableQuiescenceSamples(samples) {
     if (
       previousObservedMs !== null &&
       observedMs - previousObservedMs >
-        C2ZC_RENDERER_QUIESCENCE_MAX_SAMPLE_GAP_MS
+        C2ZC_RENDERER_SETTLEMENT_MAX_SAMPLE_GAP_MS
     ) {
       segment = [];
       fingerprint = null;
@@ -2061,7 +2069,7 @@ export function assessDurableQuiescenceSamples(samples) {
     const currentFingerprint =
       typeof sample.fingerprint === "string"
         ? sample.fingerprint
-        : observationFingerprint(sample);
+        : rendererSettlementFingerprint(sample);
     if (fingerprint !== currentFingerprint) {
       fingerprint = currentFingerprint;
       segment = [];
@@ -2075,7 +2083,7 @@ export function assessDurableQuiescenceSamples(samples) {
       !Number.isFinite(startMs) ||
       !Number.isFinite(endMs) ||
       endMs < startMs ||
-      endMs - startMs < C2ZC_RENDERER_QUIESCENCE_MIN_STABLE_MS
+      endMs - startMs < C2ZC_RENDERER_SETTLEMENT_MIN_STABLE_MS
     ) {
       continue;
     }
@@ -2105,6 +2113,9 @@ export function classifyDmlSnapshotTransition({
   before,
   after,
   settledAfter,
+  beforeLedger,
+  afterLedger,
+  settledAfterLedger,
   beforeFingerprint,
   afterFingerprint,
 }) {
@@ -2114,48 +2125,66 @@ export function classifyDmlSnapshotTransition({
   const snapshotChangedDuringProbe = beforeJson !== afterJson;
   const snapshotChangedAfterProbe = afterJson !== settledAfterJson;
   const snapshotChangedFromBefore = beforeJson !== settledAfterJson;
-  const quiescenceFingerprintChanged = beforeFingerprint !== afterFingerprint;
+  const beforeLedgerJson = JSON.stringify(beforeLedger);
+  const afterLedgerJson = JSON.stringify(afterLedger);
+  const settledAfterLedgerJson = JSON.stringify(settledAfterLedger);
+  const ledgerChangedDuringProbe = beforeLedgerJson !== afterLedgerJson;
+  const ledgerChangedAfterProbe = afterLedgerJson !== settledAfterLedgerJson;
+  const ledgerChangedFromBefore = beforeLedgerJson !== settledAfterLedgerJson;
+  const settlementFingerprintChanged = beforeFingerprint !== afterFingerprint;
   const unaccountedPostProbeChange =
     !snapshotChangedDuringProbe &&
-    snapshotChangedAfterProbe &&
-    !quiescenceFingerprintChanged;
+    (snapshotChangedAfterProbe || ledgerChangedAfterProbe) &&
+    !settlementFingerprintChanged;
   return {
-    ok: !snapshotChangedDuringProbe && !unaccountedPostProbeChange,
+    ok:
+      !snapshotChangedDuringProbe &&
+      !ledgerChangedDuringProbe &&
+      !unaccountedPostProbeChange,
     snapshotUnchanged: !snapshotChangedDuringProbe,
     backgroundWriterDetected:
       !snapshotChangedDuringProbe &&
-      snapshotChangedAfterProbe &&
-      quiescenceFingerprintChanged,
+      (snapshotChangedAfterProbe || ledgerChangedAfterProbe) &&
+      settlementFingerprintChanged,
+    ledgerUnchanged: !ledgerChangedDuringProbe,
     snapshotChangedDuringProbe,
     snapshotChangedAfterProbe,
     snapshotChangedFromBefore,
-    quiescenceFingerprintChanged,
+    ledgerChangedDuringProbe,
+    ledgerChangedAfterProbe,
+    ledgerChangedFromBefore,
+    settlementFingerprintChanged,
     unaccountedPostProbeChange,
   };
 }
 
-async function waitForRendererQuiescence(harness, page, workspace, label) {
+async function waitForRendererDurableSettlement(
+  harness,
+  page,
+  workspace,
+  label,
+) {
   const samples = [];
   return harness.waitUntil(
     async () => {
-      const observation = await readRendererQuiescenceObservation(
+      const observation = await readRendererDurableSettlementObservation(
         harness,
         page,
         workspace,
       );
       samples.push({
         ...observation,
-        fingerprint: observationFingerprint(observation),
+        fingerprint: rendererSettlementFingerprint(observation),
       });
-      const evidence = assessDurableQuiescenceSamples(samples);
+      const evidence = assessDurableRendererSettlementSamples(samples);
       if (!evidence) {
         throw new Error(
           `${label} is not settled: ${JSON.stringify(
-            quiescenceDiagnostic(observation),
+            rendererSettlementDiagnostic(observation),
           )}`,
         );
       }
-      validateDurableQuiescenceObservation(
+      validateDurableRendererSettlementObservation(
         observation,
         `${label} terminal readiness`,
       );
@@ -2167,124 +2196,9 @@ async function waitForRendererQuiescence(harness, page, workspace, label) {
       };
     },
     label,
-    C2ZC_RENDERER_QUIESCENCE_WAIT_MS,
-    C2ZC_RENDERER_QUIESCENCE_INTERVAL_MS,
+    C2ZC_RENDERER_SETTLEMENT_WAIT_MS,
+    C2ZC_RENDERER_SETTLEMENT_INTERVAL_MS,
   );
-}
-
-function requireCoreQuiescenceEvidence(artifact, label) {
-  const receipt = artifact?.receipt;
-  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
-    throw new Error(`${label} did not return the core quiescence artifact`);
-  }
-  const state = receipt.state;
-  if (
-    receipt.freshness?.heldProjectId !== null ||
-    receipt.freshness?.cutoverNotReady !== false ||
-    state?.freshnessHoldProjectId !== null ||
-    state?.heldProjectId !== null
-  ) {
-    throw new Error(
-      `${label} must prove no freshness hold and no cutover-not-ready state`,
-    );
-  }
-  const discovery = receipt.discovery;
-  if (
-    discovery?.timerScheduled !== false ||
-    discovery?.pendingRetry !== false ||
-    discovery?.pendingEvent !== false ||
-    discovery?.wakeAckPending !== false ||
-    discovery?.wakeOutboxDrainInFlight !== false ||
-    discovery?.wakeOutboxDrainSucceeded !== true ||
-    discovery?.wakeOutboxDrainFailed !== false ||
-    discovery?.wakeOutboxPendingRows !== false
-  ) {
-    throw new Error(`${label} must prove the wake outbox is drained`);
-  }
-  if (
-    receipt.freshness?.inFlight !== false ||
-    receipt.freshness?.hasMore !== false ||
-    receipt.freshness?.noWrite !== true ||
-    receipt.freshness?.wakePending !== false ||
-    discovery?.inFlight !== false ||
-    discovery?.empty !== true ||
-    discovery?.queueIdle !== true
-  ) {
-    throw new Error(`${label} must prove all core schedulers are idle`);
-  }
-  return artifact;
-}
-
-async function requireCoreQuiescence(
-  harness,
-  app,
-  phase,
-  { previousSequence, binding },
-) {
-  if (
-    typeof harness?.awaitQuiescence !== "function" ||
-    typeof harness?.readQuiescence !== "function"
-  ) {
-    throw new Error(
-      "C2-ZC DML denial requires the core awaitQuiescence/readQuiescence API",
-    );
-  }
-  const checkedBinding = requireWorkspaceBinding(binding);
-  if (!Number.isSafeInteger(previousSequence) || previousSequence < 0) {
-    throw new Error(
-      "C2-ZC DML denial requires a non-negative previous sequence",
-    );
-  }
-  const requestNonce = randomUUID();
-  const awaited = requireCoreQuiescenceEvidence(
-    await harness.awaitQuiescence(app, phase, {
-      previousSequence,
-      requestNonce,
-      authorityId: checkedBinding.authorityId,
-      generation: checkedBinding.generation,
-    }),
-    `${phase} awaitQuiescence`,
-  );
-  const awaitedReceipt = awaited.receipt;
-  const reread = requireCoreQuiescenceEvidence(
-    await harness.readQuiescence(app, phase, {
-      previousSequence: awaitedReceipt.sequence - 1,
-      requestNonce: awaitedReceipt.requestNonce,
-      authorityId: checkedBinding.authorityId,
-      generation: checkedBinding.generation,
-    }),
-    `${phase} readQuiescence`,
-  );
-  if (
-    reread.receipt.sequence !== awaitedReceipt.sequence ||
-    reread.receipt.requestNonce !== requestNonce ||
-    reread.receipt.phase !== phase ||
-    reread.receipt.stateDigest !== awaitedReceipt.stateDigest ||
-    reread.sha256 !== awaited.sha256
-  ) {
-    throw new Error(`${phase} core quiescence changed between await and read`);
-  }
-  return reread;
-}
-
-function serializeCoreQuiescenceArtifact(artifact, label) {
-  const checked = requireCoreQuiescenceEvidence(artifact, label);
-  if (
-    typeof checked.path !== "string" ||
-    typeof checked.realPath !== "string" ||
-    !/^sha256:[0-9a-f]{64}$/u.test(checked.sha256 ?? "") ||
-    !Number.isSafeInteger(checked.byteLength) ||
-    checked.byteLength <= 0
-  ) {
-    throw new Error(`${label} is missing its immutable artifact identity`);
-  }
-  return {
-    receipt: checked.receipt,
-    path: checked.path,
-    realPath: checked.realPath,
-    sha256: checked.sha256,
-    byteLength: checked.byteLength,
-  };
 }
 
 async function expectProtectedWriterDenial(
@@ -2325,32 +2239,38 @@ async function runRendererDmlProbe(
   operation,
   index,
 ) {
-  const beforeQuiescence = await waitForRendererQuiescence(
+  const beforeSettlement = await waitForRendererDurableSettlement(
     harness,
     page,
     workspace,
     `C2-ZC renderer DML probe ${index} before ${operation.name} ${table.name}`,
   );
   const before = await snapshotTables(harness, page);
+  const beforeLedger = await readWorkspaceLedger(harness, page);
   await expectProtectedWriterDenial(harness, page, {
     table: table.name,
     operation: operation.name,
     sql: operation.sql(table.name, table.updateColumn),
   });
   const after = await snapshotTables(harness, page);
-  const afterQuiescence = await waitForRendererQuiescence(
+  const afterLedger = await readWorkspaceLedger(harness, page);
+  const afterSettlement = await waitForRendererDurableSettlement(
     harness,
     page,
     workspace,
     `C2-ZC renderer DML probe ${index} after ${operation.name} ${table.name}`,
   );
   const settledAfter = await snapshotTables(harness, page);
+  const settledAfterLedger = await readWorkspaceLedger(harness, page);
   const transition = classifyDmlSnapshotTransition({
     before,
     after,
     settledAfter,
-    beforeFingerprint: beforeQuiescence.fingerprint,
-    afterFingerprint: afterQuiescence.fingerprint,
+    beforeLedger,
+    afterLedger,
+    settledAfterLedger,
+    beforeFingerprint: beforeSettlement.fingerprint,
+    afterFingerprint: afterSettlement.fingerprint,
   });
   if (!transition.ok) {
     throw new Error(
@@ -2368,8 +2288,11 @@ async function runRendererDmlProbe(
     beforeSnapshot: before,
     afterSnapshot: after,
     settledAfterSnapshot: settledAfter,
-    beforeQuiescence: quiescenceEvidence(beforeQuiescence),
-    afterQuiescence: quiescenceEvidence(afterQuiescence),
+    beforeLedger,
+    afterLedger,
+    settledAfterLedger,
+    beforeSettlement: rendererSettlementEvidence(beforeSettlement),
+    afterSettlement: rendererSettlementEvidence(afterSettlement),
   };
 }
 
@@ -2387,13 +2310,10 @@ export async function runC2ZcRendererMcpDmlDenialJourney(harness) {
     typeof harness.close !== "function" ||
     typeof harness.invokeOk !== "function" ||
     typeof harness.waitUntil !== "function" ||
-    typeof harness.recordTimeline !== "function" ||
-    typeof harness.awaitQuiescence !== "function" ||
-    typeof harness.readQuiescence !== "function"
+    typeof harness.recordTimeline !== "function"
   ) {
     throw new TypeError(
-      "C2-ZC DML denial journey requires waitUntil, recordTimeline, and " +
-        "the core awaitQuiescence/readQuiescence API",
+      "C2-ZC DML denial journey requires waitUntil and recordTimeline",
     );
   }
 
@@ -2423,35 +2343,17 @@ export async function runC2ZcRendererMcpDmlDenialJourney(harness) {
       path: workspace,
     });
 
-    const binding = assertC2ZcRendererWorkspaceBinding(
-      await harness.invokeOk(
-        launched.page,
-        "narrative_extraction_capture_workspace_binding",
-        { expectedWorkspacePath: workspace },
-      ),
-    );
-    const coreBefore = await requireCoreQuiescence(
-      harness,
-      launched.app,
-      C2ZC_RENDERER_MCP_DML_DENIAL_PHASES[1],
-      { previousSequence: 0, binding },
-    );
-    const openingLedger = await readWorkspaceLedger(harness, launched.page);
-    assertQuiescenceLedgerMatches(
-      coreBefore.receipt,
-      openingLedger,
-      "C2-ZC DML opening core quiescence",
-    );
-
-    // The scheduler remains production-enabled. This renderer-only read
-    // barrier absorbs the ordinary open-time maintenance/freshness work
-    // before any denial probe is paired with a table snapshot.
-    const openingQuiescence = await waitForRendererQuiescence(
+    // The scheduler remains production-enabled. This renderer-only durable
+    // settlement barrier absorbs ordinary open-time maintenance/freshness
+    // work before any denial probe is paired with a protected snapshot.
+    const openingSettlement = await waitForRendererDurableSettlement(
       harness,
       launched.page,
       workspace,
-      "C2-ZC renderer DML opening quiescence",
+      "C2-ZC renderer DML opening durable settlement",
     );
+    const openingSnapshot = await snapshotTables(harness, launched.page);
+    const openingLedger = await readWorkspaceLedger(harness, launched.page);
     const denialCount = { renderer: 0 };
     const probeEvidence = [];
     let probeIndex = 0;
@@ -2473,72 +2375,38 @@ export async function runC2ZcRendererMcpDmlDenialJourney(harness) {
     }
 
     // The final evidence is deliberately captured only after another
-    // renderer-visible quiescence check; it is not compared to the opening
-    // snapshot because legitimate writers may have completed between probes.
-    const finalQuiescence = await waitForRendererQuiescence(
+    // renderer-visible durable settlement check. It is compared to the
+    // opening ledger as an observation, never as a main-process receipt.
+    const finalSettlement = await waitForRendererDurableSettlement(
       harness,
       launched.page,
       workspace,
-      "C2-ZC renderer DML final quiescence",
+      "C2-ZC renderer DML final durable settlement",
     );
     const finalSnapshot = await snapshotTables(harness, launched.page);
-    const coreAfter = await requireCoreQuiescence(
-      harness,
-      launched.app,
-      C2ZC_RENDERER_MCP_DML_DENIAL_PHASES[1],
-      { previousSequence: coreBefore.receipt.sequence, binding },
-    );
     const finalLedger = await readWorkspaceLedger(harness, launched.page);
-    assertQuiescenceLedgerMatches(
-      coreAfter.receipt,
-      finalLedger,
-      "C2-ZC DML final core quiescence",
-    );
-    const quiescenceArtifacts = {
-      before: serializeCoreQuiescenceArtifact(
-        coreBefore,
-        "C2-ZC DML opening core quiescence",
-      ),
-      after: serializeCoreQuiescenceArtifact(
-        coreAfter,
-        "C2-ZC DML final core quiescence",
-      ),
-    };
-    // The core receipt is emitted by the main/N-API connection while the
-    // ledger is read through the renderer's typed db_execute connection.
-    // Keep this cross-connection comparison in the persisted result so a
-    // matching sidecar cannot be mistaken for renderer-local state alone.
-    const secondaryConnectionProof = {
-      workspace,
-      binding,
-      opening: openingLedger,
-      final: finalLedger,
-      openingStateDigest: coreBefore.receipt.stateDigest,
-      finalStateDigest: coreAfter.receipt.stateDigest,
-    };
     const settledEvidence = {
       evidenceVersion: C2ZC_RENDERER_DML_EVIDENCE_VERSION,
       kind: C2ZC_RENDERER_DML_TIMELINE_EVENT,
       workspace,
       settled: true,
-      startAt: finalQuiescence.startAt,
-      endAt: finalQuiescence.endAt,
-      durationMs: finalQuiescence.durationMs,
-      stableSampleCount: finalQuiescence.stableSampleCount,
-      fingerprint: finalQuiescence.fingerprint,
-      monotonicStartMs: finalQuiescence.monotonicStartMs,
-      monotonicEndMs: finalQuiescence.monotonicEndMs,
-      monotonicDurationMs: finalQuiescence.monotonicDurationMs,
-      terminalLedger: finalQuiescence.terminalLedger,
+      startAt: finalSettlement.startAt,
+      endAt: finalSettlement.endAt,
+      durationMs: finalSettlement.durationMs,
+      stableSampleCount: finalSettlement.stableSampleCount,
+      fingerprint: finalSettlement.fingerprint,
+      monotonicStartMs: finalSettlement.monotonicStartMs,
+      monotonicEndMs: finalSettlement.monotonicEndMs,
+      monotonicDurationMs: finalSettlement.monotonicDurationMs,
+      terminalLedger: finalSettlement.terminalLedger,
+      openingSnapshot,
+      finalSnapshot,
       openingLedger,
       finalLedger,
-      secondaryConnectionProof,
-      quiescenceArtifacts,
-      openingQuiescence: quiescenceEvidence(openingQuiescence),
+      openingSettlement: rendererSettlementEvidence(openingSettlement),
       probeCount: probeEvidence.length,
       probes: probeEvidence,
-      finalQuiescence: quiescenceEvidence(finalQuiescence),
-      finalSnapshot,
+      finalSettlement: rendererSettlementEvidence(finalSettlement),
     };
     harness.recordTimeline(C2ZC_RENDERER_DML_TIMELINE_EVENT, {
       evidence: settledEvidence,
@@ -2557,8 +2425,6 @@ export async function runC2ZcRendererMcpDmlDenialJourney(harness) {
       rendererDenials: denialCount.renderer,
       protectedTableCount: C2ZC_RENDERER_TABLE_CONTRACTS.length,
       settledEvidence,
-      quiescenceArtifacts,
-      secondaryConnectionProof,
       mcpGeneric: C2ZC_MCP_GENERIC_SQL_CONTRACT,
     };
   } finally {

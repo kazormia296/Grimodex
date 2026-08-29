@@ -48,6 +48,25 @@ const C2ZC_RUST_REQUESTED_BASE_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_BASE";
 const C2ZC_RUST_REQUESTED_HEAD_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD";
 const C2ZC_RUST_CANDIDATE_JSON_ENV = "GRIMODEX_C2ZC_RUST_CANDIDATE_JSON";
 const C2ZC_RUST_RECEIPT_PATH_ENV = "GRIMODEX_C2ZC_RUST_RECEIPT_PATH";
+const PRODUCT_JOURNEY_BUILD_RECEIPT_ENV =
+  "GRIMODEX_PRODUCT_JOURNEY_BUILD_RECEIPT";
+const PRODUCT_JOURNEY_BUILD_RECEIPT_KEYS = [
+  "version",
+  "verified",
+  "source",
+  "candidate",
+];
+const PRODUCT_JOURNEY_CANDIDATE_KEYS = [
+  "requestedBase",
+  "requestedHead",
+  "resolvedBaseSha",
+  "resolvedHeadSha",
+  "resolvedHeadTreeSha",
+  "currentHeadSha",
+  "worktreeClean",
+  "worktreeFingerprint",
+  "worktreeStatusHash",
+];
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -489,6 +508,47 @@ function assertC2ZcRustAcceptanceEvidenceShape(evidence, label) {
   }
 }
 
+function assertProductJourneyBuildReceiptShape(
+  evidence,
+  label,
+  { candidate = null } = {},
+) {
+  if (
+    !isPlainObject(evidence) ||
+    JSON.stringify(Object.keys(evidence).sort()) !==
+      JSON.stringify([...PRODUCT_JOURNEY_BUILD_RECEIPT_KEYS].sort()) ||
+    evidence.version !== 1 ||
+    evidence.verified !== true ||
+    evidence.source !== "local-ci-candidate" ||
+    !isPlainObject(evidence.candidate) ||
+    JSON.stringify(Object.keys(evidence.candidate).sort()) !==
+      JSON.stringify([...PRODUCT_JOURNEY_CANDIDATE_KEYS].sort()) ||
+    typeof evidence.candidate.requestedBase !== "string" ||
+    evidence.candidate.requestedBase.length === 0 ||
+    typeof evidence.candidate.requestedHead !== "string" ||
+    evidence.candidate.requestedHead.length === 0 ||
+    !/^[0-9a-f]{40,64}$/u.test(evidence.candidate.resolvedBaseSha ?? "") ||
+    !/^[0-9a-f]{40,64}$/u.test(evidence.candidate.resolvedHeadSha ?? "") ||
+    !/^[0-9a-f]{40,64}$/u.test(evidence.candidate.resolvedHeadTreeSha ?? "") ||
+    !/^[0-9a-f]{40,64}$/u.test(evidence.candidate.currentHeadSha ?? "") ||
+    typeof evidence.candidate.worktreeClean !== "boolean" ||
+    !/^[0-9a-f]{64}$/u.test(evidence.candidate.worktreeFingerprint ?? "") ||
+    !/^[0-9a-f]{64}$/u.test(evidence.candidate.worktreeStatusHash ?? "")
+  ) {
+    throw new Error(`${label} must include a verified local-CI build receipt`);
+  }
+  if (candidate) {
+    for (const field of PRODUCT_JOURNEY_CANDIDATE_KEYS) {
+      if (evidence.candidate[field] !== candidate[field]) {
+        throw new Error(
+          `${label} build receipt is bound to a different candidate: ${field}`,
+        );
+      }
+    }
+  }
+  return evidence;
+}
+
 function assertStringArrayEqual(actual, expected, label) {
   if (
     !Array.isArray(actual) ||
@@ -527,6 +587,17 @@ function assertPassedProductJourneyResult(report) {
       "product journey results must record allPassed and allClean",
     );
   }
+  if (report.rustAcceptanceComplete !== true) {
+    throw new Error(
+      "product journey results must record a completed Rust acceptance gate",
+    );
+  }
+  if (report.acceptanceRequired === true) {
+    assertProductJourneyBuildReceiptShape(
+      report.buildReceipt,
+      "C2-ZC product journey results",
+    );
+  }
   if (
     report.acceptanceRequired === true &&
     (report.acceptanceComplete !== true ||
@@ -563,6 +634,7 @@ function assertPassedProductJourneyManifest(
   manifest,
   expectedIds,
   report = null,
+  { candidate = null } = {},
 ) {
   if (!isPlainObject(manifest) || manifest.version !== 1) {
     throw new Error("product journey audit manifest version 1 is required");
@@ -571,7 +643,8 @@ function assertPassedProductJourneyManifest(
     manifest.status !== "passed" ||
     manifest.catalogDigest !== PRODUCT_JOURNEY_CATALOG_DIGEST ||
     manifest.allPassed !== true ||
-    manifest.allClean !== true
+    manifest.allClean !== true ||
+    manifest.rustAcceptanceComplete !== true
   ) {
     throw new Error(
       "product journey audit manifest is not a clean Full result",
@@ -611,7 +684,9 @@ function assertPassedProductJourneyManifest(
   if (report?.acceptanceRequired === true) {
     if (
       manifest.acceptanceRequired !== true ||
+      manifest.rustAcceptanceComplete !== true ||
       manifest.acceptanceComplete !== true ||
+      !isPlainObject(manifest.buildReceipt) ||
       !isPlainObject(manifest.c2zcRustAcceptance)
     ) {
       throw new Error(
@@ -621,6 +696,28 @@ function assertPassedProductJourneyManifest(
     assertC2ZcRustAcceptanceEvidenceShape(
       manifest.c2zcRustAcceptance,
       "C2-ZC product journey manifest",
+    );
+    assertProductJourneyBuildReceiptShape(
+      manifest.buildReceipt,
+      "C2-ZC product journey manifest",
+      { candidate },
+    );
+  }
+  if (
+    report &&
+    manifest.rustAcceptanceComplete !== (report.rustAcceptanceComplete === true)
+  ) {
+    throw new Error(
+      "product journey audit manifest Rust completion does not match results",
+    );
+  }
+  if (
+    report &&
+    JSON.stringify(manifest.buildReceipt ?? null) !==
+      JSON.stringify(report.buildReceipt ?? null)
+  ) {
+    throw new Error(
+      "product journey audit manifest build receipt does not match results",
     );
   }
 }
@@ -675,8 +772,23 @@ export async function collectProductJourneyEvidence(
 
   const report = JSON.parse(await readFile(resultsPath, "utf8"));
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const currentCandidate = reportRequiresC2ZcRustAcceptance(report)
+    ? (candidate ??
+      (await resolveLocalCiCandidate(plan, {
+        root,
+      })))
+    : null;
   const journeyIds = assertPassedProductJourneyResult(report);
-  assertPassedProductJourneyManifest(manifest, journeyIds, report);
+  if (reportRequiresC2ZcRustAcceptance(report)) {
+    assertProductJourneyBuildReceiptShape(
+      report.buildReceipt,
+      "C2-ZC product journey results",
+      { candidate: currentCandidate },
+    );
+  }
+  assertPassedProductJourneyManifest(manifest, journeyIds, report, {
+    candidate: currentCandidate,
+  });
   if (
     manifest.results.path !== "results.json" ||
     manifest.results.realPath !== resultEvidence.realPath ||
@@ -716,11 +828,6 @@ export async function collectProductJourneyEvidence(
 
   let c2zcRustAcceptance = null;
   if (reportRequiresC2ZcRustAcceptance(report)) {
-    const currentCandidate =
-      candidate ??
-      (await resolveLocalCiCandidate(plan, {
-        root,
-      }));
     const reported = report.c2zcRustAcceptance;
     if (
       !isPlainObject(reported) ||
@@ -794,12 +901,18 @@ export async function collectProductJourneyEvidence(
     artifacts,
     artifactDigest: digestJson(artifacts),
     acceptanceRequired: report.acceptanceRequired === true,
+    rustAcceptanceComplete: report.rustAcceptanceComplete === true,
+    buildReceipt: report.buildReceipt ?? null,
     acceptanceComplete: report.acceptanceComplete === true,
     c2zcRustAcceptance,
   };
 }
 
-function verifyProductJourneyEvidence(receiptEvidence, currentEvidence) {
+function verifyProductJourneyEvidence(
+  receiptEvidence,
+  currentEvidence,
+  { candidate = null } = {},
+) {
   if (!isPlainObject(receiptEvidence)) {
     throw new Error("Full receipt product journey evidence is required.");
   }
@@ -821,11 +934,18 @@ function verifyProductJourneyEvidence(receiptEvidence, currentEvidence) {
   }
   if (receiptEvidence.acceptanceRequired === true) {
     if (
+      receiptEvidence.rustAcceptanceComplete !== true ||
       receiptEvidence.acceptanceComplete !== true ||
+      !isPlainObject(receiptEvidence.buildReceipt) ||
       !isPlainObject(receiptEvidence.c2zcRustAcceptance)
     ) {
       throw new Error("Full receipt C2-ZC acceptance evidence is incomplete.");
     }
+    assertProductJourneyBuildReceiptShape(
+      receiptEvidence.buildReceipt,
+      "Full receipt C2-ZC build evidence",
+      { candidate },
+    );
     assertC2ZcRustAcceptanceEvidenceShape(
       receiptEvidence.c2zcRustAcceptance,
       "Full receipt C2-ZC acceptance evidence",
@@ -859,6 +979,8 @@ function verifyProductJourneyEvidence(receiptEvidence, currentEvidence) {
       "allClean",
       "artifactDigest",
       "acceptanceRequired",
+      "rustAcceptanceComplete",
+      "buildReceipt",
       "acceptanceComplete",
       "c2zcRustAcceptance",
     ]) {
@@ -912,6 +1034,7 @@ export function verifyLocalCiReceipt(
     verifyProductJourneyEvidence(
       receipt.productJourneyEvidence,
       currentProductJourneyEvidence,
+      { candidate },
     );
   }
   return receipt;
@@ -1019,7 +1142,11 @@ function bindC2ZcRustGateCommand(command, stageId, { plan, candidate }) {
   };
 }
 
-async function bindC2ZcProductJourneyCommand(command, stageId, { root, plan }) {
+async function bindC2ZcProductJourneyCommand(
+  command,
+  stageId,
+  { root, plan, candidate },
+) {
   if (stageId !== "electron-product-journeys") return command;
   const configuredPath = command.env?.[C2ZC_RUST_RECEIPT_PATH_ENV];
   const boundEnv = {
@@ -1027,6 +1154,14 @@ async function bindC2ZcProductJourneyCommand(command, stageId, { root, plan }) {
     [C2ZC_RUST_REQUESTED_BASE_ENV]: plan.comparison.base,
     [C2ZC_RUST_REQUESTED_HEAD_ENV]: plan.comparison.head,
   };
+  if (candidate) {
+    boundEnv[PRODUCT_JOURNEY_BUILD_RECEIPT_ENV] = JSON.stringify({
+      version: 1,
+      verified: true,
+      source: "local-ci-candidate",
+      candidate,
+    });
+  }
   if (typeof configuredPath !== "string" || configuredPath.length === 0) {
     return { ...command, env: boundEnv };
   }
@@ -1111,7 +1246,7 @@ export async function runLocalCiPlan(
       const boundCommand = await bindC2ZcProductJourneyCommand(
         rustBoundCommand,
         stage.id,
-        { root, plan },
+        { root, plan, candidate },
       );
       if (failedCommand) {
         commands.push(

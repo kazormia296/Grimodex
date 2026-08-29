@@ -20,8 +20,6 @@ import {
 } from "./narrativeMaintenanceTriggers.js";
 import {
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
-  type NarrativeMaintenanceCiRuntimeStateReaderResult,
-  type NarrativeMaintenanceCiQuiescenceWriter,
   shouldDisableNarrativeMaintenanceForLaunch,
   type NarrativeMaintenanceCiSeam,
 } from "./narrativeMaintenanceCiSeam.js";
@@ -34,10 +32,6 @@ export interface NarrativeMaintenanceBootstrapRuntime {
 export interface NarrativeMaintenanceBootstrapFactories {
   readonly createScheduler?: typeof createNarrativeMaintenanceScheduler;
   readonly createCoordinator?: typeof createNarrativeMaintenanceTriggerCoordinator;
-  readonly quiescenceWriter?: NarrativeMaintenanceCiQuiescenceWriter | null;
-  readonly freshnessStateReader?: () =>
-    | NarrativeMaintenanceCiRuntimeStateReaderResult["freshness"]
-    | null;
 }
 
 const inactiveRuntime = (): NarrativeMaintenanceBootstrapRuntime => ({
@@ -69,18 +63,6 @@ export function bootstrapNarrativeMaintenance(
   const createCoordinator =
     factories.createCoordinator ?? createNarrativeMaintenanceTriggerCoordinator;
   const scheduler = createScheduler(backend, {
-    onCycleSettled: (observation) => {
-      void Promise.resolve(
-        factories.quiescenceWriter?.recordScheduler(observation),
-      ).catch((error: unknown) => {
-        // The sidecar is acceptance diagnostics only; never turn a background
-        // observer failure into an unhandled main-process rejection.
-        console.warn(
-          "[narrative-maintenance] quiescence scheduler receipt failed:",
-          error,
-        );
-      });
-    },
     onWorkspaceBindingMismatch: () => {
       coordinator?.requestRediscovery();
     },
@@ -103,40 +85,10 @@ export function bootstrapNarrativeMaintenance(
       );
     },
   });
-  coordinator = createCoordinator(backend, scheduler, {
-    onDiscoverySettled: (observation) => {
-      void Promise.resolve(
-        factories.quiescenceWriter?.recordMaintenance(observation),
-      ).catch((error: unknown) => {
-        console.warn(
-          "[narrative-maintenance] quiescence discovery receipt failed:",
-          error,
-        );
-      });
-    },
-  });
-  let runtimeMutationRevision = 0;
-  let previousComponentRevision = "";
-  factories.quiescenceWriter?.setRuntimeStateReader(() => {
-    const maintenance = coordinator?.getQuiescenceState?.() ?? null;
-    const schedulerState = scheduler.getQuiescenceState?.() ?? null;
-    const freshness = factories.freshnessStateReader?.() ?? null;
-    const componentRevision = JSON.stringify([
-      maintenance?.mutationRevision ?? null,
-      schedulerState?.mutationRevision ?? null,
-      freshness?.mutationRevision ?? null,
-    ]);
-    if (componentRevision !== previousComponentRevision) {
-      previousComponentRevision = componentRevision;
-      runtimeMutationRevision += 1;
-    }
-    return {
-      mutationRevision: runtimeMutationRevision,
-      maintenance,
-      scheduler: schedulerState,
-      freshness,
-    };
-  });
+  // The coordinator and scheduler retain their production owners. No
+  // maintenance/scheduler callback is allowed to arm acceptance evidence;
+  // the held-Freshness writer is fed directly by the Freshness scheduler.
+  coordinator = createCoordinator(backend, scheduler);
   scheduler.start();
 
   return { scheduler, coordinator };

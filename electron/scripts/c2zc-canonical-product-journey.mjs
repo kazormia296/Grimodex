@@ -1511,11 +1511,381 @@ export function assertC2ZcPostMarkerProjectSettled(
   });
 }
 
+const C2ZC_HELD_FRESHNESS_TYPE =
+  "grimodex:narrative-maintenance-ci-held-freshness";
+const C2ZC_UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const C2ZC_HELD_RECEIPT_KEYS = [
+  "version",
+  "type",
+  "nonce",
+  "requestNonce",
+  "phase",
+  "requestedAt",
+  "sequence",
+  "observedAt",
+  "monotonicObservedAtMs",
+  "workspaceBinding",
+  "freshness",
+  "state",
+  "stateDigest",
+];
+const C2ZC_HELD_FRESHNESS_KEYS = [
+  "cycleGeneration",
+  "requestBarrierCycleGeneration",
+  "requestPublishedAtMs",
+  "cycleStartedAtMs",
+  "observedAtMs",
+  "inFlight",
+  "hasMore",
+  "noWrite",
+  "heldProjectId",
+  "cutoverNotReady",
+  "wakePending",
+  "timerScheduled",
+  "nextCycleGuardStateDigest",
+];
+
+function assertC2ZcHeldWorkspaceBinding(value, expected, label) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    JSON.stringify(Object.keys(value).sort()) !==
+      JSON.stringify(["authorityId", "generation"]) ||
+    typeof value.authorityId !== "string" ||
+    value.authorityId.trim() !== value.authorityId ||
+    value.authorityId.length === 0 ||
+    !Number.isSafeInteger(value.generation) ||
+    value.generation <= 0
+  ) {
+    throw new Error(`${label} workspace binding is invalid`);
+  }
+  if (
+    expected !== undefined &&
+    canonicalJson(value) !== canonicalJson(expected)
+  ) {
+    throw new Error(`${label} workspace binding does not match the request`);
+  }
+  return value;
+}
+
+function normalizeC2ZcHeldCursor(cursor, label) {
+  if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) {
+    throw new Error(`${label} cursor is missing`);
+  }
+  const cursorKeys = Object.keys(cursor).sort();
+  const expectedCursorKeys = [
+    "acknowledgedThrough",
+    "activeRunId",
+    "lastError",
+    "reservedThrough",
+    "semanticEpochId",
+  ];
+  if (
+    JSON.stringify(cursorKeys) !== JSON.stringify(expectedCursorKeys) &&
+    JSON.stringify(cursorKeys) !==
+      JSON.stringify(["projectId", ...expectedCursorKeys].sort())
+  ) {
+    throw new Error(`${label} cursor has unexpected keys`);
+  }
+  const normalized = {
+    acknowledgedThrough: cursor.acknowledgedThrough,
+    reservedThrough:
+      cursor.reservedThrough === null || cursor.reservedThrough === undefined
+        ? null
+        : cursor.reservedThrough,
+    activeRunId: cursor.activeRunId ?? null,
+    semanticEpochId: cursor.semanticEpochId ?? null,
+    lastError: cursor.lastError ?? null,
+  };
+  if (
+    !Number.isSafeInteger(normalized.acknowledgedThrough) ||
+    normalized.acknowledgedThrough < 0 ||
+    (normalized.reservedThrough !== null &&
+      (!Number.isSafeInteger(normalized.reservedThrough) ||
+        normalized.reservedThrough < 0)) ||
+    ["activeRunId", "semanticEpochId", "lastError"].some(
+      (key) =>
+        normalized[key] !== null &&
+        (typeof normalized[key] !== "string" ||
+          normalized[key].trim() !== normalized[key] ||
+          normalized[key].length === 0),
+    )
+  ) {
+    throw new Error(`${label} cursor is invalid`);
+  }
+  return normalized;
+}
+
 /**
- * Bind the workspace-wide cutover proof to every project observation. The
- * project snapshots are deliberately read separately (SQLite reads are not
- * presented as one atomic Electron transaction); atomicity remains bound to
- * the candidate-bound shared-Rust receipt supplied in `atomicityEvidence`.
+ * Validate the main sidecar as a pre-marker held-Freshness event only.
+ * This evidence proves the selected secondary project was held while A/B
+ * inventory and cursors were observed. It is intentionally not a cutover,
+ * workspace-wide, or post-marker settlement receipt.
+ */
+export function assertC2ZcPreMarkerHeldEvidence(
+  event,
+  {
+    requestNonce,
+    phase,
+    workspaceBinding,
+    secondaryProjectId,
+    projectInventory,
+    label = "C2-ZC pre-marker held Freshness",
+  } = {},
+) {
+  const receipt = event?.receipt ?? event;
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    throw new Error(`${label} event is missing`);
+  }
+  assertExactKeys(receipt, C2ZC_HELD_RECEIPT_KEYS, `${label} receipt`);
+  if (receipt.type !== C2ZC_HELD_FRESHNESS_TYPE) {
+    throw new Error(`${label} has an invalid event type`);
+  }
+  if (
+    typeof requestNonce !== "string" ||
+    requestNonce.trim() === "" ||
+    !C2ZC_UUID_V4.test(requestNonce) ||
+    receipt.requestNonce !== requestNonce
+  ) {
+    throw new Error(`${label} requestNonce does not match the request`);
+  }
+  if (
+    typeof phase !== "string" ||
+    phase.trim() === "" ||
+    phase.length > 256 ||
+    phase.includes("\u0000") ||
+    receipt.phase !== phase
+  ) {
+    throw new Error(`${label} phase does not match the request`);
+  }
+  if (
+    receipt.version !== 1 ||
+    typeof receipt.nonce !== "string" ||
+    receipt.nonce.trim() !== receipt.nonce ||
+    receipt.nonce.length === 0 ||
+    !C2ZC_UUID_V4.test(receipt.nonce) ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(
+      receipt.requestedAt,
+    ) ||
+    !Number.isSafeInteger(receipt.sequence) ||
+    receipt.sequence <= 0 ||
+    typeof receipt.observedAt !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(
+      receipt.observedAt,
+    ) ||
+    Date.parse(receipt.observedAt) < Date.parse(receipt.requestedAt) ||
+    !Number.isSafeInteger(receipt.monotonicObservedAtMs) ||
+    receipt.monotonicObservedAtMs < 0 ||
+    !/^sha256:[0-9a-f]{64}$/u.test(receipt.stateDigest)
+  ) {
+    throw new Error(`${label} receipt header is invalid`);
+  }
+  assertC2ZcHeldWorkspaceBinding(
+    receipt.workspaceBinding,
+    workspaceBinding,
+    label,
+  );
+  const freshness = receipt.freshness;
+  if (!freshness || typeof freshness !== "object" || Array.isArray(freshness)) {
+    throw new Error(`${label} is missing the exact held Freshness observation`);
+  }
+  assertExactKeys(freshness, C2ZC_HELD_FRESHNESS_KEYS, `${label} freshness`);
+  const requestedAtMs = Date.parse(receipt.requestedAt);
+  if (
+    typeof receipt.requestedAt !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(
+      receipt.requestedAt,
+    ) ||
+    !Number.isFinite(requestedAtMs) ||
+    !Number.isSafeInteger(freshness.requestBarrierCycleGeneration) ||
+    freshness.requestBarrierCycleGeneration <= 0 ||
+    freshness.requestBarrierCycleGeneration >= freshness.cycleGeneration ||
+    !Number.isSafeInteger(freshness.requestPublishedAtMs) ||
+    freshness.requestPublishedAtMs < 0 ||
+    freshness.requestPublishedAtMs < requestedAtMs ||
+    !Number.isSafeInteger(freshness.cycleStartedAtMs) ||
+    freshness.cycleStartedAtMs < 0 ||
+    freshness.cycleStartedAtMs <= freshness.requestPublishedAtMs ||
+    !Number.isSafeInteger(freshness.observedAtMs) ||
+    freshness.observedAtMs < 0 ||
+    freshness.observedAtMs <= requestedAtMs ||
+    freshness.cycleStartedAtMs > freshness.observedAtMs
+  ) {
+    throw new Error(
+      `${label} freshness cycle timing is not causally ordered after requestedAt`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(freshness.cycleGeneration) ||
+    freshness.cycleGeneration <= 0 ||
+    freshness.inFlight !== false ||
+    freshness.hasMore !== false ||
+    freshness.noWrite !== true ||
+    typeof freshness.heldProjectId !== "string" ||
+    freshness.heldProjectId.trim() !== freshness.heldProjectId ||
+    freshness.heldProjectId.length === 0 ||
+    freshness.cutoverNotReady !== true ||
+    freshness.wakePending !== false ||
+    typeof freshness.timerScheduled !== "boolean" ||
+    (freshness.nextCycleGuardStateDigest !== null &&
+      typeof freshness.nextCycleGuardStateDigest !== "string") ||
+    freshness.timerScheduled !== (freshness.nextCycleGuardStateDigest !== null)
+  ) {
+    throw new Error(`${label} freshness is not a held no-write observation`);
+  }
+  const heldProject = freshness.heldProjectId;
+  const cutoverNotReady = freshness.cutoverNotReady;
+  const noWrite = freshness.noWrite;
+  if (
+    typeof secondaryProjectId !== "string" ||
+    secondaryProjectId.trim() === "" ||
+    heldProject !== secondaryProjectId ||
+    cutoverNotReady !== true ||
+    noWrite !== true
+  ) {
+    throw new Error(
+      `${label} must hold the requested secondary with cutoverNotReady/noWrite evidence`,
+    );
+  }
+  const state = receipt.state;
+  if (
+    !state ||
+    typeof state !== "object" ||
+    Array.isArray(state) ||
+    state.marker !== null ||
+    state.freshnessHoldProjectId !== secondaryProjectId ||
+    state.heldProjectId !== secondaryProjectId ||
+    !Array.isArray(state.projects) ||
+    state.projects.length !== 2
+  ) {
+    throw new Error(
+      `${label} must prove marker=null with an observed A/B state`,
+    );
+  }
+  assertExactKeys(
+    state,
+    [
+      "authorityId",
+      "generation",
+      "freshnessHoldProjectId",
+      "heldProjectId",
+      "projects",
+      "marker",
+      "stateDigest",
+    ],
+    `${label} state`,
+  );
+  if (
+    state.authorityId !== receipt.workspaceBinding.authorityId ||
+    state.generation !== receipt.workspaceBinding.generation ||
+    !/^sha256:[0-9a-f]{64}$/u.test(state.stateDigest) ||
+    state.stateDigest !== receipt.stateDigest
+  ) {
+    throw new Error(`${label} state binding or digest is invalid`);
+  }
+  const stateWithoutDigest = { ...state };
+  delete stateWithoutDigest.stateDigest;
+  if (sha256Canonical(stateWithoutDigest) !== state.stateDigest) {
+    throw new Error(`${label} state digest does not bind the observed state`);
+  }
+  if (
+    freshness.timerScheduled &&
+    freshness.nextCycleGuardStateDigest !== state.stateDigest
+  ) {
+    throw new Error(`${label} freshness guard digest does not bind the state`);
+  }
+  const observedProjects = state.projects.map((project, index) => {
+    if (
+      !project ||
+      typeof project.projectId !== "string" ||
+      project.projectId.trim() === "" ||
+      JSON.stringify(Object.keys(project).sort()) !==
+        JSON.stringify(["currentEpochId", "cursor", "feedHead", "projectId"]) ||
+      !project.cursor ||
+      JSON.stringify(Object.keys(project.cursor).sort()) !==
+        JSON.stringify(
+          [
+            "acknowledgedThrough",
+            "activeRunId",
+            "lastError",
+            "reservedThrough",
+            "semanticEpochId",
+          ].sort(),
+        )
+    ) {
+      throw new Error(`${label} state project ${index} is invalid`);
+    }
+    return {
+      projectId: project.projectId,
+      currentEpochId: project.currentEpochId ?? null,
+      feedHead: project.feedHead,
+      cursor: normalizeC2ZcHeldCursor(
+        project.cursor,
+        `${label} state project ${project.projectId}`,
+      ),
+    };
+  });
+  for (const project of observedProjects) {
+    if (
+      (project.currentEpochId !== null &&
+        (typeof project.currentEpochId !== "string" ||
+          project.currentEpochId.trim() !== project.currentEpochId ||
+          project.currentEpochId.length === 0)) ||
+      !Number.isSafeInteger(project.feedHead) ||
+      project.feedHead < 0
+    ) {
+      throw new Error(
+        `${label} state project ${project.projectId} has invalid epoch/feed evidence`,
+      );
+    }
+  }
+  const observedIds = observedProjects.map((project) => project.projectId);
+  if (
+    new Set(observedIds).size !== observedIds.length ||
+    canonicalJson([...observedIds].sort()) !== canonicalJson(observedIds)
+  ) {
+    throw new Error(`${label} A/B project inventory is not sorted and unique`);
+  }
+  const expectedIds = projectInventory;
+  if (
+    !Array.isArray(expectedIds) ||
+    expectedIds.length !== 2 ||
+    new Set(expectedIds).size !== expectedIds.length ||
+    canonicalJson([...expectedIds].sort()) !== canonicalJson(observedIds)
+  ) {
+    throw new Error(
+      `${label} project inventory does not match observed A/B state`,
+    );
+  }
+  const held = observedProjects.find(
+    (project) => project.projectId === secondaryProjectId,
+  );
+  if (!held) {
+    throw new Error(`${label} omitted the held secondary project`);
+  }
+  if (
+    Number(held.feedHead) <= Number(held.cursor.acknowledgedThrough) &&
+    held.cursor.activeRunId === null &&
+    held.cursor.reservedThrough === null
+  ) {
+    throw new Error(
+      `${label} secondary cursor is not held at an incomplete boundary`,
+    );
+  }
+  return {
+    event: receipt,
+    workspaceBinding: receipt.workspaceBinding,
+    projectInventory: observedIds,
+    projects: observedProjects,
+    secondaryProjectId,
+  };
+}
+
+/**
+ * Bind the workspace-wide cutover proof to every post-marker project
+ * observation and the candidate-bound shared-Rust boundary receipt.
  */
 export function assertC2ZcWorkspaceCutoverReceipt({
   markerBefore,
@@ -1523,8 +1893,7 @@ export function assertC2ZcWorkspaceCutoverReceipt({
   projects,
   projectSnapshots,
   projectInventory,
-  quiescenceReceipt,
-  atomicityEvidence,
+  rustBoundaryEvidence,
   label = "C2-ZC workspace cutover",
 }) {
   const beforeRows = markerRowsFromSnapshot(markerBefore);
@@ -1538,13 +1907,13 @@ export function assertC2ZcWorkspaceCutoverReceipt({
     afterSnapshot,
     `${label} marker after activation`,
   );
-  const rustReceipt = atomicityEvidence?.receipt ?? null;
+  const rustReceipt = rustBoundaryEvidence?.receipt ?? null;
   if (
-    atomicityEvidence == null ||
-    atomicityEvidence.verified !== true ||
-    typeof atomicityEvidence.receiptPath !== "string" ||
-    atomicityEvidence.receiptPath.trim() === "" ||
-    !C2ZC_SHA256_DIGEST.test(atomicityEvidence.receiptSha256 ?? "") ||
+    rustBoundaryEvidence == null ||
+    rustBoundaryEvidence.verified !== true ||
+    typeof rustBoundaryEvidence.receiptPath !== "string" ||
+    rustBoundaryEvidence.receiptPath.trim() === "" ||
+    !C2ZC_SHA256_DIGEST.test(rustBoundaryEvidence.receiptSha256 ?? "") ||
     rustReceipt === null ||
     rustReceipt.schema !== "grimodex.c2zc.rust-acceptance-receipt" ||
     rustReceipt.version !== 1 ||
@@ -1568,15 +1937,15 @@ export function assertC2ZcWorkspaceCutoverReceipt({
         gate?.passedCount !== 1 ||
         gate?.failedCount !== 0,
     ) ||
-    (atomicityEvidence.gates !== undefined &&
-      canonicalJson(atomicityEvidence.gates) !==
+    (rustBoundaryEvidence.gates !== undefined &&
+      canonicalJson(rustBoundaryEvidence.gates) !==
         canonicalJson(rustReceipt.gates)) ||
-    (atomicityEvidence.candidate !== undefined &&
-      canonicalJson(atomicityEvidence.candidate) !==
+    (rustBoundaryEvidence.candidate !== undefined &&
+      canonicalJson(rustBoundaryEvidence.candidate) !==
         canonicalJson(rustReceipt.candidate))
   ) {
     throw new Error(
-      `${label} atomicity evidence is not a candidate-bound shared-Rust receipt`,
+      `${label} Rust boundary evidence is not a candidate-bound shared-Rust receipt`,
     );
   }
   const entries = projects ?? projectSnapshots;
@@ -1603,34 +1972,6 @@ export function assertC2ZcWorkspaceCutoverReceipt({
   if (new Set(inventoryIds).size !== inventoryIds.length) {
     throw new Error(`${label} projects-table inventory contains duplicates`);
   }
-  const qState = quiescenceReceipt?.state ?? quiescenceReceipt;
-  const qProjects = qState?.projects;
-  const qProjectIds =
-    qState?.projectIds ??
-    (Array.isArray(qProjects)
-      ? qProjects.map((project) => project?.projectId)
-      : null);
-  if (
-    !Array.isArray(qProjects) ||
-    !Array.isArray(qProjectIds) ||
-    qProjectIds.some((projectId) => typeof projectId !== "string") ||
-    new Set(qProjectIds).size !== qProjectIds.length ||
-    canonicalJson(qProjectIds) !==
-      canonicalJson(qProjects.map((project) => project?.projectId))
-  ) {
-    throw new Error(`${label} quiescence receipt project set is invalid`);
-  }
-  const qByProjectId = new Map(
-    qProjects.map((project) => [project.projectId, project]),
-  );
-  if (
-    canonicalJson([...inventoryIds].sort()) !==
-    canonicalJson([...qProjectIds].sort())
-  ) {
-    throw new Error(
-      `${label} projects-table inventory and quiescence project set differ`,
-    );
-  }
   const ids = new Set();
   for (const [index, entry] of entries.entries()) {
     const before = entry?.before ?? entry?.beforeSnapshot ?? null;
@@ -1645,17 +1986,10 @@ export function assertC2ZcWorkspaceCutoverReceipt({
       throw new Error(`${label} project observation ${index} is invalid`);
     }
     ids.add(projectId);
-    const qProject = qByProjectId.get(projectId);
     const currentEpochId = after.epochs?.at(-1)?.id;
-    if (
-      !qProject ||
-      typeof currentEpochId !== "string" ||
-      currentEpochId.trim() === "" ||
-      qProject.currentEpochId !== currentEpochId ||
-      qProject.projectId !== projectId
-    ) {
+    if (typeof currentEpochId !== "string" || currentEpochId.trim() === "") {
       throw new Error(
-        `${label} project ${projectId} nested snapshot/current Epoch does not match quiescence receipt`,
+        `${label} project ${projectId} post-marker snapshot is missing its current Epoch`,
       );
     }
     if (after.projectId !== projectId) {
@@ -1682,9 +2016,7 @@ export function assertC2ZcWorkspaceCutoverReceipt({
     }
   }
   if (
-    canonicalJson([...ids].sort()) !==
-      canonicalJson([...inventoryIds].sort()) ||
-    canonicalJson([...ids].sort()) !== canonicalJson([...qProjectIds].sort())
+    canonicalJson([...ids].sort()) !== canonicalJson([...inventoryIds].sort())
   ) {
     throw new Error(
       `${label} project snapshots omit or add a workspace project`,
@@ -1693,7 +2025,7 @@ export function assertC2ZcWorkspaceCutoverReceipt({
   return {
     marker,
     projectIds: [...ids],
-    atomicityEvidence,
+    rustBoundaryEvidence,
   };
 }
 
@@ -2176,23 +2508,26 @@ export function assertC2ZcSecondaryMaintenanceReadiness({
  * current non-idle publisher, while B must be selected by the held cycle and
  * remain unchanged at the durable boundary.
  */
-export function assertC2ZcCausalHoldEvidence({
+export function assertC2ZcPreMarkerCausalEvidence({
   primarySnapshot,
   secondaryBeforeHold,
   secondaryDuringHold,
-  heldReceipt,
+  preMarkerHeldEvidence,
   primaryProjectId,
   secondaryProjectId,
   primaryEventId,
   primaryEpochId = null,
   verifyRuns = [],
+  requestNonce = null,
+  phase = null,
+  workspaceBinding = null,
   label = "C2-ZC causal A/B hold",
 }) {
   if (
     !primarySnapshot ||
     !secondaryBeforeHold ||
     !secondaryDuringHold ||
-    !heldReceipt ||
+    !preMarkerHeldEvidence ||
     typeof primaryProjectId !== "string" ||
     typeof secondaryProjectId !== "string" ||
     typeof primaryEventId !== "string"
@@ -2201,9 +2536,17 @@ export function assertC2ZcCausalHoldEvidence({
       `${label} is missing the primary, secondary, or hold receipt`,
     );
   }
-  const receipt = heldReceipt.receipt ?? heldReceipt;
+  const receipt = preMarkerHeldEvidence.receipt ?? preMarkerHeldEvidence;
   const state = receipt?.state;
   const freshness = receipt?.freshness;
+  assertC2ZcPreMarkerHeldEvidence(receipt, {
+    requestNonce,
+    phase,
+    workspaceBinding,
+    secondaryProjectId,
+    projectInventory: state?.projects?.map((project) => project?.projectId),
+    label,
+  });
   if (
     !freshness ||
     freshness.heldProjectId !== secondaryProjectId ||
@@ -2316,13 +2659,17 @@ export function assertC2ZcCausalHoldEvidence({
   return {
     primaryEvent,
     secondaryEvents,
-    heldReceipt,
+    preMarkerHeldEvidence,
     primarySnapshot,
     secondaryBeforeHold,
     secondaryDuringHold,
     secondaryMaintenance,
   };
 }
+
+// Compatibility export for older acceptance fixtures; the canonical runner
+// and all new consumers use the explicit pre-marker name above.
+export const assertC2ZcCausalHoldEvidence = assertC2ZcPreMarkerCausalEvidence;
 
 function settledWorkspaceLifecycleTransition(events, workspace) {
   if (!Array.isArray(events)) return null;
@@ -5751,33 +6098,42 @@ async function runC2ZcAuthorityLane(
           context.workspace,
           "C2-ZC hold gate",
         );
-        // This is the causal checkpoint: native has actually selected B,
-        // performed the ordinary cutover attempt, and returned NOT_READY. A
-        // merely absent marker or an idle DB snapshot cannot satisfy it.
-        const heldReceipt = await harness.awaitQuiescence(
-          openLaunch.app,
-          `${phasePrefix}/open-held-quiescence`,
-          {
-            previousSequence:
-              openLaunch.quiescenceArtifact?.receipt.sequence ?? 0,
-            requestNonce: randomUUID(),
-            authorityId: binding.authorityId,
-            generation: binding.generation,
-          },
-        );
-        const held = heldReceipt.receipt;
-        if (
-          held.freshness.heldProjectId !== secondaryProjectId ||
-          held.freshness.cutoverNotReady !== true ||
-          held.freshness.noWrite !== true ||
-          held.state.freshnessHoldProjectId !== secondaryProjectId ||
-          held.state.heldProjectId !== secondaryProjectId ||
-          held.state.marker !== null
-        ) {
+        // This is the causal checkpoint: the main sidecar has actually
+        // selected B, performed the ordinary cutover attempt, and returned a
+        // pre-marker held-Freshness event. It is never a post-marker receipt.
+        if (typeof harness.awaitHeldFreshness !== "function") {
           throw new Error(
-            "C2-ZC hold receipt did not prove the held secondary NOT_READY cycle",
+            "C2-ZC canonical journey requires the awaitHeldFreshness harness API",
           );
         }
+        const heldRequestNonce = randomUUID();
+        const heldPhase = `${phasePrefix}/open-held-freshness`;
+        const heldBinding = {
+          authorityId: binding.authorityId,
+          generation: binding.generation,
+        };
+        const preMarkerHeldEvidence = await harness.awaitHeldFreshness(
+          openLaunch.app,
+          heldPhase,
+          {
+            previousSequence:
+              openLaunch.heldFreshnessArtifact?.receipt.sequence ?? 0,
+            requestNonce: heldRequestNonce,
+            workspaceBinding: heldBinding,
+          },
+        );
+        const validatedPreMarkerHeldEvidence = assertC2ZcPreMarkerHeldEvidence(
+          preMarkerHeldEvidence,
+          {
+            requestNonce: heldRequestNonce,
+            phase: heldPhase,
+            workspaceBinding: heldBinding,
+            secondaryProjectId,
+            projectInventory: [context.projectId, secondaryProjectId].sort(),
+            label: "C2-ZC pre-marker held Freshness",
+          },
+        );
+        const held = validatedPreMarkerHeldEvidence.event;
         const heldProjects = new Map(
           held.state.projects.map((project) => [project.projectId, project]),
         );
@@ -5825,11 +6181,11 @@ async function runC2ZcAuthorityLane(
           { projectId: secondaryProjectId, requireUnacked: true },
           "C2-ZC held B project_create",
         );
-        const causalHold = assertC2ZcCausalHoldEvidence({
+        const causalHold = assertC2ZcPreMarkerCausalEvidence({
           primarySnapshot: primaryDuringHold,
           secondaryBeforeHold: secondaryBeforeHoldSnapshot,
           secondaryDuringHold,
-          heldReceipt,
+          preMarkerHeldEvidence,
           primaryProjectId: context.projectId,
           secondaryProjectId,
           primaryEventId: primaryTypedFeedMutation.eventId,
@@ -5837,6 +6193,9 @@ async function runC2ZcAuthorityLane(
           verifyRuns: phaseRuns.filter(
             (run) => run.runKind === "dependency-verify",
           ),
+          requestNonce: heldRequestNonce,
+          phase: heldPhase,
+          workspaceBinding: heldBinding,
           label: "C2-ZC causal A/B hold",
         });
         if (primaryDuringHold.markerRows.length !== 0) {
@@ -5915,8 +6274,8 @@ async function runC2ZcAuthorityLane(
         context.record(`${phasePrefix}/two-project-cursor-gate`, {
           primaryProjectId: context.projectId,
           secondaryProjectId,
-          holdReceipt: heldReceipt.receipt,
-          holdReceiptSha256: heldReceipt.sha256,
+          preMarkerHeldEvidence: preMarkerHeldEvidence.receipt,
+          preMarkerHeldEvidenceSha256: preMarkerHeldEvidence.sha256,
           causalPrimaryFeedEventId: causalHold.primaryEvent.eventId,
           causalSecondaryFeedEventIds: causalHold.secondaryEvents.map(
             (event) => event.eventId,
@@ -6053,8 +6412,7 @@ async function runC2ZcAuthorityLane(
             },
           ],
           projectInventory: markerSnapshot.projectInventory,
-          quiescenceReceipt: heldReceipt.receipt,
-          atomicityEvidence: harness.c2zcRustAcceptanceEvidence ?? null,
+          rustBoundaryEvidence: harness.c2zcRustAcceptanceEvidence ?? null,
           label: "C2-ZC workspace cutover receipt",
         });
         assertC2ZcLegacyProjectionStable(
@@ -6091,7 +6449,7 @@ async function runC2ZcAuthorityLane(
             genericStorageAndProvenance: "exercised",
             canonicalRead: "not-exercised-in-this-Electron-journey",
           },
-          rustAcceptanceReceipt: harness.c2zcRustAcceptanceEvidence
+          rustBoundaryEvidence: harness.c2zcRustAcceptanceEvidence
             ? {
                 receiptPath: harness.c2zcRustAcceptanceEvidence.receiptPath,
                 receiptSha256: harness.c2zcRustAcceptanceEvidence.receiptSha256,

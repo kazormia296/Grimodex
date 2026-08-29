@@ -156,6 +156,22 @@ fn narrative_ci_quiescence_state(
     freshness_hold_project_id: Option<&str>,
     held_project_id: Option<&str>,
 ) -> anyhow::Result<serde_json::Value> {
+    narrative_ci_quiescence_state_with_snapshot_hook(
+        db,
+        binding,
+        freshness_hold_project_id,
+        held_project_id,
+        None,
+    )
+}
+
+fn narrative_ci_quiescence_state_with_snapshot_hook(
+    db: &Database,
+    binding: &MaintenanceWorkspaceBinding,
+    freshness_hold_project_id: Option<&str>,
+    held_project_id: Option<&str>,
+    after_project_ids: Option<&dyn Fn()>,
+) -> anyhow::Result<serde_json::Value> {
     binding.validate()?;
     if let Some(held_project_id) = held_project_id {
         anyhow::ensure!(
@@ -164,33 +180,38 @@ fn narrative_ci_quiescence_state(
         );
     }
     db.with_conn(|conn| {
-        let project_ids: Vec<String> = {
-            let mut statement = conn.prepare("SELECT id FROM projects ORDER BY id ASC")?;
-            let project_ids = statement
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            project_ids
-        };
-        let mut projects = Vec::with_capacity(project_ids.len());
-        for project_id in project_ids {
-            let (
-                current_epoch_id,
-                feed_head,
-                acknowledged_through,
-                reserved_through,
-                active_run_id,
-                cursor_epoch_id,
-                last_error,
-            ): (
-                Option<String>,
-                i64,
-                Option<i64>,
-                Option<i64>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-            ) = conn.query_row(
-                "SELECT
+        conn.execute_batch("BEGIN DEFERRED TRANSACTION")?;
+        let result = (|| -> anyhow::Result<serde_json::Value> {
+            let project_ids: Vec<String> = {
+                let mut statement = conn.prepare("SELECT id FROM projects ORDER BY id ASC")?;
+                let project_ids = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                project_ids
+            };
+            if let Some(after_project_ids) = after_project_ids {
+                after_project_ids();
+            }
+            let mut projects = Vec::with_capacity(project_ids.len());
+            for project_id in project_ids {
+                let (
+                    current_epoch_id,
+                    feed_head,
+                    acknowledged_through,
+                    reserved_through,
+                    active_run_id,
+                    cursor_epoch_id,
+                    last_error,
+                ): (
+                    Option<String>,
+                    i64,
+                    Option<i64>,
+                    Option<i64>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                ) = conn.query_row(
+                    "SELECT
                     (SELECT id
                        FROM narrative_semantic_epochs
                       WHERE project_id = ?1
@@ -224,39 +245,39 @@ fn narrative_ci_quiescence_state(
                       WHERE project_id = ?1
                         AND consumer_id = 'narrative-incremental-freshness/v1'
                       LIMIT 1)",
-                [project_id.as_str()],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                    ))
-                },
-            )?;
-            projects.push(serde_json::json!({
-                "projectId": project_id,
-                "currentEpochId": current_epoch_id,
-                "feedHead": feed_head,
-                "cursor": {
-                    "acknowledgedThrough": acknowledged_through,
-                    "reservedThrough": reserved_through,
-                    "activeRunId": active_run_id,
-                    "semanticEpochId": cursor_epoch_id,
-                    "lastError": last_error,
-                },
-            }));
-        }
+                    [project_id.as_str()],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                        ))
+                    },
+                )?;
+                projects.push(serde_json::json!({
+                    "projectId": project_id,
+                    "currentEpochId": current_epoch_id,
+                    "feedHead": feed_head,
+                    "cursor": {
+                        "acknowledgedThrough": acknowledged_through,
+                        "reservedThrough": reserved_through,
+                        "activeRunId": active_run_id,
+                        "semanticEpochId": cursor_epoch_id,
+                        "lastError": last_error,
+                    },
+                }));
+            }
 
-        let (marker_migration_id, marker_contract_version, marker_applied_at): (
-            Option<String>,
-            Option<i64>,
-            Option<String>,
-        ) = conn.query_row(
-            "SELECT
+            let (marker_migration_id, marker_contract_version, marker_applied_at): (
+                Option<String>,
+                Option<i64>,
+                Option<String>,
+            ) = conn.query_row(
+                "SELECT
                 (SELECT migration_id
                    FROM schema_data_migrations
                   WHERE migration_id = ?1
@@ -272,30 +293,41 @@ fn narrative_ci_quiescence_state(
                   WHERE migration_id = ?1
                   ORDER BY applied_at DESC
                   LIMIT 1)",
-            [grimodex_db::narrative_extraction::C2_ZC_CUTOVER_MIGRATION_ID],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
-        let marker = marker_migration_id.map(|migration_id| {
-            serde_json::json!({
-                "migrationId": migration_id,
-                "contractVersion": marker_contract_version,
-                "appliedAt": marker_applied_at,
-            })
-        });
-        let mut state = serde_json::json!({
-            "authorityId": binding.authority_id.clone(),
-            "generation": binding.generation,
-            "freshnessHoldProjectId": freshness_hold_project_id,
-            "heldProjectId": held_project_id,
-            "projects": projects,
-            "marker": marker,
-        });
-        let digest = format!(
-            "sha256:{}",
-            grimodex_db::narrative_extraction::digest_plan(&state)
-        );
-        state["stateDigest"] = serde_json::Value::String(digest);
-        Ok(state)
+                [grimodex_db::narrative_extraction::C2_ZC_CUTOVER_MIGRATION_ID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            let marker = marker_migration_id.map(|migration_id| {
+                serde_json::json!({
+                    "migrationId": migration_id,
+                    "contractVersion": marker_contract_version,
+                    "appliedAt": marker_applied_at,
+                })
+            });
+            let mut state = serde_json::json!({
+                "authorityId": binding.authority_id.clone(),
+                "generation": binding.generation,
+                "freshnessHoldProjectId": freshness_hold_project_id,
+                "heldProjectId": held_project_id,
+                "projects": projects,
+                "marker": marker,
+            });
+            let digest = format!(
+                "sha256:{}",
+                grimodex_db::narrative_extraction::digest_plan(&state)
+            );
+            state["stateDigest"] = serde_json::Value::String(digest);
+            Ok(state)
+        })();
+        match result {
+            Ok(state) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(state)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     })
 }
 
@@ -785,9 +817,8 @@ mod narrative_freshness_restore_lock_tests {
             })
             .expect("seed project");
 
-        let authority =
-            WorkspaceAuthority::from_database_for_test(database, workspace_path)
-                .expect("workspace authority");
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
         let state = Arc::new(
             AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
                 .expect("app state"),
@@ -882,6 +913,81 @@ mod narrative_freshness_result_contract_tests {
         assert!(error
             .to_string()
             .starts_with("NEX_MAINTENANCE_CI_FRESHNESS_HOLD_CUTOVER_READY:"));
+    }
+}
+
+#[cfg(test)]
+mod narrative_ci_quiescence_snapshot_tests {
+    use super::*;
+    use grimodex_db::state::WorkspaceAuthority;
+
+    #[test]
+    fn quiescence_projection_keeps_one_read_snapshot_across_external_mutation() {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-quiescence-snapshot-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let workspace_path = root.join("workspace");
+        std::fs::create_dir_all(workspace_path.join(".grimodex"))
+            .expect("workspace metadata directory");
+        std::fs::write(
+            workspace_path.join(".grimodex/workspace.json"),
+            serde_json::json!({
+                "id": "quiescence-snapshot",
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project");
+        let db_path = workspace_path.join("grimodex.db");
+        let authority =
+            WorkspaceAuthority::from_database_for_test(database, workspace_path.clone())
+                .expect("workspace authority");
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority:quiescence-snapshot".to_string(),
+            generation: 1,
+        };
+        let external_path = db_path.clone();
+        let state = narrative_ci_quiescence_state_with_snapshot_hook(
+            authority.db(),
+            &binding,
+            None,
+            None,
+            Some(&|| {
+                let external = Database::new(&external_path).expect("external database");
+                external
+                    .with_conn(|conn| {
+                        conn.execute(
+                            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+                             VALUES (?1, 1, '2026-01-01T00:00:00.000Z')",
+                            [grimodex_db::narrative_extraction::C2_ZC_CUTOVER_MIGRATION_ID],
+                        )?;
+                        Ok::<_, anyhow::Error>(())
+                    })
+                    .expect("external marker mutation");
+            }),
+        )
+        .expect("snapshot state");
+        // `migrate()` seeds the bootstrap project; the explicit fixture row
+        // above makes the pre-hook snapshot contain both rows.  The external
+        // mutation only adds the cutover marker, so the project projection
+        // must still contain that original two-row set.
+        assert_eq!(state["projects"].as_array().expect("projects").len(), 2);
+        assert!(state["marker"].is_null());
+        drop(authority);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 

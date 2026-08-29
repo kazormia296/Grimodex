@@ -43,6 +43,7 @@ interface SchedulerOptions {
    */
   onCycleCompleted?: (observation: {
     cycleGeneration: number;
+    cycleStartedAtMs: number;
     observedAtMs: number;
     inFlight: boolean;
     hasMore: boolean;
@@ -194,8 +195,10 @@ export function createNarrativeFreshnessScheduler(
     let completedObservation: ReturnType<
       typeof freshnessCycleObservation
     > | null = null;
+    let cycleStartedAtMs = 0;
     try {
       // napi class methodはbindを失うとselfが壊れるためbackend経由で呼ぶ。
+      cycleStartedAtMs = Date.now();
       const result = await method.call(backend);
       if (disposed) return;
       if (result !== null) {
@@ -259,6 +262,7 @@ export function createNarrativeFreshnessScheduler(
         try {
           const callback = options.onCycleCompleted?.({
             cycleGeneration,
+            cycleStartedAtMs,
             observedAtMs: Date.now(),
             inFlight: false,
             hasMore: completedObservation.hasMore,

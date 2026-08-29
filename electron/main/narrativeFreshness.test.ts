@@ -154,8 +154,15 @@ describe("createNarrativeFreshnessScheduler", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(onCycleCompleted).toHaveBeenCalledOnce();
+    const [observation] = onCycleCompleted.mock.calls[0] as [
+      { cycleStartedAtMs: number; observedAtMs: number },
+    ];
+    expect(observation.cycleStartedAtMs).toBeLessThanOrEqual(
+      observation.observedAtMs,
+    );
     expect(onCycleCompleted).toHaveBeenCalledWith({
       cycleGeneration: 1,
+      cycleStartedAtMs: expect.any(Number),
       observedAtMs: expect.any(Number),
       inFlight: false,
       hasMore: false,
@@ -167,6 +174,33 @@ describe("createNarrativeFreshnessScheduler", () => {
       nextCycleGuardStateDigest: null,
       quiescenceState: undefined,
     });
+  });
+
+  it("captures cycle start before the native callback advances the clock", async () => {
+    const t1 = 10_000;
+    const t2 = 20_000;
+    vi.setSystemTime(t1 - INITIAL_DELAY_MS);
+    let nativeEnteredAtMs = 0;
+    const runNarrativeFreshnessCycle = vi.fn().mockImplementation(async () => {
+      vi.setSystemTime(t2);
+      nativeEnteredAtMs = Date.now();
+      return summary(false);
+    });
+    const onCycleCompleted = vi.fn();
+    const { scheduler } = createScheduler(
+      { runNarrativeFreshnessCycle },
+      vi.fn(),
+      { onCycleCompleted },
+    );
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    const [observation] = onCycleCompleted.mock.calls[0] as [
+      { cycleStartedAtMs: number },
+    ];
+    expect(observation.cycleStartedAtMs).toBe(t1);
+    expect(observation.cycleStartedAtMs).toBeLessThan(nativeEnteredAtMs);
   });
 
   it("cycle失敗をwarnして有界retryを継続する", async () => {

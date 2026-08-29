@@ -15,17 +15,17 @@ import {
   C2ZC_RENDERER_MCP_DML_DENIAL_ID,
   C2ZC_RENDERER_MCP_DML_DENIAL_JOURNEY,
   C2ZC_RENDERER_MCP_DML_DENIAL_PHASES,
-  C2ZC_RENDERER_QUIESCENCE_MIN_STABLE_MS,
-  C2ZC_RENDERER_QUIESCENCE_REDISCOVERY_DELAY_MS,
-  C2ZC_RENDERER_QUIESCENCE_QUERIES,
+  C2ZC_RENDERER_SETTLEMENT_MIN_STABLE_MS,
+  C2ZC_RENDERER_SETTLEMENT_REDISCOVERY_DELAY_MS,
+  C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES,
   C2ZC_RENDERER_DML_EVIDENCE_VERSION,
   C2ZC_RENDERER_DML_TIMELINE_EVENT,
   C2ZC_RENDERER_TABLE_CONTRACTS,
-  assessDurableQuiescenceSamples,
-  assertQuiescenceLedgerMatches,
+  assessDurableRendererSettlementSamples,
+  assertRendererLedgerMatches,
   classifyDmlSnapshotTransition,
   inspectDurableTerminalLedger,
-  validateDurableQuiescenceObservation,
+  validateDurableRendererSettlementObservation,
   runC2ZcRendererMcpDmlDenialJourney,
 } from "../electron/scripts/c2zc-renderer-mcp-dml-denial-product-journey.mjs";
 import * as dmlContract from "../electron/scripts/c2zc-renderer-mcp-dml-denial-product-journey.mjs";
@@ -132,21 +132,20 @@ test("DML acceptance uses a unique phase namespace and explicit allowlist", () =
   );
 });
 
-test("DML acceptance delegates quiescence to the canonical core harness", async () => {
+test("DML acceptance uses renderer-visible durable settlement only", async () => {
   const source = await readRepo(
     "electron/scripts/c2zc-renderer-mcp-dml-denial-product-journey.mjs",
   );
-  assert.match(source, /await\s+harness\.awaitQuiescence\(app, phase/);
-  assert.match(source, /await\s+harness\.readQuiescence\(app, phase/);
+  assert.doesNotMatch(source, /awaitQuiescence|readQuiescence/);
   assert.match(source, /narrative_extraction_capture_workspace_binding/);
-  assert.match(source, /quiescenceArtifacts/);
+  assert.match(source, /rendererSettlementEvidence|settledEvidence/);
   assert.match(source, /withLaunchEnvironmentForTest/);
   assert.doesNotMatch(source, /readRuntimeQuiescenceReceipt/);
   assert.doesNotMatch(source, /assertRuntimeQuiescenceReceipt/);
   assert.doesNotMatch(source, /C2ZC_RUNTIME_QUIESCENCE/);
 });
 
-test("DML quiescence projects the exact Native binding from three keys", () => {
+test("DML settlement projects the exact Native binding from three keys", () => {
   const binding = dmlContract.assertC2ZcRendererWorkspaceBinding({
     authorityId: "authority-c2zc",
     generation: 7,
@@ -166,15 +165,15 @@ test("DML quiescence projects the exact Native binding from three keys", () => {
   );
 });
 
-test("quiescence stability window is strictly longer than scheduler rediscovery", () => {
+test("settlement stability window is strictly longer than scheduler rediscovery", () => {
   assert.ok(
-    C2ZC_RENDERER_QUIESCENCE_MIN_STABLE_MS >
-      C2ZC_RENDERER_QUIESCENCE_REDISCOVERY_DELAY_MS,
+    C2ZC_RENDERER_SETTLEMENT_MIN_STABLE_MS >
+      C2ZC_RENDERER_SETTLEMENT_REDISCOVERY_DELAY_MS,
   );
-  assert.ok(C2ZC_RENDERER_QUIESCENCE_MIN_STABLE_MS >= 500);
+  assert.ok(C2ZC_RENDERER_SETTLEMENT_MIN_STABLE_MS >= 500);
 });
 
-test("durable quiescence does not accept a settled sample before a delayed writer", () => {
+test("durable settlement does not accept a settled sample before a delayed writer", () => {
   const sample = (observedAt, monotonicMs, fingerprint, settled = true) => ({
     observedAt,
     monotonicMs,
@@ -191,9 +190,9 @@ test("durable quiescence does not accept a settled sample before a delayed write
     sample("2026-08-28T00:00:00.100Z", 100, "A"),
   ];
   assert.equal(
-    assessDurableQuiescenceSamples(firstSamples),
+    assessDurableRendererSettlementSamples(firstSamples),
     null,
-    "two 100ms polls must not be accepted as durable quiescence",
+    "two 100ms polls must not be accepted as durable settlement",
   );
   const delayedWriterSamples = [
     ...firstSamples,
@@ -202,16 +201,16 @@ test("durable quiescence does not accept a settled sample before a delayed write
     sample("2026-08-28T00:00:00.600Z", 600, "A"),
     sample("2026-08-28T00:00:00.850Z", 850, "A"),
   ];
-  const evidence = assessDurableQuiescenceSamples(delayedWriterSamples);
+  const evidence = assessDurableRendererSettlementSamples(delayedWriterSamples);
   assert.ok(evidence);
   assert.equal(evidence.fingerprint, "A");
-  assert.ok(evidence.durationMs >= C2ZC_RENDERER_QUIESCENCE_MIN_STABLE_MS);
+  assert.ok(evidence.durationMs >= C2ZC_RENDERER_SETTLEMENT_MIN_STABLE_MS);
   assert.equal(evidence.stableSampleCount, 3);
   assert.equal(evidence.startAt, "2026-08-28T00:00:00.350Z");
   assert.equal(evidence.endAt, "2026-08-28T00:00:00.850Z");
 });
 
-test("durable quiescence resets on an unstable fingerprint and never reports a partial interval", () => {
+test("durable settlement resets on an unstable fingerprint and never reports a partial interval", () => {
   const sample = (observedAt, monotonicMs, fingerprint) => ({
     observedAt,
     monotonicMs,
@@ -219,7 +218,7 @@ test("durable quiescence resets on an unstable fingerprint and never reports a p
     settled: true,
     terminalLedger: { ready: true, obligations: [], completed: [] },
   });
-  const evidence = assessDurableQuiescenceSamples([
+  const evidence = assessDurableRendererSettlementSamples([
     sample("2026-08-28T00:00:00.000Z", 0, "A"),
     sample("2026-08-28T00:00:00.250Z", 250, "A"),
     sample("2026-08-28T00:00:00.500Z", 500, "B"),
@@ -232,7 +231,7 @@ test("durable quiescence resets on an unstable fingerprint and never reports a p
   assert.equal(evidence.fingerprint, "A");
   assert.equal(evidence.startAt, "2026-08-28T00:00:00.750Z");
   assert.equal(evidence.stableSampleCount, 4);
-  assert.ok(evidence.durationMs >= C2ZC_RENDERER_QUIESCENCE_MIN_STABLE_MS);
+  assert.ok(evidence.durationMs >= C2ZC_RENDERER_SETTLEMENT_MIN_STABLE_MS);
 });
 
 test("durable quiescence rejects a 60-second sample gap instead of treating it as continuous", () => {
@@ -244,7 +243,7 @@ test("durable quiescence rejects a 60-second sample gap instead of treating it a
     terminalLedger: { ready: true, obligations: [], completed: [] },
   });
   assert.equal(
-    assessDurableQuiescenceSamples([
+    assessDurableRendererSettlementSamples([
       sample("2026-08-28T00:00:00.000Z", 0),
       sample("2026-08-28T00:00:00.100Z", 100),
       sample("2026-08-28T00:01:00.100Z", 60_100),
@@ -263,7 +262,7 @@ test("durable quiescence uses monotonic samples and preserves monotonic receipt 
     settled: true,
     terminalLedger: { ready: true, obligations: [], completed: [] },
   });
-  const evidence = assessDurableQuiescenceSamples([
+  const evidence = assessDurableRendererSettlementSamples([
     sample("2099-01-01T00:00:00.000Z", 1_000),
     sample("2026-01-01T00:00:00.100Z", 1_100),
     sample("2026-01-01T00:00:00.350Z", 1_350),
@@ -284,7 +283,7 @@ test("durable quiescence resets on a non-monotonic observation clock", () => {
     settled: true,
     terminalLedger: { ready: true, obligations: [], completed: [] },
   });
-  const evidence = assessDurableQuiescenceSamples([
+  const evidence = assessDurableRendererSettlementSamples([
     sample("2026-08-28T00:00:00.000Z", 0, "A"),
     sample("2026-08-28T00:00:00.400Z", 400, "A"),
     sample("2026-08-28T00:00:00.100Z", 100, "A"),
@@ -330,7 +329,7 @@ test("core quiescence ledger binding rejects empty, missing, extra, or mismatche
     },
   };
   assert.doesNotThrow(() =>
-    assertQuiescenceLedgerMatches(receipt, ledger, "exact ledger"),
+    assertRendererLedgerMatches(receipt, ledger, "exact ledger"),
   );
   for (const [label, projects] of [
     ["empty", []],
@@ -342,7 +341,7 @@ test("core quiescence ledger binding rejects empty, missing, extra, or mismatche
   ]) {
     assert.throws(
       () =>
-        assertQuiescenceLedgerMatches(
+        assertRendererLedgerMatches(
           { state: { projects, marker: null } },
           ledger,
           `${label} ledger`,
@@ -353,7 +352,7 @@ test("core quiescence ledger binding rejects empty, missing, extra, or mismatche
   }
   assert.throws(
     () =>
-      assertQuiescenceLedgerMatches(
+      assertRendererLedgerMatches(
         {
           state: {
             projects: ledger.projects,
@@ -375,7 +374,7 @@ test("core quiescence ledger binding rejects empty, missing, extra, or mismatche
 test("durable quiescence rejects a missing terminal ledger obligation", () => {
   assert.throws(
     () =>
-      validateDurableQuiescenceObservation({
+      validateDurableRendererSettlementObservation({
         settled: true,
         feedAndCursor: { consistent: true },
         active: {
@@ -1314,8 +1313,8 @@ test("journey executes its real renderer contract without requiring a dependency
   const mutableSnapshots = Object.fromEntries(
     C2ZC_NATIVE_OWNED_TABLE_NAMES.map((table) => [table, []]),
   );
-  const quiescenceQueries = new Set(
-    Object.values(C2ZC_RENDERER_QUIESCENCE_QUERIES),
+  const settlementQueries = new Set(
+    Object.values(C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES),
   );
   let rendererOpen = false;
   let activeMaintenance = false;
@@ -1323,8 +1322,6 @@ test("journey executes its real renderer contract without requiring a dependency
   let waitUntilRetries = 0;
   let fakeNowMs = Date.parse("2026-08-28T00:00:00.000Z");
   let fakeMonotonicMs = 0;
-  let coreQuiescenceSequence = 0;
-  let latestCoreQuiescenceArtifact = null;
   const canonicalJson = (value) => {
     if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
     if (value && typeof value === "object") {
@@ -1593,101 +1590,6 @@ test("journey executes its real renderer contract without requiring a dependency
         fakeMonotonicMs += 100;
         return observedAt;
       },
-      async awaitQuiescence(app, phase, options) {
-        assert.equal(app.phase, C2ZC_RENDERER_MCP_DML_DENIAL_PHASES[1]);
-        assert.equal(phase, C2ZC_RENDERER_MCP_DML_DENIAL_PHASES[1]);
-        assert.equal(options.authorityId, "authority-1");
-        assert.equal(options.generation, 1);
-        assert.equal(options.previousSequence, coreQuiescenceSequence);
-        assert.match(options.requestNonce, /^[0-9a-f-]{36}$/iu);
-        coreQuiescenceSequence += 1;
-        const stateWithoutDigest = {
-          authorityId: "authority-1",
-          generation: 1,
-          freshnessHoldProjectId: null,
-          heldProjectId: null,
-          projects: [
-            {
-              projectId: "background-project",
-              currentEpochId: "epoch-1",
-              feedHead: 1,
-              cursor: {
-                acknowledgedThrough: 1,
-                reservedThrough: null,
-                activeRunId: null,
-                semanticEpochId: null,
-                lastError: null,
-              },
-            },
-          ],
-          marker: null,
-        };
-        const state = {
-          ...stateWithoutDigest,
-          stateDigest: specDigest(stateWithoutDigest),
-        };
-        const requestedAt = new Date(fakeNowMs).toISOString();
-        fakeNowMs += 2;
-        const receipt = {
-          version: 1,
-          type: "grimodex:narrative-maintenance-ci-quiescence",
-          nonce: "2f7f2c00-1b8f-4cde-8b1a-9f9a94d15d1d",
-          requestNonce: options.requestNonce,
-          phase,
-          requestedAt,
-          sequence: coreQuiescenceSequence,
-          observedAt: new Date(fakeNowMs).toISOString(),
-          monotonicObservedAtMs: coreQuiescenceSequence,
-          workspaceBinding: { authorityId: "authority-1", generation: 1 },
-          discovery: {
-            discoveryGeneration: 3,
-            empty: true,
-            inFlight: false,
-            timerScheduled: false,
-            pendingRetry: false,
-            pendingEvent: false,
-            wakeAckPending: false,
-            wakeOutboxDrainInFlight: false,
-            wakeOutboxDrainSucceeded: true,
-            wakeOutboxDrainFailed: false,
-            wakeOutboxPendingRows: false,
-            queueIdle: true,
-          },
-          freshness: {
-            cycleGeneration: 4,
-            inFlight: false,
-            hasMore: false,
-            noWrite: true,
-            heldProjectId: null,
-            cutoverNotReady: false,
-            wakePending: false,
-            timerScheduled: false,
-            nextCycleGuardStateDigest: null,
-          },
-          state,
-          stateDigest: state.stateDigest,
-        };
-        latestCoreQuiescenceArtifact = {
-          receipt,
-          path: `/tmp/quiescence-${coreQuiescenceSequence}.json`,
-          realPath: `/tmp/quiescence-${coreQuiescenceSequence}.json`,
-          sha256: `sha256:${String.fromCharCode(96 + coreQuiescenceSequence)}${"a".repeat(63)}`,
-          byteLength: 100,
-        };
-        return latestCoreQuiescenceArtifact;
-      },
-      async readQuiescence(app, phase, options) {
-        assert.equal(app.phase, C2ZC_RENDERER_MCP_DML_DENIAL_PHASES[1]);
-        assert.equal(phase, C2ZC_RENDERER_MCP_DML_DENIAL_PHASES[1]);
-        assert.equal(options.previousSequence, coreQuiescenceSequence - 1);
-        assert.equal(
-          options.requestNonce,
-          latestCoreQuiescenceArtifact?.receipt.requestNonce,
-        );
-        assert.equal(options.authorityId, "authority-1");
-        assert.equal(options.generation, 1);
-        return latestCoreQuiescenceArtifact;
-      },
       async invokeOk(page, command, args) {
         assert.equal(
           page.phase.endsWith("open") || page.phase.endsWith("restart"),
@@ -1715,14 +1617,17 @@ test("journey executes its real renderer contract without requiring a dependency
               })),
             };
           }
-          assert.ok(quiescenceQueries.has(args.sql), args.sql);
-          if (args.sql === C2ZC_RENDERER_QUIESCENCE_QUERIES.projects) {
+          assert.ok(settlementQueries.has(args.sql), args.sql);
+          if (args.sql === C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.projects) {
             return { rows: ledgerProjects };
           }
-          if (args.sql === C2ZC_RENDERER_QUIESCENCE_QUERIES.feed) {
+          if (args.sql === C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.feed) {
             return { rows: [{ projectId: "background-project", feedHead: 1 }] };
           }
-          if (args.sql === C2ZC_RENDERER_QUIESCENCE_QUERIES.freshnessCursors) {
+          if (
+            args.sql ===
+            C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.freshnessCursors
+          ) {
             return {
               rows: [
                 {
@@ -1739,7 +1644,9 @@ test("journey executes its real renderer contract without requiring a dependency
               ],
             };
           }
-          if (args.sql === C2ZC_RENDERER_QUIESCENCE_QUERIES.activeRuns) {
+          if (
+            args.sql === C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.activeRuns
+          ) {
             return {
               rows: activeMaintenance
                 ? [
@@ -1754,19 +1661,24 @@ test("journey executes its real renderer contract without requiring a dependency
                 : [],
             };
           }
-          if (args.sql === C2ZC_RENDERER_QUIESCENCE_QUERIES.epochs) {
+          if (args.sql === C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.epochs) {
             return { rows: ledgerEpochs };
           }
-          if (args.sql === C2ZC_RENDERER_QUIESCENCE_QUERIES.terminalRuns) {
+          if (
+            args.sql === C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.terminalRuns
+          ) {
             return { rows: ledgerRuns };
           }
-          if (args.sql === C2ZC_RENDERER_QUIESCENCE_QUERIES.tasks) {
+          if (args.sql === C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.tasks) {
             return { rows: ledgerTasks };
           }
-          if (args.sql === C2ZC_RENDERER_QUIESCENCE_QUERIES.attempts) {
+          if (args.sql === C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.attempts) {
             return { rows: ledgerAttempts };
           }
-          if (args.sql === C2ZC_RENDERER_QUIESCENCE_QUERIES.freshnessEvidence) {
+          if (
+            args.sql ===
+            C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.freshnessEvidence
+          ) {
             return { rows: ledgerFreshnessEvidence };
           }
           return { rows: [] };
@@ -1791,38 +1703,10 @@ test("journey executes its real renderer contract without requiring a dependency
     assert.equal(result.settledEvidence.kind, C2ZC_RENDERER_DML_TIMELINE_EVENT);
     assert.equal(result.settledEvidence.settled, true);
     assert.equal(result.settledEvidence.probeCount, 36);
-    assert.deepEqual(result.secondaryConnectionProof.binding, {
-      authorityId: "authority-1",
-      generation: 1,
-    });
-    assert.deepEqual(
-      result.secondaryConnectionProof.opening,
-      result.settledEvidence.openingLedger,
-    );
-    assert.deepEqual(
-      result.secondaryConnectionProof.final,
-      result.settledEvidence.finalLedger,
-    );
-    assert.equal(
-      result.secondaryConnectionProof.openingStateDigest,
-      result.quiescenceArtifacts.before.receipt.stateDigest,
-    );
-    assert.equal(
-      result.secondaryConnectionProof.finalStateDigest,
-      result.quiescenceArtifacts.after.receipt.stateDigest,
-    );
-    assert.deepEqual(Object.keys(result.quiescenceArtifacts).sort(), [
-      "after",
-      "before",
-    ]);
-    assert.equal(result.quiescenceArtifacts.before.receipt.sequence, 1);
-    assert.equal(result.quiescenceArtifacts.after.receipt.sequence, 2);
-    for (const artifact of Object.values(result.quiescenceArtifacts)) {
-      assert.match(artifact.sha256, /^sha256:[0-9a-f]{64}$/iu);
-      assert.equal(artifact.path, artifact.realPath);
-      assert.ok(Number.isSafeInteger(artifact.byteLength));
-      assert.ok(artifact.byteLength > 0);
-    }
+    assert.equal("secondaryConnectionProof" in result, false);
+    assert.equal("quiescenceArtifacts" in result, false);
+    assert.equal(result.settledEvidence.openingSettlement.settled, true);
+    assert.equal(result.settledEvidence.finalSettlement.settled, true);
     for (const field of [
       "startAt",
       "endAt",
@@ -1838,7 +1722,7 @@ test("journey executes its real renderer contract without requiring a dependency
     }
     assert.ok(result.settledEvidence.durationMs >= 500);
     assert.ok(result.settledEvidence.stableSampleCount >= 2);
-    assert.deepEqual(result.settledEvidence.finalQuiescence.feedAndCursor, {
+    assert.deepEqual(result.settledEvidence.finalSettlement.feedAndCursor, {
       feed: [{ projectId: "background-project", feedHead: 1 }],
       cursors: [
         {
@@ -1871,12 +1755,12 @@ test("journey executes its real renderer contract without requiring a dependency
             JSON.stringify(probe.afterSnapshot[probe.table]) &&
           probe.snapshotUnchanged &&
           !probe.backgroundWriterDetected &&
-          probe.beforeQuiescence.settled &&
-          probe.afterQuiescence.settled,
+          probe.beforeSettlement.settled &&
+          probe.afterSettlement.settled,
       ),
     );
-    assert.equal(result.settledEvidence.finalQuiescence.settled, true);
-    assert.deepEqual(result.settledEvidence.finalQuiescence.active, {
+    assert.equal(result.settledEvidence.finalSettlement.settled, true);
+    assert.deepEqual(result.settledEvidence.finalSettlement.active, {
       runs: [],
       tasks: [],
       attempts: [],
@@ -1899,7 +1783,7 @@ test("journey executes its real renderer contract without requiring a dependency
     const snapshotCalls = selectCalls.filter((call) =>
       /^SELECT \* FROM "[^"]+" ORDER BY .+$/.test(call.sql),
     );
-    assert.equal(snapshotCalls.length, 981);
+    assert.equal(snapshotCalls.length, 990);
     const selectsByTable = new Map();
     for (const call of snapshotCalls) {
       assert.deepEqual(call.params, []);
@@ -1912,12 +1796,15 @@ test("journey executes its real renderer contract without requiring a dependency
     }
     assert.deepEqual([...selectsByTable.keys()], C2ZC_NATIVE_OWNED_TABLE_NAMES);
     for (const table of C2ZC_NATIVE_OWNED_TABLE_NAMES) {
-      assert.equal(selectsByTable.get(table)?.length, 109, table);
+      assert.equal(selectsByTable.get(table)?.length, 110, table);
     }
-    const quiescenceCalls = selectCalls.filter((call) =>
-      quiescenceQueries.has(call.sql),
+    const settlementCalls = selectCalls.filter((call) =>
+      settlementQueries.has(call.sql),
     );
-    assert.ok(quiescenceCalls.length >= 8 * 2);
+    assert.ok(
+      settlementCalls.length >=
+        Object.keys(C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES).length,
+    );
     assert.ok(
       selectCalls.every(
         (call) =>
@@ -1970,24 +1857,26 @@ test("renderer denial journey stays outside fixture seam and production IPC/prel
   assert.doesNotMatch(journeySource, /executeFixtureDml/);
   assert.doesNotMatch(journeySource, /app_settings/);
   assert.doesNotMatch(journeySource, /C2ZC_FIXTURE_DML_CONTRACT/);
-  assert.match(journeySource, /waitForRendererQuiescence/);
+  assert.match(journeySource, /waitForRendererDurableSettlement/);
   assert.match(journeySource, /recordTimeline/);
   assert.doesNotMatch(journeySource, /scheduler.*(?:disable|disabled|off)/i);
   assert.doesNotMatch(journeySource, /(?:disable|disabled|off).*scheduler/i);
-  for (const [name, sql] of Object.entries(C2ZC_RENDERER_QUIESCENCE_QUERIES)) {
+  for (const [name, sql] of Object.entries(
+    C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES,
+  )) {
     assert.match(sql, /^\s*SELECT\b/i, name);
     assert.doesNotMatch(sql, /\b(?:INSERT|UPDATE|DELETE|REPLACE)\b/i, name);
   }
   assert.match(
-    C2ZC_RENDERER_QUIESCENCE_QUERIES.activeRuns,
+    C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.activeRuns,
     /run_kind <> 'interpretation'/,
   );
   assert.match(
-    C2ZC_RENDERER_QUIESCENCE_QUERIES.reservations,
+    C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.reservations,
     /reserved_through_sequence/,
   );
   assert.match(
-    C2ZC_RENDERER_QUIESCENCE_QUERIES.repairLeases,
+    C2ZC_RENDERER_DURABLE_SETTLEMENT_QUERIES.repairLeases,
     /narrative_maintenance_repair_leases/,
   );
   assert.match(harnessSource, /C2ZC_RENDERER_DML_PHASE_ALLOWLIST/);

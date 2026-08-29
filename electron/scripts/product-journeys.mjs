@@ -65,6 +65,27 @@ const C2ZC_RUST_RECEIPT_PATH_ENV = "GRIMODEX_C2ZC_RUST_RECEIPT_PATH";
 const C2ZC_RUST_RECEIPT_SHA256_ENV = "GRIMODEX_C2ZC_RUST_RECEIPT_SHA256";
 const C2ZC_RUST_BASE_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_BASE";
 const C2ZC_RUST_HEAD_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD";
+const PRODUCT_JOURNEY_BUILD_RECEIPT_ENV =
+  "GRIMODEX_PRODUCT_JOURNEY_BUILD_RECEIPT";
+const PRODUCT_JOURNEY_BUILD_RECEIPT_KEYS = [
+  "version",
+  "verified",
+  "source",
+  "candidate",
+];
+const PRODUCT_JOURNEY_CANDIDATE_KEYS = [
+  "requestedBase",
+  "requestedHead",
+  "resolvedBaseSha",
+  "resolvedHeadSha",
+  "resolvedHeadTreeSha",
+  "currentHeadSha",
+  "worktreeClean",
+  "worktreeFingerprint",
+  "worktreeStatusHash",
+];
+const PRODUCT_JOURNEY_GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/u;
+const PRODUCT_JOURNEY_SHA256_HEX = /^[0-9a-f]{64}$/u;
 const C2ZC_PRODUCT_JOURNEY_IDS = Object.freeze(
   NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
 );
@@ -2368,6 +2389,78 @@ function requiresC2ZcRustAcceptance({ journeys, selectionName }) {
   return selectionName === "c2-zc" || hasC2ZcAcceptanceJourney(journeys);
 }
 
+export function readProductJourneyBuildReceipt() {
+  const raw = process.env[PRODUCT_JOURNEY_BUILD_RECEIPT_ENV];
+  if (!raw) return null;
+  try {
+    const receipt = JSON.parse(raw);
+    if (
+      !receipt ||
+      typeof receipt !== "object" ||
+      Array.isArray(receipt) ||
+      JSON.stringify(Object.keys(receipt).sort()) !==
+        JSON.stringify([...PRODUCT_JOURNEY_BUILD_RECEIPT_KEYS].sort()) ||
+      receipt.version !== 1 ||
+      receipt.verified !== true ||
+      receipt.source !== "local-ci-candidate" ||
+      !isValidProductJourneyCandidate(receipt.candidate) ||
+      receipt.candidate.worktreeClean !== true ||
+      receipt.candidate.resolvedHeadSha !== receipt.candidate.currentHeadSha
+    ) {
+      return null;
+    }
+    return receipt;
+  } catch {
+    return null;
+  }
+}
+
+function isValidProductJourneyCandidate(candidate) {
+  if (
+    !candidate ||
+    typeof candidate !== "object" ||
+    Array.isArray(candidate) ||
+    JSON.stringify(Object.keys(candidate).sort()) !==
+      JSON.stringify([...PRODUCT_JOURNEY_CANDIDATE_KEYS].sort())
+  ) {
+    return false;
+  }
+  if (
+    ["requestedBase", "requestedHead"].some(
+      (field) =>
+        typeof candidate[field] !== "string" ||
+        candidate[field].length === 0 ||
+        candidate[field].includes("\u0000"),
+    ) ||
+    [
+      "resolvedBaseSha",
+      "resolvedHeadSha",
+      "resolvedHeadTreeSha",
+      "currentHeadSha",
+    ].some(
+      (field) =>
+        typeof candidate[field] !== "string" ||
+        !PRODUCT_JOURNEY_GIT_OBJECT_ID.test(candidate[field]),
+    ) ||
+    typeof candidate.worktreeClean !== "boolean" ||
+    !PRODUCT_JOURNEY_SHA256_HEX.test(candidate.worktreeFingerprint ?? "") ||
+    !PRODUCT_JOURNEY_SHA256_HEX.test(candidate.worktreeStatusHash ?? "")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function productJourneyCandidatesEqual(left, right) {
+  return (
+    isValidProductJourneyCandidate(left) &&
+    isValidProductJourneyCandidate(right) &&
+    PRODUCT_JOURNEY_CANDIDATE_KEYS.every(
+      (field) => left[field] === right[field],
+    )
+  );
+}
+
 async function readC2ZcRustAcceptanceEvidence({ required }) {
   const configuredPath =
     process.env[C2ZC_RUST_RECEIPT_PATH_ENV] ??
@@ -2396,26 +2489,67 @@ async function readC2ZcRustAcceptanceEvidence({ required }) {
     receiptPath: configuredPath,
     receiptSha256: process.env[C2ZC_RUST_RECEIPT_SHA256_ENV] ?? null,
   });
+  if (!productJourneyCandidatesEqual(candidate, verified.receipt.candidate)) {
+    throw new Error(
+      "C2-ZC Rust acceptance receipt is not bound to the live product journey candidate",
+    );
+  }
   return {
     required,
     verified: true,
     receiptPath: verified.receiptPath,
     receiptSha256: verified.receiptSha256,
-    candidate: verified.receipt.candidate,
+    candidate,
     gates: verified.receipt.gates,
     receipt: verified.receipt,
   };
 }
 
-function refreshReportOutcome(report) {
-  report.allPassed =
+export function refreshProductJourneyOutcome(report) {
+  const exactLanePass =
     report.status === "passed" &&
+    Array.isArray(report.journeyIds) &&
+    Array.isArray(report.journeys) &&
     report.journeys.length === report.journeyIds.length &&
-    report.journeys.every((journey) => journey.status === "passed") &&
-    (report.acceptanceRequired !== true || report.acceptanceComplete === true);
-  report.allClean =
-    report.allPassed &&
+    report.journeys.every((journey) => journey.status === "passed");
+  const exactLaneClean =
+    exactLanePass &&
     report.journeys.every((journey) => journey.cleanPass === true);
+  const rustAcceptanceComplete =
+    report.acceptanceRequired !== true ||
+    (report.c2zcRustAcceptance?.required === true &&
+      report.c2zcRustAcceptance?.verified === true);
+  const buildReceiptComplete =
+    report.acceptanceRequired !== true ||
+    (report.buildReceipt?.verified === true &&
+      isValidProductJourneyCandidate(report.buildReceipt.candidate) &&
+      report.buildReceipt.candidate.worktreeClean === true);
+  const candidateBindingComplete =
+    report.acceptanceRequired !== true ||
+    (productJourneyCandidatesEqual(
+      report.buildReceipt?.candidate,
+      report.c2zcRustAcceptance?.candidate,
+    ) &&
+      productJourneyCandidatesEqual(
+        report.c2zcRustAcceptance?.candidate,
+        report.c2zcRustAcceptance?.receipt?.candidate,
+      ));
+  report.rustAcceptanceComplete = rustAcceptanceComplete;
+  report.allPassed =
+    exactLanePass &&
+    rustAcceptanceComplete &&
+    buildReceiptComplete &&
+    candidateBindingComplete;
+  report.allClean =
+    exactLaneClean &&
+    rustAcceptanceComplete &&
+    buildReceiptComplete &&
+    candidateBindingComplete;
+  // This is the final acceptance bit. It cannot be inherited from a Rust-only
+  // preflight when a required product lane failed or is not clean.
+  report.acceptanceComplete =
+    report.acceptanceRequired === true && report.allClean;
+  return report;
 }
 
 async function writeAuditManifest(outputPath, report, artifactEvidence) {
@@ -2429,6 +2563,8 @@ async function writeAuditManifest(outputPath, report, artifactEvidence) {
     allPassed: report.allPassed === true,
     allClean: report.allClean === true,
     acceptanceRequired: report.acceptanceRequired === true,
+    rustAcceptanceComplete: report.rustAcceptanceComplete === true,
+    buildReceipt: report.buildReceipt ?? null,
     acceptanceComplete: report.acceptanceComplete === true,
     c2zcRustAcceptance: report.c2zcRustAcceptance ?? null,
     results: {
@@ -2447,7 +2583,7 @@ async function writeAuditManifest(outputPath, report, artifactEvidence) {
 }
 
 async function writeFailureReport(outputPath, report, artifactEvidence) {
-  refreshReportOutcome(report);
+  refreshProductJourneyOutcome(report);
   await writeResults(outputPath, report);
   try {
     await writeAuditManifest(outputPath, report, artifactEvidence);
@@ -2494,6 +2630,8 @@ export async function runProductJourneys({
       journeys,
       selectionName,
     }),
+    rustAcceptanceComplete: false,
+    buildReceipt: readProductJourneyBuildReceipt(),
     acceptanceComplete: false,
     c2zcRustAcceptance: null,
     selectionBinding: {
@@ -2527,9 +2665,10 @@ export async function runProductJourneys({
     report.c2zcRustAcceptance = await readC2ZcRustAcceptanceEvidence({
       required: report.acceptanceRequired,
     });
-    report.acceptanceComplete =
+    report.rustAcceptanceComplete =
       report.acceptanceRequired !== true ||
-      report.c2zcRustAcceptance.verified === true;
+      (report.c2zcRustAcceptance.required === true &&
+        report.c2zcRustAcceptance.verified === true);
     const preflight =
       assertArtifacts ??
       ((selectedJourneys) =>
@@ -2641,14 +2780,14 @@ export async function runProductJourneys({
       });
     }
   }
-  refreshReportOutcome(report);
+  refreshProductJourneyOutcome(report);
   await writeResults(outputPath, report);
   try {
     await writeAuditManifest(outputPath, report, artifactEvidence);
   } catch (error) {
     report.status = "failed";
     report.error = serializeError(error);
-    refreshReportOutcome(report);
+    refreshProductJourneyOutcome(report);
     await writeResults(outputPath, report);
     throw error;
   }

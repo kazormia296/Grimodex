@@ -554,20 +554,7 @@ test("C2-ZC common settlement accepts exact empty Generic sets for restored and 
       { projectId: restoredPrimary.projectId },
       { projectId: bareSecondary.projectId },
     ],
-    quiescenceReceipt: {
-      projectIds: [restoredPrimary.projectId, bareSecondary.projectId],
-      projects: [
-        {
-          projectId: restoredPrimary.projectId,
-          currentEpochId: "primary-e1",
-        },
-        {
-          projectId: bareSecondary.projectId,
-          currentEpochId: "secondary-e0",
-        },
-      ],
-    },
-    atomicityEvidence: c2zcRustAcceptanceEvidenceFixture(),
+    rustBoundaryEvidence: c2zcRustAcceptanceEvidenceFixture(),
   };
   assert.throws(
     () => assertC2ZcWorkspaceCutoverReceipt(workspace),
@@ -645,7 +632,7 @@ test("C2-ZC restore fixture launcher emits the catalog phase through the runtime
   assert.deepEqual(closes, [C2ZC_POST_MARKER_PRODUCT_JOURNEY_PHASES[0]]);
 });
 
-test("C2-ZC workspace cutover receipt requires every project and explicit Rust atomicity binding", () => {
+test("C2-ZC workspace cutover receipt requires every project and explicit Rust boundary evidence", () => {
   const marker = {
     migrationId: "narrative-c2-canonical-freshness-v1",
     contractVersion: 1,
@@ -657,9 +644,9 @@ test("C2-ZC workspace cutover receipt requires every project and explicit Rust a
         markerBefore: null,
         markerAfter: { marker, markerRows: [marker] },
         projects: [],
-        atomicityEvidence: null,
+        rustBoundaryEvidence: null,
       }),
-    /project|atomic|Rust/i,
+    /project|boundary|Rust/i,
   );
 });
 
@@ -988,7 +975,7 @@ test("direct C2-ZC new-project launch sees restored freshness", async () => {
   }
 });
 
-test("C2-ZC Electron evidence is scoped and candidate-bound Rust receipts compose separately", async () => {
+test("C2-ZC Electron evidence is scoped and candidate-bound Rust boundary evidence composes separately", async () => {
   const [runner, mainSeam, nativeSeam, harness] = await Promise.all([
     read("electron/scripts/c2zc-canonical-product-journey.mjs"),
     read("electron/main/narrativeMaintenanceCiSeam.ts"),
@@ -996,14 +983,19 @@ test("C2-ZC Electron evidence is scoped and candidate-bound Rust receipts compos
     read("electron/scripts/product-journey-harness.mjs"),
   ]);
   assert.match(runner, /electronEvidenceScope/);
-  assert.match(runner, /rustAcceptanceReceipt/);
+  assert.match(runner, /rustBoundaryEvidence/);
   assert.match(runner, /not-exercised-in-this-Electron-journey/);
   assert.doesNotMatch(runner, /rustComponentTests/);
   assert.match(runner, /readAuthoritySnapshot/);
   assert.match(runner, /assertC2ZcGenericFreshnessStorage/);
-  assert.match(mainSeam, /writeNarrativeMaintenanceCiQuiescence/);
+  assert.match(mainSeam, /createNarrativeMaintenanceCiHeldFreshnessWriter/);
   assert.match(nativeSeam, /run_incremental_freshness_cycle/);
-  assert.match(harness, /main-maintenance-receipt/);
+  assert.match(harness, /awaitHeldFreshness/);
+  assert.match(harness, /function syncNarrativeMaintenanceDirectoryStrict/);
+  assert.match(
+    harness,
+    /await rename\(temporaryPath, requestPath\);[\s\S]*syncNarrativeMaintenanceDirectoryStrict\(nonceDir\)/,
+  );
 });
 
 test("C2-ZC journey is named in the quality impact manifest", async () => {
@@ -2163,16 +2155,7 @@ test("assertC2ZcWorkspaceCutoverReceipt accepts restored E0/E1 while assertC2ZcP
       },
     ],
     projectInventory: [{ projectId: "project-primary" }],
-    quiescenceReceipt: {
-      projectIds: ["project-primary"],
-      projects: [
-        {
-          projectId: "project-primary",
-          currentEpochId: "epoch-e1",
-        },
-      ],
-    },
-    atomicityEvidence: rustAcceptanceEvidence,
+    rustBoundaryEvidence: rustAcceptanceEvidence,
   };
   assert.doesNotThrow(
     () => assertC2ZcWorkspaceCutoverReceipt(workspaceCutoverArguments),
@@ -2182,9 +2165,9 @@ test("assertC2ZcWorkspaceCutoverReceipt accepts restored E0/E1 while assertC2ZcP
     () =>
       assertC2ZcWorkspaceCutoverReceipt({
         ...workspaceCutoverArguments,
-        atomicityEvidence: null,
+        rustBoundaryEvidence: null,
       }),
-    /atomicity|Rust/i,
+    /boundary|Rust/i,
     "workspace cutover must not pass without the candidate-bound Rust receipt",
   );
   assert.throws(
@@ -2215,38 +2198,37 @@ test("assertC2ZcWorkspaceCutoverReceipt accepts restored E0/E1 while assertC2ZcP
           { projectId: "project-primary" },
           { projectId: "project-third" },
         ],
-        quiescenceReceipt: {
-          projectIds: ["project-primary", "project-third"],
-          projects: [
-            {
-              projectId: "project-primary",
-              currentEpochId: "epoch-e1",
+      },
+    ],
+    [
+      "foreign nested project snapshot identity",
+      {
+        projects: [
+          {
+            projectId: "project-foreign",
+            before: primaryBefore,
+            after: primaryAfter,
+          },
+        ],
+      },
+    ],
+    [
+      "nested project snapshot current epoch mismatch",
+      {
+        projects: [
+          {
+            projectId: "project-primary",
+            before: primaryBefore,
+            after: {
+              ...primaryAfter,
+              epochs: primaryAfter.epochs.map((epoch, index, epochs) =>
+                index === epochs.length - 1
+                  ? { ...epoch, id: "epoch-foreign" }
+                  : epoch,
+              ),
             },
-            { projectId: "project-third", currentEpochId: "third-e1" },
-          ],
-        },
-      },
-    ],
-    [
-      "foreign nested q receipt identity",
-      {
-        quiescenceReceipt: {
-          projectIds: ["project-primary"],
-          projects: [
-            { projectId: "project-foreign", currentEpochId: "epoch-e1" },
-          ],
-        },
-      },
-    ],
-    [
-      "nested q receipt current epoch mismatch",
-      {
-        quiescenceReceipt: {
-          projectIds: ["project-primary"],
-          projects: [
-            { projectId: "project-primary", currentEpochId: "epoch-foreign" },
-          ],
-        },
+          },
+        ],
       },
     ],
   ]) {
@@ -2263,17 +2245,8 @@ test("assertC2ZcWorkspaceCutoverReceipt accepts restored E0/E1 while assertC2ZcP
             },
           ],
           projectInventory: [{ projectId: "project-primary" }],
-          quiescenceReceipt: {
-            projectIds: ["project-primary"],
-            projects: [
-              {
-                projectId: "project-primary",
-                currentEpochId: "epoch-e1",
-              },
-            ],
-          },
           ...overrides,
-          atomicityEvidence: rustAcceptanceEvidence,
+          rustBoundaryEvidence: rustAcceptanceEvidence,
         }),
       /inventory|project set|identity|epoch|snapshot/i,
       label,

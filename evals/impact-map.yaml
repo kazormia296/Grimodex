@@ -335,6 +335,7 @@ rules:
       - scripts/c2-5b-product-journeys.test.mjs
       - scripts/c2zc-product-journeys.test.mjs
       - scripts/c2zc-renderer-mcp-dml-denial.test.mjs
+      - scripts/c2zc-acceptance-consumer.test.mjs
       - scripts/c2zc-rust-acceptance-receipt.mjs
       - scripts/c2zc-rust-acceptance-receipt.test.mjs
       - scripts/local-ci-registry.json
