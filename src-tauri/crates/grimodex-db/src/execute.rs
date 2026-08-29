@@ -1840,46 +1840,40 @@ mod tests {
 
     #[test]
     fn untrusted_sql_readonly_probe_fails_closed_for_non_readonly_statements() {
-        let db = test_db();
-        db.migrate().expect("migrate database");
-        db.with_conn(|conn| {
-            let cases = [
-                ("SELECT 1", false),
-                ("-- leading comment\nSELECT 1", true),
-                (
-                    "WITH values_cte AS (SELECT 1) SELECT * FROM values_cte",
-                    true,
-                ),
-                ("EXPLAIN SELECT 1", false),
-                (
-                    "INSERT INTO project_settings (project_id, key, value) VALUES (?1, ?2, ?3)",
-                    true,
-                ),
-                (
-                    "UPDATE project_settings SET value = ?1 WHERE project_id = ?2 AND key = ?3",
-                    true,
-                ),
-                (
-                    "DELETE FROM project_settings WHERE project_id = ?1 AND key = ?2",
-                    true,
-                ),
-                (
-                    "WITH values_cte AS (SELECT 1) INSERT INTO project_settings
-                     (project_id, key, value) VALUES (?1, ?2, ?3)",
-                    true,
-                ),
-                ("not valid SQLite", true),
-            ];
-            for (sql, expected_guard) in cases {
-                assert_eq!(
-                    untrusted_sql_needs_reserved_project_setting_guard(sql),
-                    expected_guard,
-                    "unexpected readonly probe result for {sql:?}"
-                );
-            }
-            Ok(())
-        })
-        .expect("probe readonly statements");
+        let cases = [
+            ("SELECT 1", false),
+            ("-- leading comment\nSELECT 1", true),
+            (
+                "WITH values_cte AS (SELECT 1) SELECT * FROM values_cte",
+                true,
+            ),
+            ("EXPLAIN SELECT 1", false),
+            (
+                "INSERT INTO project_settings (project_id, key, value) VALUES (?1, ?2, ?3)",
+                true,
+            ),
+            (
+                "UPDATE project_settings SET value = ?1 WHERE project_id = ?2 AND key = ?3",
+                true,
+            ),
+            (
+                "DELETE FROM project_settings WHERE project_id = ?1 AND key = ?2",
+                true,
+            ),
+            (
+                "WITH values_cte AS (SELECT 1) INSERT INTO project_settings
+                 (project_id, key, value) VALUES (?1, ?2, ?3)",
+                true,
+            ),
+            ("not valid SQLite", true),
+        ];
+        for (sql, expected_guard) in cases {
+            assert_eq!(
+                untrusted_sql_needs_reserved_project_setting_guard(sql),
+                expected_guard,
+                "unexpected readonly probe result for {sql:?}"
+            );
+        }
     }
 
     #[test]
