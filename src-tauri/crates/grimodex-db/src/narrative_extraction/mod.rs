@@ -5,6 +5,8 @@ mod attention;
 mod c2z_preparation;
 pub(crate) mod c2zb_application_rekey;
 mod c2zc_canonical_cutover;
+#[cfg(feature = "c2zc-fixture-builder")]
+pub mod c2zc_restore_fixture;
 pub mod change_feed;
 mod chronicle_operations;
 mod codex_operations;
