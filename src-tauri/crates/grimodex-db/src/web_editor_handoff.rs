@@ -371,6 +371,38 @@ fn rebuild_trusted_schema_objects(
     })
 }
 
+fn validate_c2zc_native_table_contracts(
+    database: &Database,
+    expected: &SchemaContract,
+) -> anyhow::Result<()> {
+    let actual = database.with_conn(inspect_connection)?;
+    let registry = bundled_protected_writer_registry();
+    let table_names = std::iter::once("schema_data_migrations").chain(
+        registry
+            .c2zc_native_owned_entries()
+            .map(|entry| entry.table.as_str()),
+    );
+
+    for table_name in table_names {
+        let expected_table = expected.tables.get(table_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_C2ZC_WEB_EDITOR_HANDOFF_SCHEMA_REJECTED: trusted schema contract is missing table '{table_name}'"
+            )
+        })?;
+        let actual_table = actual.tables.get(table_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_C2ZC_WEB_EDITOR_HANDOFF_SCHEMA_REJECTED: migrated database is missing native-owned table '{table_name}'"
+            )
+        })?;
+        if actual_table != expected_table {
+            anyhow::bail!(
+                "NEX_C2ZC_WEB_EDITOR_HANDOFF_SCHEMA_REJECTED: native-owned table '{table_name}' does not match the trusted schema contract"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn validate_migrated_schema(database: &Database, expected: &SchemaContract) -> anyhow::Result<()> {
     let actual = database.with_conn(inspect_connection)?;
 
@@ -463,6 +495,7 @@ fn import_web_editor_workspace_inner(
     database.with_conn(harden_untrusted_connection)?;
     database.migrate()?;
     let expected_schema = expected_schema_contract()?;
+    validate_c2zc_native_table_contracts(&database, &expected_schema)?;
     rebuild_trusted_schema_objects(&database, &expected_schema)?;
     database.fts_rebuild()?;
     validate_migrated_schema(&database, &expected_schema)?;

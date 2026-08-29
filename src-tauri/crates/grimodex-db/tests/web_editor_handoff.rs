@@ -372,6 +372,90 @@ fn rejects_non_empty_semantic_epoch_before_publishing_and_cleans_candidate() {
 }
 
 #[test]
+fn rejects_empty_poisoned_schema_data_migrations_before_publishing() {
+    let root = temp_dir("poisoned-marker-schema");
+    let source = mutate_browser_database(
+        &root.join("source"),
+        "web-project",
+        "White Lighthouse",
+        |conn| {
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 DROP TABLE schema_data_migrations;
+                 CREATE TABLE schema_data_migrations (
+                     migration_id TEXT NOT NULL,
+                     contract_version INTEGER NOT NULL
+                         CHECK(contract_version > 0 AND contract_version <= 1000),
+                     applied_at TEXT NOT NULL,
+                     PRIMARY KEY(migration_id)
+                 );
+                 PRAGMA foreign_keys = ON;",
+            )?;
+            Ok(())
+        },
+    );
+
+    let error = import_web_editor_workspace(
+        &settings_path(&root),
+        &handoff_json(&source, "web-project", "White Lighthouse"),
+    )
+    .expect_err("poisoned marker schema must never be trusted after migration");
+    let message = error.to_string();
+    assert!(
+        message.contains("NEX_C2ZC_WEB_EDITOR_HANDOFF_SCHEMA_REJECTED"),
+        "unexpected error: {message}"
+    );
+    assert!(message.contains("schema_data_migrations"), "{message}");
+    assert_eq!(unpublished_workspace_count(&root), 0);
+
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn rejects_empty_poisoned_semantic_epoch_schema_before_publishing() {
+    let root = temp_dir("poisoned-epoch-schema");
+    let source = mutate_browser_database(
+        &root.join("source"),
+        "web-project",
+        "White Lighthouse",
+        |conn| {
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 DROP TABLE narrative_semantic_epochs;
+                 CREATE TABLE narrative_semantic_epochs (
+                     id TEXT NOT NULL COLLATE NOCASE,
+                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                     epoch_number INTEGER NOT NULL CHECK(epoch_number >= 0),
+                     reason TEXT NOT NULL
+                         CHECK(reason IN ('initial','restore','migration','integrity-repair','manual-rebuild')),
+                     triggered_by_change_event_uid TEXT,
+                     created_at TEXT NOT NULL,
+                     PRIMARY KEY(id),
+                     UNIQUE(project_id, epoch_number)
+                 );
+                 PRAGMA foreign_keys = ON;",
+            )?;
+            Ok(())
+        },
+    );
+
+    let error = import_web_editor_workspace(
+        &settings_path(&root),
+        &handoff_json(&source, "web-project", "White Lighthouse"),
+    )
+    .expect_err("poisoned Semantic Epoch schema must never be trusted after migration");
+    let message = error.to_string();
+    assert!(
+        message.contains("NEX_C2ZC_WEB_EDITOR_HANDOFF_SCHEMA_REJECTED"),
+        "unexpected error: {message}"
+    );
+    assert!(message.contains("narrative_semantic_epochs"), "{message}");
+    assert_eq!(unpublished_workspace_count(&root), 0);
+
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn c2zc_native_owned_registry_has_the_exact_authority_finding_and_repair_tables() {
     let registry = bundled_protected_writer_registry();
     let mut tables = registry
