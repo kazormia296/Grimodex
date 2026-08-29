@@ -2,6 +2,18 @@ import { db } from "@/db/client";
 import { appSettings, projectSettings } from "@/db/schema";
 import { eq, and, like } from "drizzle-orm";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { SCAN_IMPORT_STATE_KEY } from "@/features/import/scan/scanImportState";
+
+export const NATIVE_OWNED_PROJECT_SETTING_ERROR =
+  "NATIVE_OWNED_PROJECT_SETTING";
+
+function assertMutableProjectSettingKey(key: string): void {
+  if (key === SCAN_IMPORT_STATE_KEY) {
+    throw new Error(
+      `${NATIVE_OWNED_PROJECT_SETTING_ERROR}: ${SCAN_IMPORT_STATE_KEY}`,
+    );
+  }
+}
 
 /**
  * Keys we never surface in the timelapse: the recorder's own on/off control
@@ -69,6 +81,7 @@ export async function setProjectSetting(
   key: string,
   value: string,
 ): Promise<void> {
+  assertMutableProjectSettingKey(key);
   await db
     .insert(projectSettings)
     .values({ projectId, key, value })
@@ -92,6 +105,7 @@ export async function deleteProjectSetting(
   projectId: string,
   key: string,
 ): Promise<void> {
+  assertMutableProjectSettingKey(key);
   await db
     .delete(projectSettings)
     .where(

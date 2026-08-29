@@ -12,6 +12,7 @@ use std::sync::{
 };
 use std::time::Instant;
 
+use super::narrative_extraction::maintenance_runtime::SCAN_IMPORT_STATE_KEY;
 use super::protected_writers::{
     bundled_protected_writer_registry, classify_insert_columns, untrusted_mutation_rejection,
     PROTECTED_WRITER_SQL_ERROR,
@@ -59,6 +60,62 @@ const RENDERER_SQL_LENGTH_LIMIT: i32 = 1_048_576;
 const RENDERER_VDBE_OP_LIMIT: i32 = 250_000;
 const RENDERER_PROGRESS_INTERVAL: i32 = 10_000;
 const RENDERER_MAX_PROGRESS_CALLBACKS: usize = 5_000;
+
+const RESERVED_PROJECT_SETTING_INSERT_TRIGGER: &str =
+    "grimodex_guard_reserved_project_setting_insert";
+const RESERVED_PROJECT_SETTING_UPDATE_TRIGGER: &str =
+    "grimodex_guard_reserved_project_setting_update";
+const RESERVED_PROJECT_SETTING_DELETE_TRIGGER: &str =
+    "grimodex_guard_reserved_project_setting_delete";
+
+const RESERVED_PROJECT_SETTING_GUARD_SQL: &str = r#"
+CREATE TEMP TRIGGER grimodex_guard_reserved_project_setting_insert
+BEFORE INSERT ON main.project_settings
+WHEN NEW.key = 'scan.import.state'
+BEGIN
+  SELECT RAISE(ABORT, 'PROTECTED_WRITER_SQL: denied mutation of reserved project setting scan.import.state');
+END;
+CREATE TEMP TRIGGER grimodex_guard_reserved_project_setting_update
+BEFORE UPDATE ON main.project_settings
+WHEN OLD.key = 'scan.import.state' OR NEW.key = 'scan.import.state'
+BEGIN
+  SELECT RAISE(ABORT, 'PROTECTED_WRITER_SQL: denied mutation of reserved project setting scan.import.state');
+END;
+CREATE TEMP TRIGGER grimodex_guard_reserved_project_setting_delete
+BEFORE DELETE ON main.project_settings
+WHEN OLD.key = 'scan.import.state'
+BEGIN
+  SELECT RAISE(ABORT, 'PROTECTED_WRITER_SQL: denied mutation of reserved project setting scan.import.state');
+END;
+"#;
+
+fn drop_reserved_project_setting_guard(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(&format!(
+        "DROP TRIGGER IF EXISTS temp.{RESERVED_PROJECT_SETTING_INSERT_TRIGGER};
+         DROP TRIGGER IF EXISTS temp.{RESERVED_PROJECT_SETTING_UPDATE_TRIGGER};
+         DROP TRIGGER IF EXISTS temp.{RESERVED_PROJECT_SETTING_DELETE_TRIGGER};"
+    ))
+}
+
+fn install_reserved_project_setting_guard(conn: &Connection) -> rusqlite::Result<()> {
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM main.sqlite_master
+             WHERE type = 'table' AND name = 'project_settings'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(());
+    }
+
+    // Clear any partial installation before creating the complete set. The
+    // policy cleanup repeats this after removing the authorizer, so a setup
+    // error cannot strand a trigger on the shared connection.
+    drop_reserved_project_setting_guard(conn)?;
+    conn.execute_batch(RESERVED_PROJECT_SETTING_GUARD_SQL)
+}
 
 fn log_prefix(sql: &str) -> String {
     let trimmed = sql.trim_start();
@@ -264,6 +321,7 @@ fn restore_renderer_sql_policy(
         &mut first_error,
         conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>),
     );
+    keep_first_cleanup_error(&mut first_error, drop_reserved_project_setting_guard(conn));
     keep_first_cleanup_error(
         &mut first_error,
         conn.set_db_config(
@@ -313,6 +371,7 @@ where
     let denied_for_hook = Arc::clone(&denied_reason);
     let budget_for_hook = Arc::clone(&budget_exhausted);
     let setup_result = (|| -> rusqlite::Result<()> {
+        install_reserved_project_setting_guard(conn)?;
         conn.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, RENDERER_SQL_LENGTH_LIMIT)?;
         conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, RENDERER_VDBE_OP_LIMIT)?;
         conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
@@ -389,6 +448,11 @@ where
     }
 
     if let Err(error) = &result {
+        if error.to_string().contains(PROTECTED_WRITER_SQL_ERROR) {
+            return Err(anyhow::anyhow!(
+                "{PROTECTED_WRITER_SQL_ERROR}: denied mutation of reserved project setting {SCAN_IMPORT_STATE_KEY}"
+            ));
+        }
         if matches!(
             error.downcast_ref::<rusqlite::Error>(),
             Some(rusqlite::Error::SqliteFailure(failure, _))
@@ -1674,6 +1738,259 @@ mod tests {
             )
             .expect("read trusted seed");
         assert_eq!(rows[0]["title"], Value::from("Before"));
+    }
+
+    #[test]
+    fn untrusted_sql_cannot_mutate_reserved_scan_marker_but_trusted_can() {
+        let db = test_db();
+        db.migrate().expect("migrate database");
+        for (name, operation) in [
+            (RESERVED_PROJECT_SETTING_INSERT_TRIGGER, "AFTER INSERT"),
+            (RESERVED_PROJECT_SETTING_UPDATE_TRIGGER, "AFTER UPDATE"),
+            (RESERVED_PROJECT_SETTING_DELETE_TRIGGER, "AFTER DELETE"),
+        ] {
+            db.execute(
+                &format!(
+                    "CREATE TRIGGER {name} {operation} ON project_settings
+                     WHEN 0 BEGIN SELECT 1; END"
+                ),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("create persistent trigger {name}: {error}"));
+        }
+        db.execute(
+            "INSERT OR IGNORE INTO projects (id, title, created_at, updated_at)
+             VALUES ('scan-marker-guard', 'Scan marker guard', datetime('now'), datetime('now'))",
+            &[],
+            "run",
+        )
+        .expect("seed project");
+        db.execute(
+            "INSERT INTO project_settings (project_id, key, value)
+             VALUES ('scan-marker-guard', 'ordinary.setting', 'before')",
+            &[],
+            "run",
+        )
+        .expect("trusted ordinary project setting");
+        db.execute(
+            "INSERT INTO project_settings (project_id, key, value)
+             VALUES (?1, ?2, ?3)",
+            &[
+                Value::from("scan-marker-guard"),
+                Value::from(SCAN_IMPORT_STATE_KEY),
+                Value::from("staging"),
+            ],
+            "run",
+        )
+        .expect("trusted Native may create the Scan marker");
+
+        let attempts = [
+            (
+                "insert-literal",
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-marker-guard', 'scan.import.state', 'forged')",
+                vec![],
+            ),
+            (
+                "insert-bound",
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES (?1, ?2, ?3)",
+                vec![
+                    Value::from("scan-marker-guard"),
+                    Value::from(SCAN_IMPORT_STATE_KEY),
+                    Value::from("forged"),
+                ],
+            ),
+            (
+                "update-literal",
+                "UPDATE project_settings SET value = 'forged'
+                 WHERE project_id = 'scan-marker-guard' AND key = 'scan.import.state'",
+                vec![],
+            ),
+            (
+                "update-bound",
+                "UPDATE project_settings SET value = ?1
+                 WHERE project_id = ?2 AND key = ?3",
+                vec![
+                    Value::from("forged"),
+                    Value::from("scan-marker-guard"),
+                    Value::from(SCAN_IMPORT_STATE_KEY),
+                ],
+            ),
+            (
+                "update-expression",
+                "UPDATE project_settings SET value = 'forged'
+                 WHERE project_id = 'scan-marker-guard'
+                   AND key = printf('%s', 'scan.import.state')",
+                vec![],
+            ),
+            (
+                "update-to-reserved-key",
+                "UPDATE project_settings SET key = 'scan.import.state'
+                 WHERE project_id = 'scan-marker-guard' AND key = 'ordinary.setting'",
+                vec![],
+            ),
+            (
+                "update-from-reserved-key",
+                "UPDATE project_settings SET key = 'ordinary.renamed'
+                 WHERE project_id = 'scan-marker-guard' AND key = 'scan.import.state'",
+                vec![],
+            ),
+            (
+                "delete-literal",
+                "DELETE FROM project_settings
+                 WHERE project_id = 'scan-marker-guard' AND key = 'scan.import.state'",
+                vec![],
+            ),
+            (
+                "delete-bound",
+                "DELETE FROM project_settings WHERE project_id = ?1 AND key = ?2",
+                vec![
+                    Value::from("scan-marker-guard"),
+                    Value::from(SCAN_IMPORT_STATE_KEY),
+                ],
+            ),
+            (
+                "replace",
+                "INSERT OR REPLACE INTO project_settings (project_id, key, value)
+                 VALUES ('scan-marker-guard', 'scan.import.state', 'forged')",
+                vec![],
+            ),
+            (
+                "upsert-reserved",
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-marker-guard', 'scan.import.state', 'forged')
+                 ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value",
+                vec![],
+            ),
+        ];
+
+        for origin in [SqlOrigin::Renderer, SqlOrigin::McpGeneric] {
+            for (label, sql, params) in &attempts {
+                let error = db
+                    .execute_untrusted(origin, sql, params, "run")
+                    .expect_err("untrusted SQL must not mutate the Scan marker");
+                assert!(
+                    error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                    "unexpected {origin:?} {label} error: {error}"
+                );
+            }
+
+            db.execute_untrusted(
+                origin,
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-marker-guard', 'ordinary.insert', 'inserted')",
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("{origin:?} ordinary insert: {error}"));
+            db.execute_untrusted(
+                origin,
+                "UPDATE project_settings SET value = 'updated'
+                 WHERE project_id = 'scan-marker-guard' AND key = 'ordinary.setting'",
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("{origin:?} ordinary update: {error}"));
+            db.execute_untrusted(
+                origin,
+                "DELETE FROM project_settings
+                 WHERE project_id = 'scan-marker-guard' AND key = 'ordinary.insert'",
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("{origin:?} ordinary delete: {error}"));
+
+            let batch = vec![
+                BatchStatement {
+                    sql: "INSERT INTO project_settings (project_id, key, value)
+                          VALUES ('scan-marker-guard', 'ordinary.batch', 'inserted')"
+                        .to_string(),
+                    params: vec![],
+                    method: "run".to_string(),
+                },
+                BatchStatement {
+                    sql: "INSERT INTO project_settings (project_id, key, value)
+                          VALUES (?1, ?2, ?3)"
+                        .to_string(),
+                    params: vec![
+                        Value::from("scan-marker-guard"),
+                        Value::from(SCAN_IMPORT_STATE_KEY),
+                        Value::from("forged"),
+                    ],
+                    method: "run".to_string(),
+                },
+            ];
+            let batch_error = db
+                .execute_batch_tx_untrusted(origin, &batch)
+                .expect_err("untrusted batch must roll back before the reserved marker");
+            assert!(
+                batch_error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                "unexpected {origin:?} batch error: {batch_error}"
+            );
+            let batch_rows = db
+                .execute(
+                    "SELECT count(*) AS count FROM project_settings
+                     WHERE project_id = 'scan-marker-guard' AND key = 'ordinary.batch'",
+                    &[],
+                    "get",
+                )
+                .expect("inspect rolled-back ordinary batch row");
+            assert_eq!(batch_rows[0]["count"], Value::from(0));
+            db.execute_untrusted(
+                origin,
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-marker-guard', 'ordinary.after_batch', 'inserted')",
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("{origin:?} policy cleanup: {error}"));
+            db.execute_untrusted(
+                origin,
+                "DELETE FROM project_settings
+                 WHERE project_id = 'scan-marker-guard' AND key = 'ordinary.after_batch'",
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("{origin:?} policy cleanup delete: {error}"));
+        }
+
+        let marker = db
+            .execute(
+                "SELECT value FROM project_settings
+                 WHERE project_id = 'scan-marker-guard' AND key = 'scan.import.state'",
+                &[],
+                "get",
+            )
+            .expect("read preserved Scan marker");
+        assert_eq!(marker[0]["value"], Value::from("staging"));
+
+        db.execute(
+            "UPDATE project_settings SET value = 'published'
+             WHERE project_id = 'scan-marker-guard' AND key = 'scan.import.state'",
+            &[],
+            "run",
+        )
+        .expect("trusted Native may update the Scan marker");
+        db.execute(
+            "DELETE FROM project_settings
+             WHERE project_id = 'scan-marker-guard' AND key = 'scan.import.state'",
+            &[],
+            "run",
+        )
+        .expect("trusted Native may remove the Scan marker");
+
+        let persistent_triggers = db
+            .execute(
+                "SELECT count(*) AS count FROM main.sqlite_master
+                 WHERE type = 'trigger'
+                   AND name LIKE 'grimodex_guard_reserved_project_setting_%'",
+                &[],
+                "get",
+            )
+            .expect("read persistent guard trigger names");
+        assert_eq!(persistent_triggers[0]["count"], Value::from(3));
     }
 
     #[test]
