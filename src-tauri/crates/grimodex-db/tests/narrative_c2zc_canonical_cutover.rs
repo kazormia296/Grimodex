@@ -87,6 +87,19 @@ type ConsumerFreshnessRow = (
 
 type EdgeFreshnessRow = (String, String, Option<String>, String, String, String);
 
+type ProjectFreshnessLivenessRow = (
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    i64,
+    i64,
+    i64,
+);
+
 fn fixture_db() -> Database {
     let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
     db.migrate().expect("migrate database");
@@ -1982,12 +1995,7 @@ impl LegacySnapshotBaseline {
                         descriptor.identity_columns,
                     )
                     .ok()
-                    .is_some_and(|key| {
-                        baseline
-                            .expected_keys
-                            .iter()
-                            .any(|expected| *expected == key)
-                    })
+                    .is_some_and(|key| baseline.expected_keys.contains(&key))
                 })
                 .collect::<Vec<_>>();
             assert_eq!(
@@ -2465,18 +2473,33 @@ fn seed_previous_release_application(
     (run_id, set_id, saved_proposal_id, revision_id, event_id)
 }
 
+struct PreviousReleaseApplicationArgs<'a> {
+    project_id: &'a str,
+    scene_id: &'a str,
+    run_id: &'a str,
+    set_id: &'a str,
+    proposal_id: &'a str,
+    revision_id: &'a str,
+    event_id: &'a str,
+    expected_tail_ordinal: Option<String>,
+    identity: &'a str,
+}
+
 fn apply_previous_release_application(
     db: &Database,
-    project_id: &str,
-    scene_id: &str,
-    run_id: &str,
-    set_id: &str,
-    proposal_id: &str,
-    revision_id: &str,
-    event_id: &str,
-    expected_tail_ordinal: Option<String>,
-    identity: &str,
+    args: PreviousReleaseApplicationArgs<'_>,
 ) -> String {
+    let PreviousReleaseApplicationArgs {
+        project_id,
+        scene_id,
+        run_id,
+        set_id,
+        proposal_id,
+        revision_id,
+        event_id,
+        expected_tail_ordinal,
+        identity,
+    } = args;
     let request_id = format!("request-c2zc-previous-release-{identity}");
     let session_id = format!("session-c2zc-previous-release-{identity}");
     let prepared = narrative_extraction_prepare_commit(
@@ -2735,18 +2758,7 @@ fn assert_project_freshness_liveness(db: &Database, project_id: &str, epoch_id: 
         feed_head,
         completed_runs,
         active_runs,
-    ): (
-        i64,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-        i64,
-        i64,
-        i64,
-    ) = db
+    ): ProjectFreshnessLivenessRow = db
         .with_conn(|conn| {
             Ok(conn.query_row(
                 "SELECT cursor.acknowledged_through_sequence,
@@ -3145,15 +3157,20 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
     );
     let default_application_id = apply_previous_release_application(
         &opened.database,
-        release_schema_fixture::SECOND_PROJECT_ID,
-        release_schema_fixture::SECOND_SCENE_ID,
-        &default_application_source_run_id,
-        &default_application_set_id,
-        &default_proposal_id,
-        &default_revision_id,
-        &default_event_id,
-        current_event_tail_ordinal(&opened.database, release_schema_fixture::SECOND_PROJECT_ID),
-        release_schema_fixture::SECOND_PROJECT_ID,
+        PreviousReleaseApplicationArgs {
+            project_id: release_schema_fixture::SECOND_PROJECT_ID,
+            scene_id: release_schema_fixture::SECOND_SCENE_ID,
+            run_id: &default_application_source_run_id,
+            set_id: &default_application_set_id,
+            proposal_id: &default_proposal_id,
+            revision_id: &default_revision_id,
+            event_id: &default_event_id,
+            expected_tail_ordinal: current_event_tail_ordinal(
+                &opened.database,
+                release_schema_fixture::SECOND_PROJECT_ID,
+            ),
+            identity: release_schema_fixture::SECOND_PROJECT_ID,
+        },
     );
     let source_identity = format!("project:scene:{}", release_schema_fixture::SCENE_ID);
     let revision_token = current_scene_revision_token(
@@ -3172,15 +3189,20 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         );
     let application_id = apply_previous_release_application(
         &opened.database,
-        release_schema_fixture::PROJECT_ID,
-        release_schema_fixture::SCENE_ID,
-        &application_source_run_id,
-        &application_set_id,
-        &proposal_id,
-        &revision_id,
-        &event_id,
-        current_event_tail_ordinal(&opened.database, release_schema_fixture::PROJECT_ID),
-        "gate-a2-project",
+        PreviousReleaseApplicationArgs {
+            project_id: release_schema_fixture::PROJECT_ID,
+            scene_id: release_schema_fixture::SCENE_ID,
+            run_id: &application_source_run_id,
+            set_id: &application_set_id,
+            proposal_id: &proposal_id,
+            revision_id: &revision_id,
+            event_id: &event_id,
+            expected_tail_ordinal: current_event_tail_ordinal(
+                &opened.database,
+                release_schema_fixture::PROJECT_ID,
+            ),
+            identity: "gate-a2-project",
+        },
     );
     let application_ids_by_project = BTreeMap::from([
         (
