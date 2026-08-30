@@ -164,6 +164,107 @@ function heldFreshnessReceipt(
   };
 }
 
+const HELD_FRESHNESS_STUCK_LAUNCH_TIMEOUT_MS = 3_000;
+const HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_TIMEOUT_MS = 2_500;
+const HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_ITERATION_TIMEOUT_MS = 250;
+const HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_POLL_INTERVAL_MS = 10;
+const HUNG_SCREENSHOT_CAPTURE_TIMEOUT_MS = 5_000;
+const HUNG_SCREENSHOT_STUB_TIMEOUT_MS = 1_000;
+const HUNG_SCREENSHOT_ATTEMPT_TIMEOUT_MS =
+  HUNG_SCREENSHOT_CAPTURE_TIMEOUT_MS - HUNG_SCREENSHOT_STUB_TIMEOUT_MS;
+const HUNG_SCREENSHOT_CAPTURE_COMPLETION_TIMEOUT_MS = 2_000;
+
+async function awaitHeldFreshnessBeforeRequestBarrier(
+  harness,
+  {
+    phase,
+    requestNonce,
+    workspaceBinding,
+    timeoutMs = HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_TIMEOUT_MS,
+  },
+) {
+  const requestPath = path.join(
+    harness.receiptRoot,
+    RECEIPT_NONCE,
+    NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+  );
+  const nonceDir = path.dirname(requestPath);
+  const journalPhase = `${phase}/before-request`;
+  let lastObservation = `root=${harness.receiptRoot}; request=unobserved`;
+
+  try {
+    await waitUntil(
+      async () => {
+        let request;
+        try {
+          request = JSON.parse(await readFile(requestPath, "utf8"));
+        } catch (error) {
+          if (error?.code === "ENOENT") {
+            lastObservation = `root=${harness.receiptRoot}; request=missing`;
+            return false;
+          }
+          throw error;
+        }
+        const requestMatches =
+          request?.nonce === RECEIPT_NONCE &&
+          request?.requestNonce === requestNonce &&
+          request?.phase === phase &&
+          canonicalValueText(request?.workspaceBinding) ===
+            canonicalValueText(workspaceBinding);
+
+        let journalEntries;
+        try {
+          journalEntries = (await readFile(harness.journalPath, "utf8"))
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line));
+        } catch (error) {
+          if (error?.code === "ENOENT") {
+            lastObservation = `root=${harness.receiptRoot}; request=${requestMatches}; journal=missing`;
+            return false;
+          }
+          throw error;
+        }
+        const reverifyCompleted = journalEntries.some(
+          (entry) =>
+            entry.operation === "receipt-revalidate" &&
+            entry.phase === journalPhase &&
+            entry.status === "completed",
+        );
+        const temporaryEntries = (await readdir(nonceDir)).filter((name) =>
+          name.endsWith(".tmp"),
+        );
+        lastObservation =
+          `root=${harness.receiptRoot}; request=${requestMatches}; ` +
+          `reverify=${reverifyCompleted}; temporary=${temporaryEntries.join(",") || "none"}`;
+        return (
+          requestMatches &&
+          reverifyCompleted &&
+          temporaryEntries.length === 0
+        );
+      },
+      `held-Freshness before-request barrier for ${phase}`,
+      timeoutMs,
+      HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_POLL_INTERVAL_MS,
+      {
+        iterationTimeoutMs: Math.min(
+          HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_ITERATION_TIMEOUT_MS,
+          timeoutMs,
+        ),
+      },
+    );
+  } catch (error) {
+    throw new Error(
+      `held-Freshness before-request barrier failed for ${phase}: ${lastObservation}`,
+      { cause: error },
+    );
+  }
+
+  // Let the completed journal write and the reverify continuation settle
+  // before publishing the deliberately stuck temp artifact.
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
 test("maintenance receipt contract is nonce-bound and exact", () => {
   const env = {
     CI: "true",
@@ -714,7 +815,7 @@ test("harness retries only the current held-Freshness temp and reports a stuck t
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
-    launchTimeoutMs: 100,
+    launchTimeoutMs: HELD_FRESHNESS_STUCK_LAUNCH_TIMEOUT_MS,
     electronLauncher: {
       launch: async ({ env }) => {
         const expected = expectedNarrativeMaintenanceCiReceipt(env);
@@ -823,8 +924,28 @@ test("harness retries only the current held-Freshness temp and reports a stuck t
     RECEIPT_NONCE,
     "held-freshness-0000000003.json.tmp",
   );
+  const stuckWait = harness.awaitHeldFreshness(
+    launched.app,
+    "held-freshness-retry/stuck",
+    {
+      previousSequence: 2,
+      requestNonce: stuckRequestNonce,
+      authorityId: "authority-1",
+      generation: 1,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
+    },
+  );
+  try {
+    await awaitHeldFreshnessBeforeRequestBarrier(harness, {
+      phase: "held-freshness-retry/stuck",
+      requestNonce: stuckRequestNonce,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
+    });
+  } catch (error) {
+    await stuckWait.catch(() => undefined);
+    throw error;
+  }
   const stuckWrite = (async () => {
-    await new Promise((resolve) => setTimeout(resolve, 5));
     const nonceDir = path.dirname(stuckTempPath);
     const request = JSON.parse(
       await readFile(
@@ -847,16 +968,7 @@ test("harness retries only the current held-Freshness temp and reports a stuck t
       { mode: 0o600 },
     );
   })();
-  await assert.rejects(
-    harness.awaitHeldFreshness(launched.app, "held-freshness-retry/stuck", {
-      previousSequence: 2,
-      requestNonce: stuckRequestNonce,
-      authorityId: "authority-1",
-      generation: 1,
-      workspaceBinding: { authorityId: "authority-1", generation: 1 },
-    }),
-    /partial\/stuck/i,
-  );
+  await assert.rejects(stuckWait, /partial\/stuck/i);
   await stuckWrite;
   await rm(stuckTempPath, { force: true });
   await harness.close(launched.app, launched.page, "held-freshness-retry");
@@ -3286,16 +3398,58 @@ test("failure evidence is published before a bounded optional screenshot", async
   const artifactRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-product-hung-screenshot-"),
   );
+  const runtime = path.join(artifactRoot, "hung-screenshot", "runtime");
+  const runtimeOperationsPath = path.join(runtime, "operations.jsonl");
   let resolveScreenshotStarted;
   const screenshotStarted = new Promise((resolve) => {
     resolveScreenshotStarted = resolve;
   });
+  let screenshotEvidence;
+  let screenshotEvidenceError;
   const page = {
     isClosed: () => false,
     on: () => undefined,
     evaluate: async () => [],
     waitForFunction: async () => undefined,
     screenshot: async () => {
+      try {
+        screenshotEvidence = {
+          operations: await readFile(runtimeOperationsPath, "utf8"),
+          mainLog: await readFile(
+            path.join(runtime, "diagnostics", "main.log"),
+            "utf8",
+          ),
+          rendererLog: await readFile(
+            path.join(runtime, "diagnostics", "renderer.log"),
+            "utf8",
+          ),
+          authorityTimeline: await readFile(
+            path.join(runtime, "diagnostics", "authority-timeline.json"),
+            "utf8",
+          ),
+          rendererDiagnostics: await readFile(
+            path.join(runtime, "diagnostics", "renderer-diagnostics.json"),
+            "utf8",
+          ),
+          mainDiagnostics: await readFile(
+            path.join(runtime, "diagnostics", "main-diagnostics.json"),
+            "utf8",
+          ),
+          database: await readFile(
+            path.join(
+              runtime,
+              "diagnostics",
+              "databases",
+              "snapshot-workspace.db",
+            ),
+          ),
+          receiptSnapshot: await readdir(
+            path.join(runtime, "diagnostics", "receipt-snapshot"),
+          ),
+        };
+      } catch (error) {
+        screenshotEvidenceError = error;
+      }
       resolveScreenshotStarted();
       return new Promise(() => {});
     },
@@ -3326,52 +3480,70 @@ test("failure evidence is published before a bounded optional screenshot", async
     path.join(snapshotWorkspace, "grimodex.db"),
     "CREATE TABLE evidence (value TEXT);",
   ]);
+  let captureSettled = false;
   const capture = harness.captureFailureArtifact("hung-screenshot");
-  await Promise.race([
-    screenshotStarted,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("screenshot was not attempted")), 500),
-    ),
-  ]);
-  const runtime = path.join(artifactRoot, "hung-screenshot", "runtime");
-  assert.match(
-    await readFile(path.join(runtime, "operations.jsonl"), "utf8"),
-    /electron-launch/,
+  void capture.then(
+    () => {
+      captureSettled = true;
+    },
+    () => {
+      captureSettled = true;
+    },
   );
+
+  let screenshotAttemptTimer;
+  try {
+    await Promise.race([
+      screenshotStarted,
+      new Promise((_, reject) => {
+        screenshotAttemptTimer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `screenshot was not attempted within ${HUNG_SCREENSHOT_ATTEMPT_TIMEOUT_MS}ms`,
+              ),
+            ),
+          HUNG_SCREENSHOT_ATTEMPT_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (screenshotAttemptTimer) clearTimeout(screenshotAttemptTimer);
+  }
+  if (screenshotEvidenceError) {
+    throw new Error("durable failure evidence was not published", {
+      cause: screenshotEvidenceError,
+    });
+  }
+  assert.ok(screenshotEvidence);
+  assert.match(screenshotEvidence.operations, /electron-launch/);
+  assert.equal(screenshotEvidence.mainLog, "");
+  assert.ok(screenshotEvidence.rendererLog !== undefined);
+  assert.ok(screenshotEvidence.authorityTimeline !== undefined);
+  assert.ok(screenshotEvidence.rendererDiagnostics !== undefined);
+  assert.ok(screenshotEvidence.mainDiagnostics !== undefined);
+  assert.ok(screenshotEvidence.database.byteLength > 0);
+  assert.ok(Array.isArray(screenshotEvidence.receiptSnapshot));
   assert.equal(
-    await readFile(path.join(runtime, "diagnostics", "main.log"), "utf8"),
-    "",
+    captureSettled,
+    false,
+    "capture must still be pending on the bounded screenshot",
   );
-  await readFile(path.join(runtime, "diagnostics", "renderer.log"), "utf8");
-  await readFile(
-    path.join(runtime, "diagnostics", "authority-timeline.json"),
-    "utf8",
-  );
-  await readFile(
-    path.join(runtime, "diagnostics", "renderer-diagnostics.json"),
-    "utf8",
-  );
-  await readFile(
-    path.join(runtime, "diagnostics", "main-diagnostics.json"),
-    "utf8",
-  );
-  assert.ok(
-    (
-      await readFile(
-        path.join(runtime, "diagnostics", "databases", "snapshot-workspace.db"),
-      )
-    ).byteLength > 0,
-  );
-  await readdir(path.join(runtime, "diagnostics", "receipt-snapshot"));
-  await Promise.race([
-    capture,
-    new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error("hung screenshot was not bounded")),
-        2_000,
-      ),
-    ),
-  ]);
+  let captureCompletionTimer;
+  try {
+    await Promise.race([
+      capture,
+      new Promise((_, reject) => {
+        captureCompletionTimer = setTimeout(
+          () => reject(new Error("hung screenshot was not bounded")),
+          HUNG_SCREENSHOT_CAPTURE_COMPLETION_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (captureCompletionTimer) clearTimeout(captureCompletionTimer);
+  }
+  assert.equal(captureSettled, true);
   await harness
     .close(launched.app, launched.page, "observability/hung-screenshot")
     .catch(() => undefined);
