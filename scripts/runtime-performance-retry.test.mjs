@@ -275,6 +275,15 @@ test("measurement errors, mixed regressions, and disabled policy never retry", (
     {
       retryTransientOnce: true,
       first: {
+        status: 1,
+        phase: "measurement-timeout",
+        metrics: null,
+        evaluation: null,
+      },
+    },
+    {
+      retryTransientOnce: true,
+      first: {
         ...eligibleFailure(),
         evaluation: buildEvaluation("chroniclePan", ["projectOpenMs"]),
       },

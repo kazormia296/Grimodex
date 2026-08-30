@@ -589,6 +589,8 @@ test("C2-ZC product results and audit manifest bind the verified fixture manifes
     mkdir(path.dirname(rendererPath), { recursive: true }),
     mkdir(path.dirname(nativePath), { recursive: true }),
     mkdir(fixtureRoot, { recursive: true }),
+  ]);
+  await Promise.all([
     writeFile(mainPath, "main"),
     writeFile(rendererPath, "renderer"),
     writeFile(nativePath, "native"),
@@ -865,6 +867,8 @@ test("C2-ZC rehashes configured artifacts after every lane before acceptance", a
     mkdir(path.dirname(mainPath), { recursive: true }),
     mkdir(path.dirname(rendererPath), { recursive: true }),
     mkdir(path.dirname(nativePath), { recursive: true }),
+  ]);
+  await Promise.all([
     writeFile(mainPath, "main"),
     writeFile(rendererPath, "renderer"),
     writeFile(nativePath, "native"),

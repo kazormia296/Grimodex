@@ -575,6 +575,8 @@ test("local Full builds and verifies an external C2-ZC fixture before passing it
     mkdir(path.dirname(nativePath), { recursive: true }),
     mkdir(path.dirname(mainPath), { recursive: true }),
     mkdir(path.dirname(rendererPath), { recursive: true }),
+  ]);
+  await Promise.all([
     writeFile(nativePath, "native"),
     writeFile(mainPath, "main"),
     writeFile(rendererPath, "renderer"),
@@ -751,6 +753,8 @@ test("local Full passes the verified copied fixture to product journeys, never t
     mkdir(path.dirname(nativePath), { recursive: true }),
     mkdir(path.dirname(mainPath), { recursive: true }),
     mkdir(path.dirname(rendererPath), { recursive: true }),
+  ]);
+  await Promise.all([
     writeFile(nativePath, "native"),
     writeFile(mainPath, "main"),
     writeFile(rendererPath, "renderer"),
@@ -1018,6 +1022,8 @@ test("local CI does not self-attest a product build receipt before the build com
     mkdir(path.dirname(mainPath), { recursive: true }),
     mkdir(path.dirname(rendererPath), { recursive: true }),
     mkdir(path.dirname(nativePath), { recursive: true }),
+  ]);
+  await Promise.all([
     writeFile(mainPath, "main"),
     writeFile(rendererPath, "renderer"),
     writeFile(nativePath, "native"),

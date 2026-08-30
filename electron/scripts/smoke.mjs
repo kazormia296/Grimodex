@@ -14,7 +14,6 @@
  * 実行前提: `pnpm napi:build` と `pnpm electron:build` が済んでいること。
  * 失敗時は一時ディレクトリを残して exit 1（調査用にパスを表示する）。
  */
-import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -30,6 +29,23 @@ import {
   aggregateAppProcessMemory,
   appMemoryMeasurement,
 } from "./process-memory.mjs";
+import {
+  RUNTIME_PERFORMANCE_RAF_CALIBRATION_SAMPLE_COUNT,
+  assertRuntimePerformanceActive,
+  buildRuntimePerformanceTimeoutArtifact,
+  buildRuntimePerformanceTimeoutArtifactPath,
+  captureRafCalibration,
+  createRuntimePerformanceCleanupCoordinator,
+  finalizeRuntimePerformanceTimeout,
+  focusRuntimeWindow,
+  readDomForegroundSnapshot,
+  readRuntimeWindowSnapshot,
+  runRuntimePerformancePhaseSequence,
+  snapshotChildProcess,
+  snapshotRuntimePerformanceContext,
+  terminateOwnedProcessTree,
+  writeRuntimePerformanceTimeoutArtifact,
+} from "./performance-harness.mjs";
 import {
   RUNTIME_PERFORMANCE_INPUT_TEXT,
   RUNTIME_PERFORMANCE_STEADY_INPUT_TEXT,
@@ -108,7 +124,7 @@ function log(step) {
 function precondition(cond, message) {
   if (!cond) {
     console.error(`[electron:smoke] ${message}`);
-    process.exit(1);
+    throw new Error(message);
   }
 }
 
@@ -235,6 +251,43 @@ const performanceMetrics = {
   },
   diagnostics: null,
 };
+const performanceTimeoutArtifactPath =
+  buildRuntimePerformanceTimeoutArtifactPath(
+    performanceOutputPath ?? path.join(tmpRoot, "runtime-metrics.json"),
+  );
+const runtimeContext = {
+  startedAt: new Date().toISOString(),
+  startedAtMonotonic: performance.now(),
+  phase: "bootstrap",
+  currentInteraction: null,
+  app: null,
+  page: null,
+  memorySampler: null,
+  memoryStopPromise: null,
+  closePromise: null,
+  foreground: null,
+  rafCalibration: null,
+  partialMetrics: performanceMetrics,
+  cleanupCoordinator: createRuntimePerformanceCleanupCoordinator(),
+  timeoutSnapshot: null,
+  watchdogTriggered: false,
+  watchdogPromise: null,
+};
+const runtimeAbortController = new AbortController();
+const runtimeAbortSignal = runtimeAbortController.signal;
+
+function assertRuntimePhaseActive(label) {
+  assertRuntimePerformanceActive(runtimeAbortSignal, label);
+}
+
+function setRuntimePhase(phase, currentInteraction = null) {
+  runtimeContext.phase = phase;
+  runtimeContext.currentInteraction = currentInteraction;
+}
+
+function setRuntimeInteraction(currentInteraction) {
+  runtimeContext.currentInteraction = currentInteraction;
+}
 
 async function appMemorySnapshot(app) {
   const processMetrics = await app.evaluate(({ app: electronApp }) =>
@@ -376,6 +429,14 @@ function startMemorySampler(app, phase, initialPage = null) {
   };
 }
 
+async function stopRuntimeMemorySampler(memorySampler) {
+  if (!memorySampler) return null;
+  const stopPromise =
+    runtimeContext.cleanupCoordinator.stopMemorySampler(memorySampler);
+  runtimeContext.memoryStopPromise ??= stopPromise;
+  return await stopPromise;
+}
+
 async function pauseMemorySamplerForInteraction(memorySampler) {
   const before = await memorySampler.sampleFresh(true);
   if (!before) {
@@ -396,6 +457,8 @@ async function pauseMemorySamplerForInteraction(memorySampler) {
 
 /** アプリを 1 回起動して main window の bridge が生きるまで待つ。 */
 async function launchApp(phase, { deferMemorySampler = false } = {}) {
+  assertRuntimePhaseActive(`launch ${phase}`);
+  setRuntimePhase(phase);
   const env = { ...process.env };
   delete env.ELECTRON_RENDERER_URL; // 本番経路（app://）を強制
   env.GRIMODEX_USER_DATA_DIR = userDataDir;
@@ -428,10 +491,38 @@ async function launchApp(phase, { deferMemorySampler = false } = {}) {
     env,
     timeout: LAUNCH_TIMEOUT_MS,
   });
+  const cleanupCoordinator = createRuntimePerformanceCleanupCoordinator();
+  runtimeContext.cleanupCoordinator = cleanupCoordinator;
+  runtimeContext.app = app;
+  runtimeContext.page = null;
+  runtimeContext.memorySampler = null;
+  runtimeContext.memoryStopPromise = null;
+  runtimeContext.closePromise = null;
+  try {
+    assertRuntimePhaseActive(`launch ${phase}`);
+  } catch (error) {
+    try {
+      await cleanupCoordinator.closeApp(
+        app,
+        null,
+        phase,
+        closeElectronAppWithDiagnostics,
+      );
+    } catch {
+      await cleanupCoordinator.terminateProcess(() =>
+        terminateOwnedProcessTree({
+          childProcessSnapshot: snapshotChildProcess(app.process?.()),
+          platform: process.platform,
+        }),
+      );
+    }
+    throw error;
+  }
   const memorySampler =
     performanceOutputPath && !deferMemorySampler
       ? startMemorySampler(app, phase)
       : null;
+  runtimeContext.memorySampler = memorySampler;
   // main プロセスの標準出力を prefix 付きで透過（CI 調査用）
   app.process().stdout?.on("data", (d) => {
     process.stdout.write(`  [main] ${String(d)}`);
@@ -441,6 +532,7 @@ async function launchApp(phase, { deferMemorySampler = false } = {}) {
   });
 
   const page = await app.firstWindow({ timeout: LAUNCH_TIMEOUT_MS });
+  runtimeContext.page = page;
   page.on("console", (message) => {
     if (!["warning", "error"].includes(message.type())) return;
     process.stderr.write(`  [renderer:${message.type()}] ${message.text()}\n`);
@@ -476,16 +568,67 @@ async function launchApp(phase, { deferMemorySampler = false } = {}) {
 }
 
 async function closeAppWithDiagnostics(app, page, phase) {
-  await closeElectronAppWithDiagnostics(app, page, phase);
+  const closePromise = runtimeContext.cleanupCoordinator.closeApp(
+    app,
+    page,
+    phase,
+    closeElectronAppWithDiagnostics,
+  );
+  runtimeContext.closePromise ??= closePromise;
+  return await closePromise;
+}
+
+async function finishRuntimePhase({ app, page, memorySampler, phase }) {
+  if (runtimeContext.watchdogTriggered) {
+    if (runtimeContext.watchdogPromise) await runtimeContext.watchdogPromise;
+    return;
+  }
+  await stopRuntimeMemorySampler(memorySampler);
+  if (runtimeContext.watchdogTriggered) {
+    if (runtimeContext.watchdogPromise) await runtimeContext.watchdogPromise;
+    return;
+  }
+  await closeAppWithDiagnostics(app, page, phase);
+  if (runtimeContext.watchdogTriggered && runtimeContext.watchdogPromise) {
+    await runtimeContext.watchdogPromise;
+    return;
+  }
+  if (runtimeContext.app === app) {
+    runtimeContext.app = null;
+    runtimeContext.page = null;
+    runtimeContext.memorySampler = null;
+    runtimeContext.memoryStopPromise = null;
+    runtimeContext.closePromise = null;
+  }
 }
 
 async function ensureBenchmarkPageForeground(page) {
+  const requestedNativeWindow = await focusRuntimeWindow(runtimeContext.app);
   await page.bringToFront();
   await page.waitForFunction(
-    () => document.visibilityState === "visible" && document.hidden === false,
+    () =>
+      document.visibilityState === "visible" &&
+      document.hidden === false &&
+      document.hasFocus(),
     undefined,
     { timeout: 10_000 },
   );
+  const nativeWindow = await readRuntimeWindowSnapshot(runtimeContext.app);
+  const dom = await readDomForegroundSnapshot(page);
+  runtimeContext.foreground = { dom, nativeWindow };
+  if (
+    requestedNativeWindow?.available !== true ||
+    nativeWindow?.available !== true ||
+    nativeWindow.isFocused !== true ||
+    nativeWindow.isVisible !== true ||
+    dom?.visibilityState !== "visible" ||
+    dom?.documentHidden !== false ||
+    dom?.documentHasFocus !== true
+  ) {
+    throw new Error(
+      `runtime performance foreground verification failed: ${JSON.stringify({ dom, nativeWindow, requestedNativeWindow })}`,
+    );
+  }
 }
 
 /** 指定 scene の本文が DB に残っているか（ブリッジ経由 SELECT）。 */
@@ -858,6 +1001,7 @@ async function measureRuntimeAutosaveSample(
     cpuProfilePath = null,
   },
 ) {
+  setRuntimeInteraction("autosave");
   // Each sample is independent evidence. Reassert active-page scheduling just
   // before opening its session so background-priority post-save tasks are not
   // measured under Chromium's occluded-window timer policy.
@@ -900,6 +1044,7 @@ async function measureRuntimeAutosaveSample(
   if (!session?.segments?.durableSave || !session?.segments?.postSaveDrain) {
     throw new Error(`${sceneId} performance segment evidence is incomplete`);
   }
+  setRuntimeInteraction(null);
   return { inputTarget, session };
 }
 
@@ -915,6 +1060,7 @@ function aggregateRuntimeLongTaskSamples(samples) {
 }
 
 async function assertTreeAndGridVirtualization(page) {
+  setRuntimeInteraction("treeFilter");
   const scenesPanel = page
     .locator('[data-droptarget-id="scenes-panel"]:visible')
     .first();
@@ -1010,9 +1156,11 @@ async function assertTreeAndGridVirtualization(page) {
   log(
     `  Grid virtualization: ${await gridRendered.jsonValue()} rendered / ${PERF_SCENE_COUNT} fixture scenes`,
   );
+  setRuntimeInteraction(null);
 }
 
 async function measureTimelineDrag(page, memorySampler) {
+  setRuntimeInteraction("timelineDrag");
   const timelinePanel = page.getByTestId("timeline-panel");
   const axisMode = timelinePanel.locator("select").first();
   if ((await axisMode.inputValue()) !== "story") {
@@ -1133,9 +1281,11 @@ async function measureTimelineDrag(page, memorySampler) {
   log(
     `  Timeline drag: ${frameMetrics?.frameCount ?? "missing"} frame(s), p95 ${frameMetrics?.p95FrameMs ?? "missing"} ms, max ${frameMetrics?.maxFrameMs ?? "missing"} ms`,
   );
+  setRuntimeInteraction(null);
 }
 
 async function measureChroniclePan(page, memorySampler) {
+  setRuntimeInteraction("chroniclePan");
   const track = page.locator("#chronicle-track:visible").first();
   await showPanel(page, "chronicle", track);
   await page.waitForFunction(
@@ -1388,6 +1538,7 @@ async function measureChroniclePan(page, memorySampler) {
 
   await togglePanel(page, "chronicle");
   await track.waitFor({ state: "detached", timeout: 10_000 });
+  setRuntimeInteraction(null);
 }
 
 function shouldMeasureReviewScenario(scenario) {
@@ -1398,6 +1549,7 @@ function shouldMeasureReviewScenario(scenario) {
 }
 
 async function measureMapView(page, memorySampler) {
+  setRuntimeInteraction("mapDrag");
   const mapPanel = page.locator('[data-droptarget-id="map-panel"]');
   await showPanel(page, "map", mapPanel);
   await page.waitForFunction(
@@ -1775,6 +1927,7 @@ async function measureMapView(page, memorySampler) {
     `  Map drag: target=${performanceMetrics.interactions.mapDrag.targetNodeRenderCount} render(s), ${performanceMetrics.interactions.mapDrag.unrelatedNodeCount} unrelated nodes, ${performanceMetrics.interactions.mapDrag.unrelatedNodeObjectIdentityChanges} object identity / ${performanceMetrics.interactions.mapDrag.unrelatedNodeRenderCount} render / ${performanceMetrics.interactions.mapDrag.unrelatedChildListReplacements} DOM replacement churn`,
   );
   await captureViewMemoryWindow(page, memorySampler, "map");
+  setRuntimeInteraction(null);
 }
 
 async function measureTimelineView(page, memorySampler) {
@@ -1800,6 +1953,7 @@ async function measureTimelineView(page, memorySampler) {
 }
 
 async function measureLinearView(page, memorySampler) {
+  setRuntimeInteraction("linearScroll");
   const linearToggle = page.locator(
     'span[title="リニアモード"] > button:not([disabled])',
   );
@@ -1907,9 +2061,11 @@ async function measureLinearView(page, memorySampler) {
     .locator("[data-linear-virtual-row]")
     .first()
     .waitFor({ state: "detached", timeout: 10_000 });
+  setRuntimeInteraction(null);
 }
 
 async function measureChatVirtualization(page, memorySampler) {
+  setRuntimeInteraction("chatScroll");
   const virtualList = page.getByTestId("chat-virtual-list");
   await showPanel(page, "chat", virtualList);
   await page.waitForFunction(
@@ -1993,6 +2149,7 @@ async function measureChatVirtualization(page, memorySampler) {
   await targetMessage.waitFor({ state: "visible", timeout: 10_000 });
 
   const draftDelta = " RUNTIME-STREAMING-DRAFT-DELTA";
+  setRuntimeInteraction("chatDraft");
   let draftSession = null;
   let draftTargetVisible = false;
   let prepared = false;
@@ -2107,10 +2264,28 @@ async function measureChatVirtualization(page, memorySampler) {
   );
   await captureViewMemoryWindow(page, memorySampler, "chat");
   await hidePanelIfVisible(page, "chat", virtualList);
+  setRuntimeInteraction(null);
 }
 
 async function sampleLargeFixtureViews(page, memorySampler) {
+  setRuntimePhase("write.views.calibration", "rafCalibration");
+  await ensureBenchmarkPageForeground(page);
+  runtimeContext.rafCalibration = await captureRafCalibration(page, {
+    sampleCount: RUNTIME_PERFORMANCE_RAF_CALIBRATION_SAMPLE_COUNT,
+    onSample: (summary) => {
+      runtimeContext.rafCalibration = summary;
+    },
+  });
+  if (!runtimeContext.rafCalibration.complete) {
+    throw new Error(
+      `runtime performance rAF calibration incomplete: ${JSON.stringify(runtimeContext.rafCalibration)}`,
+    );
+  }
+  log(
+    `  rAF calibration: ${runtimeContext.rafCalibration.sampleCount} sample(s), p95 ${runtimeContext.rafCalibration.p95Ms ?? "missing"} ms, max ${runtimeContext.rafCalibration.maxMs ?? "missing"} ms`,
+  );
   if (shouldMeasureReviewScenario("map")) {
+    setRuntimePhase("write.views.map", "mapDrag");
     await measureMapView(page, memorySampler);
     await hidePanelIfVisible(
       page,
@@ -2119,6 +2294,7 @@ async function sampleLargeFixtureViews(page, memorySampler) {
     );
   }
   if (shouldMeasureReviewScenario("timeline")) {
+    setRuntimePhase("write.views.timeline", "timelineDrag");
     await measureTimelineView(page, memorySampler);
     await hidePanelIfVisible(
       page,
@@ -2127,6 +2303,7 @@ async function sampleLargeFixtureViews(page, memorySampler) {
     );
   }
   if (shouldMeasureReviewScenario("chronicle")) {
+    setRuntimePhase("write.views.chronicle", "chroniclePan");
     await measureChroniclePan(page, memorySampler);
     await hidePanelIfVisible(
       page,
@@ -2135,6 +2312,7 @@ async function sampleLargeFixtureViews(page, memorySampler) {
     );
   }
   if (shouldMeasureReviewScenario("linear")) {
+    setRuntimePhase("write.views.linear", "linearScroll");
     await measureLinearView(page, memorySampler);
   }
 
@@ -2177,6 +2355,8 @@ async function sampleLargeFixtureViews(page, memorySampler) {
 // ── フェーズ 1: seed（workspace 作成 + global settings 準備） ─────────────────
 
 async function phaseSeed() {
+  assertRuntimePhaseActive("phase seed");
+  setRuntimePhase("seed");
   log("phase 1/3: seed — 起動して一時 workspace を作成");
   const { app, page, memorySampler } = await launchApp("seed");
   try {
@@ -2232,14 +2412,15 @@ async function phaseSeed() {
       );
     }
   } finally {
-    await memorySampler?.stop();
-    await closeAppWithDiagnostics(app, page, "seed");
+    await finishRuntimePhase({ app, page, memorySampler, phase: "seed" });
   }
 }
 
 // ── フェーズ 2: 執筆（シーン作成 → 本文入力 → オートセーブ着弾） ───────────────
 
 async function phaseWrite() {
+  assertRuntimePhaseActive("phase write");
+  setRuntimePhase("write");
   log("phase 2/3: write — シーン作成と本文入力");
   const launched = await launchApp("write", {
     deferMemorySampler: Boolean(performanceOutputPath),
@@ -2322,6 +2503,8 @@ async function phaseWrite() {
       log("  seed scene editor が入力可能（coldStart完了）");
 
       memorySampler = startMemorySampler(app, "write", page);
+      runtimeContext.memorySampler = memorySampler;
+      runtimeContext.memoryStopPromise = null;
       const startupMemorySample = await memorySampler.sampleFresh(true);
       performanceMetrics.memory.startupBytes =
         startupMemorySample?.measuredBytes ?? null;
@@ -2527,14 +2710,15 @@ async function phaseWrite() {
       }
     }
   } finally {
-    await memorySampler?.stop();
-    await closeAppWithDiagnostics(app, page, "write");
+    await finishRuntimePhase({ app, page, memorySampler, phase: "write" });
   }
 }
 
 // ── フェーズ 3: 再起動して残存 assert ─────────────────────────────────────────
 
 async function phaseAssertAfterRestart() {
+  assertRuntimePhaseActive("phase restart");
+  setRuntimePhase("restart");
   log("phase 3/3: restart — 再起動後の本文残存 assert");
   const { app, page, memorySampler } = await launchApp("restart");
   try {
@@ -2595,9 +2779,138 @@ async function phaseAssertAfterRestart() {
       .waitFor({ state: "visible", timeout: 30_000 });
     log("  UI 残存確認（エディタに本文表示）");
   } finally {
-    await memorySampler?.stop();
-    await closeAppWithDiagnostics(app, page, "restart");
+    await finishRuntimePhase({
+      app,
+      page,
+      memorySampler,
+      phase: "restart",
+    });
   }
+}
+
+async function collectRuntimeTimeoutDiagnostics(timeoutSnapshot) {
+  const dom = await readDomForegroundSnapshot(timeoutSnapshot.page).catch(
+    (error) => ({ available: false, error: String(error?.message ?? error) }),
+  );
+  const nativeWindow = await readRuntimeWindowSnapshot(
+    timeoutSnapshot.app,
+  ).catch((error) => ({
+    available: false,
+    error: String(error?.message ?? error),
+  }));
+  let appMetrics = null;
+  if (timeoutSnapshot.app?.evaluate) {
+    appMetrics = await timeoutSnapshot.app
+      .evaluate(({ app: electronApp }) =>
+        electronApp.getAppMetrics().map((metric) => ({
+          pid: metric.pid,
+          type: metric.type,
+          creationTime: metric.creationTime,
+          memory: metric.memory ?? null,
+          cpu: metric.cpu ?? null,
+        })),
+      )
+      .catch((error) => ({
+        available: false,
+        error: String(error?.message ?? error),
+      }));
+  }
+  return {
+    foreground: { dom, nativeWindow },
+    nativeWindow,
+    environment: timeoutSnapshot.environment,
+    process: {
+      node: timeoutSnapshot.process.node,
+      electron: timeoutSnapshot.process.electron,
+      appMetrics,
+    },
+  };
+}
+
+async function finalizeRuntimePageSession(timeoutSnapshot) {
+  if (!timeoutSnapshot.page?.evaluate) return null;
+  return await timeoutSnapshot.page
+    .evaluate(() => globalThis.endPerfSession?.())
+    .catch(() => null);
+}
+
+function finalizeRuntimeWatchdog(timeoutSnapshot) {
+  if (runtimeContext.watchdogPromise) return runtimeContext.watchdogPromise;
+  const artifact = buildRuntimePerformanceTimeoutArtifact({
+    reason: "global-watchdog",
+    timeoutMs: GLOBAL_WATCHDOG_MS,
+    startedAt: timeoutSnapshot.startedAt,
+    timedOutAt: timeoutSnapshot.capturedAt,
+    elapsedMs: timeoutSnapshot.elapsedMs,
+    phase: timeoutSnapshot.phase,
+    currentInteraction: timeoutSnapshot.currentInteraction,
+    partialMetrics: timeoutSnapshot.partialMetrics,
+    rafCalibration: timeoutSnapshot.rafCalibration,
+    foreground: timeoutSnapshot.foreground,
+    environment: timeoutSnapshot.environment,
+    process: timeoutSnapshot.process,
+  });
+  const cleanupCoordinator = timeoutSnapshot.cleanupCoordinator;
+  const stopMemorySampler = () =>
+    cleanupCoordinator?.stopMemorySampler(timeoutSnapshot.memorySampler) ??
+    timeoutSnapshot.memorySampler?.stop?.();
+  const closeApp = () =>
+    cleanupCoordinator?.closeApp(
+      timeoutSnapshot.app,
+      timeoutSnapshot.page,
+      timeoutSnapshot.phase,
+      closeElectronAppWithDiagnostics,
+    ) ??
+    (timeoutSnapshot.app
+      ? closeElectronAppWithDiagnostics(
+          timeoutSnapshot.app,
+          timeoutSnapshot.page,
+          timeoutSnapshot.phase,
+        )
+      : null);
+  const forceKill = () =>
+    cleanupCoordinator?.terminateProcess(() =>
+      terminateOwnedProcessTree({
+        childProcessSnapshot: timeoutSnapshot.process.electron,
+        platform: timeoutSnapshot.process.node.platform ?? process.platform,
+      }),
+    ) ??
+    terminateOwnedProcessTree({
+      childProcessSnapshot: timeoutSnapshot.process.electron,
+      platform: timeoutSnapshot.process.node.platform ?? process.platform,
+    });
+  const watchdogPromise = finalizeRuntimePerformanceTimeout({
+    timeoutArtifactPath: performanceTimeoutArtifactPath,
+    artifact,
+    collectDiagnostics: () => collectRuntimeTimeoutDiagnostics(timeoutSnapshot),
+    finalizeSession: () => finalizeRuntimePageSession(timeoutSnapshot),
+    stopMemorySampler,
+    closeApp,
+    forceKill,
+    writeArtifact: writeRuntimePerformanceTimeoutArtifact,
+    hardExit: (exitCode, result) => {
+      console.error(
+        `[electron:smoke] structured watchdog evidence: ${result.path}`,
+      );
+      process.exit(exitCode);
+    },
+  })
+    .then((result) => {
+      console.error(
+        `[electron:smoke] structured watchdog evidence: ${result.path}`,
+      );
+      process.exitCode = 1;
+      return result;
+    })
+    .catch((error) => {
+      console.error(
+        `[electron:smoke] watchdog finalization failed: ${error?.stack ?? error}`,
+      );
+      process.exitCode = 1;
+      return null;
+    });
+  runtimeContext.watchdogPromise = watchdogPromise;
+  return watchdogPromise;
 }
 
 // ── 実行 ────────────────────────────────────────────────────────────────────
@@ -2607,33 +2920,86 @@ const watchdog = setTimeout(() => {
     `[electron:smoke] watchdog timeout (${GLOBAL_WATCHDOG_MS}ms) — 強制終了します`,
   );
   console.error(`[electron:smoke] 一時ディレクトリを残します: ${tmpRoot}`);
-  process.exit(1);
+  const timeoutSnapshot = snapshotRuntimePerformanceContext(runtimeContext);
+  runtimeContext.timeoutSnapshot = timeoutSnapshot;
+  runtimeContext.watchdogTriggered = true;
+  runtimeAbortController.abort("global-watchdog");
+  void finalizeRuntimeWatchdog(timeoutSnapshot);
 }, GLOBAL_WATCHDOG_MS);
 watchdog.unref?.();
 
 try {
   await mkdir(workspaceDir, { recursive: true });
   await mkdir(userDataDir, { recursive: true });
-  await phaseSeed();
-  await phaseWrite();
-  await phaseAssertAfterRestart();
-  if (performanceOutputPath) {
-    await writeFile(
-      performanceOutputPath,
-      `${JSON.stringify(performanceMetrics, null, 2)}\n`,
-      "utf8",
-    );
-    log(`performance metrics: ${performanceOutputPath}`);
+  await runRuntimePerformancePhaseSequence({
+    signal: runtimeAbortSignal,
+    phases: [phaseSeed, phaseWrite, phaseAssertAfterRestart],
+  });
+  if (runtimeContext.watchdogTriggered) {
+    await runtimeContext.watchdogPromise;
+    process.exitCode = 1;
+  } else {
+    if (performanceOutputPath) {
+      await writeFile(
+        performanceOutputPath,
+        `${JSON.stringify(performanceMetrics, null, 2)}\n`,
+        "utf8",
+      );
+      log(`performance metrics: ${performanceOutputPath}`);
+    }
+    clearTimeout(watchdog);
+    if (runtimeContext.watchdogTriggered) {
+      await runtimeContext.watchdogPromise;
+      process.exitCode = 1;
+    } else {
+      await rm(tmpRoot, { recursive: true, force: true });
+      log("PASS — A2/A9 スモーク完了（3 起動、本文残存を確認）");
+      process.exitCode = 0;
+    }
   }
-  clearTimeout(watchdog);
-  await rm(tmpRoot, { recursive: true, force: true });
-  log("PASS — A2/A9 スモーク完了（3 起動、本文残存を確認）");
-  process.exit(0);
 } catch (e) {
   clearTimeout(watchdog);
   console.error(`[electron:smoke] FAIL: ${e?.stack ?? e}`);
   console.error(`[electron:smoke] 一時ディレクトリを残します: ${tmpRoot}`);
-  // 生きの Electron プロセスが残らないよう明示 kill（best-effort）
-  spawnSync("pkill", ["-f", mainCjs], { stdio: "ignore" });
-  process.exit(1);
+  if (runtimeContext.watchdogTriggered) {
+    if (runtimeContext.watchdogPromise) await runtimeContext.watchdogPromise;
+  } else {
+    const memorySampler = runtimeContext.memorySampler;
+    if (memorySampler) {
+      try {
+        await stopRuntimeMemorySampler(memorySampler);
+      } catch (cleanupError) {
+        console.error(
+          `[electron:smoke] memory cleanup failed: ${cleanupError?.stack ?? cleanupError}`,
+        );
+      }
+    }
+    if (runtimeContext.app) {
+      try {
+        await closeAppWithDiagnostics(
+          runtimeContext.app,
+          runtimeContext.page,
+          runtimeContext.phase,
+        );
+      } catch (closeError) {
+        console.error(
+          `[electron:smoke] app close failed: ${closeError?.stack ?? closeError}`,
+        );
+        const failureSnapshot =
+          snapshotRuntimePerformanceContext(runtimeContext);
+        const termination =
+          await runtimeContext.cleanupCoordinator.terminateProcess(() =>
+            terminateOwnedProcessTree({
+              childProcessSnapshot: failureSnapshot.process.electron,
+              platform:
+                failureSnapshot.process.node.platform ?? process.platform,
+            }),
+          );
+        console.error(
+          `[electron:smoke] owned process termination: ${JSON.stringify(termination)}`,
+        );
+      }
+    }
+  }
+  process.exitCode = 1;
 }

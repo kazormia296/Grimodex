@@ -1,13 +1,34 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import yaml from "js-yaml";
 
 import { closeElectronAppWithDiagnostics } from "../electron/scripts/close-electron-app.mjs";
+import {
+  RUNTIME_PERFORMANCE_RAF_CALIBRATION_SAMPLE_COUNT,
+  buildRuntimePerformanceSmokeInvocation,
+  buildRuntimePerformanceTimeoutArtifact,
+  buildRuntimePerformanceTimeoutArtifactPath,
+  captureRafCalibration,
+  checkFreshXvfbCapability,
+  collectOwnedProcessTree,
+  createRuntimePerformanceCleanupCoordinator,
+  finalizeRuntimePerformanceTimeout,
+  focusRuntimeWindow,
+  readRuntimeWindowSnapshot,
+  runRuntimePerformancePhaseSequence,
+  snapshotRuntimePerformanceContext,
+  snapshotRuntimeEnvironment,
+  terminateOwnedProcessTree,
+} from "../electron/scripts/performance-harness.mjs";
+import { DEFAULT_RUNTIME_BUDGETS } from "./runtime-performance-budget.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -86,13 +107,584 @@ test("runtime frame gate pins active-foreground Chromium timing semantics", asyn
   );
   assert.match(
     source,
-    /async function ensureBenchmarkPageForeground\(page\) \{\s+await page\.bringToFront\(\);\s+await page\.waitForFunction\(\s*\(\) =>\s*document\.visibilityState === "visible" &&\s*document\.hidden === false,/,
+    /async function ensureBenchmarkPageForeground\(page\) \{[\s\S]*?focusRuntimeWindow\([\s\S]*?await page\.bringToFront\(\);[\s\S]*?document\.visibilityState === "visible"[\s\S]*?document\.hidden === false[\s\S]*?document\.hasFocus\(\)/,
+  );
+  assert.match(source, /readDomForegroundSnapshot/);
+  assert.match(source, /readRuntimeWindowSnapshot/);
+  assert.match(source, /RUNTIME_PERFORMANCE_RAF_CALIBRATION_SAMPLE_COUNT/);
+  const watchdogStart = source.indexOf("const watchdog = setTimeout");
+  const watchdogEnd = source.indexOf("\ntry {", watchdogStart);
+  assert.ok(watchdogStart >= 0 && watchdogEnd > watchdogStart);
+  assert.doesNotMatch(
+    source.slice(watchdogStart, watchdogEnd),
+    /process\.exit\(/,
+    "watchdog must finalize evidence before setting a non-zero exit code",
+  );
+  assert.match(source, /snapshotRuntimePerformanceContext\(runtimeContext\)/);
+  assert.match(source, /runtimeAbortController\.abort\("global-watchdog"\)/);
+  assert.match(source, /runRuntimePerformancePhaseSequence\(/);
+  assert.match(
+    source,
+    /hardExit: \(exitCode, result\) => \{[\s\S]*?process\.exit\(exitCode\)/,
+    "hard exit is only wired after the finalizer has returned from artifact flush",
   );
   assert.equal(
     source.match(/await ensureBenchmarkPageForeground\(page\);/g)?.length,
-    5,
-    "launch, autosave, gesture driver, Timeline, and Chronicle must all establish an active Page",
+    6,
+    "launch, calibration, autosave, gesture driver, Timeline, and Chronicle must all establish an active Page",
   );
+});
+
+test("Linux runtime performance attempts always route through a fresh Xvfb", () => {
+  for (const attempt of [1, 2]) {
+    const invocation = buildRuntimePerformanceSmokeInvocation({
+      attempt,
+      platform: "linux",
+      nodePath: "/usr/bin/node",
+      smokePath: "/repo/electron/scripts/smoke.mjs",
+    });
+    assert.equal(invocation.useFreshXvfb, true);
+    assert.equal(invocation.command, "xvfb-run");
+    assert.deepEqual(invocation.args, [
+      "--auto-servernum",
+      "--server-args=-screen 0 1920x1080x24",
+      "/usr/bin/node",
+      "/repo/electron/scripts/smoke.mjs",
+    ]);
+  }
+
+  assert.deepEqual(
+    buildRuntimePerformanceSmokeInvocation({
+      platform: "darwin",
+      nodePath: "/usr/bin/node",
+      smokePath: "/repo/electron/scripts/smoke.mjs",
+    }),
+    {
+      useFreshXvfb: false,
+      command: "/usr/bin/node",
+      args: ["/repo/electron/scripts/smoke.mjs"],
+    },
+  );
+});
+
+test("benchmark runner keeps measurement failures non-retryable and records timeout evidence", async () => {
+  const source = await read("electron/scripts/performance-benchmark.mjs");
+  assert.match(source, /buildRuntimePerformanceSmokeInvocation/);
+  assert.match(source, /delete smokeEnv\.WAYLAND_DISPLAY/);
+  assert.match(source, /delete smokeEnv\.ELECTRON_OZONE_PLATFORM_HINT/);
+  assert.match(source, /smokeEnv\.GDK_BACKEND = "x11"/);
+  assert.match(source, /smokeEnv\.QT_QPA_PLATFORM = "xcb"/);
+  assert.match(
+    source,
+    /phase: timedOut \? "measurement-timeout" : "measurement"/,
+  );
+  assert.doesNotMatch(
+    source,
+    /attempt === 2[\s\S]*?(?:xvfb-run|useFreshXvfb)/,
+    "attempt two must not be the only fresh-Xvfb path",
+  );
+});
+
+test("Linux Xvfb capability is fail-closed before measurement", () => {
+  const calls = [];
+  const available = checkFreshXvfbCapability({
+    platform: "linux",
+    spawnSyncImpl: (command, args, options) => {
+      calls.push({ command, args, options });
+      return { status: 0, error: null };
+    },
+  });
+  assert.deepEqual(available, {
+    required: true,
+    available: true,
+    command: "xvfb-run",
+  });
+  assert.deepEqual(calls, [
+    { command: "xvfb-run", args: ["--help"], options: { stdio: "ignore" } },
+  ]);
+
+  const missing = checkFreshXvfbCapability({
+    platform: "linux",
+    spawnSyncImpl: () => ({ status: null, error: new Error("ENOENT") }),
+  });
+  assert.equal(missing.required, true);
+  assert.equal(missing.available, false);
+  assert.match(missing.reason, /ENOENT/);
+
+  let nonLinuxCalls = 0;
+  assert.deepEqual(
+    checkFreshXvfbCapability({
+      platform: "darwin",
+      spawnSyncImpl: () => {
+        nonLinuxCalls += 1;
+        return { status: 1 };
+      },
+    }),
+    { required: false, available: true, command: null },
+  );
+  assert.equal(nonLinuxCalls, 0);
+});
+
+test("foreground helper focuses and snapshots the native BrowserWindow", async () => {
+  const calls = [];
+  const browserWindow = {
+    id: 7,
+    webContents: { id: 8 },
+    isDestroyed: () => false,
+    isMinimized: () => true,
+    isVisible: () => false,
+    isFocused: () => true,
+    getBounds: () => ({ x: 1, y: 2, width: 800, height: 600 }),
+    restore: () => calls.push("restore"),
+    show: () => calls.push("show"),
+    focus: () => calls.push("focus"),
+  };
+  const app = {
+    evaluate: async (callback) =>
+      await callback({
+        BrowserWindow: { getAllWindows: () => [browserWindow] },
+      }),
+  };
+
+  const focused = await focusRuntimeWindow(app);
+  const snapshot = await readRuntimeWindowSnapshot(app);
+  assert.deepEqual(calls, ["restore", "show", "focus"]);
+  assert.equal(focused.available, true);
+  assert.equal(focused.isFocused, true);
+  assert.equal(focused.isVisible, false);
+  assert.deepEqual(snapshot.bounds, { x: 1, y: 2, width: 800, height: 600 });
+  assert.equal(snapshot.webContentsId, 8);
+});
+
+test("timeout evidence preserves phase, partial metrics, foreground, environment, and process context", () => {
+  const environment = snapshotRuntimeEnvironment({
+    DISPLAY: ":99",
+    WAYLAND_DISPLAY: "wayland-0",
+    XDG_SESSION_TYPE: "wayland",
+  });
+  const artifact = buildRuntimePerformanceTimeoutArtifact({
+    reason: "global-watchdog",
+    timeoutMs: 300_000,
+    startedAt: "2026-08-28T00:00:00.000Z",
+    timedOutAt: "2026-08-28T00:05:00.000Z",
+    elapsedMs: 300_000,
+    phase: "write.views.timeline",
+    currentInteraction: "timelineDrag",
+    partialMetrics: {
+      interactions: { timelineDrag: { frameCount: 121, p95FrameMs: 1018.1 } },
+    },
+    rafCalibration: { sampleCount: 16, p95Ms: 1000 },
+    foreground: {
+      dom: { visibilityState: "visible", hasFocus: false },
+      nativeWindow: { isFocused: false, isVisible: true },
+    },
+    environment,
+    process: { pid: 1234, electronPid: 5678 },
+  });
+
+  assert.equal(artifact.schemaVersion, 1);
+  assert.equal(artifact.kind, "electron-runtime-performance-timeout");
+  assert.equal(artifact.phase, "write.views.timeline");
+  assert.equal(artifact.currentInteraction, "timelineDrag");
+  assert.equal(
+    artifact.partialMetrics.interactions.timelineDrag.frameCount,
+    121,
+  );
+  assert.equal(artifact.rafCalibration.sampleCount, 16);
+  assert.equal(artifact.environment.DISPLAY, ":99");
+  assert.equal(artifact.process.pid, 1234);
+  assert.match(
+    buildRuntimePerformanceTimeoutArtifactPath("/tmp/runtime-metrics.json"),
+    /runtime-metrics-timeout\.json$/,
+  );
+});
+
+test("rAF calibration records sixteen samples and exposes one-second cadence", async () => {
+  let sampleIndex = 0;
+  const progress = [];
+  const calibration = await captureRafCalibration(
+    {
+      evaluate: async () => {
+        const timestamp = sampleIndex * 1_000;
+        sampleIndex += 1;
+        return {
+          timestamp,
+          callbackNow: timestamp,
+          visibilityState: "visible",
+          documentHidden: false,
+          documentHasFocus: true,
+        };
+      },
+    },
+    {
+      sampleCount: RUNTIME_PERFORMANCE_RAF_CALIBRATION_SAMPLE_COUNT,
+      onSample: (summary) => progress.push(summary.sampleCount),
+    },
+  );
+
+  assert.equal(calibration.requestedSampleCount, 16);
+  assert.equal(calibration.sampleCount, 16);
+  assert.equal(calibration.complete, true);
+  assert.equal(calibration.intervals.length, 15);
+  assert.equal(calibration.p95Ms, 1_000);
+  assert.equal(calibration.maxMs, 1_000);
+  assert.equal(progress.at(-1), 16);
+  assert.equal(calibration.samples.at(-1).visibilityState, "visible");
+  assert.equal(calibration.samples.at(-1).documentHidden, false);
+  assert.equal(calibration.samples.at(-1).documentHasFocus, true);
+});
+
+test("timeout finalization runs diagnostics and cleanup before writing evidence", async () => {
+  const events = [];
+  let written = null;
+  const result = await finalizeRuntimePerformanceTimeout({
+    timeoutArtifactPath: "/tmp/runtime-metrics-timeout.json",
+    artifact: buildRuntimePerformanceTimeoutArtifact({
+      reason: "global-watchdog",
+      timeoutMs: 300_000,
+      phase: "write.views.timeline",
+      currentInteraction: "timelineDrag",
+      partialMetrics: { interactions: { timelineDrag: { frameCount: 121 } } },
+      rafCalibration: { sampleCount: 8 },
+    }),
+    collectDiagnostics: async () => {
+      events.push("diagnostics");
+      return {
+        foreground: {
+          dom: { visibilityState: "visible", hasFocus: false },
+          nativeWindow: { isFocused: false, isVisible: true },
+        },
+        process: { electronPid: 5678 },
+        environment: { DISPLAY: ":99" },
+      };
+    },
+    finalizeSession: async () => events.push("session"),
+    stopMemorySampler: async () => events.push("memory"),
+    closeApp: async () => events.push("close"),
+    forceKill: async () => events.push("kill"),
+    writeArtifact: async (filePath, finalArtifact) => {
+      events.push("write");
+      written = { filePath, finalArtifact };
+    },
+  });
+
+  assert.deepEqual(events, [
+    "diagnostics",
+    "session",
+    "memory",
+    "close",
+    "write",
+  ]);
+  assert.equal(result.path, "/tmp/runtime-metrics-timeout.json");
+  assert.equal(written.finalArtifact.phase, "write.views.timeline");
+  assert.equal(
+    written.finalArtifact.partialMetrics.interactions.timelineDrag.frameCount,
+    121,
+  );
+  assert.equal(written.finalArtifact.diagnostics.process.electronPid, 5678);
+  assert.equal(written.finalArtifact.cleanup.memorySampler.status, "completed");
+  assert.equal(written.finalArtifact.cleanup.session.status, "completed");
+  assert.equal(written.finalArtifact.cleanup.app.status, "completed");
+  assert.equal(written.finalArtifact.cleanup.forceKill.status, "skipped");
+  assert.equal(
+    written.finalArtifact.cleanup.processTermination.reason,
+    "close-completed",
+  );
+});
+
+test("timeout snapshots freeze runtime handles before later phase mutation", () => {
+  const app = { process: () => ({ pid: 4321, exitCode: null }) };
+  const page = { id: "page-at-timeout" };
+  const memorySampler = { id: "sampler-at-timeout" };
+  const context = {
+    startedAt: "2026-08-28T00:00:00.000Z",
+    startedAtMonotonic: 10,
+    phase: "write.views.timeline",
+    currentInteraction: "timelineDrag",
+    app,
+    page,
+    memorySampler,
+    foreground: { dom: { hasFocus: false } },
+    rafCalibration: { sampleCount: 16, p95Ms: 1_000 },
+    partialMetrics: { interactions: { timelineDrag: { frameCount: 121 } } },
+    cleanupCoordinator: createRuntimePerformanceCleanupCoordinator(),
+  };
+
+  const snapshot = snapshotRuntimePerformanceContext(context, {
+    now: () => 1_787_577_600_000,
+    monotonicNow: () => 42,
+    nodeProcess: {
+      pid: 99,
+      ppid: 1,
+      platform: "linux",
+      execPath: "/usr/bin/node",
+      argv: ["node", "smoke.mjs"],
+      version: "v22.0.0",
+    },
+    environment: { DISPLAY: ":99", XDG_SESSION_TYPE: "x11" },
+  });
+
+  context.phase = "restart";
+  context.currentInteraction = "chroniclePan";
+  context.app = null;
+  context.page = null;
+  context.memorySampler = null;
+  context.foreground.dom.hasFocus = true;
+  context.partialMetrics.interactions.timelineDrag.frameCount = 0;
+
+  assert.equal(Object.isFrozen(snapshot), true);
+  assert.equal(snapshot.phase, "write.views.timeline");
+  assert.equal(snapshot.currentInteraction, "timelineDrag");
+  assert.equal(snapshot.app, app);
+  assert.equal(snapshot.page, page);
+  assert.equal(snapshot.memorySampler, memorySampler);
+  assert.equal(snapshot.process.electron.pid, 4321);
+  assert.equal(snapshot.foreground.dom.hasFocus, false);
+  assert.equal(
+    snapshot.partialMetrics.interactions.timelineDrag.frameCount,
+    121,
+  );
+  assert.equal(snapshot.elapsedMs, 32);
+});
+
+test("phase boundary abort prevents the next phase from starting", async () => {
+  const controller = new AbortController();
+  const events = [];
+  await assert.rejects(
+    runRuntimePerformancePhaseSequence({
+      signal: controller.signal,
+      phases: [
+        async () => {
+          events.push("phase1");
+          controller.abort("watchdog");
+        },
+        async () => events.push("phase2"),
+      ],
+    }),
+    /aborted/,
+  );
+  assert.deepEqual(events, ["phase1"]);
+});
+
+test("normal and timeout cleanup share one close and sampler promise", async () => {
+  const calls = [];
+  const coordinator = createRuntimePerformanceCleanupCoordinator();
+  const app = { id: "owned-app" };
+  const page = { id: "owned-page" };
+  const sampler = {
+    stop: async () => {
+      calls.push("memory");
+      return { stopped: true };
+    },
+  };
+  const close = async () => {
+    calls.push("close");
+  };
+  const snapshot = snapshotRuntimePerformanceContext(
+    {
+      startedAt: "2026-08-28T00:00:00.000Z",
+      phase: "write.views.timeline",
+      currentInteraction: "timelineDrag",
+      app,
+      page,
+      memorySampler: sampler,
+      cleanupCoordinator: coordinator,
+      childProcess: { pid: 4322, exitCode: null },
+    },
+    { nodeProcess: { pid: 99, platform: "linux" } },
+  );
+
+  const normalCleanup = Promise.all([
+    coordinator.stopMemorySampler(sampler),
+    coordinator.closeApp(app, page, snapshot.phase, close),
+  ]);
+  const timeoutCleanup = finalizeRuntimePerformanceTimeout({
+    timeoutArtifactPath: "/tmp/runtime-metrics-coordinator-timeout.json",
+    artifact: buildRuntimePerformanceTimeoutArtifact({
+      phase: snapshot.phase,
+      currentInteraction: snapshot.currentInteraction,
+    }),
+    collectDiagnostics: async () => null,
+    finalizeSession: async () => null,
+    stopMemorySampler: () =>
+      snapshot.cleanupCoordinator.stopMemorySampler(snapshot.memorySampler),
+    closeApp: () =>
+      snapshot.cleanupCoordinator.closeApp(
+        snapshot.app,
+        snapshot.page,
+        snapshot.phase,
+        close,
+      ),
+    forceKill: async () => calls.push("kill"),
+    writeArtifact: async () => calls.push("write"),
+  });
+
+  await Promise.all([normalCleanup, timeoutCleanup]);
+  assert.deepEqual(calls, ["memory", "close", "write"]);
+});
+
+test("owned process termination never targets a sibling and records bounded signals", async () => {
+  const killed = [];
+  const processTable = [
+    { pid: 700, ppid: 1 },
+    { pid: 701, ppid: 700 },
+    { pid: 702, ppid: 701 },
+    { pid: 703, ppid: 1 },
+  ];
+  assert.deepEqual(collectOwnedProcessTree(700, processTable), [702, 701, 700]);
+
+  const result = await terminateOwnedProcessTree({
+    childProcessSnapshot: { pid: 700, exitCode: null, signalCode: null },
+    platform: "linux",
+    processTable,
+    killImpl: (pid, signal) => killed.push({ pid, signal }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.pids, [702, 701, 700]);
+  assert.deepEqual(killed, [
+    { pid: 702, signal: "SIGTERM" },
+    { pid: 702, signal: "SIGKILL" },
+    { pid: 701, signal: "SIGTERM" },
+    { pid: 701, signal: "SIGKILL" },
+    { pid: 700, signal: "SIGTERM" },
+    { pid: 700, signal: "SIGKILL" },
+  ]);
+  assert.equal(
+    killed.some(({ pid }) => pid === 703),
+    false,
+  );
+});
+
+test("unavailable Windows killer still flushes timeout artifact", async () => {
+  const events = [];
+  let written = null;
+  const result = await finalizeRuntimePerformanceTimeout({
+    timeoutArtifactPath: "/tmp/runtime-metrics-windows-timeout.json",
+    artifact: buildRuntimePerformanceTimeoutArtifact({
+      phase: "write.views.timeline",
+      currentInteraction: "timelineDrag",
+    }),
+    collectDiagnostics: async () => null,
+    finalizeSession: async () => null,
+    stopMemorySampler: async () => null,
+    closeApp: async () => {
+      events.push("close");
+      throw new Error("close timed out");
+    },
+    forceKill: async () => {
+      events.push("kill");
+      return await terminateOwnedProcessTree({
+        childProcessSnapshot: { pid: 800, exitCode: null },
+        platform: "win32",
+        spawnSyncImpl: () => ({
+          status: null,
+          error: Object.assign(new Error("taskkill unavailable"), {
+            code: "ENOENT",
+          }),
+        }),
+      });
+    },
+    writeArtifact: async (filePath, finalArtifact) => {
+      events.push("write");
+      written = { filePath, finalArtifact };
+    },
+  });
+
+  assert.deepEqual(events, ["close", "kill", "write"]);
+  assert.equal(result.path, "/tmp/runtime-metrics-windows-timeout.json");
+  assert.equal(
+    written.finalArtifact.cleanup.processTermination.status,
+    "unavailable",
+  );
+  assert.match(
+    written.finalArtifact.cleanup.processTermination.reason,
+    /ENOENT|unavailable/,
+  );
+});
+
+test("process-level timeout harness flushes JSON before hard exit with a live handle", () => {
+  const temporaryRoot = mkdtempSync(
+    path.join(os.tmpdir(), "grimodex-runtime-timeout-hard-exit-"),
+  );
+  const artifactPath = path.join(temporaryRoot, "timeout.json");
+  const helperUrl = pathToFileURL(
+    path.join(repoRoot, "electron/scripts/performance-harness.mjs"),
+  ).href;
+  const childSource = `
+    import {
+      finalizeRuntimePerformanceTimeout,
+      terminateOwnedProcessTree,
+    } from ${JSON.stringify(helperUrl)};
+
+    // Keep a live harness handle so process.exitCode alone would hang until
+    // the parent watchdog kills this child.
+    const livePlaywrightHandle = setInterval(() => {}, 1_000);
+    void livePlaywrightHandle;
+    await finalizeRuntimePerformanceTimeout({
+      timeoutArtifactPath: ${JSON.stringify(artifactPath)},
+      artifact: {
+        reason: "global-watchdog",
+        timeoutMs: 300_000,
+        phase: "write.views.timeline",
+        currentInteraction: "timelineDrag",
+      },
+      collectDiagnostics: async () => null,
+      finalizeSession: async () => null,
+      stopMemorySampler: async () => null,
+      closeApp: async () => {
+        throw new Error("close timed out");
+      },
+      forceKill: async () =>
+        terminateOwnedProcessTree({
+          childProcessSnapshot: { pid: 9123, exitCode: null },
+          platform: "win32",
+          spawnSyncImpl: () => ({
+            status: null,
+            error: Object.assign(new Error("taskkill unavailable: ENOENT"), {
+              code: "ENOENT",
+            }),
+          }),
+        }),
+      hardExit: (exitCode) => process.exit(exitCode),
+    });
+  `;
+
+  try {
+    const child = spawnSync(
+      process.execPath,
+      ["--input-type=module", "--eval", childSource],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 2_000,
+      },
+    );
+    assert.equal(
+      child.error,
+      undefined,
+      `child harness exceeded its bounded exit window:\n${child.stderr}`,
+    );
+    assert.equal(child.status, 1, child.stderr);
+    assert.equal(child.signal, null);
+    const serializedArtifact = readFileSync(artifactPath, "utf8");
+    const artifact = JSON.parse(serializedArtifact);
+    assert.equal(artifact.kind, "electron-runtime-performance-timeout");
+    assert.equal(artifact.phase, "write.views.timeline");
+    assert.equal(artifact.cleanup.app.status, "failed");
+    assert.equal(artifact.cleanup.processTermination.status, "unavailable");
+    assert.match(artifact.cleanup.processTermination.reason, /ENOENT/);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("runtime budget thresholds remain product constants while the harness changes", () => {
+  assert.equal(DEFAULT_RUNTIME_BUDGETS.interactionFrameMeanMs, 17.5);
+  assert.equal(DEFAULT_RUNTIME_BUDGETS.interactionFrameP95Ms, 17.5);
+  assert.equal(DEFAULT_RUNTIME_BUDGETS.interactionFrameCatastrophicMaxMs, 50.1);
+  assert.equal(DEFAULT_RUNTIME_BUDGETS.interactionFrameMinimumSamples, 120);
+  assert.equal(DEFAULT_RUNTIME_BUDGETS.interactionWorkFrameMinimumSamples, 120);
 });
 
 test("Chronicle runtime readiness proves full state with a bounded DOM projection", async () => {
