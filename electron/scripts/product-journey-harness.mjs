@@ -2031,12 +2031,12 @@ export const MAIN_PROCESS_NOISE_ALLOWLIST = Object.freeze([
   Object.freeze({
     id: "ubuntu-xvfb-restore-reload-shared-image-skia",
     phases: Object.freeze([
-      "c2-5b-restore-verify-rebuild-verify/restore",
+      "c2-5b-restore-verify-rebuild-verify/open",
       "c2-zc-canonical-authority-cutover/restore",
       "c2-zc-post-marker-lifecycle/bootstrap-restore",
     ]),
     reason:
-      "Observed on Ubuntu Xvfb during the trusted production renderer reload after Settings backup restore; only the exact C2-5B restore, C2-ZC canonical-authority-cutover restore, or C2-ZC post-marker-lifecycle bootstrap-restore phase is allowed.",
+      "Observed on Ubuntu Xvfb during the trusted production renderer reload after Settings backup restore; only the exact c2-5b-restore-verify-rebuild-verify/open, c2-zc-canonical-authority-cutover/restore, or c2-zc-post-marker-lifecycle/bootstrap-restore phase is allowed.",
     expiresOn: "2026-09-30",
     pattern:
       /^\[\d+:\d+\/\d+\.\d+:ERROR:gpu\/command_buffer\/service\/shared_image\/shared_image_manager\.cc:\d+\] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox\.\r?\n?$/,

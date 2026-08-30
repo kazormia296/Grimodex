@@ -238,9 +238,7 @@ async function awaitHeldFreshnessBeforeRequestBarrier(
           `root=${harness.receiptRoot}; request=${requestMatches}; ` +
           `reverify=${reverifyCompleted}; temporary=${temporaryEntries.join(",") || "none"}`;
         return (
-          requestMatches &&
-          reverifyCompleted &&
-          temporaryEntries.length === 0
+          requestMatches && reverifyCompleted && temporaryEntries.length === 0
         );
       },
       `held-Freshness before-request barrier for ${phase}`,
@@ -2594,42 +2592,76 @@ test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics"
   );
 });
 
-test("trusted restore reload allows only the exact Ubuntu Xvfb Skia mailbox line", async (t) => {
-  const mainStderr = new EventEmitter();
-  const page = {
-    isClosed: () => false,
-    on: () => undefined,
-    waitForFunction: async () => undefined,
-    screenshot: async () => undefined,
-  };
-  const app = {
-    firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: mainStderr }),
-  };
-  const harness = createProductJourneyHarness({
-    mainCjs: "/tmp/fake-main.cjs",
-    electronBin: "/tmp/fake-electron",
-    electronLauncher: {
-      launch: async () => app,
+test("trusted restore and open reload allow only the exact Ubuntu Xvfb Skia mailbox line", async (t) => {
+  const exact =
+    "[146128:0824/022134.434622:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n";
+  for (const { phase, message, allowed } of [
+    {
+      phase: "c2-5b-restore-verify-rebuild-verify/restore",
+      message: exact,
+      allowed: false,
     },
-    closeApp: async () => {
-      mainStderr.emit("end");
+    {
+      phase: "c2-5b-restore-verify-rebuild-verify/open",
+      message: exact,
+      allowed: true,
     },
-  });
-  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+    {
+      phase: "c2-5b-restore-verify-rebuild-verify/open",
+      message: exact.replace("ProduceSkia:", "ProduceSkiaNearMatch:"),
+      allowed: false,
+    },
+    {
+      phase: "c2-5b-restore-verify-rebuild-verify/open",
+      message: exact.replace("ProduceSkia:", "ProduceMemory:"),
+      allowed: false,
+    },
+  ]) {
+    const mainStderr = new EventEmitter();
+    const page = {
+      isClosed: () => false,
+      on: () => undefined,
+      waitForFunction: async () => undefined,
+      screenshot: async () => undefined,
+    };
+    const app = {
+      firstWindow: async () => page,
+      process: () => ({ stdout: null, stderr: mainStderr }),
+    };
+    const harness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      electronLauncher: {
+        launch: async () => app,
+      },
+      closeApp: async () => {
+        mainStderr.emit("end");
+      },
+    });
+    t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
 
-  const phase = "c2-5b-restore-verify-rebuild-verify/open";
-  const launched = await harness.launch(phase);
-  mainStderr.emit(
-    "data",
-    "[146128:0824/022134.434622:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n",
-  );
-  await harness.close(launched.app, launched.page, phase);
+    const launched = await harness.launch(phase);
+    mainStderr.emit("data", message);
+    await harness.close(launched.app, launched.page, phase);
 
-  const diagnostics = await harness.finalizeDiagnostics();
-  assert.equal(diagnostics.mainErrorCount, 1);
-  assert.deepEqual(diagnostics.unallowedMainErrors, []);
-  assert.equal(diagnostics.mainCleanPass, true);
+    const error = await harness.finalizeDiagnostics().then(
+      () => null,
+      (cause) => cause,
+    );
+    if (allowed) {
+      assert.equal(error, null);
+      return;
+    }
+    assert.equal(error?.name, "MainProcessDiagnosticsError");
+    assert.equal(error.diagnostics.mainErrorCount, 1);
+    assert.deepEqual(
+      error.diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
+        phase,
+        message,
+      })),
+      [{ phase, message }],
+    );
+  }
 });
 
 test("C2-ZC restore reload allows the exact Ubuntu Xvfb Skia mailbox line", async (t) => {
