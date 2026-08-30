@@ -9,6 +9,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   realpath,
   rm,
   stat,
@@ -69,6 +70,8 @@ const C2ZC_RESTORE_FIXTURE_EVIDENCE_DIR = path.join(
   "local-ci",
   "c2-zc-restore-fixture",
 );
+const C2ZC_RESTORE_FIXTURE_RUN_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const C2ZC_FULL_STAGE_ORDER = Object.freeze([
   "rust",
   C2ZC_RUST_ACCEPTANCE_GATE_STAGE,
@@ -645,6 +648,28 @@ function assertOutsideRepository(root, candidatePath, label) {
   }
 }
 
+function assertC2ZcRestoreFixtureRunId(runId, label) {
+  if (
+    typeof runId !== "string" ||
+    !C2ZC_RESTORE_FIXTURE_RUN_ID_PATTERN.test(runId)
+  ) {
+    throw new Error(`${label} must be a UUIDv4`);
+  }
+}
+
+function c2zcRestoreFixtureArtifactPaths(directory) {
+  return {
+    fixturePath: path.join(directory, C2ZC_RESTORE_FIXTURE_BACKUP_NAME),
+    databasePath: path.join(directory, C2ZC_RESTORE_FIXTURE_DATABASE_NAME),
+    manifestPath: path.join(directory, C2ZC_RESTORE_FIXTURE_MANIFEST_NAME),
+  };
+}
+
+function c2zcRestoreFixtureEvidenceDirectory(root, runId) {
+  assertC2ZcRestoreFixtureRunId(runId, "C2-ZC restore fixture run");
+  return path.join(root, C2ZC_RESTORE_FIXTURE_EVIDENCE_DIR, runId);
+}
+
 async function createC2ZcRestoreFixtureContext(root, plan, candidate) {
   if (!candidate) {
     throw new Error(
@@ -741,39 +766,148 @@ async function bindC2ZcRestoreFixtureCommand(
   return { command: { ...command, args }, context: nextContext };
 }
 
-async function captureC2ZcRestoreFixtureEvidence(context, root) {
+export async function captureC2ZcRestoreFixtureEvidence(
+  context,
+  root,
+  { runId = randomUUID(), beforePublish = null } = {},
+) {
   if (!context?.input?.manifestPath) {
     throw new Error("C2-ZC restore fixture was not loaded after verification");
   }
-  const evidenceDirectory = path.join(root, C2ZC_RESTORE_FIXTURE_EVIDENCE_DIR);
+  const evidenceDirectory = path.resolve(
+    root,
+    C2ZC_RESTORE_FIXTURE_EVIDENCE_DIR,
+  );
+  const finalDirectory = c2zcRestoreFixtureEvidenceDirectory(root, runId);
+  try {
+    await stat(finalDirectory);
+    throw new Error(
+      `C2-ZC restore fixture evidence run ${runId} already exists`,
+    );
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
   await mkdir(evidenceDirectory, { recursive: true });
-  const fixtureEvidencePath = path.join(
-    evidenceDirectory,
-    C2ZC_RESTORE_FIXTURE_BACKUP_NAME,
+  const stagedDirectory = await mkdtemp(
+    path.join(evidenceDirectory, `.c2zc-restore-fixture-${runId}-`),
   );
-  const databaseEvidencePath = path.join(
-    evidenceDirectory,
-    C2ZC_RESTORE_FIXTURE_DATABASE_NAME,
-  );
-  const manifestEvidencePath = path.join(
-    evidenceDirectory,
-    C2ZC_RESTORE_FIXTURE_MANIFEST_NAME,
-  );
-  await copyFile(context.fixturePath, fixtureEvidencePath);
-  await copyFile(context.databasePath, databaseEvidencePath);
-  await copyFile(context.manifestPath, manifestEvidencePath);
-  return readC2ZcRestoreFixtureEvidence(
-    {
-      fixturePath: fixtureEvidencePath,
-      databasePath: databaseEvidencePath,
-      manifestPath: manifestEvidencePath,
-    },
-    {
+  const stagedPaths = c2zcRestoreFixtureArtifactPaths(stagedDirectory);
+  const destinationPaths = c2zcRestoreFixtureArtifactPaths(finalDirectory);
+  try {
+    await copyFile(context.fixturePath, stagedPaths.fixturePath);
+    await copyFile(context.databasePath, stagedPaths.databasePath);
+    await copyFile(context.manifestPath, stagedPaths.manifestPath);
+    await readC2ZcRestoreFixtureEvidence(stagedPaths, {
+      root,
+      candidate: context.candidate,
+      label: "C2-ZC staged restore fixture",
+    });
+    if (beforePublish !== null) {
+      if (typeof beforePublish !== "function") {
+        throw new Error(
+          "C2-ZC restore fixture beforePublish must be a function",
+        );
+      }
+      await beforePublish({
+        finalDirectory,
+        stagedDirectory,
+        stagedPaths,
+      });
+    }
+    await rename(stagedDirectory, finalDirectory);
+    return readC2ZcRestoreFixtureEvidence(destinationPaths, {
       root,
       candidate: context.candidate,
       label: "C2-ZC copied restore fixture",
-    },
+    });
+  } finally {
+    // Do not sweep abandoned dot-prefix staging directories automatically:
+    // a concurrent active capture must never be mistaken for an orphan.  A
+    // SIGKILL can intentionally leave one behind; normal paths clean up here.
+    await rm(stagedDirectory, { recursive: true, force: true });
+  }
+}
+
+function resolveC2ZcRestoreFixtureEvidencePaths(
+  evidence,
+  { root = repoRoot, label = "C2-ZC restore fixture evidence" } = {},
+) {
+  if (!isPlainObject(evidence)) {
+    throw new Error(`${label} is required`);
+  }
+  if (
+    evidence.path !== evidence.artifacts?.fixture?.path ||
+    evidence.manifestPath !== evidence.manifest?.path
+  ) {
+    throw new Error(`${label} paths must bind to their artifact identities`);
+  }
+  const resolveRepositoryPath = (value, field) => {
+    if (
+      typeof value !== "string" ||
+      value.length === 0 ||
+      value.includes("\0") ||
+      path.isAbsolute(value) ||
+      value.split(/[\\/]/u).includes("..")
+    ) {
+      throw new Error(`${label} ${field} must be repository-relative`);
+    }
+    const resolved = path.resolve(root, value);
+    const relative = path.relative(path.resolve(root), resolved);
+    if (
+      relative === "" ||
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    ) {
+      throw new Error(`${label} ${field} must stay inside the repository`);
+    }
+    return resolved;
+  };
+  const fixturePath = resolveRepositoryPath(evidence.path, "fixture");
+  const databasePath = resolveRepositoryPath(
+    evidence.artifacts?.database?.path,
+    "database",
   );
+  const manifestPath = resolveRepositoryPath(evidence.manifestPath, "manifest");
+  const fixtureDirectory = path.dirname(fixturePath);
+  const evidenceDirectory = path.resolve(
+    root,
+    C2ZC_RESTORE_FIXTURE_EVIDENCE_DIR,
+  );
+  const runId = path.relative(evidenceDirectory, fixtureDirectory);
+  if (
+    fixtureDirectory !== path.dirname(databasePath) ||
+    fixtureDirectory !== path.dirname(manifestPath) ||
+    path.basename(fixturePath) !== C2ZC_RESTORE_FIXTURE_BACKUP_NAME ||
+    path.basename(databasePath) !== C2ZC_RESTORE_FIXTURE_DATABASE_NAME ||
+    path.basename(manifestPath) !== C2ZC_RESTORE_FIXTURE_MANIFEST_NAME
+  ) {
+    throw new Error(
+      `${label} paths must share the canonical artifact directory`,
+    );
+  }
+  assertC2ZcRestoreFixtureRunId(runId, `${label} run`);
+  return { fixturePath, databasePath, manifestPath, runId };
+}
+
+function assertC2ZcRestoreFixtureRunBinding(evidence, runId, label) {
+  assertC2ZcRestoreFixtureRunId(runId, `${label} run`);
+  const prefix = `${C2ZC_RESTORE_FIXTURE_EVIDENCE_DIR.split(path.sep).join(
+    "/",
+  )}/${runId}/`;
+  for (const [field, value, name] of [
+    ["fixture", evidence?.path, C2ZC_RESTORE_FIXTURE_BACKUP_NAME],
+    [
+      "database",
+      evidence?.artifacts?.database?.path,
+      C2ZC_RESTORE_FIXTURE_DATABASE_NAME,
+    ],
+    ["manifest", evidence?.manifestPath, C2ZC_RESTORE_FIXTURE_MANIFEST_NAME],
+  ]) {
+    if (value !== `${prefix}${name}`) {
+      throw new Error(`${label} ${field} path is not bound to its run`);
+    }
+  }
 }
 
 function artifactIdentityWithoutRequestedPath(identity) {
@@ -1428,7 +1562,7 @@ function productJourneySelectionForPlan(plan, report) {
 /** Collect and validate the immutable product-journey evidence for a Full receipt. */
 export async function collectProductJourneyEvidence(
   plan,
-  { candidate = null, root = repoRoot } = {},
+  { candidate = null, root = repoRoot, restoreFixtureEvidence = null } = {},
 ) {
   const artifactRoot = resolveProductJourneyArtifactDirectory(plan, { root });
   const resultsPath = path.join(artifactRoot, "results.json");
@@ -1480,23 +1614,10 @@ export async function collectProductJourneyEvidence(
   const expectedFixtureEvidence =
     plan.profile === "full" && plannedC2ZcAcceptance
       ? await readC2ZcRestoreFixtureEvidence(
-          {
-            fixturePath: path.join(
-              root,
-              C2ZC_RESTORE_FIXTURE_EVIDENCE_DIR,
-              C2ZC_RESTORE_FIXTURE_BACKUP_NAME,
-            ),
-            databasePath: path.join(
-              root,
-              C2ZC_RESTORE_FIXTURE_EVIDENCE_DIR,
-              C2ZC_RESTORE_FIXTURE_DATABASE_NAME,
-            ),
-            manifestPath: path.join(
-              root,
-              C2ZC_RESTORE_FIXTURE_EVIDENCE_DIR,
-              C2ZC_RESTORE_FIXTURE_MANIFEST_NAME,
-            ),
-          },
+          resolveC2ZcRestoreFixtureEvidencePaths(restoreFixtureEvidence, {
+            root,
+            label: "C2-ZC run-bound restore fixture evidence",
+          }),
           { root, candidate: currentCandidate },
         )
       : null;
@@ -2150,6 +2271,11 @@ export function verifyLocalCiReceipt(
         "Full receipt C2-ZC restore fixture",
         { candidate },
       );
+      assertC2ZcRestoreFixtureRunBinding(
+        receipt.c2zcRestoreFixture,
+        receipt.runId,
+        "Full receipt C2-ZC restore fixture",
+      );
       assertC2ZcProductJourneyFixtureSummary(
         c2zcFixtureSummary(receipt.productJourneyEvidence.c2zcRestoreFixture),
         c2zcFixtureSummary(receipt.c2zcRestoreFixture),
@@ -2295,18 +2421,11 @@ function c2zcFixtureDiagnostic({
   };
 }
 
-async function removeCopiedC2ZcRestoreFixture(root) {
-  await Promise.all(
-    [
-      C2ZC_RESTORE_FIXTURE_BACKUP_NAME,
-      C2ZC_RESTORE_FIXTURE_DATABASE_NAME,
-      C2ZC_RESTORE_FIXTURE_MANIFEST_NAME,
-    ].map((name) =>
-      rm(path.join(root, C2ZC_RESTORE_FIXTURE_EVIDENCE_DIR, name), {
-        force: true,
-      }),
-    ),
-  );
+async function removeCopiedC2ZcRestoreFixture(root, runId) {
+  await rm(c2zcRestoreFixtureEvidenceDirectory(root, runId), {
+    recursive: true,
+    force: true,
+  });
 }
 
 function bindC2ZcRustGateCommand(command, stageId, { plan, candidate }) {
@@ -2459,15 +2578,18 @@ export async function runLocalCiPlan(
     notify = () => {},
     productJourneyEvidence = null,
     root = repoRoot,
+    runId: requestedRunId = null,
   } = {},
 ) {
   const startedAt = new Date().toISOString();
   const started = performance.now();
-  const runId = randomUUID();
+  const runId = requestedRunId ?? randomUUID();
+  assertC2ZcRestoreFixtureRunId(runId, "Local CI run");
   const stages = [];
   let failedStage = null;
   let c2zcRestoreFixtureContext = null;
   let c2zcRestoreFixtureDiagnostic = null;
+  let c2zcRestoreFixtureEvidenceOwned = false;
 
   for (const stage of plan.stages) {
     if (failedStage) {
@@ -2569,7 +2691,9 @@ export async function runLocalCiPlan(
               await captureC2ZcRestoreFixtureEvidence(
                 c2zcRestoreFixtureContext,
                 root,
+                { runId },
               );
+            c2zcRestoreFixtureEvidenceOwned = true;
           }
         } catch (error) {
           execution = {
@@ -2581,7 +2705,10 @@ export async function runLocalCiPlan(
         }
       }
       if (stage.id === C2ZC_RESTORE_FIXTURE_STAGE && status === "failed") {
-        await removeCopiedC2ZcRestoreFixture(root);
+        if (c2zcRestoreFixtureEvidenceOwned) {
+          await removeCopiedC2ZcRestoreFixture(root, runId);
+          c2zcRestoreFixtureEvidenceOwned = false;
+        }
         c2zcRestoreFixtureDiagnostic = c2zcFixtureDiagnostic({
           runId,
           stage: stage.id,
@@ -2740,7 +2867,10 @@ async function main() {
     const receipt = JSON.parse(await readFile(reportPath, "utf8"));
     const currentProductJourneyEvidence =
       plan.profile === "full"
-        ? await collectProductJourneyEvidence(plan, { candidate })
+        ? await collectProductJourneyEvidence(plan, {
+            candidate,
+            restoreFixtureEvidence: receipt.c2zcRestoreFixture,
+          })
         : null;
     verifyLocalCiReceipt(receipt, {
       profile: plan.profile,
@@ -2784,6 +2914,7 @@ async function main() {
           plan,
           {
             candidate: finishedCandidate,
+            restoreFixtureEvidence: result.c2zcRestoreFixture,
           },
         );
         verifyLocalCiReceipt(result, {

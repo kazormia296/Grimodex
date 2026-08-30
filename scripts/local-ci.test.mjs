@@ -6,6 +6,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -26,6 +27,7 @@ import {
 
 import {
   buildLocalCiPlan,
+  captureC2ZcRestoreFixtureEvidence,
   collectProductJourneyEvidence,
   expectedC2ZcAcceptanceForPlan,
   parseLocalCiArgs,
@@ -51,6 +53,7 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
+const LOCAL_CI_TEST_RUN_ID = "99999999-9999-4999-8999-999999999999";
 
 async function read(relativePath) {
   return readFile(path.join(repoRoot, relativePath), "utf8");
@@ -111,12 +114,9 @@ function c2zcFixtureManifest(candidate, fixtureBytes) {
 function c2zcFixtureEvidence(candidate) {
   const fixtureBytes = Buffer.from("offline-fixture", "utf8");
   const fixtureManifest = c2zcFixtureManifest(candidate, fixtureBytes);
-  const fixturePath =
-    ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.backup.db";
-  const databasePath =
-    ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.db";
-  const manifestPath =
-    ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.manifest.json";
+  const fixturePath = `.artifacts/local-ci/c2-zc-restore-fixture/${LOCAL_CI_TEST_RUN_ID}/c2zc-restore-fixture.backup.db`;
+  const databasePath = `.artifacts/local-ci/c2-zc-restore-fixture/${LOCAL_CI_TEST_RUN_ID}/c2zc-restore-fixture.db`;
+  const manifestPath = `.artifacts/local-ci/c2-zc-restore-fixture/${LOCAL_CI_TEST_RUN_ID}/c2zc-restore-fixture.manifest.json`;
   const fixture = {
     path: fixturePath,
     realPath: `/repo/${fixturePath}`,
@@ -688,28 +688,27 @@ test("local Full builds and verifies an external C2-ZC fixture before passing it
   const fixtureInput = JSON.parse(
     productCommand.env.GRIMODEX_C2ZC_RESTORE_FIXTURE,
   );
+  const publishedFixtureDirectory = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/c2-zc-restore-fixture",
+    result.runId,
+  );
   assert.equal(
     fixtureInput.path,
-    path.join(
-      temporaryRoot,
-      ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.backup.db",
-    ),
+    path.join(publishedFixtureDirectory, "c2zc-restore-fixture.backup.db"),
   );
   assert.equal(
     fixtureInput.manifest,
-    path.join(
-      temporaryRoot,
-      ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.manifest.json",
-    ),
+    path.join(publishedFixtureDirectory, "c2zc-restore-fixture.manifest.json"),
   );
   assert.ok(result.c2zcRestoreFixture);
   assert.equal(
     result.c2zcRestoreFixture.path,
-    ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.backup.db",
+    `.artifacts/local-ci/c2-zc-restore-fixture/${result.runId}/c2zc-restore-fixture.backup.db`,
   );
   assert.equal(
     result.c2zcRestoreFixture.manifestPath,
-    ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.manifest.json",
+    `.artifacts/local-ci/c2-zc-restore-fixture/${result.runId}/c2zc-restore-fixture.manifest.json`,
   );
   await assert.rejects(
     readFile(path.join(outputDir, "c2zc-restore-fixture.backup.db")),
@@ -738,6 +737,571 @@ test("local Full builds and verifies an external C2-ZC fixture before passing it
     }),
     /bytes|digest|manifest artifacts/i,
     "Full fixture evidence must re-read the copied database",
+  );
+});
+
+test("C2-ZC evidence atomically replaces read-only existing fixture files", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-c2zc-atomic-success-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const sourceDirectory = path.join(temporaryRoot, "source");
+  const evidenceDirectory = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/c2-zc-restore-fixture",
+  );
+  await Promise.all([
+    mkdir(sourceDirectory, { recursive: true }),
+    mkdir(evidenceDirectory, { recursive: true }),
+  ]);
+  const candidate = completeCandidate();
+  const sourceBytes = Buffer.from("new-fixture", "utf8");
+  const sourceManifest = c2zcFixtureManifest(candidate, sourceBytes);
+  const sourcePaths = {
+    fixturePath: path.join(sourceDirectory, "c2zc-restore-fixture.backup.db"),
+    databasePath: path.join(sourceDirectory, "c2zc-restore-fixture.db"),
+    manifestPath: path.join(
+      sourceDirectory,
+      "c2zc-restore-fixture.manifest.json",
+    ),
+  };
+  await Promise.all([
+    writeFile(sourcePaths.fixturePath, sourceBytes),
+    writeFile(sourcePaths.databasePath, sourceBytes),
+    writeFile(
+      sourcePaths.manifestPath,
+      `${JSON.stringify(sourceManifest, null, 2)}\n`,
+    ),
+  ]);
+
+  const oldBytes = Buffer.from("old-fixture", "utf8");
+  const oldManifest = c2zcFixtureManifest(candidate, oldBytes);
+  const destinationPaths = {
+    fixturePath: path.join(evidenceDirectory, "c2zc-restore-fixture.backup.db"),
+    databasePath: path.join(evidenceDirectory, "c2zc-restore-fixture.db"),
+    manifestPath: path.join(
+      evidenceDirectory,
+      "c2zc-restore-fixture.manifest.json",
+    ),
+  };
+  await Promise.all([
+    writeFile(destinationPaths.fixturePath, oldBytes),
+    writeFile(destinationPaths.databasePath, oldBytes),
+    writeFile(
+      destinationPaths.manifestPath,
+      `${JSON.stringify(oldManifest, null, 2)}\n`,
+    ),
+  ]);
+  await Promise.all(
+    Object.values(destinationPaths).map((filePath) => chmod(filePath, 0o444)),
+  );
+
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const evidence = await captureC2ZcRestoreFixtureEvidence(
+    {
+      ...sourcePaths,
+      candidate,
+      input: { manifestPath: sourcePaths.manifestPath },
+    },
+    temporaryRoot,
+    { runId },
+  );
+
+  const publishedDirectory = path.join(evidenceDirectory, runId);
+  const publishedPaths = {
+    fixturePath: path.join(
+      publishedDirectory,
+      "c2zc-restore-fixture.backup.db",
+    ),
+    databasePath: path.join(publishedDirectory, "c2zc-restore-fixture.db"),
+    manifestPath: path.join(
+      publishedDirectory,
+      "c2zc-restore-fixture.manifest.json",
+    ),
+  };
+  assert.equal(
+    await readFile(destinationPaths.fixturePath, "utf8"),
+    "old-fixture",
+  );
+  assert.equal(
+    await readFile(destinationPaths.databasePath, "utf8"),
+    "old-fixture",
+  );
+  assert.equal(
+    await readFile(publishedPaths.fixturePath, "utf8"),
+    "new-fixture",
+  );
+  assert.equal(
+    await readFile(publishedPaths.databasePath, "utf8"),
+    "new-fixture",
+  );
+  assert.equal(
+    await readFile(destinationPaths.manifestPath, "utf8"),
+    `${JSON.stringify(oldManifest, null, 2)}\n`,
+  );
+  assert.equal(
+    await readFile(publishedPaths.manifestPath, "utf8"),
+    `${JSON.stringify(sourceManifest, null, 2)}\n`,
+  );
+  assert.equal(
+    evidence.path,
+    `.artifacts/local-ci/c2-zc-restore-fixture/${runId}/c2zc-restore-fixture.backup.db`,
+  );
+  assert.deepEqual(
+    (await readdir(evidenceDirectory)).sort(),
+    [
+      "c2zc-restore-fixture.backup.db",
+      "c2zc-restore-fixture.db",
+      "c2zc-restore-fixture.manifest.json",
+      runId,
+    ].sort(),
+  );
+});
+
+test("C2-ZC evidence staging failure preserves existing evidence and removes temp files", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-c2zc-atomic-failure-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const sourceDirectory = path.join(temporaryRoot, "source");
+  const evidenceDirectory = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/c2-zc-restore-fixture",
+  );
+  await Promise.all([
+    mkdir(sourceDirectory, { recursive: true }),
+    mkdir(evidenceDirectory, { recursive: true }),
+  ]);
+  const candidate = completeCandidate();
+  const sourceBytes = Buffer.from("new-fixture", "utf8");
+  const sourceManifest = c2zcFixtureManifest(candidate, sourceBytes);
+  const sourcePaths = {
+    fixturePath: path.join(sourceDirectory, "c2zc-restore-fixture.backup.db"),
+    databasePath: path.join(sourceDirectory, "c2zc-restore-fixture.db"),
+    manifestPath: path.join(
+      sourceDirectory,
+      "c2zc-restore-fixture.manifest.json",
+    ),
+  };
+  await Promise.all([
+    writeFile(sourcePaths.fixturePath, sourceBytes),
+    writeFile(
+      sourcePaths.manifestPath,
+      `${JSON.stringify(sourceManifest, null, 2)}\n`,
+    ),
+  ]);
+
+  const oldBytes = Buffer.from("old-fixture", "utf8");
+  const oldManifest = c2zcFixtureManifest(candidate, oldBytes);
+  const destinationPaths = {
+    fixturePath: path.join(evidenceDirectory, "c2zc-restore-fixture.backup.db"),
+    databasePath: path.join(evidenceDirectory, "c2zc-restore-fixture.db"),
+    manifestPath: path.join(
+      evidenceDirectory,
+      "c2zc-restore-fixture.manifest.json",
+    ),
+  };
+  await Promise.all([
+    writeFile(destinationPaths.fixturePath, oldBytes),
+    writeFile(destinationPaths.databasePath, oldBytes),
+    writeFile(
+      destinationPaths.manifestPath,
+      `${JSON.stringify(oldManifest, null, 2)}\n`,
+    ),
+  ]);
+  const before = await Promise.all(
+    Object.values(destinationPaths).map((filePath) => readFile(filePath)),
+  );
+  const runId = "22222222-2222-4222-8222-222222222222";
+
+  await assert.rejects(
+    captureC2ZcRestoreFixtureEvidence(
+      {
+        ...sourcePaths,
+        candidate,
+        input: { manifestPath: sourcePaths.manifestPath },
+      },
+      temporaryRoot,
+      { runId },
+    ),
+    /ENOENT/,
+  );
+
+  const after = await Promise.all(
+    Object.values(destinationPaths).map((filePath) => readFile(filePath)),
+  );
+  assert.deepEqual(after, before);
+  assert.deepEqual((await readdir(evidenceDirectory)).sort(), [
+    "c2zc-restore-fixture.backup.db",
+    "c2zc-restore-fixture.db",
+    "c2zc-restore-fixture.manifest.json",
+  ]);
+  await assert.rejects(
+    readFile(
+      path.join(evidenceDirectory, runId, "c2zc-restore-fixture.manifest.json"),
+    ),
+    /ENOENT/,
+  );
+});
+
+test("C2-ZC evidence publish failure cleans only its staging directory", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-c2zc-publish-failure-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const sourceDirectory = path.join(temporaryRoot, "source");
+  const evidenceDirectory = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/c2-zc-restore-fixture",
+  );
+  await Promise.all([
+    mkdir(sourceDirectory, { recursive: true }),
+    mkdir(evidenceDirectory, { recursive: true }),
+  ]);
+  const candidate = completeCandidate();
+  const sourceBytes = Buffer.from("publish-failure-fixture", "utf8");
+  const sourceManifest = c2zcFixtureManifest(candidate, sourceBytes);
+  const sourcePaths = {
+    fixturePath: path.join(sourceDirectory, "c2zc-restore-fixture.backup.db"),
+    databasePath: path.join(sourceDirectory, "c2zc-restore-fixture.db"),
+    manifestPath: path.join(
+      sourceDirectory,
+      "c2zc-restore-fixture.manifest.json",
+    ),
+  };
+  await Promise.all([
+    writeFile(sourcePaths.fixturePath, sourceBytes),
+    writeFile(sourcePaths.databasePath, sourceBytes),
+    writeFile(
+      sourcePaths.manifestPath,
+      `${JSON.stringify(sourceManifest, null, 2)}\n`,
+    ),
+  ]);
+  const runId = "33333333-3333-4333-8333-333333333333";
+  const finalDirectory = path.join(evidenceDirectory, runId);
+  await assert.rejects(
+    captureC2ZcRestoreFixtureEvidence(
+      {
+        ...sourcePaths,
+        candidate,
+        input: { manifestPath: sourcePaths.manifestPath },
+      },
+      temporaryRoot,
+      {
+        runId,
+        beforePublish: async ({ finalDirectory: publishDirectory }) => {
+          assert.equal(publishDirectory, finalDirectory);
+          await mkdir(publishDirectory);
+          await writeFile(path.join(publishDirectory, "sentinel"), "keep");
+        },
+      },
+    ),
+    /EEXIST|ENOTEMPTY/,
+  );
+  assert.equal(
+    await readFile(path.join(finalDirectory, "sentinel"), "utf8"),
+    "keep",
+  );
+  assert.deepEqual(await readdir(evidenceDirectory), [runId]);
+});
+
+test("concurrent C2-ZC evidence captures publish independent self-contained run directories", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-c2zc-concurrent-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const evidenceDirectory = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/c2-zc-restore-fixture",
+  );
+  const candidate = completeCandidate();
+  const contexts = await Promise.all(
+    [
+      ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "fixture-a"],
+      ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "fixture-b"],
+    ].map(async ([runId, value]) => {
+      const sourceDirectory = await mkdtemp(
+        path.join(os.tmpdir(), `grimodex-local-ci-c2zc-source-${value}-`),
+      );
+      t.after(() => rm(sourceDirectory, { recursive: true, force: true }));
+      const bytes = Buffer.from(value, "utf8");
+      const manifest = c2zcFixtureManifest(candidate, bytes);
+      const paths = {
+        fixturePath: path.join(
+          sourceDirectory,
+          "c2zc-restore-fixture.backup.db",
+        ),
+        databasePath: path.join(sourceDirectory, "c2zc-restore-fixture.db"),
+        manifestPath: path.join(
+          sourceDirectory,
+          "c2zc-restore-fixture.manifest.json",
+        ),
+      };
+      await Promise.all([
+        writeFile(paths.fixturePath, bytes),
+        writeFile(paths.databasePath, bytes),
+        writeFile(paths.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`),
+      ]);
+      return { paths, runId, value };
+    }),
+  );
+  const evidence = await Promise.all(
+    contexts.map(({ paths, runId }) =>
+      captureC2ZcRestoreFixtureEvidence(
+        {
+          ...paths,
+          candidate,
+          input: { manifestPath: paths.manifestPath },
+        },
+        temporaryRoot,
+        { runId },
+      ),
+    ),
+  );
+  assert.deepEqual(
+    evidence.map(({ path: fixturePath }) => fixturePath).sort(),
+    contexts
+      .map(
+        ({ runId }) =>
+          `.artifacts/local-ci/c2-zc-restore-fixture/${runId}/c2zc-restore-fixture.backup.db`,
+      )
+      .sort(),
+  );
+  for (const { runId, value } of contexts) {
+    const publishedFixturePath = path.join(
+      temporaryRoot,
+      ".artifacts/local-ci/c2-zc-restore-fixture",
+      runId,
+      "c2zc-restore-fixture.backup.db",
+    );
+    assert.equal(await readFile(publishedFixturePath, "utf8"), value);
+  }
+  assert.deepEqual(
+    (await readdir(evidenceDirectory)).sort(),
+    contexts.map(({ runId }) => runId).sort(),
+  );
+});
+
+test("failed C2-ZC fixture cleanup is scoped to the current run evidence", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-c2zc-cleanup-scope-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const registry = await readRegistry();
+  const full = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const fixtureStage = full.stages.find(
+    (stage) => stage.id === "c2-zc-restore-fixture-builder",
+  );
+  const candidate = completeCandidate();
+  const fixtureBytes = Buffer.from("cleanup-scope-fixture", "utf8");
+  const executeFixture =
+    (failVerify = false) =>
+    async (command) => {
+      if (command.args.includes("build")) {
+        const outputDir =
+          command.args[command.args.indexOf("--output-dir") + 1];
+        const manifest = c2zcFixtureManifest(candidate, fixtureBytes);
+        await mkdir(outputDir, { recursive: true });
+        await Promise.all([
+          writeFile(
+            path.join(outputDir, manifest.artifacts.fixture.path),
+            fixtureBytes,
+          ),
+          writeFile(
+            path.join(outputDir, manifest.artifacts.database.path),
+            fixtureBytes,
+          ),
+          writeFile(
+            path.join(outputDir, "c2zc-restore-fixture.manifest.json"),
+            `${JSON.stringify(manifest, null, 2)}\n`,
+          ),
+        ]);
+      }
+      return {
+        durationMs: 1,
+        exitCode: failVerify && command.args.includes("verify") ? 17 : 0,
+        signal: null,
+      };
+    };
+  const first = await runLocalCiPlan(
+    { ...full, stages: [fixtureStage] },
+    {
+      candidate,
+      root: temporaryRoot,
+      executeCommand: executeFixture(),
+    },
+  );
+  assert.equal(first.status, "passed");
+  assert.ok(first.c2zcRestoreFixture);
+  await access(path.join(temporaryRoot, first.c2zcRestoreFixture.path));
+
+  const second = await runLocalCiPlan(
+    { ...full, stages: [fixtureStage] },
+    {
+      candidate,
+      root: temporaryRoot,
+      executeCommand: executeFixture(true),
+    },
+  );
+  assert.equal(second.status, "failed");
+  assert.equal(second.c2zcRestoreFixture, null);
+  await access(path.join(temporaryRoot, first.c2zcRestoreFixture.path));
+  assert.deepEqual(
+    await readdir(
+      path.join(temporaryRoot, ".artifacts/local-ci/c2-zc-restore-fixture"),
+    ),
+    [first.runId],
+  );
+});
+
+test("same-run C2-ZC evidence collision never deletes pre-existing evidence", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-c2zc-collision-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const registry = await readRegistry();
+  const full = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const fixtureStage = full.stages.find(
+    (stage) => stage.id === "c2-zc-restore-fixture-builder",
+  );
+  const candidate = completeCandidate();
+  const runId = "44444444-4444-4444-8444-444444444444";
+  const evidenceDirectory = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/c2-zc-restore-fixture",
+    runId,
+  );
+  const existingBytes = Buffer.from("pre-existing-evidence", "utf8");
+  const existingManifest = c2zcFixtureManifest(candidate, existingBytes);
+  await mkdir(evidenceDirectory, { recursive: true });
+  await Promise.all([
+    writeFile(
+      path.join(evidenceDirectory, "c2zc-restore-fixture.backup.db"),
+      existingBytes,
+    ),
+    writeFile(
+      path.join(evidenceDirectory, "c2zc-restore-fixture.db"),
+      existingBytes,
+    ),
+    writeFile(
+      path.join(evidenceDirectory, "c2zc-restore-fixture.manifest.json"),
+      `${JSON.stringify(existingManifest, null, 2)}\n`,
+    ),
+  ]);
+  const existingPaths = {
+    fixturePath: path.join(evidenceDirectory, "c2zc-restore-fixture.backup.db"),
+    databasePath: path.join(evidenceDirectory, "c2zc-restore-fixture.db"),
+    manifestPath: path.join(
+      evidenceDirectory,
+      "c2zc-restore-fixture.manifest.json",
+    ),
+  };
+  const before = await Promise.all(
+    Object.values(existingPaths).map((filePath) => readFile(filePath)),
+  );
+  const fixtureBytes = Buffer.from("collision-source", "utf8");
+  const executeFixture = async (command) => {
+    if (command.args.includes("build")) {
+      const outputDir = command.args[command.args.indexOf("--output-dir") + 1];
+      const manifest = c2zcFixtureManifest(candidate, fixtureBytes);
+      await mkdir(outputDir, { recursive: true });
+      await Promise.all([
+        writeFile(
+          path.join(outputDir, manifest.artifacts.fixture.path),
+          fixtureBytes,
+        ),
+        writeFile(
+          path.join(outputDir, manifest.artifacts.database.path),
+          fixtureBytes,
+        ),
+        writeFile(
+          path.join(outputDir, "c2zc-restore-fixture.manifest.json"),
+          `${JSON.stringify(manifest, null, 2)}\n`,
+        ),
+      ]);
+    }
+    return {
+      durationMs: 1,
+      exitCode: 0,
+      signal: null,
+    };
+  };
+
+  const result = await runLocalCiPlan(
+    { ...full, stages: [fixtureStage] },
+    {
+      candidate,
+      root: temporaryRoot,
+      runId,
+      executeCommand: executeFixture,
+    },
+  );
+  assert.equal(result.runId, runId);
+  assert.equal(result.status, "failed");
+  assert.equal(result.c2zcRestoreFixture, null);
+  assert.deepEqual(
+    await Promise.all(
+      Object.values(existingPaths).map((filePath) => readFile(filePath)),
+    ),
+    before,
+  );
+  const retained = await readC2ZcRestoreFixtureEvidence(existingPaths, {
+    root: temporaryRoot,
+    candidate,
+  });
+  assert.equal(
+    retained.fixtureSha256,
+    `sha256:${createHash("sha256").update(existingBytes).digest("hex")}`,
+  );
+});
+
+test("legacy fixed-path C2-ZC receipts fail closed under run-bound verification", () => {
+  const candidate = completeCandidate();
+  const plan = fullStageBindingPlan({ productJourneySet: null });
+  const legacy = c2zcFixtureEvidence(candidate);
+  const legacyDirectory = ".artifacts/local-ci/c2-zc-restore-fixture";
+  const legacyFixturePath = `${legacyDirectory}/c2zc-restore-fixture.backup.db`;
+  const legacyDatabasePath = `${legacyDirectory}/c2zc-restore-fixture.db`;
+  const legacyManifestPath = `${legacyDirectory}/c2zc-restore-fixture.manifest.json`;
+  legacy.path = legacyFixturePath;
+  legacy.manifestPath = legacyManifestPath;
+  legacy.manifest.path = legacyManifestPath;
+  legacy.artifacts.fixture.path = legacyFixturePath;
+  legacy.artifacts.database.path = legacyDatabasePath;
+  const productJourneyEvidence = completeProductJourneyEvidence({
+    acceptanceRequired: true,
+  });
+  productJourneyEvidence.c2zcRestoreFixture = legacy;
+  const receipt = {
+    version: 3,
+    profile: "full",
+    coverage: { completeness: "complete", fromStage: null },
+    candidate,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    status: "passed",
+    stages: passedStagesForPlan(plan),
+    productJourneyEvidence,
+    c2zcRestoreFixture: legacy,
+  };
+
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(receipt, {
+        profile: "full",
+        candidate,
+        plan,
+        currentProductJourneyEvidence: productJourneyEvidence,
+        currentC2ZcRestoreFixtureEvidence: legacy,
+      }),
+    /run|bound/i,
   );
 });
 
@@ -823,19 +1387,18 @@ test("local Full passes the verified copied fixture to product journeys, never t
   const fixtureInput = JSON.parse(
     productCommand.env.GRIMODEX_C2ZC_RESTORE_FIXTURE,
   );
+  const publishedFixtureDirectory = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/c2-zc-restore-fixture",
+    result.runId,
+  );
   assert.equal(
     fixtureInput.path,
-    path.join(
-      temporaryRoot,
-      ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.backup.db",
-    ),
+    path.join(publishedFixtureDirectory, "c2zc-restore-fixture.backup.db"),
   );
   assert.equal(
     fixtureInput.manifest,
-    path.join(
-      temporaryRoot,
-      ".artifacts/local-ci/c2-zc-restore-fixture/c2zc-restore-fixture.manifest.json",
-    ),
+    path.join(publishedFixtureDirectory, "c2zc-restore-fixture.manifest.json"),
   );
   assert.notEqual(fixtureInput.path, result.c2zcRestoreFixture?.workingPath);
 });
@@ -1961,6 +2524,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     profile: "full",
     coverage: { completeness: "complete", fromStage: null },
     candidate,
+    runId: LOCAL_CI_TEST_RUN_ID,
     status: "passed",
     stages: passedStagesForPlan(acceptedReceiptPlan),
     productJourneyEvidence: acceptedEvidence,
