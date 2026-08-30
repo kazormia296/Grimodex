@@ -28,6 +28,7 @@ import {
   snapshotRuntimeEnvironment,
   terminateOwnedProcessTree,
 } from "../electron/scripts/performance-harness.mjs";
+import * as runtimePerformanceHarness from "../electron/scripts/performance-harness.mjs";
 import { DEFAULT_RUNTIME_BUDGETS } from "./runtime-performance-budget.mjs";
 
 const repoRoot = path.resolve(
@@ -132,6 +133,63 @@ test("runtime frame gate pins active-foreground Chromium timing semantics", asyn
     source.match(/await ensureBenchmarkPageForeground\(page\);/g)?.length,
     6,
     "launch, calibration, autosave, gesture driver, Timeline, and Chronicle must all establish an active Page",
+  );
+});
+
+test("smoke phase and failure cleanup wire bounded owned cleanup", async () => {
+  const source = await read("electron/scripts/smoke.mjs");
+  const finishStart = source.indexOf(
+    "async function finishRuntimePhase({ app, page, memorySampler, phase })",
+  );
+  const finishEnd = source.indexOf(
+    "\nasync function ensureBenchmarkPageForeground",
+    finishStart,
+  );
+  assert.ok(finishStart >= 0 && finishEnd > finishStart);
+  const finish = source.slice(finishStart, finishEnd);
+  assert.match(
+    finish,
+    /cleanupRuntimePerformancePhase\(\{[\s\S]*?app,[\s\S]*?memorySampler,[\s\S]*?stopMemorySampler:[\s\S]*?closeApp:[\s\S]*?forceKill:[\s\S]*?operationTimeoutMs:\s*FAILURE_CLEANUP_TIMEOUT_MS,[\s\S]*?abort:/,
+    "phase finally must pass every owned cleanup callback and deadline",
+  );
+  assert.match(
+    finish,
+    /if \(cleanup\.status !== "completed"\) \{[\s\S]*?throw new Error\(/,
+    "failed phase cleanup must propagate to the top-level failure path",
+  );
+  assert.match(
+    finish,
+    /if \(runtimeContext\.app === app\) \{[\s\S]*?runtimeContext\.app = null[\s\S]*?runtimeContext\.page = null[\s\S]*?runtimeContext\.memorySampler = null/,
+    "runtime handles must reset only after phase-finally cleanup",
+  );
+  assert.equal(
+    source.match(/finally \{\s+await finishRuntimePhase\(/g)?.length,
+    3,
+    "seed, write, and restart must all clean up from finally",
+  );
+
+  const catchStart = source.lastIndexOf("} catch (e) {");
+  assert.ok(catchStart >= 0, "top-level smoke failure catch is required");
+  const failureCatch = source.slice(catchStart);
+  const abortIndex = failureCatch.indexOf(
+    'runtimeAbortController.abort("top-level-failure")',
+  );
+  const memoryIndex = failureCatch.search(
+    /runBoundedOperation\(\s*"memorySampler"/,
+  );
+  const appIndex = failureCatch.search(/runBoundedOperation\(\s*"app"/);
+  const clearIndex = failureCatch.indexOf("clearTimeout(watchdog)");
+  assert.ok(abortIndex >= 0, "failure cleanup must abort phase work first");
+  assert.ok(memoryIndex > abortIndex, "sampler cleanup must be bounded");
+  assert.ok(appIndex > memoryIndex, "app cleanup must be bounded");
+  assert.ok(
+    clearIndex > appIndex,
+    "global watchdog must remain armed during failure cleanup",
+  );
+  assert.match(
+    failureCatch,
+    /runBoundedOperation\(\s*"forceKill"/,
+    "owned process fallback must also be bounded",
   );
 });
 
@@ -601,6 +659,245 @@ test("unavailable Windows killer still flushes timeout artifact", async () => {
     written.finalArtifact.cleanup.processTermination.reason,
     /ENOENT|unavailable/,
   );
+});
+
+test("timeout finalization reaches hard exit after artifact writer rejection", async () => {
+  const events = [];
+  const result = await finalizeRuntimePerformanceTimeout({
+    timeoutArtifactPath: "/tmp/runtime-metrics-writer-rejected.json",
+    artifact: buildRuntimePerformanceTimeoutArtifact({
+      phase: "write.views.timeline",
+      currentInteraction: "timelineDrag",
+    }),
+    operationTimeoutMs: 25,
+    writeArtifact: async () => {
+      events.push("write");
+      throw new Error("artifact writer failed");
+    },
+    hardExit: (exitCode, hardExitResult) => {
+      events.push("hardExit");
+      assert.equal(exitCode, 1);
+      assert.equal(hardExitResult.writeArtifact.status, "failed");
+    },
+  });
+
+  assert.deepEqual(events, ["write", "hardExit"]);
+  assert.equal(result.writeArtifact.status, "failed");
+});
+
+test(
+  "timeout finalization reaches hard exit after artifact writer never settles",
+  { timeout: 500 },
+  async () => {
+    const events = [];
+    const result = await finalizeRuntimePerformanceTimeout({
+      timeoutArtifactPath: "/tmp/runtime-metrics-writer-pending.json",
+      artifact: buildRuntimePerformanceTimeoutArtifact({
+        phase: "write.views.timeline",
+        currentInteraction: "timelineDrag",
+      }),
+      operationTimeoutMs: 25,
+      writeArtifact: async () => {
+        events.push("write");
+        return await new Promise(() => {});
+      },
+      hardExit: (exitCode, hardExitResult) => {
+        events.push("hardExit");
+        assert.equal(exitCode, 1);
+        assert.equal(hardExitResult.writeArtifact.status, "timed-out");
+      },
+    });
+
+    assert.deepEqual(events, ["write", "hardExit"]);
+    assert.equal(result.writeArtifact.status, "timed-out");
+  },
+);
+
+test(
+  "phase-finally cleanup aborts and force-kills after a never-settling sampler and app",
+  { timeout: 500 },
+  async () => {
+    const events = [];
+    const controller = new AbortController();
+    const startedAt = performance.now();
+    const result =
+      await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
+        app: { id: "owned-app" },
+        page: { id: "owned-page" },
+        phase: "seed",
+        memorySampler: { id: "owned-sampler" },
+        operationTimeoutMs: 25,
+        stopMemorySampler: async () => {
+          events.push("sampler");
+          return await new Promise(() => {});
+        },
+        closeApp: async () => {
+          events.push("close");
+          return await new Promise(() => {});
+        },
+        forceKill: async () => {
+          events.push("forceKill");
+          return { status: "completed", pids: [1234] };
+        },
+        abort: (reason) => {
+          events.push(`abort:${reason}`);
+          controller.abort(reason);
+        },
+      });
+
+    assert.ok(performance.now() - startedAt < 250);
+    assert.equal(result.status, "failed");
+    assert.deepEqual(events, [
+      "sampler",
+      "abort:phase-cleanup-timeout",
+      "close",
+      "forceKill",
+    ]);
+    assert.equal(result.memorySampler.status, "timed-out");
+    assert.equal(result.app.status, "timed-out");
+    assert.equal(result.forceKill.status, "completed");
+    assert.equal(controller.signal.reason, "phase-cleanup-timeout");
+  },
+);
+
+test("phase-finally cleanup shares normal owned cleanup across duplicate calls", async () => {
+  const events = [];
+  const coordinator = createRuntimePerformanceCleanupCoordinator();
+  const app = { id: "owned-app" };
+  const page = { id: "owned-page" };
+  const sampler = { id: "owned-sampler" };
+  const close = async () => {
+    events.push("close");
+  };
+  const stopMemorySampler = () =>
+    coordinator.stopMemorySampler({
+      ...sampler,
+      stop: async () => {
+        events.push("sampler");
+      },
+    });
+  const closeApp = () => coordinator.closeApp(app, page, "seed", close);
+  const forceKill = () =>
+    coordinator.terminateProcess(async () => {
+      events.push("forceKill");
+      return { status: "completed" };
+    });
+  const run = () =>
+    runtimePerformanceHarness.cleanupRuntimePerformancePhase({
+      app,
+      page,
+      phase: "seed",
+      memorySampler: sampler,
+      cleanupCoordinator: coordinator,
+      stopMemorySampler,
+      closeApp,
+      forceKill,
+      operationTimeoutMs: 25,
+    });
+
+  const [first, second] = await Promise.all([run(), run()]);
+  assert.equal(first.status, "completed");
+  assert.equal(second.status, "completed");
+  assert.deepEqual(events, ["sampler", "close"]);
+  assert.deepEqual(coordinator.snapshot(), {
+    memoryStopStarted: true,
+    closeStarted: true,
+    terminationStarted: false,
+  });
+});
+
+test("phase-finally cleanup absorbs a late sampler rejection after its deadline", async () => {
+  const events = [];
+  let rejectSampler;
+  const lateSampler = new Promise((resolve, reject) => {
+    rejectSampler = reject;
+  });
+  const result =
+    await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
+      app: { id: "owned-app" },
+      page: { id: "owned-page" },
+      phase: "write",
+      memorySampler: { id: "owned-sampler" },
+      operationTimeoutMs: 10,
+      stopMemorySampler: () => lateSampler,
+      closeApp: async () => {
+        events.push("close");
+      },
+      forceKill: async () => {
+        events.push("forceKill");
+        return { status: "completed" };
+      },
+      abort: (reason) => events.push(`abort:${reason}`),
+    });
+
+  assert.equal(result.status, "failed");
+  assert.deepEqual(events, ["abort:phase-cleanup-timeout", "close"]);
+  rejectSampler(new Error("late sampler failure"));
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("phase-finally cleanup fails closed for missing required callbacks", async () => {
+  const missingSampler = await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
+    app: { id: "owned-app" },
+    page: { id: "owned-page" },
+    phase: "seed",
+    memorySampler: { id: "owned-sampler" },
+    closeApp: async () => null,
+    abort: () => {},
+    operationTimeoutMs: 25,
+  });
+  assert.equal(missingSampler.status, "failed");
+  assert.equal(missingSampler.memorySampler.status, "failed");
+  assert.match(
+    missingSampler.memorySampler.error.message,
+    /memorySampler.*callback.*required/i,
+  );
+
+  const missingApp = await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
+    app: { id: "owned-app" },
+    page: { id: "owned-page" },
+    phase: "write",
+    forceKill: async () => ({ status: "completed" }),
+    abort: () => {},
+    operationTimeoutMs: 25,
+  });
+  assert.equal(missingApp.status, "failed");
+  assert.equal(missingApp.app.status, "failed");
+  assert.match(missingApp.app.error.message, /app.*callback.*required/i);
+  assert.equal(missingApp.forceKill.status, "completed");
+
+  const missingForceKill = await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
+    app: { id: "owned-app" },
+    page: { id: "owned-page" },
+    phase: "restart",
+    closeApp: async () => {
+      throw new Error("close failed");
+    },
+    abort: () => {},
+    operationTimeoutMs: 25,
+  });
+  assert.equal(missingForceKill.status, "failed");
+  assert.equal(missingForceKill.app.status, "failed");
+  assert.equal(missingForceKill.forceKill.status, "failed");
+  assert.match(
+    missingForceKill.forceKill.error.message,
+    /forceKill.*callback.*required/i,
+  );
+
+  const closeSucceeded =
+    await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
+      app: { id: "owned-app" },
+      page: { id: "owned-page" },
+      phase: "seed",
+      closeApp: async () => null,
+      abort: () => {},
+      operationTimeoutMs: 25,
+    });
+  assert.equal(closeSucceeded.status, "completed");
+  assert.deepEqual(closeSucceeded.forceKill, {
+    status: "skipped",
+    reason: "close-completed",
+  });
 });
 
 test("process-level timeout harness flushes JSON before hard exit with a live handle", () => {

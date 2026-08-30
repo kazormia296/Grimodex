@@ -675,7 +675,7 @@ export function buildRuntimePerformanceTimeoutArtifact({
   };
 }
 
-async function runBoundedOperation(label, operation, timeoutMs) {
+export async function runBoundedOperation(label, operation, timeoutMs) {
   if (typeof operation !== "function") return { status: "skipped" };
   let timer = null;
   try {
@@ -711,6 +711,119 @@ function normalizeProcessTerminationResult(operationResult) {
     };
   }
   return operationResult;
+}
+
+function cleanupOperationSucceeded(operationResult) {
+  return (
+    operationResult?.status === "completed" ||
+    operationResult?.status === "skipped"
+  );
+}
+
+function requiredCleanupOperation(label, operation) {
+  if (typeof operation === "function") return operation;
+  return () => {
+    throw new TypeError(
+      `${label} cleanup callback is required for an owned resource`,
+    );
+  };
+}
+
+/**
+ * Finish one normal smoke phase without allowing a stalled inspector call to
+ * strand the phase's `finally` block. The caller owns the resource-specific
+ * callbacks so the same cleanup coordinator can deduplicate normal, failure,
+ * and watchdog paths.
+ */
+export async function cleanupRuntimePerformancePhase({
+  app = null,
+  page = null,
+  phase = "runtime phase",
+  memorySampler = null,
+  cleanupCoordinator = null,
+  stopMemorySampler,
+  closeApp,
+  forceKill,
+  operationTimeoutMs = 5_000,
+  abort,
+} = {}) {
+  let abortIssued = false;
+  const abortCleanup = (reason) => {
+    if (abortIssued || typeof abort !== "function") return;
+    abortIssued = true;
+    try {
+      abort(reason);
+    } catch {
+      // Cleanup must continue to the owned app/force-kill path even if the
+      // caller's abort hook has already been disposed.
+    }
+  };
+
+  const memoryResult = await runBoundedOperation(
+    "memorySampler",
+    memorySampler
+      ? requiredCleanupOperation("memorySampler", stopMemorySampler)
+      : undefined,
+    operationTimeoutMs,
+  );
+  if (!cleanupOperationSucceeded(memoryResult)) {
+    abortCleanup(
+      memoryResult.status === "timed-out"
+        ? "phase-cleanup-timeout"
+        : "phase-cleanup-failed",
+    );
+  }
+
+  const appResult = await runBoundedOperation(
+    "app",
+    app ? requiredCleanupOperation("app", closeApp) : undefined,
+    operationTimeoutMs,
+  );
+  const closeSucceeded =
+    !app ||
+    (cleanupOperationSucceeded(appResult) &&
+      appResult.value?.closed !== false);
+  if (!closeSucceeded) {
+    abortCleanup(
+      appResult.status === "timed-out"
+        ? "phase-cleanup-timeout"
+        : "phase-cleanup-failed",
+    );
+  }
+
+  const forceKillResult = closeSucceeded
+    ? { status: "skipped", reason: "close-completed" }
+    : normalizeProcessTerminationResult(
+        await runBoundedOperation(
+          "forceKill",
+          requiredCleanupOperation("forceKill", forceKill),
+          operationTimeoutMs,
+        ),
+      );
+  if (!closeSucceeded && !cleanupOperationSucceeded(forceKillResult)) {
+    abortCleanup(
+      forceKillResult.status === "timed-out"
+        ? "phase-cleanup-timeout"
+        : "phase-cleanup-failed",
+    );
+  }
+
+  const forceKillSucceeded =
+    closeSucceeded || forceKillResult.status === "completed";
+  const status =
+    cleanupOperationSucceeded(memoryResult) &&
+    closeSucceeded &&
+    forceKillSucceeded
+      ? "completed"
+      : "failed";
+  return {
+    status,
+    phase,
+    memorySampler: memoryResult,
+    app: appResult,
+    forceKill: forceKillResult,
+    cleanupState: cleanupCoordinator?.snapshot?.() ?? null,
+  };
 }
 
 export async function finalizeRuntimePerformanceTimeout({
@@ -774,8 +887,16 @@ export async function finalizeRuntimePerformanceTimeout({
     cleanup,
   });
   const absolutePath = path.resolve(timeoutArtifactPath);
-  await writeArtifact(absolutePath, finalArtifact);
-  const result = { path: absolutePath, artifact: finalArtifact };
+  const writeResult = await runBoundedOperation(
+    "writeArtifact",
+    () => writeArtifact(absolutePath, finalArtifact),
+    operationTimeoutMs,
+  );
+  const result = {
+    path: absolutePath,
+    artifact: finalArtifact,
+    writeArtifact: writeResult,
+  };
   if (typeof hardExit === "function") await hardExit(exitCode, result);
   return result;
 }

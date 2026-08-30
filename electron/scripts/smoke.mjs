@@ -36,10 +36,12 @@ import {
   buildRuntimePerformanceTimeoutArtifactPath,
   captureRafCalibration,
   createRuntimePerformanceCleanupCoordinator,
+  cleanupRuntimePerformancePhase,
   finalizeRuntimePerformanceTimeout,
   focusRuntimeWindow,
   readDomForegroundSnapshot,
   readRuntimeWindowSnapshot,
+  runBoundedOperation,
   runRuntimePerformancePhaseSequence,
   snapshotChildProcess,
   snapshotRuntimePerformanceContext,
@@ -116,6 +118,9 @@ const EDITOR_INPUT_READY_MARK = `grimodex.editorInputReady:${encodeURIComponent(
   PERF_SCENE_ID,
 )}`;
 const GLOBAL_WATCHDOG_MS = Number(process.env.SMOKE_TIMEOUT_MS ?? 300_000);
+const FAILURE_CLEANUP_TIMEOUT_MS = Number(
+  process.env.SMOKE_CLEANUP_TIMEOUT_MS ?? 5_000,
+);
 
 function log(step) {
   console.log(`[electron:smoke] ${step}`);
@@ -583,12 +588,36 @@ async function finishRuntimePhase({ app, page, memorySampler, phase }) {
     if (runtimeContext.watchdogPromise) await runtimeContext.watchdogPromise;
     return;
   }
-  await stopRuntimeMemorySampler(memorySampler);
+  const cleanup = await cleanupRuntimePerformancePhase({
+    app,
+    page,
+    phase,
+    memorySampler,
+    cleanupCoordinator: runtimeContext.cleanupCoordinator,
+    stopMemorySampler: () => stopRuntimeMemorySampler(memorySampler),
+    closeApp: () => closeAppWithDiagnostics(app, page, phase),
+    forceKill: () => {
+      const failureSnapshot = snapshotRuntimePerformanceContext(runtimeContext);
+      return runtimeContext.cleanupCoordinator.terminateProcess(() =>
+        terminateOwnedProcessTree({
+          childProcessSnapshot: failureSnapshot.process.electron,
+          platform:
+            failureSnapshot.process.node.platform ?? process.platform,
+        }),
+      );
+    },
+    operationTimeoutMs: FAILURE_CLEANUP_TIMEOUT_MS,
+    abort: (reason) => runtimeAbortController.abort(reason),
+  });
   if (runtimeContext.watchdogTriggered) {
     if (runtimeContext.watchdogPromise) await runtimeContext.watchdogPromise;
     return;
   }
-  await closeAppWithDiagnostics(app, page, phase);
+  if (cleanup.status !== "completed") {
+    throw new Error(
+      `${phase} cleanup failed: ${JSON.stringify(cleanup)}`,
+    );
+  }
   if (runtimeContext.watchdogTriggered && runtimeContext.watchdogPromise) {
     await runtimeContext.watchdogPromise;
     return;
@@ -2958,48 +2987,68 @@ try {
     }
   }
 } catch (e) {
-  clearTimeout(watchdog);
+  runtimeAbortController.abort("top-level-failure");
   console.error(`[electron:smoke] FAIL: ${e?.stack ?? e}`);
   console.error(`[electron:smoke] 一時ディレクトリを残します: ${tmpRoot}`);
+  let cleanupTimedOut = false;
   if (runtimeContext.watchdogTriggered) {
     if (runtimeContext.watchdogPromise) await runtimeContext.watchdogPromise;
+    cleanupTimedOut = true;
   } else {
     const memorySampler = runtimeContext.memorySampler;
     if (memorySampler) {
-      try {
-        await stopRuntimeMemorySampler(memorySampler);
-      } catch (cleanupError) {
+      const memoryCleanup = await runBoundedOperation(
+        "memorySampler",
+        () => stopRuntimeMemorySampler(memorySampler),
+        FAILURE_CLEANUP_TIMEOUT_MS,
+      );
+      if (memoryCleanup.status !== "completed") {
+        cleanupTimedOut = true;
         console.error(
-          `[electron:smoke] memory cleanup failed: ${cleanupError?.stack ?? cleanupError}`,
+          `[electron:smoke] memory cleanup ${memoryCleanup.status}: ${JSON.stringify(memoryCleanup)}`,
         );
       }
     }
     if (runtimeContext.app) {
-      try {
-        await closeAppWithDiagnostics(
-          runtimeContext.app,
-          runtimeContext.page,
-          runtimeContext.phase,
-        );
-      } catch (closeError) {
+      const app = runtimeContext.app;
+      const page = runtimeContext.page;
+      const phase = runtimeContext.phase;
+      const appCleanup = await runBoundedOperation(
+        "app",
+        () => closeAppWithDiagnostics(app, page, phase),
+        FAILURE_CLEANUP_TIMEOUT_MS,
+      );
+      if (appCleanup.status !== "completed") {
+        cleanupTimedOut = true;
         console.error(
-          `[electron:smoke] app close failed: ${closeError?.stack ?? closeError}`,
+          `[electron:smoke] app close ${appCleanup.status}: ${JSON.stringify(appCleanup)}`,
         );
         const failureSnapshot =
           snapshotRuntimePerformanceContext(runtimeContext);
-        const termination =
-          await runtimeContext.cleanupCoordinator.terminateProcess(() =>
-            terminateOwnedProcessTree({
-              childProcessSnapshot: failureSnapshot.process.electron,
-              platform:
-                failureSnapshot.process.node.platform ?? process.platform,
-            }),
-          );
+        const termination = await runBoundedOperation(
+          "forceKill",
+          () =>
+            runtimeContext.cleanupCoordinator.terminateProcess(() =>
+              terminateOwnedProcessTree({
+                childProcessSnapshot: failureSnapshot.process.electron,
+                platform:
+                  failureSnapshot.process.node.platform ?? process.platform,
+              }),
+            ),
+          FAILURE_CLEANUP_TIMEOUT_MS,
+        );
         console.error(
           `[electron:smoke] owned process termination: ${JSON.stringify(termination)}`,
         );
       }
     }
+  }
+  if (runtimeContext.watchdogTriggered && runtimeContext.watchdogPromise) {
+    await runtimeContext.watchdogPromise;
+    cleanupTimedOut = true;
+  }
+  if (!cleanupTimedOut) {
+    clearTimeout(watchdog);
   }
   process.exitCode = 1;
 }
