@@ -19,12 +19,15 @@ import {
   NARRATIVE_MAINTENANCE_FOREGROUND_SYSTEM_WORK_MARKER,
   NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER,
   NARRATIVE_MAINTENANCE_INTERRUPTED_CODE,
+  NARRATIVE_MAINTENANCE_NONCE_ENV,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV,
   NARRATIVE_MAINTENANCE_RETRY_OBSERVATION_MS,
   NARRATIVE_MAINTENANCE_SEAM_CONTRACT,
+  NARRATIVE_MAINTENANCE_SETUP_ENV,
+  NARRATIVE_FRESHNESS_DISABLE_ENV,
   NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
   NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
   NARRATIVE_MAINTENANCE_TRIGGERS,
@@ -43,6 +46,7 @@ import {
   selectInterruptedRunFromExitSnapshot,
   selectInterruptedRecoveryFromStableLedger,
   terminalRetryCandidates,
+  runRestoreVerifyRebuildVerifyScenario,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import * as narrativeMaintenanceProductJourneys from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import {
@@ -53,7 +57,10 @@ import {
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_DOMAIN_RULES,
 } from "../electron/scripts/product-journey-catalog.mjs";
-import { PRODUCT_JOURNEY_ELECTRON_PHASES } from "../electron/scripts/product-journey-harness.mjs";
+import {
+  expectedNarrativeMaintenanceCiReceipt,
+  PRODUCT_JOURNEY_ELECTRON_PHASES,
+} from "../electron/scripts/product-journey-harness.mjs";
 import {
   resolveProductJourneyImpactCatalog,
   selectProductJourneys,
@@ -756,6 +763,527 @@ test("C2-5B journey seam constants keep exact durable failure contracts", () => 
   ]);
 });
 
+test("C2-5B restore scenario phases capture an active owner receipt per launch", async () => {
+  const restoreLaunchPhase =
+    narrativeMaintenanceProductJourneys.launchRestoreVerifyRebuildVerifyRestorePhaseForTest;
+  const launchPhase =
+    narrativeMaintenanceProductJourneys.launchRestoreVerifyRebuildVerifyPhaseForTest;
+  assert.equal(
+    typeof restoreLaunchPhase,
+    "function",
+    "the production restore phase launcher must expose only a narrow test injection seam",
+  );
+  assert.equal(
+    typeof launchPhase,
+    "function",
+    "the production phase launcher must expose only a narrow test injection seam",
+  );
+
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  const previousSetup = process.env[NARRATIVE_MAINTENANCE_SETUP_ENV];
+  const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  const unrelatedEnv = "GRIMODEX_PRODUCT_JOURNEY_UNRELATED_SENTINEL";
+  const previousUnrelated = process.env[unrelatedEnv];
+  const inheritedOwner = "pre-existing-owner-value";
+  const inheritedNonce = "00000000-0000-4000-8000-000000000001";
+  const inheritedSetup = "pre-existing-setup-value";
+  const inheritedFreshness = "pre-existing-freshness-value";
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = inheritedOwner;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = inheritedNonce;
+  process.env[NARRATIVE_MAINTENANCE_SETUP_ENV] = inheritedSetup;
+  process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = inheritedFreshness;
+  process.env[unrelatedEnv] = "preserve-me";
+
+  const captured = [];
+  const phases = [
+    {
+      launcher: restoreLaunchPhase,
+      name: "c2-5b-restore-verify-rebuild-verify/restore",
+      environment: {},
+      expectedEnvironment: {
+        setup: NARRATIVE_MAINTENANCE_SEAM_CONTRACT.setupDisabledValue,
+        freshness: NARRATIVE_MAINTENANCE_SEAM_CONTRACT.freshnessDisabledValue,
+      },
+    },
+    {
+      launcher: launchPhase,
+      name: "c2-5b-restore-verify-rebuild-verify/open",
+      environment: { trigger: "dependency-gap" },
+      expectedEnvironment: { setup: undefined, freshness: undefined },
+    },
+    {
+      launcher: launchPhase,
+      name: "c2-5b-restore-verify-rebuild-verify/restart",
+      environment: { trigger: "dependency-gap" },
+      expectedEnvironment: { setup: undefined, freshness: undefined },
+    },
+  ];
+  const fakeHarness = {};
+  const injectedLaunch = async (phase) => {
+    const childEnv = { ...process.env };
+    const expectedReceipt = expectedNarrativeMaintenanceCiReceipt(childEnv);
+    assert.ok(expectedReceipt, `${phase} must expect an active receipt`);
+    assert.equal(expectedReceipt.active, true);
+    assert.equal(
+      expectedReceipt.nonce,
+      childEnv[NARRATIVE_MAINTENANCE_NONCE_ENV],
+    );
+    assert.equal(process.env[unrelatedEnv], "preserve-me");
+    captured.push({
+      phase,
+      ownerPresent: Object.hasOwn(
+        childEnv,
+        NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+      ),
+      owner: childEnv[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV],
+      nonce: childEnv[NARRATIVE_MAINTENANCE_NONCE_ENV],
+      setup: childEnv[NARRATIVE_MAINTENANCE_SETUP_ENV],
+      freshness: childEnv[NARRATIVE_FRESHNESS_DISABLE_ENV],
+      receipt: {
+        active: expectedReceipt.active,
+        nativeAck: expectedReceipt.nativeAck,
+        nonce: expectedReceipt.nonce,
+        type: expectedReceipt.type,
+      },
+    });
+    return { app: { phase }, page: { phase } };
+  };
+
+  try {
+    for (const { launcher, name, environment, expectedEnvironment } of phases) {
+      const originalEnvironment = { ...environment };
+      await launcher(fakeHarness, name, environment, injectedLaunch);
+      assert.deepEqual(
+        environment,
+        originalEnvironment,
+        `${name} must not mutate the caller's unrelated scenario environment`,
+      );
+      assert.equal(
+        process.env[unrelatedEnv],
+        "preserve-me",
+        `${name} must not leak or overwrite unrelated process environment`,
+      );
+      const latest = captured.at(-1);
+      assert.deepEqual(
+        { setup: latest.setup, freshness: latest.freshness },
+        expectedEnvironment,
+        `${name} must receive only its phase-specific maintenance environment`,
+      );
+      assert.equal(
+        process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV],
+        inheritedOwner,
+        `${name} owner token must be restored after launch`,
+      );
+      assert.equal(
+        process.env[NARRATIVE_MAINTENANCE_NONCE_ENV],
+        inheritedNonce,
+        `${name} nonce must be restored after launch`,
+      );
+      assert.equal(
+        process.env[NARRATIVE_MAINTENANCE_SETUP_ENV],
+        inheritedSetup,
+        `${name} setup seam must be restored after launch`,
+      );
+      assert.equal(
+        process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+        inheritedFreshness,
+        `${name} freshness seam must be restored after launch`,
+      );
+    }
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    }
+    if (previousNonce === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+    }
+    if (previousSetup === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_SETUP_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_SETUP_ENV] = previousSetup;
+    }
+    if (previousFreshness === undefined) {
+      delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+    } else {
+      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = previousFreshness;
+    }
+    if (previousUnrelated === undefined) delete process.env[unrelatedEnv];
+    else process.env[unrelatedEnv] = previousUnrelated;
+  }
+
+  assert.deepEqual(
+    captured.map(({ phase, ownerPresent, owner, nonce, setup, freshness }) => ({
+      phase,
+      ownerPresent,
+      owner,
+      nonce,
+      setup,
+      freshness,
+    })),
+    phases.map(({ name, expectedEnvironment }) => ({
+      phase: name,
+      ownerPresent: true,
+      owner: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+      nonce: captured.find((entry) => entry.phase === name)?.nonce,
+      ...expectedEnvironment,
+    })),
+  );
+  assert.equal(new Set(captured.map(({ nonce }) => nonce)).size, phases.length);
+  assert.ok(
+    captured.every(({ nonce }) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+        nonce,
+      ),
+    ),
+    "every injected launch must receive a UUIDv4 nonce",
+  );
+  assert.deepEqual(
+    captured.map(({ receipt }) => receipt),
+    captured.map(({ nonce }) => ({
+      active: true,
+      nativeAck: true,
+      nonce,
+      type: "grimodex:narrative-maintenance-ci-receipt",
+    })),
+    "every launch must expose the active main-maintenance-receipt expectation",
+  );
+});
+
+test("C2-5B restore reopens the normal scheduler in a fresh Electron process", async () => {
+  const restorePhase = "c2-5b-restore-verify-rebuild-verify/restore";
+  const source = await readFile(
+    new URL(
+      "../electron/scripts/narrative-maintenance-product-journeys.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const journeyBody = source.match(
+    /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
+  )?.[0];
+  assert.ok(
+    journeyBody,
+    "C2-5B restore journey caller must remain inspectable",
+  );
+  assert.ok(
+    NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES.includes(restorePhase),
+    "C2-5B restore phase must be registered for diagnostics",
+  );
+  assert.ok(
+    PRODUCT_JOURNEY_ELECTRON_PHASES.includes(restorePhase),
+    "C2-5B restore phase must be registered in the harness phase allowlist",
+  );
+  assert.match(
+    journeyBody,
+    /restorePhase:\s*"restore",\s*openPhase:\s*"open",/s,
+    "C2-5B must close the disabled restore process before opening a normal scheduler process",
+  );
+  assert.match(
+    journeyBody,
+    /onRestore:\s*\(/,
+    "C2-5B must retain the post-restore observation before the fresh open",
+  );
+  assert.match(
+    journeyBody,
+    /onOpen:\s*\(/,
+    "C2-5B must retain the normal Verify/Rebuild/Verify observation",
+  );
+});
+
+test("C2-5B restore scenario runs restore then close then normal open dynamically", async () => {
+  const id = "c2-5b-restore-verify-rebuild-verify";
+  const restorePhase = id + "/restore";
+  const openPhase = id + "/open";
+  const beforeEpochs = [
+    { id: "epoch-initial", epochNumber: 0, reason: "initial" },
+  ];
+  const restoreEpoch = {
+    id: "epoch-restore",
+    epochNumber: 1,
+    reason: "restore",
+    createdAt: "2026-08-23T00:00:00.000Z",
+  };
+  const phaseRuns = [
+    {
+      id: "verify-1",
+      runKind: "dependency-verify",
+      semanticEpochId: restoreEpoch.id,
+      status: "completed",
+      createdAt: "2026-08-23T00:00:01.000Z",
+      completedAt: "2026-08-23T00:00:01.500Z",
+    },
+    {
+      id: "rebuild-1",
+      runKind: "semantic-index-rebuild",
+      semanticEpochId: restoreEpoch.id,
+      status: "completed",
+      createdAt: "2026-08-23T00:00:02.000Z",
+      completedAt: "2026-08-23T00:00:02.500Z",
+    },
+    {
+      id: "verify-2",
+      runKind: "dependency-verify",
+      semanticEpochId: restoreEpoch.id,
+      status: "completed",
+      createdAt: "2026-08-23T00:00:03.000Z",
+      completedAt: "2026-08-23T00:00:03.500Z",
+    },
+  ];
+  const createContext = (phase, runs, epochs) => ({
+    projectId: "project-1",
+    phase,
+    runs: async () => runs,
+    epochs: async () => epochs,
+  });
+  const contexts = [
+    createContext(restorePhase, [], beforeEpochs),
+    createContext(restorePhase, [], [...beforeEpochs, restoreEpoch]),
+    createContext(openPhase, phaseRuns, [...beforeEpochs, restoreEpoch]),
+  ];
+  const events = [];
+  const launches = [];
+  let contextIndex = 0;
+  const unrelatedEnv = "GRIMODEX_PRODUCT_JOURNEY_UNRELATED_SENTINEL";
+  const environmentNames = [
+    "CI",
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+    NARRATIVE_MAINTENANCE_NONCE_ENV,
+    NARRATIVE_MAINTENANCE_SETUP_ENV,
+    NARRATIVE_FRESHNESS_DISABLE_ENV,
+    unrelatedEnv,
+  ];
+  const previousEnvironment = new Map(
+    environmentNames.map((name) => [name, process.env[name]]),
+  );
+  const inheritedEnvironment = {
+    CI: "true",
+    [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]: "inherited-owner",
+    [NARRATIVE_MAINTENANCE_NONCE_ENV]: "00000000-0000-4000-8000-000000000001",
+    [NARRATIVE_MAINTENANCE_SETUP_ENV]: "inherited-setup",
+    [NARRATIVE_FRESHNESS_DISABLE_ENV]: "inherited-freshness",
+    [unrelatedEnv]: "preserve-me",
+  };
+  for (const [name, value] of Object.entries(inheritedEnvironment)) {
+    process.env[name] = value;
+  }
+
+  let observedEnvironment;
+  let scenarioResult;
+  try {
+    scenarioResult = await runRestoreVerifyRebuildVerifyScenario(
+      {
+        workspacePath: (requestedId) => {
+          assert.equal(requestedId, id);
+          return "/tmp/c2-5b-restore-phase-sequence-test";
+        },
+        launch: async (phase) => {
+          const childEnvironment = { ...process.env };
+          const receipt =
+            expectedNarrativeMaintenanceCiReceipt(childEnvironment);
+          assert.ok(receipt, phase + " must publish an active receipt");
+          launches.push({
+            phase,
+            owner: childEnvironment[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV],
+            nonce: childEnvironment[NARRATIVE_MAINTENANCE_NONCE_ENV],
+            setup: childEnvironment[NARRATIVE_MAINTENANCE_SETUP_ENV],
+            freshness: childEnvironment[NARRATIVE_FRESHNESS_DISABLE_ENV],
+            receipt: {
+              type: receipt.type,
+              active: receipt.active,
+              nativeAck: receipt.nativeAck,
+              nonce: receipt.nonce,
+              setup: receipt.setup,
+              freshness: receipt.freshness,
+            },
+          });
+          events.push({ type: "launch", phase });
+          return {
+            app: { phase },
+            page: { phase },
+          };
+        },
+        close: async (app, page, phase) => {
+          assert.equal(app.phase, phase);
+          assert.equal(page.phase, phase);
+          events.push({ type: "close", phase });
+        },
+        waitUntil: async (predicate, label) => {
+          const result = await predicate();
+          assert.ok(result, label + " must settle in the injected harness");
+          return result;
+        },
+      },
+      async (_harness, workspace) => {
+        assert.equal(workspace, "/tmp/c2-5b-restore-phase-sequence-test");
+        events.push({ type: "configure" });
+      },
+      {
+        id,
+        restorePhase: "restore",
+        openPhase: "open",
+        restoreThroughSettingsUi: async (_context, backupName) => {
+          assert.equal(backupName, "restore-fixture.db");
+          events.push({ type: "restore-click" });
+        },
+        testHooks: {
+          fixtureEvidence: { backupName: "restore-fixture.db" },
+          readRunSnapshot: async () => [],
+          contextForLaunch: async (_harness, launch) => {
+            const context = contexts[contextIndex++];
+            assert.ok(
+              context,
+              "unexpected contextForLaunch call for " + launch.app.phase,
+            );
+            assert.equal(launch.app.phase, context.phase);
+            return context;
+          },
+          waitForReadiness: async () => {},
+          waitForRestorePhaseRows: async () => phaseRuns,
+        },
+        onRestore: async ({ context, fixtureEvidence }) => {
+          assert.equal(context.phase, restorePhase);
+          assert.equal(fixtureEvidence.backupName, "restore-fixture.db");
+          events.push({ type: "restore-observed" });
+        },
+        onOpen: async ({
+          openLaunch,
+          phaseRuns: observedPhaseRuns,
+          beforeEpochs: observedBeforeEpochs,
+          epochs,
+        }) => {
+          assert.equal(openLaunch.app.phase, openPhase);
+          assert.deepEqual(observedPhaseRuns, phaseRuns);
+          assert.deepEqual(
+            observedBeforeEpochs,
+            beforeEpochs,
+            "open callback must receive the pre-restore Epoch baseline",
+          );
+          const observedRestoreEpoch =
+            assertRestoreVerifyRebuildVerifyCausality(
+              observedPhaseRuns,
+              observedBeforeEpochs,
+              epochs,
+            );
+          assert.equal(observedRestoreEpoch.id, restoreEpoch.id);
+          events.push({ type: "open-observed" });
+        },
+      },
+    );
+    observedEnvironment = Object.fromEntries(
+      environmentNames.map((name) => [name, process.env[name]]),
+    );
+  } finally {
+    for (const [name, value] of previousEnvironment) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+
+  assert.equal(contextIndex, contexts.length);
+  assert.deepEqual(
+    events.filter(({ type }) => type !== "configure"),
+    [
+      { type: "launch", phase: restorePhase },
+      { type: "restore-click" },
+      { type: "restore-observed" },
+      { type: "close", phase: restorePhase },
+      { type: "launch", phase: openPhase },
+      { type: "open-observed" },
+      { type: "close", phase: openPhase },
+    ],
+    "the scenario must close restore before launching the normal open process",
+  );
+  assert.deepEqual(
+    launches.map(({ phase, setup, freshness }) => ({
+      phase,
+      setup,
+      freshness,
+    })),
+    [
+      { phase: restorePhase, setup: "disabled", freshness: "disabled" },
+      { phase: openPhase, setup: undefined, freshness: undefined },
+    ],
+  );
+  assert.deepEqual(
+    launches.map(({ owner, receipt: { active, nativeAck, nonce, type } }) => ({
+      owner,
+      active,
+      nativeAck,
+      nonce,
+      type,
+    })),
+    launches.map(({ nonce }) => ({
+      owner: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+      active: true,
+      nativeAck: true,
+      nonce,
+      type: "grimodex:narrative-maintenance-ci-receipt",
+    })),
+  );
+  assert.equal(
+    new Set(launches.map(({ nonce }) => nonce)).size,
+    launches.length,
+    "restore and open launches must have distinct nonces",
+  );
+  assert.ok(
+    launches.every(({ nonce }) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+        nonce,
+      ),
+    ),
+    "restore and open launch nonces must be UUIDv4",
+  );
+  assert.notEqual(
+    scenarioResult.restore.context,
+    scenarioResult.open.context,
+    "normal open must bind a fresh process context after restore closes",
+  );
+  assert.equal(scenarioResult.restore.context.phase, restorePhase);
+  assert.equal(scenarioResult.open.context.phase, openPhase);
+  assert.equal(
+    observedEnvironment.CI,
+    inheritedEnvironment.CI,
+    "scenario must restore CI after all phase launches",
+  );
+  assert.equal(
+    observedEnvironment[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV],
+    inheritedEnvironment[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV],
+    "scenario must restore inherited owner environment",
+  );
+  assert.equal(
+    observedEnvironment[NARRATIVE_MAINTENANCE_NONCE_ENV],
+    inheritedEnvironment[NARRATIVE_MAINTENANCE_NONCE_ENV],
+    "scenario must restore inherited nonce environment",
+  );
+  assert.equal(
+    observedEnvironment[NARRATIVE_MAINTENANCE_SETUP_ENV],
+    inheritedEnvironment[NARRATIVE_MAINTENANCE_SETUP_ENV],
+    "scenario must restore inherited setup environment",
+  );
+  assert.equal(
+    observedEnvironment[NARRATIVE_FRESHNESS_DISABLE_ENV],
+    inheritedEnvironment[NARRATIVE_FRESHNESS_DISABLE_ENV],
+    "scenario must restore inherited freshness environment",
+  );
+  assert.equal(observedEnvironment[unrelatedEnv], "preserve-me");
+  assert.deepEqual(
+    Object.fromEntries(
+      environmentNames.map((name) => [name, process.env[name]]),
+    ),
+    Object.fromEntries(previousEnvironment),
+    "scenario cleanup must restore the process environment after assertions",
+  );
+});
+
 test("restore fixture evidence is canonical and an empty fixture stays red", () => {
   const expected = {
     projectId: "project-1",
@@ -1333,7 +1861,7 @@ test("restore journey must exercise the Settings backup UI and rebind after relo
   );
   assert.match(
     scenarioBody,
-    /contextForLaunch\([\s\S]*beforeRestoreRuns[\s\S]*restore\/reload project hydration/,
+    /contextForLaunch(?:ForScenario)?\([\s\S]*beforeRestoreRuns[\s\S]*restore\/reload project hydration/,
     "restore journey must rebind context and wait for post-reload hydration",
   );
   assert.match(
@@ -2096,7 +2624,7 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
   );
   assert.match(
     restoreJourneyBody,
-    /seedRestoreFixtureEvidence\(\s*harness,\s*workspace,\s*id,\s*\{\s*fixturePhase\s*\}\s*,?\s*\)/,
+    /seedRestoreFixtureEvidence\(\s*harness,\s*workspace,\s*id,\s*\{\s*fixturePhase\s*,?\s*\}\s*,?\s*\)/,
     "restore journey must seed its own restore-fixture caller",
   );
   assert.match(

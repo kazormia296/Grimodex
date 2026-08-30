@@ -113,6 +113,7 @@ export const NARRATIVE_MAINTENANCE_JOURNEY_IDS = Object.freeze(
 export const NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES = Object.freeze([
   "c2-5b-schema-backfill-verify/open",
   "c2-5b-restore-verify-rebuild-verify/restore-fixture",
+  "c2-5b-restore-verify-rebuild-verify/restore",
   "c2-5b-restore-verify-rebuild-verify/open",
   "c2-5b-graph-digest-no-skip/baseline",
   "c2-5b-graph-digest-no-skip/changed",
@@ -1697,6 +1698,46 @@ function launchEnvironmentForScenario(environment = {}) {
   };
 }
 
+async function launchRestoreVerifyRebuildVerifyPhase(
+  harness,
+  phase,
+  environment = {},
+  launch = (launchPhase) => harness.launch(launchPhase),
+) {
+  return withLaunchEnvironment(
+    launchEnvironmentForScenario({
+      ...environment,
+      ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+    }),
+    () => launch(phase),
+  );
+}
+
+async function launchRestoreVerifyRebuildVerifyRestorePhase(
+  harness,
+  phase,
+  environment = {},
+  launch = (launchPhase) => harness.launch(launchPhase),
+) {
+  return launchRestoreVerifyRebuildVerifyPhase(
+    harness,
+    phase,
+    {
+      ...environment,
+      setup: NARRATIVE_MAINTENANCE_SEAM_CONTRACT.setupDisabledValue,
+      freshness: NARRATIVE_MAINTENANCE_SEAM_CONTRACT.freshnessDisabledValue,
+      ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+    },
+    launch,
+  );
+}
+
+/** Narrow test seam for observing the production scenario phase launcher. */
+export const launchRestoreVerifyRebuildVerifyPhaseForTest =
+  launchRestoreVerifyRebuildVerifyPhase;
+export const launchRestoreVerifyRebuildVerifyRestorePhaseForTest =
+  launchRestoreVerifyRebuildVerifyRestorePhase;
+
 async function configureJourneyWorkspace(
   harness,
   configureWorkspace,
@@ -3109,6 +3150,7 @@ export async function runRestoreVerifyRebuildVerifyScenario(
     requirePreRestoreMaintenanceSettled = true,
     restoreThroughSettingsUi = restoreBackupThroughSettingsUi,
     fixturePhase = "restore-fixture",
+    testHooks = null,
     onFixture = null,
     onRestore = null,
     onOpen = null,
@@ -3118,28 +3160,37 @@ export async function runRestoreVerifyRebuildVerifyScenario(
   if (typeof configureWorkspace !== "function") {
     throw new Error("restore scenario requires configureWorkspace");
   }
+  const readRunSnapshotForScenario =
+    testHooks?.readRunSnapshot ?? readRunSnapshot;
+  const contextForLaunchForScenario =
+    testHooks?.contextForLaunch ?? contextForLaunch;
+  const waitForReadinessForScenario =
+    testHooks?.waitForReadiness ?? waitForReadiness;
+  const waitForRestorePhaseRowsForScenario =
+    testHooks?.waitForRestorePhaseRows ?? waitForRestorePhaseRows;
   const workspace = harness.workspacePath(id);
   await configureJourneyWorkspace(harness, configureWorkspace, workspace);
-  const fixtureEvidence = await seedRestoreFixtureEvidence(
-    harness,
-    workspace,
-    id,
-    { fixturePhase },
-  );
+  const fixtureEvidence =
+    testHooks?.fixtureEvidence ??
+    (await seedRestoreFixtureEvidence(harness, workspace, id, {
+      fixturePhase,
+    }));
   await onFixture?.({
     id,
     workspace,
     fixtureEvidence,
     fixturePhase,
   });
-  const preLaunchRuns = await readRunSnapshot(workspace);
-  const restoreLaunch = await withLaunchEnvironment(
-    launchEnvironmentForScenario(restoreEnvironment),
+  const preLaunchRuns = await readRunSnapshotForScenario(workspace);
+  const restoreLaunch = await launchRestoreVerifyRebuildVerifyRestorePhase(
+    harness,
+    `${id}/${restorePhase}`,
+    restoreEnvironment,
     () => harness.launch(`${id}/${restorePhase}`),
   );
   let restoreResult;
   try {
-    const context = await contextForLaunch(
+    const context = await contextForLaunchForScenario(
       harness,
       restoreLaunch,
       workspace,
@@ -3150,7 +3201,7 @@ export async function runRestoreVerifyRebuildVerifyScenario(
     // maintenance scheduler concurrently. Restore must not detach the live
     // DB while either still owns a scoped mutation; wait on their durable
     // completion/cursor contract instead of sleeping for an arbitrary delay.
-    await waitForReadiness(context, "restore/pre-restore settled", {
+    await waitForReadinessForScenario(context, "restore/pre-restore settled", {
       requireMaintenanceSettled: requirePreRestoreMaintenanceSettled,
     });
     const beforeRestoreRuns = await context.runs();
@@ -3161,7 +3212,7 @@ export async function runRestoreVerifyRebuildVerifyScenario(
     await harness.waitUntil(
       async () => {
         try {
-          const candidate = await contextForLaunch(
+          const candidate = await contextForLaunchForScenario(
             harness,
             restoreLaunch,
             workspace,
@@ -3215,7 +3266,7 @@ export async function runRestoreVerifyRebuildVerifyScenario(
       // C2-5B's combined phase intentionally observes the automatic chain
       // after the Settings UI reload. C2-ZC takes the split branch below so
       // setup-disabled restore remains free of maintenance Runs.
-      const sequence = await waitForRestorePhaseRows(
+      const sequence = await waitForRestorePhaseRowsForScenario(
         restoredContext,
         beforeRestoreRuns,
       );
@@ -3255,20 +3306,25 @@ export async function runRestoreVerifyRebuildVerifyScenario(
     typeof openEnvironment === "function"
       ? await openEnvironment(restoreResult)
       : openEnvironment;
-  const openLaunch = await withLaunchEnvironment(
-    launchEnvironmentForScenario(resolvedOpenEnvironment),
+  const openLaunch = await launchRestoreVerifyRebuildVerifyPhase(
+    harness,
+    `${id}/${openPhase}`,
+    {
+      ...resolvedOpenEnvironment,
+      ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+    },
     () => harness.launch(`${id}/${openPhase}`),
   );
   let openResult;
   try {
-    const context = await contextForLaunch(
+    const context = await contextForLaunchForScenario(
       harness,
       openLaunch,
       workspace,
       id,
       restoreResult.runs,
     );
-    const phaseRuns = await waitForRestorePhaseRows(
+    const phaseRuns = await waitForRestorePhaseRowsForScenario(
       context,
       restoreResult.runs,
     );
@@ -3286,15 +3342,24 @@ export async function runRestoreVerifyRebuildVerifyScenario(
       runs,
       epochs,
     };
-    await onOpen?.({ ...openResult, openLaunch });
+    await onOpen?.({
+      ...openResult,
+      openLaunch,
+      beforeEpochs: restoreResult.beforeEpochs,
+    });
   } finally {
     await harness.close(openLaunch.app, openLaunch.page, `${id}/${openPhase}`);
   }
 
   let restartResult = null;
   if (restartPhase !== null) {
-    const restartLaunch = await withLaunchEnvironment(
-      launchEnvironmentForScenario(restartEnvironment),
+    const restartLaunch = await launchRestoreVerifyRebuildVerifyPhase(
+      harness,
+      `${id}/${restartPhase}`,
+      {
+        ...restartEnvironment,
+        ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+      },
       () => harness.launch(`${id}/${restartPhase}`),
     );
     try {
@@ -3337,8 +3402,13 @@ export async function runRestoreVerifyRebuildVerifyScenario(
 
 async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
   const id = "c2-5b-restore-verify-rebuild-verify";
+  // The restore process is intentionally scheduler-free. Start a second,
+  // normal /open process after it closes so Verify -> Rebuild -> confirmation
+  // Verify runs under the production scheduler rather than a disabled seam.
   return runRestoreVerifyRebuildVerifyScenario(harness, configureWorkspace, {
     id,
+    restorePhase: "restore",
+    openPhase: "open",
     onRestore: ({ context, fixtureEvidence }) => {
       context.record("restore-epoch-trigger-observed", {
         backupName: fixtureEvidence.backupName,
