@@ -607,7 +607,6 @@ mod narrative_freshness_restore_lock_tests {
             .expect("freshness cycle completed before authority recheck");
 
         let restore_state = Arc::clone(&state);
-        let restore_started_at = Instant::now();
         let restore_thread = std::thread::spawn(move || {
             let state_for_hook = Arc::clone(&restore_state);
             restore_backup_core(&restore_state.ws, backup_name, move || {
@@ -642,13 +641,10 @@ mod narrative_freshness_restore_lock_tests {
             .expect("release freshness finalization");
 
         let restore_result = restore_thread.join().expect("restore thread");
-        let restore_elapsed = restore_started_at.elapsed();
         let cycle_result = cycle_thread.join().expect("freshness thread");
+        // wait_for_sole_owner() owns the bounded pin-drain failure; keep
+        // unrelated restore I/O latency out of this ordering contract.
         restore_result.expect("restore must not time out waiting for freshness authority");
-        assert!(
-            restore_elapsed < Duration::from_secs(10),
-            "restore crossed the sole-owner timeout boundary: {restore_elapsed:?}"
-        );
         assert!(
             cycle_result
                 .expect("workspace replacement is a fail-soft scheduler outcome")
@@ -743,7 +739,6 @@ mod narrative_freshness_restore_lock_tests {
             .expect("maintenance cycle completed before authority recheck");
 
         let restore_state = Arc::clone(&state);
-        let restore_started_at = Instant::now();
         let restore_thread = std::thread::spawn(move || {
             let state_for_hook = Arc::clone(&restore_state);
             restore_backup_core(&restore_state.ws, backup_name, move || {
@@ -774,13 +769,10 @@ mod narrative_freshness_restore_lock_tests {
             .expect("release maintenance finalization");
 
         let restore_result = restore_thread.join().expect("restore thread");
-        let restore_elapsed = restore_started_at.elapsed();
         let revalidation_result = revalidation_thread.join().expect("revalidation thread");
+        // wait_for_sole_owner() owns the bounded pin-drain failure; keep
+        // unrelated restore I/O latency out of this ordering contract.
         restore_result.expect("restore must not time out waiting for maintenance authorities");
-        assert!(
-            restore_elapsed < Duration::from_secs(10),
-            "restore crossed the sole-owner timeout boundary: {restore_elapsed:?}"
-        );
         assert!(
             !revalidation_result.expect("maintenance revalidation"),
             "replacement authority must reject the completed old cycle"
