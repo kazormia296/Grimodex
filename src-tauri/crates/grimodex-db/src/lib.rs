@@ -601,6 +601,7 @@ pub mod error;
 pub mod events;
 pub mod migration_supervisor;
 pub mod open;
+pub(crate) mod open_wal;
 pub mod recovery;
 pub mod state;
 pub mod web_editor_handoff;
