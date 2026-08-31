@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useReducer,
+  useRef,
+} from "react";
 
 import type { WorkLayerSystemState } from "./types";
 import {
@@ -8,6 +14,7 @@ import {
 
 interface NavigationControllerOptions {
   readonly enabled: boolean;
+  readonly scopeId: string | null;
   readonly systemState: WorkLayerSystemState;
 }
 
@@ -40,6 +47,7 @@ function escapeBelongsToForeignOverlay(event: KeyboardEvent): boolean {
 
 export function useWorkLayerNavigationController({
   enabled,
+  scopeId,
   systemState,
 }: NavigationControllerOptions) {
   const [navigation, dispatch] = useReducer(
@@ -50,6 +58,18 @@ export function useWorkLayerNavigationController({
   const ambientOpenerRef = useRef<HTMLElement | null>(null);
   const nestedOpenerIdsRef = useRef<string[]>([]);
   const previousModeRef = useRef(navigation.mode);
+  const previousScopeIdRef = useRef(scopeId);
+
+  // A preview decision and its navigation receipt are meaningful only within
+  // one workspace scope. Reset before paint when a new model scope arrives so
+  // a receipt from the prior project is never displayed against it.
+  useLayoutEffect(() => {
+    if (previousScopeIdRef.current === scopeId) return;
+    previousScopeIdRef.current = scopeId;
+    ambientOpenerRef.current = null;
+    nestedOpenerIdsRef.current = [];
+    dispatch({ type: "close" });
+  }, [scopeId]);
 
   const rememberAmbientOpener = useCallback(() => {
     ambientOpenerRef.current =

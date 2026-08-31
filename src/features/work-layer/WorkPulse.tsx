@@ -20,11 +20,10 @@ export function WorkPulse() {
   const { model, navigation, openAttention, openFocus, openSystem } = workLayer;
   const attentionCount = model.attention.length;
   const attentionDelta = model.attentionDelta ?? 0;
-  const resolutionDelta =
-    navigation.mode === "resolved" && attentionCount > 0 ? -1 : 0;
+  const resolutionDelta = navigation.mode === "resolved" ? -1 : 0;
   const showArrivalMotion = attentionDelta > 0 && !reducedMotion;
   const showResolutionMotion = resolutionDelta < 0 && !reducedMotion;
-  const visibleAttentionCount = attentionCount + resolutionDelta;
+  const visibleAttentionCount = attentionCount;
   const focusTitle = model.focus?.title ?? t("workLayer.focus.unset", "未設定");
   const attentionActive =
     attentionCount > 0 &&

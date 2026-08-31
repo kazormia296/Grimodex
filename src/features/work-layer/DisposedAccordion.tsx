@@ -7,6 +7,7 @@ import { useWorkLayer } from "./WorkLayerContext";
 const LABELS: Record<WorkLayerDisposition, string> = {
   snoozed: "SNOOZE",
   held: "HOLD",
+  "basis-ignored": "BASIS IGNORED",
   dismissed: "DISMISSED",
   legacy: "LEGACY",
 };
@@ -14,6 +15,7 @@ const LABELS: Record<WorkLayerDisposition, string> = {
 const DETAIL_KEYS: Record<WorkLayerDisposition, string> = {
   snoozed: "workLayer.disposed.snoozedDetail",
   held: "workLayer.disposed.heldDetail",
+  "basis-ignored": "workLayer.disposed.basisIgnoredDetail",
   dismissed: "workLayer.disposed.dismissedDetail",
   legacy: "workLayer.disposed.legacyDetail",
 };
@@ -21,6 +23,7 @@ const DETAIL_KEYS: Record<WorkLayerDisposition, string> = {
 const DETAIL_FALLBACKS: Record<WorkLayerDisposition, string> = {
   snoozed: "再浮上まで保留",
   held: "作者判断まで保持",
+  "basis-ignored": "このMaterial Basisだけ抑制",
   dismissed: "同一問題は再通知しない",
   legacy: "推測で再割当しない",
 };

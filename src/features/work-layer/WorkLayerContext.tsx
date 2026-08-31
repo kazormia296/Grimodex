@@ -6,37 +6,16 @@ import {
   useState,
 } from "react";
 
+import {
+  createPreviewFindingSessionState,
+  derivePreviewFindingModel,
+  recordPreviewFindingDisposition,
+} from "./previewFindingSession";
 import type { WorkLayerModel, WorkLayerPort } from "./types";
 import { switchWorkLayerFocus } from "./switchWorkLayerFocus";
 import { useWorkLayerNavigationController } from "./useWorkLayerNavigationController";
+import type { WorkLayerContextValue } from "./workLayerContextTypes";
 import { WorkPulseLiveRegion } from "./WorkPulseLiveRegion";
-import type { WorkLayerNavigationState } from "./workLayerReducer";
-
-interface WorkLayerContextValue {
-  readonly model: WorkLayerModel;
-  readonly navigation: WorkLayerNavigationState;
-  readonly openFocus: () => void;
-  readonly openAttention: () => void;
-  readonly openDisposed: () => void;
-  readonly openLedger: () => void;
-  readonly openActiveWork: () => void;
-  readonly openFinding: (findingId: string) => void;
-  readonly openPortal: () => void;
-  readonly openProjection: () => void;
-  readonly openChangeReview: () => void;
-  readonly openBatch: () => void;
-  readonly openSystem: () => void;
-  readonly openInspect: () => void;
-  readonly switchFocusPreview: (targetId: string) => void;
-  readonly selectFinding: (findingId: string) => void;
-  readonly resolvePreview: (
-    findingId: string,
-    candidateId: string,
-    decisionLabel: string,
-  ) => void;
-  readonly back: () => void;
-  readonly close: () => void;
-}
 
 const WorkLayerContext = createContext<WorkLayerContextValue | null>(null);
 
@@ -61,14 +40,19 @@ export function WorkLayerProvider({
   const [consumedArrivalScope, setConsumedArrivalScope] = useState<
     string | null
   >(null);
+  const [previewFindingSession, setPreviewFindingSession] = useState(
+    createPreviewFindingSessionState(null),
+  );
   const navigationController = useWorkLayerNavigationController({
     enabled: active && model != null,
+    scopeId: model?.scopeId ?? null,
     systemState: model?.system.state ?? "idle",
   });
 
   useEffect(() => {
     if (!active) {
       setModel(null);
+      setPreviewFindingSession(createPreviewFindingSessionState(null));
       return;
     }
     if (initialModel != null) {
@@ -96,14 +80,29 @@ export function WorkLayerProvider({
 
   const hasPendingArrival = (model?.attentionDelta ?? 0) > 0;
   const modelScopeId = model?.scopeId;
+  const previewModel =
+    model == null
+      ? null
+      : derivePreviewFindingModel(model, previewFindingSession);
   const arrivalSuppressed =
     hasPendingArrival &&
     (navigationController.navigation.mode !== "ambient" ||
       consumedArrivalScope === modelScopeId);
   const visibleModel =
-    model != null && arrivalSuppressed
-      ? { ...model, attentionDelta: 0 }
-      : model;
+    previewModel != null && arrivalSuppressed
+      ? { ...previewModel, attentionDelta: 0 }
+      : previewModel != null
+        ? previewModel
+        : null;
+
+  useEffect(() => {
+    if (modelScopeId == null) return;
+    setPreviewFindingSession((current) =>
+      current.scopeId === modelScopeId
+        ? current
+        : createPreviewFindingSessionState(modelScopeId),
+    );
+  }, [modelScopeId]);
 
   useEffect(() => {
     if (
@@ -136,7 +135,37 @@ export function WorkLayerProvider({
           },
           resolvePreview: (findingId, candidateId, decisionLabel) => {
             onPreviewDecision?.(findingId, candidateId);
+            if (
+              visibleModel.attention.some((finding) => finding.id === findingId)
+            ) {
+              setPreviewFindingSession((current) =>
+                recordPreviewFindingDisposition(
+                  current,
+                  visibleModel.scopeId,
+                  findingId,
+                  "resolved",
+                ),
+              );
+            }
             navigationController.resolvePreview(findingId, decisionLabel);
+          },
+          disposePreview: (findingId, disposition) => {
+            if (
+              !visibleModel.attention.some(
+                (finding) => finding.id === findingId,
+              )
+            ) {
+              return;
+            }
+            setPreviewFindingSession((current) =>
+              recordPreviewFindingDisposition(
+                current,
+                visibleModel.scopeId,
+                findingId,
+                disposition,
+              ),
+            );
+            navigationController.openAttention();
           },
         };
   const resolutionDelta =

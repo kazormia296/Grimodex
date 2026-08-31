@@ -6493,7 +6493,15 @@
         "correctionRule": "Create Correction rule"
       },
       "decision": "{{action}} (UI Preview)",
-      "previewOnly": "PREVIEW ONLY · NOT SAVED"
+      "previewOnly": "PREVIEW ONLY · NOT SAVED",
+      "correction": {
+        "aria": "Correction rule creation preview",
+        "heading": "CORRECTION RULE · UI PREVIEW",
+        "label": "Correction rule",
+        "defaultValue": "Re-propose a Chronicle Event after its Evidence is lost",
+        "note": "Rule edits remain in this UI preview and are not saved.",
+        "close": "Close Correction rule creation preview"
+      }
     },
     "batch": {
       "aria": "Batch Review",
@@ -6526,6 +6534,7 @@
       "note": "A dismissed item resurfaces as a new finding when its material basis changes.",
       "snoozedDetail": "Held until resurfacing",
       "heldDetail": "Held for an author decision",
+      "basisIgnoredDetail": "Suppress only this Material Basis",
       "dismissedDetail": "Do not repeat the same issue",
       "legacyDetail": "Do not infer a reassignment"
     },

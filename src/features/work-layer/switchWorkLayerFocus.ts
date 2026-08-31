@@ -10,10 +10,8 @@ export function switchWorkLayerFocus(
   );
   const nextFocus =
     current.allWork?.find(
-      (item) =>
-        item.status === "waiting" &&
-        (item.id === targetId || item.title === requestedTarget?.title),
-    ) ?? requestedTarget;
+      (item) => item.status === "waiting" && item.id === targetId,
+    ) ?? (current.allWork == null ? requestedTarget : undefined);
   if (nextFocus == null) return current;
 
   const later =
@@ -35,7 +33,7 @@ export function switchWorkLayerFocus(
       later,
     },
     allWork: current.allWork?.map((item) => {
-      if (item.id === nextFocus.id || item.title === nextFocus.title) {
+      if (item.id === nextFocus.id) {
         return { ...item, status: "active", tag: "NOW" };
       }
       if (item.status === "active") {

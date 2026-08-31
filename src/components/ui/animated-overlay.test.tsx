@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("motion/react", async () => {
@@ -113,5 +113,95 @@ describe("AnimatedOverlay", () => {
         screen.getByRole("button", { name: "First dialog action" }),
       ).toHaveFocus(),
     );
+  });
+
+  it("keeps the current focus and uses the latest onClose while open", async () => {
+    const firstClose = vi.fn();
+    const latestClose = vi.fn();
+    const view = render(
+      <AnimatedOverlay open onClose={firstClose} className="dialog">
+        <button type="button">First dialog action</button>
+        <input aria-label="Import name" />
+      </AnimatedOverlay>,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "First dialog action" }),
+      ).toHaveFocus(),
+    );
+    const input = screen.getByRole("textbox", { name: "Import name" });
+    input.focus();
+
+    view.rerender(
+      <AnimatedOverlay open onClose={latestClose} className="dialog">
+        <button type="button">First dialog action</button>
+        <input aria-label="Import name" />
+      </AnimatedOverlay>,
+    );
+    await Promise.resolve();
+
+    expect(input).toHaveFocus();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(firstClose).not.toHaveBeenCalled();
+    expect(latestClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores focus to the connected opener when closed", async () => {
+    const view = render(
+      <>
+        <button type="button">Opener</button>
+        <AnimatedOverlay open={false} onClose={onClose} className="dialog">
+          <button type="button">Dialog action</button>
+        </AnimatedOverlay>
+      </>,
+    );
+    const opener = screen.getByRole("button", { name: "Opener" });
+    opener.focus();
+
+    view.rerender(
+      <>
+        <button type="button">Opener</button>
+        <AnimatedOverlay open onClose={onClose} className="dialog">
+          <button type="button">Dialog action</button>
+        </AnimatedOverlay>
+      </>,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Dialog action" }),
+      ).toHaveFocus(),
+    );
+
+    view.rerender(
+      <>
+        <button type="button">Opener</button>
+        <AnimatedOverlay open={false} onClose={onClose} className="dialog">
+          <button type="button">Dialog action</button>
+        </AnimatedOverlay>
+      </>,
+    );
+
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it("restores focus to the connected opener when unmounted", async () => {
+    render(<button type="button">External opener</button>);
+    const opener = screen.getByRole("button", { name: "External opener" });
+    opener.focus();
+    const overlay = render(
+      <AnimatedOverlay open onClose={onClose} className="dialog">
+        <button type="button">Dialog action</button>
+      </AnimatedOverlay>,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Dialog action" }),
+      ).toHaveFocus(),
+    );
+    overlay.unmount();
+
+    await waitFor(() => expect(opener).toHaveFocus());
   });
 });

@@ -40,9 +40,19 @@ export function AnimatedOverlay({
   const reduced = useReducedMotion();
   const mouseDownOnBackdrop = useRef(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) return;
+    openerRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
@@ -53,14 +63,17 @@ export function AnimatedOverlay({
       initialTarget?.focus({ preventScroll: true });
     });
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("keydown", handler);
     return () => {
       cancelled = true;
       window.removeEventListener("keydown", handler);
+      const opener = openerRef.current;
+      openerRef.current = null;
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (typeof document === "undefined") return null;
 

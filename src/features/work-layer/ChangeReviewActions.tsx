@@ -1,32 +1,73 @@
 import { useTranslation } from "react-i18next";
 
 const ACTIONS = [
-  { id: "apply", key: "apply", primary: true, quiet: false },
-  { id: "edit-apply", key: "editApply", primary: false, quiet: false },
-  { id: "reject", key: "reject", primary: false, quiet: false },
-  { id: "hold", key: "hold", primary: false, quiet: false },
-  { id: "ignore-basis", key: "ignoreBasis", primary: false, quiet: true },
+  {
+    id: "apply",
+    key: "apply",
+    effect: "resolve",
+    primary: true,
+    quiet: false,
+  },
+  {
+    id: "edit-apply",
+    key: "editApply",
+    effect: "resolve",
+    primary: false,
+    quiet: false,
+  },
+  {
+    id: "reject",
+    key: "reject",
+    effect: "resolve",
+    primary: false,
+    quiet: false,
+  },
+  {
+    id: "hold",
+    key: "hold",
+    effect: "dispose",
+    disposition: "held",
+    primary: false,
+    quiet: false,
+  },
+  {
+    id: "ignore-basis",
+    key: "ignoreBasis",
+    effect: "dispose",
+    disposition: "basis-ignored",
+    primary: false,
+    quiet: true,
+  },
   {
     id: "correction-rule",
     key: "correctionRule",
+    effect: "edit-correction-rule",
     primary: false,
     quiet: true,
   },
 ] as const;
 
+export type ChangeReviewAction =
+  | {
+      readonly effect: "resolve";
+      readonly decision: "apply" | "edit-apply" | "reject";
+      readonly label: string;
+    }
+  | {
+      readonly effect: "dispose";
+      readonly disposition: "held" | "basis-ignored";
+      readonly label: string;
+    }
+  | {
+      readonly effect: "edit-correction-rule";
+      readonly label: string;
+    };
+
 interface ChangeReviewActionsProps {
-  readonly findingId: string;
-  readonly onPreviewDecision: (
-    findingId: string,
-    candidateId: string,
-    decisionLabel: string,
-  ) => void;
+  readonly onAction: (action: ChangeReviewAction) => void;
 }
 
-export function ChangeReviewActions({
-  findingId,
-  onPreviewDecision,
-}: ChangeReviewActionsProps) {
+export function ChangeReviewActions({ onAction }: ChangeReviewActionsProps) {
   const { t } = useTranslation();
 
   return (
@@ -40,16 +81,27 @@ export function ChangeReviewActions({
           <button
             key={action.id}
             type="button"
-            onClick={() =>
-              onPreviewDecision(
-                findingId,
-                `change-review:${action.id}`,
-                t("workLayer.review.decision", {
-                  action: label,
-                  defaultValue: `${label}（UI Preview）`,
-                }),
-              )
-            }
+            onClick={() => {
+              const decisionLabel = t("workLayer.review.decision", {
+                action: label,
+                defaultValue: `${label}（UI Preview）`,
+              });
+              if (action.effect === "resolve") {
+                onAction({
+                  effect: "resolve",
+                  decision: action.id,
+                  label: decisionLabel,
+                });
+              } else if (action.effect === "dispose") {
+                onAction({
+                  effect: "dispose",
+                  disposition: action.disposition,
+                  label: decisionLabel,
+                });
+              } else {
+                onAction({ effect: "edit-correction-rule", label });
+              }
+            }}
             className={
               action.quiet
                 ? `${index === 4 ? "ml-auto " : ""}px-1 py-2 text-[10px] text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`

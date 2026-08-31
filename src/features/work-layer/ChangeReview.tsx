@@ -1,9 +1,14 @@
 import { ArrowLeft, X } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { ChangeReviewActions } from "./ChangeReviewActions";
+import {
+  type ChangeReviewAction,
+  ChangeReviewActions,
+} from "./ChangeReviewActions";
 import { ChangeReviewDiff } from "./ChangeReviewDiff";
 import { ChangeReviewRail } from "./ChangeReviewRail";
+import { CorrectionRulePreview } from "./CorrectionRulePreview";
 import { ProjectionPipeline } from "./ProjectionPipeline";
 import { ProjectionWorkGraph } from "./ProjectionWorkGraph";
 import { useWorkLayer } from "./WorkLayerContext";
@@ -13,16 +18,40 @@ export function ChangeReview() {
   const workLayer = useWorkLayer();
   const { t } = useTranslation();
   const backRef = useWorkLayerInitialFocus<HTMLButtonElement>();
+  const [showCorrectionRule, setShowCorrectionRule] = useState(false);
 
   if (workLayer == null) return null;
 
-  const { model, navigation, back, close, openInspect, resolvePreview } =
-    workLayer;
+  const {
+    model,
+    navigation,
+    back,
+    close,
+    openInspect,
+    resolvePreview,
+    disposePreview,
+  } = workLayer;
   const finding =
     model.attention.find(
       (candidate) => candidate.id === navigation.selectedFindingId,
     ) ?? model.attention[0];
   if (finding == null) return null;
+
+  const handleAction = (action: ChangeReviewAction) => {
+    if (action.effect === "resolve") {
+      resolvePreview(
+        finding.id,
+        `change-review:${action.decision}`,
+        action.label,
+      );
+      return;
+    }
+    if (action.effect === "dispose") {
+      disposePreview(finding.id, action.disposition);
+      return;
+    }
+    setShowCorrectionRule(true);
+  };
 
   return (
     <section
@@ -81,6 +110,11 @@ export function ChangeReview() {
               "Scene 12の再解釈により、承認済みの内容と異なるProposalが生成されました。適用するまでStory Bibleは書き換えられません。",
             )}
           </p>
+          {showCorrectionRule && (
+            <CorrectionRulePreview
+              onClose={() => setShowCorrectionRule(false)}
+            />
+          )}
           <ChangeReviewDiff />
           <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t border-border pt-3 font-mono text-[8px] tracking-[0.08em]">
             <span>
@@ -104,10 +138,7 @@ export function ChangeReview() {
         <ChangeReviewRail onInspect={openInspect} />
       </div>
 
-      <ChangeReviewActions
-        findingId={finding.id}
-        onPreviewDecision={resolvePreview}
-      />
+      <ChangeReviewActions onAction={handleAction} />
       <ProjectionPipeline finding={finding} activeLabel="CHANGE REVIEW" />
     </section>
   );

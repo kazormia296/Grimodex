@@ -143,7 +143,7 @@ export function BatchReview() {
         }}
         onPreview={() =>
           resolvePreview(
-            model.attention[0]?.id ?? "batch-preview",
+            finding?.id ?? "batch-preview",
             `batch:${selected.join(",")}`,
             t(
               "workLayer.batch.decision",

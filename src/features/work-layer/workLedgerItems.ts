@@ -3,6 +3,7 @@ import type { WorkLayerModel, WorkLedgerItemView } from "./types";
 const DISPOSITION_TAGS = {
   snoozed: "SNOOZE",
   held: "HOLD",
+  "basis-ignored": "BASIS IGNORED",
   dismissed: "DISMISSED",
   legacy: "LEGACY",
 } as const;

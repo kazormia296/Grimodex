@@ -26,7 +26,7 @@ const MODEL: WorkLayerModel = {
   scopeId: "preview-project",
   codexPanelAvailable: false,
   focus: {
-    id: "focus-dungeon",
+    id: "work-active",
     title: "地下牢の改稿",
     authorTasks: [
       {
@@ -35,7 +35,7 @@ const MODEL: WorkLayerModel = {
         completed: false,
       },
     ],
-    later: [{ id: "focus-sword", title: "伏線『青い剣』" }],
+    later: [{ id: "work-waiting", title: "伏線『青い剣』" }],
   },
   attention: [
     {
@@ -186,6 +186,15 @@ function renderWorkLayer(
       </main>
       {options.children}
     </WorkLayerProvider>,
+  );
+}
+
+function ScopePreview({ model }: { readonly model: WorkLayerModel }) {
+  return (
+    <WorkLayerProvider initialModel={model}>
+      <WorkPulse />
+      <WorkLayerSurface />
+    </WorkLayerProvider>
   );
 }
 
@@ -527,6 +536,38 @@ describe("Work Layer UI", () => {
         name: "Attentionが1件解消されました（UIプレビュー）",
       }),
     ).toBeInTheDocument();
+  });
+
+  it("clears a preview receipt when the model scope changes", async () => {
+    const user = userEvent.setup();
+    const preview = render(<ScopePreview model={MODEL} />);
+
+    await user.click(screen.getByRole("button", { name: "Attention 2件" }));
+    await user.click(
+      screen.getByRole("button", { name: "『アリス』の参照先が曖昧を開く" }),
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: "アリス・レインへBindingをプレビュー",
+      }),
+    );
+    expect(
+      screen.getByRole("status", { name: "プレビュー判断の受領証" }),
+    ).toBeInTheDocument();
+
+    preview.rerender(
+      <ScopePreview model={{ ...MODEL, scopeId: "other-preview-project" }} />,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("status", { name: "プレビュー判断の受領証" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("button", { name: "Attention 2件" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("previews the candidate selected by the author", async () => {

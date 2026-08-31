@@ -84,26 +84,85 @@ describe("ChangeReview", () => {
     expect(review.getByText(/Reject時: V1/)).toBeInTheDocument();
   });
 
+  it.each(["Proposal を適用", "編集して適用", "Reject"])(
+    "completes the %s decision in an unsaved UI preview",
+    async (action) => {
+      const user = userEvent.setup();
+      const review = within(await renderReview());
+
+      await user.click(review.getByRole("button", { name: action }));
+
+      const receipt = await screen.findByRole("status", {
+        name: "プレビュー判断の受領証",
+      });
+      expect(within(receipt).getByText(new RegExp(action))).toBeInTheDocument();
+      expect(
+        within(receipt).getByText(/判断はまだ保存されていません/),
+      ).toBeInTheDocument();
+      expect(within(receipt).getByText("NOT SAVED")).toBeInTheDocument();
+    },
+  );
+
   it.each([
-    "Proposal を適用",
-    "編集して適用",
-    "Reject",
-    "保留",
-    "このMaterial Basisだけ無視",
-    "Correction ruleを作成",
-  ])("keeps the %s operation in an unsaved UI preview", async (action) => {
+    ["保留", "HOLD"],
+    ["このMaterial Basisだけ無視", "BASIS IGNORED"],
+  ])(
+    "moves %s into its own preview disposition without a resolution receipt",
+    async (action, dispositionLabel) => {
+      const user = userEvent.setup();
+      const review = within(await renderReview());
+
+      await user.click(review.getByRole("button", { name: action }));
+
+      expect(
+        screen.queryByRole("status", { name: "プレビュー判断の受領証" }),
+      ).not.toBeInTheDocument();
+      const tray = within(
+        await screen.findByRole("dialog", { name: "Attentionの作業トレイ" }),
+      );
+      expect(
+        tray.queryByText("Chronicle『脱獄』のEvidenceが見つからない"),
+      ).not.toBeInTheDocument();
+      await user.click(
+        tray.getByRole("button", {
+          name: "処分済みの判断 5件を開く",
+        }),
+      );
+      const disposed = within(
+        screen.getByRole("region", { name: "処分済みの判断" }),
+      );
+      const disposedTitle = disposed.getByText(
+        "Chronicle『脱獄』のEvidenceが見つからない",
+      );
+      const disposedItem = disposedTitle.closest("div");
+      expect(disposedItem).not.toBeNull();
+      expect(
+        within(disposedItem as HTMLDivElement).getByText(dispositionLabel),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("opens a correction-rule editor preview without resolving the Finding", async () => {
     const user = userEvent.setup();
     const review = within(await renderReview());
 
-    await user.click(review.getByRole("button", { name: action }));
+    await user.click(
+      review.getByRole("button", { name: "Correction ruleを作成" }),
+    );
 
-    const receipt = await screen.findByRole("status", {
-      name: "プレビュー判断の受領証",
-    });
-    expect(within(receipt).getByText(new RegExp(action))).toBeInTheDocument();
     expect(
-      within(receipt).getByText(/判断はまだ保存されていません/),
+      screen.queryByRole("status", { name: "プレビュー判断の受領証" }),
+    ).not.toBeInTheDocument();
+    const editor = within(
+      screen.getByRole("region", {
+        name: "Correction ruleの作成プレビュー",
+      }),
+    );
+    expect(
+      editor.getByRole("textbox", { name: "Correction rule" }),
+    ).toHaveValue("Evidenceが失われたChronicle Eventを再提案する");
+    expect(
+      screen.getByRole("dialog", { name: "Change Review" }),
     ).toBeInTheDocument();
-    expect(within(receipt).getByText("NOT SAVED")).toBeInTheDocument();
   });
 });

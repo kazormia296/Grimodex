@@ -83,7 +83,17 @@ export interface WorkLayerFindingView {
   readonly systemWork: SystemWorkView;
 }
 
-export type WorkLayerDisposition = "snoozed" | "held" | "dismissed" | "legacy";
+export type WorkLayerDisposition =
+  | "snoozed"
+  | "held"
+  | "basis-ignored"
+  | "dismissed"
+  | "legacy";
+
+export type WorkLayerPreviewDisposition = Extract<
+  WorkLayerDisposition,
+  "held" | "basis-ignored"
+>;
 
 export interface DisposedAttentionView {
   readonly id: string;

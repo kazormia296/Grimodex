@@ -6476,7 +6476,15 @@
         "correctionRule": "Correction ruleを作成"
       },
       "decision": "{{action}}（UI Preview）",
-      "previewOnly": "PREVIEW ONLY · NOT SAVED"
+      "previewOnly": "PREVIEW ONLY · NOT SAVED",
+      "correction": {
+        "aria": "Correction ruleの作成プレビュー",
+        "heading": "CORRECTION RULE · UI PREVIEW",
+        "label": "Correction rule",
+        "defaultValue": "Evidenceが失われたChronicle Eventを再提案する",
+        "note": "ルールの編集内容はこのUIプレビュー内だけに保持され、保存されません。",
+        "close": "Correction ruleの作成プレビューを閉じる"
+      }
     },
     "batch": {
       "aria": "Batch Review",
@@ -6509,6 +6517,7 @@
       "note": "Dismiss済みはmaterial basisが変わると新しいFindingとして再浮上します。",
       "snoozedDetail": "再浮上まで保留",
       "heldDetail": "作者判断まで保持",
+      "basisIgnoredDetail": "このMaterial Basisだけ抑制",
       "dismissedDetail": "同一問題は再通知しない",
       "legacyDetail": "推測で再割当しない"
     },
