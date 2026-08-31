@@ -176,17 +176,15 @@ describe("Work Layer UI", () => {
     renderWorkLayer();
 
     await user.click(screen.getByRole("button", { name: "Attention 2件" }));
-    await user.click(
-      screen.getByRole("button", { name: "『アリス』の参照先が曖昧を開く" }),
-    );
+    const findingButton = screen.getByRole("button", {
+      name: "『アリス』の参照先が曖昧を開く",
+    });
+    await user.click(findingButton);
     const lens = screen.getByRole("dialog", { name: "Resolve Lens" });
     expect(within(lens).getByText("REVIEW")).toBeInTheDocument();
     expect(within(lens).getByText("FRESHNESS")).toBeInTheDocument();
     expect(within(lens).getByText("PROJECTION")).toBeInTheDocument();
 
-    const findingButton = screen.getByRole("button", {
-      name: "『アリス』の参照先が曖昧を開く",
-    });
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() =>
       expect(
@@ -195,7 +193,7 @@ describe("Work Layer UI", () => {
         }),
       ).toHaveFocus(),
     );
-    expect(findingButton).not.toBeConnected();
+    expect(findingButton.isConnected).toBe(false);
 
     await user.click(
       screen.getByRole("button", { name: "2件をResolve Projectionで開く" }),
@@ -466,9 +464,14 @@ describe("Work Layer UI", () => {
       screen.getByRole("button", { name: "すべての作業を開く" }),
     );
     const ledger = screen.getByRole("dialog", { name: "すべての作業" });
+    await user.click(within(ledger).getByRole("button", { name: /保留/ }));
+    expect(within(ledger).getByText("処分済みのFinding")).toBeInTheDocument();
     expect(
-      within(ledger).getByRole("button", { name: /保留/ }),
-    ).toBeInTheDocument();
+      within(ledger).queryByRole("button", {
+        name: "進行中の地下牢の改稿をトレイで開く",
+      }),
+    ).not.toBeInTheDocument();
+    await user.click(within(ledger).getByRole("button", { name: /すべて/ }));
 
     await user.click(
       within(ledger).getByRole("button", {
