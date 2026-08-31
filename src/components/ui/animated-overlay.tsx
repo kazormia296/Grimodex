@@ -4,6 +4,16 @@ import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 
+const INITIAL_FOCUS_SELECTOR = [
+  "[autofocus]",
+  "button:not([disabled])",
+  "[href]",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
 interface AnimatedOverlayProps {
   open: boolean;
   onClose: () => void;
@@ -29,14 +39,27 @@ export function AnimatedOverlay({
 }: AnimatedOverlayProps) {
   const reduced = useReducedMotion();
   const mouseDownOnBackdrop = useRef(false);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      const initialTarget =
+        contentRef.current?.querySelector<HTMLElement>(
+          INITIAL_FOCUS_SELECTOR,
+        ) ?? contentRef.current;
+      initialTarget?.focus({ preventScroll: true });
+    });
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("keydown", handler);
+    };
   }, [open, onClose]);
 
   if (typeof document === "undefined") return null;
@@ -51,6 +74,7 @@ export function AnimatedOverlay({
       {open && (
         <motion.div
           data-testid="animated-overlay-backdrop"
+          data-animated-overlay-root="true"
           className={cn(
             "fixed inset-0 z-50 flex items-center justify-center",
             backdropClassName,
@@ -68,6 +92,8 @@ export function AnimatedOverlay({
           }}
         >
           <motion.div
+            ref={contentRef}
+            tabIndex={-1}
             className={cn(className)}
             data-testid={testId}
             data-tour-target={tourTarget}

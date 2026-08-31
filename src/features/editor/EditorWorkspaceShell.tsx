@@ -15,9 +15,11 @@ import { BackgroundStudioHost } from "@/features/editor/background/BackgroundStu
 import { AdaptiveWorkspaceShell } from "@/features/layout/adaptive/AdaptiveWorkspaceShell";
 import { ConnectedMobileWorkspaceSurface } from "@/features/layout/adaptive/MobileWorkspaceSurfaces";
 import { requestWebEditorHandoffImport } from "@/features/import/webEditorHandoffRequest";
-import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 import { EditorWorkspaceDialogs } from "@/features/editor/EditorWorkspaceDialogs";
 import { EditorWorkspaceHeader } from "@/features/editor/EditorWorkspaceHeader";
+import { EditorWorkspaceProviders } from "@/features/editor/EditorWorkspaceProviders";
+import { isWorkLayerAvailable } from "@/features/editor/workLayerAvailability";
+import { WorkLayerSurface } from "@/features/work-layer/WorkLayer";
 
 const ZenAmbientBackdrop = lazy(() =>
   import("@/features/editor/ZenAmbientBackdrop").then((module) => ({
@@ -91,8 +93,19 @@ export function EditorWorkspaceShell({
   onSetHostedHandoff,
 }: EditorWorkspaceShellProps) {
   const { t } = useTranslation();
+  const workLayerActive = isWorkLayerAvailable({
+    lifecycleLocked,
+    editorZenMode,
+    phoneWorkspace,
+    panelWindow,
+    screenshotPanelId,
+  });
+
   return (
-    <WorkspaceViewportProvider profile={workspaceProfile}>
+    <EditorWorkspaceProviders
+      activeWorkLayer={workLayerActive}
+      profile={workspaceProfile}
+    >
       <div
         className="app-shell flex h-screen flex-col"
         inert={lifecycleLocked ? true : undefined}
@@ -217,10 +230,11 @@ export function EditorWorkspaceShell({
               zenMode={editorZenMode}
             />
           )}
+          <WorkLayerSurface />
         </main>
         <ZenModeController />
         <BackgroundStudioHost zenMode={editorZenMode} />
       </div>
-    </WorkspaceViewportProvider>
+    </EditorWorkspaceProviders>
   );
 }

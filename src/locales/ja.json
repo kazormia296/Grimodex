@@ -6316,5 +6316,233 @@
       "coverageStale": "分析範囲が変わった",
       "sourceMissing": "根拠が見つからない"
     }
+  },
+  "workLayer": {
+    "back": "一段戻る",
+    "focus": {
+      "unset": "未設定",
+      "aria": "Focus {{title}}"
+    },
+    "attention": {
+      "aria": "Attention {{count}}件"
+    },
+    "arrival": {
+      "aria": "新しいAttentionが{{count}}件あります"
+    },
+    "resolution": {
+      "aria": "Attentionが{{count}}件解消されました（UIプレビュー）"
+    },
+    "system": {
+      "aria": "System {{label}}",
+      "activityAria": "System Activity",
+      "activityEmpty": "表示できるSystem activityの明細はまだありません。",
+      "activityReadOnly": "SYSは実行状況の読み取り専用プレビューです。FindingやTaskをチェック操作へ変換しません。",
+      "blockedAria": "System Blocked",
+      "blockedReason": "停止理由",
+      "blockedReasonFallback": "停止理由の詳細はまだ提供されていません。",
+      "staleImpact": "古くなる可能性がある範囲",
+      "staleImpactFallback": "影響範囲は未判定です。既存の構造と判断は変更されません。",
+      "blockedPreviewOnly": "再実行とDetachはUI配置だけのプレビューです。保存・再実行・切り離しは行いません。",
+      "retryPreview": "再実行 · PREVIEW ONLY",
+      "detachPreview": "Detach · PREVIEW ONLY",
+      "inspectRun": "INSPECT →",
+      "inspectRunAria": "System runを検査",
+      "runInspectionAria": "System Run Inspection",
+      "runInspectionNote": "この画面はfixture由来の読み取り専用UIです。実行・保存・NIR更新は行いません。",
+      "blockedNoCheckbox": "SYSの停止はFindingやTaskの完了ではありません。チェック操作では解消しません。"
+    },
+    "tray": {
+      "attentionAria": "Attentionの作業トレイ",
+      "focusAria": "Focusの作業トレイ",
+      "attentionNote": "作者の判断で解消します。チェックで完了にはしません。",
+      "openFinding": "{{title}}を開く",
+      "openFindingReview": "{{title}}をChange Reviewで開く",
+      "openProjection": "{{count}}件をResolve Projectionで開く",
+      "openProjectionLabel": "{{count}}件をまとめて RESOLVE で開く",
+      "addTask": "この作業にタスクを追加",
+      "addTaskPreviewAria": "この作業にタスクを追加 · PREVIEW ONLY",
+      "taskDraftLabel": "タスクの下書き",
+      "taskDraftPlaceholder": "作者タスクを入力",
+      "addTaskDraft": "下書きを追加",
+      "cancelTaskDraft": "下書きを閉じる",
+      "taskDraftNotSaved": "NOT SAVED",
+      "taskDraftPreviewNote": "この下書きはUIだけに表示され、保存されません。",
+      "previewOnly": "PREVIEW ONLY",
+      "switchFocus": "Focusへ切り替える",
+      "switchFocusTarget": "{{title}}へFocusを切り替える",
+      "capture": "作業を捕捉",
+      "noFocus": "Focus なし",
+      "emptyAttention": "作者の判断を待つAttentionはありません。",
+      "expandAttention": "Attention {{count}}件を展開",
+      "expandFocus": "Focusを展開",
+      "andMore": " ほか"
+    },
+    "lens": {
+      "aria": "Resolve Lens",
+      "sourceMissing": "現在の本文にAnchorがありません",
+      "reason": "理由",
+      "previous": "以前",
+      "bindingPreviewAria": "{{candidate}}へBindingをプレビュー",
+      "bindingDecision": "{{candidate}}へ Binding",
+      "binding": "{{candidate}}へ Binding",
+      "createPerson": "新しい人物として作成",
+      "annotations": "Lens注釈投影",
+      "impact": "影響",
+      "hold": "保留",
+      "holdPreview": "保留をプレビューしました。保存されていません。",
+      "excludePair": "この2件を今後同一候補にしない",
+      "excludePairPreview": "候補ペアの除外をプレビューしました。保存されていません。",
+      "next": "次: {{title}}"
+    },
+    "projection": {
+      "aria": "Resolve Projection",
+      "presetUnchanged": "PRESET UNCHANGED",
+      "candidateContext": "Context Portal · Codex",
+      "selectedCandidate": "選択中の候補",
+      "followsCandidate": "候補の選択に追従 · UI PREVIEW"
+    },
+    "portal": {
+      "aria": "Context Portal",
+      "open": "Context Portalを開く",
+      "noFinding": "選択中のFindingはありません",
+      "note": "不在のCodex文脈を一時的に表示しています。この選択はまだ保存されません。",
+      "candidates": "Binding候補",
+      "empty": "Binding候補はありません。",
+      "notSaved": "NOT SAVED",
+      "preview": "Bindingをプレビュー",
+      "temporary": "一時的な召喚",
+      "dismiss": "Context Portalを閉じる"
+    },
+    "review": {
+      "aria": "Change Review",
+      "open": "Change Reviewを開く",
+      "anchorMissing": "現在のAnchorは見つかりません",
+      "previewNote": "選択はUI上の確認だけで、まだ保存・適用されません。",
+      "target": "対象 · Chronicle Event「脱獄」",
+      "heading": "Change Review — Chronicle Event「脱獄」 V1→V2",
+      "proposalNotice": "Scene 12の再解釈により、承認済みの内容と異なるProposalが生成されました。適用するまでStory Bibleは書き換えられません。",
+      "diffCaption": "V1とV2のフィールド別差分",
+      "versions": {
+        "accepted": "承認済み · V1",
+        "proposal": "PROPOSAL · V2"
+      },
+      "fields": {
+        "title": "タイトル",
+        "method": "手段",
+        "period": "時期",
+        "notes": "補足"
+      },
+      "values": {
+        "title": "脱獄",
+        "methodOld": "青い剣で錠を斬り、牢を破る",
+        "methodNew": "拾った鍵で錠を開け、牢を出る",
+        "period": "3年霜月 · 確定",
+        "notesOld": "剣の呪いが解けたことを示す"
+      },
+      "unchanged": "変更なし",
+      "removed": "REMOVED",
+      "evidence": {
+        "oldExcerpt": "「彼女は青い剣を鞘から抜いた」",
+        "missing": "MISSING",
+        "oldAnchor": "v48 に一致なし",
+        "newExcerpt": "「アリスは鍵を拾い、地下牢を出た」",
+        "newAnchor": "¶2 · ANCHORED"
+      },
+      "states": {
+        "review": "REVIEW ACCEPTED · V1",
+        "freshness": "FRESHNESS SOURCE-MISSING",
+        "projection": "PROJECTION APPLIED · V1"
+      },
+      "rail": {
+        "trigger": "変更を引き起こした本文",
+        "triggerExcerpt": "「アリスは鍵を拾い、地下牢を出た。振り返りはしなかった。」",
+        "triggerAnchor": "SCENE 12 · ¶2 · v48",
+        "impact": "適用した場合の影響",
+        "impacts": {
+          "timeline": "Timeline「脱獄」ノード",
+          "scenes": "Related Scenes · 4件",
+          "thread": "伏線「青い剣」— 回収位置に波及",
+          "chat": "Chat Context materialization · 2件"
+        },
+        "applyEffect": "適用時: V2をHuman-derived Revisionとして保存し、下流Consumerを再投影",
+        "rejectEffect": "Reject時: V1を維持し、このMaterial Basisをnegative memoryに記録"
+      },
+      "actions": {
+        "apply": "Proposal を適用",
+        "editApply": "編集して適用",
+        "reject": "Reject",
+        "hold": "保留",
+        "ignoreBasis": "このMaterial Basisだけ無視",
+        "correctionRule": "Correction ruleを作成"
+      },
+      "decision": "{{action}}（UI Preview）",
+      "previewOnly": "PREVIEW ONLY · NOT SAVED"
+    },
+    "batch": {
+      "aria": "Batch Review",
+      "open": "安全なProposalを一括確認",
+      "heading": "安全なProposalを一括確認",
+      "note": "押下状態で対象を選びます。チェックボックスはAuthor Task専用です。この承認はまだ保存されません。",
+      "criteria": "SAFEは新規追加のみ・既存構造と矛盾なし・Evidence anchored・重複候補なしのすべてを満たすProposalです。満たさないものは個別判断へ残します。",
+      "individual": "要個別判断",
+      "empty": "一括確認できるProposalはありません。",
+      "decision": "{{count}}件のSafe Proposalを一括承認（UI Preview）",
+      "preview": "一括承認をプレビュー",
+      "viewIndividual": "個別に見る",
+      "impact": "承認した場合の影響",
+      "impactNote": "一括承認は1 Decisionとして記録され、個別に取り消せます。要個別判断は選択されません。",
+      "openInspection": "Deep Inspectionを開く",
+      "impacts": {
+        "chronicle": "Chronicle · Event +2 / State +1 / Relation +1",
+        "timeline": "Timeline 再構築 · 1",
+        "scenes": "Related Scenes 再評価 · 4件"
+      }
+    },
+    "disposed": {
+      "aria": "処分済みの判断",
+      "heading": "処分済み",
+      "retention": "件数外 · 削除しない",
+      "open": "処分済み",
+      "openAria": "処分済みの判断 {{count}}件を開く",
+      "closeAria": "処分済みの判断 {{count}}件を閉じる",
+      "empty": "処分済みの判断はありません。",
+      "note": "Dismiss済みはmaterial basisが変わると新しいFindingとして再浮上します。",
+      "snoozedDetail": "再浮上まで保留",
+      "heldDetail": "作者判断まで保持",
+      "dismissedDetail": "同一問題は再通知しない",
+      "legacyDetail": "推測で再割当しない"
+    },
+    "ledger": {
+      "aria": "すべての作業",
+      "heading": "すべての作業",
+      "open": "すべての作業 →",
+      "openAria": "すべての作業を開く",
+      "back": "トレイに戻る",
+      "order": "更新順",
+      "empty": "該当する作業はありません。",
+      "escape": "トレイへ",
+      "openActiveAria": "進行中の{{title}}をトレイで開く",
+      "taskProgress": "タスク {{completed}}/{{total}}",
+      "filters": {
+        "all": "すべて",
+        "active": "進行中",
+        "waiting": "待機",
+        "held": "保留",
+        "completed": "完了"
+      },
+      "groups": {
+        "waiting": "待機（LATER）"
+      }
+    },
+    "inspect": {
+      "aria": "Deep Inspection",
+      "open": "詳細を検査"
+    },
+    "resolved": {
+      "aria": "プレビュー判断の受領証",
+      "notPersisted": "これはUI上の選択確認です。判断はまだ保存されていません。基盤接続後にHuman Decisionとして記録されます。",
+      "next": "次: {{title}} →",
+      "nextAria": "次: {{title}}を{{destination}}で開く"
+    }
   }
 }

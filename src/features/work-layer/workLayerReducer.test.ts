@@ -52,9 +52,36 @@ describe("workLayerReducer", () => {
       history: ["ambient", "tray-attention"],
     });
 
-    expect(
-      reduceWorkLayerNavigation(projection, { type: "back" }),
-    ).toEqual(createInitialWorkLayerNavigationState());
+    expect(reduceWorkLayerNavigation(projection, { type: "back" })).toEqual(
+      createInitialWorkLayerNavigationState(),
+    );
+  });
+
+  it("returns ALL WORK to the Focus tray from every tray footer", () => {
+    const initial = createInitialWorkLayerNavigationState();
+    const attention = reduceWorkLayerNavigation(initial, {
+      type: "open-attention",
+    });
+    const disposed = reduceWorkLayerNavigation(attention, {
+      type: "open-disposed",
+    });
+
+    for (const opener of [attention, disposed]) {
+      const ledger = reduceWorkLayerNavigation(opener, {
+        type: "open-ledger",
+      });
+
+      expect(ledger).toMatchObject({
+        mode: "ledger",
+        history: ["ambient", "tray-focus"],
+      });
+      expect(reduceWorkLayerNavigation(ledger, { type: "back" })).toMatchObject(
+        {
+          mode: "tray-focus",
+          history: ["ambient"],
+        },
+      );
+    }
   });
 
   it("turns a preview decision into a receipt without claiming persistence", () => {
@@ -68,6 +95,7 @@ describe("workLayerReducer", () => {
     expect(
       reduceWorkLayerNavigation(lens, {
         type: "resolve-preview",
+        findingId: "finding-binding",
         decisionLabel: "アリス・レインへ Binding",
       }),
     ).toEqual({

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("motion/react", async () => {
@@ -94,5 +94,24 @@ describe("AnimatedOverlay", () => {
     );
     await userEvent.click(screen.getByText("Inner"));
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("moves initial focus inside the overlay", async () => {
+    const view = render(<button type="button">Opener</button>);
+    screen.getByRole("button", { name: "Opener" }).focus();
+    view.rerender(
+      <>
+        <button type="button">Opener</button>
+        <AnimatedOverlay open onClose={onClose} className="dialog">
+          <button type="button">First dialog action</button>
+        </AnimatedOverlay>
+      </>,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "First dialog action" }),
+      ).toHaveFocus(),
+    );
   });
 });
