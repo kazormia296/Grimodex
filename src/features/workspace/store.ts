@@ -42,6 +42,7 @@ import {
 import { initializeWorkspaceStore } from "./workspaceInitialization";
 import {
   createWorkspaceOpenProjectLifecycleTiming,
+  createWorkspaceOpenTransition,
   runWorkspaceOpenTraceStep,
   setWorkspaceOpenTraceTarget,
   startRuntimeCompositionTrace,
@@ -119,19 +120,14 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       quiescenceLease = await acquireQuiescenceLeaseAfterTimelapseGenesis(
         "workspace-open",
         {
-          transition: {
-            kind: "workspace",
-            from: {
+          transition: createWorkspaceOpenTransition(
+            {
               workspacePath: get().activeWorkspacePath,
               workspaceOpenRevision: get().workspaceOpenRevision,
               projectId: previousProjectId,
             },
-            to: {
-              workspacePath: path,
-              workspaceOpenRevision: null,
-              projectId: null,
-            },
-          },
+            path,
+          ),
         },
       );
       // Debounced snapshot writes carry the old Project id. Stop them before

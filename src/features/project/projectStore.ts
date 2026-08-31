@@ -17,7 +17,6 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { flushStrictQuiescence } from "@/application/lifecycle/quiescenceCoordinator";
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
-import { debugLog } from "@/lib/debugLog";
 import { withProjectLoad, type ProjectLoadContext } from "./projectLoadGate";
 import { acquireQuiescenceLeaseAfterTimelapseGenesis } from "@/features/timelapse/genesisQuiescence";
 import { acquireQuiescenceLease } from "@/application/lifecycle/quiescenceLease";
@@ -33,30 +32,22 @@ import {
   isCurrentMutationAuthority,
   type MutationAuthority,
 } from "@/features/concurrency/mutationAuthority";
-import {
-  createQuiescenceProviderId,
-  registerQuiescenceProvider,
-} from "@/lib/quiescenceProviders";
 import { runProjectLoadWithFailureToast } from "./projectLoadFailure";
 import {
   applyProjectMetadata,
   getFallbackProjectLanguage,
-  initializeProjectTimelapse,
   prepareExternalWriteFeedStop,
-  startProjectExternalWriteFeed,
 } from "@/application/project/projectRuntime";
 import {
   getCurrentProjectId,
   publishCurrentProjectId,
 } from "@/application/project/currentProjectAuthority";
 import type { LifecycleTransitionTrace } from "@/application/lifecycle/lifecycleTrace";
+import { type TimelapseGenesisBarrierLease } from "@/features/timelapse/genesisBarrier";
 import {
-  beginTimelapseGenesisBarrier,
-  hasFailedTimelapseGenesisBarrier,
-  registerTimelapseGenesisRetry,
-  _resetTimelapseGenesisBarriersForTests,
-  type TimelapseGenesisBarrierLease,
-} from "@/features/timelapse/genesisBarrier";
+  createProjectTimelapseLifecycle,
+  isProjectTimelapseBrowserRuntime,
+} from "./projectTimelapseLifecycle";
 
 export { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
@@ -111,29 +102,12 @@ interface ProjectState {
 let loadProjectGeneration = 0;
 let projectStrictQuiescenceTail: Promise<void> = Promise.resolve();
 let projectLoadCommitTail: Promise<void> = Promise.resolve();
-let timelapseInitTail: Promise<void> = Promise.resolve();
-let externalWriteFeedStartTail: Promise<void> = Promise.resolve();
 let refreshProjectsGeneration = 0;
 let lastNonLoadingProjectPresentation: {
   projectLoadStatus: Exclude<ProjectState["projectLoadStatus"], "loading">;
   degradedParticipants: string[];
 } | null = null;
-const pendingProjectBackgroundMutations = new Set<Promise<void>>();
-const projectBackgroundMutationFailures: unknown[] = [];
-const timelapseGenesisFailures = new Map<string, unknown>();
 const deletedProjectIds = new Set<string>();
-let deferredProjectBackgroundActivation: {
-  projectId: string;
-  generation: number;
-  genesisBarrier: TimelapseGenesisBarrierLease;
-} | null = null;
-let deferredExternalWriteFeedStart: {
-  projectId: string;
-  generation: number;
-  timelapseReady: Promise<void>;
-  expectedWorkspacePath: string;
-  expectedWorkspaceOpenRevision: number | undefined;
-} | null = null;
 
 function isCurrentProjectLoad(generation: number): boolean {
   return generation === loadProjectGeneration;
@@ -173,75 +147,12 @@ function capturePreviousProjectState(state: ProjectState): {
   };
 }
 
-interface ProjectBackgroundAuthority {
-  generation: number;
-  mutation: MutationAuthority;
-}
-
-function captureProjectBackgroundAuthority(
-  projectId: string,
-  _generation: number,
-): ProjectBackgroundAuthority {
-  return {
-    generation: _generation,
-    mutation: captureMutationAuthority(projectId, getCurrentProjectId),
-  };
-}
-
-function canStartProjectBackgroundMutation(
-  authority: ProjectBackgroundAuthority,
-): boolean {
-  return (
-    isCurrentProjectLoad(authority.generation) &&
-    isCurrentMutationAuthority(authority.mutation)
-  );
-}
-
-function trackProjectBackgroundMutation(
-  task: Promise<void>,
-  recordFailure: boolean = true,
-): void {
-  pendingProjectBackgroundMutations.add(task);
-  void task.then(
-    () => pendingProjectBackgroundMutations.delete(task),
-    (error: unknown) => {
-      pendingProjectBackgroundMutations.delete(task);
-      if (recordFailure) projectBackgroundMutationFailures.push(error);
-    },
-  );
-}
-
-async function awaitPendingProjectBackgroundMutations(): Promise<void> {
-  while (pendingProjectBackgroundMutations.size > 0) {
-    await Promise.allSettled([...pendingProjectBackgroundMutations]);
-  }
-  // Report each completed failure once. Stateful writers retain their own
-  // retry material (notably recorder.queue), and later quiescence stages retry
-  // it; permanently replaying this historical error would make retry/close
-  // impossible even after that retry succeeds.
-  const failures = projectBackgroundMutationFailures.splice(0);
-  if (failures.length > 0) {
-    throw new AggregateError(
-      failures,
-      failures.length === 1 && failures[0] instanceof Error
-        ? failures[0].message
-        : "One or more Project background mutations failed",
-    );
-  }
-}
-
-registerQuiescenceProvider({
-  id: createQuiescenceProviderId("project-background-mutations"),
-  stage: "scoped-mutations",
-  flush: awaitPendingProjectBackgroundMutations,
-});
-
 /** Invalidates every async Project load/list refresh before a Workspace swap. */
 export function invalidateProjectLoadsForWorkspaceSwitch(): void {
   loadProjectGeneration++;
   refreshProjectsGeneration++;
   deletedProjectIds.clear();
-  deferredProjectBackgroundActivation = null;
+  projectTimelapseLifecycle.invalidateForWorkspaceSwitch();
 }
 
 function isCurrentWorkspaceRefresh(
@@ -337,249 +248,17 @@ function resolveInitialProjectId(
   return projectRows[0]!.id;
 }
 
-/**
- * timelapse recorder / externalWriteFeed を触ってよい実行環境か。
- * VITEST では mocked db harness にチェーン tail SELECT を要求しない・タイマー
- * や promise をテストファイル間にリークさせないため、SSR (window なし) では
- * そもそも記録対象が無いためスキップする。
- */
-function isRealBrowserRuntime(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    !(
-      typeof import.meta !== "undefined" &&
-      (import.meta as { vitest?: boolean }).vitest
-    ) &&
-    !(typeof process !== "undefined" && process.env?.VITEST)
-  );
-}
-
-function scheduleTimelapseInitialization(
-  projectId: string,
-  _generation: number,
-  genesisBarrier: TimelapseGenesisBarrierLease,
-  expectedWorkspacePath?: string,
-): Promise<void> {
-  const mutationAuthority = captureMutationAuthority(
-    projectId,
-    getCurrentProjectId,
-  );
-  const canMutate = () => isCurrentMutationAuthority(mutationAuthority);
-  const run = timelapseInitTail.then(async () => {
-    if (!canMutate()) {
-      genesisBarrier.abort("Project mutation authority changed before start");
-      return;
-    }
-    try {
-      await initializeProjectTimelapse({
-        projectId,
-        expectedWorkspacePath,
-        canStart: canMutate,
-        isMutationCurrent: canMutate,
-      });
-      if (!canMutate()) {
-        genesisBarrier.abort(
-          "Project mutation authority changed during initialization",
-        );
-        return;
-      }
-      genesisBarrier.complete();
-      timelapseGenesisFailures.delete(projectId);
-    } catch (error) {
-      genesisBarrier.fail(error);
-      timelapseGenesisFailures.set(projectId, error);
-      throw error;
-    }
-  });
-  // Genesis failure remains represented by its closed barrier and retry map;
-  // do not also accumulate historical generic failures that would veto a
-  // later successful same-Project recovery.
-  trackProjectBackgroundMutation(run, false);
-
-  // Rebinds are serialized so an already-started stale init must finish before
-  // the latest project binds.  This keeps the latest project authoritative.
-  timelapseInitTail = run.catch((_error) => {
-    debugLog.warn("timelapse", "recorder init failed", {
-      sensitivity: "safe",
-      fields: {
-        operation: "initializeRecorder",
-        outcome: "failed",
-      },
-    });
-  });
-  return run;
-}
-
-async function retryFailedTimelapseGenesisForCurrentProject(
-  projectId: string,
-): Promise<void> {
-  if (
-    getCurrentProjectId() !== projectId ||
-    !hasFailedTimelapseGenesisBarrier(projectId)
-  ) {
-    return;
-  }
-  await scheduleTimelapseInitialization(
-    projectId,
-    loadProjectGeneration,
-    beginTimelapseGenesisBarrier(projectId),
-  );
-}
-
-registerTimelapseGenesisRetry(retryFailedTimelapseGenesisForCurrentProject);
-
-function scheduleExternalWriteFeedStart(
-  projectId: string,
-  generation: number,
-  timelapseReady: Promise<void> = Promise.resolve(),
-): void {
-  const authority = captureProjectBackgroundAuthority(projectId, generation);
-  const run = externalWriteFeedStartTail.then(async () => {
-    try {
-      await timelapseReady;
-    } catch {
-      // Genesis remains fail-closed and owns the reported background failure.
-      // Do not consume a prose backlog whose body writer would be rejected by
-      // the same barrier.
-      return;
-    }
-    await startProjectExternalWriteFeed({
-      projectId,
-      canStart: () => canStartProjectBackgroundMutation(authority),
-      isMutationCurrent: () => isCurrentMutationAuthority(authority.mutation),
-    });
-  });
-  trackProjectBackgroundMutation(run);
-
-  // startExternalWriteFeed reads its initial cursor asynchronously. Serialize
-  // starts so a late cursor read from A can never finish after B's start.
-  externalWriteFeedStartTail = run.catch((_error) => {
-    debugLog.warn("externalWriteFeed", "start failed", {
-      sensitivity: "safe",
-      fields: {
-        operation: "start",
-        outcome: "failed",
-      },
-    });
-  });
-}
-
-function scheduleOrDeferExternalWriteFeedStart(
-  projectId: string,
-  generation: number,
-  timelapseReady: Promise<void>,
-  expectedWorkspacePath?: string,
-  expectedWorkspaceOpenRevision?: number,
-): void {
-  if (expectedWorkspacePath) {
-    const identity = getCurrentWorkspaceIdentity();
-    if (
-      identity?.path !== expectedWorkspacePath ||
-      (expectedWorkspaceOpenRevision !== undefined &&
-        identity.openRevision !== expectedWorkspaceOpenRevision)
-    ) {
-      deferredExternalWriteFeedStart = {
-        projectId,
-        generation,
-        timelapseReady,
-        expectedWorkspacePath,
-        expectedWorkspaceOpenRevision,
-      };
-      return;
-    }
-  }
-  deferredExternalWriteFeedStart = null;
-  scheduleExternalWriteFeedStart(projectId, generation, timelapseReady);
-}
-
-function presentTimelapseGenesisFailure(
-  projectId: string,
-  generation: number,
-): void {
-  if (
-    !isCurrentProjectLoad(generation) ||
-    getCurrentProjectId() !== projectId
-  ) {
-    return;
-  }
-  let newlyDegraded = false;
-  useProjectStore.setState((state) => {
-    if (state.degradedParticipants.includes("timelapse-genesis")) return state;
-    newlyDegraded = true;
-    return {
-      projectLoadStatus: "degraded",
-      degradedParticipants: [
-        ...state.degradedParticipants,
-        "timelapse-genesis",
-      ],
-    };
-  });
-  if (!newlyDegraded) return;
-  toast.warning(i18next.t("project.loadDegraded"), {
-    action: {
-      label: i18next.t("common.retry"),
-      onClick: () =>
-        void runProjectLoadWithFailureToast(() =>
-          useProjectStore.getState().loadProject(projectId),
-        ),
-    },
-  });
-}
-
-function activateProjectBackgroundIntegrations(
-  projectId: string,
-  generation: number,
-  existingGenesisBarrier?: TimelapseGenesisBarrierLease,
-): void {
-  const genesisBarrier =
-    existingGenesisBarrier ?? beginTimelapseGenesisBarrier(projectId);
-  if (
-    !isCurrentProjectLoad(generation) ||
-    getCurrentProjectId() !== projectId
-  ) {
-    genesisBarrier.abort("Project activation became stale");
-    return;
-  }
-  // A same-path Workspace reopen performs its explicit Project hydrate before
-  // publishing the new openRevision. Capturing null here would make both tails
-  // stale immediately after publication, so defer activation to the identity
-  // publication boundary.
-  if (getCurrentWorkspaceIdentity() === null) {
-    deferredProjectBackgroundActivation?.genesisBarrier.abort(
-      "superseded deferred Project activation",
-    );
-    deferredProjectBackgroundActivation = {
-      projectId,
-      generation,
-      genesisBarrier,
-    };
-    return;
-  }
-  deferredProjectBackgroundActivation = null;
-  deferredExternalWriteFeedStart = null;
-  const timelapseReady = scheduleTimelapseInitialization(
-    projectId,
-    generation,
-    genesisBarrier,
-  );
-  scheduleExternalWriteFeedStart(projectId, generation, timelapseReady);
-}
-
 /** Test hooks for the browser-only background integration path. */
 export function _scheduleExternalWriteFeedStartForTests(
   projectId: string,
 ): void {
-  scheduleExternalWriteFeedStart(projectId, loadProjectGeneration);
+  projectTimelapseLifecycle.scheduleExternalWriteFeedStartForTests(projectId);
 }
 
 export function _scheduleTimelapseInitializationForTests(
   projectId: string,
 ): void {
-  scheduleTimelapseInitialization(
-    projectId,
-    loadProjectGeneration,
-    beginTimelapseGenesisBarrier(projectId),
-  );
+  projectTimelapseLifecycle.scheduleTimelapseInitializationForTests(projectId);
 }
 
 export function _scheduleWorkspaceBackgroundIntegrationsForTests(
@@ -587,16 +266,8 @@ export function _scheduleWorkspaceBackgroundIntegrationsForTests(
   expectedWorkspacePath: string,
   expectedWorkspaceOpenRevision: number,
 ): void {
-  const timelapseReady = scheduleTimelapseInitialization(
+  projectTimelapseLifecycle.scheduleWorkspaceBackgroundIntegrationsForTests(
     projectId,
-    loadProjectGeneration,
-    beginTimelapseGenesisBarrier(projectId),
-    expectedWorkspacePath,
-  );
-  scheduleOrDeferExternalWriteFeedStart(
-    projectId,
-    loadProjectGeneration,
-    timelapseReady,
     expectedWorkspacePath,
     expectedWorkspaceOpenRevision,
   );
@@ -605,24 +276,19 @@ export function _scheduleWorkspaceBackgroundIntegrationsForTests(
 export function _activateProjectBackgroundIntegrationsForTests(
   projectId: string,
 ): void {
-  activateProjectBackgroundIntegrations(projectId, loadProjectGeneration);
+  projectTimelapseLifecycle.activateProjectBackgroundIntegrationsForTests(
+    projectId,
+  );
 }
 
 export function _presentTimelapseGenesisFailureForTests(
   projectId: string,
 ): void {
-  presentTimelapseGenesisFailure(projectId, loadProjectGeneration);
+  projectTimelapseLifecycle.presentTimelapseGenesisFailureForTests(projectId);
 }
 
 export function _resetProjectBackgroundMutationsForTests(): void {
-  _resetTimelapseGenesisBarriersForTests();
-  pendingProjectBackgroundMutations.clear();
-  projectBackgroundMutationFailures.length = 0;
-  timelapseGenesisFailures.clear();
-  deferredProjectBackgroundActivation = null;
-  deferredExternalWriteFeedStart = null;
-  timelapseInitTail = Promise.resolve();
-  externalWriteFeedStartTail = Promise.resolve();
+  projectTimelapseLifecycle.resetForTests();
   projectStrictQuiescenceTail = Promise.resolve();
   projectLoadCommitTail = Promise.resolve();
   lastNonLoadingProjectPresentation = null;
@@ -725,7 +391,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         if (!isCurrentProjectLoad(generation)) return;
         const previousState = capturePreviousProjectState(get());
         const previousId = previousState.currentProjectId;
-        const realBrowserRuntime = isRealBrowserRuntime();
+        const realBrowserRuntime = isProjectTimelapseBrowserRuntime();
         set({ projectLoadStatus: "loading", degradedParticipants: [] });
         let committed = false;
         let genesisBarrier: TimelapseGenesisBarrierLease | null = null;
@@ -755,7 +421,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
             const commitPreparedProject = () => {
               if (!isCurrentProjectLoad(generation)) return false;
               if (realBrowserRuntime) {
-                genesisBarrier = beginTimelapseGenesisBarrier(projectId);
+                genesisBarrier =
+                  projectTimelapseLifecycle.beginGenesisBarrier(projectId);
               }
               quiescenceLease.sealReadsForAuthorityCommit();
               committed = true;
@@ -781,12 +448,13 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
                     "Timelapse genesis requires a target Workspace path",
                   );
                 }
-                timelapseReady = scheduleTimelapseInitialization(
-                  projectId,
-                  generation,
-                  genesisBarrier,
-                  expectedWorkspacePath,
-                );
+                timelapseReady =
+                  projectTimelapseLifecycle.scheduleTimelapseInitialization(
+                    projectId,
+                    generation,
+                    genesisBarrier,
+                    expectedWorkspacePath,
+                  );
                 genesisActivationScheduled = true;
               },
               ...(options?.lifecycleTiming
@@ -806,7 +474,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
               ({ participantId }) => participantId,
             );
             if (
-              timelapseGenesisFailures.has(projectId) &&
+              projectTimelapseLifecycle.hasGenesisFailure(projectId) &&
               !degraded.includes("timelapse-genesis")
             ) {
               degraded.push("timelapse-genesis");
@@ -841,7 +509,10 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
               // microtask instead of racing a later ready write that could
               // hide the failure.
               void timelapseReady.catch(() => {
-                presentTimelapseGenesisFailure(projectId, generation);
+                projectTimelapseLifecycle.presentTimelapseGenesisFailure(
+                  projectId,
+                  generation,
+                );
               });
             }
 
@@ -854,7 +525,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
                   "Timelapse genesis was not started after commit",
                 );
               }
-              scheduleOrDeferExternalWriteFeedStart(
+              projectTimelapseLifecycle.scheduleOrDeferExternalWriteFeedStart(
                 projectId,
                 generation,
                 timelapseReady,
@@ -900,7 +571,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
               const commitPreviousProject = () => {
                 if (!isCurrentProjectLoad(generation)) return false;
                 if (realBrowserRuntime) {
-                  genesisBarrier = beginTimelapseGenesisBarrier(previousId);
+                  genesisBarrier =
+                    projectTimelapseLifecycle.beginGenesisBarrier(previousId);
                 }
                 quiescenceLease.sealReadsForAuthorityCommit();
                 set({ currentProjectId: previousId });
@@ -922,12 +594,13 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
                       "Rollback timelapse genesis requires a Workspace path",
                     );
                   }
-                  timelapseReady = scheduleTimelapseInitialization(
-                    previousId,
-                    generation,
-                    genesisBarrier,
-                    expectedWorkspacePath,
-                  );
+                  timelapseReady =
+                    projectTimelapseLifecycle.scheduleTimelapseInitialization(
+                      previousId,
+                      generation,
+                      genesisBarrier,
+                      expectedWorkspacePath,
+                    );
                   genesisActivationScheduled = true;
                 },
               );
@@ -964,7 +637,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
                     { cause: e },
                   );
                 }
-                scheduleExternalWriteFeedStart(
+                projectTimelapseLifecycle.scheduleExternalWriteFeedStart(
                   previousId,
                   generation,
                   timelapseReady,
@@ -1145,7 +818,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           // loadProject publishes the critical Project state before scheduling
           // recorder/feed tails. Those tails can still touch the old Project
           // (recorder drain), so they are part of phase one for deletion.
-          await awaitPendingProjectBackgroundMutations();
+          await projectTimelapseLifecycle.awaitPendingProjectBackgroundMutations();
           if (
             !isCurrentLifecycleWorkspace(authority) ||
             get().currentProjectId === projectId ||
@@ -1179,6 +852,24 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   },
 }));
 
+const projectTimelapseLifecycle = createProjectTimelapseLifecycle({
+  getCurrentProjectId,
+  getLoadGeneration: () => loadProjectGeneration,
+  isCurrentProjectLoad,
+  retryProjectLoad: (projectId) => {
+    void runProjectLoadWithFailureToast(() =>
+      useProjectStore.getState().loadProject(projectId),
+    );
+  },
+  setProjectPresentation: (updater) =>
+    useProjectStore.setState((state) =>
+      updater({
+        projectLoadStatus: state.projectLoadStatus,
+        degradedParticipants: state.degradedParticipants,
+      }),
+    ),
+});
+
 setCurrentRuntimeProjectId(FALLBACK_PROJECT_ID);
 useProjectStore.subscribe((state, previous) => {
   if (state.currentProjectId === previous.currentProjectId) return;
@@ -1187,30 +878,7 @@ useProjectStore.subscribe((state, previous) => {
 
 subscribeCurrentWorkspaceIdentity((identity) => {
   if (!identity) return;
-  if (deferredProjectBackgroundActivation) {
-    const activation = deferredProjectBackgroundActivation;
-    deferredProjectBackgroundActivation = null;
-    activateProjectBackgroundIntegrations(
-      activation.projectId,
-      activation.generation,
-      activation.genesisBarrier,
-    );
-  }
-  const feed = deferredExternalWriteFeedStart;
-  if (
-    !feed ||
-    identity.path !== feed.expectedWorkspacePath ||
-    (feed.expectedWorkspaceOpenRevision !== undefined &&
-      identity.openRevision !== feed.expectedWorkspaceOpenRevision)
-  ) {
-    return;
-  }
-  deferredExternalWriteFeedStart = null;
-  scheduleExternalWriteFeedStart(
-    feed.projectId,
-    feed.generation,
-    feed.timelapseReady,
-  );
+  projectTimelapseLifecycle.handleWorkspaceIdentityPublished(identity);
 });
 
 publishCurrentProjectId(useProjectStore.getState().currentProjectId);

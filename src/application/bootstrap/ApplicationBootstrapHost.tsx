@@ -1,11 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
-import {
-  StrictQuiescenceError,
-  flushStrictQuiescence,
-  type QuiescenceFailure,
-} from "@/application/lifecycle/quiescenceCoordinator";
+import { flushStrictQuiescence } from "@/application/lifecycle/quiescenceCoordinator";
 import {
   createCloseQuiescenceController,
   type CloseQuiescenceController,
@@ -46,43 +42,13 @@ import { discardQuiescenceProviders } from "@/lib/quiescenceProviders";
 import { hasUnresolvedEditorChanges } from "@/lib/editorQuiescence";
 import { useTranslation } from "react-i18next";
 import i18next from "@/lib/i18n";
+import {
+  applyCloseFailureToDialogState,
+  classifyCloseFailure,
+} from "@/application/lifecycle/closeFailureClassification";
 import { applyApplicationTheme } from "./applicationTheme";
 
-const CLOSE_FAILURE_FALLBACK_MESSAGE =
-  "Document lifecycle did not reach quiescence";
-
-/**
- * Convert a close rejection into the state consumed by the existing failure
- * dialog. Classification is observability/UI plumbing: hostile rejected
- * values must not escape a Proxy trap or replace the original reference kept
- * for recovery bookkeeping.
- */
-export function classifyCloseFailure(
-  error: unknown,
-): readonly QuiescenceFailure[] {
-  try {
-    if (error instanceof StrictQuiescenceError) {
-      const failures = error.failures;
-      if (failures !== undefined && failures !== null) return failures;
-    }
-  } catch {
-    // A rejected IPC value may be a revoked/hostile Proxy.
-  }
-  return [
-    {
-      stage: "participants",
-      error: new Error(CLOSE_FAILURE_FALLBACK_MESSAGE),
-      originalError: error,
-    },
-  ];
-}
-
-export function applyCloseFailureToDialogState(
-  setCloseFailures: (failures: readonly QuiescenceFailure[] | null) => void,
-  error: unknown,
-): void {
-  setCloseFailures(classifyCloseFailure(error));
-}
+export { applyCloseFailureToDialogState, classifyCloseFailure };
 
 export function ApplicationBootstrapHost({
   onWebEditorImportRequested,
@@ -131,9 +97,9 @@ export function ApplicationBootstrapHost({
   );
   const toggleDebugLog = useDebugLogStore((state) => state.toggle);
   const { t } = useTranslation();
-  const [closeFailures, setCloseFailures] = useState<
-    readonly QuiescenceFailure[] | null
-  >(null);
+  const [closeFailures, setCloseFailures] = useState<ReturnType<
+    typeof classifyCloseFailure
+  > | null>(null);
   const [quiescenceSettledRevision, setQuiescenceSettledRevision] = useState(0);
   const closeControllerRef = useRef<CloseQuiescenceController | null>(null);
 
