@@ -217,7 +217,8 @@ describe("TimelineTab", () => {
     opener.focus();
     fireEvent.click(opener);
 
-    await screen.findByPlaceholderText(/追放後/);
+    const phaseLabel = await screen.findByPlaceholderText(/追放後/);
+    await waitFor(() => expect(phaseLabel).toHaveFocus());
 
     fireEvent.click(screen.getByRole("button", { name: /キャンセル|Cancel/ }));
     await waitFor(() => expect(opener).toHaveFocus());

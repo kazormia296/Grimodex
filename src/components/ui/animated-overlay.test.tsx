@@ -313,6 +313,25 @@ describe("AnimatedOverlay", () => {
     await waitFor(() => expect(opener).toHaveFocus());
   });
 
+  it("keeps an autoFocus child focused when an earlier dialog button is also focusable", async () => {
+    render(
+      <OverlayHarness>
+        <button type="button">Close dialog</button>
+        {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+        <input autoFocus aria-label="Phase label" />
+      </OverlayHarness>,
+    );
+
+    const opener = screen.getByRole("button", { name: "Open overlay" });
+    fireEvent.click(opener);
+
+    const input = await screen.findByRole("textbox", { name: "Phase label" });
+    await waitFor(() => expect(input).toHaveFocus());
+    expect(
+      screen.getByRole("button", { name: "Close dialog" }),
+    ).not.toHaveFocus();
+  });
+
   it("restores the opener after a child layout effect focuses inside", async () => {
     render(
       <OverlayHarness>

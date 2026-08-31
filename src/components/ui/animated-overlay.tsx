@@ -4,8 +4,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 
-const INITIAL_FOCUS_SELECTOR = [
-  "[autofocus]",
+const FOCUSABLE_SELECTOR = [
   "button:not([disabled])",
   "[href]",
   "input:not([disabled])",
@@ -74,10 +73,19 @@ export function AnimatedOverlay({
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
+      const content = contentRef.current;
+      if (content == null) return;
+
+      // Children can intentionally select their own target through native
+      // autoFocus or a layout/passive effect. Preserve that choice rather
+      // than letting the fallback focus a DOM-earlier button.
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && content.contains(active)) return;
+
       const initialTarget =
-        contentRef.current?.querySelector<HTMLElement>(
-          INITIAL_FOCUS_SELECTOR,
-        ) ?? contentRef.current;
+        content.querySelector<HTMLElement>("[autofocus]") ??
+        content.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) ??
+        content;
       initialTarget?.focus({ preventScroll: true });
     });
     return () => {
