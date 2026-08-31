@@ -1632,6 +1632,9 @@ mod tests {
         let ws_path = ws_dir.to_string_lossy().into_owned();
         open_workspace_sync(&ws_state, &mut initial_deps, &ws_path)
             .expect("create current-schema workspace");
+        let initial_maintenance = claim_workspace_maintenance_exclusive(&ws_dir)
+            .expect("join initial workspace maintenance before simulating process teardown");
+        drop(initial_maintenance);
 
         with_db_state(&ws_state, |database| {
             database.with_conn(|conn| {
@@ -1652,8 +1655,8 @@ mod tests {
                     crate::open_wal::OpenWalCheckpointMode::Noop,
                 )?;
                 assert!(
-                    state.log_frames >= 750,
-                    "fixture must leave enough total WAL frames for open preparation"
+                    (750..=1_000).contains(&state.log_frames),
+                    "fixture WAL must stay inside the bounded open-preparation window: {state:?}"
                 );
                 Ok(())
             })
@@ -1664,6 +1667,9 @@ mod tests {
         // happens when process teardown leaves a WAL sidecar for the next open.
         let keeper = rusqlite::Connection::open(ws_dir.join("grimodex.db"))
             .expect("open WAL keeper connection");
+        let _: i64 = keeper
+            .query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get(0))
+            .expect("activate WAL keeper connection");
         let previous = ws_state.inner.lock().expect("workspace state").take();
         drop(previous);
 
@@ -1707,13 +1713,18 @@ mod tests {
                 )?;
                 assert!(
                     state.log_frames < 750,
-                    "the first post-open writer must start from a restarted WAL"
+                    "the first post-open writer must start from a restarted WAL: {state:?}"
                 );
                 Ok(())
             })
         })
         .expect("verify first writer WAL state");
 
+        let reopened = ws_state.inner.lock().expect("workspace state").take();
+        drop(reopened);
+        let reopened_maintenance = claim_workspace_maintenance_exclusive(&ws_dir)
+            .expect("join reopened workspace maintenance before fixture cleanup");
+        drop(reopened_maintenance);
         drop(keeper);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1743,6 +1754,9 @@ mod tests {
         let ws_path = ws_dir.to_string_lossy().into_owned();
         open_workspace_sync(&ws_state, &mut initial_deps, &ws_path)
             .expect("create current-schema workspace");
+        let initial_maintenance = claim_workspace_maintenance_exclusive(&ws_dir)
+            .expect("join initial workspace maintenance before simulating process teardown");
+        drop(initial_maintenance);
 
         with_db_state(&ws_state, |database| {
             database.with_conn(|conn| {
@@ -1765,6 +1779,9 @@ mod tests {
 
         let keeper = rusqlite::Connection::open(ws_dir.join("grimodex.db"))
             .expect("open oversized WAL keeper connection");
+        let _: i64 = keeper
+            .query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get(0))
+            .expect("activate oversized WAL keeper connection");
         let previous = ws_state.inner.lock().expect("workspace state").take();
         drop(previous);
         let before = crate::open_wal::sqlite_wal_checkpoint(
@@ -1774,7 +1791,7 @@ mod tests {
         .expect("inspect oversized WAL before cold open");
         assert!(
             before.log_frames > 1_000,
-            "fixture must exceed one autocheckpoint cycle"
+            "fixture must exceed one autocheckpoint cycle: {before:?}"
         );
 
         let mut trace = NativeWorkspaceOpenTrace::new(true);
@@ -1824,6 +1841,11 @@ mod tests {
         })
         .expect("authority must publish without changing oversized WAL state");
 
+        let reopened = ws_state.inner.lock().expect("workspace state").take();
+        drop(reopened);
+        let reopened_maintenance = claim_workspace_maintenance_exclusive(&ws_dir)
+            .expect("join reopened workspace maintenance before fixture cleanup");
+        drop(reopened_maintenance);
         drop(keeper);
         let _ = std::fs::remove_dir_all(&dir);
     }

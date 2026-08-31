@@ -1406,12 +1406,17 @@ mod tests {
     #[test]
     fn prune_drops_expired_and_over_count_items() {
         let db = test_db();
+        let now = chrono::Utc::now();
+        let expired = (now - chrono::Duration::days(365)).to_rfc3339();
+        let i1 = (now - chrono::Duration::days(3)).to_rfc3339();
+        let i2 = (now - chrono::Duration::days(2)).to_rfc3339();
+        let i3 = (now - chrono::Duration::days(1)).to_rfc3339();
         // 期日切れ (retention 60 日をはるかに超える古さ)
-        create(&db, payload("期日切れ", "2020-01-01T00:00:00Z")).expect("create expired");
+        create(&db, payload("期日切れ", &expired)).expect("create expired");
         // 新しいもの 3 件
-        create(&db, payload("i1", "2026-07-01T00:00:00Z")).expect("create");
-        create(&db, payload("i2", "2026-07-02T00:00:00Z")).expect("create");
-        create(&db, payload("i3", "2026-07-03T00:00:00Z")).expect("create");
+        create(&db, payload("i1", &i1)).expect("create");
+        create(&db, payload("i2", &i2)).expect("create");
+        create(&db, payload("i3", &i3)).expect("create");
 
         // retention で 1 件、max_count=2 で古い方からもう 1 件消え、残 2 件。
         let remaining = prune(&db, PROJECT.to_string(), 60, 2).expect("prune");
