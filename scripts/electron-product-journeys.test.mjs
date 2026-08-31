@@ -2084,6 +2084,37 @@ test("product journey fixture mutations use the harness-owned non-renderer seam"
   assert.match(sources[2], /harness\.executeFixtureOperations/);
 });
 
+test("native round-trip fixture relaunch waits for matching Project authority", async () => {
+  const source = await read(
+    "electron/scripts/product-journey-native-roundtrips.mjs",
+  );
+  const helperIndex = source.indexOf(
+    "relaunchAfterFixtureOperations: async (operations) => {",
+  );
+  const relaunchIndex = source.indexOf(
+    "writing = await harness.launch(`${id}/write`)",
+    helperIndex,
+  );
+  const authorityIndex = source.indexOf(
+    "await projectIdFor(harness, writing.page)",
+    relaunchIndex,
+  );
+  const mismatchIndex = source.indexOf(
+    "reopenedProjectId !== projectId",
+    authorityIndex,
+  );
+  const returnIndex = source.indexOf("return writing.page", mismatchIndex);
+
+  assert.ok(
+    helperIndex >= 0 &&
+      helperIndex < relaunchIndex &&
+      relaunchIndex < authorityIndex &&
+      authorityIndex < mismatchIndex &&
+      mismatchIndex < returnIndex,
+    "fixture relaunch must wait for and verify Project authority before returning the page",
+  );
+});
+
 test("product harness enables only the deterministic main-boundary AI provider", async () => {
   const source = await read("electron/scripts/product-journey-harness.mjs");
   assert.match(source, /GRIMODEX_PRODUCT_JOURNEY_FAKE_AI/);

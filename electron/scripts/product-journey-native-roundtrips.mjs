@@ -89,6 +89,12 @@ async function runNativeRoundTrip(
           writing = null;
           await harness.executeFixtureOperations(workspace, operations);
           writing = await harness.launch(`${id}/write`);
+          const reopenedProjectId = await projectIdFor(harness, writing.page);
+          if (reopenedProjectId !== projectId) {
+            throw new Error(
+              `${id}: project authority changed after fixture relaunch (${projectId} -> ${reopenedProjectId})`,
+            );
+          }
           return writing.page;
         },
       })),
