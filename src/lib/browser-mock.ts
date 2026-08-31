@@ -24629,7 +24629,9 @@ export async function createBrowserMock(
     });
   }
 
-  function assertBrowserTimelapseWorkspace(args: Record<string, unknown>): void {
+  function assertBrowserTimelapseWorkspace(
+    args: Record<string, unknown>,
+  ): void {
     if (
       typeof args.expectedWorkspacePath !== "string" ||
       !args.expectedWorkspacePath.trim()
@@ -24721,10 +24723,13 @@ export async function createBrowserMock(
       throw new Error(`${command} requires the exact typed payload`);
     }
     assertBrowserTimelapseWorkspace(args);
-    const projectId =
-      typeof args.projectId === "string" ? args.projectId : "";
+    const projectId = typeof args.projectId === "string" ? args.projectId : "";
     assertTimelapseProject(projectId);
-    if (!Array.isArray(args.targets) || args.targets.length < 1 || args.targets.length > 64) {
+    if (
+      !Array.isArray(args.targets) ||
+      args.targets.length < 1 ||
+      args.targets.length > 64
+    ) {
       throw new Error(`${command} targets must contain 1..64 identities`);
     }
     const targets = args.targets.map((value, index) => {
@@ -24759,7 +24764,9 @@ export async function createBrowserMock(
         id: string;
       };
     });
-    const identities = targets.map((target) => `${target.kind}\u0000${target.id}`);
+    const identities = targets.map(
+      (target) => `${target.kind}\u0000${target.id}`,
+    );
     if (new Set(identities).size !== identities.length) {
       throw new Error(`${command} targets must be unique`);
     }
@@ -24823,7 +24830,9 @@ export async function createBrowserMock(
         let skippedExistingCount = 0;
         for (const target of targets) {
           const spec = specs[target.kind];
-          const body = trusted.get(`${target.kind}\u0000${target.id}`) as string;
+          const body = trusted.get(
+            `${target.kind}\u0000${target.id}`,
+          ) as string;
           const rows = queryAll(
             `select entity_type, anchor_timestamp, payload, encoding from state_snapshots
               where project_id = ? and domain = ? and entity_id = ? and anchor_sequence = ?`,
@@ -24835,14 +24844,18 @@ export async function createBrowserMock(
                 row.entity_type !== null &&
                 row.entity_type !== spec.entityType
               ) {
-                throw new Error(`${command} existing snapshot scope is invalid`);
+                throw new Error(
+                  `${command} existing snapshot scope is invalid`,
+                );
               }
               if (
                 Number(row.anchor_timestamp) !== tail.timestamp ||
                 row.payload !== body ||
                 row.encoding !== "json"
               ) {
-                throw new Error(`${command} existing snapshot does not match trusted body`);
+                throw new Error(
+                  `${command} existing snapshot does not match trusted body`,
+                );
               }
             }
             skippedExistingCount += 1;
@@ -25011,7 +25024,11 @@ export async function createBrowserMock(
     const projectId = String(args.projectId);
     assertTimelapseProject(projectId);
     const payload = args.payload;
-    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    if (
+      typeof payload !== "object" ||
+      payload === null ||
+      Array.isArray(payload)
+    ) {
       throw new Error(`${command} payload is invalid`);
     }
     const payloadRecord = payload as Record<string, unknown>;
@@ -25021,7 +25038,8 @@ export async function createBrowserMock(
       payloadRecord.layout === null ||
       Array.isArray(payloadRecord.layout) ||
       Object.keys(payloadRecord).some(
-        (key) => !new Set(["layout", "activePresetId", "hiddenStripePanels"]).has(key),
+        (key) =>
+          !new Set(["layout", "activePresetId", "hiddenStripePanels"]).has(key),
       )
     ) {
       throw new Error(`${command} payload scope is invalid`);
@@ -25037,7 +25055,9 @@ export async function createBrowserMock(
       Object.hasOwn(payloadRecord, "hiddenStripePanels") &&
       (!Array.isArray(payloadRecord.hiddenStripePanels) ||
         payloadRecord.hiddenStripePanels.length > 128 ||
-        payloadRecord.hiddenStripePanels.some((panel) => typeof panel !== "string"))
+        payloadRecord.hiddenStripePanels.some(
+          (panel) => typeof panel !== "string",
+        ))
     ) {
       throw new Error(`${command} hiddenStripePanels is invalid`);
     }
@@ -25071,7 +25091,13 @@ export async function createBrowserMock(
             (project_id, domain, entity_type, entity_id, anchor_sequence,
              anchor_timestamp, payload, encoding, created_at)
            values (?, 'layout', 'workspace', 'workspace', ?, ?, ?, 'json', ?)`,
-          [projectId, tail.sequence, tail.timestamp, payloadJson, tail.timestamp],
+          [
+            projectId,
+            tail.sequence,
+            tail.timestamp,
+            payloadJson,
+            tail.timestamp,
+          ],
         );
         db.run("COMMIT");
         options.onDatabaseDirty?.();

@@ -819,7 +819,11 @@ describe("createBrowserMock", () => {
       await appendEvent("default-project", "purge-malformed-1", 1700000100010);
       await mock.invoke("db_execute", {
         sql: "insert into project_settings (project_id, key, value) values (?, ?, ?)",
-        params: ["default-project", "timelapse.resetSequence", "not-an-integer"],
+        params: [
+          "default-project",
+          "timelapse.resetSequence",
+          "not-an-integer",
+        ],
         method: "run",
       });
 

@@ -12,9 +12,7 @@ export const TIMELAPSE_RESET_SEQUENCE_KEY = "timelapse.resetSequence";
 
 function assertMutableProjectSettingKey(key: string): void {
   if (key === SCAN_IMPORT_STATE_KEY || key === TIMELAPSE_RESET_SEQUENCE_KEY) {
-    throw new Error(
-      `${NATIVE_OWNED_PROJECT_SETTING_ERROR}: ${key}`,
-    );
+    throw new Error(`${NATIVE_OWNED_PROJECT_SETTING_ERROR}: ${key}`);
   }
 }
 
@@ -87,7 +85,10 @@ export async function getProjectSetting(
 export async function getTimelapseResetSequence(
   projectId: string,
 ): Promise<number> {
-  const value = await getProjectSetting(projectId, TIMELAPSE_RESET_SEQUENCE_KEY);
+  const value = await getProjectSetting(
+    projectId,
+    TIMELAPSE_RESET_SEQUENCE_KEY,
+  );
   if (value === null) return 0;
   const sequence = Number(value);
   if (!Number.isSafeInteger(sequence) || sequence < 0) {

@@ -319,17 +319,15 @@ describe("typed body/layout/history writers", () => {
       anchorTimestamp: 1_700_000_000_000,
     });
     await expect(
-      appendBodyBaselines(
-        {
-          expectedWorkspacePath: "/workspace/novel.gdx",
-          projectId: "p1",
-          targets: [
-            { kind: "scene", id: "s1" },
-            { kind: "codex", id: "c1" },
-          ],
-          expectedAnchorSequence: 12,
-        },
-      ),
+      appendBodyBaselines({
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        targets: [
+          { kind: "scene", id: "s1" },
+          { kind: "codex", id: "c1" },
+        ],
+        expectedAnchorSequence: 12,
+      }),
     ).resolves.toMatchObject({
       insertedCount: 2,
       skippedExistingCount: 1,

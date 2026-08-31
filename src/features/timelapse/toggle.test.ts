@@ -40,9 +40,9 @@ const snapshotsMock = vi.hoisted(() => ({
   >(async () => ({
     insertedCount: 0,
     skippedExistingBaselineCount: 0,
-      skippedExistingBodyStepCount: 0,
-      completed: true,
-    })),
+    skippedExistingBodyStepCount: 0,
+    completed: true,
+  })),
   appendBodyBaselines: vi.fn(async () => ({
     insertedCount: 1,
     skippedExistingCount: 0,

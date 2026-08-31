@@ -239,7 +239,11 @@ export async function appendBodyBaselines(
     anchorTimestamp: 0,
     completed: true,
   };
-  for (let offset = 0; offset < targets.length; offset += BODY_BASELINE_BATCH_SIZE) {
+  for (
+    let offset = 0;
+    offset < targets.length;
+    offset += BODY_BASELINE_BATCH_SIZE
+  ) {
     if (!isAuthoritative()) {
       total.completed = false;
       return total;
@@ -283,12 +287,15 @@ export async function purgeTimelapseHistoryNative(
 export async function recordLayoutSnapshot(
   input: RecordLayoutSnapshotInput,
 ): Promise<RecordLayoutSnapshotResult> {
-  return invoke<RecordLayoutSnapshotResult>("timelapse_layout_snapshot_record", {
-    expectedWorkspacePath: input.expectedWorkspacePath,
-    projectId: input.projectId,
-    payload: input.payload,
-    expectedAnchorSequence: input.expectedAnchorSequence ?? null,
-  });
+  return invoke<RecordLayoutSnapshotResult>(
+    "timelapse_layout_snapshot_record",
+    {
+      expectedWorkspacePath: input.expectedWorkspacePath,
+      projectId: input.projectId,
+      payload: input.payload,
+      expectedAnchorSequence: input.expectedAnchorSequence ?? null,
+    },
+  );
 }
 
 export interface DecodedSnapshot {

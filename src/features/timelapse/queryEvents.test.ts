@@ -17,7 +17,10 @@ vi.mock("@/features/settings/api", () => ({
 
 import { loadProjectChangeEvents, loadSceneChangeEvents } from "./queryEvents";
 
-function renderCondition(condition: unknown): { sql: string; params: unknown[] } {
+function renderCondition(condition: unknown): {
+  sql: string;
+  params: unknown[];
+} {
   return (
     condition as {
       toQuery: (config: {

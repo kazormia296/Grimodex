@@ -6,7 +6,10 @@ vi.mock("@/features/layout/layoutStore", () => ({
   useLayoutStore: { getState: vi.fn() },
 }));
 const { workspaceIdentity } = vi.hoisted(() => ({
-  workspaceIdentity: vi.fn(() => ({ path: "/workspace/novel.gdx", openRevision: 1 })),
+  workspaceIdentity: vi.fn(() => ({
+    path: "/workspace/novel.gdx",
+    openRevision: 1,
+  })),
 }));
 vi.mock("@/runtime/workspaceIdentity", () => ({
   getCurrentWorkspaceIdentity: workspaceIdentity,
@@ -65,7 +68,10 @@ describe("seedWorkspaceSnapshot", () => {
   it("omits empty optional fields", async () => {
     mockLayout({ activePresetId: null, hiddenStripePanels: new Set() });
     await seedWorkspaceSnapshot("p");
-    const payload = rec.mock.calls[0][0].payload as unknown as Record<string, unknown>;
+    const payload = rec.mock.calls[0][0].payload as unknown as Record<
+      string,
+      unknown
+    >;
     expect("activePresetId" in payload).toBe(false);
     expect("hiddenStripePanels" in payload).toBe(false);
   });

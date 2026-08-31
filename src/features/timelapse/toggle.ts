@@ -314,11 +314,7 @@ export async function rebaselineEntitiesAtTail(
       );
       return result.completed;
     } catch (err) {
-      console.warn(
-        "[timelapse] rebaseline snapshot batch failed",
-        batch,
-        err,
-      );
+      console.warn("[timelapse] rebaseline snapshot batch failed", batch, err);
       return false;
     }
   };
@@ -360,11 +356,7 @@ async function rearmFromGenesis(
   setRecorderEnabled(true);
   await initRecorderForProject(projectId); // re-reads now-empty tail -> genesis
   const anchorSequence = await readAuthoritativeChainTail(projectId);
-  await stampEntityBaselines(
-    projectId,
-    expectedWorkspacePath,
-    anchorSequence,
-  );
+  await stampEntityBaselines(projectId, expectedWorkspacePath, anchorSequence);
   // Seed the workspace layout snapshot so forward layout events have an initial
   // state to replay on top of (§17 P0.4). Mirrors the per-session seed in
   // projectStore.loadProject so toggle-ON without a reload also anchors the UI.
@@ -385,14 +377,20 @@ async function rollbackFailedRearm(
     // replacement workspace.
     await setTimelapseEnabledSetting(projectId, expectedWorkspacePath, false);
   } catch (settingError) {
-    console.warn("[timelapse] failed to roll back enabled setting", settingError);
+    console.warn(
+      "[timelapse] failed to roll back enabled setting",
+      settingError,
+    );
   }
   if (workspaceIdentity && isCurrentWorkspaceIdentity(workspaceIdentity)) {
     try {
       await purgeTimelapseHistoryNative({ expectedWorkspacePath, projectId });
       resetRecorderChain();
     } catch (cleanupError) {
-      console.warn("[timelapse] failed to clean up partial re-arm", cleanupError);
+      console.warn(
+        "[timelapse] failed to clean up partial re-arm",
+        cleanupError,
+      );
     }
   } else {
     console.warn(
@@ -428,11 +426,7 @@ export async function setTimelapseEnabled(
       );
     }
     try {
-      await setTimelapseEnabledSetting(
-        projectId,
-        workspaceIdentity.path,
-        true,
-      );
+      await setTimelapseEnabledSetting(projectId, workspaceIdentity.path, true);
     } catch (error) {
       return rollbackFailedRearm(
         projectId,
@@ -448,11 +442,7 @@ export async function setTimelapseEnabled(
     if (!workspaceIdentity) {
       throw new Error("Timelapse disable requires an active workspace");
     }
-    await setTimelapseEnabledSetting(
-      projectId,
-      workspaceIdentity.path,
-      false,
-    );
+    await setTimelapseEnabledSetting(projectId, workspaceIdentity.path, false);
   }
 }
 
