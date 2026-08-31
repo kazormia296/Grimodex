@@ -3582,32 +3582,32 @@ pub fn tree_node_patch_with_authority(
     };
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |tx| {
-        if let Some(response) = load_idempotent_response(&tx, &idempotency_request)? {
+        if let Some(response) = load_idempotent_response(tx, &idempotency_request)? {
             return Ok(response);
         }
         validate_tree_replay_lineage_in_tx(
-            &tx,
+            tx,
             &payload.project_id,
             payload.origin,
             payload.original_transaction_id.as_deref(),
             payload.undo_journal_id.as_deref(),
         )?;
         validate_tree_replay_target_in_tx(
-            &tx,
+            tx,
             &payload.project_id,
             payload.origin,
             payload.undo_journal_id.as_deref(),
             &payload.node_id,
             "patch",
         )?;
-        let before = select_tree_node(&tx, &payload.project_id, &payload.node_id)?;
+        let before = select_tree_node(tx, &payload.project_id, &payload.node_id)?;
         let before_live_scene_subtree_count = if before
             .get("nodeType")
             .and_then(Value::as_str)
             == Some("folder")
         {
             Some(live_scene_subtree_count(
-                &tx,
+                tx,
                 &payload.project_id,
                 &payload.node_id,
             )?)
@@ -3634,12 +3634,12 @@ pub fn tree_node_patch_with_authority(
                 Value::Null => {}
                 Value::String(parent_id) => {
                     ensure_tree_parent_does_not_cycle(
-                        &tx,
+                        tx,
                         &payload.project_id,
                         &payload.node_id,
                         parent_id,
                     )?;
-                    ensure_tree_parent_in_project(&tx, &payload.project_id, parent_id)?;
+                    ensure_tree_parent_in_project(tx, &payload.project_id, parent_id)?;
                 }
                 _ => anyhow::bail!("tree node parentId must be a string or null"),
             }
@@ -3652,7 +3652,7 @@ pub fn tree_node_patch_with_authority(
                 match entry_id {
                     Value::Null => {}
                     Value::String(entry_id) => ensure_tree_codex_reference_in_project(
-                        &tx,
+                        tx,
                         &payload.project_id,
                         field,
                         entry_id,
@@ -3662,7 +3662,7 @@ pub fn tree_node_patch_with_authority(
             }
         }
 
-        Database::execute_with_conn(&tx, &sql, &params, "run")?;
+        Database::execute_with_conn(tx, &sql, &params, "run")?;
         let updated = tx.changes();
         if updated != 1 {
             if let Some(base_version) = payload.base_version {
@@ -3678,7 +3678,7 @@ pub fn tree_node_patch_with_authority(
                 payload.project_id
             );
         }
-        let row = select_tree_node(&tx, &payload.project_id, &payload.node_id)?;
+        let row = select_tree_node(tx, &payload.project_id, &payload.node_id)?;
         if let Some(base_version) = payload.base_version {
             let expected_version = if payload.bump_version {
                 base_version
@@ -3716,7 +3716,7 @@ pub fn tree_node_patch_with_authority(
                     .and_then(Value::as_i64)
                     .ok_or_else(|| anyhow::anyhow!("tree node row has no version"))?;
                 crate::narrative_extraction::record_human_field_write(
-                    &tx,
+                    tx,
                     &payload.project_id,
                     "scene",
                     &payload.node_id,
@@ -3726,7 +3726,7 @@ pub fn tree_node_patch_with_authority(
                 let source_key = format!("project:scene:{}", payload.node_id);
                 let source_token = format!("v{version}@{updated_at}");
                 crate::narrative_extraction::propagate_source_change_freshness_in_tx(
-                    &tx,
+                    tx,
                     &payload.project_id,
                     "scene-body",
                     &source_key,
@@ -3766,7 +3766,7 @@ pub fn tree_node_patch_with_authority(
         {
             Some((
                 before_live_scene_subtree_count.unwrap_or(0),
-                live_scene_subtree_count(&tx, &payload.project_id, &payload.node_id)?,
+                live_scene_subtree_count(tx, &payload.project_id, &payload.node_id)?,
             ))
         } else {
             None
@@ -3796,7 +3796,7 @@ pub fn tree_node_patch_with_authority(
             NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
         ) {
             crate::undo_journal::insert_undo_journal_in_tx(
-                &tx,
+                tx,
                 crate::undo_journal::UndoJournalInsert {
                     id: &journal_id,
                     project_id: &payload.project_id,
@@ -3813,7 +3813,7 @@ pub fn tree_node_patch_with_authority(
             )?;
         }
         let append = append_tree_feed_result(
-            &tx,
+            tx,
             TreeFeedAppend {
                 project_id: &payload.project_id,
                 request_id: &payload.request_id,
@@ -3854,7 +3854,7 @@ pub fn tree_node_patch_with_authority(
         )?;
         if append_body_snapshot {
             crate::timelapse::append_timelapse_body_snapshots_in_tx(
-                &tx,
+                tx,
                 &payload.project_id,
                 append.canonical.tail_sequence,
                 timestamp,
@@ -3871,7 +3871,7 @@ pub fn tree_node_patch_with_authority(
             &journal_id,
         );
         insert_idempotent_response(
-            &tx,
+            tx,
             &idempotency_request,
             &payload.project_id,
             &response,

@@ -1133,7 +1133,7 @@ impl Database {
             let mut skipped_existing_count = 0usize;
             let mut insert_targets = Vec::new();
             for target in targets {
-                let body = trusted_content.get(&target).ok_or_else(|| {
+                let body = trusted_content.get(target).ok_or_else(|| {
                     anyhow::anyhow!(
                         "TIMELAPSE_BODY_SNAPSHOT_ENTITY_SCOPE_MISMATCH: target body was not resolved"
                     )

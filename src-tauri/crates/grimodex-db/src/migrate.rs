@@ -9126,9 +9126,10 @@ mod tests {
         let first_index_dropped_for_hook = Arc::clone(&first_index_dropped);
         db.with_conn(|conn| {
             conn.authorizer(Some(move |context: AuthContext<'_>| match context.action {
-                AuthAction::DropIndex { index_name, .. }
-                    if index_name == "idx_change_events_project_domain_op_entity_seq" =>
-                {
+                AuthAction::DropIndex {
+                    index_name: "idx_change_events_project_domain_op_entity_seq",
+                    ..
+                } => {
                     first_index_dropped_for_hook.store(true, Ordering::SeqCst);
                     Authorization::Allow
                 }
