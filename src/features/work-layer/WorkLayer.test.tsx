@@ -1,14 +1,16 @@
 // @vitest-environment happy-dom
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  WorkLayerProvider,
-  WorkLayerSurface,
-  WorkPulse,
-} from "./WorkLayer";
+import { WorkLayerProvider, WorkLayerSurface, WorkPulse } from "./WorkLayer";
 import type { WorkLayerModel, WorkLayerPort } from "./types";
 
 const MODEL: WorkLayerModel = {
@@ -157,7 +159,9 @@ describe("Work Layer UI", () => {
       within(attentionTray).getByText("『アリス』の参照先が曖昧"),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Focus 地下牢の改稿" }));
+    await user.click(
+      screen.getByRole("button", { name: "Focus 地下牢の改稿" }),
+    );
     const focusTray = screen.getByRole("dialog", {
       name: "Focusの作業トレイ",
     });
@@ -180,7 +184,19 @@ describe("Work Layer UI", () => {
     expect(within(lens).getByText("FRESHNESS")).toBeInTheDocument();
     expect(within(lens).getByText("PROJECTION")).toBeInTheDocument();
 
+    const findingButton = screen.getByRole("button", {
+      name: "『アリス』の参照先が曖昧を開く",
+    });
     fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: "『アリス』の参照先が曖昧を開く",
+        }),
+      ).toHaveFocus(),
+    );
+    expect(findingButton).not.toBeConnected();
+
     await user.click(
       screen.getByRole("button", { name: "2件をResolve Projectionで開く" }),
     );
@@ -206,12 +222,29 @@ describe("Work Layer UI", () => {
     expect(
       screen.getByRole("dialog", { name: "Resolve Projection" }),
     ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "詳細を検査" }),
+      ).toHaveFocus(),
+    );
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Attention 2件" }),
+      ).toHaveFocus(),
+    );
+    expect(
+      screen.queryByRole("dialog", { name: "Attentionの作業トレイ" }),
+    ).not.toBeInTheDocument();
   });
 
   it("ignores composing/default-prevented Escape and restores focus when returning to ambient", async () => {
     const user = userEvent.setup();
     renderWorkLayer();
-    const attentionButton = screen.getByRole("button", { name: "Attention 2件" });
+    const attentionButton = screen.getByRole("button", {
+      name: "Attention 2件",
+    });
     attentionButton.focus();
     await user.click(attentionButton);
 
@@ -262,11 +295,196 @@ describe("Work Layer UI", () => {
     ).toHaveTextContent("まだ保存されていません");
   });
 
+  it("previews the candidate selected by the author", async () => {
+    const user = userEvent.setup();
+    const onPreviewDecision = vi.fn();
+    renderWorkLayer({ onPreviewDecision });
+
+    await user.click(screen.getByRole("button", { name: "Attention 2件" }));
+    await user.click(
+      screen.getByRole("button", { name: "『アリス』の参照先が曖昧を開く" }),
+    );
+    await user.click(screen.getByRole("radio", { name: "アリス・ハーグ" }));
+    await user.click(
+      screen.getByRole("button", {
+        name: "アリス・ハーグへBindingをプレビュー",
+      }),
+    );
+
+    expect(onPreviewDecision).toHaveBeenCalledWith(
+      "finding-binding",
+      "alice-hague",
+    );
+  });
+
   it("does not load or render the Work Layer outside the primary desktop workspace", async () => {
     const port: WorkLayerPort = { load: vi.fn().mockResolvedValue(MODEL) };
     renderWorkLayer({ active: false, initialModel: null, port });
 
     expect(port.load).not.toHaveBeenCalled();
     expect(screen.queryByTestId("work-pulse")).not.toBeInTheDocument();
+  });
+
+  it("opens running system work from SYS without adding it to Attention", async () => {
+    const user = userEvent.setup();
+    renderWorkLayer({
+      initialModel: {
+        ...MODEL,
+        system: { state: "running", label: "verify" },
+      },
+    });
+
+    expect(
+      screen.getByRole("button", { name: "System verify" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Attention 2件" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "System verify" }));
+    const activity = screen.getByRole("dialog", { name: "System Activity" });
+    expect(within(activity).queryAllByRole("checkbox")).toHaveLength(0);
+  });
+
+  it("opens blocked system work as a SYS event with non-persistent actions", async () => {
+    const user = userEvent.setup();
+    renderWorkLayer({
+      initialModel: {
+        ...MODEL,
+        system: { state: "blocked", label: "contract" },
+      },
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: "System contract" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "System Blocked" }),
+    ).toHaveTextContent("UI PREVIEW");
+  });
+
+  it("keeps empty Attention quiet and exposes disposed records separately", async () => {
+    const user = userEvent.setup();
+    renderWorkLayer({
+      initialModel: { ...MODEL, focus: null, attention: [] },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Attention 0件" }));
+    const emptyTray = screen.getByRole("dialog", {
+      name: "Attentionの作業トレイ",
+    });
+    expect(
+      within(emptyTray).queryByText(
+        "作者の判断で解消します。チェックで完了にはしません。",
+      ),
+    ).not.toBeInTheDocument();
+    expect(within(emptyTray).getByText("Focus なし")).toBeInTheDocument();
+
+    await user.click(
+      within(emptyTray).getByRole("button", {
+        name: "処分済みの判断 1件を開く",
+      }),
+    );
+    const disposed = screen.getByRole("dialog", { name: "処分済みの判断" });
+    expect(disposed).toHaveTextContent("処分済みのFinding");
+    expect(within(disposed).queryAllByRole("checkbox")).toHaveLength(0);
+  });
+
+  it("opens a temporary Context Portal and returns to its Lens opener", async () => {
+    const user = userEvent.setup();
+    renderWorkLayer();
+
+    await user.click(screen.getByRole("button", { name: "Attention 2件" }));
+    await user.click(
+      screen.getByRole("button", { name: "『アリス』の参照先が曖昧を開く" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Context Portalを開く" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Context Portal" }),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Resolve Lens" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Context Portalを開く" }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it("opens Change Review and Batch as children of Projection", async () => {
+    const user = userEvent.setup();
+    renderWorkLayer();
+
+    await user.click(screen.getByRole("button", { name: "Attention 2件" }));
+    await user.click(
+      screen.getByRole("button", { name: "2件をResolve Projectionで開く" }),
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: /Chronicle『脱獄』のEvidenceが見つからない/,
+      }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Change Reviewを開く" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Change Review" }),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await user.click(
+      screen.getByRole("button", { name: "安全なProposalを一括確認" }),
+    );
+    const batch = screen.getByRole("dialog", { name: "Batch Review" });
+    expect(within(batch).queryAllByRole("checkbox")).toHaveLength(0);
+  });
+
+  it("shows a restrained arrival beat without opening the Work Layer", () => {
+    const arrivalModel: WorkLayerModel & { readonly attentionDelta: number } = {
+      ...MODEL,
+      attentionDelta: 1,
+    };
+    renderWorkLayer({ initialModel: arrivalModel });
+
+    expect(
+      screen.getByRole("status", { name: "新しいAttention" }),
+    ).toHaveTextContent("+1");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("opens ALL WORK from tray variants and returns through the active work or Escape", async () => {
+    const user = userEvent.setup();
+    renderWorkLayer();
+
+    await user.click(
+      screen.getByRole("button", { name: "Focus 地下牢の改稿" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "すべての作業を開く" }),
+    );
+    const ledger = screen.getByRole("dialog", { name: "すべての作業" });
+    expect(
+      within(ledger).getByRole("button", { name: /保留/ }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(ledger).getByRole("button", {
+        name: "進行中の地下牢の改稿をトレイで開く",
+      }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Focusの作業トレイ" }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "すべての作業を開く" }),
+    );
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(
+      screen.getByRole("dialog", { name: "Focusの作業トレイ" }),
+    ).toBeInTheDocument();
   });
 });

@@ -51,6 +51,10 @@ describe("workLayerReducer", () => {
       mode: "projection",
       history: ["ambient", "tray-attention"],
     });
+
+    expect(
+      reduceWorkLayerNavigation(projection, { type: "back" }),
+    ).toEqual(createInitialWorkLayerNavigationState());
   });
 
   it("turns a preview decision into a receipt without claiming persistence", () => {
