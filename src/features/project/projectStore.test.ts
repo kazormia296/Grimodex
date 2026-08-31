@@ -293,6 +293,10 @@ describe("useProjectStore", () => {
       backgroundH.flushTimelapse.mockRejectedValueOnce(
         new Error("timelapse drain failed"),
       );
+      setCurrentWorkspaceIdentity({
+        path: "/workspace/project-store-test",
+        openRevision: 1,
+      });
       useProjectStore.setState({ currentProjectId: PROJECT_ID });
 
       _scheduleTimelapseInitializationForTests(PROJECT_ID);
@@ -1432,6 +1436,10 @@ describe("useProjectStore", () => {
       });
       await useProjectStore.getState().initCurrentProject();
       await useProjectStore.getState().loadProject("proj-current");
+      setCurrentWorkspaceIdentity({
+        path: "/workspace/project-store-test",
+        openRevision: 1,
+      });
       mockedReload.mockClear();
       const drain = deferred<void>();
       backgroundH.flushTimelapse.mockReturnValueOnce(drain.promise);
