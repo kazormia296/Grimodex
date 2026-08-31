@@ -29,6 +29,7 @@ import {
 } from "./api";
 import type { TrashItemInput } from "./types";
 import { getCreateResultMetadata } from "@/lib/createResultMetadata";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 type AnyWindow = Record<string, unknown>;
 
@@ -49,9 +50,11 @@ const input: TrashItemInput = {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  publishCurrentProjectId("p1");
 });
 
 afterEach(() => {
+  publishCurrentProjectId(null);
   delete (window as unknown as AnyWindow).__TAURI_INTERNALS__;
   delete (window as unknown as AnyWindow).grimodex;
 });

@@ -1,14 +1,24 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
+const recorderMocks = vi.hoisted(() => ({
+  getRecorderSessionId: vi.fn(() => "session-1"),
+  flushStrict: vi.fn(() => Promise.resolve()),
+  acquireTimelapseReplacementFence: vi.fn(() => ({
+    commit: vi.fn(),
+    release: vi.fn(),
+  })),
+}));
+
 vi.mock("@/lib/tauri", () => ({ invoke: vi.fn() }));
 vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectId: () => "project-1",
 }));
-vi.mock("@/features/timelapse/recorder", () => ({
-  getRecorderSessionId: () => "session-1",
-}));
+vi.mock("@/features/timelapse/recorder", () => recorderMocks);
 
 import { invoke } from "@/lib/tauri";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { _resetTimelapseGenesisBarriersForTests } from "@/features/timelapse/genesisBarrier";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { applyUndoJournal } from "./undoJournal";
 
 function requestIds(): string[] {
@@ -18,6 +28,15 @@ function requestIds(): string[] {
 }
 
 beforeEach(() => {
+  _resetTimelapseGenesisBarriersForTests();
+  publishCurrentProjectId("project-1");
+  setCurrentWorkspaceIdentity({
+    path: "/workspace/undo-journal.test.gdx",
+    openRevision: 1,
+  });
+
+  recorderMocks.flushStrict.mockClear();
+  recorderMocks.acquireTimelapseReplacementFence.mockClear();
   (invoke as Mock).mockReset().mockResolvedValue(undefined);
 });
 
