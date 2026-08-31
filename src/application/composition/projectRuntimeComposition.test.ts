@@ -33,7 +33,7 @@ vi.mock("@/features/settings/settingsStore", () => ({
     }),
   },
 }));
-vi.mock("@/features/timelapse/toggle", () => toggleMock);
+vi.mock("@/features/timelapse/timelapseAdmin", () => toggleMock);
 vi.mock("@/features/timelapse/recorder", () => recorderMock);
 vi.mock("@/features/timelapse/seedSession", () => ({
   seedWorkspaceSnapshot: seedMock,

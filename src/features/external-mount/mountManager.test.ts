@@ -139,7 +139,7 @@ vi.mock("@/features/editor/persistSceneBody", () => ({
   scheduleBodyMentionScan: mockScheduleBodyMentionScan,
 }));
 
-vi.mock("@/features/timelapse/toggle", () => ({
+vi.mock("@/features/timelapse/rebaseline", () => ({
   rebaselineScenesAtTail: mockRebaselineScenesAtTail,
 }));
 

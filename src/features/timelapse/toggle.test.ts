@@ -75,7 +75,7 @@ const treeMock = vi.hoisted(() => {
   return {
     listAllNodes: vi.fn(() => Promise.resolve([] as unknown[])),
     loadSceneContent,
-    // toggle.ts now batches scene bodies via loadScenesFull; delegate to the
+    // The admin path batches scene bodies via the typed Native writer; delegate to the
     // loadSceneContent mock so per-test content overrides still apply.
     loadScenesFull: vi.fn(async (ids: string[]) => {
       const out = new Map<
@@ -124,6 +124,7 @@ vi.mock("./seedSession", () => ({
   seedWorkspaceSnapshot: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("./snapshots", () => snapshotsMock);
+vi.mock("./baselineSnapshots", () => snapshotsMock);
 vi.mock("@/features/settings/api", () => settingsMock);
 vi.mock("@/runtime/workspaceIdentity", () => workspaceMock);
 vi.mock("@/features/tree/api", () => treeMock);
@@ -136,9 +137,8 @@ import {
   purgeTimelapseHistory,
   isTimelapseEnabled,
   ensureGenesisBaselines,
-  rebaselineScenesAtTail,
-  rebaselineEntitiesAtTail,
-} from "./toggle";
+} from "./timelapseAdmin";
+import { rebaselineScenesAtTail, rebaselineEntitiesAtTail } from "./rebaseline";
 
 beforeEach(() => {
   vi.clearAllMocks();

@@ -110,7 +110,7 @@ vi.mock("@/features/timelapse/recorder", () => ({
   initRecorderForProject: backgroundH.initRecorderForProject,
 }));
 
-vi.mock("@/features/timelapse/toggle", () => ({
+vi.mock("@/features/timelapse/timelapseAdmin", () => ({
   isTimelapseEnabled: backgroundH.isTimelapseEnabled,
   ensureGenesisBaselines: backgroundH.ensureGenesisBaselines,
 }));

@@ -18,13 +18,13 @@ async function initializeTimelapse({
     providedWorkspacePath ?? workspaceIdentity?.path;
   if (!expectedWorkspacePath || !isMutationCurrent()) return;
 
-  const [toggle, recorder] = await Promise.all([
-    import("@/features/timelapse/toggle"),
+  const [admin, recorder] = await Promise.all([
+    import("@/features/timelapse/timelapseAdmin"),
     import("@/features/timelapse/recorder"),
   ]);
   if (!canStart()) return;
 
-  const enabled = await toggle.isTimelapseEnabled(projectId);
+  const enabled = await admin.isTimelapseEnabled(projectId);
   if (!isMutationCurrent()) return;
 
   recorder.setRecorderEnabled(enabled);
@@ -33,7 +33,7 @@ async function initializeTimelapse({
   if (!isMutationCurrent()) return;
 
   if (!enabled || !bound) return;
-  await toggle.ensureGenesisBaselines(
+  await admin.ensureGenesisBaselines(
     projectId,
     expectedWorkspacePath,
     isMutationCurrent,

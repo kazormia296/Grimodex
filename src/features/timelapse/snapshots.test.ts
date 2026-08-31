@@ -20,13 +20,13 @@ vi.mock("@/features/settings/api", () => ({
 }));
 
 import {
-  appendBodyBaselines,
   appendGenesisBaselines,
   loadLatestSnapshot,
   purgeTimelapseHistoryNative,
   recordLayoutSnapshot,
   shouldCreateSnapshot,
 } from "./snapshots";
+import { appendBodyBaselines } from "./baselineSnapshots";
 
 interface GenesisInvokeArgs extends Record<string, unknown> {
   expectedWorkspacePath: string;

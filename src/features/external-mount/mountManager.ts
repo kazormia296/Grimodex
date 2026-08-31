@@ -17,7 +17,7 @@ import {
   updateNode,
 } from "@/features/tree/api";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
-import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
+import { rebaselineScenesAtTail } from "@/features/timelapse/rebaseline";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";

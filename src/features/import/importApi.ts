@@ -33,7 +33,7 @@ import {
 import {
   rebaselineEntitiesAtTail,
   rebaselineScenesAtTail,
-} from "@/features/timelapse/toggle";
+} from "@/features/timelapse/rebaseline";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { db } from "@/db/client";
 import { chatSessions, chatMessages } from "@/db/schema";
