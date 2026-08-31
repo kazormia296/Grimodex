@@ -218,6 +218,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "timelapseAppendBatch",
       Promise.resolve('{"insertedCount":1,"tailSequence":2,"tailHash":"h"}'),
     ) as never,
+    timelapseGenesisBaselinesAppend: record(
+      "timelapseGenesisBaselinesAppend",
+      Promise.resolve(
+        '{"insertedCount":2,"skippedExistingBaselineCount":1,"skippedExistingBodyStepCount":1}',
+      ),
+    ) as never,
     aiAuditAppendBatch: record(
       "aiAuditAppendBatch",
       Promise.resolve(
@@ -4272,6 +4278,155 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
+  it("timelapse_genesis_baselines_append: exact workspace-bound payloadを位置引数へ写像", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "timelapse_genesis_baselines_append",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: ["scene-1", "scene-2", "scene-3", "scene-4"],
+        anchorTimestamp: 1_800_000_000_000,
+      },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "timelapseGenesisBaselinesAppend",
+        args: [
+          "/workspace/novel.gdx",
+          "p1",
+          "scene",
+          ["scene-1", "scene-2", "scene-3", "scene-4"],
+          1_800_000_000_000,
+        ],
+      },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        insertedCount: 2,
+        skippedExistingBaselineCount: 1,
+        skippedExistingBodyStepCount: 1,
+      },
+    });
+  });
+
+  it.each([
+    [
+      "missing path",
+      { projectId: "p1", kind: "scene", entityIds: ["s1"], anchorTimestamp: 1 },
+    ],
+    [
+      "blank path",
+      {
+        expectedWorkspacePath: "",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: ["s1"],
+        anchorTimestamp: 1,
+      },
+    ],
+    [
+      "unknown kind",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "chapter",
+        entityIds: ["s1"],
+        anchorTimestamp: 1,
+      },
+    ],
+    [
+      "empty ids",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: [],
+        anchorTimestamp: 1,
+      },
+    ],
+    [
+      "duplicate ids",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: ["s1", "s1"],
+        anchorTimestamp: 1,
+      },
+    ],
+    [
+      "too many ids",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: Array.from({ length: 65 }, (_, index) => `s${index}`),
+        anchorTimestamp: 1,
+      },
+    ],
+    [
+      "negative timestamp",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: ["s1"],
+        anchorTimestamp: -1,
+      },
+    ],
+    [
+      "unknown field",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: ["s1"],
+        anchorTimestamp: 1,
+        content: "renderer-owned",
+      },
+    ],
+  ])("timelapse genesis rejects %s before Native", async (_label, args) => {
+    const method = vi.fn();
+    const { backend } = fakeBackend({
+      timelapseGenesisBaselinesAppend: method,
+    });
+
+    const env = await dispatchInvoke(
+      "timelapse_genesis_baselines_append",
+      args,
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(false);
+    expect(method).not.toHaveBeenCalled();
+  });
+
+  it("timelapse genesis reports backend version skew explicitly", async () => {
+    const { backend } = fakeBackend({
+      timelapseGenesisBaselinesAppend: undefined,
+    });
+    const env = await dispatchInvoke(
+      "timelapse_genesis_baselines_append",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "snippet",
+        entityIds: ["snippet-1"],
+        anchorTimestamp: 1,
+      },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.error).toContain(IPC_BACKEND_UNAVAILABLE_MARKER);
+      expect(env.error).toContain("timelapseGenesisBaselinesAppend");
+    }
+  });
+
   it("tree_node_patch: optional content eventを同じtyped payloadへ保持する", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -5154,6 +5309,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "temporal_scene_patch",
       "test_ai_connection",
       "timelapse_append_batch",
+      "timelapse_genesis_baselines_append",
       "trash_bin_clear_all",
       "trash_bin_create",
       "trash_bin_delete",

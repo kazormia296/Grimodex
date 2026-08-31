@@ -293,8 +293,6 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       });
       quiescenceLease.transition?.advance("new-scope-hydrated");
       authorityPublishSpan.finish();
-      // Optimize FTS indexes in background (fire-and-forget)
-      invoke("fts_optimize").catch(() => {});
       return "opened";
     } catch (e) {
       trace.fail();

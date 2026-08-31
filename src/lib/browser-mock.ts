@@ -822,6 +822,8 @@ export interface BrowserMockOptions {
    * rollback fault-injection triggers. Production builds ignore this flag.
    */
   allowProtectedWriterTestFixtures?: boolean;
+  /** Test-only observation point for the single genesis change-event probe. */
+  onTimelapseGenesisLedgerReadForTest?: () => void;
 }
 
 export interface BrowserAiAuthorizationRequest {
@@ -24382,6 +24384,240 @@ export async function createBrowserMock(
     });
   }
 
+  async function handleTimelapseGenesisBaselinesAppend(
+    args: Record<string, unknown>,
+  ): Promise<{
+    insertedCount: number;
+    skippedExistingBaselineCount: number;
+    skippedExistingBodyStepCount: number;
+  }> {
+    const command = "timelapse_genesis_baselines_append";
+    const exactString = (key: string, maxLength: number): string => {
+      const value = args[key];
+      if (
+        typeof value !== "string" ||
+        value.length === 0 ||
+        value !== value.trim() ||
+        value.length > maxLength
+      ) {
+        throw new Error(`${command} ${key} is invalid`);
+      }
+      return value;
+    };
+    const allowedKeys = new Set([
+      "expectedWorkspacePath",
+      "projectId",
+      "kind",
+      "entityIds",
+      "anchorTimestamp",
+    ]);
+    if (
+      Object.keys(args).length !== allowedKeys.size ||
+      Object.keys(args).some((key) => !allowedKeys.has(key))
+    ) {
+      throw new Error(`${command} requires the exact typed payload`);
+    }
+    const expectedWorkspacePath = exactString("expectedWorkspacePath", 16_384);
+    const projectId = exactString("projectId", 512);
+    const kind = args.kind;
+    if (kind !== "scene" && kind !== "codex" && kind !== "snippet") {
+      throw new Error(`${command} kind is invalid`);
+    }
+    if (
+      !Array.isArray(args.entityIds) ||
+      args.entityIds.length < 1 ||
+      args.entityIds.length > 64
+    ) {
+      throw new Error(`${command} entityIds must contain 1..64 ids`);
+    }
+    const entityIds = args.entityIds.map((value, index) => {
+      if (
+        typeof value !== "string" ||
+        value.length === 0 ||
+        value !== value.trim() ||
+        value.length > 512
+      ) {
+        throw new Error(`${command} entityIds[${index}] is invalid`);
+      }
+      return value;
+    });
+    if (new Set(entityIds).size !== entityIds.length) {
+      throw new Error(`${command} entityIds must be unique`);
+    }
+    const anchorTimestamp = args.anchorTimestamp;
+    if (
+      typeof anchorTimestamp !== "number" ||
+      !Number.isSafeInteger(anchorTimestamp) ||
+      anchorTimestamp < 0
+    ) {
+      throw new Error(`${command} anchorTimestamp is invalid`);
+    }
+
+    const settingsIdentity = handleGetGlobalSettings().lastActiveWorkspace;
+    const activeWorkspacePath =
+      options.workspaceIdentity ??
+      (typeof settingsIdentity === "string" && settingsIdentity.trim()
+        ? settingsIdentity
+        : BROWSER_WORKSPACE_PATH);
+    if (expectedWorkspacePath !== activeWorkspacePath) {
+      throw new Error(
+        `TIMELAPSE_GENESIS_WORKSPACE_CHANGED: expected ${expectedWorkspacePath}, active ${activeWorkspacePath}`,
+      );
+    }
+
+    const spec =
+      kind === "scene"
+        ? {
+            table: "tree_nodes",
+            domain: "editor",
+            entityType: "scene",
+            extraPredicate: "AND node_type = 'scene'",
+          }
+        : kind === "codex"
+          ? {
+              table: "codex_entries",
+              domain: "codex",
+              entityType: "codex_entry",
+              extraPredicate: "",
+            }
+          : {
+              table: "snippets",
+              domain: "snippet",
+              entityType: "snippet",
+              extraPredicate: "",
+            };
+
+    return withAppendLedgerLock(async () => {
+      db.run("BEGIN IMMEDIATE");
+      try {
+        // Match Native ordering: validate every requested ownership scope from
+        // IDs only before reading any potentially-large editor content.
+        for (const entityId of entityIds) {
+          const row = queryOne(
+            `SELECT id FROM ${spec.table}
+              WHERE id = ? AND project_id = ? ${spec.extraPredicate}`,
+            [entityId, projectId],
+          );
+          if (!row) {
+            throw new Error(
+              `TIMELAPSE_GENESIS_ENTITY_NOT_FOUND: ${kind} '${entityId}' is not owned by project '${projectId}'`,
+            );
+          }
+        }
+
+        let insertedCount = 0;
+        const placeholders = entityIds.map(() => "?").join(", ");
+        const existingBaselineIds = new Set(
+          queryAll(
+            `SELECT entity_id FROM state_snapshots
+              WHERE project_id = ? AND domain = ?
+                AND entity_id IN (${placeholders})`,
+            [projectId, spec.domain, ...entityIds],
+          ).map((row) => String(row.entity_id)),
+        );
+        const skippedExistingBaselineCount = existingBaselineIds.size;
+        let skippedExistingBodyStepCount = 0;
+        const unsnapshottedIds = entityIds.filter(
+          (entityId) => !existingBaselineIds.has(entityId),
+        );
+        if (unsnapshottedIds.length === 0) {
+          db.run("COMMIT");
+          return {
+            insertedCount,
+            skippedExistingBaselineCount,
+            skippedExistingBodyStepCount,
+          };
+        }
+
+        const candidatePlaceholders = unsnapshottedIds
+          .map(() => "?")
+          .join(", ");
+        options.onTimelapseGenesisLedgerReadForTest?.();
+        const bodyStepRows = queryAll(
+          `SELECT entity_id FROM change_events
+            WHERE project_id = ? AND domain = ? AND op_type = 'doc.step'
+              AND (entity_id IN (${candidatePlaceholders})
+                OR entity_id IS NULL OR entity_id = '')`,
+          [projectId, spec.domain, ...unsnapshottedIds],
+        );
+        const existingBodyStepIds = new Set<string>();
+        let ambiguousDomainStep = false;
+        for (const row of bodyStepRows) {
+          if (typeof row.entity_id === "string" && row.entity_id.length > 0) {
+            existingBodyStepIds.add(row.entity_id);
+          } else {
+            ambiguousDomainStep = true;
+          }
+        }
+        const eligibleIds = unsnapshottedIds.filter((entityId) => {
+          if (ambiguousDomainStep || existingBodyStepIds.has(entityId)) {
+            skippedExistingBodyStepCount += 1;
+            return false;
+          }
+          return true;
+        });
+
+        const entities = eligibleIds.map((entityId) => {
+          const row = queryOne(
+            `SELECT content FROM ${spec.table}
+              WHERE id = ? AND project_id = ? ${spec.extraPredicate}`,
+            [entityId, projectId],
+          );
+          if (!row || typeof row.content !== "string") {
+            throw new Error(
+              `TIMELAPSE_GENESIS_ENTITY_NOT_FOUND: ${kind} '${entityId}' is not owned by project '${projectId}'`,
+            );
+          }
+          return { entityId, content: row.content };
+        });
+        if (
+          entities.length > 1 &&
+          entities.reduce(
+            (bytes, entity) =>
+              bytes + new TextEncoder().encode(entity.content).byteLength,
+            0,
+          ) >
+            8 * 1024 * 1024
+        ) {
+          throw new Error("TIMELAPSE_GENESIS_BASELINE_BATCH_TOO_LARGE");
+        }
+
+        for (const entity of entities) {
+          db.run(
+            `INSERT INTO state_snapshots
+              (project_id, domain, entity_type, entity_id, anchor_sequence,
+               anchor_timestamp, payload, encoding, created_at)
+             VALUES (?, ?, ?, ?, 0, ?, ?, 'json', ?)`,
+            [
+              projectId,
+              spec.domain,
+              spec.entityType,
+              entity.entityId,
+              anchorTimestamp,
+              entity.content,
+              anchorTimestamp,
+            ],
+          );
+          insertedCount += 1;
+        }
+        db.run("COMMIT");
+        if (insertedCount > 0) options.onDatabaseDirty?.();
+        return {
+          insertedCount,
+          skippedExistingBaselineCount,
+          skippedExistingBodyStepCount,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the atomic append failure.
+        }
+        throw error;
+      }
+    });
+  }
+
   function browserAiAuditProjectId(
     args: Record<string, unknown>,
   ): string | null {
@@ -27429,6 +27665,8 @@ export async function createBrowserMock(
         } as T;
       case "timelapse_append_batch":
         return (await handleTimelapseAppendBatch(args)) as T;
+      case "timelapse_genesis_baselines_append":
+        return (await handleTimelapseGenesisBaselinesAppend(args)) as T;
       case "ime_export_get_status":
       case "ime_export_refresh":
       case "ime_export_set_active_project":

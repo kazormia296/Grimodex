@@ -100,6 +100,7 @@ use grimodex_db::state::{
     active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
     PinnedWorkspaceDb,
 };
+use grimodex_db::timelapse::TimelapseGenesisBaselineKind;
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload, TrashBinRestorePayload};
 use grimodex_db::web_editor_handoff;
 use grimodex_db::workspace::{self, GlobalSettings};
@@ -1659,6 +1660,35 @@ fn validate_ai_audit_workspace(
     if active != expected {
         return Err(AppError::Anyhow(anyhow::anyhow!(
             "AI_AUDIT_WORKSPACE_CHANGED: expected {}, active {}",
+            expected.display(),
+            active.display()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_timelapse_workspace(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_workspace_path: &str,
+) -> std::result::Result<(), AppError> {
+    if expected_workspace_path.is_empty()
+        || expected_workspace_path.trim() != expected_workspace_path
+        || expected_workspace_path.chars().count() > 16_384
+    {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "TIMELAPSE_GENESIS_BASELINE_INVALID_WORKSPACE_PATH: expectedWorkspacePath must be exact, non-empty, and at most 16384 characters"
+        )));
+    }
+    let active = workspace
+        .path()
+        .canonicalize()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+    let expected = PathBuf::from(expected_workspace_path)
+        .canonicalize()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+    if active != expected {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "TIMELAPSE_GENESIS_BASELINE_WORKSPACE_CHANGED: expected {}, active {}",
             expected.display(),
             active.display()
         )));
@@ -5078,6 +5108,35 @@ impl Backend {
         .await
     }
 
+    /// Append missing genesis editor-body baselines in one native transaction.
+    /// Any existing same-entity snapshot (including a later rebaseline) makes
+    /// that entity ineligible. The renderer supplies identity only; trusted
+    /// workspace tables own payload, domain, entityType, and project membership.
+    #[napi]
+    pub async fn timelapse_genesis_baselines_append(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        kind: String,
+        entity_ids: Vec<String>,
+        anchor_timestamp: i64,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_timelapse_workspace(&workspace, &expected_workspace_path)?;
+            let kind = TimelapseGenesisBaselineKind::parse(&kind)?;
+            let summary = workspace.db().append_timelapse_genesis_baselines(
+                &project_id,
+                kind,
+                &entity_ids,
+                anchor_timestamp,
+            )?;
+            Ok(serde_json::to_string(&summary).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     /// Append a durable batch to the complete AI-use audit ledger. The
     /// renderer snapshots `expected_workspace_path` before dispatch; every
     /// subsequent event must still target that exact workspace. A workspace
@@ -5438,8 +5497,8 @@ impl Backend {
     }
 
     /// FTS optimize (commands/integrity.rs の写像 — 実装は grimodex-db の
-    /// `Database::fts_optimize` を Tauri と共用)。workspace open 後のアイドル
-    /// タイミングで呼ばれる fail-soft コマンド。
+    /// `Database::fts_optimize` を Tauri と共用)。明示的なメンテナンス用であり、
+    /// workspace open からは自動実行しない。
     #[napi]
     pub async fn fts_optimize(&self) -> Result<()> {
         let state = Arc::clone(&self.state);
@@ -9630,6 +9689,102 @@ mod ime_workspace_tests {
         drop(snapshot);
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod timelapse_genesis_baseline_tests {
+    use super::*;
+    use grimodex_db::state::ActiveWorkspace;
+    use grimodex_db::Database;
+
+    fn backend_with_scene() -> (Backend, std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-timelapse-genesis-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let workspace_path = root.join("workspace");
+        let nested = workspace_path.join("nested");
+        std::fs::create_dir_all(&nested).expect("workspace dirs");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("schema");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title, language)
+                     VALUES ('project-a', 'A', 'ja')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO tree_nodes (id, project_id, node_type, title, content)
+                     VALUES ('scene-a', 'project-a', 'scene', 'Scene A',
+                             '{\"type\":\"doc\",\"content\":[]}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("seed database");
+        let authority = grimodex_db::WorkspaceAuthority::from_database_for_test(
+            database,
+            workspace_path.clone(),
+        )
+        .expect("authority");
+        let resources = root.join("resources");
+        let state = AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+            .expect("app state");
+        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
+        (
+            Backend {
+                state: Arc::new(state),
+            },
+            root,
+            workspace_path,
+        )
+    }
+
+    #[tokio::test]
+    async fn adapter_pins_canonical_workspace_and_serializes_typed_summary() {
+        let (backend, root, workspace_path) = backend_with_scene();
+        let equivalent_path = workspace_path.join("nested").join("..");
+        let wire = backend
+            .timelapse_genesis_baselines_append(
+                equivalent_path.to_string_lossy().into_owned(),
+                "project-a".into(),
+                "scene".into(),
+                vec!["scene-a".into()],
+                123,
+            )
+            .await
+            .expect("append baseline");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&wire).expect("summary JSON"),
+            serde_json::json!({
+                "insertedCount": 1,
+                "skippedExistingBaselineCount": 0,
+                "skippedExistingBodyStepCount": 0,
+            })
+        );
+
+        let wrong_workspace = root.join("wrong-workspace");
+        std::fs::create_dir_all(&wrong_workspace).expect("wrong workspace dir");
+        let error = backend
+            .timelapse_genesis_baselines_append(
+                wrong_workspace.to_string_lossy().into_owned(),
+                "project-a".into(),
+                "scene".into(),
+                vec!["scene-a".into()],
+                124,
+            )
+            .await
+            .expect_err("wrong workspace must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("TIMELAPSE_GENESIS_BASELINE_WORKSPACE_CHANGED"),
+            "unexpected error: {error}"
+        );
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 

@@ -594,6 +594,7 @@ pub mod sample_seed;
 pub mod scene_body;
 pub mod schema_contract;
 pub mod snippet_writes;
+pub mod timelapse;
 pub mod trash_bin;
 pub mod undo_journal;
 

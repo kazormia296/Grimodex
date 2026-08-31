@@ -17,7 +17,7 @@
 
 import { db } from "@/db/client";
 import { changeEvents, stateSnapshots } from "@/db/schema";
-import { and, count, eq, inArray } from "drizzle-orm";
+import { count, eq } from "drizzle-orm";
 import {
   flushNow,
   getRecorderChainHead,
@@ -26,7 +26,7 @@ import {
   resetRecorderChain,
   setRecorderEnabled,
 } from "./recorder";
-import { recordStateSnapshot, loadLatestSnapshot } from "./snapshots";
+import { appendGenesisBaselines, recordStateSnapshot } from "./snapshots";
 import { getProjectSetting, setProjectSetting } from "@/features/settings/api";
 import {
   listAllNodes,
@@ -242,66 +242,65 @@ async function stampEntityBaselines(
 }
 
 /**
- * Cheap existence probe: has this project recorded any editor-body step (scene,
- * codex, OR snippet)? LIMIT 1 keeps it O(1) on the load path even for a large
- * change_events table (a long novel's log can reach tens of MB — §6). "Genesis"
- * for a body baseline means specifically "no body doc.step to double-apply", not
- * "no events at all": a project may hold only layout/chat events yet still have
- * content-bearing scenes/codex/snippets that need baselining. A codex-only edit
- * (editor doc.step absent, codex doc.step present) is likewise past genesis —
- * stamping anchor=0 over its recorded steps would double-apply them.
- */
-async function hasBodySteps(projectId: string): Promise<boolean> {
-  const rows = await db
-    .select({ id: changeEvents.id })
-    .from(changeEvents)
-    .where(
-      and(
-        eq(changeEvents.projectId, projectId),
-        inArray(changeEvents.domain, ["editor", "codex", "snippet"]),
-        eq(changeEvents.opType, "doc.step"),
-      ),
-    )
-    .limit(1);
-  return rows.length > 0;
-}
-
-/**
- * Default-ON wiring fix: bake genesis scene baselines without a toggle.
+ * Default-ON wiring fix: bake genesis entity baselines without a toggle.
  *
- * `stampSceneBaselines` otherwise runs only on the explicit OFF→ON toggle /
- * purge (`rearmFromGenesis`). Under the default-ON setting `loadProject`
- * auto-enables recording, so a project that is never toggled gets no scene
- * baselines — and a non-empty scene then can't be replayed in the timelapse
- * export (it seeds from an empty doc and a step referencing the pre-existing
- * content throws RangeError). Bake baselines once, at genesis (no recorded
- * events yet), so the default-ON path matches the toggled path.
+ * Explicit OFF→ON/purge continues to use `stampEntityBaselines` after a full
+ * wipe. The default-ON load path instead sends only current entity identities
+ * to the typed Native writer. Native owns the atomic decision per entity:
+ * any existing baseline and existing body step are skipped, current body
+ * content is loaded from the trusted table, and a missing baseline is inserted
+ * under the exact expected Workspace binding.
  *
- * Two guards keep this safe and idempotent:
- *  - Skip when body steps already exist: past genesis an anchorSequence=0
- *    baseline would double-apply the already-recorded steps on top of a doc
- *    that already includes them (positions go out of range — the very bug we
- *    fix). Such projects can only be repaired by an explicit OFF→ON re-record.
- *  - Skip PER KIND when a baseline for that kind already exists: avoids duplicate
- *    rows on reload, yet still baselines a codex/snippet added AFTER the first
- *    genesis pass (scenes stay skipped, the new kind gets stamped) — otherwise a
- *    single editor-only guard would leave the fresh codex/snippet unbaselined.
+ * Entity-level checks make interrupted passes resumable: one existing scene no
+ * longer suppresses every remaining scene. Batches stay bounded at the typed
+ * wrapper and the mutation-generation callback is checked around every await.
  */
 export async function ensureGenesisBaselines(
   projectId: string,
+  expectedWorkspacePath: string,
   isAuthoritative: () => boolean = () => true,
 ): Promise<void> {
   if (!isAuthoritative()) return;
-  if (await hasBodySteps(projectId)) return; // past genesis
+  const nodes = await listAllNodes(projectId);
   if (!isAuthoritative()) return;
-  const which: BaselineKindFilter = {
-    scene: !(await loadLatestSnapshot({ projectId, domain: "editor" })),
-    codex: !(await loadLatestSnapshot({ projectId, domain: "codex" })),
-    snippet: !(await loadLatestSnapshot({ projectId, domain: "snippet" })),
-  };
+  const sceneIds = nodes
+    .filter((node) => node.nodeType === "scene")
+    .map((node) => node.id);
+
   if (!isAuthoritative()) return;
-  if (!which.scene && !which.codex && !which.snippet) return; // all baked
-  await stampEntityBaselines(projectId, which, isAuthoritative);
+  // These are the narrowest existing list projections for the two domains.
+  // They still return content, but it is deliberately discarded here: Native
+  // reloads the authoritative payload inside the atomic append transaction.
+  const codex = await listCodexContentsForBaseline(projectId);
+  if (!isAuthoritative()) return;
+  const snippets = await listSnippets(projectId);
+  if (!isAuthoritative()) return;
+
+  const anchorTimestamp = Date.now();
+  const batches = [
+    { kind: "scene" as const, entityIds: sceneIds },
+    { kind: "codex" as const, entityIds: codex.map((entry) => entry.id) },
+    {
+      kind: "snippet" as const,
+      entityIds: snippets.map((snippet) => snippet.id),
+    },
+  ];
+  for (const batch of batches) {
+    if (!isAuthoritative()) return;
+    if (batch.entityIds.length === 0) continue;
+    const result = await appendGenesisBaselines(
+      {
+        expectedWorkspacePath,
+        projectId,
+        kind: batch.kind,
+        entityIds: batch.entityIds,
+        anchorTimestamp,
+      },
+      isAuthoritative,
+    );
+    if (!isAuthoritative()) return;
+    if (!result.completed) return;
+  }
 }
 
 /**

@@ -324,6 +324,13 @@ export declare class Backend {
    */
   timelapseAppendBatch(projectId: string, sessionId: string, events: any): Promise<string>
   /**
+   * Append missing genesis editor-body baselines in one native transaction.
+   * Any existing same-entity snapshot (including a later rebaseline) makes
+   * that entity ineligible. The renderer supplies identity only; trusted
+   * workspace tables own payload, domain, entityType, and project membership.
+   */
+  timelapseGenesisBaselinesAppend(expectedWorkspacePath: string, projectId: string, kind: string, entityIds: Array<string>, anchorTimestamp: number): Promise<string>
+  /**
    * Append a durable batch to the complete AI-use audit ledger. The
    * renderer snapshots `expected_workspace_path` before dispatch; every
    * subsequent event must still target that exact workspace. A workspace
@@ -400,8 +407,8 @@ export declare class Backend {
   trashBinPrune(projectId: string, retentionDays: number, maxCount: number): Promise<string>
   /**
    * FTS optimize (commands/integrity.rs の写像 — 実装は grimodex-db の
-   * `Database::fts_optimize` を Tauri と共用)。workspace open 後のアイドル
-   * タイミングで呼ばれる fail-soft コマンド。
+   * `Database::fts_optimize` を Tauri と共用)。明示的なメンテナンス用であり、
+   * workspace open からは自動実行しない。
    */
   ftsOptimize(): Promise<void>
   /** FTS 全再構築 (設定画面のデータカテゴリから明示実行)。 */

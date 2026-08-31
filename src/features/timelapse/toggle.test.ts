@@ -1,6 +1,21 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+interface GenesisBaselineMockInput {
+  expectedWorkspacePath: string;
+  projectId: string;
+  kind: "scene" | "codex" | "snippet";
+  entityIds: readonly string[];
+  anchorTimestamp: number;
+}
+
+interface GenesisBaselineMockResult {
+  insertedCount: number;
+  skippedExistingBaselineCount: number;
+  skippedExistingBodyStepCount: number;
+  completed: boolean;
+}
+
 const { dbDelete, dbSelectWhere } = vi.hoisted(() => {
   const dbWhere = vi.fn(() => Promise.resolve());
   const dbDelete = vi.fn((_table: unknown) => ({ where: dbWhere }));
@@ -19,7 +34,17 @@ const recorderMock = vi.hoisted(() => ({
 }));
 const snapshotsMock = vi.hoisted(() => ({
   recordStateSnapshot: vi.fn(() => Promise.resolve()),
-  loadLatestSnapshot: vi.fn(() => Promise.resolve<unknown>(null)),
+  appendGenesisBaselines: vi.fn<
+    (
+      input: GenesisBaselineMockInput,
+      isAuthoritative?: () => boolean,
+    ) => Promise<GenesisBaselineMockResult>
+  >(async () => ({
+    insertedCount: 0,
+    skippedExistingBaselineCount: 0,
+    skippedExistingBodyStepCount: 0,
+    completed: true,
+  })),
 }));
 const settingsMock = vi.hoisted(() => ({
   getProjectSetting: vi.fn(() => Promise.resolve<string | null>(null)),
@@ -105,7 +130,12 @@ beforeEach(() => {
   snippetMock.listSnippets.mockResolvedValue([]);
   snippetMock.getSnippet.mockResolvedValue({ content: '{"type":"doc"}' });
   dbSelectWhere.mockResolvedValue([]);
-  snapshotsMock.loadLatestSnapshot.mockResolvedValue(null);
+  snapshotsMock.appendGenesisBaselines.mockResolvedValue({
+    insertedCount: 0,
+    skippedExistingBaselineCount: 0,
+    skippedExistingBodyStepCount: 0,
+    completed: true,
+  });
   recorderMock.isRecorderEnabled.mockReturnValue(true);
   recorderMock.getRecorderChainHead.mockReturnValue(0);
 });
@@ -209,33 +239,31 @@ describe("isTimelapseEnabled", () => {
 });
 
 describe("ensureGenesisBaselines", () => {
-  it("genesis (no events, no baseline): bakes anchor=0 baselines for scenes only", async () => {
-    dbSelectWhere.mockResolvedValue([]); // 0 recorded events
-    snapshotsMock.loadLatestSnapshot.mockResolvedValue(null); // no baseline yet
+  it("delegates current scene ids to the atomic typed writer", async () => {
     treeMock.listAllNodes.mockResolvedValue([
       { id: "s1", nodeType: "scene" },
       { id: "n1", nodeType: "note" },
       { id: "s2", nodeType: "scene" },
     ]);
 
-    await ensureGenesisBaselines("p1");
+    await ensureGenesisBaselines("p1", "/workspace/novel.gdx");
 
-    // Scenes only (note skipped), anchored at genesis.
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(2);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({
+    expect(
+      snapshotsMock.appendGenesisBaselines,
+    ).toHaveBeenCalledExactlyOnceWith(
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
         projectId: "p1",
-        domain: "editor",
-        entityType: "scene",
-        entityId: "s1",
-        anchorSequence: 0,
-      }),
+        kind: "scene",
+        entityIds: ["s1", "s2"],
+        anchorTimestamp: expect.any(Number),
+      },
+      expect.any(Function),
     );
+    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
   });
 
-  it("genesis: also bakes codex/snippet baselines (not just scenes)", async () => {
-    dbSelectWhere.mockResolvedValue([]);
-    snapshotsMock.loadLatestSnapshot.mockResolvedValue(null);
+  it("delegates scene/codex/snippet independently under one captured path", async () => {
     treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
     codexMock.listCodexContentsForBaseline.mockResolvedValue([
       { id: "c1", content: '{"type":"doc"}' },
@@ -244,64 +272,105 @@ describe("ensureGenesisBaselines", () => {
       { id: "sn1", content: '{"type":"doc"}' },
     ]);
 
-    await ensureGenesisBaselines("p1");
+    await ensureGenesisBaselines("p1", "/workspace/captured.gdx");
 
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(3);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ domain: "codex", entityId: "c1" }),
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenCalledTimes(3);
+    for (const [input] of snapshotsMock.appendGenesisBaselines.mock.calls) {
+      expect(input).toEqual(
+        expect.objectContaining({
+          expectedWorkspacePath: "/workspace/captured.gdx",
+          projectId: "p1",
+        }),
+      );
+    }
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ kind: "codex", entityIds: ["c1"] }),
+      expect.any(Function),
     );
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ domain: "snippet", entityId: "sn1" }),
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ kind: "snippet", entityIds: ["sn1"] }),
+      expect.any(Function),
     );
   });
 
-  it("baselines a codex added after the first genesis pass (scene already baked)", async () => {
-    dbSelectWhere.mockResolvedValue([]); // still genesis (no doc.step)
-    // Scene baseline already exists (editor domain); codex/snippet have none.
-    snapshotsMock.loadLatestSnapshot.mockImplementation((opts?: unknown) =>
-      Promise.resolve(
-        (opts as { domain: string }).domain === "editor"
-          ? { domain: "editor" }
-          : null,
-      ),
+  it("delegates partial/resume decisions per entity to Native", async () => {
+    treeMock.listAllNodes.mockResolvedValue([
+      { id: "s1", nodeType: "scene" },
+      { id: "s2", nodeType: "scene" },
+    ]);
+    codexMock.listCodexContentsForBaseline.mockResolvedValue([
+      { id: "c1", content: '{"ignored":"renderer-content"}' },
+    ]);
+    snapshotsMock.appendGenesisBaselines
+      .mockResolvedValueOnce({
+        insertedCount: 1,
+        skippedExistingBaselineCount: 1,
+        skippedExistingBodyStepCount: 0,
+        completed: true,
+      })
+      .mockResolvedValueOnce({
+        insertedCount: 0,
+        skippedExistingBaselineCount: 0,
+        skippedExistingBodyStepCount: 1,
+        completed: true,
+      });
+
+    await ensureGenesisBaselines("p1", "/workspace/novel.gdx");
+
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ kind: "scene", entityIds: ["s1", "s2"] }),
+      expect.any(Function),
     );
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ kind: "codex", entityIds: ["c1"] }),
+      expect.any(Function),
+    );
+  });
+
+  it("stops before another kind when mutation authority is lost", async () => {
+    let authoritative = true;
     treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
     codexMock.listCodexContentsForBaseline.mockResolvedValue([
       { id: "c1", content: "{}" },
     ]);
-
-    await ensureGenesisBaselines("p1");
-
-    // Scene skipped (already baked); the fresh codex is stamped.
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(1);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ domain: "codex", entityId: "c1" }),
-    );
-  });
-
-  it("past genesis (events exist): does NOT bake — avoids double-applying recorded steps", async () => {
-    dbSelectWhere.mockResolvedValue([{ id: 1 }]); // >=1 recorded event
-    treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
-    codexMock.listCodexContentsForBaseline.mockResolvedValue([{ id: "c1" }]);
-
-    await ensureGenesisBaselines("p1");
-
-    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
-  });
-
-  it("idempotent: genesis but an editor baseline already exists -> no re-bake", async () => {
-    dbSelectWhere.mockResolvedValue([]); // genesis
-    snapshotsMock.loadLatestSnapshot.mockResolvedValue({
-      domain: "editor",
-      entityId: "s1",
-      anchorSequence: 0,
-      payload: {},
+    snapshotsMock.appendGenesisBaselines.mockImplementation(async () => {
+      authoritative = false;
+      return {
+        insertedCount: 1,
+        skippedExistingBaselineCount: 0,
+        skippedExistingBodyStepCount: 0,
+        completed: false,
+      };
     });
+
+    await ensureGenesisBaselines(
+      "p1",
+      "/workspace/novel.gdx",
+      () => authoritative,
+    );
+
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts the pass after a live batch failure so the next load resumes", async () => {
     treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
+    codexMock.listCodexContentsForBaseline.mockResolvedValue([
+      { id: "c1", content: "{}" },
+    ]);
+    snapshotsMock.appendGenesisBaselines.mockResolvedValue({
+      insertedCount: 0,
+      skippedExistingBaselineCount: 0,
+      skippedExistingBodyStepCount: 0,
+      completed: false,
+    });
 
-    await ensureGenesisBaselines("p1");
+    await ensureGenesisBaselines("p1", "/workspace/novel.gdx");
 
-    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenCalledTimes(1);
   });
 });
 

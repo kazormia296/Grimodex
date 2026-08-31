@@ -475,10 +475,26 @@ describe("useWorkspaceStore", () => {
       );
     });
 
-    it("sets editor view and active workspace on success", async () => {
-      mockInvoke.mockResolvedValueOnce({
-        name: "MyNovel",
-        workspaceId: "workspace-my-novel",
+    it("sets editor view and active workspace without automatically optimizing FTS", async () => {
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "open_workspace") {
+          return {
+            name: "MyNovel",
+            workspaceId: "workspace-my-novel",
+            isExisting: true,
+          };
+        }
+        if (command === "get_global_settings") {
+          return {
+            recentWorkspaces: [],
+            lastActiveWorkspace: "D:\\Novels\\MyNovel",
+            theme: "system",
+            uiLanguage: "ja",
+            uiScale: 100,
+            showLauncherOnStartup: false,
+          };
+        }
+        return { rows: [] };
       });
 
       await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\MyNovel");
@@ -490,6 +506,9 @@ describe("useWorkspaceStore", () => {
       expect(state.workspaceOpenRevision).toBe(1);
       expect(state.workspaceSwitchInProgress).toBe(false);
       expect(state.workspaceHydrated).toBe(true);
+      expect(
+        mockInvoke.mock.calls.some(([command]) => command === "fts_optimize"),
+      ).toBe(false);
     });
 
     it("opens the recovery shell without hydrating when native returns Safe Mode", async () => {

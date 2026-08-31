@@ -1,5 +1,6 @@
 import { db } from "@/db/client";
 import { stateSnapshots } from "@/db/schema";
+import { invoke } from "@/lib/tauri";
 import { and, desc, eq, lte } from "drizzle-orm";
 
 /**
@@ -27,6 +28,139 @@ export interface RecordSnapshotInput {
   anchorTimestamp: number;
   /** Caller-defined payload. Stringified before storage. */
   payload: unknown;
+}
+
+export type GenesisBaselineKind = "scene" | "codex" | "snippet";
+
+export interface AppendGenesisBaselinesInput {
+  expectedWorkspacePath: string;
+  projectId: string;
+  kind: GenesisBaselineKind;
+  entityIds: readonly string[];
+  anchorTimestamp: number;
+}
+
+export interface AppendGenesisBaselinesResult {
+  insertedCount: number;
+  skippedExistingBaselineCount: number;
+  skippedExistingBodyStepCount: number;
+  /** False when this activation must stop and resume on a later load. */
+  completed: boolean;
+}
+
+type NativeAppendGenesisBaselinesResult = Omit<
+  AppendGenesisBaselinesResult,
+  "completed"
+>;
+
+const GENESIS_BASELINE_BATCH_SIZE = 64;
+const GENESIS_BASELINE_BATCH_TOO_LARGE =
+  "TIMELAPSE_GENESIS_BASELINE_BATCH_TOO_LARGE";
+
+/**
+ * Ask the authoritative backend to append missing genesis baselines.
+ *
+ * The renderer sends identities only. Native validates the exact Workspace,
+ * checks each entity's existing baseline/body-step state, reads its current
+ * content, and inserts snapshots in one transaction. Small bounded chunks keep
+ * a long novel responsive while the expected Workspace path closes a switch
+ * race at the actual database write boundary.
+ */
+export async function appendGenesisBaselines(
+  input: AppendGenesisBaselinesInput,
+  isAuthoritative: () => boolean = () => true,
+): Promise<AppendGenesisBaselinesResult> {
+  const total: AppendGenesisBaselinesResult = {
+    insertedCount: 0,
+    skippedExistingBaselineCount: 0,
+    skippedExistingBodyStepCount: 0,
+    completed: true,
+  };
+  const entityIds = [...new Set(input.entityIds)];
+  let aborted = false;
+  let warned = false;
+
+  const dispatch = async (batchEntityIds: string[]): Promise<void> => {
+    if (aborted || !isAuthoritative()) {
+      aborted = true;
+      total.completed = false;
+      return;
+    }
+    let result: NativeAppendGenesisBaselinesResult;
+    try {
+      result = await invoke<NativeAppendGenesisBaselinesResult>(
+        "timelapse_genesis_baselines_append",
+        {
+          expectedWorkspacePath: input.expectedWorkspacePath,
+          projectId: input.projectId,
+          kind: input.kind,
+          entityIds: batchEntityIds,
+          anchorTimestamp: input.anchorTimestamp,
+        },
+      );
+    } catch (error) {
+      // A Workspace switch between the renderer precheck and Native authority
+      // validation is expected cancellation, not a background-init failure.
+      if (!isAuthoritative()) {
+        aborted = true;
+        total.completed = false;
+        return;
+      }
+      if (
+        batchEntityIds.length > 1 &&
+        String(error).includes(GENESIS_BASELINE_BATCH_TOO_LARGE)
+      ) {
+        const midpoint = Math.ceil(batchEntityIds.length / 2);
+        if (!isAuthoritative()) {
+          aborted = true;
+          total.completed = false;
+          return;
+        }
+        await dispatch(batchEntityIds.slice(0, midpoint));
+        if (aborted || !isAuthoritative()) {
+          aborted = true;
+          total.completed = false;
+          return;
+        }
+        await dispatch(batchEntityIds.slice(midpoint));
+        return;
+      }
+      if (!warned) {
+        warned = true;
+        console.warn(
+          "[timelapse] genesis baseline batch failed; remaining entities will resume on next load",
+          error,
+        );
+      }
+      aborted = true;
+      total.completed = false;
+      return;
+    }
+    if (!isAuthoritative()) {
+      aborted = true;
+      total.completed = false;
+      return;
+    }
+    total.insertedCount += result.insertedCount;
+    total.skippedExistingBaselineCount += result.skippedExistingBaselineCount;
+    total.skippedExistingBodyStepCount += result.skippedExistingBodyStepCount;
+  };
+
+  for (
+    let offset = 0;
+    offset < entityIds.length;
+    offset += GENESIS_BASELINE_BATCH_SIZE
+  ) {
+    if (aborted || !isAuthoritative()) {
+      total.completed = false;
+      return total;
+    }
+    await dispatch(
+      entityIds.slice(offset, offset + GENESIS_BASELINE_BATCH_SIZE),
+    );
+  }
+
+  return total;
 }
 
 export async function recordStateSnapshot(

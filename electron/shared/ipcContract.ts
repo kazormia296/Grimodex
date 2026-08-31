@@ -509,6 +509,14 @@ export interface NapiBackendLike {
     sessionId: string,
     events: unknown,
   ): Promise<string>;
+  /** Optional so a stale native binding reports an explicit version-skew error. */
+  timelapseGenesisBaselinesAppend?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    kind: string,
+    entityIds: string[],
+    anchorTimestamp: number,
+  ): Promise<string>;
   aiAuditAppendBatch(
     expectedWorkspacePath: string,
     projectId: string | null,
@@ -1873,6 +1881,93 @@ function requireSafeInteger(
     );
   }
   return value;
+}
+
+function requireTimelapseGenesisBaselinesAppendArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+  kind: "scene" | "codex" | "snippet";
+  entityIds: string[];
+  anchorTimestamp: number;
+} {
+  const command = "timelapse_genesis_baselines_append";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "kind",
+    "entityIds",
+    "anchorTimestamp",
+  ]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId, kind, entityIds, anchorTimestamp`,
+    );
+  }
+
+  const exactBoundedString = (key: string, maxLength: number): string => {
+    const value = requireNonEmptyString(args, key, command);
+    if (value !== value.trim() || value.length > maxLength) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact non-empty string of at most ${maxLength} characters`,
+      );
+    }
+    return value;
+  };
+  const expectedWorkspacePath = exactBoundedString(
+    "expectedWorkspacePath",
+    16_384,
+  );
+  const projectId = exactBoundedString("projectId", 512);
+  const kindValue = requireString(args, "kind", command);
+  if (
+    kindValue !== "scene" &&
+    kindValue !== "codex" &&
+    kindValue !== "snippet"
+  ) {
+    throw new Error(
+      `invalid args \`kind\` for command \`${command}\`: expected scene, codex, or snippet`,
+    );
+  }
+  const rawEntityIds = requireArray(args, "entityIds", command);
+  if (rawEntityIds.length < 1 || rawEntityIds.length > 64) {
+    throw new Error(
+      `invalid args \`entityIds\` for command \`${command}\`: expected 1..64 items`,
+    );
+  }
+  const entityIds = rawEntityIds.map((value, index) => {
+    if (
+      typeof value !== "string" ||
+      value.length === 0 ||
+      value !== value.trim() ||
+      value.length > 512
+    ) {
+      throw new Error(
+        `invalid args \`entityIds[${index}]\` for command \`${command}\`: expected an exact non-empty string of at most 512 characters`,
+      );
+    }
+    return value;
+  });
+  if (new Set(entityIds).size !== entityIds.length) {
+    throw new Error(
+      `invalid args \`entityIds\` for command \`${command}\`: duplicate ids are not allowed`,
+    );
+  }
+  const anchorTimestamp = requireSafeInteger(args, "anchorTimestamp", command);
+  if (anchorTimestamp < 0) {
+    throw new Error(
+      `invalid args \`anchorTimestamp\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    kind: kindValue,
+    entityIds,
+    anchorTimestamp,
+  };
 }
 
 /** OCC トークンや件数など「0 以上の整数」必須フィールド用。 */
@@ -6458,6 +6553,24 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requirePresent(a, "events", "timelapse_append_batch"),
         ),
       ),
+  },
+  timelapse_genesis_baselines_append: {
+    run: async (b, a) => {
+      const input = requireTimelapseGenesisBaselinesAppendArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseGenesisBaselinesAppend,
+          "timelapseGenesisBaselinesAppend",
+        )(
+          input.expectedWorkspacePath,
+          input.projectId,
+          input.kind,
+          input.entityIds,
+          input.anchorTimestamp,
+        ),
+      );
+    },
   },
   ai_audit_append_batch: {
     run: async (b, a) =>
