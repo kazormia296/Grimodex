@@ -11,6 +11,11 @@ import path from "node:path";
 import process from "node:process";
 
 import { restoreBackupThroughSettingsUi } from "./narrative-maintenance-product-journeys.mjs";
+import {
+  assertC2ZcRustVerifyContractVersion,
+  assertC2ZcRustVerifyCoverage,
+  C2ZC_RUST_VERIFY_COVERAGE_COUNT,
+} from "../../scripts/c2zc-verify-contract.mjs";
 
 /**
  * C2-ZC is one stateful lifecycle.  The runner owns only observations and
@@ -23,7 +28,7 @@ export const C2ZC_RESTORE_FIXTURE_MANIFEST_VERSION = 1;
 export const C2ZC_RESTORE_FIXTURE_CONTRACT_VERSION = 1;
 export const C2ZC_RESTORE_FIXTURE_BUILDER_VERSION =
   "c2zc-restore-fixture-builder/v1";
-export const C2ZC_VERIFY_COVERAGE_COUNT = 13;
+export const C2ZC_VERIFY_COVERAGE_COUNT = C2ZC_RUST_VERIFY_COVERAGE_COUNT;
 export const C2ZC_CANONICAL_PRODUCT_JOURNEY_PHASES = Object.freeze([
   `${C2ZC_PRODUCT_JOURNEY_ID}/restore-fixture`,
   `${C2ZC_PRODUCT_JOURNEY_ID}/restore`,
@@ -371,35 +376,7 @@ function expectedCoverageOf(value, label) {
 }
 
 function normalizeCoverage(coverage, label) {
-  if (
-    coverage.complete !== true ||
-    !Array.isArray(coverage.required) ||
-    !Array.isArray(coverage.covered) ||
-    !Array.isArray(coverage.missing) ||
-    coverage.required.length !== C2ZC_VERIFY_COVERAGE_COUNT ||
-    coverage.covered.length !== C2ZC_VERIFY_COVERAGE_COUNT ||
-    coverage.missing.length !== 0
-  ) {
-    throw new Error(`${label} does not contain complete 13/13 coverage`);
-  }
-  for (const [field, values] of [
-    ["required", coverage.required],
-    ["covered", coverage.covered],
-  ]) {
-    if (
-      values.some(
-        (value) => typeof value !== "string" || value.trim() === "",
-      ) ||
-      new Set(values).size !== C2ZC_VERIFY_COVERAGE_COUNT
-    ) {
-      throw new Error(`${label} ${field} must contain 13 unique values`);
-    }
-  }
-  const required = [...coverage.required].sort();
-  const covered = [...coverage.covered].sort();
-  if (stableJson(required) !== stableJson(covered)) {
-    throw new Error(`${label} coverage required and covered value sets differ`);
-  }
+  assertC2ZcRustVerifyCoverage(coverage, label);
   return {
     ...coverage,
     missing: [],
@@ -408,7 +385,7 @@ function normalizeCoverage(coverage, label) {
 
 /**
  * Compare the persisted machine-readable values with the Rust Verify outcome.
- * The JavaScript contract deliberately does not reproduce Rust's check list.
+ * Both sides are validated against the shared policy/Rust contract binding.
  */
 export function assertC2ZcVerifyCoverage(
   run,
@@ -419,11 +396,20 @@ export function assertC2ZcVerifyCoverage(
   if (run?.status !== undefined && run.status !== "completed") {
     throw new Error(`${label} must be a completed production Verify Run`);
   }
+  assertC2ZcRustVerifyContractVersion(
+    outcome.verifyContractVersion,
+    `${label} verifyContractVersion`,
+  );
   const actual = expectedCoverageOf(outcome, `${label} persisted`);
   const normalizedActual = normalizeCoverage(actual, `${label} persisted`);
   if (rustOutcome !== undefined && rustOutcome !== null) {
+    const parsedRustOutcome = parseObject(rustOutcome, "Rust Verify outcome");
+    assertC2ZcRustVerifyContractVersion(
+      parsedRustOutcome.verifyContractVersion,
+      "Rust Verify outcome verifyContractVersion",
+    );
     const expected = normalizeCoverage(
-      expectedCoverageOf(rustOutcome, "Rust Verify outcome"),
+      expectedCoverageOf(parsedRustOutcome, "Rust Verify outcome"),
       "Rust Verify outcome",
     );
     if (stableJson(normalizedActual) !== stableJson(expected)) {

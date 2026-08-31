@@ -58,6 +58,9 @@ const h = vi.hoisted(() => ({
   refreshAiRatio: vi.fn(() => Promise.resolve()),
   refreshContextLayers: vi.fn(() => Promise.resolve()),
   scheduleEditorAnalysisTask: vi.fn(),
+  runTimelapseBodyWrite: vi.fn(),
+  runTimelapseBodyReplacement: vi.fn(),
+  runTimelapseMutation: vi.fn(),
   deriveSceneAiRatio: vi.fn(() => 37 as number | undefined),
   deriveSceneBodySnapshot: vi.fn((_doc: ProseMirrorNode) => ({
     contentJson: JSON.stringify({ type: "doc", content: [] }),
@@ -189,6 +192,26 @@ vi.mock("@/features/timelapse/recorder", () => ({
   getRecorderSessionId: () => "scene-recorder-session",
   recordChangeEvent: h.recordChangeEvent,
 }));
+vi.mock("@/features/timelapse/bodyWriteMode", () => ({
+  runTimelapseBodyWrite: (
+    _input: unknown,
+    callbacks: {
+      commit: (coverage: undefined) => Promise<unknown>;
+      project: (committed: unknown) => Promise<unknown>;
+    },
+  ) => callbacks.commit(undefined).then(callbacks.project),
+  runTimelapseBodyReplacement: (
+    _input: unknown,
+    callbacks: {
+      commit: () => Promise<unknown>;
+      project: (committed: unknown) => Promise<unknown>;
+    },
+  ) => callbacks.commit().then(callbacks.project),
+  runTimelapseMutation: (
+    _projectId: string,
+    operation: () => Promise<unknown>,
+  ) => operation(),
+}));
 vi.mock("@/features/matrix/matrixDataVersion", () => ({
   bumpMatrixDataVersion: h.bumpMatrixDataVersion,
 }));
@@ -202,6 +225,7 @@ import {
   persistSceneBody,
 } from "@/features/editor/persistSceneBody";
 import { flushQuiescenceProviderStage } from "@/lib/quiescenceProviders";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 const DOC_JSON = { type: "doc", content: [] };
 const fakeDoc = { toJSON: () => DOC_JSON } as unknown as ProseMirrorNode;
@@ -224,6 +248,7 @@ beforeEach(() => {
     path: "/workspace/test",
     openRevision: 7,
   });
+  publishCurrentProjectId("proj-1");
   h.listCodexMatchTargets.mockResolvedValue([]);
   h.state.treeNodes = [{ id: "scene-1", sourceUri: undefined }];
   h.state.codexEntries = [];
@@ -233,6 +258,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  publishCurrentProjectId(null);
   setCurrentWorkspaceIdentity(null);
   _resetSceneBodyCommitRegistryForTests();
 });

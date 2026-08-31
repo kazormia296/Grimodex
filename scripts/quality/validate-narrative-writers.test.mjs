@@ -1,10 +1,5 @@
 import assert from "node:assert/strict";
-import {
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -41,6 +36,8 @@ const C2A_DRIZZLE_TABLES = [
 ];
 
 const C2ZC_NATIVE_OWNED_TABLES = [
+  "change_events",
+  "state_snapshots",
   "narrative_semantic_epochs",
   "narrative_extraction_runs",
   "narrative_dependency_edges",
@@ -141,7 +138,7 @@ describe("validate-narrative-writers", () => {
     );
   });
 
-  it("keeps the nine C2-ZC authority, finding, and repair tables registered", () => {
+  it("keeps the eleven C2-ZC authority, finding, repair, and timelapse tables registered", () => {
     const registry = JSON.parse(readFileSync(REGISTRY_PATH, "utf8"));
     const entries = registry.filter((entry) =>
       C2ZC_NATIVE_OWNED_TABLES.includes(entry.table),
@@ -182,6 +179,95 @@ describe("validate-narrative-writers", () => {
     );
   });
 
+  it("maps timelapse Drizzle exports to the active Native registry", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "narrative-writers-"));
+    const registryPath = path.join(
+      root,
+      "policies/narrative/protected-writers.json",
+    );
+    mkdirSync(path.dirname(registryPath), { recursive: true });
+    writeFileSync(
+      registryPath,
+      JSON.stringify([
+        {
+          aggregate: "narrative-c2zc-timelapse",
+          table: "change_events",
+          protection: "table",
+          writer: "narrative.authority",
+          enforcement: "active",
+        },
+        {
+          aggregate: "narrative-c2zc-timelapse",
+          table: "state_snapshots",
+          protection: "table",
+          writer: "narrative.authority",
+          enforcement: "active",
+        },
+      ]),
+    );
+    const srcDir = path.join(root, "src/features/timelapse");
+    mkdirSync(srcDir, { recursive: true });
+    const illegalOperations = [
+      [
+        "change-events-insert",
+        "changeEvents",
+        "await db.insert(changeEvents).values({});",
+      ],
+      [
+        "change-events-update",
+        "changeEvents",
+        "await db.update(changeEvents).set({});",
+      ],
+      [
+        "change-events-delete",
+        "changeEvents",
+        "await db.delete(changeEvents);",
+      ],
+      [
+        "state-snapshots-insert",
+        "stateSnapshots",
+        "await db.insert(stateSnapshots).values({});",
+      ],
+      [
+        "state-snapshots-update",
+        "stateSnapshots",
+        "await db.update(stateSnapshots).set({});",
+      ],
+      [
+        "state-snapshots-delete",
+        "stateSnapshots",
+        "await db.delete(stateSnapshots);",
+      ],
+    ];
+    for (const [fileStem, identifier, mutation] of illegalOperations) {
+      writeFileSync(
+        path.join(srcDir, `${fileStem}.ts`),
+        [
+          "import { changeEvents, stateSnapshots } from '@/db/schema';",
+          mutation,
+          "",
+        ].join("\n"),
+      );
+    }
+
+    const result = validateNarrativeWriters({
+      repoRoot: root,
+      registryPath,
+    });
+    assert.equal(result.violations.length, illegalOperations.length);
+    assert.deepEqual(
+      result.violations
+        .map((violation) => [violation.file, violation.table])
+        .sort(),
+      illegalOperations
+        .map(([fileStem, identifier]) => [
+          `src/features/timelapse/${fileStem}.ts`,
+          identifier === "changeEvents" ? "change_events" : "state_snapshots",
+        ])
+        .sort(),
+    );
+  });
+
   it("rejects generic renderer, browser, and MCP SQL DML for every C2A table", () => {
     const root = mkdtempSync(path.join(tmpdir(), "narrative-writers-"));
     const surfaces = [
@@ -216,7 +302,9 @@ describe("validate-narrative-writers", () => {
       surfaces.length * C2A_PROTECTED_TABLES.length,
     );
     assert.deepEqual(
-      [...new Set(result.violations.map((violation) => violation.table))].sort(),
+      [
+        ...new Set(result.violations.map((violation) => violation.table)),
+      ].sort(),
       [...C2A_PROTECTED_TABLES].sort(),
     );
   });

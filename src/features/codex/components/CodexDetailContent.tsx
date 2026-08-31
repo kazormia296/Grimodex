@@ -70,6 +70,7 @@ import {
 } from "@/features/concurrency/externalWriteStore";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { trackPendingEditorWrite } from "@/lib/editorQuiescence";
+import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
 
 type VersionedWriter = (baseVersion: number) => Promise<VersionedSaveOutcome>;
 
@@ -171,6 +172,9 @@ export function CodexDetailContent({
   const [summary, setSummary] = useState(entry.summary ?? "");
   const [notes, setNotes] = useState(
     !entry.notes || entry.notes === "{}" ? "" : entry.notes,
+  );
+  const timelapseDocumentRef = useRef<TimelapseDocumentRef | undefined>(
+    undefined,
   );
   const [contextMode, setContextMode] = useState<CodexContextMode>(
     (entry.contextMode as CodexContextMode) ?? "mentioned",
@@ -413,7 +417,12 @@ export function CodexDetailContent({
   const persistTextPatch = useCallback(
     async (data: Parameters<typeof updateText>[1]) => {
       const outcome = await enqueueVersionedWrite((baseVersion) =>
-        updateText(entry.id, data, { baseVersion }),
+        updateText(entry.id, data, {
+          baseVersion,
+          ...(data.content !== undefined && timelapseDocumentRef.current
+            ? { timelapseDocument: timelapseDocumentRef.current }
+            : {}),
+        }),
       );
       if (!outcome.persisted) {
         throw new AlreadyNotifiedSaveError(
@@ -824,8 +833,12 @@ export function CodexDetailContent({
     scheduleSummarySave();
   };
 
-  const handleContentChange = (content: string) => {
+  const handleContentChange = (
+    content: string,
+    timelapseDocument?: TimelapseDocumentRef,
+  ) => {
     contentRef.current = content;
+    timelapseDocumentRef.current = timelapseDocument;
     markDirty();
     scheduleContentSave();
   };

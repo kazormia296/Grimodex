@@ -16,28 +16,33 @@
  */
 
 import { db } from "@/db/client";
-import { changeEvents, stateSnapshots } from "@/db/schema";
-import { count, eq } from "drizzle-orm";
+import { changeEvents } from "@/db/schema";
+import { and, count, eq, gt } from "drizzle-orm";
 import {
   flushNow,
-  getRecorderChainHead,
   initRecorderForProject,
   isRecorderEnabled,
   resetRecorderChain,
   setRecorderEnabled,
+  readAuthoritativeChainTail,
 } from "./recorder";
-import { appendGenesisBaselines, recordStateSnapshot } from "./snapshots";
-import { getProjectSetting, setProjectSetting } from "@/features/settings/api";
 import {
-  listAllNodes,
-  loadSceneContent,
-  loadScenesFull,
-} from "@/features/tree/api";
+  appendBodyBaselines,
+  appendGenesisBaselines,
+  purgeTimelapseHistoryNative,
+} from "./snapshots";
 import {
-  getCodexEntry,
-  listCodexContentsForBaseline,
-} from "@/features/codex/api";
-import { getSnippet, listSnippets } from "@/features/snippets/api";
+  getProjectSetting,
+  getTimelapseResetSequence,
+  setTimelapseEnabledSetting,
+} from "@/features/settings/api";
+import { listAllNodes } from "@/features/tree/api";
+import { listCodexContentsForBaseline } from "@/features/codex/api";
+import { listSnippets } from "@/features/snippets/api";
+import {
+  getCurrentWorkspaceIdentity,
+  isCurrentWorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
 
 export const TIMELAPSE_ENABLED_KEY = "timelapse.enabled";
 
@@ -57,59 +62,6 @@ export interface EntityBaselineRef {
   id: string;
 }
 
-/** doc.step domain + entityType per kind (must match the recorder + buildCursors). */
-const KIND_SNAPSHOT: Record<
-  BaselineKind,
-  { domain: string; entityType: string }
-> = {
-  scene: { domain: "editor", entityType: "scene" },
-  codex: { domain: "codex", entityType: "codex_entry" },
-  snippet: { domain: "snippet", entityType: "snippet" },
-};
-
-/**
- * Current PM-JSON body for an entity, or null when it no longer exists (a stale
- * ref must be skipped, not stamped with an empty doc). Scenes throw on a missing
- * node (caught upstream); codex/snippet resolve to undefined.
- */
-async function loadEntityContent(
-  projectId: string,
-  ref: EntityBaselineRef,
-): Promise<string | null> {
-  if (ref.kind === "scene") return loadSceneContent(ref.id);
-  if (ref.kind === "codex") {
-    return (await getCodexEntry(projectId, ref.id))?.content ?? null;
-  }
-  return (await getSnippet(projectId, ref.id))?.content ?? null;
-}
-
-/**
- * Record one entity baseline. Best-effort: a failure degrades that entity's
- * replay seek but never corrupts the chain, so callers swallow the warning and
- * continue with the rest.
- */
-async function recordEntityBaseline(
-  projectId: string,
-  kind: BaselineKind,
-  entityId: string,
-  payload: string,
-  anchorSequence: number,
-  anchorTimestamp: number,
-  isAuthoritative: () => boolean = () => true,
-): Promise<void> {
-  if (!isAuthoritative()) return;
-  const spec = KIND_SNAPSHOT[kind];
-  await recordStateSnapshot({
-    projectId,
-    domain: spec.domain,
-    entityType: spec.entityType,
-    entityId,
-    anchorSequence,
-    anchorTimestamp,
-    payload,
-  });
-}
-
 /** Persisted per-project flag. Defaults ON for legacy projects with no row. */
 export async function isTimelapseEnabled(projectId: string): Promise<boolean> {
   return (
@@ -121,23 +73,31 @@ export async function isTimelapseEnabled(projectId: string): Promise<boolean> {
 export async function countTimelapseEvents(projectId: string): Promise<number> {
   // COUNT(*) を SQL 側で集計する。全行の id を webview に持ち帰って rows.length で
   // 数えると、長編の change_events (数十 MB になり得る §6) を丸ごと転送してしまう。
+  const resetSequence = await getTimelapseResetSequence(projectId);
   const [row] = await db
     .select({ n: count() })
     .from(changeEvents)
-    .where(eq(changeEvents.projectId, projectId));
+    .where(
+      and(
+        eq(changeEvents.projectId, projectId),
+        gt(changeEvents.sequence, resetSequence),
+      ),
+    );
   return row?.n ?? 0;
 }
 
 /**
- * Delete all recorded history for a project and reset the in-memory chain so
- * the next flush starts a fresh genesis chain. Does NOT touch the project row.
+ * Reset the visible recorded history for a project and reset the in-memory
+ * chain binding. Native retains the shared canonical hash chain and advances
+ * its typed reset epoch so Narrative Change Feed foreign keys remain valid.
+ * Does NOT touch the project row.
  */
-async function wipeHistory(projectId: string): Promise<void> {
+async function wipeHistory(
+  projectId: string,
+  expectedWorkspacePath: string,
+): Promise<void> {
   await flushNow(); // drain any queued events first (defensive)
-  await db.delete(changeEvents).where(eq(changeEvents.projectId, projectId));
-  await db
-    .delete(stateSnapshots)
-    .where(eq(stateSnapshots.projectId, projectId));
+  await purgeTimelapseHistoryNative({ expectedWorkspacePath, projectId });
   resetRecorderChain();
 }
 
@@ -155,88 +115,83 @@ const ALL_KINDS: BaselineKindFilter = {
 };
 
 /**
- * Stamp the current doc of every editor-body entity (scenes + codex entries +
- * snippets) as a genesis (anchorSequence=0) baseline so post-enable edits replay
- * from a known starting doc. codex/snippet list rows already carry `.content`,
- * so they're stamped without a re-fetch; scenes load their body lazily.
- * `which` limits the pass to kinds that don't already have a baseline (see
- * `ensureGenesisBaselines`), so a codex added after the first genesis pass still
- * gets baselined without re-stamping scenes. Best-effort per entity: a failure
- * degrades that entity's replay seek but never corrupts the chain.
+ * Stamp every editor-body entity as a genesis baseline through the typed
+ * Native writer. The renderer sends IDs only; Native reads each trusted body
+ * and commits one bounded kind batch. A failed re-arm is surfaced so the
+ * caller can roll the setting back instead of claiming recording is active.
  */
 async function stampEntityBaselines(
   projectId: string,
+  expectedWorkspacePath: string,
+  anchorSequence?: number,
   which: BaselineKindFilter = ALL_KINDS,
   isAuthoritative: () => boolean = () => true,
 ): Promise<void> {
   const anchorTimestamp = Date.now();
-
+  const batches: Array<{
+    kind: BaselineKind;
+    entityIds: string[];
+    enabled: boolean;
+  }> = [];
   if (which.scene) {
     const nodes = await listAllNodes(projectId);
-    const scenes = nodes.filter((n) => n.nodeType === "scene");
-    // per-scene loadSceneContent は 1 件ごとに IPC 往復 + drizzle sqlite-proxy の
-    // warmed microtask を積み上げる N+1 (長編で数百シーン)。loadScenesFull で 1 往復に
-    // 畳む — 内部で同じ read-after-write バリア (awaitPendingSceneContentWrite) を
-    // 張るので、記録される baseline payload は loadSceneContent と不変。
-    const contents = await loadScenesFull(scenes.map((s) => s.id));
-    for (const scene of scenes) {
-      try {
-        const payload = contents.get(scene.id)?.content ?? ""; // PM-JSON string
-        await recordEntityBaseline(
-          projectId,
-          "scene",
-          scene.id,
-          payload,
-          0,
-          anchorTimestamp,
-          isAuthoritative,
-        );
-      } catch (err) {
-        console.warn("[timelapse] baseline failed for scene", scene.id, err);
-      }
-    }
+    batches.push({
+      kind: "scene",
+      entityIds: nodes
+        .filter((node) => node.nodeType === "scene")
+        .map((node) => node.id),
+      enabled: true,
+    });
   }
-
   if (which.codex) {
-    // baseline payload は content (PM JSON) だけなので id+content projection。
     const codex = await listCodexContentsForBaseline(projectId);
-    for (const entry of codex) {
-      try {
-        await recordEntityBaseline(
-          projectId,
-          "codex",
-          entry.id,
-          entry.content,
-          0,
-          anchorTimestamp,
-          isAuthoritative,
-        );
-      } catch (err) {
-        console.warn("[timelapse] baseline failed for codex", entry.id, err);
-      }
-    }
+    batches.push({
+      kind: "codex",
+      entityIds: codex.map((entry) => entry.id),
+      enabled: true,
+    });
+  }
+  if (which.snippet) {
+    const snippets = await listSnippets(projectId);
+    batches.push({
+      kind: "snippet",
+      entityIds: snippets.map((snippet) => snippet.id),
+      enabled: true,
+    });
   }
 
-  if (which.snippet) {
-    const snippetRows = await listSnippets(projectId);
-    for (const snippet of snippetRows) {
-      try {
-        await recordEntityBaseline(
-          projectId,
-          "snippet",
-          snippet.id,
-          snippet.content,
-          0,
-          anchorTimestamp,
-          isAuthoritative,
-        );
-      } catch (err) {
-        console.warn(
-          "[timelapse] baseline failed for snippet",
-          snippet.id,
-          err,
-        );
-      }
+  for (const batch of batches) {
+    if (!batch.enabled || batch.entityIds.length === 0) continue;
+    if (!isAuthoritative()) return;
+    const result =
+      anchorSequence === undefined
+        ? await appendGenesisBaselines(
+            {
+              expectedWorkspacePath,
+              projectId,
+              kind: batch.kind,
+              entityIds: batch.entityIds,
+              anchorTimestamp,
+            },
+            isAuthoritative,
+          )
+        : await appendBodyBaselines(
+            {
+              expectedWorkspacePath,
+              projectId,
+              targets: batch.entityIds.map((id) => ({
+                kind: batch.kind,
+                id,
+              })),
+              expectedAnchorSequence: anchorSequence,
+            },
+            isAuthoritative,
+          );
+    if (!isAuthoritative()) return;
+    if (!result.completed) {
+      throw new Error(
+        `Timelapse genesis baseline pass did not complete for ${batch.kind}`,
+      );
     }
   }
 }
@@ -299,7 +254,11 @@ export async function ensureGenesisBaselines(
       isAuthoritative,
     );
     if (!isAuthoritative()) return;
-    if (!result.completed) return;
+    if (!result.completed) {
+      throw new Error(
+        `Timelapse genesis baseline pass did not complete for ${batch.kind}`,
+      );
+    }
   }
 }
 
@@ -328,28 +287,53 @@ export async function rebaselineEntitiesAtTail(
   committedSequence?: number,
 ): Promise<void> {
   if (!isRecorderEnabled() || refs.length === 0) return;
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  if (!workspaceIdentity) {
+    console.warn(
+      "[timelapse] rebaseline skipped because no active workspace identity is available",
+    );
+    return;
+  }
   await flushNow();
-  const anchorSequence = committedSequence ?? getRecorderChainHead();
-  const anchorTimestamp = Date.now();
-  for (const ref of refs) {
+  if (!isCurrentWorkspaceIdentity(workspaceIdentity)) return;
+  const anchorSequence =
+    committedSequence ?? (await readAuthoritativeChainTail(projectId));
+  const targets = refs.map((ref) => ({ kind: ref.kind, id: ref.id }));
+  const isAuthoritative = () => isCurrentWorkspaceIdentity(workspaceIdentity);
+  const append = async (batch: typeof targets): Promise<boolean> => {
+    if (!isAuthoritative()) return false;
     try {
-      const payload = await loadEntityContent(projectId, ref); // PM-JSON string
-      if (payload === null) continue; // entity gone — skip, don't stamp empty
-      await recordEntityBaseline(
-        projectId,
-        ref.kind,
-        ref.id,
-        payload,
-        anchorSequence,
-        anchorTimestamp,
+      const result = await appendBodyBaselines(
+        {
+          expectedWorkspacePath: workspaceIdentity.path,
+          projectId,
+          targets: batch,
+          expectedAnchorSequence: anchorSequence,
+        },
+        isAuthoritative,
       );
+      return result.completed;
     } catch (err) {
       console.warn(
-        "[timelapse] rebaseline snapshot failed for",
-        ref.kind,
-        ref.id,
+        "[timelapse] rebaseline snapshot batch failed",
+        batch,
         err,
       );
+      return false;
+    }
+  };
+
+  // Native validates every member before inserting. If a stale identity makes
+  // a multi-entity transaction fail, retry bounded singletons so valid bodies
+  // still receive their tail baseline without ever accepting renderer bytes.
+  for (let offset = 0; offset < targets.length; offset += 64) {
+    const batch = targets.slice(offset, offset + 64);
+    if (await append(batch)) continue;
+    if (!isAuthoritative()) return;
+    if (batch.length === 1) continue;
+    for (const target of batch) {
+      const completed = await append([target]);
+      if (!completed && !isAuthoritative()) return;
     }
   }
 }
@@ -369,15 +353,53 @@ export async function rebaselineScenesAtTail(
 }
 
 /** Re-arm the recorder on a freshly-wiped project and stamp baselines. */
-async function rearmFromGenesis(projectId: string): Promise<void> {
+async function rearmFromGenesis(
+  projectId: string,
+  expectedWorkspacePath: string,
+): Promise<void> {
   setRecorderEnabled(true);
   await initRecorderForProject(projectId); // re-reads now-empty tail -> genesis
-  await stampEntityBaselines(projectId);
+  const anchorSequence = await readAuthoritativeChainTail(projectId);
+  await stampEntityBaselines(
+    projectId,
+    expectedWorkspacePath,
+    anchorSequence,
+  );
   // Seed the workspace layout snapshot so forward layout events have an initial
   // state to replay on top of (§17 P0.4). Mirrors the per-session seed in
   // projectStore.loadProject so toggle-ON without a reload also anchors the UI.
   const { seedWorkspaceSnapshot } = await import("./seedSession");
   await seedWorkspaceSnapshot(projectId);
+}
+
+async function rollbackFailedRearm(
+  projectId: string,
+  expectedWorkspacePath: string,
+  workspaceIdentity: ReturnType<typeof getCurrentWorkspaceIdentity>,
+  error: unknown,
+): Promise<never> {
+  setRecorderEnabled(false);
+  try {
+    // Both rollback writes are path-bound Native commands. A switch therefore
+    // rejects them instead of redirecting cleanup to a same-id project in the
+    // replacement workspace.
+    await setTimelapseEnabledSetting(projectId, expectedWorkspacePath, false);
+  } catch (settingError) {
+    console.warn("[timelapse] failed to roll back enabled setting", settingError);
+  }
+  if (workspaceIdentity && isCurrentWorkspaceIdentity(workspaceIdentity)) {
+    try {
+      await purgeTimelapseHistoryNative({ expectedWorkspacePath, projectId });
+      resetRecorderChain();
+    } catch (cleanupError) {
+      console.warn("[timelapse] failed to clean up partial re-arm", cleanupError);
+    }
+  } else {
+    console.warn(
+      "[timelapse] skipped failed re-arm cleanup because workspace authority changed",
+    );
+  }
+  throw error;
 }
 
 /**
@@ -390,13 +412,47 @@ export async function setTimelapseEnabled(
   enabled: boolean,
 ): Promise<void> {
   if (enabled) {
-    await wipeHistory(projectId);
-    await rearmFromGenesis(projectId);
-    await setProjectSetting(projectId, TIMELAPSE_ENABLED_KEY, "true");
+    const workspaceIdentity = getCurrentWorkspaceIdentity();
+    if (!workspaceIdentity) {
+      throw new Error("Timelapse enable requires an active workspace");
+    }
+    await wipeHistory(projectId, workspaceIdentity.path);
+    try {
+      await rearmFromGenesis(projectId, workspaceIdentity.path);
+    } catch (error) {
+      return rollbackFailedRearm(
+        projectId,
+        workspaceIdentity.path,
+        workspaceIdentity,
+        error,
+      );
+    }
+    try {
+      await setTimelapseEnabledSetting(
+        projectId,
+        workspaceIdentity.path,
+        true,
+      );
+    } catch (error) {
+      return rollbackFailedRearm(
+        projectId,
+        workspaceIdentity.path,
+        workspaceIdentity,
+        error,
+      );
+    }
   } else {
     await flushNow();
     setRecorderEnabled(false);
-    await setProjectSetting(projectId, TIMELAPSE_ENABLED_KEY, "false");
+    const workspaceIdentity = getCurrentWorkspaceIdentity();
+    if (!workspaceIdentity) {
+      throw new Error("Timelapse disable requires an active workspace");
+    }
+    await setTimelapseEnabledSetting(
+      projectId,
+      workspaceIdentity.path,
+      false,
+    );
   }
 }
 
@@ -407,6 +463,21 @@ export async function setTimelapseEnabled(
  */
 export async function purgeTimelapseHistory(projectId: string): Promise<void> {
   const enabled = await isTimelapseEnabled(projectId);
-  await wipeHistory(projectId);
-  if (enabled) await rearmFromGenesis(projectId);
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  if (!workspaceIdentity) {
+    throw new Error("Timelapse purge requires an active workspace");
+  }
+  await wipeHistory(projectId, workspaceIdentity.path);
+  if (enabled) {
+    try {
+      await rearmFromGenesis(projectId, workspaceIdentity.path);
+    } catch (error) {
+      return rollbackFailedRearm(
+        projectId,
+        workspaceIdentity.path,
+        workspaceIdentity,
+        error,
+      );
+    }
+  }
 }

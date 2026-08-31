@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
 import { changeEvents } from "@/db/schema";
-import { and, asc, eq } from "drizzle-orm";
+import { getTimelapseResetSequence } from "@/features/settings/api";
+import { and, asc, eq, gt } from "drizzle-orm";
 
 // Re-export the canonical union from the recorder so the recorded-domain set
 // stays single-sourced (was a hand-maintained duplicate that drifted).
@@ -14,10 +15,16 @@ export type { Domain } from "./recorder";
  * this will need pagination but P5's scope is "fits in memory".
  */
 export async function loadProjectChangeEvents(projectId: string) {
+  const resetSequence = await getTimelapseResetSequence(projectId);
   return db
     .select()
     .from(changeEvents)
-    .where(eq(changeEvents.projectId, projectId))
+    .where(
+      and(
+        eq(changeEvents.projectId, projectId),
+        gt(changeEvents.sequence, resetSequence),
+      ),
+    )
     .orderBy(asc(changeEvents.sequence));
 }
 
@@ -31,6 +38,7 @@ export async function loadSceneChangeEvents(
   projectId: string,
   sceneId: string,
 ) {
+  const resetSequence = await getTimelapseResetSequence(projectId);
   return db
     .select()
     .from(changeEvents)
@@ -38,6 +46,7 @@ export async function loadSceneChangeEvents(
       and(
         eq(changeEvents.projectId, projectId),
         eq(changeEvents.sceneId, sceneId),
+        gt(changeEvents.sequence, resetSequence),
       ),
     )
     .orderBy(asc(changeEvents.sequence));

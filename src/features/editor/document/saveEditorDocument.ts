@@ -13,27 +13,49 @@ import type { VersionedSaveOutcome } from "@/lib/saveOutcome";
 import type { AgentWriteResult } from "@/features/agent-writes/event";
 import { AlreadyNotifiedSaveError } from "./saveErrors";
 import type { LoadedEditorBinding } from "./types";
+import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
+import type { TimelapseDocumentIdentity } from "@/features/timelapse/bodyWriteMode";
+
+export interface TimelapseDocumentSaveOptions {
+  /** Accepted doc.step capability from the loaded editor session. */
+  timelapseDocument?: TimelapseDocumentRef;
+  /** Structural identity used by replacement fallback. */
+  timelapseDocumentIdentity?: TimelapseDocumentIdentity;
+}
 
 export interface EditorDocumentServices {
   persistSceneBody: (
     id: string,
     doc: ProseMirrorNode,
-    options: { baseVersion: number },
+    options: {
+      baseVersion: number;
+      timelapseDocument?: TimelapseDocumentRef;
+      timelapseDocumentIdentity?: TimelapseDocumentIdentity;
+    },
   ) => Promise<PersistedSceneBody>;
   updateCodexPhase: (
     phaseId: string,
     data: { contentOverride: string },
-    options: { baseVersion: number },
+    options: {
+      baseVersion: number;
+      timelapseDocument?: TimelapseDocumentRef;
+    },
   ) => Promise<CodexEntryPhase | null>;
   updateCodexText: (
     id: string,
     data: { content: string },
-    options: { baseVersion: number },
+    options: {
+      baseVersion: number;
+      timelapseDocument?: TimelapseDocumentRef;
+    },
   ) => Promise<VersionedSaveOutcome>;
   updateSnippet: (
     id: string,
     data: { content: string },
-    options: { baseVersion: number },
+    options: {
+      baseVersion: number;
+      timelapseDocument?: TimelapseDocumentRef;
+    },
   ) => Promise<VersionedSaveOutcome>;
   updateChronicleEvent: (input: {
     eventId: string;
@@ -86,13 +108,17 @@ export async function saveEditorDocument(
   binding: LoadedEditorBinding,
   doc: ProseMirrorNode,
   services: EditorDocumentServices = defaultEditorDocumentServices,
+  timelapseOptions: TimelapseDocumentSaveOptions = {},
 ): Promise<SaveEditorDocumentResult> {
   switch (binding.kind) {
     case "tree": {
       const persistedSceneBody = await services.persistSceneBody(
         binding.id,
         doc,
-        { baseVersion: binding.loadedVersion },
+        {
+          baseVersion: binding.loadedVersion,
+          ...timelapseOptions,
+        },
       );
       return {
         binding: {
@@ -123,7 +149,12 @@ export async function saveEditorDocument(
         const outcome = await services.updateCodexText(
           binding.id,
           { content },
-          { baseVersion: binding.loadedVersion },
+          {
+            baseVersion: binding.loadedVersion,
+            ...(timelapseOptions.timelapseDocument
+              ? { timelapseDocument: timelapseOptions.timelapseDocument }
+              : {}),
+          },
         );
         if (!outcome.persisted) {
           throw new AlreadyNotifiedSaveError(
@@ -140,7 +171,12 @@ export async function saveEditorDocument(
       const outcome = await services.updateSnippet(
         binding.id,
         { content: services.serializeSnippet(doc) },
-        { baseVersion: binding.loadedVersion },
+        {
+          baseVersion: binding.loadedVersion,
+          ...(timelapseOptions.timelapseDocument
+            ? { timelapseDocument: timelapseOptions.timelapseDocument }
+            : {}),
+        },
       );
       if (!outcome.persisted) {
         throw new AlreadyNotifiedSaveError(

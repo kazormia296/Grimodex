@@ -45,6 +45,11 @@ import {
   registerQuiescenceProvider,
 } from "@/lib/quiescenceProviders";
 import { reserveChatMessageAdds } from "@/features/timelapse/captureChat";
+import {
+  _resetTimelapseGenesisBarriersForTests,
+  beginTimelapseGenesisBarrier,
+  registerTimelapseGenesisRetry,
+} from "@/features/timelapse/genesisBarrier";
 
 vi.mock("sonner", () => ({
   toast: {
@@ -2056,6 +2061,37 @@ describe("useChatStore", () => {
         expect(isQuiescenceLeaseActive()).toBe(false);
       } finally {
         unregister();
+      }
+    });
+
+    it("handles an immediate genesis retry rejection until the queued clear observes it", async () => {
+      const failure = new Error("timelapse genesis retry failed");
+      const unhandledRejections: unknown[] = [];
+      const captureUnhandledRejection = (reason: unknown): void => {
+        unhandledRejections.push(reason);
+      };
+      useProjectStore.setState({ currentProjectId: "proj-1" });
+      const genesis = beginTimelapseGenesisBarrier("proj-1");
+      genesis.fail(new Error("initial genesis failed"));
+      const unregisterRetry = registerTimelapseGenesisRetry(async () => {
+        throw failure;
+      });
+      process.on("unhandledRejection", captureUnhandledRejection);
+
+      try {
+        const clear = useChatStore.getState().clearProjectChatHistory("proj-1");
+
+        await expect(clear).rejects.toBe(failure);
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+        expect(unhandledRejections).toEqual([]);
+        expect(mockClearProjectChatHistory).not.toHaveBeenCalled();
+        expect(isQuiescenceLeaseActive()).toBe(false);
+      } finally {
+        process.off("unhandledRejection", captureUnhandledRejection);
+        unregisterRetry();
+        _resetTimelapseGenesisBarriersForTests();
+        useProjectStore.setState({ currentProjectId: null });
       }
     });
   });

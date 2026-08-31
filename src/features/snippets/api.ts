@@ -15,6 +15,15 @@ import {
   type CanonicalWriteContext,
   type CanonicalWriteReceipt,
 } from "@/features/native-writes/writeContext";
+import {
+  runTimelapseBodyReplacement,
+  runTimelapseBodyWrite,
+  runTimelapseMutation,
+} from "@/features/timelapse/bodyWriteMode";
+import type {
+  TimelapseCoverageProof,
+  TimelapseDocumentRef,
+} from "@/features/timelapse/documentCoverage";
 
 export type Snippet = Omit<typeof snippets.$inferSelect, "contentSource"> & {
   contentSource?: string | null;
@@ -81,30 +90,44 @@ export async function createSnippet(
   opts?: { writeContext?: CanonicalWriteContext },
 ): Promise<SnippetWriteResult> {
   const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
-  const result = await invoke<NativeSnippetWriteResult>("snippet_create", {
-    payload: {
-      ...writeContext,
-      projectId: data.projectId,
-      snippetId: data.id,
-      title: data.title,
-      content: data.content,
-      tagsCache: data.tagsCache ?? null,
-      contentSource: data.contentSource ?? null,
-      sceneId: data.sceneId ?? null,
-      sourceChatMessageId: data.sourceChatMessageId ?? null,
-      canonicalPayload: {
+  const write = async (): Promise<SnippetWriteResult> => {
+    const result = await invoke<NativeSnippetWriteResult>("snippet_create", {
+      payload: {
+        ...writeContext,
+        projectId: data.projectId,
+        snippetId: data.id,
         title: data.title,
+        content: data.content,
+        tagsCache: data.tagsCache ?? null,
+        contentSource: data.contentSource ?? null,
         sceneId: data.sceneId ?? null,
+        sourceChatMessageId: data.sourceChatMessageId ?? null,
+        canonicalPayload: {
+          title: data.title,
+          sceneId: data.sceneId ?? null,
+        },
+      },
+    });
+    const created = await getSnippet(data.projectId, result.entityId);
+    if (!created) throw new Error(`Snippet ${result.entityId} was not created`);
+    return attachWriteReceipt(created, {
+      changeEventUid: result.changeEventUid,
+      maintenanceTransactionId: result.maintenanceTransactionId,
+      undoJournalId: result.undoJournalId,
+    });
+  };
+  return runTimelapseBodyReplacement(
+    {
+      projectId: data.projectId,
+      documentIdentity: {
+        projectId: data.projectId,
+        domain: "snippet",
+        entityType: "snippet",
+        entityId: data.id,
       },
     },
-  });
-  const created = await getSnippet(data.projectId, result.entityId);
-  if (!created) throw new Error(`Snippet ${result.entityId} was not created`);
-  return attachWriteReceipt(created, {
-    changeEventUid: result.changeEventUid,
-    maintenanceTransactionId: result.maintenanceTransactionId,
-    undoJournalId: result.undoJournalId,
-  });
+    { commit: write, project: async (created) => created },
+  );
 }
 
 type SnippetUpdateData = Partial<
@@ -125,44 +148,103 @@ export async function updateSnippet(
   projectId: string,
   id: string,
   data: SnippetUpdateData,
-  opts?: { baseVersion?: number; writeContext?: CanonicalWriteContext },
+  opts?: {
+    baseVersion?: number;
+    writeContext?: CanonicalWriteContext;
+    timelapseDocument?: TimelapseDocumentRef;
+    preexistingDraft?: boolean;
+  },
 ): Promise<SnippetWriteResult | undefined> {
-  const current = await getSnippet(projectId, id);
-  if (!current) return undefined;
-  const baseVersion = opts?.baseVersion ?? current.version;
   const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
-  let result: NativeSnippetWriteResult;
-  try {
-    result = await invoke<NativeSnippetWriteResult>("snippet_update", {
-      payload: {
-        ...writeContext,
-        projectId,
-        snippetId: id,
-        baseVersion,
-        canonicalPayload: snippetUpdateCanonicalPayload(current, data),
-        ...(data.title !== undefined ? { title: data.title } : {}),
-        ...(data.content !== undefined ? { content: data.content } : {}),
-        ...(data.tagsCache !== undefined
-          ? { tagsCache: nativeNullable(data.tagsCache) }
-          : {}),
-        ...(data.sceneId !== undefined
-          ? { sceneId: nativeNullable(data.sceneId) }
-          : {}),
-      },
-    });
-  } catch (error) {
-    if (String(error).toLowerCase().includes("version conflict")) {
-      throw new SnippetVersionConflictError(id);
+  type CommittedUpdate = {
+    current: Snippet;
+    result: NativeSnippetWriteResult;
+  };
+  const commit = async (
+    coverage: TimelapseCoverageProof | undefined,
+  ): Promise<CommittedUpdate | null> => {
+    const current = await getSnippet(projectId, id);
+    if (!current) return null;
+    const baseVersion = opts?.baseVersion ?? current.version;
+    let result: NativeSnippetWriteResult;
+    try {
+      result = await invoke<NativeSnippetWriteResult>("snippet_update", {
+        payload: {
+          ...writeContext,
+          projectId,
+          snippetId: id,
+          baseVersion,
+          canonicalPayload: snippetUpdateCanonicalPayload(current, data),
+          ...(data.title !== undefined ? { title: data.title } : {}),
+          ...(data.content !== undefined ? { content: data.content } : {}),
+          ...(coverage ? { timelapseDocStepCoverage: coverage } : {}),
+          ...(data.tagsCache !== undefined
+            ? { tagsCache: nativeNullable(data.tagsCache) }
+            : {}),
+          ...(data.sceneId !== undefined
+            ? { sceneId: nativeNullable(data.sceneId) }
+            : {}),
+        },
+      });
+    } catch (error) {
+      if (String(error).toLowerCase().includes("version conflict")) {
+        throw new SnippetVersionConflictError(id);
+      }
+      throw error;
     }
-    throw error;
+    return { current, result };
+  };
+  const project = async (
+    committed: CommittedUpdate | null,
+  ): Promise<SnippetWriteResult | undefined> => {
+    if (!committed) return undefined;
+    const updated = await getSnippet(projectId, id);
+    if (!updated) return undefined;
+    return attachWriteReceipt(updated, {
+      changeEventUid: committed.result.changeEventUid,
+      maintenanceTransactionId: committed.result.maintenanceTransactionId,
+      undoJournalId: committed.result.undoJournalId,
+    });
+  };
+  const documentIdentity = {
+    projectId,
+    domain: "snippet" as const,
+    entityType: "snippet" as const,
+    entityId: id,
+  };
+  if (data.content !== undefined) {
+    const write = opts?.timelapseDocument
+      ? runTimelapseBodyWrite(
+          {
+            projectId,
+            coverageReceipt: opts.timelapseDocument,
+            documentIdentity,
+            content: data.content,
+            ...(opts?.preexistingDraft ? { preexistingDraft: true } : {}),
+          },
+          {
+            commit,
+            didCommit: (committed) => committed !== null,
+            project,
+          },
+        )
+      : runTimelapseBodyReplacement(
+          {
+            projectId,
+            documentIdentity,
+            ...(opts?.preexistingDraft ? { preexistingDraft: true } : {}),
+          },
+          {
+            commit: () => commit(undefined),
+            didCommit: (committed) => committed !== null,
+            project,
+          },
+        );
+    return write;
   }
-  const updated = await getSnippet(projectId, id);
-  if (!updated) return undefined;
-  return attachWriteReceipt(updated, {
-    changeEventUid: result.changeEventUid,
-    maintenanceTransactionId: result.maintenanceTransactionId,
-    undoJournalId: result.undoJournalId,
-  });
+  return runTimelapseMutation(projectId, async () =>
+    project(await commit(undefined)),
+  );
 }
 
 export async function deleteSnippet(
@@ -173,26 +255,28 @@ export async function deleteSnippet(
   const deletionAuthority = tryAcquireChatAnchorDeletionLease();
   if (!deletionAuthority) throw new ChatAnchorDeletionBlockedError();
   try {
-    chatPersistenceDeletionGuard.assertDeletionAllowed();
-    const existing = await getSnippet(projectId, id);
-    const baseVersion = opts?.baseVersion ?? existing?.version;
-    if (baseVersion === undefined) return undefined;
-    const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
-    const result = await invoke<NativeSnippetWriteResult>("snippet_delete", {
-      payload: {
-        ...writeContext,
-        projectId,
-        snippetId: id,
-        baseVersion,
-        canonicalPayload: { title: existing?.title ?? null },
-      },
+    return await runTimelapseMutation(projectId, async () => {
+      chatPersistenceDeletionGuard.assertDeletionAllowed();
+      const existing = await getSnippet(projectId, id);
+      const baseVersion = opts?.baseVersion ?? existing?.version;
+      if (baseVersion === undefined) return undefined;
+      const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
+      const result = await invoke<NativeSnippetWriteResult>("snippet_delete", {
+        payload: {
+          ...writeContext,
+          projectId,
+          snippetId: id,
+          baseVersion,
+          canonicalPayload: { title: existing?.title ?? null },
+        },
+      });
+      notifySnippetDeleted(id);
+      return {
+        changeEventUid: result.changeEventUid,
+        maintenanceTransactionId: result.maintenanceTransactionId,
+        undoJournalId: result.undoJournalId,
+      };
     });
-    notifySnippetDeleted(id);
-    return {
-      changeEventUid: result.changeEventUid,
-      maintenanceTransactionId: result.maintenanceTransactionId,
-      undoJournalId: result.undoJournalId,
-    };
   } finally {
     deletionAuthority.release();
   }

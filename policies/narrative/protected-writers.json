@@ -481,6 +481,20 @@
     "enforcement": "active"
   },
   {
+    "aggregate": "narrative-c2zc-timelapse",
+    "table": "change_events",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-timelapse",
+    "table": "state_snapshots",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "narrative-dependency-declaration",
     "table": "narrative_dependency_declaration_sets",
     "protection": "table",

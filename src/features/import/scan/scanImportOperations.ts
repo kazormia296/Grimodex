@@ -11,7 +11,7 @@ import {
   linkScenesToEvent,
   setEventParticipants,
 } from "@/features/chronicle/api";
-import { createNode, listNodes, saveSceneContent } from "@/features/tree/api";
+import { createNode, listNodes } from "@/features/tree/api";
 import {
   createCanonicalWriteContext,
   type CanonicalWriteContext,
@@ -60,31 +60,6 @@ function sceneContent(node: Extract<ImportedNode, { kind: "scene" }>): string {
   // warning-level fallback so an unsupported rich body cannot become raw HTML.
   if (node.bodyMarkdown) return fieldValueToProseMirror(node.bodyMarkdown);
   return "{}";
-}
-
-function sceneCharCount(content: string): number {
-  try {
-    const parsed = JSON.parse(content) as {
-      content?: Array<{ text?: string; content?: unknown[] }>;
-    };
-    const walk = (
-      nodes: Array<{ text?: string; content?: unknown[] }>,
-    ): number =>
-      nodes.reduce(
-        (total, node) =>
-          total +
-          (node.text?.length ?? 0) +
-          (Array.isArray(node.content)
-            ? walk(
-                node.content as Array<{ text?: string; content?: unknown[] }>,
-              )
-            : 0),
-        0,
-      );
-    return walk(parsed.content ?? []);
-  } catch {
-    return 0;
-  }
 }
 
 async function importNodes(
@@ -136,16 +111,10 @@ async function importNodes(
           nodeType: "scene",
           title: node.title || "Untitled",
           sortOrder,
+          content,
         },
         { writeContext: createCanonicalWriteContext("import") },
       );
-      if (content !== "{}") {
-        await saveSceneContent(node.id, {
-          content,
-          charCount: sceneCharCount(content),
-          writeContext: createCanonicalWriteContext("import"),
-        });
-      }
       imported++;
     }
   }
@@ -215,6 +184,7 @@ async function importCodex(
         name: entry.name,
         aliases: JSON.stringify(entry.aliases),
         summary: entry.summary,
+        content: fieldValueToProseMirror(entry.summary ?? ""),
       },
       {
         suppressImeExport: true,
@@ -223,19 +193,21 @@ async function importCodex(
     );
   }
   for (const entry of entries) {
-    await updateCodexEntry(
-      projectId,
-      entry.id,
-      {
-        ...(entry.parentId ? { parentId: entry.parentId } : {}),
-        content: fieldValueToProseMirror(entry.summary ?? ""),
-        notes: provenanceNote(entry),
-      },
-      {
-        suppressImeExport: true,
-        writeContext: createCanonicalWriteContext("import"),
-      },
-    );
+    const notes = provenanceNote(entry);
+    if (entry.parentId || notes) {
+      await updateCodexEntry(
+        projectId,
+        entry.id,
+        {
+          ...(entry.parentId ? { parentId: entry.parentId } : {}),
+          ...(notes ? { notes } : {}),
+        },
+        {
+          suppressImeExport: true,
+          writeContext: createCanonicalWriteContext("import"),
+        },
+      );
+    }
   }
   return result(entries.length);
 }

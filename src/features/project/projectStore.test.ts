@@ -8,6 +8,7 @@ import {
   _resetProjectBackgroundMutationsForTests,
   _scheduleExternalWriteFeedStartForTests,
   _scheduleTimelapseInitializationForTests,
+  _scheduleWorkspaceBackgroundIntegrationsForTests,
   LAST_ACTIVE_PROJECT_KEY,
   useProjectStore,
 } from "./projectStore";
@@ -248,6 +249,60 @@ describe("useProjectStore", () => {
       );
     });
 
+    it("runs workspace genesis once but defers feed until the expected slow identity publishes", async () => {
+      useProjectStore.setState({ currentProjectId: PROJECT_ID });
+      setCurrentWorkspaceIdentity(null);
+
+      _scheduleWorkspaceBackgroundIntegrationsForTests(
+        PROJECT_ID,
+        "/slow-workspace",
+        41,
+      );
+      await vi.waitFor(() =>
+        expect(backgroundH.ensureGenesisBaselines).toHaveBeenCalledOnce(),
+      );
+      expect(backgroundH.startExternalWriteFeed).not.toHaveBeenCalled();
+
+      setCurrentWorkspaceIdentity({
+        path: "/wrong-workspace",
+        openRevision: 41,
+      });
+      await Promise.resolve();
+      expect(backgroundH.startExternalWriteFeed).not.toHaveBeenCalled();
+
+      setCurrentWorkspaceIdentity({
+        path: "/slow-workspace",
+        openRevision: 41,
+      });
+      await flushQuiescenceProviderStage("scoped-mutations");
+
+      expect(backgroundH.ensureGenesisBaselines).toHaveBeenCalledOnce();
+      expect(backgroundH.startExternalWriteFeed).toHaveBeenCalledOnce();
+    });
+
+    it("starts feed once when the expected workspace identity is already published", async () => {
+      useProjectStore.setState({ currentProjectId: PROJECT_ID });
+      setCurrentWorkspaceIdentity({
+        path: "/fast-workspace",
+        openRevision: 42,
+      });
+
+      _scheduleWorkspaceBackgroundIntegrationsForTests(
+        PROJECT_ID,
+        "/fast-workspace",
+        42,
+      );
+      await flushQuiescenceProviderStage("scoped-mutations");
+      setCurrentWorkspaceIdentity({
+        path: "/fast-workspace",
+        openRevision: 42,
+      });
+      await Promise.resolve();
+
+      expect(backgroundH.ensureGenesisBaselines).toHaveBeenCalledOnce();
+      expect(backgroundH.startExternalWriteFeed).toHaveBeenCalledOnce();
+    });
+
     it("strict quiescence waits for the external prose backlog drain", async () => {
       const drain = deferred<void>();
       backgroundH.drainProposedProse.mockReturnValueOnce(drain.promise);
@@ -289,9 +344,9 @@ describe("useProjectStore", () => {
       expect(backgroundH.drainProposedProse).not.toHaveBeenCalled();
     });
 
-    it("propagates a previous-Project timelapse drain failure and does not rebind", async () => {
-      backgroundH.flushTimelapse.mockRejectedValueOnce(
-        new Error("timelapse drain failed"),
+    it("fails closed when genesis initialization rejects without an owner drain", async () => {
+      backgroundH.ensureGenesisBaselines.mockRejectedValueOnce(
+        new Error("timelapse genesis failed"),
       );
       setCurrentWorkspaceIdentity({
         path: "/workspace/project-store-test",
@@ -301,14 +356,17 @@ describe("useProjectStore", () => {
 
       _scheduleTimelapseInitializationForTests(PROJECT_ID);
 
-      await expect(
-        flushQuiescenceProviderStage("scoped-mutations"),
-      ).rejects.toThrow("timelapse drain failed");
-      expect(backgroundH.setRecorderEnabled).not.toHaveBeenCalled();
-      expect(backgroundH.initRecorderForProject).not.toHaveBeenCalled();
+      await vi.waitFor(() =>
+        expect(backgroundH.ensureGenesisBaselines).toHaveBeenCalledOnce(),
+      );
       await expect(
         flushQuiescenceProviderStage("scoped-mutations"),
       ).resolves.toBeUndefined();
+      expect(backgroundH.flushTimelapse).not.toHaveBeenCalled();
+      expect(backgroundH.setRecorderEnabled).toHaveBeenCalledWith(true);
+      expect(backgroundH.initRecorderForProject).toHaveBeenCalledWith(
+        PROJECT_ID,
+      );
     });
   });
 
@@ -981,6 +1039,9 @@ describe("useProjectStore", () => {
               "read",
             );
           }
+          if (id === "proj-a") {
+            return Promise.resolve({ ...projectB!, id: "proj-a" });
+          }
           return Promise.resolve(undefined);
         });
       let staleLoad: Promise<void> | null = null;
@@ -1007,7 +1068,7 @@ describe("useProjectStore", () => {
         await Promise.all([staleLoad, latestLoad]);
 
         expect(useProjectStore.getState().currentProjectId).toBe("proj-b");
-        expect(mockedReload).toHaveBeenCalledTimes(1);
+        expect(mockedReload).toHaveBeenCalledTimes(2);
         expect(canScheduleQuiescenceMutation()).toBe(true);
       } finally {
         firstPreflush.resolve();
@@ -1186,8 +1247,9 @@ describe("useProjectStore", () => {
       expect(document.documentElement.lang).toBe("en");
       expect(useSettingsStore.getState().projectLanguage).toBe("en");
       expect(usePhaseStore.getState().resolutionMode).toBe("story");
-      // A became stale while its reload was in flight, so only B is persisted.
-      expect(mockedSetSetting).toHaveBeenCalledTimes(1);
+      // A remains authoritative until its strict preflush/commit completes;
+      // B then commits and persists last.
+      expect(mockedSetSetting).toHaveBeenCalledTimes(2);
       expect(mockedSetSetting).toHaveBeenCalledWith(
         LAST_ACTIVE_PROJECT_KEY,
         "proj-b",
@@ -1442,7 +1504,7 @@ describe("useProjectStore", () => {
       });
       mockedReload.mockClear();
       const drain = deferred<void>();
-      backgroundH.flushTimelapse.mockReturnValueOnce(drain.promise);
+      backgroundH.ensureGenesisBaselines.mockReturnValueOnce(drain.promise);
       mockedReload.mockImplementation(
         async (
           loadedProjectId,
@@ -1467,7 +1529,7 @@ describe("useProjectStore", () => {
           .getState()
           .deleteProjectById("proj-current");
         await vi.waitFor(() =>
-          expect(backgroundH.flushTimelapse).toHaveBeenCalledOnce(),
+          expect(backgroundH.ensureGenesisBaselines).toHaveBeenCalledOnce(),
         );
         expect(deleteSpy).not.toHaveBeenCalled();
 

@@ -3812,6 +3812,13 @@ export const changeEvents = sqliteTable(
   (t) => [
     index("idx_change_events_project_ts").on(t.projectId, t.timestamp),
     index("idx_change_events_scene_ts").on(t.sceneId, t.timestamp),
+    index("idx_change_events_project_domain_op_entity_seq").on(
+      t.projectId,
+      t.domain,
+      t.opType,
+      t.entityId,
+      t.sequence,
+    ),
     uniqueIndex("uq_change_events_project_seq").on(t.projectId, t.sequence),
     uniqueIndex("uq_change_events_project_uid").on(t.projectId, t.eventUid),
   ],
@@ -3910,6 +3917,13 @@ export const stateSnapshots = sqliteTable(
     index("idx_state_snap_domain_seq").on(
       t.projectId,
       t.domain,
+      t.anchorSequence,
+    ),
+    index("idx_state_snap_project_domain_type_entity_seq").on(
+      t.projectId,
+      t.domain,
+      t.entityId,
+      t.entityType,
       t.anchorSequence,
     ),
   ],

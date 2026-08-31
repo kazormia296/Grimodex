@@ -71,13 +71,22 @@ import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConfli
 import { resetEditorHistory } from "@/features/editor/editorDocumentLoad";
 import { getSnippet } from "./api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  createLoadedMiniEditorTimelapseAuthority,
+  recordMiniEditorTransaction,
+  type LoadedMiniEditorTimelapseAuthority,
+} from "@/features/editor/miniEditorTimelapse";
+import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
 
 interface SnippetDetailContentProps {
   snippet: Snippet;
   onSave: (
     id: string,
     data: Partial<{ title: string; content: string }>,
-    options: { baseVersion: number },
+    options: {
+      baseVersion: number;
+      timelapseDocument?: TimelapseDocumentRef;
+    },
   ) => Promise<VersionedSaveOutcome>;
   onDelete: (id: string) => void;
 }
@@ -216,11 +225,48 @@ export function SnippetDetailContent({
   // refresh or from a sceneContentStore broadcast — so we don't re-broadcast
   // our own echo or schedule a no-op autosave loop.
   const isApplyingExternalUpdate = useRef(false);
+  const loadedTimelapseAuthorityRef =
+    useRef<LoadedMiniEditorTimelapseAuthority | null>(null);
+  const [loadedTimelapseInstanceKey, setLoadedTimelapseInstanceKey] = useState<
+    string | null
+  >(null);
+  const timelapseAuthority = useMemo(
+    () =>
+      createLoadedMiniEditorTimelapseAuthority(snippet.projectId, {
+        kind: "snippet",
+        id: snippet.id,
+      }),
+    [snippet.id, snippet.projectId],
+  );
+  const timelapseInstanceKey = `${snippet.projectId}\u0000${snippet.id}`;
+  const timelapseInstanceKeyRef = useRef(timelapseInstanceKey);
+  if (timelapseInstanceKeyRef.current !== timelapseInstanceKey) {
+    timelapseInstanceKeyRef.current = timelapseInstanceKey;
+    loadedTimelapseAuthorityRef.current = null;
+  }
 
-  const editor = useEditor({
-    extensions: [StarterKit.configure(), AuthorshipMark],
-    content: tiptapContentFromDb(snippet.content),
-  });
+  const editor = useEditor(
+    {
+      extensions: [StarterKit.configure(), AuthorshipMark],
+      content: tiptapContentFromDb(snippet.content),
+      onCreate: () => {
+        loadedTimelapseAuthorityRef.current = timelapseAuthority;
+        setLoadedTimelapseInstanceKey(timelapseInstanceKey);
+      },
+      onDestroy: () => {
+        loadedTimelapseAuthorityRef.current = null;
+        setLoadedTimelapseInstanceKey(null);
+      },
+      onTransaction: ({ transaction }) => {
+        recordMiniEditorTransaction({
+          transaction,
+          authority: loadedTimelapseAuthorityRef.current,
+          isApplyingExternalUpdate: isApplyingExternalUpdate.current,
+        });
+      },
+    },
+    [timelapseInstanceKey],
+  );
 
   useEffect(() => {
     if (seenExternalReloadRef.current === externalReloadNonce) return;
@@ -271,7 +317,18 @@ export function SnippetDetailContent({
   }, [documentKey, editor, externalReloadNonce, snippet.id, t]);
 
   useAttribution(editor);
-  useLicenseEditableSync(editor);
+  const loadedFenceDocumentKey =
+    loadedTimelapseInstanceKey === timelapseInstanceKey ? documentKey : null;
+  const loadedFenceProjectId =
+    loadedTimelapseInstanceKey === timelapseInstanceKey
+      ? snippet.projectId
+      : null;
+  useLicenseEditableSync(
+    editor,
+    false,
+    loadedFenceDocumentKey,
+    loadedFenceProjectId,
+  );
   useCodexHighlight(editor, { skipMatchedIds: true });
   useTrashBinCapture(editor, { kind: "snippet", id: snippet.id });
 
@@ -377,6 +434,11 @@ export function SnippetDetailContent({
       if (!saveTitle && !saveContent) return;
       const outcome = await onSave(snippetId, data, {
         baseVersion: loadedVersionRef.current,
+        ...(loadedTimelapseAuthorityRef.current?.document
+          ? {
+              timelapseDocument: loadedTimelapseAuthorityRef.current.document,
+            }
+          : {}),
       });
       if (!outcome.persisted) {
         throw new AlreadyNotifiedSaveError(

@@ -2958,9 +2958,7 @@ fn current_chronicle_shared_snapshot_authority_rejects_later_proposal_tampering(
     )
     .expect_err("the shared Snapshot map must not weaken later Proposal compilation");
     assert!(
-        error
-            .to_string()
-            .contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"),
+        error.to_string().contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"),
         "unexpected shared Snapshot compiler error: {error:#}"
     );
 

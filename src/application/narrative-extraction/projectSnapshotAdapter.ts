@@ -4,7 +4,7 @@ import {
   hasPendingQuiescenceParticipantsForScopes,
   type QuiescenceParticipantScope,
 } from "@/application/lifecycle/quiescenceParticipants";
-import { acquireQuiescenceLease } from "@/application/lifecycle/quiescenceLease";
+import { acquireQuiescenceLeaseAfterTimelapseGenesis } from "@/features/timelapse/genesisQuiescence";
 import type { MutationAuthority } from "@/features/concurrency/mutationAuthority";
 import {
   awaitPendingAuthoritativeMutations,
@@ -95,10 +95,15 @@ export interface ProjectSnapshotAdapterServices {
   /** Cross-registry revision used to repeat a scoped drain to a fixed point. */
   getScopeRevision?: () => string;
   /** Production mutation-admission boundary held from scope drain through seal. */
-  acquireSourceReadLease?: () => {
-    openReadPhase: () => void;
-    release: () => void;
-  };
+  acquireSourceReadLease?: () =>
+    | {
+        openReadPhase: () => void;
+        release: () => void;
+      }
+    | Promise<{
+        openReadPhase: () => void;
+        release: () => void;
+      }>;
   createSnapshotId: () => string;
   now: () => string;
 }
@@ -399,8 +404,9 @@ export const defaultProjectSnapshotAdapterServices: ProjectSnapshotAdapterServic
     },
     getScopeRevision: () =>
       `${getAutoSaveRegistryRevision()}:${getQuiescenceParticipantRegistryRevision()}`,
-    acquireSourceReadLease: () => {
-      const lease = acquireQuiescenceLease("narrative-snapshot");
+    acquireSourceReadLease: async () => {
+      const lease =
+        await acquireQuiescenceLeaseAfterTimelapseGenesis("narrative-snapshot");
       return {
         openReadPhase: lease.openControlledReadPhase,
         release: () => lease.release(),
@@ -669,12 +675,10 @@ export async function buildProjectNarrativeSnapshot(
   }
 
   let sourceReadLease:
-    | ReturnType<
-        NonNullable<ProjectSnapshotAdapterServices["acquireSourceReadLease"]>
-      >
+    | { openReadPhase: () => void; release: () => void }
     | undefined;
   try {
-    sourceReadLease = services.acquireSourceReadLease?.();
+    sourceReadLease = await services.acquireSourceReadLease?.();
   } catch {
     return {
       ok: false,

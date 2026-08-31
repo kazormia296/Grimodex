@@ -25,12 +25,7 @@ import {
   listCodexTypes,
   createCodexType,
 } from "@/features/codex/typeApi";
-import {
-  createNode,
-  listNodes,
-  saveSceneContent,
-  updateNode,
-} from "@/features/tree/api";
+import { createNode, listNodes, updateNode } from "@/features/tree/api";
 import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
@@ -191,26 +186,6 @@ async function resolveSceneContent(scene: SceneContentSource): Promise<string> {
     return fieldValueToProseMirror(scene.body);
   }
   return "{}";
-}
-
-function sceneCharCount(contentJson: string): number {
-  try {
-    const doc = JSON.parse(contentJson) as {
-      content?: { text?: string; content?: unknown[] }[];
-    };
-    let count = 0;
-    function walk(nodes: { text?: string; content?: unknown[] }[]): void {
-      for (const n of nodes) {
-        if (n.text) count += n.text.length;
-        if (n.content)
-          walk(n.content as { text?: string; content?: unknown[] }[]);
-      }
-    }
-    if (doc.content) walk(doc.content);
-    return count;
-  } catch {
-    return 0;
-  }
 }
 
 export async function importProjectMetadata(meta: {
@@ -653,6 +628,7 @@ export async function importTree(
                   return key;
                 })()
               : keys[i]!;
+          const content = await resolveSceneContent(node);
           await createNode(
             {
               id: node.id,
@@ -661,17 +637,10 @@ export async function importTree(
               nodeType: "scene",
               title: node.title || "Untitled",
               sortOrder,
+              content,
             },
             { writeContext: createCanonicalWriteContext("import") },
           );
-          const content = await resolveSceneContent(node);
-          if (content !== "{}") {
-            await saveSceneContent(node.id, {
-              content,
-              charCount: sceneCharCount(content),
-              writeContext: createCanonicalWriteContext("import"),
-            });
-          }
           createdSceneIds.push(node.id);
           imported++;
         } catch (err) {

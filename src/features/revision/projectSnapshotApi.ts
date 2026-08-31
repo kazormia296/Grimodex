@@ -12,13 +12,10 @@ import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { createRevision } from "./api";
 import type { EntityType } from "./api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import {
-  rebaselineEntitiesAtTail,
-  type EntityBaselineRef,
-} from "@/features/timelapse/toggle";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
+import { runTimelapseBodyReplacement } from "@/features/timelapse/bodyWriteMode";
 import {
   emptySkipReport,
   fullRestoreScopeSet,
@@ -112,8 +109,14 @@ export async function createProjectSnapshot(params: {
   name: string;
   description?: string;
 }): Promise<{ id: string; entryCount: number }> {
+  return createProjectSnapshotForProject(params, getCurrentProjectId());
+}
+
+async function createProjectSnapshotForProject(
+  params: { name: string; description?: string },
+  projectId: string,
+): Promise<{ id: string; entryCount: number }> {
   const { name, description } = params;
-  const PROJECT_ID = getCurrentProjectId();
   const snapshotId = crypto.randomUUID();
   const now = new Date().toISOString();
 
@@ -122,7 +125,7 @@ export async function createProjectSnapshot(params: {
   const nodes = await db
     .select()
     .from(treeNodes)
-    .where(eq(treeNodes.projectId, PROJECT_ID));
+    .where(eq(treeNodes.projectId, projectId));
 
   const treeNodeRows: RawRow[] = [];
   const versionIds: string[] = [];
@@ -172,7 +175,7 @@ export async function createProjectSnapshot(params: {
   const codexRows = await db
     .select()
     .from(codexEntries)
-    .where(eq(codexEntries.projectId, PROJECT_ID));
+    .where(eq(codexEntries.projectId, projectId));
 
   const codexSnapRows: RawRow[] = [];
   for (const entry of codexRows) {
@@ -208,7 +211,7 @@ export async function createProjectSnapshot(params: {
   const snippetRows = await db
     .select()
     .from(snippets)
-    .where(eq(snippets.projectId, PROJECT_ID));
+    .where(eq(snippets.projectId, projectId));
 
   const snippetSnapRows: RawRow[] = [];
   for (const snippet of snippetRows) {
@@ -234,7 +237,7 @@ export async function createProjectSnapshot(params: {
   }
 
   await createNativeProjectSnapshot({
-    projectId: PROJECT_ID,
+    projectId,
     snapshotId,
     name,
     description: description ?? null,
@@ -322,6 +325,7 @@ interface RestoreAuthority {
 
 /** Build the dependency-safe insert plan; Rust owns wipe + transaction SQL. */
 async function restoreStructural(
+  projectId: string,
   snapshotId: string,
   scopes: ReadonlySet<RestoreScope>,
   context: ProjectSnapshotRestoreContext,
@@ -331,7 +335,6 @@ async function restoreStructural(
   skipped: SkipReport;
   canonicalSequence: number;
 }> {
-  const PROJECT_ID = getCurrentProjectId();
   const skipped = emptySkipReport();
   const inserts: SnapshotInsertPlan[] = [];
 
@@ -390,7 +393,7 @@ async function restoreStructural(
       pushStmt(
         buildInsert("codex_entries", {
           id: row.entry_id as string,
-          project_id: PROJECT_ID,
+          project_id: projectId,
           parent_id: (row.parent_id as string | null) ?? null,
           type: row.type as string,
           name: row.name as string,
@@ -464,7 +467,7 @@ async function restoreStructural(
       pushStmt(
         buildInsert("tree_nodes", {
           id: row.node_id as string,
-          project_id: PROJECT_ID,
+          project_id: projectId,
           parent_id: (row.parent_id as string | null) ?? null,
           node_type: row.node_type as string,
           title: row.title as string,
@@ -655,7 +658,7 @@ async function restoreStructural(
       pushStmt(
         buildInsert("snippets", {
           id: row.snippet_id as string,
-          project_id: PROJECT_ID,
+          project_id: projectId,
           title: row.title as string,
           scene_id: safeScene,
           source_chat_message_id:
@@ -873,7 +876,7 @@ async function restoreStructural(
   const applyResult = await applyNativeProjectSnapshotRestore({
     requestId: authority.requestId,
     sessionId: authority.sessionId,
-    projectId: PROJECT_ID,
+    projectId,
     snapshotId,
     scopes: [...scopes],
     inserts,
@@ -895,69 +898,12 @@ async function restoreStructural(
  * Legacy snapshots are listed and retained, but restore fails closed before
  * creating a safety snapshot or dispatching any domain write.
  */
-/**
- * A project-snapshot restore rewrites tree_nodes/codex_entries/snippets content
- * directly in the DB — the editor never issues the corresponding doc.steps, so
- * the timelapse genesis baseline goes stale (a subsequent doc.step then
- * replays on the pre-restore doc and throws `RangeError: Position out of
- * range`). The Native restore now appends the canonical
- * `project.snapshot.restore` event in the same transaction as the domain
- * rewrite and Narrative Change Feed. Renderer only re-anchors editor
- * baselines at that committed chain tail. Runs BEFORE the caller's
- * `window.location.reload()` while the recorder is still bound to this
- * project.
- */
-async function rebaselineAfterRestore(
-  format: "legacy" | "structural",
-  scopes: Set<RestoreScope>,
-  committedSequence: number,
-): Promise<void> {
-  const projectId = getCurrentProjectId();
-  if (!projectId) return;
-  // Re-anchor the baseline of every entity whose body this restore rewrote.
-  // A LEGACY restore replays content_versions for ALL entity types
-  // (restoreLegacyContentOnly writes scene/note/codex_entry/snippet bodies), so
-  // it must rebaseline codex/snippet too — not just scenes. A STRUCTURAL restore
-  // only rewrites a scope's body when that scope is selected (scene→"body",
-  // codex→"codex", snippet→"snippet"). A stale codex/snippet baseline throws the
-  // same post-restore RangeError as scenes once the entity is edited again.
-  const refs: EntityBaselineRef[] = [];
-  if (format === "legacy" || scopes.has("body")) {
-    const sceneRows = await db
-      .select({ id: treeNodes.id })
-      .from(treeNodes)
-      .where(
-        and(
-          eq(treeNodes.projectId, projectId),
-          eq(treeNodes.nodeType, "scene"),
-        ),
-      );
-    refs.push(...sceneRows.map((r) => ({ kind: "scene" as const, id: r.id })));
-  }
-  if (format === "legacy" || scopes.has("codex")) {
-    const codexRows = await db
-      .select({ id: codexEntries.id })
-      .from(codexEntries)
-      .where(eq(codexEntries.projectId, projectId));
-    refs.push(...codexRows.map((r) => ({ kind: "codex" as const, id: r.id })));
-  }
-  if (format === "legacy" || scopes.has("snippet")) {
-    const snippetRows = await db
-      .select({ id: snippets.id })
-      .from(snippets)
-      .where(eq(snippets.projectId, projectId));
-    refs.push(
-      ...snippetRows.map((r) => ({ kind: "snippet" as const, id: r.id })),
-    );
-  }
-  await rebaselineEntitiesAtTail(projectId, refs, committedSequence);
-}
-
 export async function restoreProjectSnapshot(
   snapshotId: string,
   snapshotName: string,
   options: RestoreOptions = {},
 ): Promise<RestoreResult> {
+  const projectId = getCurrentProjectId();
   // Capture the authority tuple before the first await. Every dispatch made
   // by this operation (including an exact retry supplied via options) uses
   // one immutable request/session identity.
@@ -965,13 +911,21 @@ export async function restoreProjectSnapshot(
     requestId: options.requestId ?? crypto.randomUUID(),
     sessionId: getRecorderSessionId(),
   };
-  return runTreeTopologyMutation(() =>
-    restoreProjectSnapshotWithAuthority(
-      snapshotId,
-      snapshotName,
-      options,
-      authority,
-    ),
+  return runTimelapseBodyReplacement(
+    { projectId },
+    {
+      commit: () =>
+        runTreeTopologyMutation(() =>
+          restoreProjectSnapshotWithAuthority(
+            snapshotId,
+            snapshotName,
+            options,
+            authority,
+            projectId,
+          ),
+        ),
+      project: async (result) => result,
+    },
   );
 }
 
@@ -980,6 +934,7 @@ async function restoreProjectSnapshotWithAuthority(
   snapshotName: string,
   options: RestoreOptions,
   authority: RestoreAuthority,
+  projectId: string,
 ): Promise<RestoreResult> {
   const scopes = options.scopes
     ? new Set<RestoreScope>(options.scopes)
@@ -988,7 +943,7 @@ async function restoreProjectSnapshotWithAuthority(
   // 1. Load the project-scoped restore context through the typed native
   // repository. The backend rejects snapshots owned by another project.
   const context = await loadNativeProjectSnapshotRestoreContext(
-    getCurrentProjectId(),
+    projectId,
     snapshotId,
     scopes,
   );
@@ -1002,20 +957,23 @@ async function restoreProjectSnapshotWithAuthority(
   // 2. Safety snapshot (always full). The ISO timestamp suffix keeps the
   // name unique per UNIQUE(project_id, name). This happens only after the
   // target has proven eligible for the atomic Native restore path.
-  const safety = await createProjectSnapshot({
-    name: `Before restore to '${snapshotName}' (${new Date().toISOString()})`,
-  });
+  const safety = await createProjectSnapshotForProject(
+    {
+      name: `Before restore to '${snapshotName}' (${new Date().toISOString()})`,
+    },
+    projectId,
+  );
 
-  const { restoredCount, skipped, canonicalSequence } = await restoreStructural(
+  const { restoredCount, skipped } = await restoreStructural(
+    projectId,
     snapshotId,
     scopes,
     context,
     authority,
   );
   if (scopes.has("codex")) {
-    scheduleImeExportRefresh(getCurrentProjectId());
+    scheduleImeExportRefresh(projectId);
   }
-  await rebaselineAfterRestore("structural", scopes, canonicalSequence);
   return {
     restoredCount,
     safetySnapshotId: safety.id,

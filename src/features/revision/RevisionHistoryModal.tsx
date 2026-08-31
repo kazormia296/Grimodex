@@ -18,7 +18,6 @@ import { getNode } from "@/features/tree/api";
 import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
 import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/placedBeatPreview";
 import { restoreSceneRevisionNative } from "./revisionRestoreNative";
-import { rebaselineEntitiesAtTail } from "@/features/timelapse/toggle";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { notifySameRendererDocumentWrite } from "@/features/concurrency/documentWriteNotification";
@@ -418,7 +417,7 @@ export function RevisionHistoryModal() {
       if (useEditorSessionStore.getState().isDocumentDirty(documentKey)) {
         throw new Error("Save the current scene before restoring a revision");
       }
-      const restored = await restoreSceneRevisionNative({
+      await restoreSceneRevisionNative({
         requestId: crypto.randomUUID(),
         sessionId: getRecorderSessionId(),
         projectId: node.projectId,
@@ -449,11 +448,6 @@ export function RevisionHistoryModal() {
           entityId,
         });
         await useTreeStore.getState().reloadTreeOrThrow(node.projectId);
-        await rebaselineEntitiesAtTail(
-          node.projectId,
-          [{ kind: "scene", id: entityId }],
-          restored.canonicalSequence,
-        );
       } catch (projectionError) {
         // Native already committed. Never report the domain operation as
         // failed (which could invite a duplicate restore); force a clean

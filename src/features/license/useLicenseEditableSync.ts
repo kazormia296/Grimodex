@@ -10,6 +10,10 @@ import {
   isExclusiveDocumentLeaseActive,
   subscribeExclusiveDocumentLease,
 } from "@/features/editor/document/documentSaveCoordinator";
+import {
+  isTimelapseReplacementFenceActiveForDocument,
+  subscribeTimelapseReplacementFence,
+} from "@/features/timelapse/documentCoverage";
 
 /**
  * ライセンス制限中（trial_expired / license_stale / revoked）は TipTap
@@ -31,6 +35,13 @@ export function useLicenseEditableSync(
   editor: Editor | null,
   forceReadOnly = false,
   documentKey: DocumentKey | null = null,
+  /**
+   * Immutable Project authority of the document that has actually finished
+   * loading.  Do not fall back to the render-time current Project here: a
+   * stale editor must never observe (or release) a fence belonging to the
+   * replacement workspace.
+   */
+  loadedProjectId: string | null = null,
 ): boolean {
   const restricted = useLicenseWriteRestricted();
   const quiescenceLeaseActive = useSyncExternalStore(
@@ -38,11 +49,23 @@ export function useLicenseEditableSync(
     isQuiescenceLeaseActive,
     () => false,
   );
+  const timelapseReplacementFenceActive = useSyncExternalStore(
+    subscribeTimelapseReplacementFence,
+    () =>
+      loadedProjectId !== null && documentKey !== null
+        ? isTimelapseReplacementFenceActiveForDocument(
+            loadedProjectId,
+            documentKey,
+          )
+        : false,
+    () => false,
+  );
   const readOnly =
     restricted ||
     forceReadOnly ||
     quiescenceLeaseActive ||
-    isExclusiveDocumentLeaseActive(documentKey);
+    isExclusiveDocumentLeaseActive(documentKey) ||
+    timelapseReplacementFenceActive;
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
     // emitUpdate: false — TipTap の setEditable は既定で 'update' を emit し、
@@ -61,7 +84,13 @@ export function useLicenseEditableSync(
           restricted ||
           forceReadOnly ||
           isQuiescenceLeaseActive() ||
-          isExclusiveDocumentLeaseActive(documentKey)
+          isExclusiveDocumentLeaseActive(documentKey) ||
+          (loadedProjectId !== null && documentKey !== null
+            ? isTimelapseReplacementFenceActiveForDocument(
+                loadedProjectId,
+                documentKey,
+              )
+            : false)
         ),
         false,
       );
@@ -71,10 +100,24 @@ export function useLicenseEditableSync(
       documentKey,
       syncEditable,
     );
+    // useSyncExternalStore schedules a React update, but that update is too
+    // late for a replacement fence: acquireTimelapseReplacementFence can be
+    // followed by a same-stack TipTap transaction. Subscribe directly so the
+    // editor becomes non-editable during the fence notification itself.
+    const unsubscribeTimelapse =
+      subscribeTimelapseReplacementFence(syncEditable);
     return () => {
       unsubscribeQuiescence();
       unsubscribeDocument();
+      unsubscribeTimelapse();
     };
-  }, [documentKey, editor, forceReadOnly, readOnly, restricted]);
+  }, [
+    documentKey,
+    editor,
+    forceReadOnly,
+    loadedProjectId,
+    readOnly,
+    restricted,
+  ]);
   return readOnly;
 }

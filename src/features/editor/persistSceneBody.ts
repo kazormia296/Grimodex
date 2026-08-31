@@ -57,6 +57,16 @@ import {
   getRecorderSessionId,
   recordChangeEvent,
 } from "@/features/timelapse/recorder";
+import {
+  runTimelapseBodyReplacement,
+  runTimelapseBodyWrite,
+  runTimelapseMutation,
+  type TimelapseDocumentIdentity,
+} from "@/features/timelapse/bodyWriteMode";
+import type {
+  TimelapseCoverageProof,
+  TimelapseDocumentRef,
+} from "@/features/timelapse/documentCoverage";
 
 export interface BodyMentionScanRequest {
   projectId: string;
@@ -83,6 +93,10 @@ export interface PersistSceneBodyOptions {
    * the canonical Change Event in the same transaction as the scene body.
    */
   timelapseSteps?: readonly unknown[];
+  /** Accepted doc.step capability from the loaded editor transaction stream. */
+  timelapseDocument?: TimelapseDocumentRef;
+  /** Structural scene identity used by replacement fallback. */
+  timelapseDocumentIdentity?: TimelapseDocumentIdentity;
 }
 
 interface ScheduledBodyMentionScan extends BodyMentionScanRequest {
@@ -390,154 +404,195 @@ export async function persistSceneBody(
   // 非チェーンの saveSceneContentInner を使う — 公開 saveSceneContent を呼ぶと
   // 同一チェーンへの自己 await でデッドロックする。file-backed scene は
   // schema 依存 cascade をスキップする既存挙動を維持 (単位は content のみ)。
+  const commitScene = (coverage: TimelapseCoverageProof | undefined) =>
+    serializeSceneWrite(id, async () => {
+      markStart("editor.coreSave.invokeSave");
+      // Generate one authoritative renderer-wide tree token for both the native
+      // bundle and the browser fallback. Native must not independently sample
+      // wall clock time after the JS monotonic clock has advanced past it.
+      const contentUpdatedAt = nextTreeNodeMutationTimestamp();
+      let previews: DerivedPreviews;
+      let foreshadowRows: ForeshadowRow[] = [];
+      if (nativeSnapshot) {
+        recordCounter("editor.coreSave.domainIpc");
+        const requestId = crypto.randomUUID();
+        const bundledPreviews = await saveSceneBodyBundle({
+          ...nativeSnapshot,
+          foreshadowBaseVersions: {
+            ...getSceneForeshadowBaseVersions(id, doc),
+            ...nativeSnapshot.foreshadowBaseVersions,
+          },
+          sceneId: id,
+          projectId,
+          requestId,
+          sessionId: getRecorderSessionId(),
+          eventUid: requestId,
+          origin: options.origin ?? "human",
+          ...(options.timelapseSteps !== undefined && {
+            timelapseSteps: options.timelapseSteps,
+          }),
+          ...(coverage ? { timelapseDocStepCoverage: coverage } : {}),
+          includeSidecars: !isFileBacked,
+          updatedAt: contentUpdatedAt,
+          ...(options.baseVersion !== undefined && {
+            baseVersion: options.baseVersion,
+          }),
+        });
+        recordCounter(
+          "editor.coreSave.dbTransaction",
+          bundledPreviews.dbTransactionCount,
+        );
+        previews = bundledPreviews;
+        foreshadowRows = bundledPreviews.foreshadowRows;
+      } else {
+        previews = await saveSceneContentInner(id, {
+          content: sceneJsonStr,
+          unplacedBeatsDoc,
+          charCount,
+          updatedAt: contentUpdatedAt,
+          ...(options.baseVersion !== undefined && {
+            baseVersion: options.baseVersion,
+          }),
+        });
+        // The Web Editor compatibility path has no Native transaction that can
+        // adopt replay steps. Preserve its existing replay behavior after the
+        // fallback domain write; Electron never takes this non-atomic branch.
+        if (options.timelapseSteps !== undefined) {
+          recordChangeEvent({
+            domain: "editor",
+            opType: "doc.step",
+            projectId,
+            sceneId: id,
+            entityType: "scene",
+            entityId: id,
+            payload: { steps: options.timelapseSteps },
+          });
+        }
+      }
+      markEnd("editor.coreSave.invokeSave");
+      // Publish immediately after the authoritative content commit, before
+      // fallible derived side effects. Chronicle and other read-only consumers
+      // must invalidate even when a later authorship/anchor/cache write rejects.
+      if (workspaceIdentity && projectId) {
+        // The native bundle bypasses tree/api.ts, so publish its authoritative
+        // row token here. The Drizzle fallback publishes inside
+        // saveSceneContentInner and must not be emitted twice.
+        if (nativeSnapshot) {
+          publishTreeNodeMutation({
+            workspacePath: workspaceIdentity.path,
+            workspaceOpenRevision: workspaceIdentity.openRevision,
+            projectId,
+            nodeId: id,
+            updatedAt: previews.contentUpdatedAt,
+          });
+        }
+        publishSceneBodyCommit({
+          workspacePath: workspaceIdentity.path,
+          openRevision: workspaceIdentity.openRevision,
+          projectId,
+          sceneId: id,
+          contentVersion: previews.contentVersion,
+        });
+      }
+      if (nativeSnapshot && !isFileBacked) {
+        // The former POV cache helper bumped this revision after its DB writes.
+        // The bundle owns those writes now, so publish once after commit.
+        bumpMatrixDataVersion();
+      } else if (!nativeSnapshot && !isFileBacked) {
+        markStart("editor.coreSave.saveAuthorship");
+        await saveAuthorshipSpans(id, doc);
+        markEnd("editor.coreSave.saveAuthorship");
+        markStart("editor.coreSave.saveForeshadow");
+        foreshadowRows = await saveForeshadowAnchors(id, doc);
+        markEnd("editor.coreSave.saveForeshadow");
+        markStart("editor.coreSave.saveAnnotations");
+        await saveAnnotationAnchors(projectId, id, doc);
+        markEnd("editor.coreSave.saveAnnotations");
+
+        // Beat-derived caches are whole-set replacements (insert desired rows,
+        // then prune stale rows). They must settle inside the same per-scene
+        // chain as content: otherwise an older save can finish pruning after a
+        // newer save and restore the old mention / POV set.
+        markStart("editor.coreSave.extractBeatMentions");
+        const beatMentions = extractBeatMentions(doc);
+        markEnd("editor.coreSave.extractBeatMentions");
+        markStart("editor.coreSave.upsertBeatMentions");
+        try {
+          await upsertSceneBeatMentions(id, beatMentions);
+        } catch (e) {
+          debugLog.error(
+            "persistSceneBody",
+            "upsertSceneBeatMentions failed",
+            errorDetail(e),
+          );
+        } finally {
+          markEnd("editor.coreSave.upsertBeatMentions");
+        }
+
+        markStart("editor.coreSave.extractBeatPovOverrides");
+        const beatPovOverrides = extractBeatPovOverrides(doc);
+        markEnd("editor.coreSave.extractBeatPovOverrides");
+        markStart("editor.coreSave.upsertBeatPovOverrides");
+        try {
+          await upsertSceneBeatPovOverrides(id, beatPovOverrides);
+        } catch (e) {
+          debugLog.error(
+            "persistSceneBody",
+            "upsertSceneBeatPovOverrides failed",
+            errorDetail(e),
+          );
+        } finally {
+          markEnd("editor.coreSave.upsertBeatPovOverrides");
+        }
+      }
+      publishAuthoritativeForeshadowRows(foreshadowRows);
+      return { ...previews, foreshadowRows };
+    });
+  const documentIdentity: TimelapseDocumentIdentity =
+    options.timelapseDocumentIdentity ?? {
+      projectId,
+      domain: "editor",
+      entityType: "scene",
+      entityId: id,
+      storage: isFileBacked ? "file" : "database",
+    };
+  const committedScene = nativeSnapshot
+    ? options.timelapseSteps !== undefined
+      ? runTimelapseBodyReplacement(
+          { projectId, documentIdentity },
+          {
+            commit: () => commitScene(undefined),
+            project: async (committed) => committed,
+          },
+        )
+      : options.timelapseDocument
+        ? runTimelapseBodyWrite(
+            {
+              projectId,
+              coverageReceipt: options.timelapseDocument,
+              documentIdentity,
+              content: sceneJsonStr,
+            },
+            {
+              commit: commitScene,
+              project: async (committed) => committed,
+            },
+          )
+        : runTimelapseBodyReplacement(
+            { projectId, documentIdentity },
+            {
+              commit: () => commitScene(undefined),
+              project: async (committed) => committed,
+            },
+          )
+    : runTimelapseMutation(projectId, () => commitScene(undefined));
   const {
     placedBeatPreview,
     unplacedBeatPreview,
     contentVersion,
     contentUpdatedAt,
     foreshadowRows,
-  } = await serializeSceneWrite(id, async () => {
-    markStart("editor.coreSave.invokeSave");
-    // Generate one authoritative renderer-wide tree token for both the native
-    // bundle and the browser fallback. Native must not independently sample
-    // wall clock time after the JS monotonic clock has advanced past it.
-    const contentUpdatedAt = nextTreeNodeMutationTimestamp();
-    let previews: DerivedPreviews;
-    let foreshadowRows: ForeshadowRow[] = [];
-    if (nativeSnapshot) {
-      recordCounter("editor.coreSave.domainIpc");
-      const requestId = crypto.randomUUID();
-      const bundledPreviews = await saveSceneBodyBundle({
-        ...nativeSnapshot,
-        foreshadowBaseVersions: {
-          ...getSceneForeshadowBaseVersions(id, doc),
-          ...nativeSnapshot.foreshadowBaseVersions,
-        },
-        sceneId: id,
-        projectId,
-        requestId,
-        sessionId: getRecorderSessionId(),
-        eventUid: requestId,
-        origin: options.origin ?? "human",
-        ...(options.timelapseSteps !== undefined && {
-          timelapseSteps: options.timelapseSteps,
-        }),
-        includeSidecars: !isFileBacked,
-        updatedAt: contentUpdatedAt,
-        ...(options.baseVersion !== undefined && {
-          baseVersion: options.baseVersion,
-        }),
-      });
-      recordCounter(
-        "editor.coreSave.dbTransaction",
-        bundledPreviews.dbTransactionCount,
-      );
-      previews = bundledPreviews;
-      foreshadowRows = bundledPreviews.foreshadowRows;
-    } else {
-      previews = await saveSceneContentInner(id, {
-        content: sceneJsonStr,
-        unplacedBeatsDoc,
-        charCount,
-        updatedAt: contentUpdatedAt,
-        ...(options.baseVersion !== undefined && {
-          baseVersion: options.baseVersion,
-        }),
-      });
-      // The Web Editor compatibility path has no Native transaction that can
-      // adopt replay steps. Preserve its existing replay behavior after the
-      // fallback domain write; Electron never takes this non-atomic branch.
-      if (options.timelapseSteps !== undefined) {
-        recordChangeEvent({
-          domain: "editor",
-          opType: "doc.step",
-          projectId,
-          sceneId: id,
-          entityType: "scene",
-          entityId: id,
-          payload: { steps: options.timelapseSteps },
-        });
-      }
-    }
-    markEnd("editor.coreSave.invokeSave");
-    // Publish immediately after the authoritative content commit, before
-    // fallible derived side effects. Chronicle and other read-only consumers
-    // must invalidate even when a later authorship/anchor/cache write rejects.
-    if (workspaceIdentity && projectId) {
-      // The native bundle bypasses tree/api.ts, so publish its authoritative
-      // row token here. The Drizzle fallback publishes inside
-      // saveSceneContentInner and must not be emitted twice.
-      if (nativeSnapshot) {
-        publishTreeNodeMutation({
-          workspacePath: workspaceIdentity.path,
-          workspaceOpenRevision: workspaceIdentity.openRevision,
-          projectId,
-          nodeId: id,
-          updatedAt: previews.contentUpdatedAt,
-        });
-      }
-      publishSceneBodyCommit({
-        workspacePath: workspaceIdentity.path,
-        openRevision: workspaceIdentity.openRevision,
-        projectId,
-        sceneId: id,
-        contentVersion: previews.contentVersion,
-      });
-    }
-    if (nativeSnapshot && !isFileBacked) {
-      // The former POV cache helper bumped this revision after its DB writes.
-      // The bundle owns those writes now, so publish once after commit.
-      bumpMatrixDataVersion();
-    } else if (!nativeSnapshot && !isFileBacked) {
-      markStart("editor.coreSave.saveAuthorship");
-      await saveAuthorshipSpans(id, doc);
-      markEnd("editor.coreSave.saveAuthorship");
-      markStart("editor.coreSave.saveForeshadow");
-      foreshadowRows = await saveForeshadowAnchors(id, doc);
-      markEnd("editor.coreSave.saveForeshadow");
-      markStart("editor.coreSave.saveAnnotations");
-      await saveAnnotationAnchors(projectId, id, doc);
-      markEnd("editor.coreSave.saveAnnotations");
-
-      // Beat-derived caches are whole-set replacements (insert desired rows,
-      // then prune stale rows). They must settle inside the same per-scene
-      // chain as content: otherwise an older save can finish pruning after a
-      // newer save and restore the old mention / POV set.
-      markStart("editor.coreSave.extractBeatMentions");
-      const beatMentions = extractBeatMentions(doc);
-      markEnd("editor.coreSave.extractBeatMentions");
-      markStart("editor.coreSave.upsertBeatMentions");
-      try {
-        await upsertSceneBeatMentions(id, beatMentions);
-      } catch (e) {
-        debugLog.error(
-          "persistSceneBody",
-          "upsertSceneBeatMentions failed",
-          errorDetail(e),
-        );
-      } finally {
-        markEnd("editor.coreSave.upsertBeatMentions");
-      }
-
-      markStart("editor.coreSave.extractBeatPovOverrides");
-      const beatPovOverrides = extractBeatPovOverrides(doc);
-      markEnd("editor.coreSave.extractBeatPovOverrides");
-      markStart("editor.coreSave.upsertBeatPovOverrides");
-      try {
-        await upsertSceneBeatPovOverrides(id, beatPovOverrides);
-      } catch (e) {
-        debugLog.error(
-          "persistSceneBody",
-          "upsertSceneBeatPovOverrides failed",
-          errorDetail(e),
-        );
-      } finally {
-        markEnd("editor.coreSave.upsertBeatPovOverrides");
-      }
-    }
-    publishAuthoritativeForeshadowRows(foreshadowRows);
-    return { ...previews, foreshadowRows };
-  });
+  } = await committedScene;
   if (fileBackedUri && isFileBacked) {
     markStart("editor.save.finalize");
     try {

@@ -40,12 +40,16 @@ import {
 } from "@/features/concurrency/externalWriteStore";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { rootCause } from "@/lib/debugLog";
+import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
 
 interface DetailsTabProps {
   entry: CodexEntry;
   summary: string;
   onSummaryChange: (value: string) => void;
-  onContentChange: (content: string) => void;
+  onContentChange: (
+    content: string,
+    timelapseDocument?: TimelapseDocumentRef,
+  ) => void;
   onExternalSync?: (content: string) => void;
   contentReloadToken?: number;
   /** 別窓が同一 entry を編集中なら本文エディタを read-only にする。 */
@@ -618,7 +622,10 @@ export function DetailsTab({
   };
 
   // Content変更ハンドラ
-  const handleContentChange = (newContent: string) => {
+  const handleContentChange = (
+    newContent: string,
+    timelapseDocument?: TimelapseDocumentRef,
+  ) => {
     if (isPreviewMode) return;
     if (isActivePhaseContentMode && activePhase) {
       markPhaseDirty(activePhase.id);
@@ -631,7 +638,7 @@ export function DetailsTab({
       });
       schedulePhaseContentSave();
     } else {
-      onContentChange(newContent);
+      onContentChange(newContent, timelapseDocument);
     }
   };
 
@@ -815,6 +822,7 @@ export function DetailsTab({
             content={contentForEditor}
             onContentChange={isPreviewMode ? () => {} : handleContentChange}
             entryId={contentEntryId}
+            projectId={entry.projectId}
             liveDocumentKey={contentLiveDocumentKey}
             onExternalSync={contentExternalSync}
             externalContent={contentExternalContent}

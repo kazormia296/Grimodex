@@ -517,6 +517,36 @@ export interface NapiBackendLike {
     entityIds: string[],
     anchorTimestamp: number,
   ): Promise<string>;
+  /** Renderer body rebaseline: identities only; Native reads trusted bodies. */
+  timelapseBodyBaselinesAppend?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    targets: unknown,
+    expectedAnchorSequence: number | null,
+  ): Promise<string>;
+  /**
+   * Logically reset one project: canonical change_events/hash chain remain,
+   * project state_snapshots are deleted, and Native advances the trusted
+   * resetSequence cutoff. The result contains the logical hidden-event count
+   * and deleted-snapshot count.
+   */
+  timelapseHistoryPurge?(
+    expectedWorkspacePath: string,
+    projectId: string,
+  ): Promise<string>;
+  /** Set timelapse.enabled under the exact workspace binding. */
+  timelapseEnabledSet?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    enabled: boolean,
+  ): Promise<string>;
+  /** Fixed layout/workspace/workspace snapshot scope. */
+  timelapseLayoutSnapshotRecord?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    payload: unknown,
+    expectedAnchorSequence: number | null,
+  ): Promise<string>;
   aiAuditAppendBatch(
     expectedWorkspacePath: string,
     projectId: string | null,
@@ -1970,6 +2000,257 @@ function requireTimelapseGenesisBaselinesAppendArgs(args: CommandArgs): {
   };
 }
 
+function requireTimelapseBodyBaselinesAppendArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+  targets: Array<{ kind: "scene" | "codex" | "snippet"; id: string }>;
+  expectedAnchorSequence: number | null;
+} {
+  const command = "timelapse_body_baselines_append";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "targets",
+    "expectedAnchorSequence",
+  ]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId, targets, expectedAnchorSequence`,
+    );
+  }
+  const exactBoundedString = (key: string, maxLength: number): string => {
+    const value = requireNonEmptyString(args, key, command);
+    if (value !== value.trim() || value.length > maxLength) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact non-empty string of at most ${maxLength} characters`,
+      );
+    }
+    return value;
+  };
+  const expectedWorkspacePath = exactBoundedString(
+    "expectedWorkspacePath",
+    16_384,
+  );
+  const projectId = exactBoundedString("projectId", 512);
+  const rawTargets = requireArray(args, "targets", command);
+  if (rawTargets.length < 1 || rawTargets.length > 64) {
+    throw new Error(
+      `invalid args \`targets\` for command \`${command}\`: expected 1..64 items`,
+    );
+  }
+  const seen = new Set<string>();
+  const targets = rawTargets.map((value, index) => {
+    const key = `targets[${index}]`;
+    const target = requireRecord({ value }, "value", command);
+    const targetKeys = Object.keys(target);
+    if (
+      targetKeys.length !== 2 ||
+      !Object.hasOwn(target, "kind") ||
+      !Object.hasOwn(target, "id")
+    ) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected exactly kind and id`,
+      );
+    }
+    const kind = requireString(target, "kind", command);
+    if (kind !== "scene" && kind !== "codex" && kind !== "snippet") {
+      throw new Error(
+        `invalid args \`${key}.kind\` for command \`${command}\`: expected scene, codex, or snippet`,
+      );
+    }
+    const id = requireNonEmptyString(target, "id", command);
+    if (id !== id.trim() || id.length > 512) {
+      throw new Error(
+        `invalid args \`${key}.id\` for command \`${command}\`: expected an exact non-empty string of at most 512 characters`,
+      );
+    }
+    const identity = `${kind}\u0000${id}`;
+    if (seen.has(identity)) {
+      throw new Error(
+        `invalid args \`targets\` for command \`${command}\`: duplicate identities are not allowed`,
+      );
+    }
+    seen.add(identity);
+    return {
+      kind: kind as "scene" | "codex" | "snippet",
+      id,
+    };
+  });
+  const rawAnchor = requirePresent(args, "expectedAnchorSequence", command);
+  if (
+    rawAnchor !== null &&
+    (typeof rawAnchor !== "number" ||
+      !Number.isSafeInteger(rawAnchor) ||
+      rawAnchor < 0)
+  ) {
+    throw new Error(
+      `invalid args \`expectedAnchorSequence\` for command \`${command}\`: expected a non-negative safe integer or null`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    targets,
+    expectedAnchorSequence: rawAnchor as number | null,
+  };
+}
+
+function requireTimelapseHistoryPurgeArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+} {
+  const command = "timelapse_history_purge";
+  const allowedKeys = new Set(["expectedWorkspacePath", "projectId"]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId`,
+    );
+  }
+  const expectedWorkspacePath = requireNonEmptyString(
+    args,
+    "expectedWorkspacePath",
+    command,
+  );
+  const projectId = requireNonEmptyString(args, "projectId", command);
+  if (
+    expectedWorkspacePath.trim() !== expectedWorkspacePath ||
+    expectedWorkspacePath.length > 16_384 ||
+    projectId.trim() !== projectId ||
+    projectId.length > 512
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: workspacePath and projectId must be exact bounded strings`,
+    );
+  }
+  return { expectedWorkspacePath, projectId };
+}
+
+function requireTimelapseEnabledSetArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+  enabled: boolean;
+} {
+  const command = "timelapse_enabled_set";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "enabled",
+  ]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId, enabled`,
+    );
+  }
+  const expectedWorkspacePath = requireNonEmptyString(
+    args,
+    "expectedWorkspacePath",
+    command,
+  );
+  const projectId = requireNonEmptyString(args, "projectId", command);
+  if (
+    expectedWorkspacePath.trim() !== expectedWorkspacePath ||
+    expectedWorkspacePath.length > 16_384 ||
+    projectId.trim() !== projectId ||
+    projectId.length > 512
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: workspacePath and projectId must be exact bounded strings`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    enabled: requireBoolean(args, "enabled", command),
+  };
+}
+
+function requireTimelapseLayoutSnapshotRecordArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+  payload: CommandArgs;
+  expectedAnchorSequence: number | null;
+} {
+  const command = "timelapse_layout_snapshot_record";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "payload",
+    "expectedAnchorSequence",
+  ]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId, payload, expectedAnchorSequence`,
+    );
+  }
+  const expectedWorkspacePath = requireNonEmptyString(
+    args,
+    "expectedWorkspacePath",
+    command,
+  );
+  const projectId = requireNonEmptyString(args, "projectId", command);
+  if (
+    expectedWorkspacePath.trim() !== expectedWorkspacePath ||
+    expectedWorkspacePath.length > 16_384 ||
+    projectId.trim() !== projectId ||
+    projectId.length > 512
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: workspacePath and projectId must be exact bounded strings`,
+    );
+  }
+  const payload = requireRecord(args, "payload", command);
+  const payloadKeys = new Set(["layout", "activePresetId", "hiddenStripePanels"]);
+  if (
+    !Object.hasOwn(payload, "layout") ||
+    Object.keys(payload).some((key) => !payloadKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args \`payload\` for command \`${command}\`: expected layout plus optional activePresetId/hiddenStripePanels`,
+    );
+  }
+  requireRecord(payload, "layout", command);
+  if (Object.hasOwn(payload, "activePresetId")) {
+    nullableString(payload, "activePresetId", command);
+  }
+  if (Object.hasOwn(payload, "hiddenStripePanels")) {
+    const panels = requireArray(payload, "hiddenStripePanels", command);
+    if (panels.length > 128 || panels.some((panel) => typeof panel !== "string")) {
+      throw new Error(
+        `invalid args \`payload.hiddenStripePanels\` for command \`${command}\`: expected at most 128 strings`,
+      );
+    }
+  }
+  const rawAnchor = requirePresent(args, "expectedAnchorSequence", command);
+  if (
+    rawAnchor !== null &&
+    (typeof rawAnchor !== "number" ||
+      !Number.isSafeInteger(rawAnchor) ||
+      rawAnchor < 0)
+  ) {
+    throw new Error(
+      `invalid args \`expectedAnchorSequence\` for command \`${command}\`: expected a non-negative safe integer or null`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    payload,
+    expectedAnchorSequence: rawAnchor as number | null,
+  };
+}
+
 /** OCC トークンや件数など「0 以上の整数」必須フィールド用。 */
 function requireNonNegativeSafeInteger(
   args: CommandArgs,
@@ -3041,8 +3322,64 @@ function requireSnippetWriterPayload(
     for (const key of fields) {
       if (Object.hasOwn(payload, key)) requireString(payload, key, command);
     }
+    requireTimelapseDocStepCoverage(payload, command);
   }
   return payload;
+}
+
+function requireTimelapseDocStepCoverage(
+  payload: CommandArgs,
+  command:
+    | "codex_update"
+    | "snippet_update"
+    | "save_scene_body_bundle"
+    | "tree_node_patch",
+): void {
+  if (!Object.hasOwn(payload, "timelapseDocStepCoverage")) return;
+  const contentPayload =
+    command === "tree_node_patch"
+      ? requireRecord(payload, "patch", command)
+      : payload;
+  const contentKey =
+    command === "save_scene_body_bundle" ? "contentJson" : "content";
+  if (!Object.hasOwn(contentPayload, contentKey)) {
+    throw new Error(
+      `invalid args \`timelapseDocStepCoverage\` for command \`${command}\`: coverage requires content`,
+    );
+  }
+  requireString(contentPayload, contentKey, command);
+  if (
+    command === "save_scene_body_bundle" &&
+    Object.hasOwn(payload, "timelapseSteps")
+  ) {
+    throw new Error(
+      `invalid args \`timelapseDocStepCoverage\` for command \`${command}\`: coverage cannot be combined with timelapseSteps`,
+    );
+  }
+  const proof = requireRecord(payload, "timelapseDocStepCoverage", command);
+  const expectedKeys = new Set(["eventUid", "sessionId", "contentDigest"]);
+  const proofKeys = Object.keys(proof);
+  if (
+    proofKeys.length !== expectedKeys.size ||
+    proofKeys.some((key) => !expectedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args \`timelapseDocStepCoverage\` for command \`${command}\`: expected exactly eventUid, sessionId, and contentDigest`,
+    );
+  }
+  for (const key of ["eventUid", "sessionId"] as const) {
+    if (requireNonEmptyString(proof, key, command).trim().length === 0) {
+      throw new Error(
+        `invalid args \`timelapseDocStepCoverage.${key}\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  }
+  const contentDigest = requireString(proof, "contentDigest", command);
+  if (!/^sha256:[0-9a-f]{64}$/.test(contentDigest)) {
+    throw new Error(
+      `invalid args \`timelapseDocStepCoverage.contentDigest\` for command \`${command}\`: expected a lowercase sha256 digest`,
+    );
+  }
 }
 
 function requireAuthorshipReplaceLanePayload(args: CommandArgs): CommandArgs {
@@ -3585,7 +3922,8 @@ function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "nodeId", command);
   requireNonEmptyString(payload, "updatedAt", command);
-  requireRecord(payload, "patch", command);
+  const patch = requireRecord(payload, "patch", command);
+  requireTimelapseDocStepCoverage(payload, command);
   requireBoolean(payload, "bumpVersion", command);
   if (Object.hasOwn(payload, "baseVersion")) {
     const baseVersion = requireSafeInteger(payload, "baseVersion", command);
@@ -3621,7 +3959,6 @@ function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
         `invalid args \`changeEvent\` for command \`${command}\`: expected versioned OCC`,
       );
     }
-    const patch = requireRecord(payload, "patch", command);
     if (
       !Object.hasOwn(patch, "content") ||
       Object.keys(patch).some((key) => key !== "content" && key !== "charCount")
@@ -4567,6 +4904,35 @@ function requireArray(args: CommandArgs, key: string, cmd: string): unknown[] {
   return value;
 }
 
+/**
+ * `timelapse-internal/doc.step.coverage` is a Native-owned proof row. The
+ * renderer-facing batch command must never be an authority for that row: a
+ * forged proof can otherwise make the body writer skip its full snapshot.
+ * Keep the ordinary batch shape deliberately compatible and only reject the
+ * reserved pair here; the Native/Tauri implementations repeat this guard.
+ */
+function requirePublicTimelapseAppendEvents(
+  args: CommandArgs,
+  command: string,
+): unknown[] {
+  const events = requireArray(args, "events", command);
+  for (const [index, event] of events.entries()) {
+    if (typeof event !== "object" || event === null || Array.isArray(event)) {
+      continue;
+    }
+    const row = event as CommandArgs;
+    if (
+      row.domain === "timelapse-internal" &&
+      row.opType === "doc.step.coverage"
+    ) {
+      throw new Error(
+        `TIMELAPSE_COVERAGE_RESERVED: invalid args \`events[${index}]\` for command \`${command}\`: Native-owned timelapse coverage is not accepted by the public append batch`,
+      );
+    }
+  }
+  return events;
+}
+
 function requireSemanticRerankerShadowRequest(args: CommandArgs): CommandArgs {
   const command = "semantic_reranker_shadow_score";
   const allowedRequestKeys = new Set([
@@ -4775,6 +5141,7 @@ function requireSceneBodyBundlePayload(args: CommandArgs): CommandArgs {
     );
   }
   requireString(payload, "contentJson", command);
+  requireTimelapseDocStepCoverage(payload, command);
   requireString(payload, "unplacedBeatsDoc", command);
   for (const key of ["charCount", "docContentSize"] as const) {
     const value = requireNumber(payload, key, command);
@@ -6550,7 +6917,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         await b.timelapseAppendBatch(
           requireString(a, "projectId", "timelapse_append_batch"),
           requireString(a, "sessionId", "timelapse_append_batch"),
-          requirePresent(a, "events", "timelapse_append_batch"),
+          requirePublicTimelapseAppendEvents(a, "timelapse_append_batch"),
         ),
       ),
   },
@@ -6568,6 +6935,64 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           input.kind,
           input.entityIds,
           input.anchorTimestamp,
+        ),
+      );
+    },
+  },
+  timelapse_body_baselines_append: {
+    run: async (b, a) => {
+      const input = requireTimelapseBodyBaselinesAppendArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseBodyBaselinesAppend,
+          "timelapseBodyBaselinesAppend",
+        )(
+          input.expectedWorkspacePath,
+          input.projectId,
+          input.targets,
+          input.expectedAnchorSequence,
+        ),
+      );
+    },
+  },
+  timelapse_history_purge: {
+    run: async (b, a) => {
+      const input = requireTimelapseHistoryPurgeArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseHistoryPurge,
+          "timelapseHistoryPurge",
+        )(input.expectedWorkspacePath, input.projectId),
+      );
+    },
+  },
+  timelapse_enabled_set: {
+    run: async (b, a) => {
+      const input = requireTimelapseEnabledSetArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseEnabledSet,
+          "timelapseEnabledSet",
+        )(input.expectedWorkspacePath, input.projectId, input.enabled),
+      );
+    },
+  },
+  timelapse_layout_snapshot_record: {
+    run: async (b, a) => {
+      const input = requireTimelapseLayoutSnapshotRecordArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseLayoutSnapshotRecord,
+          "timelapseLayoutSnapshotRecord",
+        )(
+          input.expectedWorkspacePath,
+          input.projectId,
+          input.payload,
+          input.expectedAnchorSequence,
         ),
       );
     },
@@ -7523,21 +7948,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   codex_update: {
-    run: async (b, a) =>
-      parseWire(
-        await requireNapiMethod(
-          b,
-          b.codexUpdate,
-          "codexUpdate",
-        )(
-          requireCanonicalWriterIdentity(a, "codex_update", [
-            "human-direct",
-            "import-apply",
-            "history-replay",
-            "restore-or-migration",
-          ]),
-        ),
-      ),
+    run: async (b, a) => {
+      const payload = requireCanonicalWriterIdentity(a, "codex_update", [
+        "human-direct",
+        "import-apply",
+        "history-replay",
+        "restore-or-migration",
+      ]);
+      requireTimelapseDocStepCoverage(payload, "codex_update");
+      return parseWire(
+        await requireNapiMethod(b, b.codexUpdate, "codexUpdate")(payload),
+      );
+    },
   },
   codex_delete: {
     run: async (b, a) =>

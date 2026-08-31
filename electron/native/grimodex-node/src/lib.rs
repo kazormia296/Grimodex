@@ -42,8 +42,8 @@ use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendar
 use grimodex_db::domain_writes::{
     self, ApplyAiTreePlanPayload, CodexRenameApplyPayload, CodexRenameUndoPayload,
     CreateScanStagingProjectPayload, ProjectCreatePayload, ProjectDeletePayload,
-    ProjectPatchPayload, ReplaceAuthorshipLanePayload, SetEntityTagsPayload, TreeNodeCreatePayload,
-    ScanStagingProjectPublishPayload, TreeNodeDeletePayload, TreeNodePatchPayload,
+    ProjectPatchPayload, ReplaceAuthorshipLanePayload, ScanStagingProjectPublishPayload,
+    SetEntityTagsPayload, TreeNodeCreatePayload, TreeNodeDeletePayload, TreeNodePatchPayload,
     UndoAiTreePlanPayload,
 };
 use grimodex_db::editor_stickies;
@@ -100,7 +100,7 @@ use grimodex_db::state::{
     active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
     PinnedWorkspaceDb,
 };
-use grimodex_db::timelapse::TimelapseGenesisBaselineKind;
+use grimodex_db::timelapse::{TimelapseBodySnapshotTarget, TimelapseGenesisBaselineKind};
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload, TrashBinRestorePayload};
 use grimodex_db::web_editor_handoff;
 use grimodex_db::workspace::{self, GlobalSettings};
@@ -125,6 +125,13 @@ type NarrativeCiProjectCursorRow = (
     Option<String>,
     Option<String>,
 );
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TimelapseBodyBaselineTargetWire {
+    kind: String,
+    id: String,
+}
 
 fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
     // Workspace metadata survives a process restart, while the recovery gate
@@ -4409,17 +4416,14 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn scan_staging_project_publish(
-        &self,
-        payload: serde_json::Value,
-    ) -> Result<String> {
+    pub async fn scan_staging_project_publish(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: ScanStagingProjectPublishPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(&domain_writes::publish_scan_staging_project(
-                    db, payload,
-                )?)?)
+                Ok(serde_json::to_string(
+                    &domain_writes::publish_scan_staging_project(db, payload)?,
+                )?)
             })
         })
         .await
@@ -5101,7 +5105,7 @@ impl Backend {
         run_blocking(move || {
             let events: Vec<AppendChangeEvent> = from_wire("events", events)?;
             with_db_state(&state.ws, |db| {
-                let result = db.append_change_events(&project_id, &session_id, &events)?;
+                let result = db.append_renderer_change_events(&project_id, &session_id, &events)?;
                 Ok(serde_json::to_string(&result)?)
             })
         })
@@ -5131,6 +5135,116 @@ impl Backend {
                 kind,
                 &entity_ids,
                 anchor_timestamp,
+            )?;
+            Ok(serde_json::to_string(&summary).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Append body baselines at the current canonical tail. Renderer callers
+    /// provide identities only; Native resolves ownership and body payload
+    /// from the trusted workspace tables inside one immediate transaction.
+    #[napi]
+    pub async fn timelapse_body_baselines_append(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        targets: serde_json::Value,
+        expected_anchor_sequence: Option<i64>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let wires: Vec<TimelapseBodyBaselineTargetWire> = from_wire("targets", targets)?;
+            let targets = wires
+                .into_iter()
+                .map(|target| {
+                    let kind = TimelapseGenesisBaselineKind::parse(&target.kind)?;
+                    Ok::<_, anyhow::Error>(match kind {
+                        TimelapseGenesisBaselineKind::Scene => {
+                            TimelapseBodySnapshotTarget::scene(target.id)
+                        }
+                        TimelapseGenesisBaselineKind::Codex => {
+                            TimelapseBodySnapshotTarget::codex(target.id)
+                        }
+                        TimelapseGenesisBaselineKind::Snippet => {
+                            TimelapseBodySnapshotTarget::snippet(target.id)
+                        }
+                    })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_timelapse_workspace(&workspace, &expected_workspace_path)?;
+            let summary = workspace.db().append_timelapse_body_baselines(
+                &project_id,
+                &targets,
+                expected_anchor_sequence,
+            )?;
+            Ok(serde_json::to_string(&summary).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Logically reset timelapse history for the authorized project in one
+    /// transaction. Canonical `change_events` and their hash chain remain
+    /// intact; project `state_snapshots` are deleted and Native advances the
+    /// trusted `resetSequence` cutoff. The summary reports the logical event
+    /// count hidden by the new cutoff and the snapshots deleted.
+    #[napi]
+    pub async fn timelapse_history_purge(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_timelapse_workspace(&workspace, &expected_workspace_path)?;
+            let summary = workspace.db().purge_timelapse_history(&project_id)?;
+            Ok(serde_json::to_string(&summary).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Set `timelapse.enabled` under the same exact workspace binding used by
+    /// the protected timelapse writers. This prevents a switch from redirecting
+    /// an enable/rollback to a project with the same id in another database.
+    #[napi]
+    pub async fn timelapse_enabled_set(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        enabled: bool,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_timelapse_workspace(&workspace, &expected_workspace_path)?;
+            let summary = workspace.db().set_timelapse_enabled(&project_id, enabled)?;
+            Ok(serde_json::to_string(&summary).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Record a renderer UI snapshot under the fixed
+    /// `layout/workspace/workspace` scope. Native derives the anchor timestamp
+    /// and checks the optional observed canonical tail.
+    #[napi]
+    pub async fn timelapse_layout_snapshot_record(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        payload: serde_json::Value,
+        expected_anchor_sequence: Option<i64>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_timelapse_workspace(&workspace, &expected_workspace_path)?;
+            let payload = serde_json::to_string(&payload).map_err(anyhow::Error::from)?;
+            let summary = workspace.db().append_timelapse_layout_snapshot(
+                &project_id,
+                &payload,
+                expected_anchor_sequence,
             )?;
             Ok(serde_json::to_string(&summary).map_err(anyhow::Error::from)?)
         })
@@ -9782,6 +9896,109 @@ mod timelapse_genesis_baseline_tests {
                 .to_string()
                 .contains("TIMELAPSE_GENESIS_BASELINE_WORKSPACE_CHANGED"),
             "unexpected error: {error}"
+        );
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn typed_timelapse_commands_bind_workspace_and_preserve_native_scopes() {
+        let (backend, root, workspace_path) = backend_with_scene();
+        let expected_workspace_path = workspace_path.to_string_lossy().into_owned();
+        let equivalent_path = workspace_path.join("nested").join("..");
+
+        let body_wire = backend
+            .timelapse_body_baselines_append(
+                equivalent_path.to_string_lossy().into_owned(),
+                "project-a".into(),
+                serde_json::json!([{ "kind": "scene", "id": "scene-a" }]),
+                None,
+            )
+            .await
+            .expect("append body baseline through N-API");
+        let body_summary =
+            serde_json::from_str::<serde_json::Value>(&body_wire).expect("body summary JSON");
+        assert_eq!(body_summary["insertedCount"], serde_json::json!(1));
+        assert_eq!(body_summary["skippedExistingCount"], serde_json::json!(0));
+        assert_eq!(body_summary["anchorSequence"], serde_json::json!(0));
+        assert!(body_summary["anchorTimestamp"].is_i64());
+
+        let layout_wire = backend
+            .timelapse_layout_snapshot_record(
+                expected_workspace_path.clone(),
+                "project-a".into(),
+                serde_json::json!({
+                    "layout": { "regions": {} },
+                    "activePresetId": null,
+                    "hiddenStripePanels": ["chat"],
+                }),
+                Some(0),
+            )
+            .await
+            .expect("append layout snapshot through N-API");
+        let layout_summary =
+            serde_json::from_str::<serde_json::Value>(&layout_wire).expect("layout summary JSON");
+        assert_eq!(layout_summary["inserted"], serde_json::json!(true));
+        assert_eq!(layout_summary["anchorSequence"], serde_json::json!(0));
+
+        let enabled_wire = backend
+            .timelapse_enabled_set(expected_workspace_path.clone(), "project-a".into(), true)
+            .await
+            .expect("set timelapse flag through N-API");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&enabled_wire).expect("enabled summary JSON"),
+            serde_json::json!({ "enabled": true })
+        );
+
+        let snapshot = active_workspace_snapshot(&backend.state.ws).expect("active workspace");
+        snapshot
+            .db()
+            .with_conn(|conn| {
+                let body_scope: (String, String, String) = conn.query_row(
+                    "SELECT domain, entity_type, entity_id FROM state_snapshots
+                      WHERE project_id = 'project-a' AND domain = 'editor'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                assert_eq!(
+                    body_scope,
+                    ("editor".into(), "scene".into(), "scene-a".into())
+                );
+                let layout_scope: (String, String, String) = conn.query_row(
+                    "SELECT domain, entity_type, entity_id FROM state_snapshots
+                      WHERE project_id = 'project-a' AND domain = 'layout'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                assert_eq!(
+                    layout_scope,
+                    ("layout".into(), "workspace".into(), "workspace".into())
+                );
+                let enabled: String = conn.query_row(
+                    "SELECT value FROM project_settings
+                      WHERE project_id = 'project-a' AND key = 'timelapse.enabled'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(enabled, "true");
+                Ok(())
+            })
+            .expect("verify N-API writer scopes");
+
+        let wrong_workspace = root.join("wrong-workspace");
+        std::fs::create_dir_all(&wrong_workspace).expect("wrong workspace dir");
+        let error = backend
+            .timelapse_history_purge(
+                wrong_workspace.to_string_lossy().into_owned(),
+                "project-a".into(),
+            )
+            .await
+            .expect_err("wrong workspace must fail closed for purge");
+        assert!(
+            error
+                .to_string()
+                .contains("TIMELAPSE_GENESIS_BASELINE_WORKSPACE_CHANGED"),
+            "unexpected workspace binding error: {error}"
         );
         drop(backend);
         let _ = std::fs::remove_dir_all(root);

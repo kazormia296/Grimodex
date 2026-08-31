@@ -8,24 +8,21 @@ import type {
 
 async function initializeTimelapse({
   projectId,
+  expectedWorkspacePath: providedWorkspacePath,
   canStart,
   isMutationCurrent,
 }: ProjectBackgroundActivation): Promise<void> {
   if (!canStart()) return;
   const workspaceIdentity = getCurrentWorkspaceIdentity();
-  if (!workspaceIdentity || !isMutationCurrent()) return;
-  const expectedWorkspacePath = workspaceIdentity.path;
+  const expectedWorkspacePath =
+    providedWorkspacePath ?? workspaceIdentity?.path;
+  if (!expectedWorkspacePath || !isMutationCurrent()) return;
 
   const [toggle, recorder] = await Promise.all([
     import("@/features/timelapse/toggle"),
     import("@/features/timelapse/recorder"),
   ]);
   if (!canStart()) return;
-
-  // Drain the old Project queue before changing the recorder binding.
-  if (!isMutationCurrent()) return;
-  await recorder.flushNow();
-  if (!isMutationCurrent()) return;
 
   const enabled = await toggle.isTimelapseEnabled(projectId);
   if (!isMutationCurrent()) return;

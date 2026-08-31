@@ -331,6 +331,32 @@ export declare class Backend {
    */
   timelapseGenesisBaselinesAppend(expectedWorkspacePath: string, projectId: string, kind: string, entityIds: Array<string>, anchorTimestamp: number): Promise<string>
   /**
+   * Append body baselines at the current canonical tail. Renderer callers
+   * provide identities only; Native resolves ownership and body payload
+   * from the trusted workspace tables inside one immediate transaction.
+   */
+  timelapseBodyBaselinesAppend(expectedWorkspacePath: string, projectId: string, targets: any, expectedAnchorSequence?: number | undefined | null): Promise<string>
+  /**
+   * Logically reset timelapse history for the authorized project in one
+   * transaction. Canonical `change_events` and their hash chain remain
+   * intact; project `state_snapshots` are deleted and Native advances the
+   * trusted `resetSequence` cutoff. The summary reports the logical event
+   * count hidden by the new cutoff and the snapshots deleted.
+   */
+  timelapseHistoryPurge(expectedWorkspacePath: string, projectId: string): Promise<string>
+  /**
+   * Set `timelapse.enabled` under the same exact workspace binding used by
+   * the protected timelapse writers. This prevents a switch from redirecting
+   * an enable/rollback to a project with the same id in another database.
+   */
+  timelapseEnabledSet(expectedWorkspacePath: string, projectId: string, enabled: boolean): Promise<string>
+  /**
+   * Record a renderer UI snapshot under the fixed
+   * `layout/workspace/workspace` scope. Native derives the anchor timestamp
+   * and checks the optional observed canonical tail.
+   */
+  timelapseLayoutSnapshotRecord(expectedWorkspacePath: string, projectId: string, payload: any, expectedAnchorSequence?: number | undefined | null): Promise<string>
+  /**
    * Append a durable batch to the complete AI-use audit ledger. The
    * renderer snapshots `expected_workspace_path` before dispatch; every
    * subsequent event must still target that exact workspace. A workspace

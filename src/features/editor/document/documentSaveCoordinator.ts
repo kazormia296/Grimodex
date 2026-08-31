@@ -62,6 +62,16 @@ export interface DocumentMutationContext {
   markAuthoritativeMutation: () => void;
 }
 
+/**
+ * Synchronously published admission barrier for an authoritative replacement.
+ * `commit` advances the renderer-local foreign revision only after the caller's
+ * canonical write succeeds; `release` merely re-opens editor admission.
+ */
+export interface ExclusiveDocumentMutationLease {
+  commit: () => void;
+  release: () => void;
+}
+
 export class StaleRetiredDocumentSaveError extends Error {
   constructor() {
     super("A detached editor draft was superseded by a newer saved version");
@@ -86,7 +96,9 @@ function notifyExclusiveDocumentLease(encoded: string): void {
   }
 }
 
-function acquireExclusiveDocumentLease(documentKey: DocumentKey): () => void {
+export function acquireExclusiveDocumentMutationLease(
+  documentKey: DocumentKey,
+): ExclusiveDocumentMutationLease {
   const encoded = encodeDocumentKey(documentKey);
   exclusiveDocumentLeaseCounts.set(
     encoded,
@@ -94,14 +106,22 @@ function acquireExclusiveDocumentLease(documentKey: DocumentKey): () => void {
   );
   notifyExclusiveDocumentLease(encoded);
 
+  let committed = false;
   let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    const remaining = (exclusiveDocumentLeaseCounts.get(encoded) ?? 1) - 1;
-    if (remaining > 0) exclusiveDocumentLeaseCounts.set(encoded, remaining);
-    else exclusiveDocumentLeaseCounts.delete(encoded);
-    notifyExclusiveDocumentLease(encoded);
+  return {
+    commit() {
+      if (committed) return;
+      committed = true;
+      recordAuthoritativeDocumentMutation(encoded);
+    },
+    release() {
+      if (released) return;
+      released = true;
+      const remaining = (exclusiveDocumentLeaseCounts.get(encoded) ?? 1) - 1;
+      if (remaining > 0) exclusiveDocumentLeaseCounts.set(encoded, remaining);
+      else exclusiveDocumentLeaseCounts.delete(encoded);
+      notifyExclusiveDocumentLease(encoded);
+    },
   };
 }
 
@@ -282,14 +302,14 @@ export async function runExclusiveDocumentMutation<T>(
   options: DocumentMutationOptions<T> = {},
 ): Promise<T> {
   const encoded = encodeDocumentKey(documentKey);
-  const releaseLease = acquireExclusiveDocumentLease(documentKey);
+  const lease = acquireExclusiveDocumentMutationLease(documentKey);
   const previous = saveTails.get(encoded);
   const run = (previous ? previous.catch(() => {}) : Promise.resolve()).then(
     async () => {
       let mutationRecorded = false;
       const markAuthoritativeMutation = () => {
         if (mutationRecorded) return;
-        recordAuthoritativeDocumentMutation(encoded);
+        lease.commit();
         mutationRecorded = true;
       };
       const result = await mutation({ markAuthoritativeMutation });
@@ -304,7 +324,7 @@ export async function runExclusiveDocumentMutation<T>(
     return await run;
   } finally {
     if (saveTails.get(encoded) === run) saveTails.delete(encoded);
-    releaseLease();
+    lease.release();
   }
 }
 

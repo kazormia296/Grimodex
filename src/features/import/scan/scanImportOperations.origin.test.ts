@@ -118,7 +118,13 @@ function plan(): ScanImportPlan {
         aliases: [],
         summary: "概要",
         confidence: 1,
-        evidence: [],
+        evidence: [
+          {
+            sectionId: "section-1",
+            paragraphId: "paragraph-1",
+            excerpt: "根拠",
+          },
+        ],
       },
     ],
     relations: [
@@ -216,13 +222,29 @@ describe("Scan canonical writer origin", () => {
     for (const call of mocks.createNode.mock.calls) {
       expectImportWriteContext(call[1]);
     }
-    expectImportWriteContext(mocks.saveSceneContent.mock.calls[0]?.[1]);
+    const sceneCreate = mocks.createNode.mock.calls.find(
+      ([input]) => input.id === "scene-1",
+    );
+    expect(sceneCreate?.[0]).toEqual(
+      expect.objectContaining({
+        content: expect.stringContaining('"type":"doc"'),
+      }),
+    );
+    expect(mocks.saveSceneContent).not.toHaveBeenCalled();
     expect(mocks.ensureBuiltinTypes).toHaveBeenCalledWith(projectId, "ja", {
       origin: "import",
     });
     expectImportWriteContext(mocks.createCodexType.mock.calls[0]?.[1]);
     expectImportWriteContext(mocks.createCodexEntry.mock.calls[0]?.[1]);
+    expect(mocks.createCodexEntry.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        content: expect.stringContaining('"type":"doc"'),
+      }),
+    );
     expectImportWriteContext(mocks.updateCodexEntry.mock.calls[0]?.[3]);
+    expect(mocks.updateCodexEntry.mock.calls[0]?.[2]).not.toHaveProperty(
+      "content",
+    );
     expectImportWriteContext(mocks.createCodexRelation.mock.calls[0]?.[1]);
     expectImportWriteContext(mocks.createPhase.mock.calls[0]?.[1]);
     expect(mocks.createEvent.mock.calls[0]?.[1]).toEqual({ origin: "import" });

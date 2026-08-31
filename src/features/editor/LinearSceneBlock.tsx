@@ -120,7 +120,9 @@ import {
   runCoordinatedDocumentSave,
 } from "@/features/editor/document/documentSaveCoordinator";
 import {
+  createLoadedTimelapseDescriptor,
   handleSceneEditorTransaction,
+  type LoadedTimelapseDescriptor,
   type SceneBeatIndexState,
 } from "@/features/editor/sceneEditorTransactionPipeline";
 import { EditorStickySurface } from "@/features/editor/stickies/EditorStickySurface";
@@ -254,6 +256,9 @@ function MountedSceneBlock({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
+  const loadedTimelapseDescriptorRef = useRef<LoadedTimelapseDescriptor | null>(
+    null,
+  );
   const isApplyingExternalUpdate = useRef(false);
   const isApplyingProgrammaticProjectionUpdate = useRef(false);
   const externalUpdateDepthRef = useRef(0);
@@ -302,6 +307,10 @@ function MountedSceneBlock({
   // 「0 chars」の一瞬の表示と、高さ崩壊によるスクロールのガタつきを防ぐ)。
   const [isLoading, setIsLoading] = useState(true);
   const [loadReady, setLoadReady] = useState(false);
+  // Keep the authority that actually produced the loaded body.  The current
+  // Project store can advance before React rerenders this block during a
+  // workspace switch, so fence admission must not derive it from props/store.
+  const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
   const [loadedInputProjectionKey, setLoadedInputProjectionKey] = useState("");
   const loadReadyRef = useRef(false);
   const inputProjectionReadyRef = useRef(false);
@@ -374,8 +383,15 @@ function MountedSceneBlock({
     // persistSceneBody が正本。タブエディタ (EditorPane) と同一経路。
     const docAtStart = ed.state.doc;
     const persistedContent = docAtStart.toJSON();
+    const timelapseDescriptor = loadedTimelapseDescriptorRef.current;
     const persisted = await persistSceneBody(sceneId, docAtStart, {
       baseVersion: sceneVersionRef.current,
+      ...(timelapseDescriptor?.document
+        ? { timelapseDocument: timelapseDescriptor.document }
+        : {}),
+      ...(timelapseDescriptor
+        ? { timelapseDocumentIdentity: timelapseDescriptor.documentIdentity }
+        : {}),
     });
     if (persisted.foreshadowRows.length > 0) {
       runProgrammaticProjectionUpdate(() => {
@@ -580,11 +596,8 @@ function MountedSceneBlock({
       onTransaction({ transaction }) {
         handleSceneEditorTransaction({
           transaction,
-          id: sceneId,
-          isEntryMode: false,
-          isCodexMode: false,
-          isSnippetMode: false,
-          isChronicleEventMode: false,
+          timelapseDescriptor: loadedTimelapseDescriptorRef.current,
+          beatSceneId: sceneId,
           isApplyingExternalUpdate: isApplyingExternalUpdate.current,
           beatIndexRef: sceneBeatIndexRef,
         });
@@ -607,10 +620,13 @@ function MountedSceneBlock({
 
   editorRef.current = editor;
 
+  const loadedFenceDocumentKey = inputProjectionReady ? documentKey : null;
+  const loadedFenceProjectId = inputProjectionReady ? loadedProjectId : null;
   const editorReadOnly = useLicenseEditableSync(
     editor,
     !inputProjectionReady,
-    documentKey,
+    loadedFenceDocumentKey,
+    loadedFenceProjectId,
   );
   const editorWritable = inputProjectionReady && !editorReadOnly;
   editorWritableRef.current = editorWritable;
@@ -916,10 +932,13 @@ function MountedSceneBlock({
 
     async function load() {
       cancel();
+      const loadProjectId = currentProjectId;
       // 再走 (reloadNonce bump) 中の in-flight 窓でも保存を禁止する。
       // 初回 mount は初期値 true なので no-op。ロード成功時のみ false に戻る。
       // 「未ロード/再ロード窓の保存禁止」は本文消失の最終防衛線 (59ab7c94)。
       loadFailedRef.current = true;
+      loadedTimelapseDescriptorRef.current = null;
+      setLoadedProjectId(null);
       publishLoadReady(false);
       setLoadedInputProjectionKey("");
       // State/effect propagation is asynchronous. Close the native input
@@ -1038,6 +1057,17 @@ function MountedSceneBlock({
         // reset. Earlier publication creates a window where user edits are
         // later cleared as if they belonged to document hydration.
         loadFailedRef.current = false;
+        loadedTimelapseDescriptorRef.current = createLoadedTimelapseDescriptor(
+          loadProjectId,
+          {
+            kind: "tree",
+            id: sceneId,
+            nodeType: treeNodeType,
+            storage: isFileBacked ? "file" : "database",
+            loadedVersion: sceneVersionRef.current,
+          },
+        );
+        setLoadedProjectId(loadProjectId);
         setLoadedInputProjectionKey(inputTargetProjectionKey);
         publishLoadReady(true);
       }
@@ -1058,6 +1088,8 @@ function MountedSceneBlock({
     publishLoadReady,
     beginApplyingExternalUpdate,
     runProgrammaticProjectionUpdate,
+    currentProjectId,
+    treeNodeType,
   ]);
 
   // Report block-axis size changes. contentBoxSize is logical (resolved

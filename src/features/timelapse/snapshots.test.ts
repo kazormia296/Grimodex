@@ -1,24 +1,30 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { CasingCache } from "drizzle-orm/casing";
 
-const { dbInsertMock, dbSelectMock, invokeMock } = vi.hoisted(() => ({
-  dbInsertMock: vi.fn(),
+const { dbSelectMock, invokeMock, resetSequenceMock } = vi.hoisted(() => ({
   dbSelectMock: vi.fn(),
   invokeMock: vi.fn(
     (_command: string, _args?: Record<string, unknown>): Promise<unknown> =>
       Promise.resolve({ rows: [] }),
   ),
+  resetSequenceMock: vi.fn(() => Promise.resolve(0)),
 }));
 
 vi.mock("@/db/client", () => ({
-  db: { insert: dbInsertMock, select: dbSelectMock },
+  db: { select: dbSelectMock },
 }));
 vi.mock("@/lib/tauri", () => ({ invoke: invokeMock }));
+vi.mock("@/features/settings/api", () => ({
+  getTimelapseResetSequence: resetSequenceMock,
+}));
 
 import {
+  appendBodyBaselines,
   appendGenesisBaselines,
   loadLatestSnapshot,
-  recordStateSnapshot,
+  purgeTimelapseHistoryNative,
+  recordLayoutSnapshot,
   shouldCreateSnapshot,
 } from "./snapshots";
 
@@ -300,37 +306,93 @@ describe("genesis snapshot batching", () => {
   });
 });
 
-describe("recordStateSnapshot + loadLatestSnapshot", () => {
+describe("typed body/layout/history writers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("round-trips a JSON payload as plain text", async () => {
-    let stored: { payload: string; encoding: string } | null = null;
-    dbInsertMock.mockImplementation(() => ({
-      values: (row: { payload: string; encoding: string }) => {
-        stored = { payload: row.payload, encoding: row.encoding };
-        return Promise.resolve();
-      },
-    }));
-
-    await recordStateSnapshot({
-      projectId: "p1",
-      domain: "editor",
-      entityId: "scene-a",
-      anchorSequence: 100,
+  it("sends body identities and current-tail OCC only", async () => {
+    invokeMock.mockResolvedValue({
+      insertedCount: 2,
+      skippedExistingCount: 1,
+      anchorSequence: 12,
       anchorTimestamp: 1_700_000_000_000,
-      payload: { doc: { type: "doc", content: [] } },
     });
-    expect(stored).not.toBeNull();
-    expect((stored as unknown as { encoding: string }).encoding).toBe("json");
-    // Stored as plain JSON TEXT (no compression / no Buffer).
-    expect(typeof (stored as unknown as { payload: string }).payload).toBe(
-      "string",
+    await expect(
+      appendBodyBaselines(
+        {
+          expectedWorkspacePath: "/workspace/novel.gdx",
+          projectId: "p1",
+          targets: [
+            { kind: "scene", id: "s1" },
+            { kind: "codex", id: "c1" },
+          ],
+          expectedAnchorSequence: 12,
+        },
+      ),
+    ).resolves.toMatchObject({
+      insertedCount: 2,
+      skippedExistingCount: 1,
+      anchorSequence: 12,
+      completed: true,
+    });
+    expect(invokeMock).toHaveBeenCalledExactlyOnceWith(
+      "timelapse_body_baselines_append",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        targets: [
+          { kind: "scene", id: "s1" },
+          { kind: "codex", id: "c1" },
+        ],
+        expectedAnchorSequence: 12,
+      },
     );
+  });
 
-    // Now make the SELECT chain return the row we just "stored" so the
-    // decoder side of the test gets exercised.
+  it("records fixed-scope layout payload and path-bound history purge", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        inserted: true,
+        anchorSequence: 4,
+        anchorTimestamp: 99,
+      })
+      .mockResolvedValueOnce({ deletedEventCount: 3, deletedSnapshotCount: 2 });
+    await recordLayoutSnapshot({
+      expectedWorkspacePath: "/workspace/novel.gdx",
+      projectId: "p1",
+      payload: { layout: { regions: {} } },
+      expectedAnchorSequence: 4,
+    });
+    await purgeTimelapseHistoryNative({
+      expectedWorkspacePath: "/workspace/novel.gdx",
+      projectId: "p1",
+    });
+    expect(invokeMock.mock.calls).toEqual([
+      [
+        "timelapse_layout_snapshot_record",
+        {
+          expectedWorkspacePath: "/workspace/novel.gdx",
+          projectId: "p1",
+          payload: { layout: { regions: {} } },
+          expectedAnchorSequence: 4,
+        },
+      ],
+      [
+        "timelapse_history_purge",
+        { expectedWorkspacePath: "/workspace/novel.gdx", projectId: "p1" },
+      ],
+    ]);
+  });
+});
+
+describe("loadLatestSnapshot", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetSequenceMock.mockResolvedValue(0);
+  });
+
+  it("decodes a JSON payload returned by the read path", async () => {
     dbSelectMock.mockImplementation(() => ({
       from: () => ({
         where: () => ({
@@ -344,7 +406,7 @@ describe("recordStateSnapshot + loadLatestSnapshot", () => {
                   entityId: "scene-a",
                   anchorSequence: 100,
                   anchorTimestamp: 1_700_000_000_000,
-                  payload: (stored as unknown as { payload: string }).payload,
+                  payload: '{"doc":{"type":"doc","content":[]}}',
                   encoding: "json",
                   createdAt: 0,
                 },
@@ -377,5 +439,63 @@ describe("recordStateSnapshot + loadLatestSnapshot", () => {
       domain: "editor",
     });
     expect(decoded).toBeNull();
+  });
+
+  it("passes the reset epoch as the lower snapshot boundary", async () => {
+    const conditions: unknown[] = [];
+    resetSequenceMock.mockResolvedValue(12);
+    dbSelectMock.mockImplementation(() => ({
+      from: () => ({
+        where: (condition: unknown) => {
+          conditions.push(condition);
+          return {
+            orderBy: () => ({
+              limit: () =>
+                Promise.resolve([
+                  {
+                    projectId: "p1",
+                    domain: "editor",
+                    entityType: "scene",
+                    entityId: "scene-a",
+                    anchorSequence: 13,
+                    anchorTimestamp: 1_700_000_000_000,
+                    payload: "{}",
+                    encoding: "json",
+                    createdAt: 0,
+                  },
+                ]),
+            }),
+          };
+        },
+      }),
+    }));
+
+    await expect(
+      loadLatestSnapshot({
+        projectId: "p1",
+        domain: "editor",
+        entityId: "scene-a",
+      }),
+    ).resolves.toMatchObject({ anchorSequence: 13 });
+    expect(resetSequenceMock).toHaveBeenCalledWith("p1");
+    expect(conditions).toHaveLength(1);
+    const query = (
+      conditions[0] as {
+        toQuery: (config: {
+          casing: CasingCache;
+          escapeName: (name: string) => string;
+          escapeParam: (index: number, value: unknown) => string;
+          escapeString: (value: string) => string;
+        }) => { sql: string; params: unknown[] };
+      }
+    ).toQuery({
+      casing: new CasingCache(),
+      escapeName: (name) => `"${name}"`,
+      escapeParam: (index) => `?${index}`,
+      escapeString: (value) => `'${value.replaceAll("'", "''")}'`,
+    });
+    expect(query.sql).toContain("anchor_sequence");
+    expect(query.sql).toContain(">=");
+    expect(query.params).toContain(12);
   });
 });

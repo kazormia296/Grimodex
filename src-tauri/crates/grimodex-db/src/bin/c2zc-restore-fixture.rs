@@ -60,8 +60,12 @@ fn verify(args: &[String]) -> Result<()> {
     let manifest = required_path_arg(args, "--manifest")?;
     let verified = if let Some(repo_root) = optional_string_arg(args, "--repo-root")? {
         let candidate = optional_string_arg(args, "--candidate")?;
-        verify_manifest_against_candidate(&manifest, &PathBuf::from(repo_root), candidate.as_deref())
-            .context("verifying C2-ZC fixture and candidate binding")?
+        verify_manifest_against_candidate(
+            &manifest,
+            &PathBuf::from(repo_root),
+            candidate.as_deref(),
+        )
+        .context("verifying C2-ZC fixture and candidate binding")?
     } else {
         verify_manifest(&manifest).context("verifying C2-ZC fixture")?
     };

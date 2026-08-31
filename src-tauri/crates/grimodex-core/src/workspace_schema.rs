@@ -22,6 +22,14 @@ use crate::{
     PREVIOUS_COMPATIBLE_SCHEMA_VERSION, PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION, SCHEMA_VERSION,
 };
 
+// The generated contract is the canonical, migration-produced definition of
+// every SQLite trigger.  The current-schema checkpoint embeds the artifact so
+// a same-name trigger with merely plausible fragments cannot make the open
+// fast path skip an in-version repair.  `schema-contract` regeneration and its
+// parity test keep this read-only authority synchronized with `migrate.rs`.
+const GENERATED_SCHEMA_CONTRACT: &str =
+    include_str!("../../../../src/db/generated/schema-contract.json");
+
 const AI_AUDIT_COLUMNS: &[(&str, &str, bool, i32)] = &[
     ("id", "INTEGER", false, 1),
     ("scope_id", "TEXT", true, 0),
@@ -584,7 +592,9 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// 33 adds sealed Dependency declaration sets, immutable entries, and
 /// optimistic Consumer heads for the NIR-0 D1 storage boundary. Version 34
 /// adds C2A's durable stage audit metadata and the structural V2 lineage
-/// monotonicity guard.
+/// monotonicity guard. SCHEMA 34 also carries an in-version repair that
+/// atomically projects non-empty body creation baselines from the canonical
+/// Narrative Change Feed lifecycle event.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     Ok(SCHEMA_VERSION == 34
         && has_v3_physical_invariants(conn)?
@@ -626,10 +636,88 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         // V2 remains a non-authoritative shadow until a later cutover lane.
         && has_v33_dependency_declaration_storage(conn)?
         && has_v34_c2a_stage_storage(conn)?
+        && has_timelapse_query_indexes(conn)?
         // The durable wake outbox and the V2 pointer monotonicity guard ship
         // as an in-version repair of SCHEMA 34: their absence forces a full
         // idempotent DDL replay rather than a version bump.
-        && table_exists(conn, "narrative_maintenance_wake_outbox")?)
+        && table_exists(conn, "narrative_maintenance_wake_outbox")?
+        && has_timelapse_creation_baseline_triggers(conn)?)
+}
+
+/// Timelapse genesis and restore eligibility are project/entity lookups. Keep
+/// their composite indexes in the current-schema checkpoint so an older
+/// workspace is repaired through the full idempotent migrator instead of
+/// silently falling back to project-wide event/snapshot scans.
+fn has_timelapse_query_indexes(conn: &Connection) -> anyhow::Result<bool> {
+    for (table, name, expected_columns) in [
+        (
+            "change_events",
+            "idx_change_events_project_domain_op_entity_seq",
+            ["project_id", "domain", "op_type", "entity_id", "sequence"].as_slice(),
+        ),
+        (
+            "state_snapshots",
+            "idx_state_snap_project_domain_type_entity_seq",
+            [
+                "project_id",
+                "domain",
+                "entity_id",
+                "entity_type",
+                "anchor_sequence",
+            ]
+            .as_slice(),
+        ),
+    ] {
+        let properties = conn
+            .query_row(
+                &format!(
+                    "SELECT \"unique\", partial
+                       FROM pragma_index_list('{table}')
+                      WHERE name = ?1"
+                ),
+                [name],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+            )
+            .optional()?;
+        if properties != Some((false, false)) || index_columns(conn, name)? != expected_columns {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn has_timelapse_creation_baseline_triggers(conn: &Connection) -> anyhow::Result<bool> {
+    let generated_contract = serde_json::from_str::<serde_json::Value>(GENERATED_SCHEMA_CONTRACT)?;
+    let expected_triggers = generated_contract
+        .get("triggers")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("generated schema contract has no triggers object"))?;
+
+    for name in [
+        "timelapse_scene_creation_baseline",
+        "timelapse_codex_creation_baseline",
+        "timelapse_snippet_creation_baseline",
+    ] {
+        let expected = expected_triggers
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!("generated schema contract is missing trigger {name}")
+            })?;
+        let actual = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                [name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let actual = actual.as_deref().map(compact_sql);
+        let expected = compact_sql(expected);
+        if actual.as_deref() != Some(expected.as_str()) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// SCHEMA 34 / NIR-0 C2A: durable, non-authoritative Stage model bindings and

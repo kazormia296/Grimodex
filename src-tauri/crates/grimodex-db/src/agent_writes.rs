@@ -24,8 +24,9 @@ use crate::idempotency::{
 use crate::narrative_extraction::change_feed::{
     append_canonical_and_narrative_change_in_tx, append_narrative_change_transaction_in_tx,
     event_from_undo_journal_row, narrative_snapshot_digest, require_replay_lineage_in_project,
-    transaction_id_for_undo_journal, AppendNarrativeChangeTransactionInput,
-    NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
+    transaction_id_for_undo_journal, AppendCanonicalNarrativeChangeResult,
+    AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
+    NarrativeChangeOrigin,
 };
 use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
 use crate::{BatchStatement, Database};
@@ -96,6 +97,8 @@ pub struct AgentCodexUpdatePayload {
     pub name: Option<String>,
     pub summary: Option<String>,
     pub content: Option<String>,
+    #[serde(default)]
+    pub timelapse_doc_step_coverage: Option<crate::timelapse::TimelapseDocStepCoverageProof>,
     pub aliases: Option<String>,
     /// set-if-present。空文字は NULL（除外語なし）に正規化する。
     #[serde(default)]
@@ -1050,7 +1053,7 @@ fn change_occurred_at(timestamp: i64) -> anyhow::Result<String> {
 // the single transaction; keeping the values explicit makes the authority
 // boundary visible at each writer call site.
 #[allow(clippy::too_many_arguments)]
-fn append_agent_forward_change_in_tx(
+fn append_agent_forward_change_result_in_tx(
     conn: &rusqlite::Connection,
     project_id: &str,
     session_id: &str,
@@ -1060,7 +1063,7 @@ fn append_agent_forward_change_in_tx(
     canonical_event: &AppendChangeEvent,
     narrative_events: Option<Vec<NarrativeChangeEventInput>>,
     renderer_context: Option<&RendererCanonicalWriteContext>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<AppendCanonicalNarrativeChangeResult> {
     let mut events = match narrative_events {
         Some(events) => events,
         None => {
@@ -1164,7 +1167,34 @@ fn append_agent_forward_change_in_tx(
             events,
         },
     )?;
-    Ok(append.narrative.transaction_id)
+    Ok(append)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_agent_forward_change_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    session_id: &str,
+    surface: Option<&str>,
+    request_id: Option<&str>,
+    undo_journal_id: &str,
+    canonical_event: &AppendChangeEvent,
+    narrative_events: Option<Vec<NarrativeChangeEventInput>>,
+    renderer_context: Option<&RendererCanonicalWriteContext>,
+) -> anyhow::Result<String> {
+    Ok(append_agent_forward_change_result_in_tx(
+        conn,
+        project_id,
+        session_id,
+        surface,
+        request_id,
+        undo_journal_id,
+        canonical_event,
+        narrative_events,
+        renderer_context,
+    )?
+    .narrative
+    .transaction_id)
 }
 
 fn normalize_foreshadow_feed_events_in_tx(
@@ -1514,6 +1544,7 @@ fn codex_update_request_hash(
     let mut normalized = payload.clone();
     normalized.session_id.clear();
     normalized.surface = None;
+    normalized.timelapse_doc_step_coverage = None;
     match tags {
         Some(tags) => {
             idempotency_hash("agent_codex_update", &(normalized, normalize_tag_set(tags)))
@@ -1532,6 +1563,7 @@ fn renderer_codex_request_hash<T: Serialize>(
     if let Some(object) = payload.as_object_mut() {
         object.remove("requestId");
         object.remove("sessionId");
+        object.remove("timelapseDocStepCoverage");
     }
     let mut context = serde_json::to_value(context)?;
     if let Some(object) = context.as_object_mut() {
@@ -3589,6 +3621,10 @@ fn agent_codex_update_internal(
                     aliases_and_empty_summary_only: false,
                 },
             )?;
+            // A renderer proof cannot authorize snapshot suppression. Keep the
+            // full Codex body snapshot for every content update until a sealed
+            // Native coverage path is available.
+            let append_body_snapshot = payload.content.is_some();
             let mut canonical_event = patched.canonical_event.clone();
             if renderer_context
                 .as_ref()
@@ -3620,7 +3656,7 @@ fn agent_codex_update_internal(
                     timestamp,
                 )?);
             }
-            append_agent_forward_change_in_tx(
+            let append = append_agent_forward_change_result_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
@@ -3631,6 +3667,17 @@ fn agent_codex_update_internal(
                 Some(narrative_events),
                 renderer_context.as_ref(),
             )?;
+            if append_body_snapshot {
+                crate::timelapse::append_timelapse_body_snapshots_in_tx(
+                    conn,
+                    &payload.project_id,
+                    append.canonical.tail_sequence,
+                    canonical_event.timestamp,
+                    &[crate::timelapse::TimelapseBodySnapshotTarget::codex(
+                        payload.entry_id.clone(),
+                    )],
+                )?;
+            }
             if renderer_context
                 .as_ref()
                 .is_none_or(|context| context.origin == NarrativeChangeOrigin::Human)
@@ -5170,6 +5217,35 @@ fn replay_foreshadow_delete_in_tx(
     Ok(())
 }
 
+fn undo_journal_body_snapshot_target(
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+) -> anyhow::Result<Option<crate::timelapse::TimelapseBodySnapshotTarget>> {
+    if row.op_kind != "update" {
+        return Ok(None);
+    }
+    let target = match row.entity_kind.as_str() {
+        "codex_entry" => {
+            crate::timelapse::TimelapseBodySnapshotTarget::codex(row.entity_id.clone())
+        }
+        "snippet" => crate::timelapse::TimelapseBodySnapshotTarget::snippet(row.entity_id.clone()),
+        _ => return Ok(None),
+    };
+    let before: Value = serde_json::from_str(
+        row.before_json
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("body update journal is missing before_json"))?,
+    )?;
+    let after: Value = serde_json::from_str(
+        row.after_json
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("body update journal is missing after_json"))?,
+    )?;
+    if before.get("content") == after.get("content") {
+        return Ok(None);
+    }
+    Ok(Some(target))
+}
+
 pub fn agent_undo_journal_impl(
     db: &Database,
     payload: AgentUndoJournalPayload,
@@ -5427,6 +5503,15 @@ pub fn agent_undo_journal_impl(
                     events: narrative_events,
                 },
             )?;
+            if let Some(target) = undo_journal_body_snapshot_target(&feed_row)? {
+                crate::timelapse::append_timelapse_body_snapshots_in_tx(
+                    conn,
+                    &payload.project_id,
+                    append.canonical.tail_sequence,
+                    timestamp,
+                    &[target],
+                )?;
+            }
             let response = json!({
                 "ok": true,
                 "changeEventUid": canonical_event.event_uid,
@@ -9819,6 +9904,7 @@ mod tests {
                 name: None,
                 summary: None,
                 content: Some("tampered content".to_string()),
+                timelapse_doc_step_coverage: None,
                 aliases: None,
                 excluded_aliases: None,
                 readings: None,
@@ -9853,6 +9939,7 @@ mod tests {
                 name: None,
                 summary: Some(String::new()),
                 content: None,
+                timelapse_doc_step_coverage: None,
                 aliases: None,
                 excluded_aliases: None,
                 readings: None,
@@ -9940,6 +10027,7 @@ mod tests {
                 name: Some("After".to_string()),
                 summary: None,
                 content: None,
+                timelapse_doc_step_coverage: None,
                 aliases: None,
                 excluded_aliases: None,
                 readings: None,
@@ -10007,6 +10095,7 @@ mod tests {
                 name: Some("MCP overwrite".to_string()),
                 summary: None,
                 content: None,
+                timelapse_doc_step_coverage: None,
                 aliases: None,
                 excluded_aliases: None,
                 readings: None,
@@ -10075,6 +10164,7 @@ mod tests {
                 name: None,
                 summary: None,
                 content: None,
+                timelapse_doc_step_coverage: None,
                 aliases: None,
                 excluded_aliases: None,
                 readings: None,
@@ -10125,6 +10215,7 @@ mod tests {
                 name: None,
                 summary: None,
                 content: None,
+                timelapse_doc_step_coverage: None,
                 aliases: None,
                 excluded_aliases: None,
                 readings: None,
@@ -10182,6 +10273,7 @@ mod tests {
                 name: Some("After".to_string()),
                 summary: None,
                 content: None,
+                timelapse_doc_step_coverage: None,
                 aliases: None,
                 excluded_aliases: None,
                 readings: None,
@@ -10269,6 +10361,7 @@ mod tests {
                 name: None,
                 summary: Some("AI summary".to_string()),
                 content: None,
+                timelapse_doc_step_coverage: None,
                 aliases: None,
                 excluded_aliases: None,
                 readings: None,
@@ -11730,6 +11823,7 @@ mod tests {
             name: Some("After".to_string()),
             summary: None,
             content: None,
+            timelapse_doc_step_coverage: None,
             aliases: None,
             excluded_aliases: None,
             readings: None,
@@ -11855,6 +11949,7 @@ mod tests {
             name: Some("After".to_string()),
             summary: None,
             content: None,
+            timelapse_doc_step_coverage: None,
             aliases: None,
             excluded_aliases: None,
             readings: None,
@@ -12289,6 +12384,7 @@ mod tests {
             name: Some(name.to_string()),
             summary: Some(format!("{name} summary")),
             content: Some(format!(r#"{{"name":"{name}"}}"#)),
+            timelapse_doc_step_coverage: None,
             aliases: Some(format!(r#"["{name}"]"#)),
             excluded_aliases: Some(format!(r#"["not-{name}"]"#)),
             readings: Some(format!(r#"["{name}-reading"]"#)),
@@ -12395,6 +12491,7 @@ mod tests {
                 name: Some("stale".to_string()),
                 summary: None,
                 content: None,
+                timelapse_doc_step_coverage: None,
                 aliases: None,
                 excluded_aliases: None,
                 readings: None,

@@ -90,6 +90,8 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
   narrative_field_authority: ["narrativeFieldAuthority"],
   narrative_change_transactions: ["narrativeChangeTransactions"],
   narrative_change_events: ["narrativeChangeEvents"],
+  change_events: ["changeEvents"],
+  state_snapshots: ["stateSnapshots"],
   narrative_change_object_heads: ["narrativeChangeObjectHeads"],
   narrative_change_cursors: ["narrativeChangeCursors"],
   narrative_change_sets: ["narrativeChangeSets"],
@@ -128,6 +130,8 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
 // explicit so adding one to schema.ts without a protected writer entry fails
 // the inverse coverage gate.
 const NARRATIVE_AUTHORITY_TABLES = [
+  "change_events",
+  "state_snapshots",
   "narrative_revision_source_basis",
   "narrative_projection_freshness",
   "narrative_projection_dependencies",
@@ -194,9 +198,11 @@ function findUnregisteredNarrativeAuthorityTables(repoRoot, registry) {
   if (!existsSync(schemaPath)) return [];
   const schema = readFileSync(schemaPath, "utf8");
   const schemaTables = new Set(
-    [...schema.matchAll(/sqliteTable\(\s*["'](narrative_[a-z0-9_]+)["']/g)].map(
-      (match) => match[1],
-    ),
+    [
+      ...schema.matchAll(
+        /sqliteTable\(\s*["']((?:narrative_[a-z0-9_]+|change_events|state_snapshots))["']/g,
+      ),
+    ].map((match) => match[1]),
   );
   const registered = new Set(registry.map((entry) => entry.table));
   return NARRATIVE_AUTHORITY_TABLES.filter(

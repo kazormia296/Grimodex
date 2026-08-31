@@ -712,6 +712,23 @@ fn validate_codex_rename_updates(updates: &[CodexRenameUndoUpdate]) -> anyhow::R
     Ok(())
 }
 
+fn codex_rename_body_snapshot_targets(
+    updates: &[CodexRenameUndoUpdate],
+) -> Vec<crate::timelapse::TimelapseBodySnapshotTarget> {
+    updates
+        .iter()
+        .filter_map(|update| match update.kind.as_str() {
+            "scene-body" => Some(crate::timelapse::TimelapseBodySnapshotTarget::scene(
+                update.ref_id.clone(),
+            )),
+            "codex-content" => Some(crate::timelapse::TimelapseBodySnapshotTarget::codex(
+                update.ref_id.clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Apply one side (forward or undo) of a rename propagation batch inside an
 /// already-open transaction. Shared by `apply_codex_rename` (forward, new
 /// value) and `undo_codex_rename` (undo, old value) — both pass the target
@@ -1108,6 +1125,13 @@ pub fn undo_codex_rename(db: &Database, payload: CodexRenameUndoPayload) -> anyh
                 events: feed_events,
             },
         )?;
+        crate::timelapse::append_timelapse_body_snapshots_in_tx(
+            &tx,
+            &payload.project_id,
+            append.canonical.tail_sequence,
+            timestamp,
+            &codex_rename_body_snapshot_targets(&payload.updates),
+        )?;
         let response = json!({
             "versions": versions,
             "changeEventUid": payload.event_uid,
@@ -1286,6 +1310,13 @@ pub fn apply_codex_rename(
                     occurred_at,
                     events: feed_events,
                 },
+            )?;
+            crate::timelapse::append_timelapse_body_snapshots_in_tx(
+                conn,
+                &payload.project_id,
+                append.canonical.tail_sequence,
+                payload.timestamp,
+                &codex_rename_body_snapshot_targets(&payload.updates),
             )?;
             let response = json!({
                 "entityId": payload.entry_id,
@@ -2225,7 +2256,6 @@ pub fn publish_scan_staging_project(
                     }],
                 },
             )?;
-
             let semantic_epoch_id = mint_c2zc_scan_publish_project_birth_epoch_in_tx(
                 tx,
                 &payload.project_id,
@@ -2325,6 +2355,8 @@ pub struct TreeNodePatchPayload {
     pub bump_version: bool,
     pub updated_at: String,
     pub change_event: Option<TreeNodePatchChangeEvent>,
+    #[serde(default)]
+    pub timelapse_doc_step_coverage: Option<crate::timelapse::TimelapseDocStepCoverageProof>,
     pub origin: NarrativeChangeOrigin,
     #[serde(default)]
     pub original_transaction_id: Option<String>,
@@ -2728,11 +2760,12 @@ struct TreeFeedAppend<'a> {
     events: Vec<NarrativeChangeEventInput>,
 }
 
-fn append_tree_feed(
+fn append_tree_feed_result(
     conn: &rusqlite::Connection,
     input: TreeFeedAppend<'_>,
-) -> anyhow::Result<String> {
-    let append = append_canonical_and_narrative_change_in_tx(
+) -> anyhow::Result<crate::narrative_extraction::change_feed::AppendCanonicalNarrativeChangeResult>
+{
+    append_canonical_and_narrative_change_in_tx(
         conn,
         input.project_id,
         input.session_id,
@@ -2761,8 +2794,16 @@ fn append_tree_feed(
             occurred_at: input.occurred_at.to_string(),
             events: input.events,
         },
-    )?;
-    Ok(append.narrative.transaction_id)
+    )
+}
+
+fn append_tree_feed(
+    conn: &rusqlite::Connection,
+    input: TreeFeedAppend<'_>,
+) -> anyhow::Result<String> {
+    Ok(append_tree_feed_result(conn, input)?
+        .narrative
+        .transaction_id)
 }
 
 fn tree_patch_path(key: &str) -> Option<&'static str> {
@@ -3002,12 +3043,14 @@ pub fn tree_node_create_with_authority(
             ensure_tree_parent_in_project(&tx, &payload.project_id, parent_id)?;
         }
         let now = chrono::Utc::now().to_rfc3339();
+        let content = payload.content.clone().unwrap_or_else(|| "{}".to_string());
+        let char_count = grimodex_core::pm_text::pm_doc_text_len(&content);
         Database::execute_with_conn(
             &tx,
             "INSERT INTO tree_nodes
               (id, project_id, parent_id, node_type, title, sort_order, synopsis, status,
-               source_uri, source_mtime, content, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+               source_uri, source_mtime, content, char_count, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
             &[
                 Value::String(payload.id.clone()),
                 Value::String(payload.project_id.clone()),
@@ -3025,7 +3068,8 @@ pub fn tree_node_create_with_authority(
                     .source_mtime
                     .clone()
                     .map_or(Value::Null, Value::String),
-                Value::String(payload.content.clone().unwrap_or_else(|| "{}".to_string())),
+                Value::String(content),
+                Value::from(char_count),
                 Value::String(now.clone()),
             ],
             "run",
@@ -3510,7 +3554,14 @@ pub fn tree_node_patch_with_authority(
             "tree node changeEvent identity must match writer identity"
         );
     }
-    let request_hash = canonical_write_payload_fingerprint("tree_node_patch", &payload)?;
+    // Coverage is an optimization proof, not the canonical body-write intent.
+    // Normalize it out so transport retries that re-materialize or omit the
+    // proof still resolve to the same receipt (while a changed body remains a
+    // request conflict).
+    let mut fingerprint_payload = payload.clone();
+    fingerprint_payload.timelapse_doc_step_coverage = None;
+    let request_hash =
+        canonical_write_payload_fingerprint("tree_node_patch", &fingerprint_payload)?;
     let idempotency_request = IdempotencyRequest {
         domain: "tree_node_patch",
         request_id: Some(&payload.request_id),
@@ -3530,9 +3581,8 @@ pub fn tree_node_patch_with_authority(
         "tree.node.patch"
     };
     db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+        with_immediate_transaction(conn, |tx| {
         if let Some(response) = load_idempotent_response(&tx, &idempotency_request)? {
-            tx.commit()?;
             return Ok(response);
         }
         validate_tree_replay_lineage_in_tx(
@@ -3702,6 +3752,15 @@ pub fn tree_node_patch_with_authority(
             changed_paths.push("/updatedAt".to_string());
         }
         let is_scene = row.get("nodeType").and_then(Value::as_str) == Some("scene");
+        let append_body_snapshot = if is_scene && payload.patch.contains_key("content") {
+            // Renderer coverage is deliberately not trusted as a snapshot
+            // authority. The body row just written is the source of truth, so
+            // retain its full snapshot for forward and history replay writes
+            // until a sealed Native proof exists.
+            true
+        } else {
+            false
+        };
         let live_scene_subtree_impact = if row.get("nodeType").and_then(Value::as_str)
             == Some("folder")
         {
@@ -3753,7 +3812,7 @@ pub fn tree_node_patch_with_authority(
                 },
             )?;
         }
-        let maintenance_transaction_id = append_tree_feed(
+        let append = append_tree_feed_result(
             &tx,
             TreeFeedAppend {
                 project_id: &payload.project_id,
@@ -3793,6 +3852,18 @@ pub fn tree_node_patch_with_authority(
                 undo_journal_id: Some(&journal_id),
             },
         )?;
+        if append_body_snapshot {
+            crate::timelapse::append_timelapse_body_snapshots_in_tx(
+                &tx,
+                &payload.project_id,
+                append.canonical.tail_sequence,
+                timestamp,
+                &[crate::timelapse::TimelapseBodySnapshotTarget::scene(
+                    payload.node_id.clone(),
+                )],
+            )?;
+        }
+        let maintenance_transaction_id = append.narrative.transaction_id;
         let response = tree_write_response(
             row,
             &payload.event_uid,
@@ -3805,8 +3876,8 @@ pub fn tree_node_patch_with_authority(
             &payload.project_id,
             &response,
         )?;
-        tx.commit()?;
         Ok(response)
+        })
     })
 }
 
@@ -5762,6 +5833,7 @@ mod tests {
             bump_version: base_version.is_some(),
             updated_at: updated_at.to_string(),
             change_event: None,
+            timelapse_doc_step_coverage: None,
             origin: NarrativeChangeOrigin::Human,
             original_transaction_id: None,
             undo_journal_id: None,
@@ -7800,6 +7872,267 @@ mod tests {
     }
 
     #[test]
+    fn codex_rename_body_replacements_snapshot_scene_and_codex_on_forward_undo_redo() {
+        let db = fixture();
+        let scene_before = r#"{"type":"doc","content":[{"type":"text","text":"scene-old"}]}"#;
+        let scene_after = r#"{"type":"doc","content":[{"type":"text","text":"scene-new😀"}]}"#;
+        let codex_before = r#"{"type":"doc","content":[{"type":"text","text":"codex-old"}]}"#;
+        let codex_after = r#"{"type":"doc","content":[{"type":"text","text":"codex-new"}]}"#;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET content = ?1, char_count = 9 WHERE id = 'moved'",
+                [scene_before],
+            )?;
+            conn.execute(
+                "UPDATE codex_entries SET content = ?1 WHERE id = 'c1'",
+                [codex_before],
+            )?;
+            Ok(())
+        })
+        .expect("seed rename body states");
+
+        let updates = |scene: &str, codex: &str, base_version: i64| {
+            vec![
+                CodexRenameUndoUpdate {
+                    kind: "scene-body".to_string(),
+                    ref_id: "moved".to_string(),
+                    detail_definition_id: None,
+                    base_version,
+                    value: scene.to_string(),
+                    char_count: Some(grimodex_core::pm_text::pm_doc_text_len(scene)),
+                    placed_beat_preview: None,
+                },
+                CodexRenameUndoUpdate {
+                    kind: "codex-content".to_string(),
+                    ref_id: "c1".to_string(),
+                    detail_definition_id: None,
+                    base_version,
+                    value: codex.to_string(),
+                    char_count: None,
+                    placed_beat_preview: None,
+                },
+            ]
+        };
+        let forward = CodexRenameApplyPayload {
+            request_id: "rename-body-forward-request".to_string(),
+            project_id: "p1".to_string(),
+            session_id: "rename-body-session".to_string(),
+            surface: Some("rename-test".to_string()),
+            entry_id: "c1".to_string(),
+            updated_at: "2026-08-13T00:00:01Z".to_string(),
+            updates: updates(scene_after, codex_after, 0),
+            event_summary: "{}".to_string(),
+            event_uid: "rename-body-forward-event".to_string(),
+            timestamp: 100,
+            redo: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+        };
+        let forward_result = apply_codex_rename(&db, forward.clone()).expect("forward body rename");
+        let mut retry = forward;
+        retry.session_id = "rename-body-session-after-restart".to_string();
+        retry.event_uid = "rename-body-forward-event-after-restart".to_string();
+        assert_eq!(
+            apply_codex_rename(&db, retry).expect("retry forward body rename"),
+            forward_result
+        );
+        let original_transaction_id = forward_result["maintenanceTransactionId"]
+            .as_str()
+            .expect("forward transaction")
+            .to_string();
+        let undo_journal_id = forward_result["undoJournalId"]
+            .as_str()
+            .expect("forward journal")
+            .to_string();
+
+        undo_codex_rename(
+            &db,
+            CodexRenameUndoPayload {
+                request_id: "rename-body-undo-request".to_string(),
+                event_uid: "rename-body-undo-event".to_string(),
+                original_transaction_id: original_transaction_id.clone(),
+                undo_journal_id: undo_journal_id.clone(),
+                project_id: "p1".to_string(),
+                updated_at: "2026-08-13T00:00:02Z".to_string(),
+                updates: updates(scene_before, codex_before, 1),
+                session_id: Some("rename-body-session".to_string()),
+            },
+        )
+        .expect("undo body rename");
+        apply_codex_rename(
+            &db,
+            CodexRenameApplyPayload {
+                request_id: "rename-body-redo-request".to_string(),
+                project_id: "p1".to_string(),
+                session_id: "rename-body-session".to_string(),
+                surface: Some("rename-test".to_string()),
+                entry_id: "c1".to_string(),
+                updated_at: "2026-08-13T00:00:03Z".to_string(),
+                updates: updates(scene_after, codex_after, 2),
+                event_summary: "{}".to_string(),
+                event_uid: "rename-body-redo-event".to_string(),
+                timestamp: 300,
+                redo: true,
+                original_transaction_id: Some(original_transaction_id),
+                undo_journal_id: Some(undo_journal_id),
+            },
+        )
+        .expect("redo body rename");
+
+        db.with_conn(|conn| {
+            let snapshots = conn
+                .prepare(
+                    "SELECT domain, entity_id, anchor_sequence, payload
+                       FROM state_snapshots
+                      WHERE project_id = 'p1' AND entity_id IN ('moved', 'c1')
+                      ORDER BY anchor_sequence, domain",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                snapshots,
+                vec![
+                    (
+                        "codex".to_string(),
+                        "c1".to_string(),
+                        1,
+                        codex_after.to_string()
+                    ),
+                    (
+                        "editor".to_string(),
+                        "moved".to_string(),
+                        1,
+                        scene_after.to_string()
+                    ),
+                    (
+                        "codex".to_string(),
+                        "c1".to_string(),
+                        2,
+                        codex_before.to_string()
+                    ),
+                    (
+                        "editor".to_string(),
+                        "moved".to_string(),
+                        2,
+                        scene_before.to_string()
+                    ),
+                    (
+                        "codex".to_string(),
+                        "c1".to_string(),
+                        3,
+                        codex_after.to_string()
+                    ),
+                    (
+                        "editor".to_string(),
+                        "moved".to_string(),
+                        3,
+                        scene_after.to_string()
+                    ),
+                ]
+            );
+            Ok(())
+        })
+        .expect("inspect rename body snapshots");
+    }
+
+    #[test]
+    fn codex_rename_snapshot_failure_rolls_back_bodies_and_all_ledgers() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_codex_rename_snapshot
+                   BEFORE INSERT ON state_snapshots
+                   BEGIN SELECT RAISE(ABORT, 'forced codex rename snapshot failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("install snapshot failure trigger");
+
+        let error = apply_codex_rename(
+            &db,
+            CodexRenameApplyPayload {
+                request_id: "rename-snapshot-failure-request".to_string(),
+                project_id: "p1".to_string(),
+                session_id: "rename-session".to_string(),
+                surface: Some("rename-test".to_string()),
+                entry_id: "c1".to_string(),
+                updated_at: "2026-08-13T00:00:01Z".to_string(),
+                updates: vec![
+                    CodexRenameUndoUpdate {
+                        kind: "scene-body".to_string(),
+                        ref_id: "moved".to_string(),
+                        detail_definition_id: None,
+                        base_version: 0,
+                        value: r#"{"type":"doc","content":[]}"#.to_string(),
+                        char_count: Some(0),
+                        placed_beat_preview: None,
+                    },
+                    CodexRenameUndoUpdate {
+                        kind: "codex-content".to_string(),
+                        ref_id: "c1".to_string(),
+                        detail_definition_id: None,
+                        base_version: 0,
+                        value: r#"{"type":"doc","content":[]}"#.to_string(),
+                        char_count: None,
+                        placed_beat_preview: None,
+                    },
+                ],
+                event_summary: "{}".to_string(),
+                event_uid: "rename-snapshot-failure-event".to_string(),
+                timestamp: 1,
+                redo: false,
+                original_transaction_id: None,
+                undo_journal_id: None,
+            },
+        )
+        .expect_err("snapshot failure must abort the whole rename");
+        assert!(error
+            .to_string()
+            .contains("forced codex rename snapshot failure"));
+
+        db.with_conn(|conn| {
+            let state: (String, i64, String, i64, i64, i64, i64, i64) = conn.query_row(
+                "SELECT
+                   (SELECT content FROM tree_nodes WHERE id = 'moved'),
+                   (SELECT version FROM tree_nodes WHERE id = 'moved'),
+                   (SELECT content FROM codex_entries WHERE id = 'c1'),
+                   (SELECT version FROM codex_entries WHERE id = 'c1'),
+                   (SELECT COUNT(*) FROM undo_journal WHERE project_id = 'p1'),
+                   (SELECT COUNT(*) FROM change_events WHERE project_id = 'p1'),
+                   (SELECT COUNT(*) FROM narrative_change_transactions WHERE project_id = 'p1'),
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE domain = 'codex_rename_apply')",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )?;
+            assert_eq!(
+                state,
+                ("{}".to_string(), 0, "{}".to_string(), 0, 0, 0, 0, 0)
+            );
+            Ok(())
+        })
+        .expect("verify snapshot rollback");
+    }
+
+    #[test]
     fn codex_rename_feed_failure_rolls_back_domain_undo_and_canonical_event() {
         let db = fixture();
         db.with_conn(|conn| {
@@ -7990,6 +8323,60 @@ mod tests {
             Ok(())
         })
         .expect("inspect tree replay");
+    }
+
+    #[test]
+    fn tree_scene_create_persists_utf16_char_count_atomically_and_replays_receipt() {
+        let db = fixture();
+        let rich_content = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Hello😀"}]}]}"#;
+        let empty_content = r#"{"type":"doc","content":[]}"#;
+        let mut rich = tree_create_payload("counted-scene", "scene", "a8", Some("root"));
+        rich.content = Some(rich_content.to_string());
+        let first = tree_node_create(&db, rich.clone()).expect("create counted scene");
+
+        let mut retry = rich;
+        retry.session_id = "tree-count-session-after-restart".to_string();
+        retry.event_uid = "tree-count-event-after-restart".to_string();
+        let replayed = tree_node_create(&db, retry).expect("replay counted scene create");
+        assert_eq!(replayed, first);
+
+        let mut empty = tree_create_payload("empty-scene", "scene", "a9", Some("root"));
+        empty.content = Some(empty_content.to_string());
+        tree_node_create(&db, empty).expect("create empty scene");
+
+        db.with_conn(|conn| {
+            let rich_row: (String, i64) = conn.query_row(
+                "SELECT content, char_count FROM tree_nodes
+                  WHERE project_id = 'p1' AND id = 'counted-scene'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let empty_row: (String, i64) = conn.query_row(
+                "SELECT content, char_count FROM tree_nodes
+                  WHERE project_id = 'p1' AND id = 'empty-scene'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(rich_row, (rich_content.to_string(), 7));
+            assert_eq!(empty_row, (empty_content.to_string(), 0));
+
+            let counts: (i64, i64, i64, i64) = conn.query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM tree_nodes WHERE id = 'counted-scene'),
+                   (SELECT COUNT(*) FROM change_events
+                     WHERE project_id = 'p1' AND entity_id = 'counted-scene'),
+                   (SELECT COUNT(*) FROM state_snapshots
+                     WHERE project_id = 'p1' AND entity_id = 'counted-scene'),
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE domain = 'tree_node_create'
+                       AND request_id = 'create-counted-scene-request')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(counts, (1, 1, 1, 1));
+            Ok(())
+        })
+        .expect("inspect atomic scene create");
     }
 
     #[test]
@@ -8655,6 +9042,29 @@ mod tests {
                 parsed[0]["newCanonicalDigest"],
                 parsed[2]["newCanonicalDigest"]
             );
+            let snapshots = conn
+                .prepare(
+                    "SELECT anchor_sequence, payload
+                       FROM state_snapshots
+                      WHERE project_id = 'p1'
+                        AND domain = 'editor'
+                        AND entity_type = 'scene'
+                        AND entity_id = 'moved'
+                      ORDER BY anchor_sequence, id",
+                )?
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                snapshots,
+                vec![
+                    (1, content_a.to_string()),
+                    (2, content_b.to_string()),
+                    (3, content_a.to_string()),
+                ],
+                "forward, undo, and redo body snapshots must retain their exact canonical tails"
+            );
             Ok(())
         })
         .expect("verify forward undo redo text impacts");
@@ -8687,6 +9097,7 @@ mod tests {
                     session_id: "revision-session".to_string(),
                     timestamp: 1,
                 }),
+                timelapse_doc_step_coverage: None,
                 origin: NarrativeChangeOrigin::Restore,
                 original_transaction_id: None,
                 undo_journal_id: None,
@@ -8776,6 +9187,7 @@ mod tests {
                     session_id: "revision-session".to_string(),
                     timestamp: 1,
                 }),
+                timelapse_doc_step_coverage: None,
                 origin: NarrativeChangeOrigin::Restore,
                 original_transaction_id: None,
                 undo_journal_id: None,

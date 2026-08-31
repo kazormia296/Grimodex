@@ -7688,10 +7688,8 @@ mod tests {
             outcome.report_digest
         );
         assert_eq!(stored["checkCoverage"], production_verify_check_coverage());
-        assert!(
-            validate_verify_check_coverage(&stored)
-                .expect("stored Verify check coverage must validate")
-        );
+        assert!(validate_verify_check_coverage(&stored)
+            .expect("stored Verify check coverage must validate"));
         validate_canonical_verify_outcome_digest(&stored)
             .expect("stored Verify outcome digest must validate");
         let verify_outcome = json!({

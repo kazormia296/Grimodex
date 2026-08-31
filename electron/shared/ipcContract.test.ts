@@ -224,6 +224,28 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '{"insertedCount":2,"skippedExistingBaselineCount":1,"skippedExistingBodyStepCount":1}',
       ),
     ) as never,
+    timelapseBodyBaselinesAppend: record(
+      "timelapseBodyBaselinesAppend",
+      Promise.resolve(
+        '{"insertedCount":2,"skippedExistingCount":1,"anchorSequence":7,"anchorTimestamp":1800000000000}',
+      ),
+    ) as never,
+    timelapseHistoryPurge: record(
+      "timelapseHistoryPurge",
+      Promise.resolve(
+        '{"deletedEventCount":3,"deletedSnapshotCount":2}',
+      ),
+    ) as never,
+    timelapseEnabledSet: record(
+      "timelapseEnabledSet",
+      Promise.resolve('{"enabled":true}'),
+    ) as never,
+    timelapseLayoutSnapshotRecord: record(
+      "timelapseLayoutSnapshotRecord",
+      Promise.resolve(
+        '{"inserted":true,"anchorSequence":7,"anchorTimestamp":1800000000000}',
+      ),
+    ) as never,
     aiAuditAppendBatch: record(
       "aiAuditAppendBatch",
       Promise.resolve(
@@ -3704,6 +3726,130 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toEqual([]);
   });
 
+  it("timelapse document coverage: strict proof shape and content dependencies are enforced", async () => {
+    const proof = {
+      eventUid: "coverage-event-1",
+      sessionId: "coverage-session-1",
+      contentDigest: `sha256:${"a".repeat(64)}`,
+    };
+    const codexPayload = {
+      ...mutationIdentity("coverage-proof-1"),
+      content: "body",
+    };
+    const { backend, calls } = fakeBackend();
+
+    const accepted = await dispatchInvoke(
+      "codex_update",
+      { payload: { ...codexPayload, timelapseDocStepCoverage: proof } },
+      { backend, shell: noShell },
+    );
+    expect(accepted.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    calls.length = 0;
+
+    const invalidProofs: readonly Record<string, unknown>[] = [
+      { ...codexPayload, timelapseDocStepCoverage: null },
+      {
+        ...codexPayload,
+        timelapseDocStepCoverage: { ...omitKey(proof, "sessionId") },
+      },
+      {
+        ...codexPayload,
+        timelapseDocStepCoverage: { ...proof, extra: "reject" },
+      },
+      {
+        ...codexPayload,
+        timelapseDocStepCoverage: {
+          ...proof,
+          eventUid: 42,
+        },
+      },
+      {
+        ...codexPayload,
+        timelapseDocStepCoverage: {
+          ...proof,
+          contentDigest: `SHA256:${"a".repeat(64)}`,
+        },
+      },
+      {
+        ...omitKey(codexPayload, "content"),
+        timelapseDocStepCoverage: proof,
+      },
+    ];
+    for (const payload of invalidProofs) {
+      const rejected = await dispatchInvoke(
+        "codex_update",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(rejected.ok).toBe(false);
+    }
+    expect(calls).toEqual([]);
+
+    const treePayload = {
+      ...mutationIdentity("coverage-tree-1"),
+      nodeId: "scene-1",
+      patch: { content: "body", charCount: 4 },
+      baseVersion: 1,
+      bumpVersion: true,
+      updatedAt: "2026-08-12T00:00:00.000Z",
+      timelapseDocStepCoverage: proof,
+    };
+    const treeAccepted = await dispatchInvoke(
+      "tree_node_patch",
+      { payload: treePayload },
+      { backend, shell: noShell },
+    );
+    expect(treeAccepted.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    calls.length = 0;
+
+    const treeMetadataOnly = {
+      ...treePayload,
+      patch: { title: "metadata-only" },
+    };
+    const treeRejected = await dispatchInvoke(
+      "tree_node_patch",
+      { payload: treeMetadataOnly },
+      { backend, shell: noShell },
+    );
+    expect(treeRejected.ok).toBe(false);
+    expect(calls).toEqual([]);
+
+    const scenePayload = {
+      sceneId: "scene-1",
+      projectId: "p1",
+      requestId: "scene-coverage-request-1",
+      sessionId: "scene-coverage-session-1",
+      eventUid: "scene-coverage-event-1",
+      origin: "human",
+      timelapseSteps: [{ stepType: "replace" }],
+      timelapseDocStepCoverage: proof,
+      includeSidecars: true,
+      updatedAt: "2026-08-12T00:00:00.000Z",
+      contentJson: "{}",
+      charCount: 0,
+      placedBeatPreview: null,
+      unplacedBeatsDoc: "[]",
+      unplacedBeatPreview: null,
+      authorshipSpans: [],
+      foreshadowSetups: [],
+      foreshadowPayoffs: [],
+      foreshadowBaseVersions: {},
+      annotationAnchors: [],
+      beatMentions: [],
+      beatPovOverrides: [],
+      docContentSize: 2,
+    };
+    const sceneRejected = await dispatchInvoke(
+      "save_scene_body_bundle",
+      { payload: scenePayload },
+      { backend, shell: noShell },
+    );
+    expect(sceneRejected.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
   it("runtime_performance_seed: owner tokenとtyped graphを1回のnative呼び出しへ写像する", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -4278,6 +4424,36 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
+  it("timelapse_append_batch: Native-owned coverage rows are rejected before dispatch", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "timelapse_append_batch",
+      {
+        projectId: "p1",
+        sessionId: "renderer-session",
+        events: [
+          {
+            eventUid: "forged-coverage",
+            domain: "timelapse-internal",
+            opType: "doc.step.coverage",
+            entityType: "scene",
+            entityId: "scene-1",
+            payload: JSON.stringify({
+              resultContentDigest: `sha256:${"0".repeat(64)}`,
+            }),
+          },
+        ],
+      },
+      { backend, shell: noShell },
+    );
+
+    if (env.ok) {
+      throw new Error("expected public append to reject Native-owned coverage");
+    }
+    expect(env.error).toContain("TIMELAPSE_COVERAGE_RESERVED");
+    expect(calls).toEqual([]);
+  });
+
   it("timelapse_genesis_baselines_append: exact workspace-bound payloadを位置引数へ写像", async () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(
@@ -4425,6 +4601,180 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       expect(env.error).toContain(IPC_BACKEND_UNAVAILABLE_MARKER);
       expect(env.error).toContain("timelapseGenesisBaselinesAppend");
     }
+  });
+
+  it("timelapse_body_baselines_append: identity-only batch and OCC tail are mapped", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "timelapse_body_baselines_append",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        targets: [
+          { kind: "scene", id: "s1" },
+          { kind: "codex", id: "c1" },
+        ],
+        expectedAnchorSequence: 7,
+      },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "timelapseBodyBaselinesAppend",
+        args: [
+          "/workspace/novel.gdx",
+          "p1",
+          [
+            { kind: "scene", id: "s1" },
+            { kind: "codex", id: "c1" },
+          ],
+          7,
+        ],
+      },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        insertedCount: 2,
+        skippedExistingCount: 1,
+        anchorSequence: 7,
+        anchorTimestamp: 1_800_000_000_000,
+      },
+    });
+  });
+
+  it.each([
+    {
+      targets: [{ kind: "scene", id: "s1", payload: "forged" }],
+      expectedAnchorSequence: null,
+    },
+    {
+      targets: [{ kind: "scene", id: "s1" }, { kind: "scene", id: "s1" }],
+      expectedAnchorSequence: null,
+    },
+    {
+      targets: [{ kind: "scene", id: "s1" }],
+      expectedAnchorSequence: -1,
+    },
+  ])("timelapse body rejects forged target shape before Native: %j", async (input) => {
+    const method = vi.fn();
+    const { backend } = fakeBackend({ timelapseBodyBaselinesAppend: method });
+    const env = await dispatchInvoke(
+      "timelapse_body_baselines_append",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        ...input,
+      },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    expect(method).not.toHaveBeenCalled();
+  });
+
+  it("timelapse_history_purge: exact workspace/project maps to atomic Native command", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "timelapse_history_purge",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+      },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "timelapseHistoryPurge",
+        args: ["/workspace/novel.gdx", "p1"],
+      },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: { deletedEventCount: 3, deletedSnapshotCount: 2 },
+    });
+  });
+
+  it("timelapse_enabled_set: boolean flag is path-bound", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "timelapse_enabled_set",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        enabled: false,
+      },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "timelapseEnabledSet",
+        args: ["/workspace/novel.gdx", "p1", false],
+      },
+    ]);
+    expect(env).toEqual({ ok: true, value: { enabled: true } });
+  });
+
+  it("timelapse_layout_snapshot_record: only fixed payload scope reaches Native", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "timelapse_layout_snapshot_record",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        payload: {
+          layout: { regions: {} },
+          activePresetId: null,
+          hiddenStripePanels: ["chat"],
+        },
+        expectedAnchorSequence: 7,
+      },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "timelapseLayoutSnapshotRecord",
+        args: [
+          "/workspace/novel.gdx",
+          "p1",
+          {
+            layout: { regions: {} },
+            activePresetId: null,
+            hiddenStripePanels: ["chat"],
+          },
+          7,
+        ],
+      },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        inserted: true,
+        anchorSequence: 7,
+        anchorTimestamp: 1_800_000_000_000,
+      },
+    });
+  });
+
+  it("timelapse layout rejects renderer-selected scope fields", async () => {
+    const method = vi.fn();
+    const { backend } = fakeBackend({
+      timelapseLayoutSnapshotRecord: method,
+    });
+    const env = await dispatchInvoke(
+      "timelapse_layout_snapshot_record",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        payload: {
+          layout: { regions: {} },
+          domain: "forged",
+        },
+        expectedAnchorSequence: null,
+      },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    expect(method).not.toHaveBeenCalled();
   });
 
   it("tree_node_patch: optional content eventを同じtyped payloadへ保持する", async () => {
@@ -5309,7 +5659,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "temporal_scene_patch",
       "test_ai_connection",
       "timelapse_append_batch",
+      "timelapse_body_baselines_append",
+      "timelapse_enabled_set",
       "timelapse_genesis_baselines_append",
+      "timelapse_history_purge",
+      "timelapse_layout_snapshot_record",
       "trash_bin_clear_all",
       "trash_bin_create",
       "trash_bin_delete",

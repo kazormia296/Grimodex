@@ -1,10 +1,10 @@
 import type { WindowCloseRequestedEvent } from "@/lib/windowControls";
 import {
-  acquireQuiescenceLease,
   isAuthorityBlockingLifecycleIdle,
   waitForAuthorityBlockingLifecycleIdle,
   type QuiescenceLease,
 } from "./quiescenceLease";
+import { acquireQuiescenceLeaseAfterTimelapseGenesis } from "@/features/timelapse/genesisQuiescence";
 
 export interface CloseQuiescenceController {
   handleCloseRequest: (event: WindowCloseRequestedEvent) => void;
@@ -29,8 +29,20 @@ export function createCloseQuiescenceController(
   let generation = 0;
   let waitAbortController: AbortController | null = null;
 
-  const ensureLease = (): void => {
-    lease ??= acquireQuiescenceLease("window-close");
+  const ensureLease = async (
+    signal?: AbortSignal,
+  ): Promise<QuiescenceLease> => {
+    if (lease) return lease;
+    const acquired = await acquireQuiescenceLeaseAfterTimelapseGenesis(
+      "window-close",
+      { signal },
+    );
+    if (lease) {
+      acquired.release();
+      return lease;
+    }
+    lease = acquired;
+    return acquired;
   };
 
   const releaseLease = (
@@ -49,16 +61,21 @@ export function createCloseQuiescenceController(
 
   const start = (): void => {
     if (approved || inFlight || options.hasImmediateVeto()) return;
-    ensureLease();
-    // A failed close leaves its authority barrier sealed. Re-open the
-    // controlled read phase so retry can run persistence and so an existing
-    // Project/Workspace lifecycle or destructive data operation can finish
-    // before we attempt teardown.
-    lease?.openTargetReadPhase();
     const attempt = ++generation;
     const abortController = new AbortController();
+    const leaseReady = ensureLease(abortController.signal);
     waitAbortController = abortController;
     const runAttempt = async (): Promise<void> => {
+      const activeLease = await leaseReady;
+      if (attempt !== generation) {
+        if (lease === activeLease) releaseLease();
+        else activeLease.release();
+        return;
+      }
+      // A failed close leaves its authority barrier sealed. Re-open the
+      // controlled read phase so retry can run persistence and so an existing
+      // Project/Workspace lifecycle or destructive data operation can finish.
+      activeLease.openTargetReadPhase();
       // Re-check synchronously after each wake-up and invoke flush in the same
       // microtask that observes idle. A lifecycle scheduled after the close
       // request but before this attempt runs is therefore included as well.
@@ -125,12 +142,18 @@ export function createCloseQuiescenceController(
     },
     discardAndClose() {
       if (inFlight) return;
-      ensureLease();
-      lease?.openTargetReadPhase();
       const attempt = ++generation;
       const abortController = new AbortController();
+      const leaseReady = ensureLease(abortController.signal);
       waitAbortController = abortController;
       const runDiscard = async (): Promise<void> => {
+        const activeLease = await leaseReady;
+        if (attempt !== generation) {
+          if (lease === activeLease) releaseLease();
+          else activeLease.release();
+          return;
+        }
+        activeLease.openTargetReadPhase();
         while (attempt === generation && !isAuthorityBlockingLifecycleIdle()) {
           await waitForAuthorityBlockingLifecycleIdle(abortController.signal);
         }

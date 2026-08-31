@@ -127,6 +127,7 @@ pub(crate) fn canonical_write_payload_fingerprint<T: Serialize>(
         object.remove("requestId");
         object.remove("sessionId");
         object.remove("eventUid");
+        object.remove("timelapseDocStepCoverage");
         if let Some(change_event) = object.get_mut("changeEvent").and_then(Value::as_object_mut) {
             change_event.remove("requestId");
             change_event.remove("sessionId");

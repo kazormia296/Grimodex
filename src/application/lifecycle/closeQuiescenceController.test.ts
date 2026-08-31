@@ -14,13 +14,45 @@ import {
 } from "@/hooks/useAutoSave";
 import { flushStrictQuiescence } from "./quiescenceCoordinator";
 import { enqueueIpc, resetIpcQueueForTests } from "@/lib/ipcQueue";
+import {
+  _resetTimelapseGenesisBarriersForTests,
+  beginTimelapseGenesisBarrier,
+} from "@/features/timelapse/genesisBarrier";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 afterEach(() => {
   _resetQuiescenceLeasesForTests();
+  _resetTimelapseGenesisBarriersForTests();
+  publishCurrentProjectId(null);
   resetIpcQueueForTests();
 });
 
 describe("createCloseQuiescenceController", () => {
+  it("cancels a slow-genesis prelude without leaking mutation admission or a late lease", async () => {
+    publishCurrentProjectId("project-slow");
+    const genesis = beginTimelapseGenesisBarrier("project-slow");
+    const close = vi.fn(async () => {});
+    const controller = createCloseQuiescenceController({
+      hasImmediateVeto: () => false,
+      flush: vi.fn(async () => {}),
+      close,
+      onFailure: vi.fn(),
+    });
+
+    controller.handleCloseRequest({ preventDefault: vi.fn() });
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+    expect(isQuiescenceLeaseActive()).toBe(false);
+
+    controller.cancel();
+    await vi.waitFor(() => expect(canScheduleQuiescenceMutation()).toBe(true));
+    genesis.complete();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(isQuiescenceLeaseActive()).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+  });
+
   it("labels a successful native close as renderer teardown", async () => {
     const changes: Array<{
       active: boolean;
@@ -127,7 +159,8 @@ describe("createCloseQuiescenceController", () => {
     controller.handleCloseRequest({ preventDefault: firstPrevent });
     expect(firstPrevent).toHaveBeenCalledOnce();
     expect(close).not.toHaveBeenCalled();
-    expect(isQuiescenceLeaseActive()).toBe(true);
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+    await vi.waitFor(() => expect(isQuiescenceLeaseActive()).toBe(true));
 
     release();
     await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());

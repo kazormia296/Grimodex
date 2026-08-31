@@ -87,6 +87,12 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/semantic_epoch.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+    // Timelapse's canonical append-only event log and snapshot anchors are
+    // shared Native-owned state. The low-level append helpers are called by
+    // typed domain writers, while the timelapse module owns snapshot writes.
+    "src-tauri/crates/grimodex-db/src/change_events.rs",
+    "src-tauri/crates/grimodex-db/src/timelapse.rs",
+    "src-tauri/crates/grimodex-core/src/change_events.rs",
   ],
   "narrative.revision-envelope": [
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",

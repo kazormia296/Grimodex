@@ -12,7 +12,6 @@ use std::sync::{
 };
 use std::time::Instant;
 
-use super::narrative_extraction::maintenance_runtime::SCAN_IMPORT_STATE_KEY;
 use super::protected_writers::{
     bundled_protected_writer_registry, classify_insert_columns, untrusted_mutation_rejection,
     PROTECTED_WRITER_SQL_ERROR,
@@ -71,21 +70,22 @@ const RESERVED_PROJECT_SETTING_DELETE_TRIGGER: &str =
 const RESERVED_PROJECT_SETTING_GUARD_SQL: &str = r#"
 CREATE TEMP TRIGGER grimodex_guard_reserved_project_setting_insert
 BEFORE INSERT ON main.project_settings
-WHEN NEW.key = 'scan.import.state'
+WHEN NEW.key IN ('scan.import.state', 'timelapse.enabled', 'timelapse.resetSequence')
 BEGIN
-  SELECT RAISE(ABORT, 'PROTECTED_WRITER_SQL: denied mutation of reserved project setting scan.import.state');
+  SELECT RAISE(ABORT, 'PROTECTED_WRITER_SQL: denied mutation of reserved project setting');
 END;
 CREATE TEMP TRIGGER grimodex_guard_reserved_project_setting_update
 BEFORE UPDATE ON main.project_settings
-WHEN OLD.key = 'scan.import.state' OR NEW.key = 'scan.import.state'
+WHEN OLD.key IN ('scan.import.state', 'timelapse.enabled', 'timelapse.resetSequence')
+  OR NEW.key IN ('scan.import.state', 'timelapse.enabled', 'timelapse.resetSequence')
 BEGIN
-  SELECT RAISE(ABORT, 'PROTECTED_WRITER_SQL: denied mutation of reserved project setting scan.import.state');
+  SELECT RAISE(ABORT, 'PROTECTED_WRITER_SQL: denied mutation of reserved project setting');
 END;
 CREATE TEMP TRIGGER grimodex_guard_reserved_project_setting_delete
 BEFORE DELETE ON main.project_settings
-WHEN OLD.key = 'scan.import.state'
+WHEN OLD.key IN ('scan.import.state', 'timelapse.enabled', 'timelapse.resetSequence')
 BEGIN
-  SELECT RAISE(ABORT, 'PROTECTED_WRITER_SQL: denied mutation of reserved project setting scan.import.state');
+  SELECT RAISE(ABORT, 'PROTECTED_WRITER_SQL: denied mutation of reserved project setting');
 END;
 "#;
 
@@ -481,7 +481,7 @@ where
     if let Err(error) = &result {
         if error.to_string().contains(PROTECTED_WRITER_SQL_ERROR) {
             return Err(anyhow::anyhow!(
-                "{PROTECTED_WRITER_SQL_ERROR}: denied mutation of reserved project setting {SCAN_IMPORT_STATE_KEY}"
+                "{PROTECTED_WRITER_SQL_ERROR}: denied mutation of reserved project setting"
             ));
         }
         if matches!(
@@ -853,6 +853,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use super::super::narrative_extraction::maintenance_runtime::SCAN_IMPORT_STATE_KEY;
     use super::*;
     use std::path::PathBuf;
 
@@ -2128,6 +2129,206 @@ mod tests {
     }
 
     #[test]
+    fn untrusted_sql_cannot_mutate_native_timelapse_settings_in_single_or_batch_dml() {
+        let db = test_db();
+        db.migrate().expect("migrate database");
+        db.execute(
+            "INSERT OR IGNORE INTO projects (id, title, created_at, updated_at)
+             VALUES ('timelapse-setting-guard', 'Timelapse setting guard', datetime('now'), datetime('now'))",
+            &[],
+            "run",
+        )
+        .expect("seed project");
+
+        for (key, initial_value) in [
+            ("timelapse.enabled", "true"),
+            ("timelapse.resetSequence", "42"),
+        ] {
+            db.execute(
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES (?1, ?2, ?3)",
+                &[
+                    Value::from("timelapse-setting-guard"),
+                    Value::from(key),
+                    Value::from(initial_value),
+                ],
+                "run",
+            )
+            .expect("trusted Native may seed the timelapse setting");
+            db.execute(
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('timelapse-setting-guard', 'ordinary.setting', 'before')
+                 ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value",
+                &[],
+                "run",
+            )
+            .expect("seed ordinary setting");
+
+            let attempts = vec![
+                (
+                    "insert-literal".to_string(),
+                    format!(
+                        "INSERT INTO project_settings (project_id, key, value)
+                         VALUES ('timelapse-setting-guard', '{key}', 'forged')"
+                    ),
+                    vec![],
+                ),
+                (
+                    "insert-bound".to_string(),
+                    "INSERT INTO project_settings (project_id, key, value)
+                     VALUES (?1, ?2, ?3)"
+                        .to_string(),
+                    vec![
+                        Value::from("timelapse-setting-guard"),
+                        Value::from(key),
+                        Value::from("forged"),
+                    ],
+                ),
+                (
+                    "update-literal".to_string(),
+                    format!(
+                        "UPDATE project_settings SET value = 'forged'
+                         WHERE project_id = 'timelapse-setting-guard' AND key = '{key}'"
+                    ),
+                    vec![],
+                ),
+                (
+                    "update-bound".to_string(),
+                    "UPDATE project_settings SET value = ?1
+                     WHERE project_id = ?2 AND key = ?3"
+                        .to_string(),
+                    vec![
+                        Value::from("forged"),
+                        Value::from("timelapse-setting-guard"),
+                        Value::from(key),
+                    ],
+                ),
+                (
+                    "update-to-reserved-key".to_string(),
+                    format!(
+                        "UPDATE project_settings SET key = '{key}'
+                         WHERE project_id = 'timelapse-setting-guard' AND key = 'ordinary.setting'"
+                    ),
+                    vec![],
+                ),
+                (
+                    "update-from-reserved-key".to_string(),
+                    format!(
+                        "UPDATE project_settings SET key = 'ordinary.renamed'
+                         WHERE project_id = 'timelapse-setting-guard' AND key = '{key}'"
+                    ),
+                    vec![],
+                ),
+                (
+                    "delete-literal".to_string(),
+                    format!(
+                        "DELETE FROM project_settings
+                         WHERE project_id = 'timelapse-setting-guard' AND key = '{key}'"
+                    ),
+                    vec![],
+                ),
+                (
+                    "delete-bound".to_string(),
+                    "DELETE FROM project_settings WHERE project_id = ?1 AND key = ?2".to_string(),
+                    vec![Value::from("timelapse-setting-guard"), Value::from(key)],
+                ),
+                (
+                    "replace".to_string(),
+                    format!(
+                        "INSERT OR REPLACE INTO project_settings (project_id, key, value)
+                         VALUES ('timelapse-setting-guard', '{key}', 'forged')"
+                    ),
+                    vec![],
+                ),
+                (
+                    "upsert-reserved".to_string(),
+                    format!(
+                        "INSERT INTO project_settings (project_id, key, value)
+                         VALUES ('timelapse-setting-guard', '{key}', 'forged')
+                         ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value"
+                    ),
+                    vec![],
+                ),
+            ];
+
+            for origin in [SqlOrigin::Renderer, SqlOrigin::McpGeneric] {
+                for (label, sql, params) in &attempts {
+                    let error = db
+                        .execute_untrusted(origin, sql, params, "run")
+                        .expect_err("untrusted SQL must not mutate Native timelapse settings");
+                    assert!(
+                        error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                        "unexpected {origin:?} {key} {label} error: {error}"
+                    );
+                }
+
+                let batch = vec![
+                    BatchStatement {
+                        sql: "INSERT INTO project_settings (project_id, key, value)
+                              VALUES ('timelapse-setting-guard', 'ordinary.batch', 'inserted')"
+                            .to_string(),
+                        params: vec![],
+                        method: "run".to_string(),
+                    },
+                    BatchStatement {
+                        sql: format!(
+                            "UPDATE project_settings SET value = 'forged'
+                             WHERE project_id = 'timelapse-setting-guard' AND key = '{key}'"
+                        ),
+                        params: vec![],
+                        method: "run".to_string(),
+                    },
+                ];
+                let batch_error = db
+                    .execute_batch_tx_untrusted(origin, &batch)
+                    .expect_err("untrusted batch must roll back before Native setting mutation");
+                assert!(
+                    batch_error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                    "unexpected {origin:?} {key} batch error: {batch_error}"
+                );
+                let batch_rows = db
+                    .execute(
+                        "SELECT count(*) AS count FROM project_settings
+                         WHERE project_id = 'timelapse-setting-guard' AND key = 'ordinary.batch'",
+                        &[],
+                        "get",
+                    )
+                    .expect("inspect rolled-back Native-setting batch");
+                assert_eq!(batch_rows[0]["count"], Value::from(0));
+            }
+
+            let value = db
+                .execute(
+                    &format!(
+                        "SELECT value FROM project_settings
+                         WHERE project_id = 'timelapse-setting-guard' AND key = '{key}'"
+                    ),
+                    &[],
+                    "get",
+                )
+                .expect("read preserved Native timelapse setting");
+            assert_eq!(value[0]["value"], Value::from(initial_value));
+        }
+
+        // Typed Native code does not use the untrusted authorizer/trigger
+        // path, so it remains able to update both reserved keys.
+        db.execute(
+            "UPDATE project_settings SET value = 'false'
+             WHERE project_id = 'timelapse-setting-guard' AND key = 'timelapse.enabled'",
+            &[],
+            "run",
+        )
+        .expect("trusted Native may update timelapse.enabled");
+        db.execute(
+            "UPDATE project_settings SET value = '43'
+             WHERE project_id = 'timelapse-setting-guard' AND key = 'timelapse.resetSequence'",
+            &[],
+            "run",
+        )
+        .expect("trusted Native may update timelapse.resetSequence");
+    }
+
+    #[test]
     fn c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes() {
         let db = test_db();
         let tables = [
@@ -2140,6 +2341,8 @@ mod tests {
             "narrative_maintenance_finding_lifecycle",
             "narrative_maintenance_finding_observations",
             "narrative_maintenance_repair_leases",
+            "change_events",
+            "state_snapshots",
         ];
 
         for table in tables {
@@ -2238,6 +2441,119 @@ mod tests {
                 )
                 .unwrap_or_else(|error| panic!("trusted SELECT {table}: {error}"));
             assert_eq!(rows[0]["value"], Value::from("trusted-replace"), "{table}");
+        }
+    }
+
+    #[test]
+    fn timelapse_canonical_tables_reject_renderer_and_mcp_batch_dml_but_allow_reads() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE renderer_batch_guard (id TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted batch guard schema");
+
+        for table in ["change_events", "state_snapshots"] {
+            db.execute(
+                &format!("CREATE TABLE {table} (id TEXT PRIMARY KEY, value TEXT NOT NULL)"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("create {table}: {error}"));
+            db.execute(
+                &format!("INSERT INTO {table} (id, value) VALUES ('trusted-seed', 'before')"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted seed {table}: {error}"));
+
+            for origin in [SqlOrigin::Renderer, SqlOrigin::McpGeneric] {
+                let rows = db
+                    .execute_untrusted(
+                        origin,
+                        &format!("SELECT value FROM {table} WHERE id = 'trusted-seed'"),
+                        &[],
+                        "get",
+                    )
+                    .unwrap_or_else(|error| panic!("{origin:?} SELECT {table}: {error}"));
+                assert_eq!(rows[0]["value"], Value::from("before"));
+
+                let single_sql =
+                    format!("UPDATE {table} SET value = 'forged' WHERE id = 'trusted-seed'");
+                let single_error = match origin {
+                    SqlOrigin::Renderer => db
+                        .execute_renderer(&single_sql, &[], "run")
+                        .expect_err("renderer timelapse DML must be rejected"),
+                    SqlOrigin::McpGeneric => db
+                        .execute_untrusted(origin, &single_sql, &[], "run")
+                        .expect_err("MCP timelapse DML must be rejected"),
+                    _ => unreachable!("test only covers untrusted origins"),
+                };
+                assert!(
+                    single_error
+                        .to_string()
+                        .contains(PROTECTED_WRITER_SQL_ERROR),
+                    "{origin:?} single UPDATE {table} was not protected: {single_error}"
+                );
+
+                let batch = [
+                    BatchStatement {
+                        sql: "INSERT INTO renderer_batch_guard (id, value) VALUES ('rolled-back', 'temporary')"
+                            .into(),
+                        params: vec![],
+                        method: "run".into(),
+                    },
+                    BatchStatement {
+                        sql: format!(
+                            "UPDATE {table} SET value = 'forged' WHERE id = 'trusted-seed'"
+                        ),
+                        params: vec![],
+                        method: "run".into(),
+                    },
+                ];
+                let error = match origin {
+                    SqlOrigin::Renderer => db
+                        .execute_batch_tx_renderer(&batch)
+                        .expect_err("renderer timelapse batch DML must be rejected"),
+                    SqlOrigin::McpGeneric => db
+                        .execute_batch_tx_untrusted(origin, &batch)
+                        .expect_err("MCP timelapse batch DML must be rejected"),
+                    _ => unreachable!("test only covers untrusted origins"),
+                };
+                assert!(
+                    error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                    "{origin:?} batch UPDATE {table} was not protected: {error}"
+                );
+
+                let rows = db
+                    .execute(
+                        "SELECT value FROM renderer_batch_guard WHERE id = 'rolled-back'",
+                        &[],
+                        "get",
+                    )
+                    .unwrap_or_else(|error| panic!("inspect {origin:?} rollback {table}: {error}"));
+                assert!(
+                    rows.is_empty(),
+                    "{origin:?} batch must roll back prior writes"
+                );
+
+                let rows = db
+                    .execute_renderer(
+                        &format!("SELECT value FROM {table} WHERE id = 'trusted-seed'"),
+                        &[],
+                        "get",
+                    )
+                    .unwrap_or_else(|error| panic!("renderer SELECT {table}: {error}"));
+                assert_eq!(rows[0]["value"], Value::from("before"));
+            }
+
+            db.execute(
+                &format!("UPDATE {table} SET value = 'trusted-update' WHERE id = 'trusted-seed'"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted update {table}: {error}"));
         }
     }
 }

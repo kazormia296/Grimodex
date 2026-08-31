@@ -13479,6 +13479,34 @@
       ],
       "createSql": "CREATE INDEX idx_authorship_sticky ON authorship_spans(sticky_id) WHERE sticky_id IS NOT NULL"
     },
+    "idx_change_events_project_domain_op_entity_seq": {
+      "table": "change_events",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "domain"
+        },
+        {
+          "ordinal": 2,
+          "column": "op_type"
+        },
+        {
+          "ordinal": 3,
+          "column": "entity_id"
+        },
+        {
+          "ordinal": 4,
+          "column": "sequence"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_change_events_project_domain_op_entity_seq ON change_events(project_id, domain, op_type, entity_id, sequence)"
+    },
     "idx_change_events_project_ts": {
       "table": "change_events",
       "unique": false,
@@ -15959,6 +15987,34 @@
       ],
       "createSql": "CREATE INDEX idx_state_snap_domain_seq ON state_snapshots(project_id, domain, anchor_sequence)"
     },
+    "idx_state_snap_project_domain_type_entity_seq": {
+      "table": "state_snapshots",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "domain"
+        },
+        {
+          "ordinal": 2,
+          "column": "entity_id"
+        },
+        {
+          "ordinal": 3,
+          "column": "entity_type"
+        },
+        {
+          "ordinal": 4,
+          "column": "anchor_sequence"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_state_snap_project_domain_type_entity_seq ON state_snapshots(project_id, domain, entity_id, entity_type, anchor_sequence)"
+    },
     "idx_state_snap_project_seq": {
       "table": "state_snapshots",
       "unique": false,
@@ -16496,6 +16552,9 @@
     "snippets_fts_en_ad": "CREATE TRIGGER snippets_fts_en_ad AFTER DELETE ON snippets WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%' BEGIN DELETE FROM snippets_fts_en WHERE rowid = old.rowid; END",
     "snippets_fts_en_ai": "CREATE TRIGGER snippets_fts_en_ai AFTER INSERT ON snippets WHEN (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%' BEGIN INSERT INTO snippets_fts_en(rowid, title, content, tags_cache) VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache,'')); END",
     "snippets_fts_en_au": "CREATE TRIGGER snippets_fts_en_au AFTER UPDATE ON snippets WHEN (old.title IS NOT new.title OR old.content IS NOT new.content OR old.tags_cache IS NOT new.tags_cache) AND (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%' BEGIN DELETE FROM snippets_fts_en WHERE rowid = old.rowid; INSERT INTO snippets_fts_en(rowid, title, content, tags_cache) VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache,'')); END",
+    "timelapse_codex_creation_baseline": "CREATE TRIGGER timelapse_codex_creation_baseline AFTER INSERT ON narrative_change_events WHEN NEW.mutation_kind IN ('create', 'restore') AND json_extract(NEW.object_key_json, '$.kind') = 'codex-entry' AND NOT EXISTS ( SELECT 1 FROM project_settings WHERE project_id = NEW.project_id AND key = 'timelapse.enabled' AND value = 'false' ) BEGIN SELECT CASE WHEN NOT EXISTS ( SELECT 1 FROM change_events canonical WHERE canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence AND canonical.sequence BETWEEN 1 AND 9007199254740991 AND canonical.sequence = ( SELECT MAX(sequence) FROM change_events WHERE project_id = NEW.project_id ) AND canonical.timestamp BETWEEN 0 AND 9007199254740991 ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR') END; SELECT CASE WHEN EXISTS ( SELECT 1 FROM state_snapshots snapshot JOIN codex_entries entry ON entry.project_id = NEW.project_id AND entry.id = json_extract(NEW.object_key_json, '$.entryId') JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'codex' AND snapshot.entity_id = entry.id AND snapshot.anchor_sequence = NEW.canonical_sequence AND ( (snapshot.entity_type IS NOT NULL AND snapshot.entity_type <> 'codex_entry') OR snapshot.anchor_timestamp IS NOT canonical.timestamp OR snapshot.payload IS NOT entry.content OR snapshot.encoding IS NOT 'json' ) ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_SNAPSHOT_MISMATCH') END; SELECT CASE WHEN EXISTS ( SELECT 1 FROM narrative_change_events sibling WHERE sibling.project_id = NEW.project_id AND sibling.canonical_sequence = NEW.canonical_sequence AND sibling.mutation_kind IN ('create', 'restore') AND sibling.id <> NEW.id AND json_extract(sibling.object_key_json, '$.kind') = 'codex-entry' AND json_extract(sibling.object_key_json, '$.entryId') = json_extract(NEW.object_key_json, '$.entryId') ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_DUPLICATE_LIFECYCLE') END; INSERT INTO state_snapshots (project_id, domain, entity_type, entity_id, anchor_sequence, anchor_timestamp, payload, encoding, created_at) SELECT NEW.project_id, 'codex', 'codex_entry', entry.id, NEW.canonical_sequence, canonical.timestamp, entry.content, 'json', canonical.timestamp FROM codex_entries entry JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE entry.project_id = NEW.project_id AND entry.id = json_extract(NEW.object_key_json, '$.entryId') AND NOT EXISTS ( SELECT 1 FROM state_snapshots snapshot WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'codex' AND snapshot.entity_id = entry.id AND snapshot.anchor_sequence = NEW.canonical_sequence ); SELECT CASE WHEN NOT EXISTS ( SELECT 1 FROM state_snapshots snapshot JOIN codex_entries entry ON entry.project_id = NEW.project_id AND entry.id = json_extract(NEW.object_key_json, '$.entryId') JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'codex' AND (snapshot.entity_type = 'codex_entry' OR snapshot.entity_type IS NULL) AND snapshot.entity_id = entry.id AND snapshot.anchor_sequence = NEW.canonical_sequence AND snapshot.anchor_timestamp = canonical.timestamp AND snapshot.payload = entry.content AND snapshot.encoding = 'json' ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_BODY_MISSING') END; END",
+    "timelapse_scene_creation_baseline": "CREATE TRIGGER timelapse_scene_creation_baseline AFTER INSERT ON narrative_change_events WHEN NEW.mutation_kind IN ('create', 'restore') AND json_extract(NEW.object_key_json, '$.kind') = 'scene' AND NOT EXISTS ( SELECT 1 FROM project_settings WHERE project_id = NEW.project_id AND key = 'timelapse.enabled' AND value = 'false' ) BEGIN SELECT CASE WHEN NOT EXISTS ( SELECT 1 FROM change_events canonical WHERE canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence AND canonical.sequence BETWEEN 1 AND 9007199254740991 AND canonical.sequence = ( SELECT MAX(sequence) FROM change_events WHERE project_id = NEW.project_id ) AND canonical.timestamp BETWEEN 0 AND 9007199254740991 ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR') END; SELECT CASE WHEN EXISTS ( SELECT 1 FROM state_snapshots snapshot JOIN tree_nodes node ON node.project_id = NEW.project_id AND node.id = json_extract(NEW.object_key_json, '$.sceneId') AND node.node_type = 'scene' JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'editor' AND snapshot.entity_id = node.id AND snapshot.anchor_sequence = NEW.canonical_sequence AND ( (snapshot.entity_type IS NOT NULL AND snapshot.entity_type <> 'scene') OR snapshot.anchor_timestamp IS NOT canonical.timestamp OR snapshot.payload IS NOT node.content OR snapshot.encoding IS NOT 'json' ) ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_SNAPSHOT_MISMATCH') END; SELECT CASE WHEN EXISTS ( SELECT 1 FROM narrative_change_events sibling WHERE sibling.project_id = NEW.project_id AND sibling.canonical_sequence = NEW.canonical_sequence AND sibling.mutation_kind IN ('create', 'restore') AND sibling.id <> NEW.id AND json_extract(sibling.object_key_json, '$.kind') = 'scene' AND json_extract(sibling.object_key_json, '$.sceneId') = json_extract(NEW.object_key_json, '$.sceneId') ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_DUPLICATE_LIFECYCLE') END; INSERT INTO state_snapshots (project_id, domain, entity_type, entity_id, anchor_sequence, anchor_timestamp, payload, encoding, created_at) SELECT NEW.project_id, 'editor', 'scene', node.id, NEW.canonical_sequence, canonical.timestamp, node.content, 'json', canonical.timestamp FROM tree_nodes node JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE node.project_id = NEW.project_id AND node.id = json_extract(NEW.object_key_json, '$.sceneId') AND node.node_type = 'scene' AND NOT EXISTS ( SELECT 1 FROM state_snapshots snapshot WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'editor' AND snapshot.entity_id = node.id AND snapshot.anchor_sequence = NEW.canonical_sequence ); SELECT CASE WHEN NOT EXISTS ( SELECT 1 FROM state_snapshots snapshot JOIN tree_nodes node ON node.project_id = NEW.project_id AND node.id = json_extract(NEW.object_key_json, '$.sceneId') AND node.node_type = 'scene' JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'editor' AND (snapshot.entity_type = 'scene' OR snapshot.entity_type IS NULL) AND snapshot.entity_id = node.id AND snapshot.anchor_sequence = NEW.canonical_sequence AND snapshot.anchor_timestamp = canonical.timestamp AND snapshot.payload = node.content AND snapshot.encoding = 'json' ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_BODY_MISSING') END; END",
+    "timelapse_snippet_creation_baseline": "CREATE TRIGGER timelapse_snippet_creation_baseline AFTER INSERT ON narrative_change_events WHEN NEW.mutation_kind IN ('create', 'restore') AND json_extract(NEW.object_key_json, '$.kind') = 'component' AND substr( json_extract(NEW.object_key_json, '$.componentId'), 1, length('snippet:') ) = 'snippet:' AND NOT EXISTS ( SELECT 1 FROM project_settings WHERE project_id = NEW.project_id AND key = 'timelapse.enabled' AND value = 'false' ) BEGIN SELECT CASE WHEN NOT EXISTS ( SELECT 1 FROM change_events canonical WHERE canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence AND canonical.sequence BETWEEN 1 AND 9007199254740991 AND canonical.sequence = ( SELECT MAX(sequence) FROM change_events WHERE project_id = NEW.project_id ) AND canonical.timestamp BETWEEN 0 AND 9007199254740991 ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR') END; SELECT CASE WHEN EXISTS ( SELECT 1 FROM state_snapshots snapshot JOIN snippets snippet ON snippet.project_id = NEW.project_id AND snippet.id = substr( json_extract(NEW.object_key_json, '$.componentId'), length('snippet:') + 1 ) JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'snippet' AND snapshot.entity_id = snippet.id AND snapshot.anchor_sequence = NEW.canonical_sequence AND ( (snapshot.entity_type IS NOT NULL AND snapshot.entity_type <> 'snippet') OR snapshot.anchor_timestamp IS NOT canonical.timestamp OR snapshot.payload IS NOT snippet.content OR snapshot.encoding IS NOT 'json' ) ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_SNAPSHOT_MISMATCH') END; SELECT CASE WHEN EXISTS ( SELECT 1 FROM narrative_change_events sibling WHERE sibling.project_id = NEW.project_id AND sibling.canonical_sequence = NEW.canonical_sequence AND sibling.mutation_kind IN ('create', 'restore') AND sibling.id <> NEW.id AND json_extract(sibling.object_key_json, '$.kind') = 'component' AND json_extract(sibling.object_key_json, '$.componentId') = json_extract(NEW.object_key_json, '$.componentId') ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_DUPLICATE_LIFECYCLE') END; INSERT INTO state_snapshots (project_id, domain, entity_type, entity_id, anchor_sequence, anchor_timestamp, payload, encoding, created_at) SELECT NEW.project_id, 'snippet', 'snippet', snippet.id, NEW.canonical_sequence, canonical.timestamp, snippet.content, 'json', canonical.timestamp FROM snippets snippet JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snippet.project_id = NEW.project_id AND snippet.id = substr( json_extract(NEW.object_key_json, '$.componentId'), length('snippet:') + 1 ) AND NOT EXISTS ( SELECT 1 FROM state_snapshots snapshot WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'snippet' AND snapshot.entity_id = snippet.id AND snapshot.anchor_sequence = NEW.canonical_sequence ); SELECT CASE WHEN NOT EXISTS ( SELECT 1 FROM state_snapshots snapshot JOIN snippets snippet ON snippet.project_id = NEW.project_id AND snippet.id = substr( json_extract(NEW.object_key_json, '$.componentId'), length('snippet:') + 1 ) JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'snippet' AND (snapshot.entity_type = 'snippet' OR snapshot.entity_type IS NULL) AND snapshot.entity_id = snippet.id AND snapshot.anchor_sequence = NEW.canonical_sequence AND snapshot.anchor_timestamp = canonical.timestamp AND snapshot.payload = snippet.content AND snapshot.encoding = 'json' ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_BODY_MISSING') END; END",
     "tree_nodes_fts_ad": "CREATE TRIGGER tree_nodes_fts_ad AFTER DELETE ON tree_nodes BEGIN INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, title, content) VALUES ('delete', old.rowid, COALESCE(old.title, ''), COALESCE(old.content, '')); END",
     "tree_nodes_fts_ai": "CREATE TRIGGER tree_nodes_fts_ai AFTER INSERT ON tree_nodes BEGIN INSERT INTO tree_nodes_fts(rowid, title, content) VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, '')); END",
     "tree_nodes_fts_au": "CREATE TRIGGER tree_nodes_fts_au AFTER UPDATE ON tree_nodes WHEN old.title IS NOT new.title OR old.content IS NOT new.content BEGIN INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, title, content) VALUES ('delete', old.rowid, COALESCE(old.title, ''), COALESCE(old.content, '')); INSERT INTO tree_nodes_fts(rowid, title, content) VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, '')); END",

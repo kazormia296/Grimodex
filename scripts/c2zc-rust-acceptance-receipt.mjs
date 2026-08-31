@@ -19,6 +19,17 @@ import {
   digestProductJourneyCatalog,
   NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
 } from "../electron/scripts/product-journey-catalog.mjs";
+import { assertC2ZcRustVerifyOutcome } from "./c2zc-verify-contract.mjs";
+
+export {
+  assertC2ZcRustVerifyCoverage,
+  assertC2ZcRustVerifyOutcome,
+  C2ZC_RUST_VERIFY_CONTRACT_VERSION,
+  C2ZC_RUST_VERIFY_COVERAGE,
+  C2ZC_RUST_VERIFY_COVERAGE_COUNT,
+  C2ZC_RUST_VERIFY_COMPILED_CHECKS,
+  C2ZC_RUST_VERIFY_CHECKS,
+} from "./c2zc-verify-contract.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(
@@ -536,6 +547,8 @@ const CANDIDATE_FIELDS = [
   "worktreeStatusHash",
 ];
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
+const GIT_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+const HEX_SHA256 = /^[0-9a-f]{64}$/u;
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -554,78 +567,6 @@ function canonicalJson(value) {
 
 function sha256(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
-}
-
-const C2ZC_RUST_VERIFY_COVERAGE_COUNT = 13;
-const C2ZC_RUST_VERIFY_OUTCOME_SENTINEL = "C2ZC_RUST_VERIFY_OUTCOME=";
-
-function exactObjectKeys(value, expected, label) {
-  if (!isPlainObject(value)) throw new Error(`${label} must be an object`);
-  const actual = Object.keys(value).sort();
-  const canonicalExpected = [...expected].sort();
-  if (
-    actual.length !== canonicalExpected.length ||
-    actual.some((key, index) => key !== canonicalExpected[index])
-  ) {
-    throw new Error(`${label} has unexpected keys`);
-  }
-}
-
-function assertVerifyCoverage(coverage) {
-  exactObjectKeys(
-    coverage,
-    ["complete", "required", "covered", "missing"],
-    "C2-ZC Rust Verify checkCoverage",
-  );
-  if (
-    coverage.complete !== true ||
-    !Array.isArray(coverage.required) ||
-    !Array.isArray(coverage.covered) ||
-    !Array.isArray(coverage.missing)
-  ) {
-    throw new Error(
-      "C2-ZC Rust Verify checkCoverage must be complete with arrays",
-    );
-  }
-  if (
-    coverage.required.length !== C2ZC_RUST_VERIFY_COVERAGE_COUNT ||
-    coverage.covered.length !== C2ZC_RUST_VERIFY_COVERAGE_COUNT
-  ) {
-    throw new Error(
-      "C2-ZC Rust Verify checkCoverage must contain exactly 13 required and covered checks",
-    );
-  }
-  if (coverage.missing.length !== 0) {
-    throw new Error("C2-ZC Rust Verify checkCoverage missing must be empty");
-  }
-  for (const [label, values] of [
-    ["required", coverage.required],
-    ["covered", coverage.covered],
-  ]) {
-    if (
-      values.some(
-        (value) =>
-          typeof value !== "string" ||
-          value.length === 0 ||
-          value.trim() !== value,
-      )
-    ) {
-      throw new Error(
-        `C2-ZC Rust Verify checkCoverage ${label} must contain non-empty strings`,
-      );
-    }
-    if (new Set(values).size !== C2ZC_RUST_VERIFY_COVERAGE_COUNT) {
-      throw new Error(
-        `C2-ZC Rust Verify checkCoverage ${label} must not contain duplicates`,
-      );
-    }
-  }
-  if (canonicalJson(coverage.required) !== canonicalJson(coverage.covered)) {
-    throw new Error(
-      "C2-ZC Rust Verify checkCoverage required and covered mismatch",
-    );
-  }
-  return coverage;
 }
 
 function sentinelValues(value) {
@@ -669,21 +610,7 @@ export function parseC2ZcRustVerifyOutcome(stdout, stderr = "") {
       "C2-ZC Rust Verify outcome sentinel JSON must be compact canonical JSON",
     );
   }
-  exactObjectKeys(
-    parsed,
-    ["verifyContractVersion", "checkCoverage"],
-    "C2-ZC Rust Verify outcome",
-  );
-  if (
-    typeof parsed.verifyContractVersion !== "string" ||
-    parsed.verifyContractVersion.length === 0 ||
-    parsed.verifyContractVersion.trim() !== parsed.verifyContractVersion
-  ) {
-    throw new Error(
-      "C2-ZC Rust Verify outcome verifyContractVersion must be non-empty",
-    );
-  }
-  assertVerifyCoverage(parsed.checkCoverage);
+  assertC2ZcRustVerifyOutcome(parsed);
   return parsed;
 }
 
@@ -944,6 +871,12 @@ function failureEvidencePath(outputPath, candidate, attemptId) {
 
 function assertCandidate(candidate, label = "candidate") {
   if (!isPlainObject(candidate)) throw new Error(`${label} is required`);
+  if (
+    JSON.stringify(Object.keys(candidate).sort()) !==
+    JSON.stringify([...CANDIDATE_FIELDS].sort())
+  ) {
+    throw new Error(`${label} has unexpected fields`);
+  }
   for (const field of CANDIDATE_FIELDS) {
     if (field === "worktreeClean") {
       if (typeof candidate[field] !== "boolean") {
@@ -951,9 +884,26 @@ function assertCandidate(candidate, label = "candidate") {
       }
     } else if (
       typeof candidate[field] !== "string" ||
-      candidate[field].length === 0
+      candidate[field].length === 0 ||
+      candidate[field].trim() !== candidate[field] ||
+      candidate[field].includes("\0")
     ) {
       throw new Error(`${label}.${field} must be a non-empty string`);
+    }
+  }
+  for (const field of [
+    "resolvedBaseSha",
+    "resolvedHeadSha",
+    "resolvedHeadTreeSha",
+    "currentHeadSha",
+  ]) {
+    if (!GIT_OBJECT_ID.test(candidate[field])) {
+      throw new Error(`${label}.${field} must be a Git object ID`);
+    }
+  }
+  for (const field of ["worktreeFingerprint", "worktreeStatusHash"]) {
+    if (!HEX_SHA256.test(candidate[field])) {
+      throw new Error(`${label}.${field} must be a SHA-256 hex digest`);
     }
   }
   if (candidate.worktreeClean !== true) {
@@ -978,13 +928,16 @@ function escapeRegExp(value) {
 }
 
 function assertExactTestExecution(stdout, stderr, fullTestName, label) {
-  const output = `${stdout}\n${stderr}`;
   const testCaseMatches = [
-    ...output.matchAll(
+    ...stdout.matchAll(
       /^\s*test\s+(.+?)\s+\.\.\.\s+(ok|FAILED|ignored)\s*$/gmu,
     ),
   ];
-  const summaryMatches = [...output.matchAll(/^\s*test result:\s+(.+)$/gmu)];
+  const summaryMatches = [
+    ...stdout.matchAll(/^\s*test result:\s+(.+)$/gmu),
+  ];
+  const stderrTestOutput =
+    /^\s*test\s+.+?\s+\.\.\.\s+(?:ok|FAILED|ignored)\s*$|^\s*test result:\s+.+$/gmu;
   const expectedTest = new RegExp(
     `^\\s*test\\s+${escapeRegExp(fullTestName)}\\s+\\.\\.\\.\\s+ok\\s*$`,
     "mu",
@@ -995,7 +948,8 @@ function assertExactTestExecution(stdout, stderr, fullTestName, label) {
     testCaseMatches.length !== 1 ||
     !expectedTest.test(testCaseMatches[0][0]) ||
     summaryMatches.length !== 1 ||
-    !expectedSummary.test(output)
+    !expectedSummary.test(stdout) ||
+    stderrTestOutput.test(stderr)
   ) {
     throw new Error(
       `${label} requires exactly one passed test result for ${fullTestName}`,
@@ -1425,7 +1379,7 @@ async function executeGit(args, root) {
 
 function requireGitObjectId(value, label) {
   const normalized = value.trim();
-  if (!/^[0-9a-f]{40,64}$/u.test(normalized)) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(normalized)) {
     throw new Error(`${label} did not resolve to a Git object ID`);
   }
   return normalized;

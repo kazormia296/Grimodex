@@ -1,5 +1,4 @@
 import { flushStrictQuiescence } from "@/application/lifecycle/quiescenceCoordinator";
-import { acquireQuiescenceLease } from "@/application/lifecycle/quiescenceLease";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { cancelWorkspaceScopedSchedules } from "@/application/workspace/workspaceScheduleQuiescence";
 import { clearRetainedEditorRecoveryDraftsForScopeChange } from "@/features/editor/editorSaveRegistry";
@@ -7,6 +6,7 @@ import {
   beginWorkspaceSwitch,
   endWorkspaceSwitch,
 } from "@/features/timelapse/recorder";
+import { acquireQuiescenceLeaseAfterTimelapseGenesis } from "@/features/timelapse/genesisQuiescence";
 import {
   getCurrentWorkspaceIdentity,
   setCurrentWorkspaceIdentity,
@@ -50,21 +50,24 @@ export async function restoreBackupWithWorkspaceAuthority(
     );
   }
   const projectId = getCurrentProjectId();
-  const lease = acquireQuiescenceLease("workspace-restore", {
-    transition: {
-      kind: "workspace",
-      from: {
-        workspacePath: previousIdentity.path,
-        workspaceOpenRevision: previousIdentity.openRevision,
-        projectId,
-      },
-      to: {
-        workspacePath: previousIdentity.path,
-        workspaceOpenRevision: null,
-        projectId: null,
+  const lease = await acquireQuiescenceLeaseAfterTimelapseGenesis(
+    "workspace-restore",
+    {
+      transition: {
+        kind: "workspace",
+        from: {
+          workspacePath: previousIdentity.path,
+          workspaceOpenRevision: previousIdentity.openRevision,
+          projectId,
+        },
+        to: {
+          workspacePath: previousIdentity.path,
+          workspaceOpenRevision: null,
+          projectId: null,
+        },
       },
     },
-  });
+  );
   let switchStarted = false;
   let rendererTerminal = false;
 

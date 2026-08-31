@@ -102,7 +102,9 @@ import {
   shouldHandleEditorUpdate,
 } from "@/features/editor/editorEventPolicy";
 import {
+  createLoadedTimelapseDescriptor,
   handleSceneEditorTransaction,
+  type LoadedTimelapseDescriptor,
   type SceneBeatIndexState,
 } from "@/features/editor/sceneEditorTransactionPipeline";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
@@ -302,6 +304,9 @@ export function EditorPane({
   const prevSceneIdRef = useRef(nodeId);
   const preserveCurrentLoadedDocumentRef = useRef<string | null>(null);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
+  const loadedTimelapseDescriptorRef = useRef<LoadedTimelapseDescriptor | null>(
+    null,
+  );
   // Per-scene editor state: cursor position + scroll (session-only, no persistence).
   // scrollOffset is the logical block-axis offset (scrollTop when horizontal,
   // -scrollLeft when vertical) — see editorLayout.getLogicalScrollOffset.
@@ -428,6 +433,10 @@ export function EditorPane({
   const editorInstanceIdRef = useRef(createEditorInstanceId("pane"));
   const [loadedDocumentKey, setLoadedDocumentKey] =
     useState<DocumentKey | null>(null);
+  // Project authority is committed together with loadedDocumentKey.  Fence
+  // admission must use this immutable loaded value, never the render-time
+  // current Project (which may already point at a replacement workspace).
+  const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
   const [loadedInputProjectionKey, setLoadedInputProjectionKey] = useState("");
   const [loadedInputScopeKey, setLoadedInputScopeKey] = useState("");
   const loadedDocumentKeyRef = useRef<DocumentKey | null>(null);
@@ -525,7 +534,7 @@ export function EditorPane({
   } = useEditorDocumentSession();
   const activeLoadedDocumentKey =
     loadedDocumentKey?.id === nodeId ? loadedDocumentKey : null;
-  const documentLeaseKey = useMemo<DocumentKey | null>(
+  const documentTargetKey = useMemo<DocumentKey | null>(
     () =>
       isEntryMode
         ? activeLoadedDocumentKey
@@ -539,8 +548,8 @@ export function EditorPane({
   // Scene reload temporarily revokes the loaded save binding. Keep the exact
   // notification key stable through that window so one nonce cannot retrigger
   // the same canonical load.
-  const activeDocumentStateKey = documentLeaseKey
-    ? externalDocumentStateKey(documentLeaseKey)
+  const activeDocumentStateKey = documentTargetKey
+    ? externalDocumentStateKey(documentTargetKey)
     : null;
   const externalReloadNonce = useExternalWriteStore((state) =>
     activeDocumentStateKey
@@ -676,6 +685,11 @@ export function EditorPane({
           snapshot.binding,
           doc,
           defaultEditorDocumentServices,
+          {
+            timelapseDocument: loadedTimelapseDescriptorRef.current?.document,
+            timelapseDocumentIdentity:
+              loadedTimelapseDescriptorRef.current?.documentIdentity,
+          },
         );
       } finally {
         markEnd("editor.coreSave");
@@ -1243,11 +1257,8 @@ export function EditorPane({
       onTransaction({ transaction }) {
         handleSceneEditorTransaction({
           transaction,
-          id: saveSceneIdRef.current,
-          isEntryMode,
-          isCodexMode,
-          isSnippetMode,
-          isChronicleEventMode,
+          timelapseDescriptor: loadedTimelapseDescriptorRef.current,
+          beatSceneId: saveSceneIdRef.current,
           isApplyingExternalUpdate: isApplyingExternalUpdate.current,
           beatIndexRef: sceneBeatIndexRef,
         });
@@ -1305,10 +1316,18 @@ export function EditorPane({
   );
 
   const editorViewReady = useEditorViewReady(editor);
+  // Preserve the historical variable name at the editor-admission boundary,
+  // but make it the committed loaded key.  The render-time target above is
+  // still used for external reload/conflict routing only.
+  const documentLeaseKey = inputProjectionReady
+    ? activeLoadedDocumentKey
+    : null;
+  const loadedFenceProjectId = inputProjectionReady ? loadedProjectId : null;
   const editorReadOnly = useLicenseEditableSync(
     editor,
     readOnly || !inputProjectionReady,
     documentLeaseKey,
+    loadedFenceProjectId,
   );
   const editorWritable = inputProjectionReady && !editorReadOnly;
   editorWritableRef.current = editorWritable;
@@ -2213,8 +2232,10 @@ export function EditorPane({
         // old binding remains valid only until the pre-switch flush completes.
         loadStarted = true;
         mutationGate.beginLoad();
+        loadedTimelapseDescriptorRef.current = null;
         loadedDocumentKeyRef.current = null;
         setLoadedDocumentKey(null);
+        setLoadedProjectId(null);
         setLoadedInputProjectionKey("");
         setLoadedInputScopeKey("");
         if (getFocusedEditor() === editorRef.current) {
@@ -2332,12 +2353,16 @@ export function EditorPane({
             loadedBinding.kind === "codex" ? loadedBinding.phaseId : null,
           );
           mutationGate.commitLoad(loadedBinding);
+          const committedProjectId = loaded.projectId ?? loadProjectId;
+          loadedTimelapseDescriptorRef.current =
+            createLoadedTimelapseDescriptor(committedProjectId, loadedBinding);
           if (isCodexMode && phaseIdOverride === undefined) {
             loadedCodexTabOverrideRef.current = overridePhaseId ?? null;
           }
           const nextDocumentKey = documentKeyFromBinding(loadedBinding);
           loadedDocumentKeyRef.current = nextDocumentKey;
           setLoadedDocumentKey(nextDocumentKey);
+          setLoadedProjectId(committedProjectId);
           setLoadedInputProjectionKey(inputTargetProjectionKey);
           setLoadedInputScopeKey(effectiveInputScopeKey);
           setIsSceneContentLoading(false);
@@ -2555,9 +2580,11 @@ export function EditorPane({
             );
             return;
           }
+          loadedTimelapseDescriptorRef.current = null;
           mutationGate.failLoad();
           loadedDocumentKeyRef.current = null;
           setLoadedDocumentKey(null);
+          setLoadedProjectId(null);
           setLoadedInputProjectionKey("");
           setLoadedInputScopeKey("");
           if (getFocusedEditor() === editorRef.current) {

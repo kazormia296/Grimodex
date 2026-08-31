@@ -42,6 +42,8 @@ import {
 import {
   C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
   C2ZC_RUST_ACCEPTANCE_GATES,
+  C2ZC_RUST_VERIFY_CONTRACT_VERSION,
+  C2ZC_RUST_VERIFY_COVERAGE,
   createC2ZcRustAcceptanceReceipt,
 } from "./c2zc-rust-acceptance-receipt.mjs";
 import {
@@ -157,13 +159,8 @@ function c2zcFixtureEvidence(candidate) {
 }
 
 const VERIFY_OUTCOME = {
-  verifyContractVersion: "9",
-  checkCoverage: {
-    complete: true,
-    required: Array.from({ length: 13 }, (_, index) => `rust-check-${index}`),
-    covered: Array.from({ length: 13 }, (_, index) => `rust-check-${index}`),
-    missing: [],
-  },
+  verifyContractVersion: C2ZC_RUST_VERIFY_CONTRACT_VERSION,
+  checkCoverage: C2ZC_RUST_VERIFY_COVERAGE,
 };
 
 function exactRustGateOutput(gateId) {
@@ -1776,6 +1773,63 @@ test("local CI execution is fail-fast and records later stages as not run", asyn
   assert.equal(result.status, "failed");
   assert.equal(result.stages[0].status, "failed");
   assert.equal(result.stages[1].status, "not-run");
+});
+
+test("C2-ZC Full does not skip product journeys after runtime performance failure", async () => {
+  const candidate = completeCandidate();
+  const registry = await readRegistry();
+  const full = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const runtimeStage = full.stages.find(
+    (stage) => stage.id === "electron-runtime-performance",
+  );
+  const productStage = full.stages.find(
+    (stage) => stage.id === "electron-product-journeys",
+  );
+  const plan = { ...full, stages: [runtimeStage, productStage] };
+  const executed = [];
+  const result = await runLocalCiPlan(plan, {
+    candidate,
+    executeCommand: async (entry) => {
+      executed.push(entry);
+      return {
+        durationMs: 1,
+        exitCode: 124,
+        signal: null,
+      };
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(
+    executed.at(-1).label,
+    runtimeStage.commands[0].label,
+    "the runtime performance failure must be the last executed command",
+  );
+  const recordedRuntimeStage = result.stages.find(
+    (stage) => stage.id === "electron-runtime-performance",
+  );
+  const recordedProductStage = result.stages.find(
+    (stage) => stage.id === "electron-product-journeys",
+  );
+  assert.equal(recordedRuntimeStage.status, "failed");
+  assert.equal(recordedProductStage.status, "not-run");
+  assert.ok(recordedProductStage.commands.length > 0);
+  assert.equal(recordedProductStage.commands[0].status, "not-run");
+  assert.match(recordedProductStage.commands[0].reason, /Fail-fast/i);
+  assert.equal(result.productJourneyEvidence, null);
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(result, {
+        profile: "full",
+        candidate,
+        plan,
+      }),
+    /passed full local CI receipt/i,
+  );
 });
 
 test("local CI resolves Git refs and rejects dirty or mismatched Full candidates", async () => {

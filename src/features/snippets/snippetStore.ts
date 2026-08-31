@@ -21,6 +21,7 @@ import {
 } from "@/lib/saveOutcome";
 import { applyUndoJournal } from "@/features/agent-writes/undoJournal";
 import type { CanonicalWriteReceipt } from "@/features/native-writes/writeContext";
+import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
 import {
   blockIfUnlicensed,
   LICENSE_WRITE_RESTRICTED_ERROR,
@@ -103,7 +104,10 @@ interface SnippetState {
     data: Partial<
       Pick<NewSnippet, "title" | "content" | "tagsCache" | "sceneId">
     >,
-    options?: { baseVersion?: number },
+    options?: {
+      baseVersion?: number;
+      timelapseDocument?: TimelapseDocumentRef;
+    },
   ) => Promise<VersionedSaveOutcome>;
   remove: (id: string) => Promise<void>;
   incrementUsageCount: (id: string) => Promise<void>;
@@ -304,7 +308,12 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         getCurrentProjectId(),
         id,
         data,
-        { baseVersion: options?.baseVersion ?? before?.version ?? 0 },
+        {
+          baseVersion: options?.baseVersion ?? before?.version ?? 0,
+          ...(options?.timelapseDocument
+            ? { timelapseDocument: options.timelapseDocument }
+            : {}),
+        },
       );
       // 行なし (スコープ miss / 削除済み) = 保存されていない。
       // false の全経路はここで必ず通知する契約 (衝突=conflict handler /

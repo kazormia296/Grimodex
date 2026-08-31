@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invokeMock = vi.fn();
 const limitMock = vi.fn();
@@ -40,6 +40,7 @@ vi.mock("@/db/client", () => ({
 
 import { patchPhaseAggregate } from "./phaseApi";
 import { PhaseVersionConflictError } from "./phaseOcc";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 const currentPhase = {
   id: "phase-1",
@@ -53,6 +54,11 @@ beforeEach(() => {
   invokeMock.mockResolvedValue(undefined);
   limitMock.mockReset();
   selectQueue = [];
+  publishCurrentProjectId("project-1");
+});
+
+afterEach(() => {
+  publishCurrentProjectId(null);
 });
 
 describe("patchPhaseAggregate", () => {

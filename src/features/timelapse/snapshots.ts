@@ -1,7 +1,8 @@
 import { db } from "@/db/client";
 import { stateSnapshots } from "@/db/schema";
 import { invoke } from "@/lib/tauri";
-import { and, desc, eq, lte } from "drizzle-orm";
+import { getTimelapseResetSequence } from "@/features/settings/api";
+import { and, desc, eq, gte, lte } from "drizzle-orm";
 
 /**
  * 執筆タイムラプス state snapshots.
@@ -18,17 +19,6 @@ import { and, desc, eq, lte } from "drizzle-orm";
 
 const DEFAULT_EVENT_GAP = 1000;
 const DEFAULT_TIME_GAP_MS = 60 * 60 * 1000; // 1 hour
-
-export interface RecordSnapshotInput {
-  projectId: string;
-  domain: string;
-  entityType?: string | null;
-  entityId?: string | null;
-  anchorSequence: number;
-  anchorTimestamp: number;
-  /** Caller-defined payload. Stringified before storage. */
-  payload: unknown;
-}
 
 export type GenesisBaselineKind = "scene" | "codex" | "snippet";
 
@@ -53,9 +43,67 @@ type NativeAppendGenesisBaselinesResult = Omit<
   "completed"
 >;
 
+export interface BodyBaselineTarget {
+  kind: GenesisBaselineKind;
+  id: string;
+}
+
+export interface AppendBodyBaselinesInput {
+  expectedWorkspacePath: string;
+  projectId: string;
+  targets: readonly BodyBaselineTarget[];
+  expectedAnchorSequence?: number | null;
+}
+
+export interface AppendBodyBaselinesResult {
+  insertedCount: number;
+  skippedExistingCount: number;
+  anchorSequence: number;
+  anchorTimestamp: number;
+  /** False when a workspace switch invalidated the caller. */
+  completed: boolean;
+}
+
+type NativeAppendBodyBaselinesResult = Omit<
+  AppendBodyBaselinesResult,
+  "completed"
+>;
+
+export interface PurgeTimelapseHistoryInput {
+  expectedWorkspacePath: string;
+  projectId: string;
+}
+
+export interface PurgeTimelapseHistoryResult {
+  deletedEventCount: number;
+  deletedSnapshotCount: number;
+}
+
+export interface LayoutSnapshotPayload {
+  layout: object;
+  activePresetId?: string | null;
+  hiddenStripePanels?: readonly string[];
+}
+
+export interface RecordLayoutSnapshotInput {
+  expectedWorkspacePath: string;
+  projectId: string;
+  payload: LayoutSnapshotPayload;
+  expectedAnchorSequence?: number | null;
+}
+
+export interface RecordLayoutSnapshotResult {
+  inserted: boolean;
+  anchorSequence: number;
+  anchorTimestamp: number;
+}
+
 const GENESIS_BASELINE_BATCH_SIZE = 64;
 const GENESIS_BASELINE_BATCH_TOO_LARGE =
   "TIMELAPSE_GENESIS_BASELINE_BATCH_TOO_LARGE";
+
+/** The Native body writer accepts bounded identity batches only. */
+const BODY_BASELINE_BATCH_SIZE = 64;
 
 /**
  * Ask the authoritative backend to append missing genesis baselines.
@@ -163,23 +211,83 @@ export async function appendGenesisBaselines(
   return total;
 }
 
-export async function recordStateSnapshot(
-  input: RecordSnapshotInput,
-): Promise<void> {
-  const json =
-    typeof input.payload === "string"
-      ? input.payload
-      : JSON.stringify(input.payload);
-  await db.insert(stateSnapshots).values({
+/**
+ * Ask Native to append body baselines at its current canonical tail. The
+ * renderer sends only `(kind, id)` identities; body bytes and snapshot scope
+ * are never accepted from this boundary. Batches are bounded and an
+ * authority callback prevents a workspace switch from being reported as a
+ * successful background pass.
+ */
+export async function appendBodyBaselines(
+  input: AppendBodyBaselinesInput,
+  isAuthoritative: () => boolean = () => true,
+): Promise<AppendBodyBaselinesResult> {
+  const targets = [...input.targets];
+  if (targets.length === 0) {
+    return {
+      insertedCount: 0,
+      skippedExistingCount: 0,
+      anchorSequence: input.expectedAnchorSequence ?? 0,
+      anchorTimestamp: 0,
+      completed: true,
+    };
+  }
+  const total: AppendBodyBaselinesResult = {
+    insertedCount: 0,
+    skippedExistingCount: 0,
+    anchorSequence: input.expectedAnchorSequence ?? 0,
+    anchorTimestamp: 0,
+    completed: true,
+  };
+  for (let offset = 0; offset < targets.length; offset += BODY_BASELINE_BATCH_SIZE) {
+    if (!isAuthoritative()) {
+      total.completed = false;
+      return total;
+    }
+    const result = await invoke<NativeAppendBodyBaselinesResult>(
+      "timelapse_body_baselines_append",
+      {
+        expectedWorkspacePath: input.expectedWorkspacePath,
+        projectId: input.projectId,
+        targets: targets.slice(offset, offset + BODY_BASELINE_BATCH_SIZE),
+        expectedAnchorSequence: input.expectedAnchorSequence ?? null,
+      },
+    );
+    if (!isAuthoritative()) {
+      total.completed = false;
+      return total;
+    }
+    total.insertedCount += result.insertedCount;
+    total.skippedExistingCount += result.skippedExistingCount;
+    total.anchorSequence = result.anchorSequence;
+    total.anchorTimestamp = result.anchorTimestamp;
+  }
+  return total;
+}
+
+/** Clear both protected timelapse ledgers through the typed Native boundary. */
+export async function purgeTimelapseHistoryNative(
+  input: PurgeTimelapseHistoryInput,
+): Promise<PurgeTimelapseHistoryResult> {
+  return invoke<PurgeTimelapseHistoryResult>("timelapse_history_purge", {
+    expectedWorkspacePath: input.expectedWorkspacePath,
     projectId: input.projectId,
-    domain: input.domain,
-    entityType: input.entityType ?? null,
-    entityId: input.entityId ?? null,
-    anchorSequence: input.anchorSequence,
-    anchorTimestamp: input.anchorTimestamp,
-    payload: json,
-    encoding: "json",
-    createdAt: Date.now(),
+  });
+}
+
+/**
+ * Persist a renderer UI payload under the fixed
+ * `layout/workspace/workspace` scope. Native derives the canonical tail and
+ * rejects a stale expected sequence.
+ */
+export async function recordLayoutSnapshot(
+  input: RecordLayoutSnapshotInput,
+): Promise<RecordLayoutSnapshotResult> {
+  return invoke<RecordLayoutSnapshotResult>("timelapse_layout_snapshot_record", {
+    expectedWorkspacePath: input.expectedWorkspacePath,
+    projectId: input.projectId,
+    payload: input.payload,
+    expectedAnchorSequence: input.expectedAnchorSequence ?? null,
   });
 }
 
@@ -202,9 +310,11 @@ export async function loadLatestSnapshot(opts: {
   entityId?: string | null;
   asOfSequence?: number;
 }): Promise<DecodedSnapshot | null> {
+  const resetSequence = await getTimelapseResetSequence(opts.projectId);
   const filters = [
     eq(stateSnapshots.projectId, opts.projectId),
     eq(stateSnapshots.domain, opts.domain),
+    gte(stateSnapshots.anchorSequence, resetSequence),
   ];
   if (opts.entityId !== undefined) {
     // drizzle: eq() can't compare against null directly via eq; the recorder

@@ -1443,6 +1443,7 @@ fn mutate_scene_source(db: &Database) {
             event_uid: "event-c2zc-source-update".to_string(),
             origin: NarrativeChangeOrigin::Human,
             timelapse_steps: None,
+            timelapse_doc_step_coverage: None,
             include_sidecars: false,
             base_version: Some(0),
             updated_at: "2026-08-24T00:00:01.000Z".to_string(),

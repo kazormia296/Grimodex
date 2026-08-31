@@ -224,7 +224,7 @@ pub fn classify_insert_columns(sql: &str) -> Option<Vec<String>> {
 mod tests {
     use super::*;
 
-    const C2ZC_NATIVE_OWNED_TABLES: [&str; 9] = [
+    const C2ZC_NATIVE_OWNED_TABLES: [&str; 11] = [
         "narrative_semantic_epochs",
         "narrative_extraction_runs",
         "narrative_dependency_edges",
@@ -234,6 +234,8 @@ mod tests {
         "narrative_maintenance_finding_lifecycle",
         "narrative_maintenance_finding_observations",
         "narrative_maintenance_repair_leases",
+        "change_events",
+        "state_snapshots",
     ];
 
     #[test]

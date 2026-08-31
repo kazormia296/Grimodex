@@ -38,6 +38,10 @@ import {
   createC2ZcFixtureSemantic,
   refreshC2ZcFixtureSemanticDigests,
 } from "./c2zc-fixture-test-support.mjs";
+import {
+  C2ZC_RUST_VERIFY_CONTRACT_VERSION,
+  C2ZC_RUST_VERIFY_COVERAGE,
+} from "./c2zc-verify-contract.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
@@ -427,14 +431,10 @@ test("typed tree-node producer timestamps use the source profile without weakeni
   );
 });
 
-test("Verify coverage compares values from the Rust outcome without a JS check catalogue", () => {
+test("Verify coverage binds both outcomes to the Rust and policy contract", () => {
   const rustOutcome = {
-    checkCoverage: {
-      complete: true,
-      required: Array.from({ length: 13 }, (_, index) => `rust-${index}`),
-      covered: Array.from({ length: 13 }, (_, index) => `rust-${index}`),
-      missing: [],
-    },
+    verifyContractVersion: C2ZC_RUST_VERIFY_CONTRACT_VERSION,
+    checkCoverage: C2ZC_RUST_VERIFY_COVERAGE,
     report: { rebuildRequired: false },
   };
   const run = { status: "completed", outcomeSummaryJson: rustOutcome };
@@ -446,9 +446,70 @@ test("Verify coverage compares values from the Rust outcome without a JS check c
     () =>
       assertC2ZcVerifyCoverage(run, {
         ...rustOutcome,
-        checkCoverage: { ...rustOutcome.checkCoverage, covered: [] },
+        checkCoverage: {
+          ...rustOutcome.checkCoverage,
+          covered: [],
+        },
       }),
     /coverage|13|Rust/i,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcVerifyCoverage(run, {
+        ...rustOutcome,
+        verifyContractVersion: "bogus",
+      }),
+    /version|Rust/i,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcVerifyCoverage(run, {
+        ...rustOutcome,
+        checkCoverage: {
+          ...rustOutcome.checkCoverage,
+          required: Array.from({ length: 13 }, (_, index) => `fake-${index}`),
+          covered: Array.from({ length: 13 }, (_, index) => `fake-${index}`),
+        },
+      }),
+    /coverage|policy|Rust/i,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcVerifyCoverage(
+        {
+          ...run,
+          outcomeSummaryJson: {
+            ...rustOutcome,
+            verifyContractVersion: "bogus",
+          },
+        },
+        rustOutcome,
+      ),
+    /version|Rust/i,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcVerifyCoverage(
+        {
+          ...run,
+          outcomeSummaryJson: {
+            ...rustOutcome,
+            checkCoverage: {
+              ...rustOutcome.checkCoverage,
+              required: [
+                "fake-check",
+                ...rustOutcome.checkCoverage.required.slice(1),
+              ],
+              covered: [
+                "fake-check",
+                ...rustOutcome.checkCoverage.covered.slice(1),
+              ],
+            },
+          },
+        },
+        rustOutcome,
+      ),
+    /coverage|policy|Rust/i,
   );
 });
 
@@ -487,19 +548,18 @@ test("marker and restart contracts retain authority, Legacy, and Epoch values", 
 });
 
 test("restore lifecycle accepts Verify -> conditional Rebuild -> confirmation Verify -> Freshness", () => {
-  const checkCoverage = {
-    complete: true,
-    required: Array.from({ length: 13 }, (_, index) => `rust-${index}`),
-    covered: Array.from({ length: 13 }, (_, index) => `rust-${index}`),
-    missing: [],
-  };
+  const checkCoverage = structuredClone(C2ZC_RUST_VERIFY_COVERAGE);
   const runs = [
     {
       id: "verify-1",
       runKind: "dependency-verify",
       status: "completed",
       semanticEpochId: "e1",
-      outcomeSummaryJson: { report: { rebuildRequired: true }, checkCoverage },
+      outcomeSummaryJson: {
+        report: { rebuildRequired: true },
+        verifyContractVersion: C2ZC_RUST_VERIFY_CONTRACT_VERSION,
+        checkCoverage,
+      },
     },
     {
       id: "rebuild-1",
@@ -512,7 +572,11 @@ test("restore lifecycle accepts Verify -> conditional Rebuild -> confirmation Ve
       runKind: "dependency-verify",
       status: "completed",
       semanticEpochId: "e1",
-      outcomeSummaryJson: { report: { rebuildRequired: false }, checkCoverage },
+      outcomeSummaryJson: {
+        report: { rebuildRequired: false },
+        verifyContractVersion: C2ZC_RUST_VERIFY_CONTRACT_VERSION,
+        checkCoverage,
+      },
     },
     {
       id: "fresh-1",
@@ -632,12 +696,7 @@ function productionVerifyReport({ first = false } = {}) {
 }
 
 function strictLifecycleRuns() {
-  const coverage = {
-    complete: true,
-    required: Array.from({ length: 13 }, (_, index) => `rust-check-${index}`),
-    covered: Array.from({ length: 13 }, (_, index) => `rust-check-${index}`),
-    missing: [],
-  };
+  const coverage = structuredClone(C2ZC_RUST_VERIFY_COVERAGE);
   const times = [
     "2026-08-29T00:00:10.000Z",
     "2026-08-29T00:00:11.000Z",
@@ -671,11 +730,13 @@ function strictLifecycleRuns() {
     runs: [
       run("verify-1", "dependency-verify", times[0], {
         report: productionVerifyReport({ first: true }),
+        verifyContractVersion: C2ZC_RUST_VERIFY_CONTRACT_VERSION,
         checkCoverage: coverage,
       }),
       run("rebuild-1", "semantic-index-rebuild", times[3]),
       run("verify-2", "dependency-verify", times[6], {
         report: productionVerifyReport(),
+        verifyContractVersion: C2ZC_RUST_VERIFY_CONTRACT_VERSION,
         checkCoverage: coverage,
       }),
       run("fresh-1", "freshness-evaluation", times[9]),
@@ -692,6 +753,7 @@ function strictLifecycleRuns() {
       appliedAt: times[12],
     },
     rustOutcome: {
+      verifyContractVersion: C2ZC_RUST_VERIFY_CONTRACT_VERSION,
       report: productionVerifyReport(),
       checkCoverage: structuredClone(coverage),
     },
@@ -816,7 +878,7 @@ test("restore lifecycle is fixture-bound, exact, timestamped, and marker-last", 
           rustOutcome: mutated.rustOutcome,
           fixtureSemantic: fixtureSemantic(),
         }),
-      /coverage|check|issue|consistent|semantic|zero|13|application|incomplete/i,
+      /coverage|check|issue|consistent|semantic|zero|13|application|incomplete|policy/i,
     );
   }
 });

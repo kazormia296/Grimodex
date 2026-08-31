@@ -16,19 +16,18 @@ import { PRODUCT_JOURNEY_CATALOG_DIGEST } from "../electron/scripts/product-jour
 import {
   C2ZC_RUST_ACCEPTANCE_GATES,
   C2ZC_RUST_ACCEPTANCE_RECEIPT_VERSION,
+  C2ZC_RUST_VERIFY_CONTRACT_VERSION,
+  C2ZC_RUST_VERIFY_COVERAGE,
+  C2ZC_RUST_VERIFY_COMPILED_CHECKS,
+  C2ZC_RUST_VERIFY_CHECKS,
   createC2ZcRustAcceptanceReceipt,
   resolveC2ZcRustAcceptanceCandidate,
   verifyC2ZcRustAcceptanceReceipt,
 } from "./c2zc-rust-acceptance-receipt.mjs";
 
 const VERIFY_OUTCOME = {
-  verifyContractVersion: "9",
-  checkCoverage: {
-    complete: true,
-    required: Array.from({ length: 13 }, (_, index) => `rust-check-${index}`),
-    covered: Array.from({ length: 13 }, (_, index) => `rust-check-${index}`),
-    missing: [],
-  },
+  verifyContractVersion: C2ZC_RUST_VERIFY_CONTRACT_VERSION,
+  checkCoverage: C2ZC_RUST_VERIFY_COVERAGE,
 };
 const VERIFY_OUTCOME_JSON = JSON.stringify(VERIFY_OUTCOME);
 
@@ -471,6 +470,11 @@ const ADDITIONAL_GATE_EXPECTATIONS = [
 
 test("C2-ZC Rust receipt keeps readiness, liveness, and native restore-lock gates ordered", () => {
   assert.deepEqual(
+    C2ZC_RUST_VERIFY_COMPILED_CHECKS,
+    C2ZC_RUST_VERIFY_CHECKS,
+    "the Rust production catalogue must stay bound to policy order",
+  );
+  assert.deepEqual(
     C2ZC_RUST_ACCEPTANCE_GATES.map(({ id }) => id),
     [
       "c2-zc-canonical-no-legacy-fallback",
@@ -650,6 +654,50 @@ test("C2-ZC Rust receipt parses only one valid production Verify outcome sentine
   for (const [label, stdout, stderr] of [
     ["missing", valid.replace(/C2ZC_RUST_VERIFY_OUTCOME=.*\n/u, ""), ""],
     [
+      "bogus version",
+      valid.replace(
+        VERIFY_OUTCOME_JSON,
+        JSON.stringify({ ...VERIFY_OUTCOME, verifyContractVersion: "bogus" }),
+      ),
+      "",
+    ],
+    [
+      "fake 13 IDs",
+      valid.replace(
+        VERIFY_OUTCOME_JSON,
+        JSON.stringify({
+          ...VERIFY_OUTCOME,
+          checkCoverage: {
+            ...VERIFY_OUTCOME.checkCoverage,
+            required: Array.from({ length: 13 }, (_, index) => `fake-${index}`),
+            covered: Array.from({ length: 13 }, (_, index) => `fake-${index}`),
+          },
+        }),
+      ),
+      "",
+    ],
+    [
+      "one policy check replaced",
+      valid.replace(
+        VERIFY_OUTCOME_JSON,
+        JSON.stringify({
+          ...VERIFY_OUTCOME,
+          checkCoverage: {
+            ...VERIFY_OUTCOME.checkCoverage,
+            required: [
+              "fake-check",
+              ...VERIFY_OUTCOME.checkCoverage.required.slice(1),
+            ],
+            covered: [
+              "fake-check",
+              ...VERIFY_OUTCOME.checkCoverage.covered.slice(1),
+            ],
+          },
+        }),
+      ),
+      "",
+    ],
+    [
       "duplicate",
       `${valid}C2ZC_RUST_VERIFY_OUTCOME=${VERIFY_OUTCOME_JSON}\n`,
       "",
@@ -819,6 +867,20 @@ test("C2-ZC Rust receipt rejects gate omission, duplication, order, command, out
         gateExecution({ id: gate.id, stdout: "running 0 tests\n" }),
     }),
     /exactly one passed/i,
+  );
+  await assert.rejects(
+    createReceipt({
+      root,
+      currentCandidate,
+      execute: async (_argv, { gate }) =>
+        gateExecution({
+          id: gate.id,
+          stdout: "",
+          stderr: OUTPUT_BY_GATE_ID[gate.id],
+        }),
+    }),
+    /exactly one passed|stderr/i,
+    "a passing test transcript in stderr must not forge a gate result",
   );
   await assert.rejects(
     createReceipt({
@@ -1185,4 +1247,75 @@ test("C2-ZC Rust candidate resolver binds requested and current HEAD trees", asy
     }),
     /HEAD and tree|tree/i,
   );
+});
+
+test("C2-ZC Rust candidate validation accepts only 40- or 64-character Git object IDs", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-c2zc-object-id-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const withObjectId = (objectId) =>
+    candidate({
+      resolvedBaseSha: objectId,
+      resolvedHeadSha: objectId,
+      resolvedHeadTreeSha: objectId,
+      currentHeadSha: objectId,
+    });
+
+  for (const length of [40, 64]) {
+    const objectId = "a".repeat(length);
+    const result = await createReceipt({
+      root,
+      currentCandidate: withObjectId(objectId),
+      outputPath: `.artifacts/local-ci/object-id-${length}.json`,
+    });
+    assert.equal(result.receiptSha256.startsWith("sha256:"), true);
+  }
+
+  for (const length of [39, 41, 63, 65]) {
+    await assert.rejects(
+      createReceipt({
+        root,
+        currentCandidate: withObjectId("a".repeat(length)),
+        outputPath: `.artifacts/local-ci/object-id-${length}.json`,
+      }),
+      /Git object ID/u,
+    );
+  }
+});
+
+test("C2-ZC Rust candidate resolver accepts only 40- or 64-character Git object IDs", async () => {
+  const resolverGit = (objectId) => {
+    const values = new Map([
+      ["rev-parse --verify origin/master^{commit}", `${objectId}\n`],
+      ["rev-parse --verify HEAD^{commit}", `${objectId}\n`],
+      ["rev-parse --verify HEAD", `${objectId}\n`],
+      ["rev-parse --verify HEAD^{tree}", `${objectId}\n`],
+      ["status --porcelain=v1 -z --untracked-files=all", ""],
+      ["diff --binary --no-ext-diff HEAD --", ""],
+      ["ls-files --others --exclude-standard -z", ""],
+    ]);
+    return async (args) => {
+      const key = args.join(" ");
+      assert.ok(values.has(key), `unexpected git invocation: ${key}`);
+      return values.get(key);
+    };
+  };
+
+  for (const length of [40, 64]) {
+    const objectId = "b".repeat(length);
+    const resolved = await resolveC2ZcRustAcceptanceCandidate({
+      git: resolverGit(objectId),
+    });
+    assert.equal(resolved.resolvedHeadSha, objectId);
+    assert.equal(resolved.resolvedHeadTreeSha, objectId);
+  }
+
+  for (const length of [39, 41, 63, 65]) {
+    await assert.rejects(
+      resolveC2ZcRustAcceptanceCandidate({
+        git: resolverGit("b".repeat(length)),
+      }),
+      /Git object ID/u,
+    );
+  }
 });

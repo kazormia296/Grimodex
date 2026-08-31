@@ -18,6 +18,10 @@ import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import { notifySameRendererDocumentWrite } from "@/features/concurrency/documentWriteNotification";
 import { validateAgentProseMirrorJson } from "./richTextInput";
 import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
+import {
+  runTimelapseBodyReplacement,
+  runTimelapseMutation,
+} from "@/features/timelapse/bodyWriteMode";
 
 export interface AgentCodexCreateInput {
   /** Stable identity of the logical request; distinct from the created entity. */
@@ -228,72 +232,89 @@ export async function agentCreateCodexEntry(
     writeOpts,
   );
 
-  const result = await invoke<AgentWriteResult>("agent_codex_create", {
-    payload: {
-      ...writeContext,
-      canonicalPayload: {
-        type: input.type,
+  const write = async (): Promise<CodexEntry> => {
+    const result = await invoke<AgentWriteResult>("agent_codex_create", {
+      payload: {
+        ...writeContext,
+        canonicalPayload: {
+          type: input.type,
+          name: input.name,
+          parentId: input.parentId ?? null,
+        },
+        entryId,
+        projectId,
+        surface: writeOpts?.surface ?? null,
+        typeSlug: input.type,
         name: input.name,
+        summary: input.summary ?? null,
+        content: content ?? null,
+        aliases: input.aliases ?? null,
+        excludedAliases: input.excludedAliases ?? null,
+        readings: input.readings ?? null,
+        tagsCache: input.tagsCache ?? null,
         parentId: input.parentId ?? null,
-      },
-      entryId,
-      projectId,
-      surface: writeOpts?.surface ?? null,
-      typeSlug: input.type,
-      name: input.name,
-      summary: input.summary ?? null,
-      content: content ?? null,
-      aliases: input.aliases ?? null,
-      excludedAliases: input.excludedAliases ?? null,
-      readings: input.readings ?? null,
-      tagsCache: input.tagsCache ?? null,
-      parentId: input.parentId ?? null,
-      sourceChatMessageId: input.sourceChatMessageId ?? chatMessageId ?? null,
-      model: input.model ?? null,
-      chatMessageId: chatMessageId ?? null,
-      traceId: input.traceId ?? null,
-      authorshipSpans,
-    },
-  });
-
-  await useCodexStore.getState().loadEntries();
-
-  // 段階3: agent 経路の codex 作成も semantic index へ (api.ts は通らないため
-  // ここで明示フック)。debounce + Rust 側 hash 再検証で冪等。
-  scheduleCodexIndex(result.entityId);
-  scheduleImeExportRefresh(projectId);
-
-  const entry = useCodexStore
-    .getState()
-    .entries.find((e) => e.id === result.entityId);
-  if (!entry) {
-    throw new Error(
-      `Created codex entry ${result.entityId} not found after reload`,
-    );
-  }
-
-  if (!useGlobalHistoryStore.getState().isReplaying) {
-    const journalId = result.undoJournalId;
-    const entityId = result.entityId;
-    useGlobalHistoryStore.getState().push({
-      kind: "codex",
-      label: i18next.t("codex.store.agentHistoryCreate"),
-      operationId: journalId,
-      entityId,
-      async undo() {
-        await applyUndoJournal(journalId, "undo");
-        await useCodexStore.getState().loadEntries();
-        scheduleImeExportRefresh(projectId);
-      },
-      async redo() {
-        await applyUndoJournal(journalId, "redo");
-        await useCodexStore.getState().loadEntries();
-        scheduleImeExportRefresh(projectId);
+        sourceChatMessageId: input.sourceChatMessageId ?? chatMessageId ?? null,
+        model: input.model ?? null,
+        chatMessageId: chatMessageId ?? null,
+        traceId: input.traceId ?? null,
+        authorshipSpans,
       },
     });
-  }
 
-  return entry;
+    await useCodexStore.getState().loadEntries();
+
+    // 段階3: agent 経路の codex 作成も semantic index へ (api.ts は通らないため
+    // ここで明示フック)。debounce + Rust 側 hash 再検証で冪等。
+    scheduleCodexIndex(result.entityId);
+    scheduleImeExportRefresh(projectId);
+
+    const entry = useCodexStore
+      .getState()
+      .entries.find((e) => e.id === result.entityId);
+    if (!entry) {
+      throw new Error(
+        `Created codex entry ${result.entityId} not found after reload`,
+      );
+    }
+
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      const journalId = result.undoJournalId;
+      const entityId = result.entityId;
+      useGlobalHistoryStore.getState().push({
+        kind: "codex",
+        label: i18next.t("codex.store.agentHistoryCreate"),
+        operationId: journalId,
+        entityId,
+        async undo() {
+          await applyUndoJournal(journalId, "undo");
+          await useCodexStore.getState().loadEntries();
+          scheduleImeExportRefresh(projectId);
+        },
+        async redo() {
+          await applyUndoJournal(journalId, "redo");
+          await useCodexStore.getState().loadEntries();
+          scheduleImeExportRefresh(projectId);
+        },
+      });
+    }
+
+    return entry;
+  };
+  if (input.content !== undefined) {
+    return runTimelapseBodyReplacement(
+      {
+        projectId,
+        documentIdentity: {
+          projectId,
+          domain: "codex",
+          entityType: "codex_entry",
+          entityId: entryId,
+        },
+      },
+      { commit: write, project: async (entry) => entry },
+    );
+  }
+  return runTimelapseMutation(projectId, write);
 }
 
 export async function agentUpdateCodexEntry(
@@ -309,13 +330,6 @@ export async function agentUpdateCodexEntry(
   }
 
   const projectId = options?.writeOpts?.projectId ?? getCurrentProjectId();
-  const before = useCodexStore
-    .getState()
-    .entries.find((e) => e.id === input.entryId);
-  if (!before) {
-    throw new Error(`Codex entry ${input.entryId} not found`);
-  }
-
   const restoreHuman = options?.restoreHuman === true;
   const content =
     !restoreHuman && input.content
@@ -348,114 +362,138 @@ export async function agentUpdateCodexEntry(
     options?.writeOpts,
   );
 
-  const result = await invoke<AgentWriteResult>("agent_codex_update", {
-    payload: {
-      ...writeContext,
-      canonicalPayload: {
-        fields: Object.keys(input)
-          .filter((field) => field !== "entryId" && field !== "requestId")
-          .sort(),
-      },
-      projectId,
-      surface: options?.writeOpts?.surface ?? null,
-      entryId: input.entryId,
-      baseVersion: await getCodexEntryVersion(projectId, input.entryId),
-      ...(input.type !== undefined ? { typeSlug: input.type } : {}),
-      ...(input.name !== undefined
-        ? { name: input.name === null ? "" : input.name }
-        : {}),
-      ...(input.summary !== undefined
-        ? { summary: input.summary === null ? "" : input.summary }
-        : {}),
-      ...(input.content !== undefined
-        ? { content: content === null ? "" : content }
-        : {}),
-      ...(input.aliases !== undefined
-        ? { aliases: input.aliases === null ? "" : input.aliases }
-        : {}),
-      ...(input.excludedAliases !== undefined
-        ? {
-            excludedAliases:
-              input.excludedAliases === null ? "" : input.excludedAliases,
-          }
-        : {}),
-      ...(input.readings !== undefined
-        ? { readings: input.readings === null ? "" : input.readings }
-        : {}),
-      ...(input.tagsCache !== undefined
-        ? { tagsCache: input.tagsCache === null ? "" : input.tagsCache }
-        : {}),
-      ...(input.parentId !== undefined
-        ? { parentId: input.parentId === null ? "" : input.parentId }
-        : {}),
-      ...(input.contextMode !== undefined
-        ? { contextMode: input.contextMode === null ? "" : input.contextMode }
-        : {}),
-      ...(input.icon !== undefined
-        ? { icon: input.icon === null ? "" : input.icon }
-        : {}),
-      ...(input.childrenBudget !== undefined
-        ? {
-            childrenBudget:
-              input.childrenBudget === null ? "" : input.childrenBudget,
-          }
-        : {}),
-      ...(input.notes !== undefined
-        ? { notes: input.notes === null ? "" : input.notes }
-        : {}),
-      model: restoreHuman ? null : (input.model ?? null),
-      chatMessageId: chatMessageId ?? null,
-      traceId: input.traceId ?? null,
-      authorshipSpans: authorshipSpans ?? null,
-      authorshipSpanLanes: authorshipSpans ? spanLanes(authorshipSpans) : null,
-    },
-  });
-
-  await useCodexStore.getState().loadEntries();
-  notifySameRendererDocumentWrite(
-    { kind: "codex", id: result.entityId, phaseId: null },
-    {
-      domain: "codex",
-      opType: "entry.update",
-      entityId: result.entityId,
-    },
-  );
-
-  // 段階3: agent 経路の codex 更新も semantic index へ (api.ts は通らない)。
-  scheduleCodexIndex(result.entityId);
-  if (input.name !== undefined || input.aliases !== undefined) {
-    scheduleImeExportRefresh(projectId);
-  }
-
-  const entry = useCodexStore
-    .getState()
-    .entries.find((e) => e.id === result.entityId);
-  if (!entry) {
-    throw new Error(
-      `Updated codex entry ${result.entityId} not found after reload`,
-    );
-  }
-
-  if (!useGlobalHistoryStore.getState().isReplaying) {
-    const journalId = result.undoJournalId;
-    const entityId = input.entryId;
-    useGlobalHistoryStore.getState().push({
-      kind: "codex",
-      label: i18next.t("codex.store.agentHistoryUpdate"),
-      operationId: journalId,
-      entityId,
-      async undo() {
-        await applyUndoJournal(journalId, "undo");
-        await useCodexStore.getState().loadEntries();
-        scheduleImeExportRefresh(projectId);
-      },
-      async redo() {
-        await applyUndoJournal(journalId, "redo");
-        await useCodexStore.getState().loadEntries();
-        scheduleImeExportRefresh(projectId);
+  const write = async (): Promise<CodexEntry> => {
+    const before = useCodexStore
+      .getState()
+      .entries.find((e) => e.id === input.entryId);
+    if (!before) {
+      throw new Error(`Codex entry ${input.entryId} not found`);
+    }
+    const result = await invoke<AgentWriteResult>("agent_codex_update", {
+      payload: {
+        ...writeContext,
+        canonicalPayload: {
+          fields: Object.keys(input)
+            .filter((field) => field !== "entryId" && field !== "requestId")
+            .sort(),
+        },
+        projectId,
+        surface: options?.writeOpts?.surface ?? null,
+        entryId: input.entryId,
+        baseVersion: await getCodexEntryVersion(projectId, input.entryId),
+        ...(input.type !== undefined ? { typeSlug: input.type } : {}),
+        ...(input.name !== undefined
+          ? { name: input.name === null ? "" : input.name }
+          : {}),
+        ...(input.summary !== undefined
+          ? { summary: input.summary === null ? "" : input.summary }
+          : {}),
+        ...(input.content !== undefined
+          ? { content: content === null ? "" : content }
+          : {}),
+        ...(input.aliases !== undefined
+          ? { aliases: input.aliases === null ? "" : input.aliases }
+          : {}),
+        ...(input.excludedAliases !== undefined
+          ? {
+              excludedAliases:
+                input.excludedAliases === null ? "" : input.excludedAliases,
+            }
+          : {}),
+        ...(input.readings !== undefined
+          ? { readings: input.readings === null ? "" : input.readings }
+          : {}),
+        ...(input.tagsCache !== undefined
+          ? { tagsCache: input.tagsCache === null ? "" : input.tagsCache }
+          : {}),
+        ...(input.parentId !== undefined
+          ? { parentId: input.parentId === null ? "" : input.parentId }
+          : {}),
+        ...(input.contextMode !== undefined
+          ? { contextMode: input.contextMode === null ? "" : input.contextMode }
+          : {}),
+        ...(input.icon !== undefined
+          ? { icon: input.icon === null ? "" : input.icon }
+          : {}),
+        ...(input.childrenBudget !== undefined
+          ? {
+              childrenBudget:
+                input.childrenBudget === null ? "" : input.childrenBudget,
+            }
+          : {}),
+        ...(input.notes !== undefined
+          ? { notes: input.notes === null ? "" : input.notes }
+          : {}),
+        model: restoreHuman ? null : (input.model ?? null),
+        chatMessageId: chatMessageId ?? null,
+        traceId: input.traceId ?? null,
+        authorshipSpans: authorshipSpans ?? null,
+        authorshipSpanLanes: authorshipSpans
+          ? spanLanes(authorshipSpans)
+          : null,
       },
     });
-  }
+    await useCodexStore.getState().loadEntries();
+    notifySameRendererDocumentWrite(
+      { kind: "codex", id: result.entityId, phaseId: null },
+      {
+        domain: "codex",
+        opType: "entry.update",
+        entityId: result.entityId,
+      },
+    );
 
-  return entry;
+    // 段階3: agent 経路の codex 更新も semantic index へ (api.ts は通らない)。
+    scheduleCodexIndex(result.entityId);
+    if (input.name !== undefined || input.aliases !== undefined) {
+      scheduleImeExportRefresh(projectId);
+    }
+
+    const entry = useCodexStore
+      .getState()
+      .entries.find((e) => e.id === result.entityId);
+    if (!entry) {
+      throw new Error(
+        `Updated codex entry ${result.entityId} not found after reload`,
+      );
+    }
+
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      const journalId = result.undoJournalId;
+      const entityId = input.entryId;
+      useGlobalHistoryStore.getState().push({
+        kind: "codex",
+        label: i18next.t("codex.store.agentHistoryUpdate"),
+        operationId: journalId,
+        entityId,
+        async undo() {
+          await applyUndoJournal(journalId, "undo");
+          await useCodexStore.getState().loadEntries();
+          scheduleImeExportRefresh(projectId);
+        },
+        async redo() {
+          await applyUndoJournal(journalId, "redo");
+          await useCodexStore.getState().loadEntries();
+          scheduleImeExportRefresh(projectId);
+        },
+      });
+    }
+
+    return entry;
+  };
+  if (input.content !== undefined) {
+    return runTimelapseBodyReplacement(
+      {
+        projectId,
+        documentIdentity: {
+          projectId,
+          domain: "codex",
+          entityType: "codex_entry",
+          entityId: input.entryId,
+        },
+      },
+      { commit: write, project: async (entry) => entry },
+    );
+  }
+  return runTimelapseMutation(projectId, write);
 }

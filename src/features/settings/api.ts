@@ -3,14 +3,17 @@ import { appSettings, projectSettings } from "@/db/schema";
 import { eq, and, like } from "drizzle-orm";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { SCAN_IMPORT_STATE_KEY } from "@/features/import/scan/scanImportState";
+import { invoke } from "@/lib/tauri";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 export const NATIVE_OWNED_PROJECT_SETTING_ERROR =
   "NATIVE_OWNED_PROJECT_SETTING";
+export const TIMELAPSE_RESET_SEQUENCE_KEY = "timelapse.resetSequence";
 
 function assertMutableProjectSettingKey(key: string): void {
-  if (key === SCAN_IMPORT_STATE_KEY) {
+  if (key === SCAN_IMPORT_STATE_KEY || key === TIMELAPSE_RESET_SEQUENCE_KEY) {
     throw new Error(
-      `${NATIVE_OWNED_PROJECT_SETTING_ERROR}: ${SCAN_IMPORT_STATE_KEY}`,
+      `${NATIVE_OWNED_PROJECT_SETTING_ERROR}: ${key}`,
     );
   }
 }
@@ -76,12 +79,48 @@ export async function getProjectSetting(
   return rows[0]?.value ?? null;
 }
 
+/**
+ * Read the Native-owned timelapse reset epoch. A malformed persisted value is
+ * fail-closed: silently treating it as zero would resurrect history that a
+ * user explicitly purged.
+ */
+export async function getTimelapseResetSequence(
+  projectId: string,
+): Promise<number> {
+  const value = await getProjectSetting(projectId, TIMELAPSE_RESET_SEQUENCE_KEY);
+  if (value === null) return 0;
+  const sequence = Number(value);
+  if (!Number.isSafeInteger(sequence) || sequence < 0) {
+    throw new Error(
+      "TIMELAPSE_HISTORY_INVALID_RESET_SEQUENCE: stored reset sequence is outside the safe integer range",
+    );
+  }
+  return sequence;
+}
+
 export async function setProjectSetting(
   projectId: string,
   key: string,
   value: string,
 ): Promise<void> {
   assertMutableProjectSettingKey(key);
+  if (key === "timelapse.enabled") {
+    if (value !== "true" && value !== "false") {
+      throw new Error(
+        "TIMELAPSE_ENABLED_INVALID_VALUE: value must be exactly 'true' or 'false'",
+      );
+    }
+    const workspaceIdentity = getCurrentWorkspaceIdentity();
+    if (!workspaceIdentity) {
+      throw new Error("Timelapse setting requires an active workspace");
+    }
+    await setTimelapseEnabledSetting(
+      projectId,
+      workspaceIdentity.path,
+      value === "true",
+    );
+    return;
+  }
   await db
     .insert(projectSettings)
     .values({ projectId, key, value })
@@ -99,6 +138,23 @@ export async function setProjectSetting(
       payload: { key, value: shortSettingValue(value) },
     });
   }
+}
+
+/**
+ * Update the timelapse flag through the path-bound Native writer. Callers that
+ * coordinate a re-arm pass a path captured before their first await so a
+ * workspace switch fails closed instead of mutating the replacement DB.
+ */
+export async function setTimelapseEnabledSetting(
+  projectId: string,
+  expectedWorkspacePath: string,
+  enabled: boolean,
+): Promise<void> {
+  await invoke("timelapse_enabled_set", {
+    expectedWorkspacePath,
+    projectId,
+    enabled,
+  });
 }
 
 export async function deleteProjectSetting(
