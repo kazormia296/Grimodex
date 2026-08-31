@@ -5,7 +5,10 @@ import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
 import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import {
   documentIdFromKey,
@@ -245,7 +248,7 @@ export function discardAutoSavesForDocument(documentKey: DocumentKey): void {
 }
 
 registerQuiescenceProvider({
-  id: "mounted-auto-saves",
+  id: createQuiescenceProviderId("mounted-auto-saves"),
   stage: "autosave",
   flush: flushAllAutoSaves,
   discard: discardAllAutoSaves,

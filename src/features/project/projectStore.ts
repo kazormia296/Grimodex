@@ -33,7 +33,10 @@ import {
   isCurrentMutationAuthority,
   type MutationAuthority,
 } from "@/features/concurrency/mutationAuthority";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import { runProjectLoadWithFailureToast } from "./projectLoadFailure";
 import {
   applyProjectMetadata,
@@ -228,7 +231,7 @@ async function awaitPendingProjectBackgroundMutations(): Promise<void> {
 }
 
 registerQuiescenceProvider({
-  id: "project-background-mutations",
+  id: createQuiescenceProviderId("project-background-mutations"),
   stage: "scoped-mutations",
   flush: awaitPendingProjectBackgroundMutations,
 });

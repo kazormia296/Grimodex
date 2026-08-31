@@ -24,7 +24,10 @@ import {
   type MutationOutcome,
 } from "@/features/concurrency/mutationAuthority";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 
 interface EnqueueOptions {
   /** Backspace バッファのフラッシュ起源など、識別子に使う一時 ID */
@@ -483,7 +486,7 @@ export async function flushPendingTrashItemsStrict(): Promise<void> {
 }
 
 registerQuiescenceProvider({
-  id: "trash-bin-pending-captures",
+  id: createQuiescenceProviderId("trash-bin-pending-captures"),
   stage: "scoped-mutations",
   flush: flushPendingTrashItemsStrict,
   discard: discardPendingTrashCaptures,

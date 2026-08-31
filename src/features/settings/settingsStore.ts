@@ -7,7 +7,10 @@ import {
 } from "./types";
 import { PROJECT_ID } from "@/features/project/constants";
 import { globalSettingsRepository } from "@/lib/globalSettings/repository";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 
 type Layer = Record<string, string>;
@@ -289,7 +292,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 }));
 
 registerQuiescenceProvider({
-  id: "settings",
+  id: createQuiescenceProviderId("settings"),
   stage: "scoped-mutations",
   flush: () => useSettingsStore.getState().flushPending(),
   discard: () => useSettingsStore.getState().discardPending(),

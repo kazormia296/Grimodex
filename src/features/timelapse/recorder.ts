@@ -12,7 +12,10 @@ import { changeEvents } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
 import { debugLog } from "@/lib/debugLog";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
 import { canCaptureTimelapseChangeEvent } from "@/application/lifecycle/quiescenceLease";
 import {
@@ -1698,7 +1701,7 @@ function discardPendingTimelapseEvents(): void {
 }
 
 registerQuiescenceProvider({
-  id: "timelapse-recorder",
+  id: createQuiescenceProviderId("timelapse-recorder"),
   stage: "timelapse",
   flush: flushStrict,
   discard: discardPendingTimelapseEvents,

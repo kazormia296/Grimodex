@@ -50,7 +50,10 @@ import {
   nextTreeNodeMutationTimestamp,
   publishTreeNodeMutation,
 } from "@/lib/treeNodeMutationRegistry";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import { isIpcLifecycleCancellation } from "@/lib/tauri";
 import { scheduleEditorAnalysisTask } from "@/lib/editorAnalysisScheduler";
 import {
@@ -326,7 +329,7 @@ export function _resetBodyMentionScanSchedulerForTests(): void {
 }
 
 registerQuiescenceProvider({
-  id: "scene-body-mention-scans",
+  id: createQuiescenceProviderId("scene-body-mention-scans"),
   stage: "scoped-mutations",
   flush: flushBodyMentionScans,
   discard: _resetBodyMentionScanSchedulerForTests,

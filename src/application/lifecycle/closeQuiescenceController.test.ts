@@ -19,12 +19,17 @@ import {
   beginTimelapseGenesisBarrier,
 } from "@/features/timelapse/genesisBarrier";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import {
+  clearQuiescenceDiagnostics,
+  getQuiescenceDiagnostics,
+} from "./quiescenceDiagnostics";
 
 afterEach(() => {
   _resetQuiescenceLeasesForTests();
   _resetTimelapseGenesisBarriersForTests();
   publishCurrentProjectId(null);
   resetIpcQueueForTests();
+  clearQuiescenceDiagnostics();
 });
 
 describe("createCloseQuiescenceController", () => {
@@ -51,6 +56,56 @@ describe("createCloseQuiescenceController", () => {
 
     expect(isQuiescenceLeaseActive()).toBe(false);
     expect(close).not.toHaveBeenCalled();
+  });
+
+  it("settles a successful genesis prelude before strict quiescence", async () => {
+    publishCurrentProjectId("project-genesis-success");
+    const genesis = beginTimelapseGenesisBarrier("project-genesis-success");
+    const close = vi.fn(async () => {});
+    const failure = vi.fn();
+    const controller = createCloseQuiescenceController({
+      hasImmediateVeto: () => false,
+      flush: vi.fn(async () => {}),
+      close,
+      onFailure: failure,
+    });
+
+    controller.handleCloseRequest({ preventDefault: vi.fn() });
+    await Promise.resolve();
+    expect(close).not.toHaveBeenCalled();
+    genesis.complete();
+
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(failure).not.toHaveBeenCalled();
+    expect(getQuiescenceDiagnostics()).toEqual([]);
+  });
+
+  it("attributes a failed genesis prelude without entering strict quiescence", async () => {
+    publishCurrentProjectId("project-genesis-failure");
+    const genesis = beginTimelapseGenesisBarrier("project-genesis-failure");
+    const genesisError = new Error("genesis failed");
+    genesis.fail(genesisError);
+    const flush = vi.fn(async () => {});
+    const failure = vi.fn();
+    const controller = createCloseQuiescenceController({
+      hasImmediateVeto: () => false,
+      flush,
+      close: vi.fn(async () => {}),
+      onFailure: failure,
+    });
+
+    controller.handleCloseRequest({ preventDefault: vi.fn() });
+    await vi.waitFor(() => expect(failure).toHaveBeenCalledOnce());
+
+    expect(failure.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+    expect(failure.mock.calls[0]?.[1]).toBe("genesis-prelude");
+    expect(flush).not.toHaveBeenCalled();
+    expect(getQuiescenceDiagnostics()).toEqual([
+      {
+        closePhase: "genesis-prelude",
+        errorName: "TimelapseGenesisBarrierError",
+      },
+    ]);
   });
 
   it("labels a successful native close as renderer teardown", async () => {
@@ -424,6 +479,71 @@ describe("createCloseQuiescenceController", () => {
     await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(2));
     expect(persistenceRead).toHaveBeenCalledOnce();
     expect(isQuiescenceLeaseActive()).toBe(false);
+  });
+
+  it("attributes strict and native failures while preserving the original dialog error", async () => {
+    const strictFailure = vi.fn();
+    const strictController = createCloseQuiescenceController({
+      hasImmediateVeto: () => false,
+      flush: vi.fn().mockRejectedValue(new Error("strict failure")),
+      close: vi.fn(async () => {}),
+      onFailure: strictFailure,
+    });
+    strictController.handleCloseRequest({ preventDefault: vi.fn() });
+    await vi.waitFor(() => expect(strictFailure).toHaveBeenCalledOnce());
+    expect(strictFailure.mock.calls[0]?.[1]).toBe("strict-quiescence");
+    expect(getQuiescenceDiagnostics()).toEqual([
+      { closePhase: "strict-quiescence", errorName: "Error" },
+    ]);
+    strictController.cancel();
+
+    const nativeFailure = vi.fn();
+    const nativeController = createCloseQuiescenceController({
+      hasImmediateVeto: () => false,
+      flush: vi.fn(async () => {}),
+      close: vi.fn().mockRejectedValue(new Error("native failure")),
+      onFailure: nativeFailure,
+    });
+    nativeController.handleCloseRequest({ preventDefault: vi.fn() });
+    await vi.waitFor(() => expect(nativeFailure).toHaveBeenCalledOnce());
+    expect(nativeFailure.mock.calls[0]?.[1]).toBe("native-close");
+  });
+
+  it("keeps discard authority/read-seal failures in the native-close phase", async () => {
+    const failure = vi.fn();
+    const controller = createCloseQuiescenceController({
+      hasImmediateVeto: () => false,
+      flush: vi.fn(async () => {
+        throw new Error("flush must not run for discard");
+      }),
+      close: vi.fn().mockRejectedValue(new Error("discard close failed")),
+      onFailure: failure,
+    });
+
+    controller.discardAndClose();
+    await vi.waitFor(() => expect(failure).toHaveBeenCalledOnce());
+    expect(failure.mock.calls[0]?.[1]).toBe("native-close");
+  });
+
+  it("always invokes the failure dialog once with a hostile original rejection", async () => {
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    const failure = vi.fn();
+    const controller = createCloseQuiescenceController({
+      hasImmediateVeto: () => false,
+      flush: vi.fn().mockRejectedValue(revoked.proxy),
+      close: vi.fn(async () => {}),
+      onFailure: failure,
+    });
+
+    controller.handleCloseRequest({ preventDefault: vi.fn() });
+    await vi.waitFor(() => expect(failure).toHaveBeenCalledOnce());
+    expect(failure).toHaveBeenCalledTimes(1);
+    expect(failure.mock.calls[0]?.[0]).toBe(revoked.proxy);
+    expect(failure.mock.calls[0]?.[1]).toBe("strict-quiescence");
+    expect(getQuiescenceDiagnostics()).toEqual([
+      { closePhase: "strict-quiescence", errorName: "UnknownError" },
+    ]);
   });
 
   it("releases a failed close lease when the user cancels", async () => {

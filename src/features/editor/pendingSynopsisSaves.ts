@@ -1,4 +1,7 @@
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 
 const DEFAULT_SAVE_DELAY_MS = 1000;
 const MAX_DRAIN_ROUNDS = 50;
@@ -262,7 +265,7 @@ function discardPendingSynopsisSaves(): void {
 }
 
 registerQuiescenceProvider({
-  id: "inline-synopsis-saves",
+  id: createQuiescenceProviderId("inline-synopsis-saves"),
   stage: "scoped-mutations",
   flush: flushPendingSynopsisSaves,
   discard: discardPendingSynopsisSaves,

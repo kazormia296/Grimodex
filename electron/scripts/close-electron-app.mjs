@@ -1,6 +1,207 @@
 const APP_CLOSE_TIMEOUT_MS = 20_000;
 const PROCESS_EXIT_GRACE_MS = 1_000;
 const PAGE_DIAGNOSTICS_TIMEOUT_MS = 2_000;
+const QUIESCENCE_DIAGNOSTICS_GLOBAL_KEY = "__grimodexQuiescenceDiagnostics";
+export const MAX_QUIESCENCE_DIAGNOSTICS = 16;
+
+const SAFE_CLOSE_PHASES = new Set([
+  "authority-quiescence",
+  "genesis-prelude",
+  "strict-quiescence",
+  "native-close",
+]);
+const SAFE_QUIESCENCE_STAGES = new Set([
+  "ai-executions",
+  "autosave",
+  "participants",
+  "external-write-back",
+  "editor-writes",
+  "scoped-mutations",
+  "scene-writes",
+  "unresolved-editor",
+  "timelapse",
+  "ipc-actual-tasks",
+]);
+const SAFE_ERROR_NAMES = new Set([
+  "AggregateError",
+  "Error",
+  "EvalError",
+  "IpcInvokeError",
+  "QuiescenceProviderStageError",
+  "RangeError",
+  "ReferenceError",
+  "StrictQuiescenceError",
+  "SyntaxError",
+  "TimelapseGenesisBarrierError",
+  "TypeError",
+  "URIError",
+  "UnknownError",
+]);
+const SAFE_IPC_CODES = new Set([
+  "IPC_BACKEND_UNAVAILABLE",
+  "IPC_DERIVED_CANCELLED",
+  "IPC_MUTATION_CANCELLED",
+  "IPC_READ_CANCELLED",
+  "IPC_SECRETS_UNAVAILABLE",
+  "IPC_TIMEOUT",
+  "IPC_UNIMPLEMENTED",
+  "NO_WORKSPACE_OPEN",
+  "RERANKER_BUSY",
+  "UNKNOWN",
+  "WORKSPACE_SWITCHING",
+]);
+const SAFE_OUTCOMES = new Set(["failed", "unknown"]);
+const SAFE_PROVIDER_ID_PATTERN = /^[a-z0-9-]{1,64}$/;
+
+function readOwnDataProperty(value, key) {
+  if (
+    value === null ||
+    (typeof value !== "object" && typeof value !== "function")
+  ) {
+    return undefined;
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasSafeValue(allowlist, value) {
+  return typeof value === "string" && allowlist.has(value);
+}
+
+function projectQuiescenceDiagnostic(value) {
+  if (
+    value === null ||
+    (typeof value !== "object" && typeof value !== "function")
+  ) {
+    return null;
+  }
+
+  const closePhase = readOwnDataProperty(value, "closePhase");
+  const errorName = readOwnDataProperty(value, "errorName");
+  if (
+    !hasSafeValue(SAFE_CLOSE_PHASES, closePhase) ||
+    !hasSafeValue(SAFE_ERROR_NAMES, errorName)
+  ) {
+    return null;
+  }
+
+  const projected = { closePhase, errorName };
+  const stage = readOwnDataProperty(value, "stage");
+  if (hasSafeValue(SAFE_QUIESCENCE_STAGES, stage)) {
+    projected.stage = stage;
+  }
+
+  const providerId = readOwnDataProperty(value, "providerId");
+  if (
+    typeof providerId === "string" &&
+    SAFE_PROVIDER_ID_PATTERN.test(providerId)
+  ) {
+    projected.providerId = providerId;
+  }
+
+  const ipcCode = readOwnDataProperty(value, "ipcCode");
+  if (hasSafeValue(SAFE_IPC_CODES, ipcCode)) {
+    projected.ipcCode = ipcCode;
+  }
+
+  const outcome = readOwnDataProperty(value, "outcome");
+  if (hasSafeValue(SAFE_OUTCOMES, outcome)) {
+    projected.outcome = outcome;
+  }
+
+  return projected;
+}
+
+export function sanitizeQuiescenceDiagnostics(value) {
+  try {
+    if (!Array.isArray(value)) return [];
+    const length = readOwnDataProperty(value, "length");
+    if (!Number.isSafeInteger(length) || length < 0) return [];
+
+    const projected = [];
+    const count = Math.min(length, MAX_QUIESCENCE_DIAGNOSTICS);
+    for (let index = 0; index < count; index += 1) {
+      const diagnostic = projectQuiescenceDiagnostic(
+        readOwnDataProperty(value, String(index)),
+      );
+      if (diagnostic !== null) projected.push(diagnostic);
+    }
+    return projected;
+  } catch {
+    return [];
+  }
+}
+
+function safePageInspectionError(error) {
+  try {
+    if (!(error instanceof Error)) return "UnknownError";
+    const name = error.name;
+    return hasSafeValue(SAFE_ERROR_NAMES, name) ? name : "Error";
+  } catch {
+    return "UnknownError";
+  }
+}
+
+function copyBoundedStringArray(value, maxItems) {
+  try {
+    if (!Array.isArray(value)) return [];
+    const length = readOwnDataProperty(value, "length");
+    if (!Number.isSafeInteger(length) || length < 0) return [];
+
+    const copied = [];
+    const count = Math.min(length, maxItems);
+    for (let index = 0; index < count; index += 1) {
+      const item = readOwnDataProperty(value, String(index));
+      if (typeof item === "string") copied.push(item);
+    }
+    return copied;
+  } catch {
+    return [];
+  }
+}
+
+function normalizePageDiagnostics(value, timeoutMs) {
+  const normalized = {
+    quiescenceDiagnostics: sanitizeQuiescenceDiagnostics(
+      readOwnDataProperty(value, "quiescenceDiagnostics"),
+    ),
+  };
+  const booleanKeys = [
+    "pageClosed",
+    "closeFailureDialog",
+    "beforeUnloadVetoed",
+  ];
+  for (const key of booleanKeys) {
+    const candidate = readOwnDataProperty(value, key);
+    if (typeof candidate === "boolean") normalized[key] = candidate;
+  }
+
+  const alerts = readOwnDataProperty(value, "alerts");
+  if (alerts !== undefined) {
+    normalized.alerts = copyBoundedStringArray(alerts, 5);
+  }
+  const quiescenceMarks = readOwnDataProperty(value, "quiescenceMarks");
+  if (quiescenceMarks !== undefined) {
+    normalized.quiescenceMarks = copyBoundedStringArray(quiescenceMarks, 40);
+  }
+
+  const pageInspectionError = readOwnDataProperty(value, "pageInspectionError");
+  if (typeof pageInspectionError === "string") {
+    const timeoutMessage = `timed out after ${timeoutMs}ms`;
+    normalized.pageInspectionError =
+      pageInspectionError === timeoutMessage
+        ? timeoutMessage
+        : "page inspection failed";
+  }
+
+  const pageUnavailable = readOwnDataProperty(value, "pageUnavailable");
+  if (pageUnavailable === true) normalized.pageUnavailable = true;
+  return normalized;
+}
 
 function processSnapshot(childProcess) {
   if (!childProcess) {
@@ -66,38 +267,179 @@ function timeoutOutcome(timeoutMs, kind) {
 }
 
 async function collectPageDiagnostics(page, timeoutMs) {
-  if (!page) return { pageUnavailable: true };
-  if (page.isClosed()) return { pageClosed: true };
+  if (!page) {
+    return { pageUnavailable: true, quiescenceDiagnostics: [] };
+  }
+  if (page.isClosed()) {
+    return { pageClosed: true, quiescenceDiagnostics: [] };
+  }
 
   const inspection = page
-    .evaluate(() => ({
-      pageClosed: false,
-      closeFailureDialog: Boolean(
-        globalThis.document.querySelector(
-          '[data-testid="close-save-failure-dialog"]',
+    .evaluate(() => {
+      const MAX_RECORDS = 16;
+      const GLOBAL_KEY = "__grimodexQuiescenceDiagnostics";
+      const CLOSE_PHASES = new Set([
+        "authority-quiescence",
+        "genesis-prelude",
+        "strict-quiescence",
+        "native-close",
+      ]);
+      const STAGES = new Set([
+        "ai-executions",
+        "autosave",
+        "participants",
+        "external-write-back",
+        "editor-writes",
+        "scoped-mutations",
+        "scene-writes",
+        "unresolved-editor",
+        "timelapse",
+        "ipc-actual-tasks",
+      ]);
+      const ERROR_NAMES = new Set([
+        "AggregateError",
+        "Error",
+        "EvalError",
+        "IpcInvokeError",
+        "QuiescenceProviderStageError",
+        "RangeError",
+        "ReferenceError",
+        "StrictQuiescenceError",
+        "SyntaxError",
+        "TimelapseGenesisBarrierError",
+        "TypeError",
+        "URIError",
+        "UnknownError",
+      ]);
+      const IPC_CODES = new Set([
+        "IPC_BACKEND_UNAVAILABLE",
+        "IPC_DERIVED_CANCELLED",
+        "IPC_MUTATION_CANCELLED",
+        "IPC_READ_CANCELLED",
+        "IPC_SECRETS_UNAVAILABLE",
+        "IPC_TIMEOUT",
+        "IPC_UNIMPLEMENTED",
+        "NO_WORKSPACE_OPEN",
+        "RERANKER_BUSY",
+        "UNKNOWN",
+        "WORKSPACE_SWITCHING",
+      ]);
+      const OUTCOMES = new Set(["failed", "unknown"]);
+      const PROVIDER_ID_PATTERN = /^[a-z0-9-]{1,64}$/;
+
+      const readOwn = (value, key) => {
+        if (
+          value === null ||
+          (typeof value !== "object" && typeof value !== "function")
+        ) {
+          return undefined;
+        }
+        try {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          return descriptor && "value" in descriptor
+            ? descriptor.value
+            : undefined;
+        } catch {
+          return undefined;
+        }
+      };
+      const isAllowed = (allowlist, value) =>
+        typeof value === "string" && allowlist.has(value);
+      const project = (value) => {
+        if (
+          value === null ||
+          (typeof value !== "object" && typeof value !== "function")
+        ) {
+          return null;
+        }
+        const closePhase = readOwn(value, "closePhase");
+        const errorName = readOwn(value, "errorName");
+        if (
+          !isAllowed(CLOSE_PHASES, closePhase) ||
+          !isAllowed(ERROR_NAMES, errorName)
+        ) {
+          return null;
+        }
+        const projected = { closePhase, errorName };
+        const stage = readOwn(value, "stage");
+        if (isAllowed(STAGES, stage)) projected.stage = stage;
+        const providerId = readOwn(value, "providerId");
+        if (
+          typeof providerId === "string" &&
+          PROVIDER_ID_PATTERN.test(providerId)
+        ) {
+          projected.providerId = providerId;
+        }
+        const ipcCode = readOwn(value, "ipcCode");
+        if (isAllowed(IPC_CODES, ipcCode)) projected.ipcCode = ipcCode;
+        const outcome = readOwn(value, "outcome");
+        if (isAllowed(OUTCOMES, outcome)) projected.outcome = outcome;
+        return projected;
+      };
+
+      let diagnostics;
+      try {
+        const globalDescriptor = Object.getOwnPropertyDescriptor(
+          globalThis,
+          GLOBAL_KEY,
+        );
+        diagnostics =
+          globalDescriptor && "value" in globalDescriptor
+            ? globalDescriptor.value
+            : undefined;
+        if (!Array.isArray(diagnostics)) {
+          diagnostics = [];
+        }
+      } catch {
+        diagnostics = [];
+      }
+
+      const projectedDiagnostics = [];
+      try {
+        const length = readOwn(diagnostics, "length");
+        if (Number.isSafeInteger(length) && length >= 0) {
+          const count = Math.min(length, MAX_RECORDS);
+          for (let index = 0; index < count; index += 1) {
+            const projected = project(readOwn(diagnostics, String(index)));
+            if (projected !== null) projectedDiagnostics.push(projected);
+          }
+        }
+      } catch {
+        return [];
+      }
+
+      return {
+        pageClosed: false,
+        closeFailureDialog: Boolean(
+          globalThis.document.querySelector(
+            '[data-testid="close-save-failure-dialog"]',
+          ),
         ),
-      ),
-      beforeUnloadVetoed: (() => {
-        const event = new globalThis.Event("beforeunload", {
-          cancelable: true,
-        });
-        globalThis.window.dispatchEvent(event);
-        return event.defaultPrevented;
-      })(),
-      alerts: Array.from(globalThis.document.querySelectorAll('[role="alert"]'))
-        .map((element) => element.textContent?.trim() ?? "")
-        .filter(Boolean)
-        .slice(0, 5),
-      quiescenceMarks: globalThis.performance
-        .getEntriesByType("mark")
-        .map((entry) => entry.name)
-        .filter((name) => name.startsWith("grimodex.quiescence."))
-        .slice(-40),
-    }))
+        beforeUnloadVetoed: (() => {
+          const event = new globalThis.Event("beforeunload", {
+            cancelable: true,
+          });
+          globalThis.window.dispatchEvent(event);
+          return event.defaultPrevented;
+        })(),
+        alerts: Array.from(
+          globalThis.document.querySelectorAll('[role="alert"]'),
+        )
+          .map((element) => element.textContent?.trim() ?? "")
+          .filter(Boolean)
+          .slice(0, 5),
+        quiescenceMarks: globalThis.performance
+          .getEntriesByType("mark")
+          .map((entry) => entry.name)
+          .filter((name) => name.startsWith("grimodex.quiescence."))
+          .slice(-40),
+        quiescenceDiagnostics: projectedDiagnostics,
+      };
+    })
     .catch((error) => ({
       pageClosed: page.isClosed(),
-      pageInspectionError:
-        error instanceof Error ? error.message : String(error),
+      pageInspectionError: safePageInspectionError(error),
+      quiescenceDiagnostics: [],
     }));
   const timeout = timeoutOutcome(timeoutMs, "page-inspection-timeout");
   try {
@@ -106,8 +448,9 @@ async function collectPageDiagnostics(page, timeoutMs) {
       ? {
           pageClosed: page.isClosed(),
           pageInspectionError: `timed out after ${timeoutMs}ms`,
+          quiescenceDiagnostics: [],
         }
-      : result;
+      : normalizePageDiagnostics(result, timeoutMs);
   } finally {
     timeout.dispose();
   }

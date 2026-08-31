@@ -30,6 +30,7 @@ import {
   setCurrentWorkspaceIdentity,
 } from "@/runtime/workspaceIdentity";
 import {
+  createQuiescenceProviderId,
   flushQuiescenceProviderStage,
   registerQuiescenceProvider,
 } from "@/lib/quiescenceProviders";
@@ -531,7 +532,7 @@ describe("useProjectStore", () => {
       });
       await useProjectStore.getState().initCurrentProject();
       const unregister = registerQuiescenceProvider({
-        id: "workspace-owned-project-hydrate-test",
+        id: createQuiescenceProviderId("workspace-owned-project-hydrate-test"),
         stage: "autosave",
         flush: async () => {
           throw new Error("old editor must not be flushed after swap");
@@ -1021,7 +1022,7 @@ describe("useProjectStore", () => {
       const targetRead = deferred<Project | undefined>();
       let preflushCount = 0;
       const unregister = registerQuiescenceProvider({
-        id: "overlapping-project-preflush-order",
+        id: createQuiescenceProviderId("overlapping-project-preflush-order"),
         stage: "autosave",
         flush: async () => {
           preflushCount += 1;
@@ -1261,7 +1262,7 @@ describe("useProjectStore", () => {
     it("does not mutate the Project table when strict quiescence fails", async () => {
       await useProjectStore.getState().initCurrentProject();
       const unregister = registerQuiescenceProvider({
-        id: "project-create-veto-test",
+        id: createQuiescenceProviderId("project-create-veto-test"),
         stage: "scoped-mutations",
         flush: async () => {
           throw new Error("pending metadata failed");
@@ -1420,7 +1421,7 @@ describe("useProjectStore", () => {
       });
       await useProjectStore.getState().initCurrentProject();
       const unregister = registerQuiescenceProvider({
-        id: "project-delete-veto-test",
+        id: createQuiescenceProviderId("project-delete-veto-test"),
         stage: "scoped-mutations",
         flush: async () => {
           throw new Error("pending write failed");

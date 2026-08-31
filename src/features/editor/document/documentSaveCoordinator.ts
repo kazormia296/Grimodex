@@ -2,7 +2,10 @@ import {
   encodeDocumentKey,
   type DocumentKey,
 } from "@/features/editor/document/documentKey";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 
 const saveTails = new Map<string, Promise<unknown>>();
 const exclusiveDocumentLeaseCounts = new Map<string, number>();
@@ -352,7 +355,7 @@ export async function awaitAllCoordinatedDocumentMutations(): Promise<void> {
 }
 
 registerQuiescenceProvider({
-  id: "coordinated-document-mutations",
+  id: createQuiescenceProviderId("coordinated-document-mutations"),
   stage: "autosave",
   flush: awaitAllCoordinatedDocumentMutations,
 });

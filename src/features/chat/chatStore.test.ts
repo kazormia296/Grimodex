@@ -41,6 +41,7 @@ import {
   tryAcquireTreeNavigationLease,
 } from "@/lib/chatNavigationGuard";
 import {
+  createQuiescenceProviderId,
   flushQuiescenceProviderStage,
   registerQuiescenceProvider,
 } from "@/lib/quiescenceProviders";
@@ -1979,7 +1980,7 @@ describe("useChatStore", () => {
       const flushGate = deferred<void>();
       const flush = vi.fn(() => flushGate.promise);
       const unregister = registerQuiescenceProvider({
-        id: "chat-history-clear-test",
+        id: createQuiescenceProviderId("chat-history-clear-test"),
         stage: "scoped-mutations",
         flush,
       });
@@ -2037,7 +2038,7 @@ describe("useChatStore", () => {
     it("preserves history and in-memory state when strict quiescence fails", async () => {
       const failure = new Error("completed turn is not durable");
       const unregister = registerQuiescenceProvider({
-        id: "chat-history-clear-failure-test",
+        id: createQuiescenceProviderId("chat-history-clear-failure-test"),
         stage: "scoped-mutations",
         flush: vi.fn().mockRejectedValue(failure),
       });

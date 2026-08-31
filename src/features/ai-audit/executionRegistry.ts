@@ -1,4 +1,7 @@
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 
 interface PendingAiAuditExecution {
   readonly executionId: string;
@@ -99,7 +102,7 @@ export async function awaitPendingAiAuditExecutions(): Promise<void> {
 }
 
 registerQuiescenceProvider({
-  id: "ai-audit-executions",
+  id: createQuiescenceProviderId("ai-audit-executions"),
   stage: "ai-executions",
   flush: awaitPendingAiAuditExecutions,
 });
