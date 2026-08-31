@@ -1,3 +1,4 @@
+import type { RefObject } from "react";
 import { useTranslation } from "react-i18next";
 
 const ACTIONS = [
@@ -65,9 +66,13 @@ export type ChangeReviewAction =
 
 interface ChangeReviewActionsProps {
   readonly onAction: (action: ChangeReviewAction) => void;
+  readonly correctionRuleTriggerRef: RefObject<HTMLButtonElement | null>;
 }
 
-export function ChangeReviewActions({ onAction }: ChangeReviewActionsProps) {
+export function ChangeReviewActions({
+  onAction,
+  correctionRuleTriggerRef,
+}: ChangeReviewActionsProps) {
   const { t } = useTranslation();
 
   return (
@@ -80,6 +85,11 @@ export function ChangeReviewActions({ onAction }: ChangeReviewActionsProps) {
         return (
           <button
             key={action.id}
+            ref={
+              action.id === "correction-rule"
+                ? correctionRuleTriggerRef
+                : undefined
+            }
             type="button"
             onClick={() => {
               const decisionLabel = t("workLayer.review.decision", {

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { resolvePhaseContentSeed, TimelineTab } from "./TimelineTab";
 import type { CodexEntry } from "@/features/codex/api";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
@@ -205,6 +205,22 @@ describe("TimelineTab", () => {
     await waitFor(() => {
       expect(screen.getAllByText("フェーズを追加").length).toBeGreaterThan(0);
     });
+  });
+
+  it("PhaseDialog の autoFocus 後も追加トリガへフォーカスを戻す", async () => {
+    mockPhaseState.phasesByEntry = { "entry-1": [] };
+    render(<TimelineTab entry={mockEntry} />);
+
+    const opener = await screen.findByRole("button", {
+      name: "フェーズを追加",
+    });
+    opener.focus();
+    fireEvent.click(opener);
+
+    await screen.findByPlaceholderText(/追放後/);
+
+    fireEvent.click(screen.getByRole("button", { name: /キャンセル|Cancel/ }));
+    await waitFor(() => expect(opener).toHaveFocus());
   });
 
   it("マウント時にloadPhasesForEntryが呼ばれる", async () => {

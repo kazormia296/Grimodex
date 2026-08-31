@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import { useLayoutEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
 interface CorrectionRulePreviewProps {
@@ -7,6 +8,11 @@ interface CorrectionRulePreviewProps {
 
 export function CorrectionRulePreview({ onClose }: CorrectionRulePreviewProps) {
   const { t } = useTranslation();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useLayoutEffect(() => {
+    textareaRef.current?.focus({ preventScroll: true });
+  }, []);
 
   return (
     <section
@@ -42,6 +48,7 @@ export function CorrectionRulePreview({ onClose }: CorrectionRulePreviewProps) {
       <label className="mt-3 block text-[10px] text-muted-foreground">
         {t("workLayer.review.correction.label", "Correction rule")}
         <textarea
+          ref={textareaRef}
           aria-label={t("workLayer.review.correction.label", "Correction rule")}
           defaultValue={t(
             "workLayer.review.correction.defaultValue",

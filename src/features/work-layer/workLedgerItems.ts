@@ -1,4 +1,8 @@
-import type { WorkLayerModel, WorkLedgerItemView } from "./types";
+import type {
+  DisposedAttentionView,
+  WorkLayerModel,
+  WorkLedgerItemView,
+} from "./types";
 
 const DISPOSITION_TAGS = {
   snoozed: "SNOOZE",
@@ -7,6 +11,26 @@ const DISPOSITION_TAGS = {
   dismissed: "DISMISSED",
   legacy: "LEGACY",
 } as const;
+
+/**
+ * A disposed Finding retains its finding ID as the ledger identity. The
+ * prefix keeps it distinct from author-created Work IDs without falling back
+ * to a mutable title.
+ */
+export function disposedFindingLedgerItemId(findingId: string): string {
+  return `disposed:${findingId}`;
+}
+
+export function createDisposedWorkLedgerItem(
+  finding: DisposedAttentionView,
+): WorkLedgerItemView {
+  return {
+    id: disposedFindingLedgerItemId(finding.id),
+    title: finding.title,
+    status: "held",
+    tag: DISPOSITION_TAGS[finding.disposition],
+  };
+}
 
 export function deriveAllWork(
   model: WorkLayerModel,
@@ -35,11 +59,6 @@ export function deriveAllWork(
       title: item.title,
       status: "waiting" as const,
     })) ?? []),
-    ...model.disposedAttention.map((item) => ({
-      id: `disposed:${item.id}`,
-      title: item.title,
-      status: "held" as const,
-      tag: DISPOSITION_TAGS[item.disposition],
-    })),
+    ...model.disposedAttention.map(createDisposedWorkLedgerItem),
   ];
 }

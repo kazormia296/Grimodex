@@ -1,5 +1,5 @@
 import { ArrowLeft, X } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -18,7 +18,15 @@ export function ChangeReview() {
   const workLayer = useWorkLayer();
   const { t } = useTranslation();
   const backRef = useWorkLayerInitialFocus<HTMLButtonElement>();
+  const correctionRuleTriggerRef = useRef<HTMLButtonElement>(null);
+  const shouldRestoreCorrectionRuleTriggerRef = useRef(false);
   const [showCorrectionRule, setShowCorrectionRule] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!shouldRestoreCorrectionRuleTriggerRef.current) return;
+    shouldRestoreCorrectionRuleTriggerRef.current = false;
+    correctionRuleTriggerRef.current?.focus({ preventScroll: true });
+  }, [showCorrectionRule]);
 
   if (workLayer == null) return null;
 
@@ -51,6 +59,11 @@ export function ChangeReview() {
       return;
     }
     setShowCorrectionRule(true);
+  };
+
+  const closeCorrectionRule = () => {
+    shouldRestoreCorrectionRuleTriggerRef.current = true;
+    setShowCorrectionRule(false);
   };
 
   return (
@@ -111,9 +124,7 @@ export function ChangeReview() {
             )}
           </p>
           {showCorrectionRule && (
-            <CorrectionRulePreview
-              onClose={() => setShowCorrectionRule(false)}
-            />
+            <CorrectionRulePreview onClose={closeCorrectionRule} />
           )}
           <ChangeReviewDiff />
           <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t border-border pt-3 font-mono text-[8px] tracking-[0.08em]">
@@ -138,7 +149,10 @@ export function ChangeReview() {
         <ChangeReviewRail onInspect={openInspect} />
       </div>
 
-      <ChangeReviewActions onAction={handleAction} />
+      <ChangeReviewActions
+        onAction={handleAction}
+        correctionRuleTriggerRef={correctionRuleTriggerRef}
+      />
       <ProjectionPipeline finding={finding} activeLabel="CHANGE REVIEW" />
     </section>
   );

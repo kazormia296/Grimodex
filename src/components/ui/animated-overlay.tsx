@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
@@ -41,18 +41,36 @@ export function AnimatedOverlay({
   const mouseDownOnBackdrop = useRef(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
-  const openerRef = useRef<HTMLElement | null>(null);
+  const savedOpenerRef = useRef<HTMLElement | null>(null);
+  const wasOpenRef = useRef(false);
+  const restoreEpochRef = useRef(0);
+  const [childrenReady, setChildrenReady] = useState(false);
 
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
 
+  // Mount the shell first, then synchronously mount children after capturing
+  // the opener. Native autoFocus runs during child DOM commit and child layout
+  // effects run before a parent layout effect, so capturing after children
+  // mount can otherwise record an element inside the dialog as its opener.
+  // The layout update is flushed before paint, so users never see an empty
+  // dialog.
+  useLayoutEffect(() => {
+    if (open && !wasOpenRef.current) {
+      savedOpenerRef.current =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      setChildrenReady(true);
+    } else if (!open && wasOpenRef.current) {
+      setChildrenReady(false);
+    }
+    wasOpenRef.current = open;
+  }, [open]);
+
   useEffect(() => {
-    if (!open) return;
-    openerRef.current =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
+    if (!open || !childrenReady) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
@@ -62,16 +80,30 @@ export function AnimatedOverlay({
         ) ?? contentRef.current;
       initialTarget?.focus({ preventScroll: true });
     });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, childrenReady]);
+
+  useEffect(() => {
+    if (!open) return;
+    // React StrictMode replays an effect setup/cleanup pair immediately after
+    // mount. Invalidate a pending cleanup restore whenever the live effect is
+    // re-established so that replay never consumes the saved opener.
+    restoreEpochRef.current += 1;
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("keydown", handler);
     return () => {
-      cancelled = true;
       window.removeEventListener("keydown", handler);
-      const opener = openerRef.current;
-      openerRef.current = null;
-      if (opener?.isConnected) opener.focus({ preventScroll: true });
+      const opener = savedOpenerRef.current;
+      const restoreEpoch = ++restoreEpochRef.current;
+      queueMicrotask(() => {
+        if (restoreEpochRef.current !== restoreEpoch) return;
+        savedOpenerRef.current = null;
+        if (opener?.isConnected) opener.focus({ preventScroll: true });
+      });
     };
   }, [open]);
 
@@ -116,7 +148,7 @@ export function AnimatedOverlay({
             transition={reduced ? { duration: 0 } : { ...EASINGS.spring }}
             onClick={(e) => e.stopPropagation()}
           >
-            {children}
+            {childrenReady ? children : null}
           </motion.div>
         </motion.div>
       )}

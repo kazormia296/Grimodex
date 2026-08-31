@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -164,5 +164,40 @@ describe("ChangeReview", () => {
     expect(
       screen.getByRole("dialog", { name: "Change Review" }),
     ).toBeInTheDocument();
+  });
+
+  it("moves keyboard focus into the correction-rule editor and restores its trigger when closed", async () => {
+    const user = userEvent.setup();
+    const review = within(await renderReview());
+    const trigger = review.getByRole("button", {
+      name: "Correction ruleを作成",
+    });
+
+    trigger.focus();
+    await user.keyboard("{Enter}");
+
+    const editor = await screen.findByRole("region", {
+      name: "Correction ruleの作成プレビュー",
+    });
+    const textbox = within(editor).getByRole("textbox", {
+      name: "Correction rule",
+    });
+    await waitFor(() => expect(textbox).toHaveFocus());
+
+    const closeButton = within(editor).getByRole("button", {
+      name: "Correction ruleの作成プレビューを閉じる",
+    });
+    await user.tab({ shift: true });
+    expect(closeButton).toHaveFocus();
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("region", {
+          name: "Correction ruleの作成プレビュー",
+        }),
+      ).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+    });
   });
 });
