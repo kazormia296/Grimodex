@@ -47,6 +47,7 @@ import {
   selectInterruptedRecoveryFromStableLedger,
   terminalRetryCandidates,
   runRestoreVerifyRebuildVerifyScenario,
+  selectChangedDigestRun,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import * as narrativeMaintenanceProductJourneys from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import {
@@ -716,6 +717,59 @@ test("C2-5B fault and trigger seams are closed enums", () => {
     "ruleRegistryDigest-changed",
     "producerGenerationSetDigest-changed",
   ]);
+});
+
+test("digest-change journey waits past canonical Verify runs for the changed coordinate", () => {
+  const evidence = {
+    graphContractDigest: "sha256:graph-current",
+    ruleRegistryDigest: "sha256:rule-current",
+    producerGenerationSetDigest: "sha256:producer-current",
+    graphStateDigest: "sha256:state-before",
+  };
+  const run = (id, status, nextEvidence) => ({
+    id,
+    runKind: "dependency-verify",
+    status,
+    outcomeSummaryJson: JSON.stringify({ skipEvidence: nextEvidence }),
+  });
+  const baseline = run("baseline", "completed", evidence);
+  const canonical = run("canonical", "completed", {
+    ...evidence,
+    graphStateDigest: "sha256:state-after",
+  });
+  const pendingChanged = run("pending-changed", "running", {
+    ...evidence,
+    graphContractDigest: "sha256:graph-changed",
+    graphStateDigest: "sha256:state-after",
+  });
+  const changed = run("changed", "completed", {
+    ...evidence,
+    graphContractDigest: "sha256:graph-changed",
+    graphStateDigest: "sha256:state-after",
+  });
+
+  assert.equal(
+    selectChangedDigestRun(
+      [baseline, canonical, pendingChanged],
+      [baseline],
+      "graphContractDigest",
+      evidence,
+    ),
+    null,
+    "an intervening canonical or incomplete Verify must not end the wait",
+  );
+  assert.deepEqual(
+    selectChangedDigestRun(
+      [baseline, canonical, pendingChanged, changed],
+      [baseline],
+      "graphContractDigest",
+      evidence,
+    ),
+    {
+      run: changed,
+      evidence: JSON.parse(changed.outcomeSummaryJson).skipEvidence,
+    },
+  );
 });
 
 test("C2-5B journey seam constants keep exact durable failure contracts", () => {

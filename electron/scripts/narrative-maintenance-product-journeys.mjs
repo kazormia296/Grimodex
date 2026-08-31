@@ -1057,6 +1057,29 @@ function skipEvidenceForRun(run, label) {
   return evidence;
 }
 
+export function selectChangedDigestRun(
+  rows,
+  baselineRows,
+  coordinate,
+  beforeEvidence,
+  label = `${coordinate} changed`,
+) {
+  const changedField = DIGEST_EVIDENCE_FIELD_BY_TRIGGER[coordinate];
+  if (!changedField) {
+    throw new Error(`${coordinate} is not a supported digest coordinate`);
+  }
+  for (const run of rowsAfter(rows, baselineRows)) {
+    if (run.runKind !== "dependency-verify" || run.status !== "completed") {
+      continue;
+    }
+    const evidence = skipEvidenceForRun(run, label);
+    if (beforeEvidence[changedField] !== evidence[changedField]) {
+      return { run, evidence };
+    }
+  }
+  return null;
+}
+
 function requireSequence(
   rows,
   expectedKinds,
@@ -3448,7 +3471,8 @@ async function runDigestChangeJourney(
       workspace,
       id,
     );
-    const baselineRows = await waitForLedger(
+    const preObservationRuns = baselineContext.baselineRuns;
+    await waitForLedger(
       baselineContext,
       (rows) =>
         rows.some(
@@ -3459,7 +3483,11 @@ async function runDigestChangeJourney(
           : null,
       `${coordinate} baseline Verify`,
     );
-    baselineContext.baselineRuns = baselineRows;
+    baselineContext.baselineRuns = await waitForStableLedger(
+      baselineContext,
+      preObservationRuns,
+      `${coordinate} baseline settled ledger`,
+    );
   } finally {
     await harness.close(
       baselineLaunch.app,
@@ -3483,17 +3511,6 @@ async function runDigestChangeJourney(
       id,
       baselineContext.baselineRuns,
     );
-    const rows = await waitForRunSequence(
-      context,
-      ["dependency-verify"],
-      `${coordinate} changed/no-skip`,
-    );
-    const latest = rows.at(-1);
-    if (baselineContext.baselineRuns.some((run) => run.id === latest?.id)) {
-      throw new Error(
-        `${coordinate} changed journey reused a baseline Run instead of recording a new Run`,
-      );
-    }
     const previousVerify = [...baselineContext.baselineRuns]
       .reverse()
       .find(
@@ -3504,7 +3521,24 @@ async function runDigestChangeJourney(
       previousVerify,
       `${coordinate} baseline`,
     );
-    const afterEvidence = skipEvidenceForRun(latest, `${coordinate} changed`);
+    const changed = await waitForLedger(
+      context,
+      (rows) =>
+        selectChangedDigestRun(
+          rows,
+          baselineContext.baselineRuns,
+          coordinate,
+          beforeEvidence,
+        ),
+      `${coordinate} changed/no-skip durable Verify`,
+    );
+    const latest = changed.run;
+    if (baselineContext.baselineRuns.some((run) => run.id === latest?.id)) {
+      throw new Error(
+        `${coordinate} changed journey reused a baseline Run instead of recording a new Run`,
+      );
+    }
+    const afterEvidence = changed.evidence;
     const changedField = DIGEST_EVIDENCE_FIELD_BY_TRIGGER[coordinate];
     if (
       !changedField ||
