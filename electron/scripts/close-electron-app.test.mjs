@@ -258,3 +258,33 @@ test("close timeout diagnostics include only the sanitized page projection", asy
     }
   }
 });
+
+test("close reuses the launch-captured child after Playwright disposal", async () => {
+  const childProcess = new FakeElectronProcess();
+  childProcess.exitCode = 86;
+  childProcess.signalCode = null;
+  let processCalls = 0;
+  let closeCalls = 0;
+  const app = {
+    process: () => {
+      processCalls += 1;
+      if (processCalls > 1) {
+        throw new TypeError(
+          "Cannot read properties of undefined (reading '_object')",
+        );
+      }
+      return childProcess;
+    },
+    close: async () => {
+      closeCalls += 1;
+    },
+  };
+  const capturedChild = app.process();
+
+  await closeElectronAppWithDiagnostics(app, null, "interrupted", {
+    childProcess: capturedChild,
+  });
+
+  assert.equal(processCalls, 1);
+  assert.equal(closeCalls, 1);
+});

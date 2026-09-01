@@ -464,9 +464,10 @@ export async function closeElectronAppWithDiagnostics(
     timeoutMs = APP_CLOSE_TIMEOUT_MS,
     processExitGraceMs = PROCESS_EXIT_GRACE_MS,
     pageDiagnosticsTimeoutMs = PAGE_DIAGNOSTICS_TIMEOUT_MS,
+    childProcess: capturedChildProcess = undefined,
   } = {},
 ) {
-  const childProcess = app.process();
+  const childProcess = capturedChildProcess ?? app.process();
   const processExit = observeProcessExit(childProcess);
   const closeTimeout = timeoutOutcome(timeoutMs, "close-timeout");
   const closeOutcome = Promise.resolve()

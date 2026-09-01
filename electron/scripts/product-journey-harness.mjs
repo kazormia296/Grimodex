@@ -70,6 +70,10 @@ export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_MAX_BYTES = 16_384;
 export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_MAX_BYTES = 4_096;
 export const NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE =
   "held-freshness-request.json";
+export const PRODUCT_JOURNEY_PROCESS_EXIT_EVIDENCE = Symbol(
+  "product-journey-process-exit-evidence",
+);
+const PRODUCT_JOURNEY_INTERRUPTED_EXIT_CODE = 86;
 const NARRATIVE_MAINTENANCE_SETUP_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_SETUP";
 const NARRATIVE_MAINTENANCE_FRESHNESS_ENV =
@@ -2976,6 +2980,7 @@ export function createProductJourneyHarness({
   const mainLog = [];
   const rendererLog = [];
   const mainDiagnostics = [];
+  const closeDiagnostics = [];
   const rendererWarnings = [];
   const rendererErrors = [];
   const pageErrors = [];
@@ -3014,6 +3019,19 @@ export function createProductJourneyHarness({
       event,
       ...details,
     });
+  }
+
+  function recordCloseDiagnostic(phase, error) {
+    const diagnostic = {
+      at: new Date().toISOString(),
+      phase,
+      errorName: boundedDiagnosticText(
+        error instanceof Error ? error.name : "Error",
+      ),
+      message: operationErrorMessage(error),
+    };
+    closeDiagnostics.push(diagnostic);
+    recordTimeline("electron-close-failed-after-process-exit", diagnostic);
   }
 
   function trackChild(child) {
@@ -3058,19 +3076,28 @@ export function createProductJourneyHarness({
     }
   }
 
+  function capturedCloseOptions(app) {
+    const childProcess = appChildProcesses.get(app);
+    return childProcess ? { childProcess } : {};
+  }
+
   async function closeActiveResources(reason) {
     const app = lastResources.app;
     const page = lastResources.page;
     if (!app) return;
     await settleWithin(
-      runHarnessOperation("electron-close", () => closeApp(app, page, reason), {
-        phase: lastResources.phase ?? "cleanup",
-        command: "electron-close",
-        args: { reason },
-        timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
-        useLaneSignal: false,
-        suppressTimeoutCleanup: true,
-      }),
+      runHarnessOperation(
+        "electron-close",
+        () => closeApp(app, page, reason, capturedCloseOptions(app)),
+        {
+          phase: lastResources.phase ?? "cleanup",
+          command: "electron-close",
+          args: { reason },
+          timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+          useLaneSignal: false,
+          suppressTimeoutCleanup: true,
+        },
+      ),
       PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
     ).catch(() => undefined);
     await settleWithin(
@@ -3147,7 +3174,13 @@ export function createProductJourneyHarness({
       await settleWithin(
         withOperationTimeout(
           "electron-close",
-          () => closeApp(app, null, "late-electron-launch"),
+          () =>
+            closeApp(
+              app,
+              null,
+              "late-electron-launch",
+              capturedCloseOptions(app),
+            ),
           {
             phase: `${phase}/late-launch`,
             command: "electron-close",
@@ -3497,7 +3530,7 @@ export function createProductJourneyHarness({
     const rendererCleanPass =
       rendererErrors.length === 0 && pageErrors.length === 0;
     const mainCleanPass = unallowedMainErrors.length === 0;
-    return {
+    const summary = {
       rendererErrorCount: rendererErrors.length,
       pageErrors: pageErrors.map((issue) => ({ ...issue })),
       mainErrorCount: mainErrors.length,
@@ -3505,6 +3538,12 @@ export function createProductJourneyHarness({
       mainCleanPass,
       cleanPass: rendererCleanPass && mainCleanPass,
     };
+    if (closeDiagnostics.length > 0) {
+      summary.closeDiagnostics = closeDiagnostics.map((issue) => ({
+        ...issue,
+      }));
+    }
+    return summary;
   }
 
   async function finalizeDiagnostics() {
@@ -4127,22 +4166,42 @@ export function createProductJourneyHarness({
     ).catch(() => undefined);
   }
 
-  async function close(app, page, phase) {
+  async function close(app, page, phase, options = {}) {
+    const expectedExitEvidence =
+      options && typeof options === "object"
+        ? options.expectedExitEvidence
+        : undefined;
+    if (expectedExitEvidence !== undefined) {
+      validateProcessExitEvidence(app, phase, expectedExitEvidence);
+    }
     recordTimeline("close-requested", { phase });
     const receiptState = receiptStates.get(app);
     await readLifecycleTrace(page).catch(() => undefined);
     await retainRendererScreenshot(page);
-    await runHarnessOperation(
-      "electron-close",
-      () => closeApp(app, page, phase),
-      {
+    try {
+      await runHarnessOperation(
+        "electron-close",
+        () => closeApp(app, page, phase, capturedCloseOptions(app)),
+        {
+          phase,
+          command: "electron-close",
+          args: { phase },
+          timeoutMs: Math.max(launchTimeoutMs, mainProcessDrainTimeoutMs),
+          useLaneSignal: false,
+        },
+      );
+    } catch (error) {
+      if (expectedExitEvidence === undefined) throw error;
+      recordCloseDiagnostic(phase, error);
+      await drainMainDiagnosticStream(app).catch(() => undefined);
+      await drainDiagnosticWork().catch(() => undefined);
+      await consumeNarrativeMaintenanceReceiptAfterProcessExit(
+        app,
         phase,
-        command: "electron-close",
-        args: { phase },
-        timeoutMs: Math.max(launchTimeoutMs, mainProcessDrainTimeoutMs),
-        useLaneSignal: false,
-      },
-    );
+        expectedExitEvidence,
+      );
+      return;
+    }
     const appProcess = appChildProcesses.get(app);
     if (appProcess) {
       forgetChild(appProcess);
@@ -4160,6 +4219,147 @@ export function createProductJourneyHarness({
     // Renderer failures frequently arrive while lifecycle shutdown is
     // cancelling reads. Do not clear phase authority until every event already
     // delivered by Playwright has been serialized.
+    await drainDiagnosticWork();
+    recordTimeline("closed", { phase });
+    if (lastResources.app === app) {
+      lastResources.app = null;
+      lastResources.page = null;
+      lastResources.phase = null;
+      lastResources.launchId = null;
+      lastResources.receiptArtifact = null;
+      lastResources.heldFreshnessArtifact = null;
+    }
+    if (!laneWatchdogController) removeSignalHandlers();
+  }
+
+  function validateProcessExitEvidence(app, phase, exit) {
+    const invalidEvidence = (cause) => {
+      throw new Error(
+        `cannot consume a narrative maintenance receipt without bound process exit evidence for ${phase}`,
+        cause ? { cause } : undefined,
+      );
+    };
+    let evidenceExitCode;
+    let evidenceSignalCode;
+    let evidenceChild;
+    try {
+      const evidenceKeys = Reflect.ownKeys(exit);
+      const expectedKeys = new Set([
+        "exitCode",
+        "signalCode",
+        PRODUCT_JOURNEY_PROCESS_EXIT_EVIDENCE,
+      ]);
+      if (
+        !exit ||
+        typeof exit !== "object" ||
+        Array.isArray(exit) ||
+        !Object.isFrozen(exit) ||
+        evidenceKeys.length !== expectedKeys.size ||
+        evidenceKeys.some((key) => !expectedKeys.has(key))
+      ) {
+        invalidEvidence();
+      }
+      const exitCodeDescriptor = Object.getOwnPropertyDescriptor(
+        exit,
+        "exitCode",
+      );
+      const signalCodeDescriptor = Object.getOwnPropertyDescriptor(
+        exit,
+        "signalCode",
+      );
+      const childDescriptor = Object.getOwnPropertyDescriptor(
+        exit,
+        PRODUCT_JOURNEY_PROCESS_EXIT_EVIDENCE,
+      );
+      if (
+        !exitCodeDescriptor ||
+        !("value" in exitCodeDescriptor) ||
+        !signalCodeDescriptor ||
+        !("value" in signalCodeDescriptor) ||
+        !childDescriptor ||
+        !("value" in childDescriptor)
+      ) {
+        invalidEvidence();
+      }
+      evidenceExitCode = exitCodeDescriptor.value;
+      evidenceSignalCode = signalCodeDescriptor.value;
+      evidenceChild = childDescriptor.value;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("without bound process exit evidence")
+      ) {
+        throw error;
+      }
+      invalidEvidence(error);
+    }
+
+    const trackedChild = appChildProcesses.get(app);
+    if (!trackedChild || evidenceChild !== trackedChild) {
+      throw new Error(
+        `cannot consume a narrative maintenance receipt without the bound app child process for ${phase}`,
+      );
+    }
+
+    const actualExitCode = trackedChild.exitCode;
+    const actualSignalCode = trackedChild.signalCode;
+    if (
+      !Number.isInteger(actualExitCode) ||
+      actualExitCode !== PRODUCT_JOURNEY_INTERRUPTED_EXIT_CODE ||
+      actualSignalCode !== null
+    ) {
+      throw new Error(
+        `cannot consume a narrative maintenance receipt before the bound process exits with code ${PRODUCT_JOURNEY_INTERRUPTED_EXIT_CODE} and no signal for ${phase}`,
+      );
+    }
+    if (
+      !Number.isInteger(evidenceExitCode) ||
+      evidenceExitCode !== actualExitCode ||
+      evidenceSignalCode !== actualSignalCode
+    ) {
+      throw new Error(
+        `cannot consume a narrative maintenance receipt with mismatched process exit evidence for ${phase}`,
+      );
+    }
+
+    return trackedChild;
+  }
+
+  /**
+   * Complete cleanup for a process that the journey has already observed to
+   * exit. Playwright can reject `app.close()` after an intentional native
+   * interruption, before the ordinary close path reaches receipt consumption.
+   * The caller must provide the exit result returned by its exit observer; we
+   * then revalidate and consume only the launch-bound receipt, preserving any
+   * foreign or malformed artifact for the root-clean gate to reject.
+   */
+  async function consumeNarrativeMaintenanceReceiptAfterProcessExit(
+    app,
+    phase,
+    exit,
+  ) {
+    const trackedChild = validateProcessExitEvidence(app, phase, exit);
+
+    const receiptState = receiptStates.get(app);
+    if (receiptState) {
+      await consumeNarrativeMaintenanceReceipt(
+        receiptState,
+        `${phase}/close`,
+        runHarnessOperation,
+      );
+      receiptStates.delete(app);
+    } else {
+      await requireCleanNarrativeMaintenanceReceiptRoot(
+        receiptRoot,
+        `${phase}/close`,
+      );
+    }
+
+    if (appChildProcesses.get(app) === trackedChild) {
+      forgetChild(trackedChild);
+      appChildProcesses.delete(app);
+    }
+    await drainMainDiagnosticStream(app);
     await drainDiagnosticWork();
     recordTimeline("closed", { phase });
     if (lastResources.app === app) {
@@ -4485,6 +4685,7 @@ export function createProductJourneyHarness({
     executeFixtureOperations,
     launch,
     close,
+    consumeNarrativeMaintenanceReceiptAfterProcessExit,
     awaitHeldFreshness,
     readHeldFreshness,
     withLaneWatchdog,

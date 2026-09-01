@@ -38,6 +38,7 @@ import {
   NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
   NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE,
   NARRATIVE_MAINTENANCE_HELD_FRESHNESS_TYPE,
+  PRODUCT_JOURNEY_PROCESS_EXIT_EVIDENCE,
   assertNarrativeMaintenanceCiReceipt,
   assertNarrativeMaintenanceCiHeldFreshnessReceipt,
   expectedNarrativeMaintenanceCiReceipt,
@@ -89,6 +90,7 @@ const RECEIPT_STALE_NONCE = "00000000-0000-4000-8000-000000000002";
 const HELD_FRESHNESS_REQUEST_NONCE = "00000000-0000-4000-8000-000000000003";
 const HELD_FRESHNESS_INITIAL_REQUEST_NONCE =
   "00000000-0000-4000-8000-000000000006";
+const INTERRUPTED_RECEIPT_NONCE = "00000000-0000-4000-8000-000000000011";
 
 function canonicalReceiptText(value) {
   return JSON.stringify(
@@ -98,6 +100,17 @@ function canonicalReceiptText(value) {
       ),
     ),
   );
+}
+
+function boundProcessExitEvidence(child, exitCode, signalCode) {
+  const evidence = { exitCode, signalCode };
+  Object.defineProperty(evidence, PRODUCT_JOURNEY_PROCESS_EXIT_EVIDENCE, {
+    configurable: false,
+    enumerable: false,
+    value: child,
+    writable: false,
+  });
+  return Object.freeze(evidence);
 }
 
 function canonicalValueText(value) {
@@ -1208,6 +1221,457 @@ test("receipt root rejects stale, wrong, partial, symlink, and duplicate artifac
     if (previousNonce === undefined)
       delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
     else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  }
+});
+
+test("interrupted process-exit cleanup consumes the exact receipt after close failure", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  const childProcess = new EventEmitter();
+  childProcess.exitCode = null;
+  childProcess.signalCode = null;
+  childProcess.stdout = null;
+  childProcess.stderr = null;
+  const page = {
+    on: () => undefined,
+    evaluate: async () => [],
+    waitForFunction: async () => undefined,
+    isClosed: () => true,
+  };
+  const app = {
+    context: () => null,
+    firstWindow: async () => page,
+    process: () => childProcess,
+  };
+  let closeCalls = 0;
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async ({ env }) => {
+        const expected = expectedNarrativeMaintenanceCiReceipt(env);
+        const nonceDir = path.join(
+          env.GRIMODEX_USER_DATA_DIR,
+          NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+          expected.nonce,
+        );
+        await mkdir(nonceDir, { recursive: true });
+        await writeFile(
+          path.join(nonceDir, "receipt.json"),
+          canonicalReceiptText(expected),
+          { mode: 0o600 },
+        );
+        return app;
+      },
+    },
+    closeApp: async () => {
+      closeCalls += 1;
+      throw new Error("Target page, context or browser has been closed");
+    },
+  });
+  t.after(async () => {
+    await harness.dispose({
+      success: false,
+      name: "interrupted-close-failure",
+    });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  const launched = await harness.launch("interrupted/close-failure");
+  await assert.rejects(
+    harness.close(launched.app, launched.page, "interrupted/close-failure"),
+    /Target page, context or browser has been closed/,
+  );
+  await assert.rejects(
+    harness.consumeNarrativeMaintenanceReceiptAfterProcessExit(
+      launched.app,
+      "interrupted/close-failure",
+      { exitCode: null, signalCode: null },
+    ),
+    /bound process exit evidence/,
+  );
+  assert.deepEqual(await readdir(harness.receiptRoot), [
+    INTERRUPTED_RECEIPT_NONCE,
+  ]);
+
+  await assert.rejects(
+    harness.consumeNarrativeMaintenanceReceiptAfterProcessExit(
+      launched.app,
+      "interrupted/close-failure",
+      boundProcessExitEvidence(childProcess, 86, null),
+    ),
+    /before the bound process exits/,
+  );
+
+  childProcess.exitCode = 0;
+  childProcess.signalCode = null;
+  await assert.rejects(
+    harness.consumeNarrativeMaintenanceReceiptAfterProcessExit(
+      launched.app,
+      "interrupted/close-failure",
+      boundProcessExitEvidence(childProcess, 0, null),
+    ),
+    /code 86/,
+  );
+
+  childProcess.exitCode = null;
+  childProcess.signalCode = "SIGTERM";
+  await assert.rejects(
+    harness.consumeNarrativeMaintenanceReceiptAfterProcessExit(
+      launched.app,
+      "interrupted/close-failure",
+      boundProcessExitEvidence(childProcess, null, "SIGTERM"),
+    ),
+    /code 86|no signal/,
+  );
+
+  childProcess.exitCode = 86;
+  childProcess.signalCode = null;
+  await assert.rejects(
+    harness.consumeNarrativeMaintenanceReceiptAfterProcessExit(
+      launched.app,
+      "interrupted/close-failure",
+      boundProcessExitEvidence(childProcess, 0, null),
+    ),
+    /mismatched process exit evidence/,
+  );
+  await assert.rejects(
+    harness.consumeNarrativeMaintenanceReceiptAfterProcessExit(
+      launched.app,
+      "interrupted/close-failure",
+      boundProcessExitEvidence(childProcess, "86", null),
+    ),
+    /mismatched process exit evidence/,
+  );
+
+  const otherChildProcess = new EventEmitter();
+  otherChildProcess.exitCode = 86;
+  otherChildProcess.signalCode = null;
+  await assert.rejects(
+    harness.consumeNarrativeMaintenanceReceiptAfterProcessExit(
+      launched.app,
+      "interrupted/close-failure",
+      boundProcessExitEvidence(otherChildProcess, 86, null),
+    ),
+    /bound app child process/,
+  );
+
+  await harness.consumeNarrativeMaintenanceReceiptAfterProcessExit(
+    launched.app,
+    "interrupted/close-failure",
+    boundProcessExitEvidence(childProcess, 86, null),
+  );
+
+  assert.equal(closeCalls, 1);
+  assert.deepEqual(await readdir(harness.receiptRoot), []);
+});
+
+test("post-exit close cleanup requires proof and retains disposed-close diagnostics", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  const harnesses = [];
+  function createDisposedCloseHarness() {
+    const childProcess = new EventEmitter();
+    childProcess.exitCode = null;
+    childProcess.signalCode = null;
+    childProcess.stdout = null;
+    childProcess.stderr = null;
+    let disposed = false;
+    let processCalls = 0;
+    let closeCalls = 0;
+    const page = {
+      on: () => undefined,
+      evaluate: async () => [],
+      waitForFunction: async () => undefined,
+      isClosed: () => true,
+    };
+    const app = {
+      context: () => null,
+      firstWindow: async () => page,
+      process: () => {
+        processCalls += 1;
+        if (disposed) {
+          throw new TypeError(
+            "Cannot read properties of undefined (reading '_object')",
+          );
+        }
+        return childProcess;
+      },
+    };
+    const harness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      electronLauncher: {
+        launch: async ({ env }) => {
+          const expected = expectedNarrativeMaintenanceCiReceipt(env);
+          const nonceDir = path.join(
+            env.GRIMODEX_USER_DATA_DIR,
+            NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+            expected.nonce,
+          );
+          await mkdir(nonceDir, { recursive: true });
+          await writeFile(
+            path.join(nonceDir, "receipt.json"),
+            canonicalReceiptText(expected),
+            { mode: 0o600 },
+          );
+          return app;
+        },
+      },
+      closeApp: async () => {
+        closeCalls += 1;
+        disposed = true;
+        throw new TypeError(
+          "Cannot read properties of undefined (reading '_object')",
+        );
+      },
+    });
+    harnesses.push(harness);
+    return {
+      app,
+      childProcess,
+      harness,
+      get closeCalls() {
+        return closeCalls;
+      },
+      get processCalls() {
+        return processCalls;
+      },
+      page,
+    };
+  }
+
+  t.after(async () => {
+    await Promise.all(
+      harnesses.map(async (harness) => {
+        await harness.dispose({
+          success: false,
+          name: "post-exit-close-proof",
+        });
+        await rm(harness.tmpRoot, { recursive: true, force: true });
+      }),
+    );
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  const valid = createDisposedCloseHarness();
+  const validLaunch = await valid.harness.launch("interrupted/disposed-valid");
+  valid.childProcess.exitCode = 86;
+  valid.childProcess.signalCode = null;
+  await valid.harness.close(
+    validLaunch.app,
+    validLaunch.page,
+    "interrupted/disposed-valid",
+    {
+      expectedExitEvidence: boundProcessExitEvidence(
+        valid.childProcess,
+        86,
+        null,
+      ),
+    },
+  );
+  assert.equal(valid.processCalls, 1);
+  assert.equal(valid.closeCalls, 1);
+  assert.deepEqual(await readdir(valid.harness.receiptRoot), []);
+  const validDiagnostics = valid.harness.finalizeDiagnostics
+    ? await valid.harness.finalizeDiagnostics()
+    : null;
+  assert.equal(validDiagnostics.closeDiagnostics.length, 1);
+  assert.deepEqual(validDiagnostics.closeDiagnostics[0], {
+    at: validDiagnostics.closeDiagnostics[0].at,
+    phase: "interrupted/disposed-valid",
+    errorName: "TypeError",
+    message: "Cannot read properties of undefined (reading '_object')",
+  });
+  const journalEntries = (await readFile(valid.harness.journalPath, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.ok(
+    journalEntries.some(
+      (entry) =>
+        entry.operation === "electron-close" && entry.status === "failed",
+    ),
+  );
+
+  const noProof = createDisposedCloseHarness();
+  const noProofLaunch = await noProof.harness.launch(
+    "interrupted/disposed-without-proof",
+  );
+  noProof.childProcess.exitCode = 86;
+  noProof.childProcess.signalCode = null;
+  await assert.rejects(
+    noProof.harness.close(
+      noProofLaunch.app,
+      noProofLaunch.page,
+      "interrupted/disposed-without-proof",
+    ),
+    /_object/,
+  );
+  assert.equal(noProof.closeCalls, 1);
+  assert.deepEqual(await readdir(noProof.harness.receiptRoot), [
+    INTERRUPTED_RECEIPT_NONCE,
+  ]);
+
+  const mismatch = createDisposedCloseHarness();
+  const mismatchLaunch = await mismatch.harness.launch(
+    "interrupted/disposed-mismatch",
+  );
+  mismatch.childProcess.exitCode = 86;
+  mismatch.childProcess.signalCode = null;
+  const otherChildProcess = new EventEmitter();
+  otherChildProcess.exitCode = 86;
+  otherChildProcess.signalCode = null;
+  await assert.rejects(
+    mismatch.harness.close(
+      mismatchLaunch.app,
+      mismatchLaunch.page,
+      "interrupted/disposed-mismatch",
+      {
+        expectedExitEvidence: boundProcessExitEvidence(
+          otherChildProcess,
+          86,
+          null,
+        ),
+      },
+    ),
+    /bound app child process/,
+  );
+  assert.equal(mismatch.closeCalls, 0);
+  assert.deepEqual(await readdir(mismatch.harness.receiptRoot), [
+    INTERRUPTED_RECEIPT_NONCE,
+  ]);
+});
+
+test("interrupted process-exit cleanup keeps wrong, foreign, and partial receipts", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  const cases = ["wrong", "foreign", "partial"];
+  const harnesses = [];
+  t.after(async () => {
+    await Promise.all(
+      harnesses.map(async (harness) => {
+        await harness.dispose({
+          success: false,
+          name: "interrupted-receipt-boundary",
+        });
+        await rm(harness.tmpRoot, { recursive: true, force: true });
+      }),
+    );
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  for (const testCase of cases) {
+    const childProcess = new EventEmitter();
+    childProcess.exitCode = null;
+    childProcess.signalCode = null;
+    childProcess.stdout = null;
+    childProcess.stderr = null;
+    const page = {
+      on: () => undefined,
+      evaluate: async () => [],
+      waitForFunction: async () => undefined,
+      isClosed: () => true,
+    };
+    const app = {
+      context: () => null,
+      firstWindow: async () => page,
+      process: () => childProcess,
+    };
+    const harness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      electronLauncher: {
+        launch: async ({ env }) => {
+          const expected = expectedNarrativeMaintenanceCiReceipt(env);
+          const nonceDir = path.join(
+            env.GRIMODEX_USER_DATA_DIR,
+            NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+            expected.nonce,
+          );
+          await mkdir(nonceDir, { recursive: true });
+          await writeFile(
+            path.join(nonceDir, "receipt.json"),
+            canonicalReceiptText(expected),
+            { mode: 0o600 },
+          );
+          return app;
+        },
+      },
+      closeApp: async () => {
+        throw new Error("close failed after process exit");
+      },
+    });
+    harnesses.push(harness);
+    const phase = `interrupted/receipt-${testCase}`;
+    const launched = await harness.launch(phase);
+    await assert.rejects(harness.close(launched.app, launched.page, phase));
+    childProcess.exitCode = 86;
+    childProcess.signalCode = null;
+    const expectedDir = path.join(
+      harness.receiptRoot,
+      INTERRUPTED_RECEIPT_NONCE,
+    );
+    if (testCase === "wrong") {
+      await rm(expectedDir, { recursive: true, force: true });
+      await mkdir(path.join(harness.receiptRoot, RECEIPT_STALE_NONCE));
+    } else if (testCase === "foreign") {
+      await mkdir(path.join(harness.receiptRoot, RECEIPT_STALE_NONCE));
+    } else {
+      await writeFile(path.join(expectedDir, "receipt.tmp"), "partial", {
+        mode: 0o600,
+      });
+    }
+    await assert.rejects(
+      harness.consumeNarrativeMaintenanceReceiptAfterProcessExit(
+        launched.app,
+        phase,
+        boundProcessExitEvidence(childProcess, 86, null),
+      ),
+      /mismatch|partial|entries|clean/i,
+    );
+    const entries = await readdir(harness.receiptRoot);
+    assert.ok(entries.length > 0, `${testCase} receipt evidence was deleted`);
   }
 });
 

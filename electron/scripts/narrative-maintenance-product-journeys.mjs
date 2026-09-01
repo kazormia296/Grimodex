@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG } from "./product-journey-catalog.mjs";
+import { PRODUCT_JOURNEY_PROCESS_EXIT_EVIDENCE } from "./product-journey-harness.mjs";
 
 const execFile = promisify(execFileCallback);
 
@@ -2997,12 +2998,11 @@ async function waitForProcessExit(app, label, timeoutMs = 5_000) {
   if (!child)
     throw new Error(`${label}: Electron child process is unavailable`);
   if (child.exitCode !== null || child.signalCode !== null) {
-    return { exitCode: child.exitCode, signalCode: child.signalCode };
+    return createProcessExitEvidence(child, child.exitCode, child.signalCode);
   }
-  const exit = once(child, "exit").then(([exitCode, signalCode]) => ({
-    exitCode,
-    signalCode,
-  }));
+  const exit = once(child, "exit").then(([exitCode, signalCode]) =>
+    createProcessExitEvidence(child, exitCode, signalCode),
+  );
   const timeout = new Promise((_, reject) => {
     const timer = setTimeout(
       () =>
@@ -3016,6 +3016,17 @@ async function waitForProcessExit(app, label, timeoutMs = 5_000) {
     exit.finally(() => clearTimeout(timer)).catch(() => undefined);
   });
   return Promise.race([exit, timeout]);
+}
+
+function createProcessExitEvidence(child, exitCode, signalCode) {
+  const evidence = { exitCode, signalCode };
+  Object.defineProperty(evidence, PRODUCT_JOURNEY_PROCESS_EXIT_EVIDENCE, {
+    configurable: false,
+    enumerable: false,
+    value: child,
+    writable: false,
+  });
+  return Object.freeze(evidence);
 }
 
 async function runSchemaBackfillVerify(
@@ -3901,12 +3912,13 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
   );
   let interruptedRun;
   let postExitRuns;
+  let interruptedExit;
   try {
     // The native interruption seam exits immediately after it durably ACKs
     // the running Run.  Arm and await process exit before touching the page;
     // page-based polling can otherwise race Target closed and hide the real
     // lifecycle failure in teardown.
-    const exit = await waitForProcessExit(
+    interruptedExit = await waitForProcessExit(
       interruptedLaunch.app,
       "process interruption recovery",
     );
@@ -3946,12 +3958,17 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
       projectId: interruptedRun.projectId,
       runId: interruptedRun.id,
       postExitRunIds: postExitRuns.map((row) => row.id),
-      ...exit,
+      ...interruptedExit,
     });
   } finally {
-    await harness
-      .close(interruptedLaunch.app, interruptedLaunch.page, `${id}/interrupted`)
-      .catch(() => undefined);
+    await harness.close(
+      interruptedLaunch.app,
+      interruptedLaunch.page,
+      `${id}/interrupted`,
+      {
+        expectedExitEvidence: interruptedExit,
+      },
+    );
   }
 
   const recoveredLaunch = await withLaunchEnvironment(
