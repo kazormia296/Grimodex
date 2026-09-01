@@ -30,6 +30,10 @@ import {
 import type { TrashItemInput } from "./types";
 import { getCreateResultMetadata } from "@/lib/createResultMetadata";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
 
 type AnyWindow = Record<string, unknown>;
 
@@ -50,10 +54,12 @@ const input: TrashItemInput = {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  _resetQuiescenceLeasesForTests();
   publishCurrentProjectId("p1");
 });
 
 afterEach(() => {
+  _resetQuiescenceLeasesForTests();
   publishCurrentProjectId(null);
   delete (window as unknown as AnyWindow).__TAURI_INTERNALS__;
   delete (window as unknown as AnyWindow).grimodex;
@@ -114,6 +120,37 @@ describe("trash_bin API（Electron シェル）", () => {
     // snake_case の生行（napi/Tauri とも SELECT * を返す）が正規化される
     expect(created.previewText).toBe("消した文字屑");
     expect(created.isInteresting).toBe(false);
+  });
+
+  it("close 中の既存 capture だけが preexisting permit で native create へ到達する", async () => {
+    installElectronBridge();
+    invokeMock.mockResolvedValue({
+      id: "trash-preexisting",
+      project_id: "p1",
+      kind: "text-fragment",
+      sub_kind: "text-fragment",
+      preview_text: "消した文字屑",
+      payload: '{"text":"消した文字屑","spans":[]}',
+      char_count: 6,
+      is_interesting: 0,
+      deleted_at: "2026-07-10T00:00:00.000Z",
+    });
+    const lease = acquireQuiescenceLease("window-close");
+    try {
+      await expect(
+        createTrashItem(input, {
+          charCount: 6,
+          isInteresting: false,
+          preexistingDraft: true,
+        }),
+      ).resolves.toMatchObject({ id: "trash-preexisting" });
+
+      await expect(
+        createTrashItem(input, { charCount: 6, isInteresting: false }),
+      ).rejects.toThrow(/mutation authority/);
+    } finally {
+      lease.release();
+    }
   });
 
   it("deletedAt 省略を native に保ち、削除済み replay metadata を正規化後も保持する", async () => {

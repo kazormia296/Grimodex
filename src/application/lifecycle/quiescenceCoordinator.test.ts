@@ -12,6 +12,7 @@ import {
 import {
   createQuiescenceProviderId,
   QuiescenceProviderStageError,
+  registerQuiescenceProvider,
 } from "@/lib/quiescenceProviders";
 import {
   LIFECYCLE_TRACE_OPT_IN_KEY,
@@ -208,6 +209,25 @@ describe("flushStrictQuiescence", () => {
   it("resolves only after every persistence stage succeeds", async () => {
     const deps = dependencies();
     await expect(flushStrictQuiescence(deps)).resolves.toBeUndefined();
+  });
+
+  it("passes a preexisting permit to scoped provider drains", async () => {
+    let received: { preexistingDraft?: boolean } | undefined;
+    const unregister = registerQuiescenceProvider({
+      id: createQuiescenceProviderId("coordinator-preexisting-draft"),
+      stage: "scoped-mutations",
+      flush: async (options) => {
+        received = options;
+      },
+    });
+
+    try {
+      await flushStrictQuiescence();
+    } finally {
+      unregister();
+    }
+
+    expect(received).toEqual({ preexistingDraft: true });
   });
 
   it("waits audited executions before flushing writes they may produce", async () => {

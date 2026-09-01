@@ -105,6 +105,8 @@ export async function createTrashItem(
     deletedAt?: string;
     /** Reuse this domain ID when retrying the same logical create. */
     id?: string;
+    /** Permit a capture that was queued before a lifecycle lease. */
+    preexistingDraft?: boolean;
   },
 ): Promise<TrashItemData> {
   if (!supportsTrashBin()) {
@@ -127,10 +129,14 @@ export async function createTrashItem(
       ? {}
       : { deletedAt: options.deletedAt }),
   };
-  return runTimelapseMutation(input.projectId, async () => {
-    const created = await invoke<unknown>("trash_bin_create", { payload });
-    return normalizeTrashItem(created);
-  });
+  return runTimelapseMutation(
+    input.projectId,
+    async () => {
+      const created = await invoke<unknown>("trash_bin_create", { payload });
+      return normalizeTrashItem(created);
+    },
+    options.preexistingDraft ? { preexistingDraft: true } : undefined,
+  );
 }
 
 export interface RestoreStructuralTrashOptions {

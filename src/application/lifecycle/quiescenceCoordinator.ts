@@ -129,7 +129,10 @@ const defaultDependencies: QuiescenceDependencies = {
   flushExternalWriteBacks: () =>
     flushQuiescenceProviderStage("external-write-back"),
   awaitEditorWrites: awaitPendingEditorWrites,
-  awaitScopedMutations: () => flushQuiescenceProviderStage("scoped-mutations"),
+  awaitScopedMutations: () =>
+    flushQuiescenceProviderStage("scoped-mutations", {
+      preexistingDraft: true,
+    }),
   awaitSceneWrites: () => flushQuiescenceProviderStage("scene-writes"),
   hasUnresolvedEditorChanges,
   flushTimelapse: () => flushQuiescenceProviderStage("timelapse"),

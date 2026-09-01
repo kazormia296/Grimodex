@@ -27,6 +27,7 @@ import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenc
 import {
   createQuiescenceProviderId,
   registerQuiescenceProvider,
+  type QuiescenceProviderFlushOptions,
 } from "@/lib/quiescenceProviders";
 
 interface EnqueueOptions {
@@ -376,7 +377,10 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
 /**
  * 保留キューから tempId を取り出し、DB に書き込む。
  */
-async function performFlushPending(tempId: string): Promise<void> {
+async function performFlushPending(
+  tempId: string,
+  options: QuiescenceProviderFlushOptions = {},
+): Promise<void> {
   const store = useTrashBinStore.getState();
   const target = store.pendingQueue.find((p) => p.tempId === tempId);
   if (!target) return;
@@ -411,6 +415,7 @@ async function performFlushPending(tempId: string): Promise<void> {
     charCount,
     isInteresting,
     id: target.tempId,
+    ...(options.preexistingDraft ? { preexistingDraft: true } : {}),
   });
 
   // Remove only after the durable create resolves. A rejection remains queued
@@ -430,10 +435,13 @@ async function performFlushPending(tempId: string): Promise<void> {
   });
 }
 
-function flushPending(tempId: string): Promise<void> {
+function flushPending(
+  tempId: string,
+  options: QuiescenceProviderFlushOptions = {},
+): Promise<void> {
   const existing = inFlightFlushes.get(tempId);
   if (existing) return existing;
-  const pending = performFlushPending(tempId).finally(() => {
+  const pending = performFlushPending(tempId, options).finally(() => {
     if (inFlightFlushes.get(tempId) === pending) {
       inFlightFlushes.delete(tempId);
     }
@@ -447,7 +455,9 @@ function flushPending(tempId: string): Promise<void> {
  * Project/Workspace/window boundary. A failed create stays queued and rejects
  * the boundary; it is retried only by a later strict-quiescence attempt.
  */
-export async function flushPendingTrashItemsStrict(): Promise<void> {
+export async function flushPendingTrashItemsStrict(
+  options: QuiescenceProviderFlushOptions = {},
+): Promise<void> {
   const failures: unknown[] = [];
   const failedIds = new Set<string>();
 
@@ -473,7 +483,7 @@ export async function flushPendingTrashItemsStrict(): Promise<void> {
     for (const id of ids) clearFlushTimer(id);
     const attempts = [...ids].map(async (id) => {
       try {
-        await flushPending(id);
+        await flushPending(id, options);
       } catch (error) {
         failures.push(error);
         failedIds.add(id);

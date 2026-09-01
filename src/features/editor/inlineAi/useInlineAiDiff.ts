@@ -15,6 +15,7 @@ import { insertGenerationLog } from "@/features/attribution/generationLogApi";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import type { GroupIndex } from "@/features/editor/tabStore";
+import { META_SKIP } from "@/features/editor/TrashBinCapturePlugin";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
@@ -471,7 +472,18 @@ export function useInlineAiDiff(
     if (generatedRange) {
       const { from, to } = generatedRange;
       if (from < to) {
-        editor.chain().focus().deleteRange({ from, to }).run();
+        editor
+          .chain()
+          .focus()
+          .command(({ tr }) => {
+            // Rejecting an inline-AI preview is a programmatic rollback, not
+            // a user deletion. Keep it out of Trash Bin capture while
+            // preserving normal Delete/Backspace capture for human edits.
+            tr.setMeta(META_SKIP, true);
+            return true;
+          })
+          .deleteRange({ from, to })
+          .run();
       }
     }
   }, [editor, dispatchDiffUpdate, projection, rollback]);
