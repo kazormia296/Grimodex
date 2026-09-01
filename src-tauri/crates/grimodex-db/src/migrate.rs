@@ -4085,7 +4085,10 @@ impl Database {
     /// after its canonical Change Event has a sequence. Narrative Change Feed
     /// events are the first central write point that can see both that sequence
     /// and the already-inserted trusted body, so these triggers append the
-    /// creation baseline inside the caller-owned transaction.
+    /// creation baseline inside the caller-owned transaction. Scene and
+    /// Snippet lifecycles remain tail-bound; the Codex trigger has one narrow
+    /// pre-Feed root-recovery exception, guarded by the complete protected
+    /// commit provenance and an exact immutable body snapshot.
     fn repair_timelapse_creation_baseline_triggers(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch("SAVEPOINT timelapse_creation_baseline_trigger_repair")?;
         let repair = conn.execute_batch(
@@ -4229,12 +4232,758 @@ impl Database {
                                AND canonical.event_uid = NEW.canonical_change_event_uid
                                AND canonical.sequence = NEW.canonical_sequence
                                AND canonical.sequence BETWEEN 1 AND 9007199254740991
-                               AND canonical.sequence = (
-                                    SELECT MAX(sequence)
-                                      FROM change_events
-                                     WHERE project_id = NEW.project_id
-                               )
                                AND canonical.timestamp BETWEEN 0 AND 9007199254740991
+                               AND (
+                                    canonical.sequence = (
+                                        SELECT MAX(sequence)
+                                          FROM change_events
+                                         WHERE project_id = NEW.project_id
+                                    )
+                                    OR (
+                                        NEW.mutation_kind = 'create'
+                                        AND EXISTS (
+                                        SELECT 1
+                                          FROM narrative_change_transactions tx
+                                          JOIN narrative_apply_commits apply_commit
+                                            ON apply_commit.project_id = tx.project_id
+                                           AND apply_commit.id = tx.commit_id
+                                          JOIN narrative_commit_journals commit_journal
+                                            ON commit_journal.project_id = tx.project_id
+                                           AND commit_journal.id = tx.journal_id
+                                           AND commit_journal.commit_id = apply_commit.id
+                                          JOIN change_events apply_event
+                                            ON apply_event.project_id = tx.project_id
+                                           AND apply_event.event_uid = tx.source_change_event_uid
+                                           AND apply_event.sequence = tx.source_change_event_sequence
+                                          JOIN codex_entries entry
+                                            ON entry.project_id = tx.project_id
+                                           AND entry.id = json_extract(
+                                                NEW.object_key_json, '$.entryId'
+                                           )
+                                          JOIN json_each(
+                                               CASE
+                                                   WHEN json_valid(commit_journal.after_json)
+                                                   THEN commit_journal.after_json
+                                                   ELSE '{}'
+                                               END,
+                                               '$.entities'
+                                          ) journal_entity
+                                         WHERE tx.project_id = NEW.project_id
+                                           AND tx.id = NEW.transaction_id
+                                           AND tx.source_domain = 'narrative.commit.apply'
+                                           AND tx.source_change_event_uid = NEW.canonical_change_event_uid
+                                           AND tx.source_change_event_sequence = NEW.canonical_sequence
+                                           AND tx.cause_kind = 'forward'
+                                           AND tx.origin = 'ai-apply'
+                                           AND tx.original_transaction_id IS NULL
+                                           AND tx.undo_journal_id IS NULL
+                                           AND tx.commit_id IS NOT NULL
+                                           AND tx.journal_id IS NOT NULL
+                                           AND tx.request_id = apply_commit.request_id
+                                           AND apply_commit.status = 'undone'
+                                           AND (
+                                                apply_commit.session_id IS NULL
+                                                OR apply_event.session_id = apply_commit.session_id
+                                           )
+                                           AND apply_event.domain = 'narrative'
+                                           AND apply_event.op_type = 'narrative.commit.apply'
+                                           AND apply_event.entity_type = 'narrative_apply_commit'
+                                           AND apply_event.entity_id = apply_commit.id
+                                           AND json_valid(apply_commit.receipt_json)
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.commitId'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.requestId'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.planDigest'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.status'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.changeEventUid'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.journalId'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.commitId'
+                                           ) = apply_commit.id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.requestId'
+                                           ) = apply_commit.request_id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.planDigest'
+                                           ) = apply_commit.plan_digest
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.journalId'
+                                           ) = commit_journal.id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.journalId'
+                                           ) = tx.journal_id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.status'
+                                           ) = 'undone'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.maintenanceTransactionId'
+                                           ) IS NULL
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.maintenanceOriginalTransactionId'
+                                           ) IS NULL
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.maintenanceEventIds'
+                                           ) IS NULL
+                                           AND EXISTS (
+                                                SELECT 1
+                                                  FROM change_events undo_event
+                                                 WHERE undo_event.project_id = apply_commit.project_id
+                                                   AND undo_event.event_uid = json_extract(
+                                                        CASE
+                                                            WHEN json_valid(apply_commit.receipt_json)
+                                                            THEN apply_commit.receipt_json
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.changeEventUid'
+                                                   )
+                                                   AND undo_event.domain = 'narrative'
+                                                   AND undo_event.op_type = 'narrative.commit.undo'
+                                                   AND undo_event.entity_type = 'narrative_apply_commit'
+                                                   AND undo_event.entity_id = apply_commit.id
+                                                   AND undo_event.sequence > apply_event.sequence
+                                                   AND json_valid(undo_event.payload)
+                                                   AND json_type(
+                                                        CASE
+                                                            WHEN json_valid(undo_event.payload)
+                                                            THEN undo_event.payload
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.commitId'
+                                                   ) = 'text'
+                                                   AND json_extract(
+                                                        CASE
+                                                            WHEN json_valid(undo_event.payload)
+                                                            THEN undo_event.payload
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.commitId'
+                                                   ) = apply_commit.id
+                                                   AND json_type(
+                                                        CASE
+                                                            WHEN json_valid(undo_event.payload)
+                                                            THEN undo_event.payload
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.applyRequestId'
+                                                   ) = 'text'
+                                                   AND json_extract(
+                                                        CASE
+                                                            WHEN json_valid(undo_event.payload)
+                                                            THEN undo_event.payload
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.applyRequestId'
+                                                   ) = apply_commit.request_id
+                                                   AND undo_event.sequence = (
+                                                        SELECT MAX(latest_undo.sequence)
+                                                          FROM change_events latest_undo
+                                                         WHERE latest_undo.project_id = apply_commit.project_id
+                                                           AND latest_undo.domain = 'narrative'
+                                                           AND latest_undo.op_type = 'narrative.commit.undo'
+                                                           AND latest_undo.entity_type = 'narrative_apply_commit'
+                                                           AND latest_undo.entity_id = apply_commit.id
+                                                   )
+                                           )
+                                           AND json_valid(apply_event.payload)
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.commitId'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.requestId'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.planDigest'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.commitId'
+                                           ) = apply_commit.id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.requestId'
+                                           ) = apply_commit.request_id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.planDigest'
+                                           ) = apply_commit.plan_digest
+                                           AND json_valid(tx.application_ids_json)
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(tx.application_ids_json)
+                                                    THEN tx.application_ids_json
+                                                    ELSE '[]'
+                                                END,
+                                                '$'
+                                           ) = 'array'
+                                           AND json_array_length(
+                                                CASE
+                                                    WHEN json_valid(tx.application_ids_json)
+                                                    THEN tx.application_ids_json
+                                                    ELSE '[]'
+                                                END
+                                           ) = (
+                                                SELECT COUNT(*)
+                                                  FROM narrative_proposal_applications application
+                                                 WHERE application.commit_id = apply_commit.id
+                                           )
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(tx.application_ids_json)
+                                                           THEN tx.application_ids_json
+                                                           ELSE '[]'
+                                                       END
+                                                  ) transaction_application
+                                                 WHERE transaction_application.type IS NOT 'text'
+                                                    OR NOT EXISTS (
+                                                        SELECT 1
+                                                          FROM narrative_proposal_applications application
+                                                         WHERE application.id = transaction_application.value
+                                                           AND application.commit_id = apply_commit.id
+                                                    )
+                                           )
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM narrative_proposal_applications application
+                                                 WHERE application.commit_id = apply_commit.id
+                                                   AND NOT EXISTS (
+                                                        SELECT 1
+                                                          FROM json_each(
+                                                               CASE
+                                                                   WHEN json_valid(tx.application_ids_json)
+                                                                   THEN tx.application_ids_json
+                                                                   ELSE '[]'
+                                                               END
+                                                          ) transaction_application
+                                                         WHERE transaction_application.value IS application.id
+                                                   )
+                                           )
+                                           AND EXISTS (
+                                                SELECT 1
+                                                  FROM narrative_proposal_applications target_application
+                                                 WHERE target_application.commit_id = apply_commit.id
+                                                   AND target_application.applied_entity_kind = 'codex_entry'
+                                                   AND target_application.applied_entity_id = entry.id
+                                           )
+                                           AND (
+                                                SELECT COUNT(*)
+                                                  FROM narrative_proposal_applications target_application
+                                                 WHERE target_application.commit_id = apply_commit.id
+                                                   AND target_application.applied_entity_kind = 'codex_entry'
+                                                   AND target_application.applied_entity_id = entry.id
+                                           ) = 1
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) journal_candidate
+                                                 WHERE json_extract(
+                                                        CASE
+                                                            WHEN json_valid(journal_candidate.value)
+                                                            THEN journal_candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                   ) = 'codex_entry'
+                                                   AND NOT EXISTS (
+                                                        SELECT 1
+                                                          FROM narrative_proposal_applications application
+                                                         WHERE application.commit_id = apply_commit.id
+                                                           AND application.applied_entity_kind = 'codex_entry'
+                                                           AND application.applied_entity_id = json_extract(
+                                                                CASE
+                                                                    WHEN json_valid(journal_candidate.value)
+                                                                    THEN journal_candidate.value
+                                                                    ELSE '{}'
+                                                                END,
+                                                                '$.entityId'
+                                                           )
+                                                           AND EXISTS (
+                                                                SELECT 1
+                                                                  FROM json_each(
+                                                                       CASE
+                                                                           WHEN json_valid(tx.application_ids_json)
+                                                                           THEN tx.application_ids_json
+                                                                           ELSE '[]'
+                                                                       END
+                                                                  ) transaction_application
+                                                                 WHERE transaction_application.value IS application.id
+                                                           )
+                                                   )
+                                           )
+                                           AND EXISTS (
+                                                SELECT 1
+                                                  FROM narrative_proposal_applications target_application
+                                                 WHERE target_application.commit_id = apply_commit.id
+                                                   AND target_application.applied_entity_kind = 'codex_entry'
+                                                   AND target_application.applied_entity_id = entry.id
+                                                   AND EXISTS (
+                                                        SELECT 1
+                                                          FROM json_each(
+                                                               CASE
+                                                                   WHEN json_valid(tx.application_ids_json)
+                                                                   THEN tx.application_ids_json
+                                                                   ELSE '[]'
+                                                               END
+                                                          ) transaction_application
+                                                         WHERE transaction_application.value IS target_application.id
+                                                   )
+                                           )
+                                           AND json_valid(commit_journal.after_json)
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(commit_journal.after_json)
+                                                    THEN commit_journal.after_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entities'
+                                           ) = 'array'
+                                           AND json_array_length(
+                                                CASE
+                                                    WHEN json_valid(commit_journal.after_json)
+                                                    THEN commit_journal.after_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entities'
+                                           ) > 0
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) candidate
+                                                 WHERE json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$'
+                                                    ) IS NOT 'object'
+                                                    OR json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                    ) IS NOT 'text'
+                                                    OR json_extract(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                    ) NOT IN (
+                                                        'event',
+                                                        'codex_entry',
+                                                        'codex_relation',
+                                                        'codex_detail_value',
+                                                        'codex_phase',
+                                                        'codex_semantic_binding',
+                                                        'temporal_node',
+                                                        'temporal_constraint',
+                                                        'temporal_scene_chronicle',
+                                                        'temporal_event_chronicle',
+                                                        'temporal_scene_story_order',
+                                                        'temporal_projection',
+                                                        'plot_thread',
+                                                        'plot_thread_marker',
+                                                        'plot_thread_branch',
+                                                        'foreshadow'
+                                                    )
+                                                    OR json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityId'
+                                                    ) IS NOT 'text'
+                                                    OR json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.version'
+                                                    ) IS NOT 'integer'
+                                                    OR json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.opKind'
+                                                    ) IS NOT 'text'
+                                           )
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) entity_a
+                                                  JOIN json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) entity_b
+                                                    ON entity_a.key < entity_b.key
+                                                 WHERE json_extract(
+                                                        CASE
+                                                            WHEN json_valid(entity_a.value)
+                                                            THEN entity_a.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                   ) IS json_extract(
+                                                        CASE
+                                                            WHEN json_valid(entity_b.value)
+                                                            THEN entity_b.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                   )
+                                                   AND json_extract(
+                                                        CASE
+                                                            WHEN json_valid(entity_a.value)
+                                                            THEN entity_a.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityId'
+                                                   ) IS json_extract(
+                                                        CASE
+                                                            WHEN json_valid(entity_b.value)
+                                                            THEN entity_b.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityId'
+                                                   )
+                                           )
+                                           AND (
+                                                SELECT COUNT(*)
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) candidate
+                                                 WHERE json_extract(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                   ) = 'codex_entry'
+                                                   AND json_extract(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityId'
+                                                   ) = entry.id
+                                           ) = 1
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entityKind'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entityKind'
+                                           ) = 'codex_entry'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entityId'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entityId'
+                                           ) = entry.id
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.opKind'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.opKind'
+                                           ) = 'create'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.version'
+                                           ) = 'integer'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.version'
+                                           ) = entry.version
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot'
+                                           ) = 'object'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.id'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.id'
+                                           ) = entry.id
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.projectId'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.projectId'
+                                           ) = entry.project_id
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.content'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.content'
+                                           ) = entry.content
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.version'
+                                           ) = 'integer'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.version'
+                                           ) = entry.version
+                                           AND NEW.change_kind = 'metadata'
+                                           AND NEW.before_version IS NULL
+                                           AND NEW.before_digest IS NULL
+                                           AND NEW.after_version = entry.version
+                                           AND NEW.changed_paths_json = '["/"]'
+                                           AND NEW.occurred_at = tx.created_at
+                                           AND (
+                                                SELECT COUNT(*)
+                                                  FROM state_snapshots snapshot
+                                                 WHERE snapshot.project_id = entry.project_id
+                                                   AND snapshot.domain = 'codex'
+                                                   AND snapshot.entity_id = entry.id
+                                                   AND snapshot.anchor_sequence = canonical.sequence
+                                           ) = 1
+                                           AND (
+                                                SELECT COUNT(*)
+                                                  FROM state_snapshots snapshot
+                                                 WHERE snapshot.project_id = entry.project_id
+                                                   AND snapshot.domain = 'codex'
+                                                   AND snapshot.entity_id = entry.id
+                                                   AND (snapshot.entity_type = 'codex_entry'
+                                                        OR snapshot.entity_type IS NULL)
+                                                   AND snapshot.anchor_sequence = canonical.sequence
+                                                   AND snapshot.anchor_timestamp = canonical.timestamp
+                                                   AND snapshot.payload = entry.content
+                                                   AND snapshot.encoding = 'json'
+                                           ) = 1
+                                    )
+                               )
+                        )
                         )
                         THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR')
                     END;

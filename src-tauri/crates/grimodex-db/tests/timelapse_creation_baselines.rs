@@ -33,6 +33,15 @@ const SESSION_ID: &str = "timelapse-create-session";
 const SCENE_DOC: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Scene A"}]}]}"#;
 const CODEX_DOC: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Codex A"}]}]}"#;
 const SNIPPET_DOC: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Snippet A"}]}]}"#;
+const PROTECTED_CODEX_ENTRY_ID: &str = "protected-codex-entry";
+const PROTECTED_CODEX_APPLY_EVENT_UID: &str = "protected-codex-apply-event";
+const PROTECTED_CODEX_UNDO_EVENT_UID: &str = "protected-codex-undo-event";
+const PROTECTED_CODEX_TAIL_EVENT_UID: &str = "protected-codex-tail-event";
+const PROTECTED_CODEX_COMMIT_ID: &str = "protected-codex-commit";
+const PROTECTED_CODEX_JOURNAL_ID: &str = "protected-codex-journal";
+const PROTECTED_CODEX_APPLICATION_ID: &str = "protected-codex-application";
+const PROTECTED_CODEX_REQUEST_ID: &str = "protected-codex-request";
+const PROTECTED_CODEX_PLAN_DIGEST: &str = "protected-codex-plan-digest";
 
 #[derive(Clone, Copy, Debug)]
 enum BodyKind {
@@ -246,6 +255,1169 @@ fn append_pre_feed_narrative_root(
         },
     )?;
     Ok(())
+}
+
+fn protected_codex_journal_entities() -> Value {
+    json!([{
+        "entityKind": "codex_entry",
+        "entityId": PROTECTED_CODEX_ENTRY_ID,
+        "version": 1,
+        "opKind": "create",
+        "snapshot": {
+            "id": PROTECTED_CODEX_ENTRY_ID,
+            "projectId": PROJECT_ID,
+            "content": CODEX_DOC,
+            "version": 1
+        }
+    }])
+}
+
+fn protected_codex_receipt() -> Value {
+    json!({
+        "commitId": PROTECTED_CODEX_COMMIT_ID,
+        "requestId": PROTECTED_CODEX_REQUEST_ID,
+        "planDigest": PROTECTED_CODEX_PLAN_DIGEST,
+        "journalId": PROTECTED_CODEX_JOURNAL_ID,
+        "status": "undone",
+        "changeEventUid": PROTECTED_CODEX_UNDO_EVENT_UID
+    })
+}
+
+fn append_protected_codex_root(
+    conn: &rusqlite::Connection,
+    request_id: &str,
+) -> anyhow::Result<()> {
+    let state_digest = narrative_snapshot_digest(&json!({
+        "entityId": PROTECTED_CODEX_ENTRY_ID,
+        "kind": "codex_entry",
+    }))?;
+    append_narrative_change_transaction_in_tx(
+        conn,
+        &AppendNarrativeChangeTransactionInput {
+            project_id: PROJECT_ID.to_string(),
+            request_id: request_id.to_string(),
+            source_domain: "narrative.commit.apply".to_string(),
+            source_change_event_uid: PROTECTED_CODEX_APPLY_EVENT_UID.to_string(),
+            cause_kind: NarrativeChangeCauseKind::Forward,
+            origin: NarrativeChangeOrigin::AiApply,
+            original_transaction_id: None,
+            commit_id: Some(PROTECTED_CODEX_COMMIT_ID.to_string()),
+            journal_id: Some(PROTECTED_CODEX_JOURNAL_ID.to_string()),
+            undo_journal_id: None,
+            application_ids: vec![PROTECTED_CODEX_APPLICATION_ID.to_string()],
+            occurred_at: "2026-08-31T00:00:00.800Z".to_string(),
+            events: vec![NarrativeChangeEventInput {
+                object_key: BodyKind::Codex.object_key(PROTECTED_CODEX_ENTRY_ID),
+                change_kind: "metadata".to_string(),
+                mutation_kind: "create".to_string(),
+                before_version: None,
+                before_digest: None,
+                after_version: Some(1),
+                after_digest: Some(state_digest),
+                changed_paths: vec!["/".to_string()],
+                text_impact: None,
+                structural_impact: Some(json!({ "changedPaths": ["/"] })),
+            }],
+        },
+    )?;
+    Ok(())
+}
+
+fn setup_protected_codex_historical_fixture() -> anyhow::Result<Database> {
+    let db = database();
+    db.with_conn(|conn| {
+        let transaction = conn.unchecked_transaction()?;
+        insert_body(
+            &transaction,
+            BodyKind::Codex,
+            PROTECTED_CODEX_ENTRY_ID,
+            CODEX_DOC,
+        )?;
+        transaction.execute(
+            "UPDATE codex_entries SET version = 1
+               WHERE project_id = ?1 AND id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID],
+        )?;
+        let apply_payload = json!({
+            "commitId": PROTECTED_CODEX_COMMIT_ID,
+            "requestId": PROTECTED_CODEX_REQUEST_ID,
+            "planDigest": PROTECTED_CODEX_PLAN_DIGEST
+        })
+        .to_string();
+        let append = append_change_events_in_tx(
+            &transaction,
+            PROJECT_ID,
+            SESSION_ID,
+            &[AppendChangeEvent {
+                event_uid: PROTECTED_CODEX_APPLY_EVENT_UID.to_string(),
+                scene_id: None,
+                domain: "narrative".to_string(),
+                op_type: "narrative.commit.apply".to_string(),
+                entity_type: Some("narrative_apply_commit".to_string()),
+                entity_id: Some(PROTECTED_CODEX_COMMIT_ID.to_string()),
+                payload: apply_payload,
+                timestamp: 800,
+            }],
+        )?;
+        assert_eq!(append.tail_sequence, 1);
+        transaction.execute(
+            "INSERT INTO state_snapshots
+                (project_id, domain, entity_type, entity_id,
+                 anchor_sequence, anchor_timestamp, payload, encoding, created_at)
+             VALUES (?1, 'codex', 'codex_entry', ?2, 1, 800, ?3, 'json', 800)",
+            params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID, CODEX_DOC],
+        )?;
+        transaction.execute(
+            "INSERT INTO narrative_apply_commits
+                (id, project_id, request_id, plan_digest, status, session_id,
+                 receipt_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'undone', ?5, ?6, '2026-08-31T00:00:00.800Z')",
+            params![
+                PROTECTED_CODEX_COMMIT_ID,
+                PROJECT_ID,
+                PROTECTED_CODEX_REQUEST_ID,
+                PROTECTED_CODEX_PLAN_DIGEST,
+                SESSION_ID,
+                protected_codex_receipt().to_string()
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO narrative_proposal_applications
+                (id, commit_id, proposal_id, revision_id,
+                 applied_entity_kind, applied_entity_id, created_at)
+             VALUES (?1, ?2, 'protected-proposal', 'protected-revision',
+                     'codex_entry', ?3, '2026-08-31T00:00:00.800Z')",
+            params![
+                PROTECTED_CODEX_APPLICATION_ID,
+                PROTECTED_CODEX_COMMIT_ID,
+                PROTECTED_CODEX_ENTRY_ID
+            ],
+        )?;
+        let after_json = json!({
+            "entities": protected_codex_journal_entities(),
+            "entityBindings": []
+        });
+        transaction.execute(
+            "INSERT INTO narrative_commit_journals
+                (id, commit_id, project_id, before_json, after_json, created_at)
+             VALUES (?1, ?2, ?3, NULL, ?4, '2026-08-31T00:00:00.800Z')",
+            params![
+                PROTECTED_CODEX_JOURNAL_ID,
+                PROTECTED_CODEX_COMMIT_ID,
+                PROJECT_ID,
+                after_json.to_string()
+            ],
+        )?;
+        append_protected_codex_root(&transaction, PROTECTED_CODEX_REQUEST_ID)?;
+        transaction.commit()?;
+        Ok(())
+    })?;
+    db.with_conn(|conn| {
+        let transaction = conn.unchecked_transaction()?;
+        let append = append_change_events_in_tx(
+            &transaction,
+            PROJECT_ID,
+            SESSION_ID,
+            &[AppendChangeEvent {
+                event_uid: PROTECTED_CODEX_UNDO_EVENT_UID.to_string(),
+                scene_id: None,
+                domain: "narrative".to_string(),
+                op_type: "narrative.commit.undo".to_string(),
+                entity_type: Some("narrative_apply_commit".to_string()),
+                entity_id: Some(PROTECTED_CODEX_COMMIT_ID.to_string()),
+                payload: json!({
+                    "commitId": PROTECTED_CODEX_COMMIT_ID,
+                    "requestId": "protected-codex-undo-request",
+                    "applyRequestId": PROTECTED_CODEX_REQUEST_ID
+                })
+                .to_string(),
+                timestamp: 801,
+            }],
+        )?;
+        assert_eq!(append.tail_sequence, 2);
+        transaction.execute(
+            "DELETE FROM narrative_change_transactions
+              WHERE project_id = ?1 AND source_change_event_uid = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_APPLY_EVENT_UID],
+        )?;
+        let append = append_change_events_in_tx(
+            &transaction,
+            PROJECT_ID,
+            SESSION_ID,
+            &[AppendChangeEvent {
+                event_uid: PROTECTED_CODEX_TAIL_EVENT_UID.to_string(),
+                scene_id: None,
+                domain: "test".to_string(),
+                op_type: "test.tail".to_string(),
+                entity_type: None,
+                entity_id: None,
+                payload: "{}".to_string(),
+                timestamp: 802,
+            }],
+        )?;
+        assert_eq!(append.tail_sequence, 3);
+        transaction.commit()?;
+        Ok(())
+    })?;
+    Ok(db)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ProtectedCodexFailure {
+    MissingTransaction,
+    MismatchedTransaction,
+    UnrelatedProvenance,
+    MismatchedRequest,
+    MismatchedSourceSequence,
+    MismatchedCause,
+    MismatchedOrigin,
+    MismatchedOriginalTransaction,
+    MismatchedUndoJournal,
+    MismatchedTransactionCreatedAt,
+    MissingCommit,
+    MismatchedCommit,
+    MismatchedCommitRequest,
+    MismatchedCommitPlanDigest,
+    MismatchedCommitStatus,
+    MissingJournal,
+    MismatchedJournal,
+    MismatchedJournalCommit,
+    MismatchedPayload,
+    MismatchedPayloadRequest,
+    MismatchedPayloadPlanDigest,
+    MalformedPayload,
+    MismatchedCanonical,
+    MismatchedCanonicalDomain,
+    MismatchedCanonicalEntityType,
+    MismatchedCanonicalEntityId,
+    MismatchedSession,
+    MismatchedApplySession,
+    MissingReceipt,
+    MismatchedReceipt,
+    MismatchedReceiptRequest,
+    MismatchedReceiptPlanDigest,
+    MismatchedReceiptJournal,
+    MismatchedReceiptStatus,
+    MismatchedReceiptChangeEvent,
+    MismatchedReceiptMaintenanceTransaction,
+    MismatchedReceiptMaintenanceOriginal,
+    MismatchedReceiptMaintenanceEvents,
+    MalformedReceipt,
+    MissingUndo,
+    MismatchedUndoIdentity,
+    MismatchedUndoOrder,
+    MalformedUndoPayload,
+    MismatchedUndoPayloadCommit,
+    MismatchedUndoPayloadRequest,
+    MissingApplication,
+    DuplicateApplication,
+    ExtraApplication,
+    MismatchedApplication,
+    MismatchedApplicationCommit,
+    MismatchedApplicationKind,
+    MismatchedApplicationEntity,
+    MissingEntity,
+    NullEntity,
+    MismatchedEntity,
+    MismatchedEntityBody,
+    MismatchedEntityVersion,
+    MismatchedEntityOperation,
+    MalformedEntity,
+    UnknownEntity,
+    DuplicateEntity,
+    MismatchedBody,
+    MismatchedVersion,
+    MissingSnapshot,
+    DuplicateSnapshot,
+    MismatchedSnapshotType,
+    MismatchedSnapshotSequence,
+    MismatchedSnapshotTimestamp,
+    MismatchedSnapshotPayload,
+    MismatchedSnapshotEncoding,
+    MismatchedNewTransaction,
+    MismatchedNewCanonical,
+    MismatchedNewSequence,
+    MismatchedNewObject,
+    MismatchedNewChangeKind,
+    MismatchedNewMutation,
+    MismatchedNewBeforeVersion,
+    MismatchedNewBeforeDigest,
+    MismatchedNewAfterVersion,
+    MismatchedNewChangedPaths,
+    MismatchedNewOccurredAt,
+}
+
+fn insert_protected_codex_candidate(
+    conn: &rusqlite::Connection,
+    failure: ProtectedCodexFailure,
+) -> anyhow::Result<()> {
+    let transaction_id = "protected-codex-candidate-transaction";
+    let (source_uid, source_sequence) = match failure {
+        ProtectedCodexFailure::MismatchedTransaction => (PROTECTED_CODEX_TAIL_EVENT_UID, 2_i64),
+        ProtectedCodexFailure::MismatchedSourceSequence => (PROTECTED_CODEX_APPLY_EVENT_UID, 2_i64),
+        _ => (PROTECTED_CODEX_APPLY_EVENT_UID, 1_i64),
+    };
+    let source_domain = match failure {
+        ProtectedCodexFailure::UnrelatedProvenance => "test.unrelated",
+        _ => "narrative.commit.apply",
+    };
+    let request_id = match failure {
+        ProtectedCodexFailure::MismatchedRequest => "wrong-request",
+        _ => PROTECTED_CODEX_REQUEST_ID,
+    };
+    let cause_kind = match failure {
+        ProtectedCodexFailure::MismatchedCause => "redo",
+        _ => "forward",
+    };
+    let origin = match failure {
+        ProtectedCodexFailure::MismatchedOrigin => "redo",
+        _ => "ai-apply",
+    };
+    let original_transaction_id = match failure {
+        ProtectedCodexFailure::MismatchedOriginalTransaction => {
+            Some("protected-codex-placeholder-transaction")
+        }
+        _ => None,
+    };
+    let undo_journal_id = match failure {
+        ProtectedCodexFailure::MismatchedUndoJournal => Some("wrong-undo-journal"),
+        _ => None,
+    };
+    let (commit_id, journal_id) = match failure {
+        ProtectedCodexFailure::MissingCommit => (None, Some(PROTECTED_CODEX_JOURNAL_ID)),
+        ProtectedCodexFailure::MismatchedCommit => {
+            (Some("wrong-commit"), Some(PROTECTED_CODEX_JOURNAL_ID))
+        }
+        ProtectedCodexFailure::MissingJournal => (Some(PROTECTED_CODEX_COMMIT_ID), None),
+        ProtectedCodexFailure::MismatchedJournal => {
+            (Some(PROTECTED_CODEX_COMMIT_ID), Some("wrong-journal"))
+        }
+        _ => (
+            Some(PROTECTED_CODEX_COMMIT_ID),
+            Some(PROTECTED_CODEX_JOURNAL_ID),
+        ),
+    };
+    let application_ids_json = match failure {
+        ProtectedCodexFailure::MismatchedApplication => r#"["wrong-application"]"#,
+        ProtectedCodexFailure::DuplicateApplication => {
+            r#"["protected-codex-application","protected-codex-application"]"#
+        }
+        _ => r#"["protected-codex-application"]"#,
+    };
+    let created_at = match failure {
+        ProtectedCodexFailure::MismatchedTransactionCreatedAt => "2026-08-31T00:00:00.999Z",
+        _ => "2026-08-31T00:00:00.801Z",
+    };
+    if matches!(
+        failure,
+        ProtectedCodexFailure::MismatchedOriginalTransaction
+    ) {
+        conn.execute(
+            "INSERT INTO narrative_change_transactions
+                (id, project_id, request_id, source_domain,
+                 source_change_event_uid, source_change_event_sequence,
+                 cause_kind, origin, application_ids_json, payload_digest, created_at)
+             VALUES (?1, ?2, 'protected-codex-placeholder-request', 'test.placeholder',
+                     ?3, 3, 'forward', 'human', '[]',
+                     'sha256:protected-codex-placeholder', '2026-08-31T00:00:00.803Z')",
+            params![
+                "protected-codex-placeholder-transaction",
+                PROJECT_ID,
+                PROTECTED_CODEX_TAIL_EVENT_UID
+            ],
+        )?;
+    }
+    conn.execute(
+        "INSERT INTO narrative_change_transactions
+            (id, project_id, request_id, source_domain,
+             source_change_event_uid, source_change_event_sequence,
+             cause_kind, origin, original_transaction_id, commit_id, journal_id,
+             undo_journal_id, application_ids_json, payload_digest, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                 'sha256:protected-codex-candidate', ?14)",
+        params![
+            transaction_id,
+            PROJECT_ID,
+            request_id,
+            source_domain,
+            source_uid,
+            source_sequence,
+            cause_kind,
+            origin,
+            original_transaction_id,
+            commit_id,
+            journal_id,
+            undo_journal_id,
+            application_ids_json,
+            created_at,
+        ],
+    )?;
+
+    match failure {
+        ProtectedCodexFailure::MismatchedPayload
+        | ProtectedCodexFailure::MismatchedPayloadRequest
+        | ProtectedCodexFailure::MismatchedPayloadPlanDigest
+        | ProtectedCodexFailure::MalformedPayload => {
+            let payload = match failure {
+                ProtectedCodexFailure::MalformedPayload => "{malformed".to_string(),
+                ProtectedCodexFailure::MismatchedPayload => json!({
+                    "commitId": "wrong-commit",
+                    "requestId": PROTECTED_CODEX_REQUEST_ID,
+                    "planDigest": PROTECTED_CODEX_PLAN_DIGEST
+                })
+                .to_string(),
+                ProtectedCodexFailure::MismatchedPayloadRequest => json!({
+                    "commitId": PROTECTED_CODEX_COMMIT_ID,
+                    "requestId": "wrong-request",
+                    "planDigest": PROTECTED_CODEX_PLAN_DIGEST
+                })
+                .to_string(),
+                ProtectedCodexFailure::MismatchedPayloadPlanDigest => json!({
+                    "commitId": PROTECTED_CODEX_COMMIT_ID,
+                    "requestId": PROTECTED_CODEX_REQUEST_ID,
+                    "planDigest": "wrong-plan-digest"
+                })
+                .to_string(),
+                _ => unreachable!("payload mutation arm is exhaustive"),
+            };
+            conn.execute(
+                "UPDATE change_events SET payload = ?1
+                   WHERE project_id = ?2 AND event_uid = ?3",
+                params![payload, PROJECT_ID, PROTECTED_CODEX_APPLY_EVENT_UID],
+            )?
+        }
+        ProtectedCodexFailure::MismatchedCanonical => conn.execute(
+            "UPDATE change_events SET op_type = 'narrative.commit.other'
+               WHERE project_id = ?1 AND event_uid = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_APPLY_EVENT_UID],
+        )?,
+        ProtectedCodexFailure::MismatchedCanonicalDomain => conn.execute(
+            "UPDATE change_events SET domain = 'wrong-domain'
+               WHERE project_id = ?1 AND event_uid = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_APPLY_EVENT_UID],
+        )?,
+        ProtectedCodexFailure::MismatchedCanonicalEntityType => conn.execute(
+            "UPDATE change_events SET entity_type = 'wrong-entity'
+               WHERE project_id = ?1 AND event_uid = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_APPLY_EVENT_UID],
+        )?,
+        ProtectedCodexFailure::MismatchedCanonicalEntityId => conn.execute(
+            "UPDATE change_events SET entity_id = 'wrong-commit'
+               WHERE project_id = ?1 AND event_uid = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_APPLY_EVENT_UID],
+        )?,
+        ProtectedCodexFailure::MismatchedSession => conn.execute(
+            "UPDATE narrative_apply_commits SET session_id = 'wrong-session'
+               WHERE project_id = ?1 AND id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_COMMIT_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedApplySession => conn.execute(
+            "UPDATE change_events SET session_id = 'wrong-session'
+               WHERE project_id = ?1 AND event_uid = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_APPLY_EVENT_UID],
+        )?,
+        ProtectedCodexFailure::MismatchedCommitRequest => conn.execute(
+            "UPDATE narrative_apply_commits SET request_id = 'wrong-request'
+               WHERE project_id = ?1 AND id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_COMMIT_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedCommitPlanDigest => conn.execute(
+            "UPDATE narrative_apply_commits SET plan_digest = 'wrong-plan-digest'
+               WHERE project_id = ?1 AND id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_COMMIT_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedCommitStatus => conn.execute(
+            "UPDATE narrative_apply_commits SET status = 'applied'
+               WHERE project_id = ?1 AND id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_COMMIT_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedJournalCommit => conn.execute(
+            "UPDATE narrative_commit_journals SET commit_id = 'wrong-commit'
+               WHERE project_id = ?1 AND id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_JOURNAL_ID],
+        )?,
+        ProtectedCodexFailure::MissingReceipt => conn.execute(
+            "UPDATE narrative_apply_commits SET receipt_json = NULL
+               WHERE project_id = ?1 AND id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_COMMIT_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedReceipt
+        | ProtectedCodexFailure::MismatchedReceiptRequest
+        | ProtectedCodexFailure::MismatchedReceiptPlanDigest
+        | ProtectedCodexFailure::MismatchedReceiptJournal
+        | ProtectedCodexFailure::MismatchedReceiptStatus
+        | ProtectedCodexFailure::MismatchedReceiptChangeEvent
+        | ProtectedCodexFailure::MismatchedReceiptMaintenanceTransaction
+        | ProtectedCodexFailure::MismatchedReceiptMaintenanceOriginal
+        | ProtectedCodexFailure::MismatchedReceiptMaintenanceEvents
+        | ProtectedCodexFailure::MalformedReceipt => {
+            let receipt_json = match failure {
+                ProtectedCodexFailure::MalformedReceipt => "{malformed".to_string(),
+                _ => {
+                    let mut receipt = protected_codex_receipt();
+                    let object = receipt
+                        .as_object_mut()
+                        .expect("protected receipt fixture is an object");
+                    match failure {
+                        ProtectedCodexFailure::MismatchedReceipt => {
+                            object.insert(
+                                "commitId".to_string(),
+                                Value::String("wrong-commit".to_string()),
+                            );
+                        }
+                        ProtectedCodexFailure::MismatchedReceiptRequest => {
+                            object.insert(
+                                "requestId".to_string(),
+                                Value::String("wrong-request".to_string()),
+                            );
+                        }
+                        ProtectedCodexFailure::MismatchedReceiptPlanDigest => {
+                            object.insert(
+                                "planDigest".to_string(),
+                                Value::String("wrong-plan-digest".to_string()),
+                            );
+                        }
+                        ProtectedCodexFailure::MismatchedReceiptJournal => {
+                            object.insert(
+                                "journalId".to_string(),
+                                Value::String("wrong-journal".to_string()),
+                            );
+                        }
+                        ProtectedCodexFailure::MismatchedReceiptStatus => {
+                            object
+                                .insert("status".to_string(), Value::String("applied".to_string()));
+                        }
+                        ProtectedCodexFailure::MismatchedReceiptChangeEvent => {
+                            object.insert(
+                                "changeEventUid".to_string(),
+                                Value::String(PROTECTED_CODEX_APPLY_EVENT_UID.to_string()),
+                            );
+                        }
+                        ProtectedCodexFailure::MismatchedReceiptMaintenanceTransaction => {
+                            object.insert(
+                                "maintenanceTransactionId".to_string(),
+                                Value::String("maintenance-id".to_string()),
+                            );
+                        }
+                        ProtectedCodexFailure::MismatchedReceiptMaintenanceOriginal => {
+                            object.insert(
+                                "maintenanceOriginalTransactionId".to_string(),
+                                Value::String("maintenance-original-id".to_string()),
+                            );
+                        }
+                        ProtectedCodexFailure::MismatchedReceiptMaintenanceEvents => {
+                            object.insert(
+                                "maintenanceEventIds".to_string(),
+                                json!(["maintenance-event"]),
+                            );
+                        }
+                        _ => unreachable!("receipt mutation arm is exhaustive"),
+                    }
+                    receipt.to_string()
+                }
+            };
+            conn.execute(
+                "UPDATE narrative_apply_commits SET receipt_json = ?1
+                WHERE project_id = ?2 AND id = ?3",
+                params![receipt_json, PROJECT_ID, PROTECTED_CODEX_COMMIT_ID],
+            )?
+        }
+        ProtectedCodexFailure::MissingUndo => conn.execute(
+            "DELETE FROM change_events
+               WHERE project_id = ?1 AND event_uid = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_UNDO_EVENT_UID],
+        )?,
+        ProtectedCodexFailure::MismatchedUndoIdentity => conn.execute(
+            "UPDATE change_events SET entity_id = 'wrong-commit'
+               WHERE project_id = ?1 AND event_uid = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_UNDO_EVENT_UID],
+        )?,
+        ProtectedCodexFailure::MismatchedUndoOrder => conn.execute(
+            "UPDATE change_events SET sequence = 0
+               WHERE project_id = ?1 AND event_uid = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_UNDO_EVENT_UID],
+        )?,
+        ProtectedCodexFailure::MalformedUndoPayload
+        | ProtectedCodexFailure::MismatchedUndoPayloadCommit
+        | ProtectedCodexFailure::MismatchedUndoPayloadRequest => conn.execute(
+            "UPDATE change_events SET payload = ?1
+               WHERE project_id = ?2 AND event_uid = ?3",
+            params![
+                match failure {
+                    ProtectedCodexFailure::MalformedUndoPayload => "{malformed".to_string(),
+                    ProtectedCodexFailure::MismatchedUndoPayloadCommit => json!({
+                        "commitId": "wrong-commit",
+                        "requestId": "protected-codex-undo-request",
+                        "applyRequestId": PROTECTED_CODEX_REQUEST_ID
+                    })
+                    .to_string(),
+                    ProtectedCodexFailure::MismatchedUndoPayloadRequest => json!({
+                        "commitId": PROTECTED_CODEX_COMMIT_ID,
+                        "requestId": "protected-codex-undo-request",
+                        "applyRequestId": "wrong-request"
+                    })
+                    .to_string(),
+                    _ => unreachable!("undo payload mutation arm is exhaustive"),
+                },
+                PROJECT_ID,
+                PROTECTED_CODEX_UNDO_EVENT_UID
+            ],
+        )?,
+        ProtectedCodexFailure::MissingApplication => conn.execute(
+            "DELETE FROM narrative_proposal_applications
+               WHERE id = ?1 AND commit_id = ?2",
+            params![PROTECTED_CODEX_APPLICATION_ID, PROTECTED_CODEX_COMMIT_ID],
+        )?,
+        ProtectedCodexFailure::ExtraApplication => conn.execute(
+            "INSERT INTO narrative_proposal_applications
+                (id, commit_id, proposal_id, revision_id,
+                 applied_entity_kind, applied_entity_id, created_at)
+             VALUES ('protected-codex-extra-application', ?1,
+                     'protected-extra-proposal', 'protected-extra-revision',
+                     'codex_entry', ?2, '2026-08-31T00:00:00.800Z')",
+            params![PROTECTED_CODEX_COMMIT_ID, PROTECTED_CODEX_ENTRY_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedApplicationCommit => conn.execute(
+            "UPDATE narrative_proposal_applications SET commit_id = 'wrong-commit'
+               WHERE id = ?1",
+            [PROTECTED_CODEX_APPLICATION_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedApplicationKind => conn.execute(
+            "UPDATE narrative_proposal_applications SET applied_entity_kind = 'scene'
+               WHERE id = ?1",
+            [PROTECTED_CODEX_APPLICATION_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedApplicationEntity => conn.execute(
+            "UPDATE narrative_proposal_applications SET applied_entity_id = 'other-entry'
+               WHERE id = ?1",
+            [PROTECTED_CODEX_APPLICATION_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedBody => conn.execute(
+            "UPDATE codex_entries SET content = 'tampered-body'
+               WHERE project_id = ?1 AND id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedVersion => conn.execute(
+            "UPDATE codex_entries SET version = 2
+               WHERE project_id = ?1 AND id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedSnapshotType => conn.execute(
+            "UPDATE state_snapshots SET entity_type = 'scene'
+               WHERE project_id = ?1 AND domain = 'codex' AND entity_id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedSnapshotSequence => conn.execute(
+            "UPDATE state_snapshots SET anchor_sequence = 2
+               WHERE project_id = ?1 AND domain = 'codex' AND entity_id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedSnapshotTimestamp => conn.execute(
+            "UPDATE state_snapshots SET anchor_timestamp = 999
+               WHERE project_id = ?1 AND domain = 'codex' AND entity_id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedSnapshotPayload => conn.execute(
+            "UPDATE state_snapshots SET payload = 'tampered-body'
+               WHERE project_id = ?1 AND domain = 'codex' AND entity_id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID],
+        )?,
+        ProtectedCodexFailure::MismatchedSnapshotEncoding => conn.execute(
+            "UPDATE state_snapshots SET encoding = 'binary'
+               WHERE project_id = ?1 AND domain = 'codex' AND entity_id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID],
+        )?,
+        ProtectedCodexFailure::MissingSnapshot => conn.execute(
+            "DELETE FROM state_snapshots
+               WHERE project_id = ?1 AND domain = 'codex' AND entity_id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID],
+        )?,
+        ProtectedCodexFailure::DuplicateSnapshot => conn.execute(
+            "INSERT INTO state_snapshots
+                (project_id, domain, entity_type, entity_id,
+                 anchor_sequence, anchor_timestamp, payload, encoding, created_at)
+             SELECT project_id, domain, entity_type, entity_id,
+                    anchor_sequence, anchor_timestamp, payload, encoding, created_at
+               FROM state_snapshots
+              WHERE project_id = ?1 AND domain = 'codex' AND entity_id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID],
+        )?,
+        _ => 0,
+    };
+
+    match failure {
+        ProtectedCodexFailure::MalformedPayload => {
+            let json_valid: i64 = conn.query_row(
+                "SELECT json_valid(payload) FROM change_events
+                  WHERE project_id = ?1 AND event_uid = ?2",
+                params![PROJECT_ID, PROTECTED_CODEX_APPLY_EVENT_UID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(json_valid, 0, "apply event payload must be invalid JSON");
+        }
+        ProtectedCodexFailure::MalformedUndoPayload => {
+            let json_valid: i64 = conn.query_row(
+                "SELECT json_valid(payload) FROM change_events
+                  WHERE project_id = ?1 AND event_uid = ?2",
+                params![PROJECT_ID, PROTECTED_CODEX_UNDO_EVENT_UID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(json_valid, 0, "undo event payload must be invalid JSON");
+        }
+        ProtectedCodexFailure::MalformedReceipt => {
+            let json_valid: i64 = conn.query_row(
+                "SELECT json_valid(receipt_json) FROM narrative_apply_commits
+                  WHERE project_id = ?1 AND id = ?2",
+                params![PROJECT_ID, PROTECTED_CODEX_COMMIT_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(json_valid, 0, "apply receipt must be invalid JSON");
+        }
+        _ => {}
+    }
+
+    if !matches!(failure, ProtectedCodexFailure::MissingTransaction) {
+        let entities = match failure {
+            ProtectedCodexFailure::MissingEntity => json!([]),
+            ProtectedCodexFailure::NullEntity => json!(null),
+            ProtectedCodexFailure::MismatchedEntity => json!([{
+                "entityKind": "codex_entry",
+                "entityId": "other-entry",
+                "version": 1,
+                "opKind": "create",
+                "snapshot": {
+                    "id": "other-entry",
+                    "projectId": PROJECT_ID,
+                    "content": CODEX_DOC,
+                    "version": 1
+                }
+            }]),
+            ProtectedCodexFailure::MismatchedEntityBody => {
+                let mut entity = protected_codex_journal_entities()[0].clone();
+                entity["snapshot"]["content"] = Value::String("tampered-body".to_string());
+                json!([entity])
+            }
+            ProtectedCodexFailure::MismatchedEntityVersion => {
+                let mut entity = protected_codex_journal_entities()[0].clone();
+                entity["version"] = Value::from(2);
+                entity["snapshot"]["version"] = Value::from(2);
+                json!([entity])
+            }
+            ProtectedCodexFailure::MismatchedEntityOperation => {
+                let mut entity = protected_codex_journal_entities()[0].clone();
+                entity["opKind"] = Value::String("update".to_string());
+                json!([entity])
+            }
+            ProtectedCodexFailure::MalformedEntity => Value::String("{malformed".to_string()),
+            ProtectedCodexFailure::UnknownEntity => json!([
+                protected_codex_journal_entities()[0].clone(),
+                {
+                    "entityKind": "unknown_entity",
+                    "entityId": "unknown-id",
+                    "version": 1,
+                    "opKind": "create",
+                    "snapshot": {}
+                }
+            ]),
+            ProtectedCodexFailure::DuplicateEntity => json!([
+                protected_codex_journal_entities()[0].clone(),
+                protected_codex_journal_entities()[0].clone()
+            ]),
+            _ => protected_codex_journal_entities(),
+        };
+        let after_json = if matches!(failure, ProtectedCodexFailure::MalformedEntity) {
+            "{malformed".to_string()
+        } else {
+            match entities {
+                Value::String(_) => entities.to_string(),
+                value => json!({ "entities": value, "entityBindings": [] }).to_string(),
+            }
+        };
+        conn.execute(
+            "UPDATE narrative_commit_journals SET after_json = ?1
+               WHERE project_id = ?2 AND id = ?3",
+            params![after_json, PROJECT_ID, PROTECTED_CODEX_JOURNAL_ID],
+        )?;
+    }
+    if matches!(failure, ProtectedCodexFailure::MissingTransaction) {
+        // Leave the candidate transaction absent so the narrative event's
+        // project-scoped foreign key rejects it before the baseline trigger.
+        conn.execute(
+            "DELETE FROM narrative_change_transactions
+              WHERE project_id = ?1 AND id = ?2",
+            params![PROJECT_ID, transaction_id],
+        )?;
+    }
+    let event_id = "protected-codex-candidate-event";
+    let event_transaction_id = match failure {
+        ProtectedCodexFailure::MismatchedNewTransaction => "missing-transaction",
+        _ => transaction_id,
+    };
+    let canonical_uid = match failure {
+        ProtectedCodexFailure::MismatchedNewCanonical => PROTECTED_CODEX_TAIL_EVENT_UID,
+        _ => PROTECTED_CODEX_APPLY_EVENT_UID,
+    };
+    let canonical_sequence = match failure {
+        ProtectedCodexFailure::MismatchedNewCanonical => 2_i64,
+        ProtectedCodexFailure::MismatchedNewSequence => 2_i64,
+        _ => 1_i64,
+    };
+    let object_key = match failure {
+        ProtectedCodexFailure::MismatchedNewObject => {
+            json!({ "kind": "codex-entry", "entryId": "other-entry" })
+        }
+        _ => BodyKind::Codex.object_key(PROTECTED_CODEX_ENTRY_ID),
+    };
+    let change_kind = match failure {
+        ProtectedCodexFailure::MismatchedNewChangeKind => "content",
+        _ => "metadata",
+    };
+    let mutation_kind = match failure {
+        ProtectedCodexFailure::MismatchedNewMutation => "restore",
+        _ => "create",
+    };
+    let before_version = match failure {
+        ProtectedCodexFailure::MismatchedNewBeforeVersion => Some(0_i64),
+        _ => None,
+    };
+    let before_digest = match failure {
+        ProtectedCodexFailure::MismatchedNewBeforeDigest => Some("sha256:wrong-before"),
+        _ => None,
+    };
+    let after_version = match failure {
+        ProtectedCodexFailure::MismatchedNewAfterVersion => 2_i64,
+        _ => 1_i64,
+    };
+    let changed_paths_json = match failure {
+        ProtectedCodexFailure::MismatchedNewChangedPaths => r#"["/content"]"#,
+        _ => r#"["/"]"#,
+    };
+    let occurred_at = match failure {
+        ProtectedCodexFailure::MismatchedNewOccurredAt => "2026-08-31T00:00:00.999Z",
+        _ => "2026-08-31T00:00:00.801Z",
+    };
+    conn.execute(
+        "INSERT INTO narrative_change_events
+            (id, project_id, transaction_id, canonical_change_event_uid,
+             canonical_sequence, event_ordinal, object_key_json, change_kind,
+             mutation_kind, before_version, before_digest, after_version,
+             after_digest, changed_paths_json, occurred_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9, ?10, ?11,
+                 'sha256:protected-codex-after', ?12, ?13)",
+        params![
+            event_id,
+            PROJECT_ID,
+            event_transaction_id,
+            canonical_uid,
+            canonical_sequence,
+            object_key.to_string(),
+            change_kind,
+            mutation_kind,
+            before_version,
+            before_digest,
+            after_version,
+            changed_paths_json,
+            occurred_at,
+        ],
+    )?;
+    Ok(())
+}
+
+#[test]
+fn historical_codex_root_reuses_exact_snapshot_only_with_protected_provenance() {
+    let db = setup_protected_codex_historical_fixture().expect("seed protected Codex fixture");
+    db.with_conn(|conn| {
+        let transaction = conn.unchecked_transaction()?;
+        append_protected_codex_root(&transaction, PROTECTED_CODEX_REQUEST_ID)?;
+        transaction.commit()?;
+        Ok(())
+    })
+    .expect("protected pre-Feed Codex root is reusable after a newer tail");
+
+    db.with_conn(|conn| {
+        let lifecycle: (
+            i64,
+            String,
+            String,
+            Option<i64>,
+            Option<String>,
+            i64,
+            String,
+        ) = conn.query_row(
+            "SELECT canonical_sequence, mutation_kind, change_kind,
+                        before_version, before_digest, after_version, occurred_at
+                   FROM narrative_change_events
+                  WHERE project_id = ?1 AND canonical_change_event_uid = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_APPLY_EVENT_UID],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )?;
+        assert_eq!(lifecycle.0, 1);
+        assert_eq!(lifecycle.1, "create");
+        assert_eq!(lifecycle.2, "metadata");
+        assert_eq!(lifecycle.3, None);
+        assert_eq!(lifecycle.4, None);
+        assert_eq!(lifecycle.5, 1);
+        assert_eq!(lifecycle.6, "2026-08-31T00:00:00.800Z");
+
+        let (snapshot_count, snapshot): (i64, (i64, i64, String, String)) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(MAX(anchor_sequence), 0),
+                    COALESCE(MAX(anchor_timestamp), 0),
+                    COALESCE(MAX(payload), ''),
+                    COALESCE(MAX(encoding), '')
+               FROM state_snapshots
+              WHERE project_id = ?1 AND domain = 'codex' AND entity_id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    (row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?),
+                ))
+            },
+        )?;
+        assert_eq!(snapshot_count, 1);
+        assert_eq!(
+            snapshot,
+            (1, 800, CODEX_DOC.to_string(), "json".to_string())
+        );
+        let application_ids: String = conn.query_row(
+            "SELECT application_ids_json
+               FROM narrative_change_transactions
+              WHERE project_id = ?1 AND id = (
+                    SELECT transaction_id FROM narrative_change_events
+                     WHERE project_id = ?1
+                       AND canonical_change_event_uid = ?2
+              )",
+            params![PROJECT_ID, PROTECTED_CODEX_APPLY_EVENT_UID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(application_ids, r#"["protected-codex-application"]"#);
+        Ok(())
+    })
+    .expect("inspect protected Codex baseline");
+}
+
+#[test]
+fn historical_codex_root_accepts_legacy_null_commit_session() {
+    let db = setup_protected_codex_historical_fixture().expect("seed protected Codex fixture");
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_apply_commits SET session_id = NULL
+               WHERE project_id = ?1 AND id = ?2",
+            params![PROJECT_ID, PROTECTED_CODEX_COMMIT_ID],
+        )?;
+        let transaction = conn.unchecked_transaction()?;
+        append_protected_codex_root(&transaction, PROTECTED_CODEX_REQUEST_ID)?;
+        transaction.commit()?;
+        Ok(())
+    })
+    .expect("legacy null commit session remains valid provenance");
+}
+
+#[test]
+fn historical_codex_root_rejects_unrelated_exact_snapshot_provenance() {
+    let db = setup_protected_codex_historical_fixture().expect("seed protected Codex fixture");
+    db.with_conn(|conn| {
+        let transaction = conn.unchecked_transaction()?;
+        let error = insert_protected_codex_candidate(
+            &transaction,
+            ProtectedCodexFailure::UnrelatedProvenance,
+        )
+        .expect_err("unrelated Feed provenance must fail closed");
+        assert!(error
+            .to_string()
+            .contains("TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR"));
+        transaction.rollback()?;
+        Ok(())
+    })
+    .expect("rollback unrelated provenance candidate");
+}
+
+#[test]
+fn historical_codex_root_rejects_missing_or_tampered_provenance() {
+    let failures = [
+        ProtectedCodexFailure::MissingTransaction,
+        ProtectedCodexFailure::MismatchedTransaction,
+        ProtectedCodexFailure::MismatchedRequest,
+        ProtectedCodexFailure::MismatchedSourceSequence,
+        ProtectedCodexFailure::MismatchedCause,
+        ProtectedCodexFailure::MismatchedOrigin,
+        ProtectedCodexFailure::MismatchedOriginalTransaction,
+        ProtectedCodexFailure::MismatchedUndoJournal,
+        ProtectedCodexFailure::MismatchedTransactionCreatedAt,
+        ProtectedCodexFailure::MissingCommit,
+        ProtectedCodexFailure::MismatchedCommit,
+        ProtectedCodexFailure::MismatchedCommitRequest,
+        ProtectedCodexFailure::MismatchedCommitPlanDigest,
+        ProtectedCodexFailure::MismatchedCommitStatus,
+        ProtectedCodexFailure::MissingJournal,
+        ProtectedCodexFailure::MismatchedJournal,
+        ProtectedCodexFailure::MismatchedJournalCommit,
+        ProtectedCodexFailure::MismatchedPayload,
+        ProtectedCodexFailure::MismatchedPayloadRequest,
+        ProtectedCodexFailure::MismatchedPayloadPlanDigest,
+        ProtectedCodexFailure::MalformedPayload,
+        ProtectedCodexFailure::MismatchedCanonical,
+        ProtectedCodexFailure::MismatchedCanonicalDomain,
+        ProtectedCodexFailure::MismatchedCanonicalEntityType,
+        ProtectedCodexFailure::MismatchedCanonicalEntityId,
+        ProtectedCodexFailure::MismatchedSession,
+        ProtectedCodexFailure::MismatchedApplySession,
+        ProtectedCodexFailure::MissingReceipt,
+        ProtectedCodexFailure::MismatchedReceipt,
+        ProtectedCodexFailure::MismatchedReceiptRequest,
+        ProtectedCodexFailure::MismatchedReceiptPlanDigest,
+        ProtectedCodexFailure::MismatchedReceiptJournal,
+        ProtectedCodexFailure::MismatchedReceiptStatus,
+        ProtectedCodexFailure::MismatchedReceiptChangeEvent,
+        ProtectedCodexFailure::MismatchedReceiptMaintenanceTransaction,
+        ProtectedCodexFailure::MismatchedReceiptMaintenanceOriginal,
+        ProtectedCodexFailure::MismatchedReceiptMaintenanceEvents,
+        ProtectedCodexFailure::MalformedReceipt,
+        ProtectedCodexFailure::MissingUndo,
+        ProtectedCodexFailure::MismatchedUndoIdentity,
+        ProtectedCodexFailure::MismatchedUndoOrder,
+        ProtectedCodexFailure::MalformedUndoPayload,
+        ProtectedCodexFailure::MismatchedUndoPayloadCommit,
+        ProtectedCodexFailure::MismatchedUndoPayloadRequest,
+        ProtectedCodexFailure::MissingApplication,
+        ProtectedCodexFailure::DuplicateApplication,
+        ProtectedCodexFailure::ExtraApplication,
+        ProtectedCodexFailure::MismatchedApplication,
+        ProtectedCodexFailure::MismatchedApplicationCommit,
+        ProtectedCodexFailure::MismatchedApplicationKind,
+        ProtectedCodexFailure::MismatchedApplicationEntity,
+        ProtectedCodexFailure::MissingEntity,
+        ProtectedCodexFailure::NullEntity,
+        ProtectedCodexFailure::MismatchedEntity,
+        ProtectedCodexFailure::MismatchedEntityBody,
+        ProtectedCodexFailure::MismatchedEntityVersion,
+        ProtectedCodexFailure::MismatchedEntityOperation,
+        ProtectedCodexFailure::MalformedEntity,
+        ProtectedCodexFailure::UnknownEntity,
+        ProtectedCodexFailure::DuplicateEntity,
+        ProtectedCodexFailure::MismatchedBody,
+        ProtectedCodexFailure::MismatchedVersion,
+        ProtectedCodexFailure::MissingSnapshot,
+        ProtectedCodexFailure::DuplicateSnapshot,
+        ProtectedCodexFailure::MismatchedSnapshotType,
+        ProtectedCodexFailure::MismatchedSnapshotSequence,
+        ProtectedCodexFailure::MismatchedSnapshotTimestamp,
+        ProtectedCodexFailure::MismatchedSnapshotPayload,
+        ProtectedCodexFailure::MismatchedSnapshotEncoding,
+        ProtectedCodexFailure::MismatchedNewTransaction,
+        ProtectedCodexFailure::MismatchedNewCanonical,
+        ProtectedCodexFailure::MismatchedNewSequence,
+        ProtectedCodexFailure::MismatchedNewObject,
+        ProtectedCodexFailure::MismatchedNewChangeKind,
+        ProtectedCodexFailure::MismatchedNewMutation,
+        ProtectedCodexFailure::MismatchedNewBeforeVersion,
+        ProtectedCodexFailure::MismatchedNewBeforeDigest,
+        ProtectedCodexFailure::MismatchedNewAfterVersion,
+        ProtectedCodexFailure::MismatchedNewChangedPaths,
+        ProtectedCodexFailure::MismatchedNewOccurredAt,
+    ];
+    for failure in failures {
+        let db = setup_protected_codex_historical_fixture().expect("seed protected Codex fixture");
+        db.with_conn(|conn| {
+            let transaction = conn.unchecked_transaction()?;
+            let error = insert_protected_codex_candidate(&transaction, failure)
+                .expect_err("tampered protected provenance must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR")
+                    || error.to_string().contains("FOREIGN KEY constraint failed")
+                    || error.to_string().contains("NEX_IMMUTABLE_APPLICATION"),
+                "{failure:?}: {error}"
+            );
+            transaction.rollback()?;
+            Ok(())
+        })
+        .expect("rollback tampered provenance candidate");
+
+        db.with_conn(|conn| {
+            let feed_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_events WHERE project_id = ?1",
+                [PROJECT_ID],
+                |row| row.get(0),
+            )?;
+            let snapshot_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM state_snapshots
+                  WHERE project_id = ?1 AND domain = 'codex' AND entity_id = ?2",
+                params![PROJECT_ID, PROTECTED_CODEX_ENTRY_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(feed_count, 0, "{failure:?}: Feed candidate must roll back");
+            assert_eq!(
+                snapshot_count, 1,
+                "{failure:?}: snapshot must remain singular"
+            );
+            Ok(())
+        })
+        .expect("inspect tampered provenance rollback");
+    }
+}
+
+#[test]
+fn scene_and_snippet_exact_snapshots_do_not_permit_non_tail_roots() {
+    for (index, (kind, content)) in [
+        (BodyKind::Scene, SCENE_DOC),
+        (BodyKind::Snippet, SNIPPET_DOC),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let db = database();
+        let entity_id = format!("non-tail-snapshot-{index}");
+        let event_uid = format!("non-tail-snapshot-event-{index}");
+        let tail_event_uid = format!("non-tail-snapshot-tail-{index}");
+        let timestamp = 160 + i64::try_from(index).expect("small fixture index");
+        create_body_with_lifecycle(&db, kind, &entity_id, content, &event_uid, timestamp)
+            .expect("create exact snapshot fixture");
+        db.with_conn(|conn| {
+            let transaction = conn.unchecked_transaction()?;
+            transaction.execute(
+                "DELETE FROM narrative_change_transactions
+                  WHERE project_id = ?1 AND source_change_event_uid = ?2",
+                params![PROJECT_ID, event_uid],
+            )?;
+            let append = append_change_events_in_tx(
+                &transaction,
+                PROJECT_ID,
+                SESSION_ID,
+                &[AppendChangeEvent {
+                    event_uid: tail_event_uid,
+                    scene_id: None,
+                    domain: "test".to_string(),
+                    op_type: "test.tail".to_string(),
+                    entity_type: None,
+                    entity_id: None,
+                    payload: "{}".to_string(),
+                    timestamp: timestamp + 1,
+                }],
+            )?;
+            assert_eq!(append.tail_sequence, 2);
+            let error = append_pre_feed_narrative_root(&transaction, kind, &entity_id, &event_uid)
+                .expect_err("Scene/Snippet non-tail root must fail even with exact snapshot");
+            assert!(error
+                .to_string()
+                .contains("TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR"));
+            transaction.rollback()?;
+            Ok(())
+        })
+        .expect("rollback Scene/Snippet non-tail root");
+    }
 }
 
 fn modernize_pre_feed_lifecycle(
