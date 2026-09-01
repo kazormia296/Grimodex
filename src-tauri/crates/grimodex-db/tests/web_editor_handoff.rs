@@ -197,6 +197,146 @@ fn imports_a_browser_database_as_a_new_migrated_workspace() {
 }
 
 #[test]
+fn imports_non_empty_timelapse_tables_and_preserves_rows() {
+    let root = temp_dir("timelapse-preservation");
+    let source = mutate_browser_database(
+        &root.join("source"),
+        "web-project",
+        "White Lighthouse",
+        |conn| {
+            conn.execute(
+                "INSERT INTO change_events
+                    (event_uid, project_id, scene_id, domain, op_type,
+                     entity_type, entity_id, payload, session_id, sequence,
+                     timestamp, prev_hash, hash)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                rusqlite::params![
+                    "event-web-timelapse",
+                    "web-project",
+                    "editor",
+                    "doc.step",
+                    "scene",
+                    "scene-web",
+                    r#"{"content":"typed event"}"#,
+                    "browser-session",
+                    7,
+                    1_700_000_000_000_i64,
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                    "1111111111111111111111111111111111111111111111111111111111111111",
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO state_snapshots
+                    (project_id, domain, entity_type, entity_id,
+                     anchor_sequence, anchor_timestamp, payload, encoding,
+                     created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    "web-project",
+                    "editor",
+                    "scene",
+                    "scene-web",
+                    7,
+                    1_700_000_000_000_i64,
+                    r#"{"type":"doc","content":[]}"#,
+                    "json",
+                    1_700_000_000_000_i64,
+                ],
+            )?;
+            Ok(())
+        },
+    );
+    let result = import_web_editor_workspace(
+        &settings_path(&root),
+        &handoff_json(&source, "web-project", "White Lighthouse"),
+    )
+    .expect("non-empty lossless timelapse rows must cross the handoff boundary");
+
+    let db =
+        Database::new(&PathBuf::from(&result.path).join("grimodex.db")).expect("open imported db");
+    let preserved = db
+        .with_conn(|conn| {
+            let event = conn.query_row(
+                "SELECT project_id, domain, op_type, entity_type, entity_id,
+                        payload, session_id, sequence, timestamp, prev_hash, hash
+                 FROM change_events WHERE event_uid = ?1",
+                ["event-web-timelapse"],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                    ))
+                },
+            )?;
+            let snapshot = conn.query_row(
+                "SELECT project_id, domain, entity_type, entity_id,
+                        anchor_sequence, anchor_timestamp, payload, encoding,
+                        created_at
+                 FROM state_snapshots
+                 WHERE project_id = ?1 AND entity_id = ?2",
+                ["web-project", "scene-web"],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, i64>(8)?,
+                    ))
+                },
+            )?;
+            Ok((event, snapshot))
+        })
+        .expect("timelapse rows preserved");
+
+    assert_eq!(
+        preserved.0,
+        (
+            "web-project".to_owned(),
+            "editor".to_owned(),
+            "doc.step".to_owned(),
+            "scene".to_owned(),
+            "scene-web".to_owned(),
+            r#"{"content":"typed event"}"#.to_owned(),
+            "browser-session".to_owned(),
+            7,
+            1_700_000_000_000_i64,
+            "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+            "1111111111111111111111111111111111111111111111111111111111111111".to_owned(),
+        )
+    );
+    assert_eq!(
+        preserved.1,
+        (
+            "web-project".to_owned(),
+            "editor".to_owned(),
+            "scene".to_owned(),
+            "scene-web".to_owned(),
+            7,
+            1_700_000_000_000_i64,
+            r#"{"type":"doc","content":[]}"#.to_owned(),
+            "json".to_owned(),
+            1_700_000_000_000_i64,
+        )
+    );
+
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn rejects_non_sqlite_and_manifest_project_mismatches_without_publishing() {
     let root = temp_dir("reject");
     std::fs::create_dir_all(&root).expect("root");
@@ -458,12 +598,10 @@ fn rejects_empty_poisoned_semantic_epoch_schema_before_publishing() {
 #[test]
 fn c2zc_native_owned_registry_has_the_exact_authority_finding_and_repair_tables() {
     let registry = bundled_protected_writer_registry();
-    let mut tables = registry
-        .active_entries()
-        .filter(|entry| entry.aggregate.starts_with("narrative-c2zc-"))
+    let tables = registry
+        .c2zc_web_editor_handoff_rejected_entries()
         .map(|entry| entry.table.as_str())
         .collect::<Vec<_>>();
-    tables.sort_unstable();
 
     assert_eq!(tables.len(), 9);
     assert_eq!(

@@ -234,7 +234,7 @@ fn reject_untrusted_c2zc_boundary(conn: &Connection) -> anyhow::Result<()> {
     }
 
     let registry = bundled_protected_writer_registry();
-    for entry in registry.c2zc_native_owned_entries() {
+    for entry in registry.c2zc_web_editor_handoff_rejected_entries() {
         let table_is_present = table_exists(conn, &entry.table).map_err(|error| {
             anyhow::anyhow!(
                 "NEX_C2ZC_WEB_EDITOR_HANDOFF_BOUNDARY_READ_FAILED: cannot inspect native-owned C2-ZC table '{}': {error}",
