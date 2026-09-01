@@ -242,8 +242,10 @@ export async function updateSnippet(
         );
     return write;
   }
-  return runTimelapseMutation(projectId, async () =>
-    project(await commit(undefined)),
+  return runTimelapseMutation(
+    projectId,
+    async () => project(await commit(undefined)),
+    opts?.preexistingDraft ? { preexistingDraft: true } : undefined,
   );
 }
 

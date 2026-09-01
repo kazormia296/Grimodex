@@ -100,6 +100,8 @@ export interface PersistSceneBodyOptions {
   timelapseDocument?: TimelapseDocumentRef;
   /** Structural scene identity used by replacement fallback. */
   timelapseDocumentIdentity?: TimelapseDocumentIdentity;
+  /** Draft admitted before a lifecycle lease began draining autosaves. */
+  preexistingDraft?: boolean;
 }
 
 interface ScheduledBodyMentionScan extends BodyMentionScanRequest {
@@ -562,7 +564,11 @@ export async function persistSceneBody(
   const committedScene = nativeSnapshot
     ? options.timelapseSteps !== undefined
       ? runTimelapseBodyReplacement(
-          { projectId, documentIdentity },
+          {
+            projectId,
+            documentIdentity,
+            ...(options.preexistingDraft ? { preexistingDraft: true } : {}),
+          },
           {
             commit: () => commitScene(undefined),
             project: async (committed) => committed,
@@ -575,6 +581,7 @@ export async function persistSceneBody(
               coverageReceipt: options.timelapseDocument,
               documentIdentity,
               content: sceneJsonStr,
+              ...(options.preexistingDraft ? { preexistingDraft: true } : {}),
             },
             {
               commit: commitScene,
@@ -582,13 +589,21 @@ export async function persistSceneBody(
             },
           )
         : runTimelapseBodyReplacement(
-            { projectId, documentIdentity },
+            {
+              projectId,
+              documentIdentity,
+              ...(options.preexistingDraft ? { preexistingDraft: true } : {}),
+            },
             {
               commit: () => commitScene(undefined),
               project: async (committed) => committed,
             },
           )
-    : runTimelapseMutation(projectId, () => commitScene(undefined));
+    : runTimelapseMutation(
+        projectId,
+        () => commitScene(undefined),
+        options.preexistingDraft ? { preexistingDraft: true } : undefined,
+      );
   const {
     placedBeatPreview,
     unplacedBeatPreview,

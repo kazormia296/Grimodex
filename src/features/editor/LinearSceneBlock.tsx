@@ -118,6 +118,7 @@ import { getTreeIndex } from "@/features/tree/treeIndex";
 import {
   createDocumentSaveSession,
   runCoordinatedDocumentSave,
+  type DocumentSaveContext,
 } from "@/features/editor/document/documentSaveCoordinator";
 import {
   createLoadedTimelapseDescriptor,
@@ -350,104 +351,114 @@ function MountedSceneBlock({
     return extensions;
   }, [isFileBacked]);
 
-  const coreSave = useCallback(async (): Promise<EditorSaveAttemptResult> => {
-    const ed = editorRef.current;
-    if (!ed) return { persisted: false, committed: false };
-    if (loadFailedRef.current) {
-      debugLog.warn(
+  const coreSave = useCallback(
+    async (
+      context: DocumentSaveContext = {},
+    ): Promise<EditorSaveAttemptResult> => {
+      const ed = editorRef.current;
+      if (!ed) return { persisted: false, committed: false };
+      if (loadFailedRef.current) {
+        debugLog.warn(
+          "LinearSceneBlock",
+          `save skipped: load failed ${sceneId.slice(0, 8)}`,
+        );
+        return { persisted: false, committed: false };
+      }
+      const inlineAi = useInlineAiStore.getState();
+      if (
+        isInlineAiSaveBlocked({
+          inlineAiStatus: inlineAi.status,
+          activeEditor: inlineAi.activeEditor,
+          editor: ed,
+        })
+      ) {
+        guardInlineAiPending();
+        throw new AlreadyNotifiedSaveError(INLINE_AI_SAVE_BLOCKED_MESSAGE);
+      }
+      debugLog.info(
         "LinearSceneBlock",
-        `save skipped: load failed ${sceneId.slice(0, 8)}`,
+        `save ${sceneId.slice(0, 8)}`,
+        JSON.stringify({ docLen: getDocText(ed.state.doc).length }),
       );
-      return { persisted: false, committed: false };
-    }
-    const inlineAi = useInlineAiStore.getState();
-    if (
-      isInlineAiSaveBlocked({
-        inlineAiStatus: inlineAi.status,
-        activeEditor: inlineAi.activeEditor,
-        editor: ed,
-      })
-    ) {
-      guardInlineAiPending();
-      throw new AlreadyNotifiedSaveError(INLINE_AI_SAVE_BLOCKED_MESSAGE);
-    }
-    debugLog.info(
-      "LinearSceneBlock",
-      `save ${sceneId.slice(0, 8)}`,
-      JSON.stringify({ docLen: getDocText(ed.state.doc).length }),
-    );
-    // save 開始時の編集世代 (doc 捕捉と同期区間なので取りこぼし無し)。
-    const editGenAtStart = editGenerationRef.current;
-    // 本文保存の全副作用カスケード (file-backed writeBack / foreshadow・
-    // annotation anchor / beat キャッシュ / 帰属 / semantic index) は
-    // persistSceneBody が正本。タブエディタ (EditorPane) と同一経路。
-    const docAtStart = ed.state.doc;
-    const persistedContent = docAtStart.toJSON();
-    const timelapseDescriptor = loadedTimelapseDescriptorRef.current;
-    const persisted = await persistSceneBody(sceneId, docAtStart, {
-      baseVersion: sceneVersionRef.current,
-      ...(timelapseDescriptor?.document
-        ? { timelapseDocument: timelapseDescriptor.document }
-        : {}),
-      ...(timelapseDescriptor
-        ? { timelapseDocumentIdentity: timelapseDescriptor.documentIdentity }
-        : {}),
-    });
-    if (persisted.foreshadowRows.length > 0) {
-      runProgrammaticProjectionUpdate(() => {
-        refreshForeshadowPayoffMarkVersions((apply) => {
-          const tr = ed.state.tr;
-          apply(tr);
-          if (tr.steps.length > 0) ed.view.dispatch(tr);
-        }, persisted.foreshadowRows);
+      // save 開始時の編集世代 (doc 捕捉と同期区間なので取りこぼし無し)。
+      const editGenAtStart = editGenerationRef.current;
+      // 本文保存の全副作用カスケード (file-backed writeBack / foreshadow・
+      // annotation anchor / beat キャッシュ / 帰属 / semantic index) は
+      // persistSceneBody が正本。タブエディタ (EditorPane) と同一経路。
+      const docAtStart = ed.state.doc;
+      const persistedContent = docAtStart.toJSON();
+      const timelapseDescriptor = loadedTimelapseDescriptorRef.current;
+      const persisted = await persistSceneBody(sceneId, docAtStart, {
+        baseVersion: sceneVersionRef.current,
+        ...(timelapseDescriptor?.document
+          ? { timelapseDocument: timelapseDescriptor.document }
+          : {}),
+        ...(timelapseDescriptor
+          ? { timelapseDocumentIdentity: timelapseDescriptor.documentIdentity }
+          : {}),
+        ...(context.preexistingDraft ? { preexistingDraft: true } : {}),
       });
-    }
-    if (persisted?.contentVersion !== undefined) {
-      sceneVersionRef.current = persisted.contentVersion;
-      announcePersistedBinding(
-        documentKey,
-        editorInstanceIdRef.current,
-        {
-          kind: "tree",
-          id: sceneId,
-          nodeType: treeNodeType,
-          storage: isFileBacked ? "file" : "database",
-          loadedVersion: persisted.contentVersion,
-        },
-        persistedContent,
-      );
-    }
-    // 保存成功時のみ dirty 解除 (失敗時は saveFn の catch 側に飛ぶので残る)。
-    // かつ保存 (await) 中に編集が入っていた場合は世代不一致 → dirty 維持
-    // (editGenerationRef のコメント参照)。
-    const committed = editGenerationRef.current === editGenAtStart;
-    if (committed) {
-      isDirtyRef.current = false;
-      useEditorSessionStore
-        .getState()
-        .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
-    }
-    return { persisted: true, committed };
-  }, [
-    documentKey,
-    isFileBacked,
-    runProgrammaticProjectionUpdate,
-    sceneId,
-    treeNodeType,
-  ]);
+      if (persisted.foreshadowRows.length > 0) {
+        runProgrammaticProjectionUpdate(() => {
+          refreshForeshadowPayoffMarkVersions((apply) => {
+            const tr = ed.state.tr;
+            apply(tr);
+            if (tr.steps.length > 0) ed.view.dispatch(tr);
+          }, persisted.foreshadowRows);
+        });
+      }
+      if (persisted?.contentVersion !== undefined) {
+        sceneVersionRef.current = persisted.contentVersion;
+        announcePersistedBinding(
+          documentKey,
+          editorInstanceIdRef.current,
+          {
+            kind: "tree",
+            id: sceneId,
+            nodeType: treeNodeType,
+            storage: isFileBacked ? "file" : "database",
+            loadedVersion: persisted.contentVersion,
+          },
+          persistedContent,
+        );
+      }
+      // 保存成功時のみ dirty 解除 (失敗時は saveFn の catch 側に飛ぶので残る)。
+      // かつ保存 (await) 中に編集が入っていた場合は世代不一致 → dirty 維持
+      // (editGenerationRef のコメント参照)。
+      const committed = editGenerationRef.current === editGenAtStart;
+      if (committed) {
+        isDirtyRef.current = false;
+        useEditorSessionStore
+          .getState()
+          .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
+      }
+      return { persisted: true, committed };
+    },
+    [
+      documentKey,
+      isFileBacked,
+      runProgrammaticProjectionUpdate,
+      sceneId,
+      treeNodeType,
+    ],
+  );
 
-  const saveFn = useCallback(async () => {
-    const result = await runCoordinatedDocumentSave(documentKey, coreSave, {
-      session: documentSaveSession,
-      didPersist: (attempt) => attempt.persisted,
-    });
-    if (shouldClearRetainedEditorRecoveryDraft(result)) {
-      clearRetainedEditorRecoveryDraft(
-        documentKey,
-        editorInstanceIdRef.current,
-      );
-    }
-  }, [coreSave, documentKey, documentSaveSession]);
+  const saveFn = useCallback(
+    async (context?: DocumentSaveContext) => {
+      const result = await runCoordinatedDocumentSave(documentKey, coreSave, {
+        session: documentSaveSession,
+        didPersist: (attempt) => attempt.persisted,
+        ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
+      });
+      if (shouldClearRetainedEditorRecoveryDraft(result)) {
+        clearRetainedEditorRecoveryDraft(
+          documentKey,
+          editorInstanceIdRef.current,
+        );
+      }
+    },
+    [coreSave, documentKey, documentSaveSession],
+  );
 
   const { schedule, cancel, pause, resume } = useAutoSave(
     saveFn,

@@ -22,6 +22,7 @@ import {
 import { applyUndoJournal } from "@/features/agent-writes/undoJournal";
 import type { CanonicalWriteReceipt } from "@/features/native-writes/writeContext";
 import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
+import type { QuiescenceProviderFlushOptions } from "@/lib/quiescenceProviders";
 import {
   blockIfUnlicensed,
   LICENSE_WRITE_RESTRICTED_ERROR,
@@ -107,6 +108,7 @@ interface SnippetState {
     options?: {
       baseVersion?: number;
       timelapseDocument?: TimelapseDocumentRef;
+      preexistingDraft?: QuiescenceProviderFlushOptions["preexistingDraft"];
     },
   ) => Promise<VersionedSaveOutcome>;
   remove: (id: string) => Promise<void>;
@@ -313,6 +315,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
           ...(options?.timelapseDocument
             ? { timelapseDocument: options.timelapseDocument }
             : {}),
+          ...(options?.preexistingDraft ? { preexistingDraft: true } : {}),
         },
       );
       // 行なし (スコープ miss / 削除済み) = 保存されていない。

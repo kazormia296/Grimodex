@@ -123,7 +123,8 @@ export interface QuiescenceDependencies {
 
 const defaultDependencies: QuiescenceDependencies = {
   awaitAiExecutions: () => flushQuiescenceProviderStage("ai-executions"),
-  flushAutoSaves: () => flushQuiescenceProviderStage("autosave"),
+  flushAutoSaves: () =>
+    flushQuiescenceProviderStage("autosave", { preexistingDraft: true }),
   flushParticipants: flushQuiescenceParticipants,
   flushExternalWriteBacks: () =>
     flushQuiescenceProviderStage("external-write-back"),

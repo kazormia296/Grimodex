@@ -237,6 +237,7 @@ interface CodexState {
     options?: {
       baseVersion?: number;
       timelapseDocument?: TimelapseDocumentRef;
+      preexistingDraft?: boolean;
     },
   ) => Promise<VersionedSaveOutcome>;
   remove: (id: string) => Promise<void>;
@@ -925,6 +926,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         ...(options?.timelapseDocument
           ? { timelapseDocument: options.timelapseDocument }
           : {}),
+        ...(options?.preexistingDraft ? { preexistingDraft: true } : {}),
       });
       if (!updated) {
         toast.error(i18next.t("codex.store.updateFailed"));

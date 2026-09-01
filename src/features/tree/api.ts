@@ -99,6 +99,12 @@ export type TreeNode = typeof treeNodes.$inferSelect;
 export type NewTreeNode = typeof treeNodes.$inferInsert;
 export type NodeType = "folder" | "scene" | "note";
 
+export interface TreeNodeUpdateOptions {
+  writeContext?: CanonicalWriteContext;
+  /** Permit only a draft that was queued before lifecycle quiescence. */
+  preexistingDraft?: boolean;
+}
+
 export type TreeNodeWriteResult = TreeNode & {
   __writeReceipt?: CanonicalWriteReceipt;
 };
@@ -579,7 +585,7 @@ export function updateNode(
       | "excludedAliases"
     >
   >,
-  options: { writeContext?: CanonicalWriteContext } = {},
+  options: TreeNodeUpdateOptions = {},
 ): Promise<TreeNodeWriteResult | undefined> {
   const workspaceIdentity = getCurrentWorkspaceIdentity();
   // Metadata, Chronicle, preview, and content all share one tree_nodes row.
@@ -673,7 +679,9 @@ export function updateNode(
     });
   const projectId = getCurrentProjectId();
   if (data.content === undefined) {
-    return runTimelapseMutation(projectId, write);
+    return options.preexistingDraft === true
+      ? runTimelapseMutation(projectId, write, { preexistingDraft: true })
+      : runTimelapseMutation(projectId, write);
   }
   const documentIdentity: TimelapseDocumentIdentity = {
     projectId,
@@ -683,7 +691,11 @@ export function updateNode(
     storage: "database",
   };
   return runTimelapseBodyReplacement(
-    { projectId, documentIdentity },
+    {
+      projectId,
+      documentIdentity,
+      ...(options.preexistingDraft === true ? { preexistingDraft: true } : {}),
+    },
     {
       commit: write,
       didCommit: (committed) => committed !== undefined,

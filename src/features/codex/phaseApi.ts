@@ -185,7 +185,7 @@ export async function updatePhase(
       | "contextModeOverride"
     >
   >,
-  opts: { baseVersion: number },
+  opts: { baseVersion: number; preexistingDraft?: boolean },
 ): Promise<CodexEntryPhase | undefined> {
   const changesContextMode = Object.prototype.hasOwnProperty.call(
     data,
@@ -201,54 +201,60 @@ export async function updatePhase(
       .limit(1)
   )[0]?.projectId;
   if (!projectId) return undefined;
-  return runTimelapseMutation(projectId, async () => {
-    if (data.contentOverride !== undefined) {
-      current = await getPhase(id);
-      if (!current) return undefined;
-    }
-    const nextContextMode = data.contextModeOverride;
-    if (current && changesContextMode && !isAiVisibleMode(nextContextMode)) {
-      // null is inherited and therefore not proof of visibility.
-      await markImpactBaselinePhasesRestricted(current.entryId);
-    }
-    try {
-      await invoke("codex_mutate", {
-        payload: {
-          operation: "phase.update",
-          projectId,
-          ...createCanonicalWriteContext(),
-          surface: "manual",
-          phaseId: id,
-          baseVersion: opts.baseVersion,
-          ...(data.label !== undefined ? { label: data.label } : {}),
-          ...(data.anchorNodeId !== undefined
-            ? { anchorNodeId: data.anchorNodeId }
-            : {}),
-          ...(data.summaryOverride !== undefined
-            ? { summaryOverride: data.summaryOverride }
-            : {}),
-          ...(data.contentOverride !== undefined
-            ? { contentOverride: data.contentOverride }
-            : {}),
-          ...(data.contextModeOverride !== undefined
-            ? { contextModeOverride: data.contextModeOverride }
-            : {}),
-        },
-      });
-    } catch (error) {
-      if (String(error).toLowerCase().includes("version conflict")) {
-        throw new PhaseVersionConflictError(id);
+  return runTimelapseMutation(
+    projectId,
+    async () => {
+      if (data.contentOverride !== undefined) {
+        current = await getPhase(id);
+        if (!current) return undefined;
       }
-      throw error;
-    }
-    const updated = await getPhase(id);
-    if (!updated) return undefined;
-    if (changesContextMode && isAiVisibleMode(nextContextMode)) {
-      // Post-write failure remains fail-closed: Impact will keep redacting.
-      await markImpactBaselinePhaseVisible(updated.entryId, id).catch(() => {});
-    }
-    return updated;
-  });
+      const nextContextMode = data.contextModeOverride;
+      if (current && changesContextMode && !isAiVisibleMode(nextContextMode)) {
+        // null is inherited and therefore not proof of visibility.
+        await markImpactBaselinePhasesRestricted(current.entryId);
+      }
+      try {
+        await invoke("codex_mutate", {
+          payload: {
+            operation: "phase.update",
+            projectId,
+            ...createCanonicalWriteContext(),
+            surface: "manual",
+            phaseId: id,
+            baseVersion: opts.baseVersion,
+            ...(data.label !== undefined ? { label: data.label } : {}),
+            ...(data.anchorNodeId !== undefined
+              ? { anchorNodeId: data.anchorNodeId }
+              : {}),
+            ...(data.summaryOverride !== undefined
+              ? { summaryOverride: data.summaryOverride }
+              : {}),
+            ...(data.contentOverride !== undefined
+              ? { contentOverride: data.contentOverride }
+              : {}),
+            ...(data.contextModeOverride !== undefined
+              ? { contextModeOverride: data.contextModeOverride }
+              : {}),
+          },
+        });
+      } catch (error) {
+        if (String(error).toLowerCase().includes("version conflict")) {
+          throw new PhaseVersionConflictError(id);
+        }
+        throw error;
+      }
+      const updated = await getPhase(id);
+      if (!updated) return undefined;
+      if (changesContextMode && isAiVisibleMode(nextContextMode)) {
+        // Post-write failure remains fail-closed: Impact will keep redacting.
+        await markImpactBaselinePhaseVisible(updated.entryId, id).catch(
+          () => {},
+        );
+      }
+      return updated;
+    },
+    opts.preexistingDraft ? { preexistingDraft: true } : undefined,
+  );
 }
 
 export async function deletePhase(

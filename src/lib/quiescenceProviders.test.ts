@@ -5,6 +5,7 @@ import {
   QuiescenceProviderStageError,
   registerQuiescenceProvider,
   type QuiescenceProviderId,
+  type QuiescenceProviderFlushOptions,
 } from "./quiescenceProviders";
 
 function provider(
@@ -155,6 +156,23 @@ describe("quiescence provider registry", () => {
         flushQuiescenceProviderStage("timelapse"),
       ).resolves.toBeUndefined();
       expect(flush).toHaveBeenCalledOnce();
+    } finally {
+      unregister();
+    }
+  });
+
+  it("passes a preexisting-draft permit through the provider stage", async () => {
+    const flush = vi.fn(
+      async (_options?: QuiescenceProviderFlushOptions) => {},
+    );
+    const unregister = registerQuiescenceProvider(
+      provider("test-preexisting-draft", flush),
+    );
+    try {
+      await flushQuiescenceProviderStage("timelapse", {
+        preexistingDraft: true,
+      });
+      expect(flush).toHaveBeenCalledWith({ preexistingDraft: true });
     } finally {
       unregister();
     }

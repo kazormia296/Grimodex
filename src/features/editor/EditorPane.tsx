@@ -180,6 +180,7 @@ import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/
 import {
   createDocumentSaveSession,
   runCoordinatedDocumentSave,
+  type DocumentSaveContext,
 } from "@/features/editor/document/documentSaveCoordinator";
 import {
   checkpointPerfSession,
@@ -678,7 +679,11 @@ export function EditorPane({
   }, [activeStatus, nodeId, isEntryMode]);
 
   const coreSave = useCallback(
-    async (snapshot: SaveSnapshot, doc: ProseMirrorNode) => {
+    async (
+      snapshot: SaveSnapshot,
+      doc: ProseMirrorNode,
+      context: DocumentSaveContext = {},
+    ) => {
       markStart("editor.coreSave");
       try {
         return await saveEditorDocument(
@@ -689,6 +694,7 @@ export function EditorPane({
             timelapseDocument: loadedTimelapseDescriptorRef.current?.document,
             timelapseDocumentIdentity:
               loadedTimelapseDescriptorRef.current?.documentIdentity,
+            ...(context.preexistingDraft ? { preexistingDraft: true } : {}),
           },
         );
       } finally {
@@ -698,8 +704,10 @@ export function EditorPane({
     [],
   );
 
-  const saveLatestFn =
-    useCallback(async (): Promise<EditorSaveAttemptResult> => {
+  const saveLatestFn = useCallback(
+    async (
+      context: DocumentSaveContext = {},
+    ): Promise<EditorSaveAttemptResult> => {
       const snapshot = mutationGate.captureSave();
       const doc = editorRef.current?.state.doc;
       if (!snapshot || !doc) {
@@ -724,7 +732,7 @@ export function EditorPane({
       setIsSaving(true);
       let result: Awaited<ReturnType<typeof coreSave>>;
       try {
-        result = await coreSave(snapshot, doc);
+        result = await coreSave(snapshot, doc, context);
       } finally {
         setIsSaving(false);
       }
@@ -804,30 +812,36 @@ export function EditorPane({
         });
       }
       return { persisted: true, committed };
-    }, [
+    },
+    [
       coreSave,
       mutationGate,
       runProgrammaticProjectionUpdate,
       setIsDirtyRef,
       setIsSaving,
-    ]);
-  const saveFn = useCallback(async () => {
-    const saveKey = activeLoadedDocumentKey ?? loadedDocumentKeyRef.current;
-    if (!saveKey) {
-      const result = await saveLatestFn();
-      if (!result.persisted && isDirtyRef.current) {
-        throw new Error("Cannot save an editor document before it is loaded");
+    ],
+  );
+  const saveFn = useCallback(
+    async (context?: DocumentSaveContext) => {
+      const saveKey = activeLoadedDocumentKey ?? loadedDocumentKeyRef.current;
+      if (!saveKey) {
+        const result = await saveLatestFn(context);
+        if (!result.persisted && isDirtyRef.current) {
+          throw new Error("Cannot save an editor document before it is loaded");
+        }
+        return;
       }
-      return;
-    }
-    const result = await runCoordinatedDocumentSave(saveKey, saveLatestFn, {
-      session: documentSaveSession,
-      didPersist: (attempt) => attempt.persisted,
-    });
-    if (shouldClearRetainedEditorRecoveryDraft(result)) {
-      clearRetainedEditorRecoveryDraft(saveKey, editorInstanceIdRef.current);
-    }
-  }, [activeLoadedDocumentKey, documentSaveSession, isDirtyRef, saveLatestFn]);
+      const result = await runCoordinatedDocumentSave(saveKey, saveLatestFn, {
+        session: documentSaveSession,
+        didPersist: (attempt) => attempt.persisted,
+        ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
+      });
+      if (shouldClearRetainedEditorRecoveryDraft(result)) {
+        clearRetainedEditorRecoveryDraft(saveKey, editorInstanceIdRef.current);
+      }
+    },
+    [activeLoadedDocumentKey, documentSaveSession, isDirtyRef, saveLatestFn],
+  );
 
   // Register this pane's save function so external callers (tab context menu,
   // agent writes, rename cascade, …) can flush it. dirty ゲート付き:

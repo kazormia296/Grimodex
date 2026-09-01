@@ -19,6 +19,11 @@ export type QuiescenceProviderId = string & {
   readonly [quiescenceProviderIdBrand]: true;
 };
 
+export interface QuiescenceProviderFlushOptions {
+  /** Permit a draft whose persistence was already queued before the lease. */
+  preexistingDraft?: boolean;
+}
+
 const QUIESCENCE_PROVIDER_ID_PATTERN = /^[a-z0-9-]{1,64}$/;
 
 export function isQuiescenceProviderId(
@@ -47,7 +52,7 @@ export function createQuiescenceProviderId<const Id extends string>(
 export interface QuiescenceProvider {
   id: QuiescenceProviderId;
   stage: QuiescenceProviderStage;
-  flush: () => Promise<void>;
+  flush: (options?: QuiescenceProviderFlushOptions) => Promise<void>;
   discard?: () => void;
   recovery?: () => unknown | readonly unknown[];
 }
@@ -110,12 +115,13 @@ export function registerQuiescenceProvider(
 
 export async function flushQuiescenceProviderStage(
   stage: QuiescenceProviderStage,
+  options?: QuiescenceProviderFlushOptions,
 ): Promise<void> {
   const selected = [...providers.values()].filter(
     (provider) => provider.stage === stage,
   );
   const results = await Promise.allSettled(
-    selected.map((provider) => provider.flush()),
+    selected.map((provider) => provider.flush(options)),
   );
   const failures = results.flatMap((result, index) =>
     result.status === "rejected" && selected[index]

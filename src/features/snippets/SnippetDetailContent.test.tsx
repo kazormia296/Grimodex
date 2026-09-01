@@ -360,6 +360,31 @@ describe("SnippetDetailContent — autosave flush on unmount", () => {
     );
   });
 
+  it("passes the lifecycle preexisting-draft permit through to onSave", async () => {
+    const onSave = vi.fn().mockResolvedValue({ persisted: true, version: 1 });
+    const { getByTestId } = render(
+      <SnippetDetailContent
+        snippet={fakeSnippet()}
+        onSave={onSave}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(getByTestId("snippet-detail-title"), {
+      target: { value: "ライフサイクル中のタイトル" },
+    });
+
+    await act(async () => {
+      await flushAllAutoSaves({ preexistingDraft: true });
+    });
+
+    expect(onSave).toHaveBeenCalledWith(
+      "snippet-1",
+      { title: "ライフサイクル中のタイトル" },
+      { baseVersion: 0, preexistingDraft: true },
+    );
+  });
+
   it("does not call onSave if no edits were scheduled before unmount", () => {
     const onSave = vi.fn().mockResolvedValue({ persisted: true, version: 1 });
     const { unmount } = render(

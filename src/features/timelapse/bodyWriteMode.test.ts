@@ -99,6 +99,29 @@ describe("timelapse body write coordination", () => {
     ]);
   });
 
+  it("forwards a preexisting-draft permit through the async genesis coordinator", async () => {
+    const fence = makeFence("preexisting");
+    h.acquireTimelapseReplacementFence.mockReturnValue(fence);
+
+    await runTimelapseBodyReplacement(
+      {
+        projectId: "project-1",
+        documentIdentity: IDENTITY,
+        preexistingDraft: true,
+      },
+      {
+        commit: async () => "native-result",
+        project: async (committed) => committed,
+      },
+    );
+
+    expect(h.runAfterTimelapseGenesis).toHaveBeenCalledWith(
+      "project-1",
+      expect.any(Function),
+      { preexistingDraft: true },
+    );
+  });
+
   it("serializes same-project body writers globally across documents", async () => {
     const fenceA = makeFence("a");
     const fenceB = makeFence("b");

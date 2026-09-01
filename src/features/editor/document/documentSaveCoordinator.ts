@@ -45,6 +45,13 @@ export interface DocumentSaveSession {
 export interface DocumentSaveOptions<T> {
   session?: DocumentSaveSession;
   didPersist?: (result: T) => boolean;
+  /** Draft admitted before a lifecycle lease began draining autosaves. */
+  preexistingDraft?: boolean;
+}
+
+export interface DocumentSaveContext {
+  /** Carry the lifecycle permit into the canonical document save path. */
+  preexistingDraft?: boolean;
 }
 
 export interface DocumentMutationOptions<T> {
@@ -264,7 +271,7 @@ function recordAuthoritativeDocumentMutation(encoded: string): void {
  */
 export async function runCoordinatedDocumentSave<T>(
   documentKey: DocumentKey,
-  saveLatest: () => Promise<T>,
+  saveLatest: (context?: DocumentSaveContext) => Promise<T>,
   options: DocumentSaveOptions<T> = {},
 ): Promise<T> {
   const encoded = encodeDocumentKey(documentKey);
@@ -275,7 +282,9 @@ export async function runCoordinatedDocumentSave<T>(
   const run = (previous ? previous.catch(() => {}) : Promise.resolve()).then(
     async () => {
       assertSessionFresh(encoded, options.session);
-      const result = await saveLatest();
+      const result = await saveLatest(
+        options.preexistingDraft ? { preexistingDraft: true } : undefined,
+      );
       if (options.didPersist?.(result) ?? true) {
         recordSuccessfulSave(encoded, options.session);
       }

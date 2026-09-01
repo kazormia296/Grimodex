@@ -21,6 +21,8 @@ export interface TimelapseDocumentSaveOptions {
   timelapseDocument?: TimelapseDocumentRef;
   /** Structural identity used by replacement fallback. */
   timelapseDocumentIdentity?: TimelapseDocumentIdentity;
+  /** Draft admitted before a lifecycle lease began draining autosaves. */
+  preexistingDraft?: boolean;
 }
 
 export interface EditorDocumentServices {
@@ -31,6 +33,7 @@ export interface EditorDocumentServices {
       baseVersion: number;
       timelapseDocument?: TimelapseDocumentRef;
       timelapseDocumentIdentity?: TimelapseDocumentIdentity;
+      preexistingDraft?: boolean;
     },
   ) => Promise<PersistedSceneBody>;
   updateCodexPhase: (
@@ -39,6 +42,7 @@ export interface EditorDocumentServices {
     options: {
       baseVersion: number;
       timelapseDocument?: TimelapseDocumentRef;
+      preexistingDraft?: boolean;
     },
   ) => Promise<CodexEntryPhase | null>;
   updateCodexText: (
@@ -47,6 +51,7 @@ export interface EditorDocumentServices {
     options: {
       baseVersion: number;
       timelapseDocument?: TimelapseDocumentRef;
+      preexistingDraft?: boolean;
     },
   ) => Promise<VersionedSaveOutcome>;
   updateSnippet: (
@@ -55,13 +60,17 @@ export interface EditorDocumentServices {
     options: {
       baseVersion: number;
       timelapseDocument?: TimelapseDocumentRef;
+      preexistingDraft?: boolean;
     },
   ) => Promise<VersionedSaveOutcome>;
-  updateChronicleEvent: (input: {
-    eventId: string;
-    detail: string;
-    baseVersion: number;
-  }) => Promise<AgentWriteResult>;
+  updateChronicleEvent: (
+    input: {
+      eventId: string;
+      detail: string;
+      baseVersion: number;
+    },
+    options?: { preexistingDraft?: boolean },
+  ) => Promise<AgentWriteResult>;
   serializeSnippet: (doc: ProseMirrorNode) => string;
 }
 
@@ -94,8 +103,11 @@ export const defaultEditorDocumentServices: EditorDocumentServices = {
     useSnippetStore.getState().update(id, data, options),
   // This editor session advances its own loadedVersion from the returned
   // result; notifying it as an external writer would create a self-conflict.
-  updateChronicleEvent: (input) =>
-    uiUpdateEvent(input, { suppressDocumentNotification: true }),
+  updateChronicleEvent: (input, options) =>
+    uiUpdateEvent(input, {
+      suppressDocumentNotification: true,
+      ...(options?.preexistingDraft ? { preexistingDraft: true } : {}),
+    }),
   serializeSnippet,
 };
 
@@ -135,7 +147,12 @@ export async function saveEditorDocument(
         const updated = await services.updateCodexPhase(
           binding.phaseId,
           { contentOverride: content },
-          { baseVersion: binding.loadedVersion },
+          {
+            baseVersion: binding.loadedVersion,
+            ...(timelapseOptions.preexistingDraft
+              ? { preexistingDraft: true }
+              : {}),
+          },
         );
         if (!updated) {
           throw new AlreadyNotifiedSaveError(
@@ -153,6 +170,9 @@ export async function saveEditorDocument(
             baseVersion: binding.loadedVersion,
             ...(timelapseOptions.timelapseDocument
               ? { timelapseDocument: timelapseOptions.timelapseDocument }
+              : {}),
+            ...(timelapseOptions.preexistingDraft
+              ? { preexistingDraft: true }
               : {}),
           },
         );
@@ -176,6 +196,9 @@ export async function saveEditorDocument(
           ...(timelapseOptions.timelapseDocument
             ? { timelapseDocument: timelapseOptions.timelapseDocument }
             : {}),
+          ...(timelapseOptions.preexistingDraft
+            ? { preexistingDraft: true }
+            : {}),
         },
       );
       if (!outcome.persisted) {
@@ -189,11 +212,14 @@ export async function saveEditorDocument(
     }
 
     case "chronicle-event": {
-      const result = await services.updateChronicleEvent({
+      const input = {
         eventId: binding.id,
         detail: JSON.stringify(doc.toJSON()),
         baseVersion: binding.loadedVersion,
-      });
+      };
+      const result = await (timelapseOptions.preexistingDraft
+        ? services.updateChronicleEvent(input, { preexistingDraft: true })
+        : services.updateChronicleEvent(input));
       return {
         binding: { ...binding, loadedVersion: result.version },
       };

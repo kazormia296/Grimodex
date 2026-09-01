@@ -77,6 +77,7 @@ import {
   type LoadedMiniEditorTimelapseAuthority,
 } from "@/features/editor/miniEditorTimelapse";
 import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
+import type { QuiescenceProviderFlushOptions } from "@/lib/quiescenceProviders";
 
 interface SnippetDetailContentProps {
   snippet: Snippet;
@@ -86,6 +87,7 @@ interface SnippetDetailContentProps {
     options: {
       baseVersion: number;
       timelapseDocument?: TimelapseDocumentRef;
+      preexistingDraft?: boolean;
     },
   ) => Promise<VersionedSaveOutcome>;
   onDelete: (id: string) => void;
@@ -418,7 +420,8 @@ export function SnippetDetailContent({
     resume: resumeAutoSave,
     flush: flushAutoSave,
   } = useAutoSave(
-    useCallback(async () => {
+    // prettier-ignore
+    useCallback(async (context?: QuiescenceProviderFlushOptions) => {
       const snippetId = snippet.id;
       // Falls back to snippet.content if the editor was already destroyed
       // (defensive — flush should run before TipTap's cleanup, but keep the
@@ -439,6 +442,7 @@ export function SnippetDetailContent({
               timelapseDocument: loadedTimelapseAuthorityRef.current.document,
             }
           : {}),
+        ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
       });
       if (!outcome.persisted) {
         throw new AlreadyNotifiedSaveError(

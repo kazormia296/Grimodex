@@ -194,23 +194,33 @@ vi.mock("@/features/timelapse/recorder", () => ({
 }));
 vi.mock("@/features/timelapse/bodyWriteMode", () => ({
   runTimelapseBodyWrite: (
-    _input: unknown,
+    input: unknown,
     callbacks: {
       commit: (coverage: undefined) => Promise<unknown>;
       project: (committed: unknown) => Promise<unknown>;
     },
-  ) => callbacks.commit(undefined).then(callbacks.project),
+  ) => {
+    h.runTimelapseBodyWrite(input, callbacks);
+    return callbacks.commit(undefined).then(callbacks.project);
+  },
   runTimelapseBodyReplacement: (
-    _input: unknown,
+    input: unknown,
     callbacks: {
       commit: () => Promise<unknown>;
       project: (committed: unknown) => Promise<unknown>;
     },
-  ) => callbacks.commit().then(callbacks.project),
+  ) => {
+    h.runTimelapseBodyReplacement(input, callbacks);
+    return callbacks.commit().then(callbacks.project);
+  },
   runTimelapseMutation: (
-    _projectId: string,
+    projectId: string,
     operation: () => Promise<unknown>,
-  ) => operation(),
+    options?: unknown,
+  ) => {
+    h.runTimelapseMutation(projectId, operation, options);
+    return operation();
+  },
 }));
 vi.mock("@/features/matrix/matrixDataVersion", () => ({
   bumpMatrixDataVersion: h.bumpMatrixDataVersion,
@@ -387,6 +397,20 @@ describe("persistSceneBody — DB-native scene", () => {
     );
     expect(h.setAiRatio).toHaveBeenCalledWith("scene-1", 37);
     expect(h.refreshAiRatio).not.toHaveBeenCalled();
+  });
+
+  it("carries a lifecycle preexisting-draft permit into the native body replacement", async () => {
+    h.state.electron = true;
+
+    await persistSceneBody("scene-1", fakeDoc, { preexistingDraft: true });
+
+    expect(h.runTimelapseBodyReplacement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-1",
+        preexistingDraft: true,
+      }),
+      expect.anything(),
+    );
   });
 
   it("forwards the loaded OCC version through the browser fallback", async () => {

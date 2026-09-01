@@ -12,6 +12,8 @@ import {
   createChronicleEvent,
   deleteChronicleItem,
   patchChronicleItem,
+  type ChroniclePatchOptions,
+  type ChronicleWriteOptions,
   type ChronicleCommandPorts,
 } from "@/application/chronicle/chronicleCommands";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
@@ -336,7 +338,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     () => ({
       event: {
         create: (input) => uiCreateEvent(input),
-        update: (input) =>
+        update: (input, options) =>
           enqueueEventAggregateWrite(
             input.eventId,
             input.baseVersion,
@@ -346,7 +348,12 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
                   ...(input as Parameters<typeof uiUpdateEvent>[0]),
                   baseVersion,
                 },
-                { suppressDocumentNotification: true },
+                options?.preexistingDraft === true
+                  ? {
+                      suppressDocumentNotification: true,
+                      preexistingDraft: true,
+                    }
+                  : { suppressDocumentNotification: true },
               );
               announcePersistedBinding(
                 { kind: "chronicle-event", id: input.eventId },
@@ -510,7 +517,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     async (
       id: string,
       patch: Partial<EventRow>,
-      options?: { propagateFailure?: boolean; baseVersion?: number },
+      options?: ChroniclePatchOptions & { propagateFailure?: boolean },
     ) => {
       const before = latestEventsRef.current.find((event) => event.id === id);
       if (!before) return;
@@ -524,7 +531,12 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
           { kind: "event", id },
           patch,
           chronicleCommandPorts,
-          { baseVersion: options?.baseVersion ?? before.version },
+          {
+            baseVersion: options?.baseVersion ?? before.version,
+            ...(options?.preexistingDraft === true
+              ? { preexistingDraft: true }
+              : {}),
+          },
         );
         if (result) {
           mutateEvents((current) =>
@@ -1784,7 +1796,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   const patchSelected = useCallback(
     async (
       patch: Partial<EventRow>,
-      options?: { propagateFailure?: boolean; baseVersion?: number },
+      options?: ChroniclePatchOptions & { propagateFailure?: boolean },
     ) => {
       if (!selected || !projectId) return;
       const id = selected.id;
@@ -1794,6 +1806,9 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
             { kind: "scene", id: sceneIdFromEventId(id) },
             patch,
             chronicleCommandPorts,
+            options?.preexistingDraft === true
+              ? { preexistingDraft: true }
+              : undefined,
           );
         } catch (error) {
           toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
@@ -1818,16 +1833,31 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     [patchSelected],
   );
   const handlePatchDraft = useCallback(
-    async (patch: Partial<EventRow>) => {
-      await patchSelected(patch, { propagateFailure: true });
+    async (patch: Partial<EventRow>, options?: ChronicleWriteOptions) => {
+      await patchSelected(patch, {
+        propagateFailure: true,
+        ...(options?.preexistingDraft === true
+          ? { preexistingDraft: true }
+          : {}),
+      });
     },
     [patchSelected],
   );
   const handlePatchDetail = useCallback(
-    async (detail: string, baseVersion: number) => {
+    async (
+      detail: string,
+      baseVersion: number,
+      options?: ChronicleWriteOptions,
+    ) => {
       const result = await patchSelected(
         { detail },
-        { propagateFailure: true, baseVersion },
+        {
+          propagateFailure: true,
+          baseVersion,
+          ...(options?.preexistingDraft === true
+            ? { preexistingDraft: true }
+            : {}),
+        },
       );
       if (!result) throw new Error("Chronicle detail save returned no version");
       return result;
