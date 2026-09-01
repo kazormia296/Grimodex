@@ -250,6 +250,12 @@ fn schema_21_shadow_migrates_to_22_and_backfills_transaction_origins() {
                      'event-forward', 1, 0, '{\"kind\":\"project\"}',
                      'metadata', 'update', '[]', '2026-08-13T00:00:00Z');
 
+                 -- SCHEMA 21 predates all timelapse baseline triggers; remove
+                 -- every future trigger for historical fidelity. The Codex
+                 -- trigger also depends on the transaction table replaced below.
+                 DROP TRIGGER IF EXISTS timelapse_scene_creation_baseline;
+                 DROP TRIGGER IF EXISTS timelapse_codex_creation_baseline;
+                 DROP TRIGGER IF EXISTS timelapse_snippet_creation_baseline;
                  PRAGMA foreign_keys = OFF;
                  CREATE TABLE narrative_change_transactions_v21 (
                     id                           TEXT NOT NULL,
@@ -517,7 +523,10 @@ fn current_marker_missing_change_feed_nullable_column_is_shadow_repaired() {
                 [],
             )?;
             conn.execute_batch(
-                "ALTER TABLE narrative_change_transactions DROP COLUMN journal_id;",
+                "-- Remove the dependency trigger to synthesize a current checkpoint
+                 -- with a missing column; the supervisor must recreate it.
+                 DROP TRIGGER IF EXISTS timelapse_codex_creation_baseline;
+                 ALTER TABLE narrative_change_transactions DROP COLUMN journal_id;",
             )?;
             assert!(
                 !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
