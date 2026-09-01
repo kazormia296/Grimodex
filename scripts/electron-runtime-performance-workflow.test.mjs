@@ -812,8 +812,8 @@ test("phase-finally cleanup absorbs a late sampler rejection after its deadline"
   const lateSampler = new Promise((resolve, reject) => {
     rejectSampler = reject;
   });
-  const result =
-    await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
+  const result = await runtimePerformanceHarness.cleanupRuntimePerformancePhase(
+    {
       app: { id: "owned-app" },
       page: { id: "owned-page" },
       phase: "write",
@@ -828,7 +828,8 @@ test("phase-finally cleanup absorbs a late sampler rejection after its deadline"
         return { status: "completed" };
       },
       abort: (reason) => events.push(`abort:${reason}`),
-    });
+    },
+  );
 
   assert.equal(result.status, "failed");
   assert.deepEqual(events, ["abort:phase-cleanup-timeout", "close"]);
@@ -837,15 +838,16 @@ test("phase-finally cleanup absorbs a late sampler rejection after its deadline"
 });
 
 test("phase-finally cleanup fails closed for missing required callbacks", async () => {
-  const missingSampler = await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
-    app: { id: "owned-app" },
-    page: { id: "owned-page" },
-    phase: "seed",
-    memorySampler: { id: "owned-sampler" },
-    closeApp: async () => null,
-    abort: () => {},
-    operationTimeoutMs: 25,
-  });
+  const missingSampler =
+    await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
+      app: { id: "owned-app" },
+      page: { id: "owned-page" },
+      phase: "seed",
+      memorySampler: { id: "owned-sampler" },
+      closeApp: async () => null,
+      abort: () => {},
+      operationTimeoutMs: 25,
+    });
   assert.equal(missingSampler.status, "failed");
   assert.equal(missingSampler.memorySampler.status, "failed");
   assert.match(
@@ -853,29 +855,31 @@ test("phase-finally cleanup fails closed for missing required callbacks", async 
     /memorySampler.*callback.*required/i,
   );
 
-  const missingApp = await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
-    app: { id: "owned-app" },
-    page: { id: "owned-page" },
-    phase: "write",
-    forceKill: async () => ({ status: "completed" }),
-    abort: () => {},
-    operationTimeoutMs: 25,
-  });
+  const missingApp =
+    await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
+      app: { id: "owned-app" },
+      page: { id: "owned-page" },
+      phase: "write",
+      forceKill: async () => ({ status: "completed" }),
+      abort: () => {},
+      operationTimeoutMs: 25,
+    });
   assert.equal(missingApp.status, "failed");
   assert.equal(missingApp.app.status, "failed");
   assert.match(missingApp.app.error.message, /app.*callback.*required/i);
   assert.equal(missingApp.forceKill.status, "completed");
 
-  const missingForceKill = await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
-    app: { id: "owned-app" },
-    page: { id: "owned-page" },
-    phase: "restart",
-    closeApp: async () => {
-      throw new Error("close failed");
-    },
-    abort: () => {},
-    operationTimeoutMs: 25,
-  });
+  const missingForceKill =
+    await runtimePerformanceHarness.cleanupRuntimePerformancePhase({
+      app: { id: "owned-app" },
+      page: { id: "owned-page" },
+      phase: "restart",
+      closeApp: async () => {
+        throw new Error("close failed");
+      },
+      abort: () => {},
+      operationTimeoutMs: 25,
+    });
   assert.equal(missingForceKill.status, "failed");
   assert.equal(missingForceKill.app.status, "failed");
   assert.equal(missingForceKill.forceKill.status, "failed");
@@ -1062,6 +1066,10 @@ class FakeElectronProcess extends EventEmitter {
     this.exitCode = null;
     this.signalCode = null;
     this.killed = false;
+    this.kill = () => {
+      this.killed = true;
+      return true;
+    };
   }
 
   exit(code = 0, signal = null) {

@@ -4,6 +4,47 @@ const PAGE_DIAGNOSTICS_TIMEOUT_MS = 2_000;
 const QUIESCENCE_DIAGNOSTICS_GLOBAL_KEY = "__grimodexQuiescenceDiagnostics";
 export const MAX_QUIESCENCE_DIAGNOSTICS = 16;
 
+const POST_EXIT_CLOSE_ERROR_METADATA = new WeakMap();
+const PLAYWRIGHT_POST_EXIT_DISPOSAL_MESSAGE =
+  "Cannot read properties of undefined (reading '_object')";
+
+class ElectronPostExitCloseError extends Error {
+  constructor({ app, phase, childProcess, cause }) {
+    const causeMessage =
+      cause instanceof Error ? cause.message : String(cause ?? "unknown error");
+    super(`${phase} app close failed after process exit: ${causeMessage}`, {
+      cause,
+    });
+    this.name = "ElectronPostExitCloseError";
+    this.app = app;
+    this.phase = phase;
+    this.childProcess = childProcess;
+    POST_EXIT_CLOSE_ERROR_METADATA.set(
+      this,
+      Object.freeze({ app, phase, childProcess }),
+    );
+    Object.freeze(this);
+  }
+}
+
+export function isElectronPostExitCloseError(error, app, phase, childProcess) {
+  const metadata = POST_EXIT_CLOSE_ERROR_METADATA.get(error);
+  return Boolean(
+    metadata &&
+    metadata.app === app &&
+    metadata.phase === phase &&
+    metadata.childProcess === childProcess,
+  );
+}
+
+function isPlaywrightPostExitDisposalError(error) {
+  return (
+    error instanceof TypeError &&
+    error.name === "TypeError" &&
+    error.message === PLAYWRIGHT_POST_EXIT_DISPOSAL_MESSAGE
+  );
+}
+
 const SAFE_CLOSE_PHASES = new Set([
   "authority-quiescence",
   "genesis-prelude",
@@ -220,6 +261,55 @@ function processSnapshot(childProcess) {
   };
 }
 
+function validateChildProcess(childProcess, phase) {
+  if (
+    childProcess === null ||
+    typeof childProcess !== "object" ||
+    Array.isArray(childProcess)
+  ) {
+    throw new TypeError(
+      `electron close received an invalid child process for ${phase}`,
+    );
+  }
+
+  let hasPid;
+  let pid;
+  let once;
+  let removeListener;
+  let kill;
+  let exitCode;
+  let signalCode;
+  try {
+    hasPid = Object.prototype.hasOwnProperty.call(childProcess, "pid");
+    pid = childProcess.pid;
+    once = childProcess.once;
+    removeListener = childProcess.removeListener;
+    kill = childProcess.kill;
+    exitCode = childProcess.exitCode;
+    signalCode = childProcess.signalCode;
+  } catch (error) {
+    throw new TypeError(
+      `electron close could not inspect the child process for ${phase}`,
+      { cause: error },
+    );
+  }
+  if (
+    !hasPid ||
+    !Number.isInteger(pid) ||
+    pid <= 0 ||
+    typeof once !== "function" ||
+    typeof removeListener !== "function" ||
+    typeof kill !== "function" ||
+    !(exitCode === null || Number.isInteger(exitCode)) ||
+    !(signalCode === null || typeof signalCode === "string")
+  ) {
+    throw new TypeError(
+      `electron close received a malformed child process for ${phase}`,
+    );
+  }
+  return childProcess;
+}
+
 function processHasExited(childProcess) {
   return Boolean(
     childProcess &&
@@ -242,14 +332,25 @@ function observeProcessExit(childProcess) {
   }
 
   let onExit;
+  let resolveExit;
   const promise = new Promise((resolve) => {
-    onExit = () => resolve({ kind: "process-exited" });
-    childProcess.once("exit", onExit);
+    resolveExit = resolve;
   });
+  onExit = () => resolveExit({ kind: "process-exited" });
+  try {
+    childProcess.once("exit", onExit);
+  } catch (error) {
+    try {
+      childProcess.removeListener("exit", onExit);
+    } catch {
+      // Preserve the event subscription failure as the actionable error.
+    }
+    throw error;
+  }
   return {
     promise,
     dispose() {
-      if (onExit) childProcess.off("exit", onExit);
+      if (onExit) childProcess.removeListener("exit", onExit);
     },
   };
 }
@@ -465,19 +566,94 @@ export async function closeElectronAppWithDiagnostics(
     processExitGraceMs = PROCESS_EXIT_GRACE_MS,
     pageDiagnosticsTimeoutMs = PAGE_DIAGNOSTICS_TIMEOUT_MS,
     childProcess: capturedChildProcess = undefined,
+    skipProcessLookup = false,
+    throwOnPostExitCloseError = false,
   } = {},
 ) {
-  const childProcess = capturedChildProcess ?? app.process();
-  const processExit = observeProcessExit(childProcess);
-  const closeTimeout = timeoutOutcome(timeoutMs, "close-timeout");
-  const closeOutcome = Promise.resolve()
-    .then(() => app.close())
-    .then(
-      () => ({ kind: "playwright-closed" }),
-      (error) => ({ kind: "playwright-close-error", error }),
-    );
-
+  let childProcess;
+  let processExit;
+  let closeTimeout;
+  let closeOutcome;
   try {
+    childProcess = skipProcessLookup
+      ? capturedChildProcess
+      : (capturedChildProcess ?? app.process());
+    if (childProcess === null || childProcess === undefined) {
+      if (!skipProcessLookup) {
+        validateChildProcess(childProcess, phase);
+      }
+    } else {
+      validateChildProcess(childProcess, phase);
+    }
+    processExit = observeProcessExit(childProcess);
+    closeTimeout = timeoutOutcome(timeoutMs, "close-timeout");
+    closeOutcome = Promise.resolve()
+      .then(() => app.close())
+      .then(
+        () => ({ kind: "playwright-closed" }),
+        (error) => ({ kind: "playwright-close-error", error }),
+      );
+
+    if (throwOnPostExitCloseError) {
+      const outcome = await Promise.race([closeOutcome, closeTimeout.promise]);
+      if (outcome.kind === "playwright-close-error") {
+        if (
+          processHasExited(childProcess) &&
+          isPlaywrightPostExitDisposalError(outcome.error)
+        ) {
+          throw new ElectronPostExitCloseError({
+            app,
+            phase,
+            childProcess,
+            cause: outcome.error,
+          });
+        }
+        throw new Error(
+          `${phase} app close failed: ${
+            outcome.error instanceof Error
+              ? outcome.error.message
+              : String(outcome.error)
+          }`,
+          { cause: outcome.error },
+        );
+      }
+      if (outcome.kind === "close-timeout") {
+        const pageDiagnostics = await collectPageDiagnostics(
+          page,
+          pageDiagnosticsTimeoutMs,
+        );
+        throw new Error(
+          `${phase} app close timed out: ${JSON.stringify({
+            ...pageDiagnostics,
+            process: processSnapshot(childProcess),
+          })}`,
+        );
+      }
+      if (processHasExited(childProcess)) return;
+      const exitGrace = timeoutOutcome(
+        processExitGraceMs,
+        "exit-grace-timeout",
+      );
+      try {
+        const graceOutcome = await Promise.race([
+          processExit.promise,
+          exitGrace.promise,
+        ]);
+        if (graceOutcome.kind === "process-exited") return;
+      } finally {
+        exitGrace.dispose();
+      }
+      const pageDiagnostics = await collectPageDiagnostics(
+        page,
+        pageDiagnosticsTimeoutMs,
+      );
+      throw new Error(
+        `${phase} app close timed out: ${JSON.stringify({
+          ...pageDiagnostics,
+          process: processSnapshot(childProcess),
+        })}`,
+      );
+    }
     const outcome = await Promise.race([
       closeOutcome,
       processExit.promise,
@@ -490,7 +666,9 @@ export async function closeElectronAppWithDiagnostics(
       return;
     }
     if (outcome.kind === "playwright-close-error") {
-      if (processHasExited(childProcess)) return;
+      if (processHasExited(childProcess)) {
+        return;
+      }
       throw new Error(
         `${phase} app close failed: ${
           outcome.error instanceof Error
@@ -528,7 +706,7 @@ export async function closeElectronAppWithDiagnostics(
       })}`,
     );
   } finally {
-    closeTimeout.dispose();
-    processExit.dispose();
+    closeTimeout?.dispose();
+    processExit?.dispose();
   }
 }

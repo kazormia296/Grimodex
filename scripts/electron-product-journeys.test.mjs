@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
 
+import { closeElectronAppWithDiagnostics } from "../electron/scripts/close-electron-app.mjs";
 import { PRODUCT_JOURNEY_CATALOG } from "../electron/scripts/product-journey-catalog.mjs";
 import {
   createProductJourneyJournal,
@@ -53,6 +54,7 @@ import {
   configureWorkspace,
   PRODUCT_JOURNEYS,
 } from "../electron/scripts/product-journeys.mjs";
+import { waitForProcessExit } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -111,6 +113,86 @@ function boundProcessExitEvidence(child, exitCode, signalCode) {
     writable: false,
   });
   return Object.freeze(evidence);
+}
+
+function childProcessStub({ stdout = null, stderr = null, pid = 1234 } = {}) {
+  const child = new EventEmitter();
+  child.pid = pid;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.killed = false;
+  child.stdout = stdout;
+  child.stderr = stderr;
+  child.kill = () => {
+    child.killed = true;
+    return true;
+  };
+  return child;
+}
+
+async function seedActiveLaneReceipt(env) {
+  const expected = expectedNarrativeMaintenanceCiReceipt(env);
+  if (!expected) return;
+  const nonceDir = path.join(
+    env.GRIMODEX_USER_DATA_DIR,
+    NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+    expected.nonce,
+  );
+  await mkdir(nonceDir, { recursive: true });
+  await writeFile(
+    path.join(nonceDir, "receipt.json"),
+    canonicalReceiptText(expected),
+    { mode: 0o600 },
+  );
+}
+
+function createActiveLaneHarness({
+  artifactRoot,
+  childProcess,
+  closeApp,
+  page: suppliedPage,
+}) {
+  const page = suppliedPage ?? {
+    isClosed: () => false,
+    on: () => undefined,
+    evaluate: async () => [],
+    waitForFunction: async () => undefined,
+  };
+  const app = {
+    context: () => null,
+    firstWindow: async () => page,
+    process: () => childProcess,
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    launchTimeoutMs: 1_000,
+    operationTimeoutMs: 1_000,
+    electronLauncher: {
+      launch: async ({ env }) => {
+        await seedActiveLaneReceipt(env);
+        return app;
+      },
+    },
+    closeApp,
+  });
+  return { app, harness, page };
+}
+
+async function readRetainedDiagnostics(artifactRoot, artifactName) {
+  return JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        artifactName,
+        "runtime",
+        "diagnostics",
+        "renderer-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
 }
 
 function canonicalValueText(value) {
@@ -441,7 +523,7 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
   const app = {
     context: () => null,
     firstWindow: async () => page,
-    process: () => ({ stdout: new EventEmitter(), stderr: null }),
+    process: () => childProcessStub({ stdout: new EventEmitter() }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -720,7 +802,7 @@ test("harness tolerates the current held-Freshness temp until atomic rename", as
   const app = {
     context: () => null,
     firstWindow: async () => page,
-    process: () => ({ stdout: new EventEmitter(), stderr: null }),
+    process: () => childProcessStub({ stdout: new EventEmitter() }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -821,7 +903,7 @@ test("harness retries only the current held-Freshness temp and reports a stuck t
   const app = {
     context: () => null,
     firstWindow: async () => page,
-    process: () => ({ stdout: new EventEmitter(), stderr: null }),
+    process: () => childProcessStub({ stdout: new EventEmitter() }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -1006,7 +1088,7 @@ test("file receipt is accepted even when Playwright consumed stdout before launc
     const app = {
       context: () => null,
       firstWindow: async () => page,
-      process: () => ({ stdout, stderr: null }),
+      process: () => childProcessStub({ stdout }),
     };
     const harness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
@@ -1197,7 +1279,7 @@ test("receipt root rejects stale, wrong, partial, symlink, and duplicate artifac
                 waitForFunction: async () => undefined,
                 isClosed: () => false,
               }),
-              process: () => ({ stdout: new EventEmitter(), stderr: null }),
+              process: () => childProcessStub({ stdout: new EventEmitter() }),
             };
           },
         },
@@ -1233,11 +1315,7 @@ test("interrupted process-exit cleanup consumes the exact receipt after close fa
     NARRATIVE_MAINTENANCE_OWNER_TOKEN;
   process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
 
-  const childProcess = new EventEmitter();
-  childProcess.exitCode = null;
-  childProcess.signalCode = null;
-  childProcess.stdout = null;
-  childProcess.stderr = null;
+  const childProcess = childProcessStub();
   const page = {
     on: () => undefined,
     evaluate: async () => [],
@@ -1380,6 +1458,35 @@ test("interrupted process-exit cleanup consumes the exact receipt after close fa
   assert.deepEqual(await readdir(harness.receiptRoot), []);
 });
 
+test("process-exit observation uses the launch-captured child after app disposal", async () => {
+  const childProcess = childProcessStub();
+  let processCalls = 0;
+  const app = {
+    process: () => {
+      processCalls += 1;
+      if (processCalls > 1) throw new TypeError("disposed app.process");
+      return childProcess;
+    },
+  };
+  const capturedChild = app.process();
+  const exitEvidence = waitForProcessExit(
+    capturedChild,
+    "captured child process",
+    500,
+  );
+  setImmediate(() => {
+    childProcess.exitCode = 86;
+    childProcess.signalCode = null;
+    childProcess.emit("exit", 86, null);
+  });
+
+  const observed = await exitEvidence;
+  assert.equal(observed.exitCode, 86);
+  assert.equal(observed.signalCode, null);
+  assert.equal(observed[PRODUCT_JOURNEY_PROCESS_EXIT_EVIDENCE], childProcess);
+  assert.equal(processCalls, 1);
+});
+
 test("post-exit close cleanup requires proof and retains disposed-close diagnostics", async (t) => {
   const previousCi = process.env.CI;
   const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
@@ -1390,15 +1497,16 @@ test("post-exit close cleanup requires proof and retains disposed-close diagnost
   process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
 
   const harnesses = [];
-  function createDisposedCloseHarness() {
-    const childProcess = new EventEmitter();
-    childProcess.exitCode = null;
-    childProcess.signalCode = null;
-    childProcess.stdout = null;
-    childProcess.stderr = null;
+  function createDisposedCloseHarness({
+    useDefaultClose = false,
+    forgedClose = false,
+    sameAppClose = false,
+  } = {}) {
+    const childProcess = childProcessStub();
     let disposed = false;
     let processCalls = 0;
     let closeCalls = 0;
+    let realCloseCalls = 0;
     const page = {
       on: () => undefined,
       evaluate: async () => [],
@@ -1417,7 +1525,54 @@ test("post-exit close cleanup requires proof and retains disposed-close diagnost
         }
         return childProcess;
       },
+      close: async () => {
+        realCloseCalls += 1;
+        closeCalls += 1;
+        disposed = true;
+        throw new TypeError(
+          "Cannot read properties of undefined (reading '_object')",
+        );
+      },
     };
+    const injectedCloseApp = useDefaultClose
+      ? undefined
+      : async (originalApp, _page, _phase, options) => {
+          closeCalls += 1;
+          disposed = true;
+          if (sameAppClose) {
+            originalApp.close = async () => {
+              realCloseCalls += 1;
+              throw new TypeError(
+                "Cannot read properties of undefined (reading '_object')",
+              );
+            };
+            return closeElectronAppWithDiagnostics(originalApp, null, _phase, {
+              ...options,
+              childProcess: options?.childProcess,
+              skipProcessLookup: true,
+              throwOnPostExitCloseError: true,
+            });
+          }
+          if (forgedClose) {
+            const fakeApp = {
+              close: async () => {
+                throw new TypeError(
+                  "Cannot read properties of undefined (reading '_object')",
+                );
+              },
+            };
+            return closeElectronAppWithDiagnostics(fakeApp, null, _phase, {
+              ...options,
+              childProcess: options?.childProcess,
+              skipProcessLookup: true,
+              throwOnPostExitCloseError: true,
+            });
+          }
+          void originalApp;
+          throw new TypeError(
+            "Cannot read properties of undefined (reading '_object')",
+          );
+        };
     const harness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
@@ -1438,13 +1593,7 @@ test("post-exit close cleanup requires proof and retains disposed-close diagnost
           return app;
         },
       },
-      closeApp: async () => {
-        closeCalls += 1;
-        disposed = true;
-        throw new TypeError(
-          "Cannot read properties of undefined (reading '_object')",
-        );
-      },
+      ...(injectedCloseApp ? { closeApp: injectedCloseApp } : {}),
     });
     harnesses.push(harness);
     return {
@@ -1456,6 +1605,9 @@ test("post-exit close cleanup requires proof and retains disposed-close diagnost
       },
       get processCalls() {
         return processCalls;
+      },
+      get realCloseCalls() {
+        return realCloseCalls;
       },
       page,
     };
@@ -1481,7 +1633,7 @@ test("post-exit close cleanup requires proof and retains disposed-close diagnost
     else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
   });
 
-  const valid = createDisposedCloseHarness();
+  const valid = createDisposedCloseHarness({ useDefaultClose: true });
   const validLaunch = await valid.harness.launch("interrupted/disposed-valid");
   valid.childProcess.exitCode = 86;
   valid.childProcess.signalCode = null;
@@ -1510,6 +1662,7 @@ test("post-exit close cleanup requires proof and retains disposed-close diagnost
     errorName: "TypeError",
     message: "Cannot read properties of undefined (reading '_object')",
   });
+  assert.equal(validDiagnostics.cleanPass, true);
   const journalEntries = (await readFile(valid.harness.journalPath, "utf8"))
     .trim()
     .split("\n")
@@ -1533,9 +1686,10 @@ test("post-exit close cleanup requires proof and retains disposed-close diagnost
       noProofLaunch.page,
       "interrupted/disposed-without-proof",
     ),
-    /_object/,
+    /Cannot read properties of undefined \(reading '_object'\)/,
   );
   assert.equal(noProof.closeCalls, 1);
+  assert.equal(noProof.realCloseCalls, 0);
   assert.deepEqual(await readdir(noProof.harness.receiptRoot), [
     INTERRUPTED_RECEIPT_NONCE,
   ]);
@@ -1568,6 +1722,1324 @@ test("post-exit close cleanup requires proof and retains disposed-close diagnost
   assert.deepEqual(await readdir(mismatch.harness.receiptRoot), [
     INTERRUPTED_RECEIPT_NONCE,
   ]);
+
+  const forged = createDisposedCloseHarness({ forgedClose: true });
+  const forgedLaunch = await forged.harness.launch(
+    "interrupted/disposed-forged",
+  );
+  forged.childProcess.exitCode = 86;
+  forged.childProcess.signalCode = null;
+  await assert.rejects(
+    forged.harness.close(
+      forgedLaunch.app,
+      forgedLaunch.page,
+      "interrupted/disposed-forged",
+      {
+        expectedExitEvidence: boundProcessExitEvidence(
+          forged.childProcess,
+          86,
+          null,
+        ),
+      },
+    ),
+    /trusted default close helper/,
+  );
+  assert.equal(forged.closeCalls, 0);
+  assert.equal(forged.realCloseCalls, 0);
+  assert.equal(forged.harness.diagnostics().cleanPass, false);
+  assert.equal(
+    forged.harness.diagnostics().closeDiagnostics.at(-1).fatal,
+    true,
+  );
+  assert.deepEqual(await readdir(forged.harness.receiptRoot), [
+    INTERRUPTED_RECEIPT_NONCE,
+  ]);
+
+  const sameApp = createDisposedCloseHarness({ sameAppClose: true });
+  const sameAppLaunch = await sameApp.harness.launch(
+    "interrupted/disposed-same-app",
+  );
+  sameApp.childProcess.exitCode = 86;
+  sameApp.childProcess.signalCode = null;
+  await assert.rejects(
+    sameApp.harness.close(
+      sameAppLaunch.app,
+      sameAppLaunch.page,
+      "interrupted/disposed-same-app",
+      {
+        expectedExitEvidence: boundProcessExitEvidence(
+          sameApp.childProcess,
+          86,
+          null,
+        ),
+      },
+    ),
+    /trusted default close helper/,
+  );
+  assert.equal(sameApp.closeCalls, 0);
+  assert.equal(sameApp.realCloseCalls, 0);
+  assert.equal(sameApp.harness.diagnostics().cleanPass, false);
+  assert.equal(
+    sameApp.harness.diagnostics().closeDiagnostics.at(-1).fatal,
+    true,
+  );
+  assert.deepEqual(await readdir(sameApp.harness.receiptRoot), [
+    INTERRUPTED_RECEIPT_NONCE,
+  ]);
+});
+
+test("post-exit proof does not widen journal or unexpected-close failures", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  const cases = ["journal-start", "journal-finalize", "unexpected-close"];
+  const harnesses = [];
+  const journalRoots = [];
+  async function createCaseHarness(testCase) {
+    const journalRoot = await mkdtemp(
+      path.join(os.tmpdir(), "grimodex-post-exit-journal-"),
+    );
+    journalRoots.push(journalRoot);
+    const journalPath = path.join(journalRoot, "operations.jsonl");
+    const childProcess = childProcessStub();
+    const page = {
+      on: () => undefined,
+      evaluate: async () => [],
+      waitForFunction: async () => undefined,
+      isClosed: () => true,
+    };
+    const app = {
+      context: () => null,
+      firstWindow: async () => page,
+      process: () => childProcess,
+    };
+    let receiptPath;
+    const harness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      journalPath,
+      electronLauncher: {
+        launch: async ({ env }) => {
+          const expected = expectedNarrativeMaintenanceCiReceipt(env);
+          receiptPath = path.join(
+            env.GRIMODEX_USER_DATA_DIR,
+            NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+            expected.nonce,
+            "receipt.json",
+          );
+          await mkdir(path.dirname(receiptPath), { recursive: true });
+          await writeFile(receiptPath, canonicalReceiptText(expected), {
+            mode: 0o600,
+          });
+          return app;
+        },
+      },
+      closeApp: async (_app, _page, phase, options) => {
+        if (testCase === "journal-finalize") {
+          await rm(journalPath, { force: true });
+          await mkdir(journalPath);
+        }
+        if (testCase === "unexpected-close") {
+          throw new Error("unexpected close I/O failure");
+        }
+        throw new TypeError(
+          "Cannot read properties of undefined (reading '_object')",
+        );
+      },
+    });
+    harnesses.push({
+      harness,
+      childProcess,
+      journalPath,
+      receiptPathRef: () => receiptPath,
+    });
+    return {
+      harness,
+      childProcess,
+      journalPath,
+      get receiptPath() {
+        return receiptPath;
+      },
+    };
+  }
+
+  t.after(async () => {
+    await Promise.all(
+      harnesses.map(({ harness }) =>
+        harness.dispose({
+          success: false,
+          name: "post-exit-journal-boundary",
+        }),
+      ),
+    );
+    await Promise.all(
+      journalRoots.map((root) => rm(root, { recursive: true, force: true })),
+    );
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  for (const testCase of cases) {
+    const current = await createCaseHarness(testCase);
+    const phase = `interrupted/${testCase}`;
+    const launched = await current.harness.launch(phase);
+    current.childProcess.exitCode = 86;
+    current.childProcess.signalCode = null;
+    if (testCase === "journal-start") {
+      await rm(current.journalPath, { force: true });
+      await mkdir(current.journalPath);
+    }
+
+    await assert.rejects(
+      current.harness.close(launched.app, launched.page, phase, {
+        expectedExitEvidence: boundProcessExitEvidence(
+          current.childProcess,
+          86,
+          null,
+        ),
+      }),
+    );
+    const diagnostics = current.harness.diagnostics();
+    assert.equal(diagnostics.cleanPass, false);
+    assert.equal(diagnostics.closeDiagnostics.at(-1).fatal, true);
+    assert.deepEqual(await readdir(current.harness.receiptRoot), [
+      INTERRUPTED_RECEIPT_NONCE,
+    ]);
+  }
+});
+
+test("harness forwards the launch-captured child to the default close helper after disposal", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  const childProcess = childProcessStub();
+  let disposed = false;
+  let processCalls = 0;
+  const page = {
+    on: () => undefined,
+    evaluate: async () => [],
+    waitForFunction: async () => undefined,
+    isClosed: () => true,
+  };
+  const app = {
+    context: () => null,
+    firstWindow: async () => page,
+    process: () => {
+      processCalls += 1;
+      if (disposed) throw new TypeError("disposed app.process");
+      return childProcess;
+    },
+    close: async () => {
+      disposed = true;
+      throw new TypeError(
+        "Cannot read properties of undefined (reading '_object')",
+      );
+    },
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async ({ env }) => {
+        const expected = expectedNarrativeMaintenanceCiReceipt(env);
+        const nonceDir = path.join(
+          env.GRIMODEX_USER_DATA_DIR,
+          NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+          expected.nonce,
+        );
+        await mkdir(nonceDir, { recursive: true });
+        await writeFile(
+          path.join(nonceDir, "receipt.json"),
+          canonicalReceiptText(expected),
+          { mode: 0o600 },
+        );
+        return app;
+      },
+    },
+  });
+  t.after(async () => {
+    await harness.dispose({
+      success: false,
+      name: "default-close-forwarding",
+    });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  const launched = await harness.launch("interrupted/default-close-forwarding");
+  childProcess.exitCode = 86;
+  childProcess.signalCode = null;
+  await harness.close(
+    launched.app,
+    launched.page,
+    "interrupted/default-close-forwarding",
+    {
+      expectedExitEvidence: boundProcessExitEvidence(childProcess, 86, null),
+    },
+  );
+
+  assert.equal(launched.appProcess, childProcess);
+  assert.equal(processCalls, 1);
+  assert.deepEqual(await readdir(harness.receiptRoot), []);
+  const diagnostics = await harness.finalizeDiagnostics();
+  assert.equal(diagnostics.cleanPass, true);
+  assert.equal(diagnostics.closeDiagnostics.length, 1);
+});
+
+test("renderer launch fails closed when the initial child cannot be captured", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  let processCalls = 0;
+  const closeOptions = [];
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-initial-capture-"),
+  );
+  const page = {
+    on: () => undefined,
+    evaluate: async () => [],
+    waitForFunction: async () => undefined,
+    isClosed: () => true,
+  };
+  const app = {
+    context: () => null,
+    firstWindow: async () => page,
+    process: () => {
+      processCalls += 1;
+      throw new TypeError("child process is unavailable");
+    },
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async ({ env }) => {
+        const expected = expectedNarrativeMaintenanceCiReceipt(env);
+        const nonceDir = path.join(
+          env.GRIMODEX_USER_DATA_DIR,
+          NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+          expected.nonce,
+        );
+        await mkdir(nonceDir, { recursive: true });
+        await writeFile(
+          path.join(nonceDir, "receipt.json"),
+          canonicalReceiptText(expected),
+          { mode: 0o600 },
+        );
+        return app;
+      },
+    },
+    artifactRoot,
+    closeApp: async (_app, _page, _phase, options) => {
+      closeOptions.push(options);
+      throw new Error("initial cleanup failed");
+    },
+  });
+  t.after(async () => {
+    await harness.dispose({
+      success: false,
+      name: "initial-child-capture-failure",
+    });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  await assert.rejects(
+    harness.launch("initial-child-capture-failure"),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.errors.length, 2);
+      assert.match(error.errors[0].message, /child process is unavailable/);
+      assert.match(error.errors[1].message, /initial cleanup failed/);
+      return true;
+    },
+  );
+  assert.equal(processCalls, 1);
+
+  await harness.dispose({
+    success: false,
+    name: "initial-child-capture-failure",
+  });
+  assert.equal(processCalls, 1);
+  assert.equal(closeOptions.length, 1);
+  assert.equal(closeOptions[0].childProcess, undefined);
+  assert.equal(closeOptions[0].skipProcessLookup, true);
+  const diagnostics = harness.diagnostics();
+  assert.equal(diagnostics.cleanPass, false);
+  assert.equal(diagnostics.closeDiagnostics?.length, 2);
+  assert.ok(
+    diagnostics.closeDiagnostics.some(
+      (issue) =>
+        issue.errorName === "ElectronChildProcessCaptureError" &&
+        issue.fatal === true,
+    ),
+  );
+  assert.ok(
+    diagnostics.closeDiagnostics.some(
+      (issue) =>
+        issue.errorName === "Error" &&
+        issue.fatal === true &&
+        issue.message.endsWith("initial cleanup failed"),
+    ),
+  );
+  const retainedDiagnostics = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        "initial-child-capture-failure",
+        "runtime",
+        "diagnostics",
+        "renderer-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(retainedDiagnostics.cleanPass, false);
+  assert.equal(retainedDiagnostics.closeDiagnostics?.length, 2);
+  assert.ok(
+    retainedDiagnostics.closeDiagnostics.some(
+      (issue) => issue.errorName === "ElectronChildProcessCaptureError",
+    ),
+  );
+  assert.ok(
+    retainedDiagnostics.closeDiagnostics.some((issue) =>
+      issue.message.endsWith("initial cleanup failed"),
+    ),
+  );
+});
+
+test("late launch without a child fails closed without a second process lookup", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-late-child-capture-"),
+  );
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  let resolveLaunch;
+  const launchPromise = new Promise((resolve) => {
+    resolveLaunch = resolve;
+  });
+  let processCalls = 0;
+  let closeCalls = 0;
+  const app = {
+    process: () => {
+      processCalls += 1;
+      throw new TypeError("late child process is unavailable");
+    },
+    close: async () => {
+      closeCalls += 1;
+    },
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    launchTimeoutMs: 10,
+    operationTimeoutMs: 10,
+    electronLauncher: {
+      launch: () => launchPromise,
+    },
+  });
+  t.after(async () => {
+    await harness.dispose({
+      success: false,
+      name: "late-child-capture-failure",
+    });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  await assert.rejects(
+    harness.launch("late-child-capture-failure"),
+    /timed out/,
+  );
+  resolveLaunch(app);
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
+
+  assert.equal(processCalls, 1);
+  assert.equal(closeCalls, 1);
+  const retainedDiagnostics = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        "late-child-capture-failure",
+        "runtime",
+        "diagnostics",
+        "renderer-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(retainedDiagnostics.cleanPass, false);
+  assert.ok(
+    retainedDiagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ElectronChildProcessCaptureError" &&
+        issue.message.includes("cannot verify process termination"),
+    ),
+    JSON.stringify(retainedDiagnostics),
+  );
+  const diagnostics = harness.diagnostics();
+  assert.equal(diagnostics.cleanPass, false);
+  assert.ok(
+    diagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ElectronChildProcessCaptureError" &&
+        issue.message.includes("cannot verify process termination"),
+    ),
+  );
+});
+
+test("launch timeout fallback records unverified cleanup when no app resolves", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-no-late-launch-"),
+  );
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  const launchPromise = new Promise(() => {});
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    launchTimeoutMs: 10,
+    operationTimeoutMs: 10,
+    electronLauncher: {
+      launch: () => launchPromise,
+    },
+  });
+  t.after(async () => {
+    await harness.dispose({
+      success: false,
+      name: "no-late-launch-resolution",
+    });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  await assert.rejects(
+    harness.launch("no-late-launch-resolution"),
+    /timed out/,
+  );
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 5_200));
+
+  const retainedDiagnostics = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        "no-late-launch-resolution",
+        "runtime",
+        "diagnostics",
+        "renderer-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(retainedDiagnostics.cleanPass, false);
+  assert.ok(
+    retainedDiagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ElectronChildProcessCaptureError" &&
+        issue.message.includes("cannot verify process termination"),
+    ),
+    JSON.stringify(retainedDiagnostics),
+  );
+});
+
+test("late cleanup owns the capture when it starts before the fallback deadline", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-late-cleanup-deadline-"),
+  );
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  let resolveLaunch;
+  const launchPromise = new Promise((resolve) => {
+    resolveLaunch = resolve;
+  });
+  let resolveClose;
+  let resolveCloseStarted;
+  const closeStarted = new Promise((resolve) => {
+    resolveCloseStarted = resolve;
+  });
+  const closeCompletion = new Promise((resolve) => {
+    resolveClose = resolve;
+  });
+  const app = {
+    process: () => {
+      throw new TypeError("late child process is unavailable");
+    },
+    close: () => {
+      resolveCloseStarted();
+      return closeCompletion;
+    },
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    launchTimeoutMs: 10,
+    operationTimeoutMs: 10,
+    electronLauncher: {
+      launch: () => launchPromise,
+    },
+  });
+  t.after(async () => {
+    resolveClose?.();
+    resolveLaunch?.(app);
+    await harness.dispose({
+      success: false,
+      name: "late-cleanup-deadline",
+    });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  await assert.rejects(harness.launch("late-cleanup-deadline"), /timed out/);
+  setTimeout(() => resolveLaunch(app), 3_500);
+  await closeStarted;
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 6_500));
+
+  const diagnostics = harness.diagnostics();
+  assert.equal(diagnostics.cleanPass, false);
+  assert.ok(
+    diagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ProductJourneyOperationTimeoutError",
+    ),
+    JSON.stringify(diagnostics),
+  );
+  const retainedDiagnostics = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        "late-cleanup-deadline",
+        "runtime",
+        "diagnostics",
+        "renderer-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(retainedDiagnostics.cleanPass, false);
+  assert.ok(
+    retainedDiagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ElectronChildProcessCaptureError",
+    ),
+    JSON.stringify(retainedDiagnostics),
+  );
+  assert.ok(
+    retainedDiagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ProductJourneyOperationTimeoutError",
+    ),
+    JSON.stringify(retainedDiagnostics),
+  );
+  resolveClose();
+});
+
+test("lane watchdog waits for late Electron cleanup before publishing evidence", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-lane-late-finalizer-"),
+  );
+  let resolveLaunch;
+  const launchPromise = new Promise((resolve) => {
+    resolveLaunch = resolve;
+  });
+  const childProcess = childProcessStub({ pid: 424300 });
+  childProcess.killSignals = [];
+  childProcess.kill = (signal) => {
+    childProcess.killSignals.push(signal);
+    childProcess.exitCode = 0;
+    return true;
+  };
+  let closeCalls = 0;
+  const app = {
+    process: () => childProcess,
+    close: async () => {
+      closeCalls += 1;
+      childProcess.exitCode = 0;
+    },
+  };
+  const phase = "probe/lane-late-finalizer";
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    launchTimeoutMs: 1_000,
+    operationTimeoutMs: 1_000,
+    electronLauncher: {
+      launch: () => launchPromise,
+    },
+    closeApp: async (value, page, reason, options) =>
+      app.close(value, page, reason, options),
+  });
+  t.after(async () => {
+    resolveLaunch?.(app);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await harness.dispose({ success: false, name: "lane-late-finalizer" });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  const running = harness.withLaneWatchdog(() => harness.launch(phase), {
+    phase,
+    timeoutMs: 15,
+  });
+  setTimeout(() => resolveLaunch(app), 30);
+  await assert.rejects(running, /watchdog|aborted|timed out/i);
+
+  assert.equal(closeCalls, 1);
+  const retainedDiagnostics = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        "probe-lane-late-finalizer",
+        "runtime",
+        "diagnostics",
+        "renderer-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(retainedDiagnostics.cleanPass, false);
+  assert.ok(
+    retainedDiagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ProductJourneyLaneWatchdogError",
+    ),
+    JSON.stringify(retainedDiagnostics),
+  );
+  const journal = (await readFile(harness.journalPath, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.ok(
+    journal.some(
+      (entry) =>
+        entry.operation === "electron-close" && entry.status === "completed",
+    ),
+    JSON.stringify(journal),
+  );
+});
+
+test("active lane cleanup publishes close rejection and unverified child termination", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-active-close-reject-"),
+  );
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  const childProcess = childProcessStub({ pid: 424302 });
+  childProcess.killSignals = [];
+  childProcess.kill = (signal) => {
+    childProcess.killSignals.push(signal);
+    return false;
+  };
+  const phase = "probe/active-close-reject";
+  const artifactName = "probe-active-close-reject";
+  const { harness } = createActiveLaneHarness({
+    artifactRoot,
+    childProcess,
+    closeApp: async () => {
+      throw new Error("active close rejected");
+    },
+  });
+  t.after(async () => {
+    await harness.dispose({ success: false, name: artifactName });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  await harness.launch(phase);
+  const running = harness.withLaneWatchdog(() => new Promise(() => {}), {
+    phase,
+    timeoutMs: 15,
+  });
+  await assert.rejects(running, /watchdog.*active-close-reject/i);
+
+  const retainedDiagnostics = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        artifactName,
+        "runtime",
+        "diagnostics",
+        "renderer-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(retainedDiagnostics.cleanPass, false);
+  assert.ok(
+    retainedDiagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "Error" &&
+        issue.message.endsWith("active close rejected"),
+    ),
+    JSON.stringify(retainedDiagnostics),
+  );
+  assert.ok(
+    retainedDiagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ElectronChildProcessTerminationError" &&
+        issue.message.includes("child.kill(SIGTERM) returned false"),
+    ),
+    JSON.stringify(retainedDiagnostics),
+  );
+  assert.ok(
+    retainedDiagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ProductJourneyLaneWatchdogError",
+    ),
+    JSON.stringify(retainedDiagnostics),
+  );
+  assert.deepEqual(
+    await readdir(artifactRoot),
+    [artifactName],
+    "lane failure must publish exactly one artifact",
+  );
+  const journal = await readFile(
+    path.join(artifactRoot, artifactName, "runtime", "operations.jsonl"),
+    "utf8",
+  );
+  assert.match(journal, /"operation":"electron-close"/u);
+  assert.match(journal, /"status":"failed"/u);
+
+  const signalsAfterLaneCleanup = [...childProcess.killSignals];
+  await harness.dispose({ success: false, name: artifactName });
+  assert.deepEqual(
+    childProcess.killSignals,
+    signalsAfterLaneCleanup,
+    "dispose must reuse the completed lane cleanup",
+  );
+});
+
+test("active lane ignores a false kill result when the child exit is verified", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-active-kill-verified-"),
+  );
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  const childProcess = childProcessStub({ pid: 424303 });
+  childProcess.killSignals = [];
+  childProcess.kill = (signal) => {
+    childProcess.killSignals.push(signal);
+    if (signal === "SIGTERM") {
+      setImmediate(() => {
+        childProcess.exitCode = 0;
+        childProcess.signalCode = null;
+        childProcess.emit("exit", 0, null);
+        childProcess.emit("close", 0, null);
+      });
+    }
+    return false;
+  };
+  const phase = "probe/active-kill-verified";
+  const artifactName = "probe-active-kill-verified";
+  const { harness } = createActiveLaneHarness({
+    artifactRoot,
+    childProcess,
+    closeApp: async () => undefined,
+  });
+  t.after(async () => {
+    await harness.dispose({ success: false, name: artifactName });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  await harness.launch(phase);
+  await assert.rejects(
+    harness.withLaneWatchdog(() => new Promise(() => {}), {
+      phase,
+      timeoutMs: 15,
+    }),
+    /watchdog.*active-kill-verified/i,
+  );
+
+  const retainedDiagnostics = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        artifactName,
+        "runtime",
+        "diagnostics",
+        "renderer-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(retainedDiagnostics.cleanPass, false);
+  assert.deepEqual(
+    retainedDiagnostics.closeDiagnostics?.map((issue) => issue.errorName),
+    ["ProductJourneyLaneWatchdogError"],
+    JSON.stringify(retainedDiagnostics),
+  );
+  assert.deepEqual(childProcess.killSignals, ["SIGTERM"]);
+  const signalsAfterLaneCleanup = [...childProcess.killSignals];
+  await harness.dispose({ success: false, name: artifactName });
+  assert.deepEqual(childProcess.killSignals, signalsAfterLaneCleanup);
+});
+
+test("late valid launches persist close and termination failures before capture", async (t) => {
+  const scenarios = [
+    {
+      name: "late-valid-close-reject",
+      close: () => Promise.reject(new Error("late default close failed")),
+      kill: () => false,
+      closeErrorName: "Error",
+    },
+    {
+      name: "late-valid-close-hang",
+      closeErrorName: "ProductJourneyOperationTimeoutError",
+      kill: () => {
+        throw new Error("late child kill failed");
+      },
+    },
+  ];
+  for (const scenario of scenarios) {
+    const artifactRoot = await mkdtemp(
+      path.join(os.tmpdir(), `grimodex-product-${scenario.name}-`),
+    );
+    let resolveLaunch;
+    const launchPromise = new Promise((resolve) => {
+      resolveLaunch = resolve;
+    });
+    let resolveClose;
+    const childProcess = childProcessStub({ pid: 424301 });
+    childProcess.killSignals = [];
+    childProcess.kill = (signal) => {
+      childProcess.killSignals.push(signal);
+      if (scenario.kill) return scenario.kill(signal);
+      return false;
+    };
+    const app = {
+      process: () => childProcess,
+      close:
+        scenario.close ??
+        (() =>
+          new Promise((resolve) => {
+            resolveClose = resolve;
+          })),
+    };
+    const harness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      artifactRoot,
+      launchTimeoutMs: 10,
+      operationTimeoutMs: 10,
+      electronLauncher: {
+        launch: () => launchPromise,
+      },
+    });
+    try {
+      await assert.rejects(harness.launch(scenario.name), /timed out/);
+      resolveLaunch(app);
+      if (scenario.name.endsWith("hang")) {
+        await new Promise((resolve) => setTimeout(resolve, 5_200));
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const retainedDiagnostics = JSON.parse(
+        await readFile(
+          path.join(
+            artifactRoot,
+            scenario.name,
+            "runtime",
+            "diagnostics",
+            "renderer-diagnostics.json",
+          ),
+          "utf8",
+        ),
+      );
+      assert.equal(retainedDiagnostics.cleanPass, false);
+      assert.ok(
+        retainedDiagnostics.closeDiagnostics?.some(
+          (issue) =>
+            issue.fatal === true && issue.errorName === scenario.closeErrorName,
+        ),
+        JSON.stringify(retainedDiagnostics),
+      );
+      assert.ok(
+        retainedDiagnostics.closeDiagnostics?.some(
+          (issue) =>
+            issue.fatal === true &&
+            issue.errorName === "ElectronChildProcessTerminationError" &&
+            issue.message.includes("termination"),
+        ),
+        JSON.stringify(retainedDiagnostics),
+      );
+      if (resolveClose) resolveClose();
+    } finally {
+      await harness.dispose({ success: false, name: scenario.name });
+      await rm(harness.tmpRoot, { recursive: true, force: true });
+      await rm(artifactRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test("late close timeout treats a concurrent verified exit as authoritative", async (t) => {
+  for (const [label, killBehavior] of [
+    ["false", () => false],
+    [
+      "throw",
+      () => {
+        throw new Error("late verified kill threw");
+      },
+    ],
+  ]) {
+    const artifactRoot = await mkdtemp(
+      path.join(os.tmpdir(), `grimodex-product-late-verified-${label}-`),
+    );
+    let resolveLaunch;
+    const launchPromise = new Promise((resolve) => {
+      resolveLaunch = resolve;
+    });
+    const childProcess = childProcessStub({
+      pid: label === "false" ? 424307 : 424308,
+    });
+    childProcess.killSignals = [];
+    childProcess.kill = (signal) => {
+      childProcess.killSignals.push(signal);
+      queueMicrotask(() => {
+        childProcess.exitCode = 0;
+        childProcess.signalCode = null;
+        childProcess.emit("exit", 0, null);
+        childProcess.emit("close", 0, null);
+      });
+      return killBehavior();
+    };
+    const app = {
+      process: () => childProcess,
+      close: () => new Promise(() => {}),
+    };
+    const harness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      artifactRoot,
+      launchTimeoutMs: 10,
+      operationTimeoutMs: 10,
+      electronLauncher: {
+        launch: () => launchPromise,
+      },
+    });
+    const phase = `observability/late-verified-${label}`;
+    const artifactName = phase.replaceAll("/", "-");
+    try {
+      await assert.rejects(harness.launch(phase), /timed out/);
+      resolveLaunch(app);
+      await new Promise((resolve) => setTimeout(resolve, 5_300));
+
+      const retainedDiagnostics = await readRetainedDiagnostics(
+        artifactRoot,
+        artifactName,
+      );
+      assert.equal(retainedDiagnostics.cleanPass, false);
+      assert.ok(
+        retainedDiagnostics.closeDiagnostics?.some(
+          (issue) =>
+            issue.fatal === true &&
+            issue.errorName === "ProductJourneyOperationTimeoutError",
+        ),
+        JSON.stringify(retainedDiagnostics),
+      );
+      assert.equal(
+        retainedDiagnostics.closeDiagnostics?.some(
+          (issue) =>
+            issue.fatal === true &&
+            issue.errorName === "ElectronChildProcessTerminationError",
+        ),
+        false,
+        JSON.stringify(retainedDiagnostics),
+      );
+      assert.deepEqual(childProcess.killSignals, ["SIGTERM"]);
+      assert.deepEqual(await readdir(artifactRoot), [artifactName]);
+    } finally {
+      await harness.dispose({ success: false, name: artifactName });
+      await rm(harness.tmpRoot, { recursive: true, force: true });
+      await rm(artifactRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test("late launch without a child aggregates Playwright cleanup failure", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  let resolveLaunch;
+  const launchPromise = new Promise((resolve) => {
+    resolveLaunch = resolve;
+  });
+  let processCalls = 0;
+  let closeCalls = 0;
+  const app = {
+    process: () => {
+      processCalls += 1;
+      throw new TypeError("late child process is unavailable");
+    },
+    close: async () => {
+      closeCalls += 1;
+      throw new Error("late Playwright cleanup failed");
+    },
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    launchTimeoutMs: 10,
+    operationTimeoutMs: 10,
+    electronLauncher: {
+      launch: () => launchPromise,
+    },
+  });
+  t.after(async () => {
+    await harness.dispose({
+      success: false,
+      name: "late-child-capture-close-failure",
+    });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  await assert.rejects(
+    harness.launch("late-child-capture-close-failure"),
+    /timed out/,
+  );
+  resolveLaunch(app);
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
+
+  assert.equal(processCalls, 1);
+  assert.equal(closeCalls, 1);
+  const diagnostics = harness.diagnostics();
+  assert.equal(diagnostics.cleanPass, false);
+  assert.ok(
+    diagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ElectronChildProcessCaptureError" &&
+        issue.message.includes("cannot verify process termination"),
+    ),
+  );
+  assert.ok(
+    diagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "Error" &&
+        issue.message.endsWith("late Playwright cleanup failed"),
+    ),
+    JSON.stringify(diagnostics.closeDiagnostics),
+  );
+});
+
+test("receipt consumption failure retains the child for final cleanup", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+
+  const childProcess = childProcessStub();
+  childProcess.killSignals = [];
+  childProcess.kill = (signal) => childProcess.killSignals.push(signal);
+  const page = {
+    on: () => undefined,
+    evaluate: async () => [],
+    waitForFunction: async () => undefined,
+    isClosed: () => true,
+  };
+  const app = {
+    context: () => null,
+    firstWindow: async () => page,
+    process: () => childProcess,
+  };
+  const closeCalls = [];
+  let receiptPath;
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async ({ env }) => {
+        const expected = expectedNarrativeMaintenanceCiReceipt(env);
+        receiptPath = path.join(
+          env.GRIMODEX_USER_DATA_DIR,
+          NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+          expected.nonce,
+          "receipt.json",
+        );
+        await mkdir(path.dirname(receiptPath), { recursive: true });
+        await writeFile(receiptPath, canonicalReceiptText(expected), {
+          mode: 0o600,
+        });
+        return app;
+      },
+    },
+    closeApp: async (closedApp, closedPage, phase, options) => {
+      closeCalls.push({ closedApp, closedPage, phase, options });
+    },
+  });
+  t.after(async () => {
+    await harness.dispose({
+      success: false,
+      name: "receipt-consumption-failure",
+    });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+  });
+
+  const launched = await harness.launch("receipt-consumption-failure");
+  const expected = expectedNarrativeMaintenanceCiReceipt(process.env);
+  await writeFile(
+    receiptPath,
+    canonicalReceiptText({ ...expected, trigger: "dependency-gap" }),
+  );
+  await assert.rejects(
+    harness.close(launched.app, launched.page, "receipt-consumption-failure"),
+    /trigger|mismatch|receipt/i,
+  );
+
+  assert.equal(closeCalls.length, 1);
+  assert.equal(closeCalls[0].options.childProcess, childProcess);
+
+  await harness.dispose({
+    success: false,
+    name: "receipt-consumption-failure",
+  });
+  assert.equal(closeCalls.length, 2);
+  assert.equal(closeCalls[1].options.childProcess, childProcess);
+  assert.deepEqual(childProcess.killSignals, ["SIGTERM", "SIGKILL"]);
 });
 
 test("interrupted process-exit cleanup keeps wrong, foreign, and partial receipts", async (t) => {
@@ -1602,11 +3074,7 @@ test("interrupted process-exit cleanup keeps wrong, foreign, and partial receipt
   });
 
   for (const testCase of cases) {
-    const childProcess = new EventEmitter();
-    childProcess.exitCode = null;
-    childProcess.signalCode = null;
-    childProcess.stdout = null;
-    childProcess.stderr = null;
+    const childProcess = childProcessStub();
     const page = {
       on: () => undefined,
       evaluate: async () => [],
@@ -1693,7 +3161,7 @@ test("production launch ignores consumed stdout but rejects any receipt file", a
     const app = {
       context: () => null,
       firstWindow: async () => page,
-      process: () => ({ stdout, stderr: null }),
+      process: () => childProcessStub({ stdout }),
     };
     const harness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
@@ -1990,7 +3458,7 @@ test("receipt is reverified after bridge readiness and after process close", asy
     const bridgeApp = {
       context: () => null,
       firstWindow: async () => bridgePage,
-      process: () => ({ stdout: new EventEmitter(), stderr: null }),
+      process: () => childProcessStub({ stdout: new EventEmitter() }),
     };
     const bridgeHarness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
@@ -2030,7 +3498,7 @@ test("receipt is reverified after bridge readiness and after process close", asy
     const closeApp = {
       context: () => null,
       firstWindow: async () => closePage,
-      process: () => ({ stdout: new EventEmitter(), stderr: null }),
+      process: () => childProcessStub({ stdout: new EventEmitter() }),
     };
     const closeHarness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
@@ -2166,7 +3634,7 @@ test("CI fixture operations are typed, exact-workspace, renderer-fenced, and fai
           on: () => undefined,
           waitForFunction: async () => undefined,
         }),
-        process: () => ({ stdout: null, stderr: null }),
+        process: () => childProcessStub(),
       }),
     },
     closeApp: async () => undefined,
@@ -2599,6 +4067,7 @@ test("performance smoke reuses the product journey boundary helpers", async () =
 
 test("product journey harness closes Electron when firstWindow fails", async (t) => {
   const app = {
+    process: () => childProcessStub(),
     firstWindow: async () => {
       throw new Error("window was never created");
     },
@@ -2646,7 +4115,7 @@ test("product journey harness retains the renderer screenshot before close", asy
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: mainStderr }),
+    process: () => childProcessStub({ stderr: mainStderr }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -2804,6 +4273,163 @@ test("product journey harness retains the renderer screenshot before close", asy
   );
 });
 
+test("lane failure retains one live renderer frame before final diagnostics", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-lane-screenshot-"),
+  );
+  const phase = "observability/lane-screenshot";
+  const artifactName = "observability-lane-screenshot";
+  const child = childProcessStub({ pid: 424306 });
+  child.killSignals = [];
+  child.kill = (signal) => {
+    child.killSignals.push(signal);
+    child.exitCode = 0;
+    child.signalCode = null;
+    child.emit("exit", 0, null);
+    child.emit("close", 0, null);
+    return true;
+  };
+  let pageClosed = false;
+  let screenshotCalls = 0;
+  const page = {
+    isClosed: () => pageClosed,
+    on: () => undefined,
+    evaluate: async () => [],
+    waitForFunction: async () => undefined,
+    screenshot: async ({ path: screenshotPath }) => {
+      assert.equal(pageClosed, false, "renderer frame must be captured live");
+      screenshotCalls += 1;
+      await writeFile(screenshotPath, "lane-renderer-frame");
+    },
+  };
+  const events = [];
+  const { harness } = createActiveLaneHarness({
+    artifactRoot,
+    childProcess: child,
+    page,
+    closeApp: async () => {
+      events.push("close");
+      pageClosed = true;
+    },
+  });
+  t.after(async () => {
+    await harness.dispose({ success: false, name: artifactName });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  await harness.launch(phase);
+  await assert.rejects(
+    harness.withLaneWatchdog(() => new Promise(() => {}), {
+      phase,
+      timeoutMs: 15,
+    }),
+    /watchdog.*lane-screenshot/i,
+  );
+
+  assert.equal(screenshotCalls, 1);
+  assert.deepEqual(events, ["close"]);
+  assert.equal(
+    await readFile(
+      path.join(artifactRoot, artifactName, "renderer.png"),
+      "utf8",
+    ),
+    "lane-renderer-frame",
+  );
+  const diagnostics = await readRetainedDiagnostics(artifactRoot, artifactName);
+  assert.equal(diagnostics.cleanPass, false);
+  assert.ok(
+    diagnostics.closeDiagnostics?.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ProductJourneyLaneWatchdogError",
+    ),
+    JSON.stringify(diagnostics),
+  );
+  assert.deepEqual(await readdir(artifactRoot), [artifactName]);
+  await harness.dispose({ success: false, name: artifactName });
+  assert.equal(screenshotCalls, 1);
+});
+
+test("lane cleanup survives a renderer screenshot availability failure", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-screenshot-guard-"),
+  );
+  const phase = "observability/screenshot-guard";
+  const artifactName = "observability-screenshot-guard";
+  const child = childProcessStub({ pid: 424309 });
+  child.killSignals = [];
+  child.kill = (signal) => {
+    child.killSignals.push(signal);
+    child.exitCode = 0;
+    child.signalCode = null;
+    child.emit("exit", 0, null);
+    child.emit("close", 0, null);
+    return true;
+  };
+  const page = {
+    on: () => undefined,
+    evaluate: async () => [],
+    waitForFunction: async () => undefined,
+    isClosed: () => {
+      throw new Error("page state unavailable");
+    },
+    screenshot: async () => {
+      throw new Error("screenshot must not be required for cleanup");
+    },
+  };
+  let closeCalls = 0;
+  const { harness } = createActiveLaneHarness({
+    artifactRoot,
+    childProcess: child,
+    page,
+    closeApp: async () => {
+      closeCalls += 1;
+    },
+  });
+  t.after(async () => {
+    await harness.dispose({ success: false, name: artifactName });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  let unhandledRejections = 0;
+  const onUnhandledRejection = () => {
+    unhandledRejections += 1;
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+  try {
+    await harness.launch(phase);
+    await assert.rejects(
+      harness.withLaneWatchdog(() => new Promise(() => {}), {
+        phase,
+        timeoutMs: 15,
+      }),
+      /watchdog.*screenshot-guard/i,
+    );
+    const diagnostics = await readRetainedDiagnostics(
+      artifactRoot,
+      artifactName,
+    );
+    assert.equal(closeCalls, 1);
+    assert.deepEqual(child.killSignals, ["SIGTERM"]);
+    assert.equal(child.exitCode, 0);
+    assert.equal(diagnostics.cleanPass, false);
+    assert.ok(
+      diagnostics.closeDiagnostics?.some(
+        (issue) =>
+          issue.fatal === true &&
+          issue.errorName === "ProductJourneyLaneWatchdogError",
+      ),
+      JSON.stringify(diagnostics),
+    );
+    assert.deepEqual(await readdir(artifactRoot), [artifactName]);
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+  }
+  assert.equal(unhandledRejections, 0);
+});
+
 test("product journey harness keeps warnings diagnostic but fails closed on close-time renderer errors", async (t) => {
   const listeners = new Map();
   const mainStderr = new EventEmitter();
@@ -2817,7 +4443,7 @@ test("product journey harness keeps warnings diagnostic but fails closed on clos
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: mainStderr }),
+    process: () => childProcessStub({ stderr: mainStderr }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -2902,7 +4528,7 @@ test("product journey harness reports a clean pass when renderer output contains
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: null }),
+    process: () => childProcessStub(),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -2943,7 +4569,7 @@ test("product journey harness fails closed on unallowed error-class main stderr"
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: mainStderr }),
+    process: () => childProcessStub({ stderr: mainStderr }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -3037,7 +4663,7 @@ test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics"
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: mainStderr }),
+    process: () => childProcessStub({ stderr: mainStderr }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -3121,7 +4747,7 @@ test("trusted restore and open reload allow only the exact Ubuntu Xvfb Skia mail
     };
     const app = {
       firstWindow: async () => page,
-      process: () => ({ stdout: null, stderr: mainStderr }),
+      process: () => childProcessStub({ stderr: mainStderr }),
     };
     const harness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
@@ -3169,7 +4795,7 @@ test("C2-ZC restore reload allows the exact Ubuntu Xvfb Skia mailbox line", asyn
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: mainStderr }),
+    process: () => childProcessStub({ stderr: mainStderr }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -3217,7 +4843,7 @@ test("C2-ZC Skia mailbox allowance remains phase- and message-exact", async (t) 
     };
     const app = {
       firstWindow: async () => page,
-      process: () => ({ stdout: null, stderr: mainStderr }),
+      process: () => childProcessStub({ stderr: mainStderr }),
     };
     const harness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
@@ -3259,7 +4885,7 @@ test("shared-image mailbox noise remains gated outside configure and for near ma
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: mainStderr }),
+    process: () => childProcessStub({ stderr: mainStderr }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -3324,7 +4950,7 @@ test("product journey harness frames main stderr lines before applying allowance
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: mainStderr }),
+    process: () => childProcessStub({ stderr: mainStderr }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -3396,7 +5022,7 @@ test("product journey harness waits for delayed main stderr before finalizing", 
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: mainStderr }),
+    process: () => childProcessStub({ stderr: mainStderr }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -3446,7 +5072,7 @@ test("product journey harness fails closed when main stderr never drains", async
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: mainStderr }),
+    process: () => childProcessStub({ stderr: mainStderr }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -3513,7 +5139,7 @@ test("product journey harness opts in before launch and reads structured lifecyc
       },
     }),
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: null }),
+    process: () => childProcessStub(),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -3606,7 +5232,7 @@ test("harness records durable operation journal entries without raw arguments", 
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: null }),
+    process: () => childProcessStub(),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -3787,6 +5413,8 @@ test("harness signal abort captures exactly once before child cleanup", async (t
   };
   const child = new EventEmitter();
   child.pid = 424244;
+  child.exitCode = null;
+  child.signalCode = null;
   child.killSignals = [];
   child.kill = (signal) => {
     child.killSignals.push(signal);
@@ -3921,6 +5549,401 @@ test("late electron launch resolution is registered and cleaned after timeout", 
   await harness.dispose({ success: false, name: "late-launch" });
 });
 
+test("lane timeout owns late Electron cleanup before publishing one artifact", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-lane-late-owned-"),
+  );
+  const child = new EventEmitter();
+  child.pid = 424251;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.killSignals = [];
+  child.kill = (signal) => {
+    child.killSignals.push(signal);
+    child.exitCode = 0;
+    return true;
+  };
+  let resolveLaunch;
+  const launchResult = new Promise((resolve) => {
+    resolveLaunch = resolve;
+  });
+  const lateApp = { process: () => child };
+  const phase = "observability/lane-late-owned";
+  const artifactName = "observability-lane-late-owned";
+  let closeCalls = 0;
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    operationTimeoutMs: 100,
+    launchTimeoutMs: 10_000,
+    electronLauncher: { launch: async () => launchResult },
+    closeApp: async (app) => {
+      closeCalls += 1;
+      app.closed = true;
+    },
+  });
+  t.after(async () => {
+    resolveLaunch?.(lateApp);
+    await harness.dispose({ success: false, name: artifactName });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  const running = harness.withLaneWatchdog(() => harness.launch(phase), {
+    phase,
+    timeoutMs: 15,
+  });
+  const resolutionTimer = setTimeout(() => resolveLaunch(lateApp), 25);
+  await assert.rejects(running, /watchdog.*lane-late-owned/i);
+  clearTimeout(resolutionTimer);
+  assert.equal(closeCalls, 1);
+  assert.equal(lateApp.closed, true);
+  assert.deepEqual(child.killSignals, ["SIGTERM"]);
+
+  await harness.dispose({ success: false, name: artifactName });
+  assert.deepEqual(await readdir(artifactRoot), [artifactName]);
+  const artifactDiagnostics = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        artifactName,
+        "runtime",
+        "diagnostics",
+        "renderer-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(artifactDiagnostics.cleanPass, false);
+  assert.equal(artifactDiagnostics.closeDiagnostics.length, 1);
+  assert.equal(
+    artifactDiagnostics.closeDiagnostics[0].errorName,
+    "ProductJourneyLaneWatchdogError",
+  );
+  assert.equal(artifactDiagnostics.closeDiagnostics[0].fatal, true);
+  const journal = await readFile(
+    path.join(artifactRoot, artifactName, "runtime", "operations.jsonl"),
+    "utf8",
+  );
+  assert.match(journal, /"operation":"electron-close"/u);
+  assert.match(journal, /"status":"completed"/u);
+});
+
+test("lane timeout records pending Electron launch cleanup without duplicate artifacts", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-lane-pending-forever-"),
+  );
+  const phase = "observability/lane-pending-forever";
+  const artifactName = "observability-lane-pending-forever";
+  let launchCalls = 0;
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    operationTimeoutMs: 100,
+    launchTimeoutMs: 10_000,
+    electronLauncher: {
+      launch: () => {
+        launchCalls += 1;
+        return new Promise(() => {});
+      },
+    },
+  });
+  t.after(async () => {
+    await harness.dispose({ success: false, name: artifactName });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  const startedAt = Date.now();
+  await assert.rejects(
+    harness.withLaneWatchdog(() => harness.launch(phase), {
+      phase,
+      timeoutMs: 15,
+    }),
+    /watchdog.*lane-pending-forever/i,
+  );
+  assert.ok(Date.now() - startedAt < 7_000);
+  assert.equal(launchCalls, 1);
+
+  assert.deepEqual(await readdir(artifactRoot), [artifactName]);
+  const diagnostics = await readRetainedDiagnostics(artifactRoot, artifactName);
+  assert.equal(diagnostics.cleanPass, false);
+  assert.equal(diagnostics.closeDiagnostics.length, 2);
+  assert.ok(
+    diagnostics.closeDiagnostics.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ProductJourneyLaneWatchdogError",
+    ),
+    JSON.stringify(diagnostics),
+  );
+  assert.ok(
+    diagnostics.closeDiagnostics.some(
+      (issue) =>
+        issue.fatal === true &&
+        issue.errorName === "ElectronChildProcessCaptureError" &&
+        issue.message.includes("Late Electron launch did not settle"),
+    ),
+    JSON.stringify(diagnostics),
+  );
+  await harness.dispose({ success: false, name: artifactName });
+  assert.deepEqual(await readdir(artifactRoot), [artifactName]);
+});
+
+test("late Electron close rejection is retained as a fatal diagnostic", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-late-close-reject-"),
+  );
+  const child = new EventEmitter();
+  child.pid = 424252;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.killSignals = [];
+  child.kill = (signal) => {
+    child.killSignals.push(signal);
+    child.exitCode = 0;
+    return true;
+  };
+  let resolveLaunch;
+  const launchResult = new Promise((resolve) => {
+    resolveLaunch = resolve;
+  });
+  const lateApp = { process: () => child };
+  const phase = "observability/late-close-reject";
+  const artifactName = "observability-late-close-reject";
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    operationTimeoutMs: 100,
+    launchTimeoutMs: 10_000,
+    electronLauncher: { launch: async () => launchResult },
+    closeApp: async () => {
+      throw new Error("late close rejected");
+    },
+  });
+  t.after(async () => {
+    resolveLaunch?.(lateApp);
+    await harness.dispose({ success: false, name: artifactName });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  const running = harness.withLaneWatchdog(() => harness.launch(phase), {
+    phase,
+    timeoutMs: 15,
+  });
+  const resolutionTimer = setTimeout(() => resolveLaunch(lateApp), 25);
+  await assert.rejects(running, /watchdog.*late-close-reject/i);
+  clearTimeout(resolutionTimer);
+  await harness.dispose({ success: false, name: artifactName });
+
+  assert.deepEqual(await readdir(artifactRoot), [artifactName]);
+  const artifactDiagnostics = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        artifactName,
+        "runtime",
+        "diagnostics",
+        "renderer-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(artifactDiagnostics.cleanPass, false);
+  assert.equal(artifactDiagnostics.closeDiagnostics.length, 2);
+  const closeDiagnostic = artifactDiagnostics.closeDiagnostics.find((issue) =>
+    issue.message.includes("late close rejected"),
+  );
+  assert.ok(closeDiagnostic, JSON.stringify(artifactDiagnostics));
+  assert.equal(closeDiagnostic.fatal, true);
+  assert.ok(
+    artifactDiagnostics.closeDiagnostics.some(
+      (issue) => issue.errorName === "ProductJourneyLaneWatchdogError",
+    ),
+    JSON.stringify(artifactDiagnostics),
+  );
+  assert.match(closeDiagnostic.message, /late close rejected/u);
+  assert.deepEqual(child.killSignals, ["SIGTERM"]);
+});
+
+test("late Electron close hang is bounded and retained as a fatal diagnostic", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-late-close-hang-"),
+  );
+  const child = new EventEmitter();
+  child.pid = 424253;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.killSignals = [];
+  child.kill = (signal) => {
+    child.killSignals.push(signal);
+    child.exitCode = 0;
+    return true;
+  };
+  let resolveLaunch;
+  const launchResult = new Promise((resolve) => {
+    resolveLaunch = resolve;
+  });
+  const lateApp = { process: () => child };
+  const phase = "observability/late-close-hang";
+  const artifactName = "observability-late-close-hang";
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    operationTimeoutMs: 100,
+    launchTimeoutMs: 10_000,
+    electronLauncher: { launch: async () => launchResult },
+    closeApp: async () => new Promise(() => {}),
+  });
+  t.after(async () => {
+    resolveLaunch?.(lateApp);
+    await harness.dispose({ success: false, name: artifactName });
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  const startedAt = Date.now();
+  const running = harness.withLaneWatchdog(() => harness.launch(phase), {
+    phase,
+    timeoutMs: 15,
+  });
+  const resolutionTimer = setTimeout(() => resolveLaunch(lateApp), 25);
+  await assert.rejects(running, /watchdog.*late-close-hang/i);
+  clearTimeout(resolutionTimer);
+  const elapsedMs = Date.now() - startedAt;
+  assert.ok(elapsedMs < 7_000, `late cleanup exceeded bound: ${elapsedMs}ms`);
+  await harness.dispose({ success: false, name: artifactName });
+
+  assert.deepEqual(await readdir(artifactRoot), [artifactName]);
+  const artifactDiagnostics = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        artifactName,
+        "runtime",
+        "diagnostics",
+        "renderer-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(artifactDiagnostics.cleanPass, false);
+  assert.equal(artifactDiagnostics.closeDiagnostics.length, 2);
+  const closeDiagnostic = artifactDiagnostics.closeDiagnostics.find((issue) =>
+    issue.message.includes("timed out"),
+  );
+  assert.ok(closeDiagnostic, JSON.stringify(artifactDiagnostics));
+  assert.equal(closeDiagnostic.fatal, true);
+  assert.ok(
+    artifactDiagnostics.closeDiagnostics.some(
+      (issue) => issue.errorName === "ProductJourneyLaneWatchdogError",
+    ),
+    JSON.stringify(artifactDiagnostics),
+  );
+  assert.match(closeDiagnostic.message, /timed out/u);
+  assert.deepEqual(child.killSignals, ["SIGTERM"]);
+});
+
+test("late Electron child kill false or throw is fatal and preserves tracking", async (t) => {
+  for (const [label, kill] of [
+    ["false", () => false],
+    [
+      "throw",
+      () => {
+        throw new Error("late kill threw");
+      },
+    ],
+  ]) {
+    const artifactRoot = await mkdtemp(
+      path.join(os.tmpdir(), `grimodex-product-late-kill-${label}-`),
+    );
+    const child = new EventEmitter();
+    child.pid = label === "false" ? 424254 : 424255;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.killSignals = [];
+    child.kill = (signal) => {
+      child.killSignals.push(signal);
+      return kill();
+    };
+    let resolveLaunch;
+    const launchResult = new Promise((resolve) => {
+      resolveLaunch = resolve;
+    });
+    const lateApp = { process: () => child };
+    const phase = `observability/late-kill-${label}`;
+    const artifactName = `observability-late-kill-${label}`;
+    const harness = createProductJourneyHarness({
+      mainCjs: "/tmp/fake-main.cjs",
+      electronBin: "/tmp/fake-electron",
+      artifactRoot,
+      operationTimeoutMs: 100,
+      launchTimeoutMs: 10_000,
+      electronLauncher: { launch: async () => launchResult },
+      closeApp: async () => undefined,
+    });
+    t.after(async () => {
+      resolveLaunch?.(lateApp);
+      await harness.dispose({ success: false, name: artifactName });
+      await rm(harness.tmpRoot, { recursive: true, force: true });
+      await rm(artifactRoot, { recursive: true, force: true });
+    });
+
+    const startedAt = Date.now();
+    const running = harness.withLaneWatchdog(() => harness.launch(phase), {
+      phase,
+      timeoutMs: 15,
+    });
+    const resolutionTimer = setTimeout(() => resolveLaunch(lateApp), 25);
+    await assert.rejects(running, new RegExp(`watchdog.*late-kill-${label}`));
+    clearTimeout(resolutionTimer);
+    assert.ok(Date.now() - startedAt < 3_000);
+    await harness.dispose({ success: false, name: artifactName });
+
+    assert.deepEqual(await readdir(artifactRoot), [artifactName]);
+    const artifactDiagnostics = JSON.parse(
+      await readFile(
+        path.join(
+          artifactRoot,
+          artifactName,
+          "runtime",
+          "diagnostics",
+          "renderer-diagnostics.json",
+        ),
+        "utf8",
+      ),
+    );
+    assert.equal(artifactDiagnostics.cleanPass, false);
+    assert.equal(artifactDiagnostics.closeDiagnostics.length, 2);
+    const terminationDiagnostic = artifactDiagnostics.closeDiagnostics.find(
+      (issue) => issue.phase.endsWith("/termination"),
+    );
+    assert.ok(terminationDiagnostic, JSON.stringify(artifactDiagnostics));
+    assert.equal(terminationDiagnostic.fatal, true);
+    assert.equal(
+      terminationDiagnostic.errorName,
+      "ElectronChildProcessTerminationError",
+    );
+    assert.ok(
+      artifactDiagnostics.closeDiagnostics.some(
+        (issue) => issue.errorName === "ProductJourneyLaneWatchdogError",
+      ),
+      JSON.stringify(artifactDiagnostics),
+    );
+    assert.match(
+      terminationDiagnostic.phase,
+      new RegExp(`late-kill-${label}/termination`),
+    );
+    assert.equal(child.exitCode, null);
+    assert.deepEqual(child.killSignals, ["SIGTERM", "SIGKILL"]);
+  }
+});
+
 test("failure evidence is published before a bounded optional screenshot", async (t) => {
   const artifactRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-product-hung-screenshot-"),
@@ -3984,7 +6007,7 @@ test("failure evidence is published before a bounded optional screenshot", async
   const app = {
     context: () => null,
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: null }),
+    process: () => childProcessStub(),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",

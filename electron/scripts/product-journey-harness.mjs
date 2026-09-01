@@ -28,7 +28,10 @@ import { StringDecoder } from "node:string_decoder";
 
 import { _electron } from "playwright";
 
-import { closeElectronAppWithDiagnostics } from "./close-electron-app.mjs";
+import {
+  closeElectronAppWithDiagnostics,
+  isElectronPostExitCloseError,
+} from "./close-electron-app.mjs";
 import { C2ZC_RENDERER_DML_PHASE_ALLOWLIST } from "./c2zc-renderer-mcp-dml-denial-product-journey.mjs";
 
 const require = createRequire(import.meta.url);
@@ -2157,6 +2160,28 @@ export class MainProcessDiagnosticsError extends Error {
   }
 }
 
+export class CloseDiagnosticsError extends Error {
+  constructor(diagnostics) {
+    const summaries = (diagnostics.closeDiagnostics ?? [])
+      .filter((issue) => issue.fatal === true)
+      .map((issue) => `[${issue.phase}] close: ${issue.message}`);
+    super(
+      `Electron close diagnostics failed (${summaries.length} fatal error(s))${
+        summaries.length > 0 ? `: ${summaries.slice(0, 4).join(" | ")}` : ""
+      }`,
+    );
+    this.name = "CloseDiagnosticsError";
+    this.diagnostics = diagnostics;
+  }
+}
+
+class ElectronChildProcessTerminationError extends Error {
+  constructor(message, options = {}) {
+    super(message, options);
+    this.name = "ElectronChildProcessTerminationError";
+  }
+}
+
 function installLifecycleTraceCapture({
   optInKey,
   eventName,
@@ -2665,8 +2690,39 @@ export async function killProcessTree(
     graceMs = PRODUCT_JOURNEY_LANE_KILL_GRACE_MS,
   } = {},
 ) {
-  if (!child) return;
+  if (!child) {
+    return {
+      attempted: false,
+      terminationVerified: true,
+      failures: [],
+    };
+  }
   const pid = Number.isSafeInteger(child.pid) ? child.pid : null;
+  const failures = [];
+  const invokeDirectKill = (requestedSignal) => {
+    if (processHasExited(child)) return;
+    if (typeof child.kill !== "function") {
+      failures.push({
+        signal: requestedSignal,
+        message: "child process does not expose kill()",
+      });
+      return;
+    }
+    try {
+      const result = child.kill(requestedSignal);
+      if (result === false) {
+        failures.push({
+          signal: requestedSignal,
+          message: `child.kill(${requestedSignal}) returned false`,
+        });
+      }
+    } catch (error) {
+      failures.push({
+        signal: requestedSignal,
+        message: operationErrorMessage(error),
+      });
+    }
+  };
   if (pid !== null && pid > 0 && pid !== process.pid) {
     try {
       process.kill(-pid, signal);
@@ -2675,11 +2731,7 @@ export async function killProcessTree(
       // that exited between the snapshot and this cleanup call.
     }
   }
-  try {
-    if (!processHasExited(child)) child.kill?.(signal);
-  } catch {
-    // Cleanup is best effort; continue to the forceful phase.
-  }
+  invokeDirectKill(signal);
   await sleepFor(graceMs);
   // The direct child may exit while descendants in its process group remain.
   // Always address the group after the grace period; ESRCH is harmless when
@@ -2691,16 +2743,17 @@ export async function killProcessTree(
       // Continue with the direct child handle below.
     }
   }
-  try {
-    if (!processHasExited(child)) child.kill?.(forceSignal);
-  } catch {
-    // The child may have exited while the forceful signal was being sent.
-  }
+  invokeDirectKill(forceSignal);
+  return {
+    attempted: true,
+    terminationVerified: processHasExited(child),
+    failures,
+  };
 }
 
 /**
  * Bound one journey lane. Failure handling is re-entrant safe and always
- * captures evidence before cleanup and process termination.
+ * captures evidence after bounded cleanup and process termination.
  */
 export async function runWithLaneWatchdog(
   fn,
@@ -2716,6 +2769,9 @@ export async function runWithLaneWatchdog(
     abortController = null,
     journal = null,
     requestId = operationRequestId(),
+    awaitLateResources = async () => undefined,
+    recordFailure = () => undefined,
+    recordChildCleanupFailure = () => undefined,
   } = {},
 ) {
   const normalizedPhase = operationPhase(phase);
@@ -2770,10 +2826,67 @@ export async function runWithLaneWatchdog(
       // Invoke the first termination synchronously so a child registered after
       // abort is never left alive for another event-loop turn.
       killResult = killChildren(child, killOptions);
-    } catch {
-      killResult = undefined;
+    } catch (error) {
+      killResult = Promise.reject(error);
     }
-    const killPromise = Promise.resolve(killResult).catch(() => undefined);
+    const killPromise = Promise.resolve(killResult).then(
+      (outcome) => {
+        let processTerminationVerified = false;
+        try {
+          processTerminationVerified = processHasExited(child);
+        } catch {
+          processTerminationVerified = false;
+        }
+        const terminationVerified =
+          outcome?.terminationVerified === true && processTerminationVerified;
+        if (!terminationVerified) {
+          const failures = Array.isArray(outcome?.failures)
+            ? outcome.failures
+            : [];
+          const failureMessage = failures
+            .map((failure) => operationErrorMessage(failure?.message))
+            .filter((message) => message.length > 0)
+            .join("; ");
+          const error = new ElectronChildProcessTerminationError(
+            `Electron child process termination was not verified: ${
+              failureMessage || "child process did not report an exit"
+            }`,
+          );
+          try {
+            recordChildCleanupFailure({ child, outcome, error });
+          } catch {
+            // Preserve the lane failure even if diagnostics recording fails.
+          }
+        }
+        return outcome;
+      },
+      (error) => {
+        let processTerminationVerified = false;
+        try {
+          processTerminationVerified = processHasExited(child);
+        } catch {
+          processTerminationVerified = false;
+        }
+        if (!processTerminationVerified) {
+          const failureMessage = operationErrorMessage(error);
+          const terminationError = new ElectronChildProcessTerminationError(
+            `Electron child process termination was not verified: ${
+              failureMessage || "child cleanup failed"
+            }`,
+          );
+          try {
+            recordChildCleanupFailure({
+              child,
+              outcome: null,
+              error: terminationError,
+            });
+          } catch {
+            // Preserve the lane failure even if diagnostics recording fails.
+          }
+        }
+        return undefined;
+      },
+    );
     pendingChildKills.add(killPromise);
     void killPromise.then(
       () => pendingChildKills.delete(killPromise),
@@ -2810,18 +2923,29 @@ export async function runWithLaneWatchdog(
   const captureOnce = async (error, status) => {
     if (failurePromise) return failurePromise;
     cleanupStarted = true;
+    try {
+      // Record the lane failure before a late launch can claim the one-shot
+      // artifact capture. The artifact is still written only after bounded
+      // late-resource cleanup below.
+      recordFailure({ error, status });
+    } catch {
+      // Preserve the original watchdog/abort reason.
+    }
     failurePromise = (async () => {
       const failureName = normalizedPhase.replaceAll(/[\\/]/gu, "-");
       try {
+        // A lane can time out while Electron's launch promise is still
+        // resolving. Let the owner adopt and close that late process before
+        // publishing the one-shot artifact, so the artifact contains the
+        // complete cleanup diagnostics and the journal remains writable.
         await settleWithin(
-          Promise.resolve().then(() =>
-            captureFailureArtifact(failureName, { error, status }),
-          ),
-          PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+          Promise.resolve().then(() => awaitLateResources({ error, status })),
+          PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS + 250,
         );
       } catch {
-        // Preserve the original watchdog/abort reason while still terminating
-        // all known children.
+        // Preserve the original watchdog/abort reason. The owner records an
+        // explicit unverified diagnostic when the late resource misses this
+        // bounded window.
       }
       try {
         await settleWithin(
@@ -2832,6 +2956,16 @@ export async function runWithLaneWatchdog(
         // Child termination below is mandatory even when graceful cleanup fails.
       }
       await drainChildren();
+      try {
+        await settleWithin(
+          Promise.resolve().then(() =>
+            captureFailureArtifact(failureName, { error, status }),
+          ),
+          PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+        );
+      } catch {
+        // Preserve the original watchdog/abort reason after cleanup evidence.
+      }
     })();
     return failurePromise;
   };
@@ -2969,6 +3103,7 @@ export function createProductJourneyHarness({
     );
   }
   validateMainProcessNoiseAllowlist(mainProcessNoiseAllowlist);
+  const trustedCloseApp = closeApp === closeElectronAppWithDiagnostics;
 
   const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "grimodex-product-"));
   const userDataDir = path.join(tmpRoot, "user-data");
@@ -2994,12 +3129,16 @@ export function createProductJourneyHarness({
   const trackedChildren = new Set();
   const trackedChildRemovers = new Map();
   const appChildProcesses = new Map();
+  const lateLaunchTasks = new Set();
   let fixtureOperationsInFlight = false;
   let launchInFlight = false;
   let laneWatchdogController = null;
   let laneWatchdogPromise = null;
   let failureCapturePromise = null;
+  let deferredFailureCapture = null;
   let failureCleanupPromise = null;
+  let retainedRendererScreenshotPromise = null;
+  let operationJournalClosed = false;
   const harnessAbortController = new AbortController();
   let signalHandlersInstalled = false;
   let disposed = false;
@@ -3021,17 +3160,213 @@ export function createProductJourneyHarness({
     });
   }
 
-  function recordCloseDiagnostic(phase, error) {
+  function recordCloseDiagnostic(app, phase, error, childProcess = undefined) {
+    const diagnosticError =
+      isElectronPostExitCloseError(error, app, phase, childProcess) &&
+      error.cause
+        ? error.cause
+        : error;
     const diagnostic = {
       at: new Date().toISOString(),
       phase,
       errorName: boundedDiagnosticText(
-        error instanceof Error ? error.name : "Error",
+        diagnosticError instanceof Error ? diagnosticError.name : "Error",
       ),
-      message: operationErrorMessage(error),
+      message: operationErrorMessage(diagnosticError),
     };
     closeDiagnostics.push(diagnostic);
     recordTimeline("electron-close-failed-after-process-exit", diagnostic);
+  }
+
+  function recordFatalCloseDiagnostic(
+    app,
+    phase,
+    error,
+    childProcess = undefined,
+  ) {
+    const diagnosticError =
+      isElectronPostExitCloseError(error, app, phase, childProcess) &&
+      error.cause
+        ? error.cause
+        : error;
+    const diagnostic = {
+      at: new Date().toISOString(),
+      phase,
+      errorName: boundedDiagnosticText(
+        diagnosticError instanceof Error ? diagnosticError.name : "Error",
+      ),
+      message: operationErrorMessage(diagnosticError),
+      fatal: true,
+    };
+    closeDiagnostics.push(diagnostic);
+    recordTimeline("electron-close-failed", diagnostic);
+  }
+
+  function recordUnverifiedCloseDiagnostic(phase, message = undefined) {
+    const diagnostic = {
+      at: new Date().toISOString(),
+      phase,
+      errorName: "ElectronChildProcessCaptureError",
+      message:
+        message ??
+        "Electron child process was unavailable; Playwright cleanup cannot verify process termination",
+      fatal: true,
+    };
+    closeDiagnostics.push(diagnostic);
+    recordTimeline("electron-close-unverified", diagnostic);
+  }
+
+  function recordLaunchUnverifiedCloseDiagnostic(
+    launchContext,
+    message = undefined,
+  ) {
+    if (!launchContext || launchContext.unverifiedCloseDiagnosticRecorded) {
+      return;
+    }
+    launchContext.unverifiedCloseDiagnosticRecorded = true;
+    recordUnverifiedCloseDiagnostic(launchContext.phase, message);
+  }
+
+  function isBoundPostExitCloseError(error, app, phase, childProcess) {
+    return isElectronPostExitCloseError(error, app, phase, childProcess);
+  }
+
+  function validateElectronChildProcess(childProcess, phase) {
+    if (
+      childProcess === null ||
+      typeof childProcess !== "object" ||
+      Array.isArray(childProcess)
+    ) {
+      throw new TypeError(
+        `electron launch returned an invalid process handle for ${phase}`,
+      );
+    }
+
+    let hasPid;
+    let pid;
+    let once;
+    let removeListener;
+    let kill;
+    let exitCode;
+    let signalCode;
+    try {
+      hasPid = Object.prototype.hasOwnProperty.call(childProcess, "pid");
+      pid = childProcess.pid;
+      once = childProcess.once;
+      removeListener = childProcess.removeListener;
+      kill = childProcess.kill;
+      exitCode = childProcess.exitCode;
+      signalCode = childProcess.signalCode;
+    } catch (error) {
+      throw new TypeError(
+        `electron launch could not inspect the process handle for ${phase}`,
+        { cause: error },
+      );
+    }
+    if (
+      !hasPid ||
+      !Number.isInteger(pid) ||
+      pid <= 0 ||
+      typeof once !== "function" ||
+      typeof removeListener !== "function" ||
+      typeof kill !== "function" ||
+      !(exitCode === null || Number.isInteger(exitCode)) ||
+      !(signalCode === null || typeof signalCode === "string")
+    ) {
+      throw new TypeError(
+        `electron launch returned a malformed process handle for ${phase}`,
+      );
+    }
+    return childProcess;
+  }
+
+  function captureElectronChildProcess(app, phase) {
+    if (!app || typeof app.process !== "function") {
+      throw new TypeError(
+        `electron launch did not expose a process handle for ${phase}`,
+      );
+    }
+    let childProcess;
+    try {
+      childProcess = app.process();
+    } catch (error) {
+      throw new TypeError(
+        `electron launch could not capture process handle for ${phase}: ${operationErrorMessage(error)}`,
+        { cause: error },
+      );
+    }
+    return validateElectronChildProcess(childProcess, phase);
+  }
+
+  function settleLaunchContext(launchContext) {
+    if (!launchContext || launchContext.lateLaunchSettled) return;
+    launchContext.lateLaunchSettled = true;
+    launchContext.resolveLateLaunch();
+  }
+
+  function registerLateElectronLaunch(app, phase, launchId) {
+    const launchContext = launchContexts.get(launchId);
+    if (launchContext) launchContext.lateLaunchStarted = true;
+    let task;
+    try {
+      task = handleLateElectronLaunch(app, phase, launchId);
+    } catch (error) {
+      task = Promise.reject(error);
+    }
+    lateLaunchTasks.add(task);
+    const settled = Promise.resolve(task).then(
+      (value) => value,
+      (error) => {
+        throw error;
+      },
+    );
+    void settled.then(
+      () => {
+        if (launchContext) settleLaunchContext(launchContext);
+        lateLaunchTasks.delete(task);
+      },
+      () => {
+        if (launchContext) settleLaunchContext(launchContext);
+        lateLaunchTasks.delete(task);
+      },
+    );
+    return task;
+  }
+
+  async function awaitLateElectronLaunches() {
+    // Let a resolved Electron promise enqueue its onLateResolve callback
+    // before taking the pending-context snapshot.
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    const pendingContexts = [...launchContexts.values()].filter(
+      (launchContext) =>
+        !launchContext.lateLaunchSettled &&
+        !launchContext.lateLaunchAwaitExpired,
+    );
+    if (pendingContexts.length === 0 && lateLaunchTasks.size === 0) return;
+    const completion = Promise.all(
+      pendingContexts.map(
+        (launchContext) => launchContext.lateLaunchCompletion,
+      ),
+    );
+    await settleWithin(
+      completion,
+      PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS + 250,
+    ).catch(() => undefined);
+    for (const launchContext of pendingContexts) {
+      if (!launchContext.lateLaunchSettled) {
+        // The lane watchdog failure and the launch-cleanup failure are
+        // independent facts. Deduplicate only through the launch context so
+        // a watchdog diagnostic cannot hide an unverified late launch.
+        recordLaunchUnverifiedCloseDiagnostic(
+          launchContext,
+          launchContext.lateLaunchStarted
+            ? "Late Electron cleanup did not settle before the cleanup deadline; process termination cannot be verified"
+            : "Late Electron launch did not settle before the cleanup deadline; process termination cannot be verified",
+        );
+        launchContext.lateLaunchAwaitExpired = true;
+      }
+    }
   }
 
   function trackChild(child) {
@@ -3057,49 +3392,128 @@ export function createProductJourneyHarness({
 
   async function killTrackedChildren() {
     const children = [...trackedChildren];
-    await Promise.all(
-      children.map((child) => killProcessTree(child).catch(() => undefined)),
+    const outcomes = await Promise.all(
+      children.map(async (child) => {
+        try {
+          return { child, outcome: await killProcessTree(child) };
+        } catch (error) {
+          return { child, error };
+        }
+      }),
     );
     for (const child of children) {
-      forgetChild(child);
+      const outcome = outcomes.find((entry) => entry.child === child);
+      if (outcome?.outcome?.terminationVerified === true) {
+        forgetChild(child);
+      }
       for (const [app, appChild] of appChildProcesses) {
-        if (appChild === child) appChildProcesses.delete(app);
+        if (
+          appChild === child &&
+          outcome?.outcome?.terminationVerified === true &&
+          processHasExited(child)
+        ) {
+          appChildProcesses.delete(app);
+        }
+      }
+    }
+    for (const [app, appChild] of appChildProcesses) {
+      if (!trackedChildren.has(appChild) && processHasExited(appChild)) {
+        appChildProcesses.delete(app);
       }
     }
   }
 
-  async function killAppProcess(app, appProcess = appChildProcesses.get(app)) {
-    await killProcessTree(appProcess).catch(() => undefined);
-    if (appProcess) forgetChild(appProcess);
-    if (appChildProcesses.get(app) === appProcess) {
+  async function killAppProcess(
+    app,
+    appProcess = appChildProcesses.get(app),
+    options = {},
+  ) {
+    if (!appProcess) {
+      return {
+        attempted: false,
+        terminationVerified: true,
+        failures: [],
+      };
+    }
+    let outcome;
+    let error;
+    try {
+      outcome = await killProcessTree(appProcess, options);
+    } catch (caughtError) {
+      error = caughtError;
+    }
+    const terminationVerified = processHasExited(appProcess);
+    if (terminationVerified) {
+      forgetChild(appProcess);
+    }
+    if (terminationVerified && appChildProcesses.get(app) === appProcess) {
       appChildProcesses.delete(app);
     }
+    return {
+      attempted: true,
+      terminationVerified,
+      failures: outcome?.failures ?? [],
+      ...(error ? { error } : {}),
+    };
   }
 
-  function capturedCloseOptions(app) {
-    const childProcess = appChildProcesses.get(app);
-    return childProcess ? { childProcess } : {};
+  function capturedCloseOptions(
+    app,
+    childProcess = appChildProcesses.get(app),
+    extraOptions = {},
+  ) {
+    return {
+      ...extraOptions,
+      skipProcessLookup: true,
+      ...(childProcess ? { childProcess } : {}),
+    };
   }
 
-  async function closeActiveResources(reason) {
+  function releaseAppChildProcess(
+    app,
+    childProcess = appChildProcesses.get(app),
+  ) {
+    if (!childProcess || appChildProcesses.get(app) !== childProcess) return;
+    forgetChild(childProcess);
+    appChildProcesses.delete(app);
+  }
+
+  async function closeActiveResources(
+    reason,
+    { reportCloseFailure = false } = {},
+  ) {
     const app = lastResources.app;
     const page = lastResources.page;
     if (!app) return;
-    await settleWithin(
-      runHarnessOperation(
-        "electron-close",
-        () => closeApp(app, page, reason, capturedCloseOptions(app)),
-        {
-          phase: lastResources.phase ?? "cleanup",
-          command: "electron-close",
-          args: { reason },
-          timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
-          useLaneSignal: false,
-          suppressTimeoutCleanup: true,
-        },
-      ),
-      PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
-    ).catch(() => undefined);
+    const childProcess = appChildProcesses.get(app);
+    const closeOptions = capturedCloseOptions(app, childProcess);
+    const closePhase = lastResources.phase ?? "cleanup";
+    await retainRendererScreenshot(page);
+    const closeOperation = runHarnessOperation(
+      "electron-close",
+      () => closeApp(app, page, reason, closeOptions),
+      {
+        phase: closePhase,
+        command: "electron-close",
+        args: { reason },
+        timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+        useLaneSignal: false,
+        suppressTimeoutCleanup: true,
+        journal: operationJournalClosed ? null : operationJournal,
+      },
+    );
+    let closeFailure = null;
+    if (reportCloseFailure) {
+      closeFailure = await closeOperation.catch((error) => error);
+      if (closeFailure) {
+        recordFatalCloseDiagnostic(app, closePhase, closeFailure, childProcess);
+      }
+    } else {
+      await settleWithin(
+        closeOperation,
+        PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+      ).catch(() => undefined);
+    }
     await settleWithin(
       Promise.resolve().then(() => drainMainDiagnosticStream(app)),
       PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
@@ -3117,6 +3531,7 @@ export function createProductJourneyHarness({
       lastResources.receiptArtifact = null;
       lastResources.heldFreshnessArtifact = null;
     }
+    return closeFailure;
   }
 
   function captureFailureOnce(name, details = {}) {
@@ -3128,10 +3543,80 @@ export function createProductJourneyHarness({
     return failureCapturePromise;
   }
 
+  function deferFailureCaptureUntilLateLaunch(name, details, launchId) {
+    if (failureCapturePromise) return failureCapturePromise;
+    let release;
+    let timeoutId;
+    const pending = {
+      launchId,
+      phase: details.phase,
+      lateLaunchStarted: false,
+      timeoutId: null,
+    };
+    const waitForLateLaunch = new Promise((resolve) => {
+      release = () => {
+        if (timeoutId) globalThis.clearTimeout(timeoutId);
+        timeoutId = null;
+        resolve();
+      };
+      timeoutId = globalThis.setTimeout(() => {
+        timeoutId = null;
+        pending.timeoutId = null;
+        if (pending.lateLaunchStarted) return;
+        if (deferredFailureCapture === pending) {
+          deferredFailureCapture = null;
+        }
+        recordLaunchUnverifiedCloseDiagnostic(
+          launchContexts.get(pending.launchId),
+        );
+        resolve();
+      }, PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS);
+      pending.timeoutId = timeoutId;
+    });
+    pending.release = release;
+    deferredFailureCapture = pending;
+    failureCapturePromise = waitForLateLaunch.then(() =>
+      settleWithin(
+        Promise.resolve().then(() => captureFailureArtifact(name, details)),
+        PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+      ),
+    );
+    return failureCapturePromise;
+  }
+
+  function claimDeferredFailureCapture(launchId) {
+    if (deferredFailureCapture?.launchId !== launchId) return false;
+    deferredFailureCapture.lateLaunchStarted = true;
+    if (deferredFailureCapture.timeoutId) {
+      globalThis.clearTimeout(deferredFailureCapture.timeoutId);
+      deferredFailureCapture.timeoutId = null;
+    }
+    return true;
+  }
+
+  function releaseDeferredFailureCapture(launchId) {
+    if (deferredFailureCapture?.launchId !== launchId) return;
+    const pending = deferredFailureCapture;
+    deferredFailureCapture = null;
+    pending.release();
+  }
+
+  async function settleLateFailureCapture(name, details, launchId) {
+    const pendingCapture = failureCapturePromise;
+    releaseDeferredFailureCapture(launchId);
+    try {
+      await (pendingCapture ?? captureFailureOnce(name, details));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function captureFailureWithCleanup(name, reason = "failure") {
     if (failureCleanupPromise) return failureCleanupPromise;
-    const capture = captureFailureOnce(name);
     failureCleanupPromise = (async () => {
+      await awaitLateElectronLaunches();
+      const capture = captureFailureOnce(name);
       await capture.catch(() => undefined);
       await closeActiveResources(`failure:${reason}`).catch(() => undefined);
       await killTrackedChildren();
@@ -3142,65 +3627,198 @@ export function createProductJourneyHarness({
   async function handleLateElectronLaunch(app, phase, launchId) {
     if (!app || typeof app !== "object") return;
     const launchContext = launchContexts.get(launchId);
-    let appProcess = null;
+    claimDeferredFailureCapture(launchId);
+    let appProcess;
+    let childCaptureError;
     try {
-      appProcess = typeof app.process === "function" ? app.process() : null;
-    } catch {
-      // Even if the late app cannot expose its child handle, close the app
-      // itself and preserve the original launch timeout.
+      appProcess = captureElectronChildProcess(app, phase);
+    } catch (error) {
+      childCaptureError = error;
     }
-    if (launchContext) {
-      launchContext.app = app;
-      launchContext.appProcess = appProcess;
-    }
-    trackChild(appProcess);
-    appChildProcesses.set(app, appProcess);
     const failureName = operationPhase(phase).replaceAll(/[\\/]/gu, "-");
-    await captureFailureOnce(failureName, {
+    const failureDetails = {
       phase,
       launchId,
-      reason: "electron-launch-resolved-after-timeout",
-    }).catch(() => undefined);
-
-    if (lastResources.app === null || lastResources.app === app) {
-      lastResources.app = app;
-      lastResources.page = null;
-      lastResources.phase = phase;
-      lastResources.launchId = launchId;
-      await closeActiveResources("late-electron-launch");
-    } else {
-      // A caller may have started another lane after observing the timeout.
-      // Never overwrite its active resources; close this late app directly.
-      await settleWithin(
-        withOperationTimeout(
-          "electron-close",
-          () =>
-            closeApp(
+      reason: appProcess
+        ? "electron-launch-resolved-after-timeout"
+        : "electron-launch-resolved-without-child",
+      ...(appProcess
+        ? {}
+        : { error: operationErrorMessage(childCaptureError) }),
+    };
+    try {
+      if (!appProcess) {
+        if (launchContext) launchContext.app = app;
+        if (launchContext) {
+          recordLaunchUnverifiedCloseDiagnostic(launchContext);
+        } else {
+          recordUnverifiedCloseDiagnostic(phase);
+        }
+        if (lastResources.app === null || lastResources.app === app) {
+          lastResources.app = app;
+          lastResources.page = null;
+          lastResources.phase = phase;
+          lastResources.launchId = launchId;
+          const closeFailure = await closeActiveResources(
+            "late-electron-launch",
+            {
+              reportCloseFailure: true,
+            },
+          );
+          if (!closeFailure) {
+            recordTimeline("electron-close-playwright-cleanup", {
+              phase,
+              launchId,
+              processTerminationVerified: false,
+            });
+          }
+        } else {
+          const closeOptions = capturedCloseOptions(app);
+          let closeFailure = null;
+          try {
+            await withOperationTimeout(
+              "electron-close",
+              () => closeApp(app, null, "late-electron-launch", closeOptions),
+              {
+                phase: `${phase}/late-launch`,
+                command: "electron-close",
+                args: { launchId },
+                timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+                journal: operationJournalClosed ? null : operationJournal,
+                onTimeout: null,
+              },
+            );
+          } catch (error) {
+            closeFailure = error;
+          }
+          if (closeFailure) {
+            recordFatalCloseDiagnostic(
               app,
-              null,
-              "late-electron-launch",
-              capturedCloseOptions(app),
-            ),
-          {
-            phase: `${phase}/late-launch`,
-            command: "electron-close",
-            args: { launchId },
-            timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
-            journal: operationJournal,
-            onTimeout: null,
-          },
-        ),
-        PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
-      ).catch(() => undefined);
+              `${phase}/late-launch`,
+              closeFailure,
+            );
+          } else {
+            recordTimeline("electron-close-playwright-cleanup", {
+              phase,
+              launchId,
+              processTerminationVerified: false,
+            });
+          }
+        }
+        return;
+      }
+      if (launchContext) {
+        launchContext.app = app;
+        launchContext.appProcess = appProcess;
+      }
+      trackChild(appProcess);
+      appChildProcesses.set(app, appProcess);
+
+      if (lastResources.app === null || lastResources.app === app) {
+        lastResources.app = app;
+        lastResources.page = null;
+        lastResources.phase = phase;
+        lastResources.launchId = launchId;
+        await closeActiveResources("late-electron-launch", {
+          reportCloseFailure: true,
+        });
+      } else {
+        // A caller may have started another lane after observing the timeout.
+        // Never overwrite its active resources; close this late app directly.
+        const closeOptions = capturedCloseOptions(app, appProcess);
+        await settleWithin(
+          withOperationTimeout(
+            "electron-close",
+            () => closeApp(app, null, "late-electron-launch", closeOptions),
+            {
+              phase: `${phase}/late-launch`,
+              command: "electron-close",
+              args: { launchId },
+              timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+              journal: operationJournalClosed ? null : operationJournal,
+              onTimeout: null,
+            },
+          ),
+          PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS + 250,
+        ).catch((error) => {
+          recordFatalCloseDiagnostic(
+            app,
+            `${phase}/late-launch`,
+            error,
+            appProcess,
+          );
+        });
+      }
+      // A late launch is already outside the lane's normal close window. Once
+      // Playwright close has failed or timed out, issue both termination
+      // signals without an additional grace sleep so the final artifact can
+      // durably record the termination outcome before disposal.
+      const termination = await killAppProcess(app, appProcess, {
+        graceMs: 0,
+      });
+      if (!termination.terminationVerified) {
+        const failureMessage = termination.error
+          ? operationErrorMessage(termination.error)
+          : termination.failures.length > 0
+            ? termination.failures.map((failure) => failure.message).join("; ")
+            : "Electron child process did not report an exit after cleanup signals";
+        recordFatalCloseDiagnostic(
+          app,
+          `${phase}/termination`,
+          new ElectronChildProcessTerminationError(
+            `Electron child process termination was not verified: ${failureMessage}`,
+          ),
+          appProcess,
+        );
+      }
+    } finally {
+      const diagnosticsCaptured = await settleLateFailureCapture(
+        failureName,
+        failureDetails,
+        launchId,
+      );
+      if (diagnosticsCaptured && appProcess && !processHasExited(appProcess)) {
+        // Keep an unverified child tracked through the fatal diagnostic and
+        // one-shot artifact. Once that evidence is durable, release the
+        // handle so subsequent disposal cannot issue duplicate kill attempts.
+        releaseAppChildProcess(app, appProcess);
+      }
+      if (launchContext) settleLaunchContext(launchContext);
+      launchContexts.delete(launchId);
     }
-    await killAppProcess(app, appProcess);
-    launchContexts.delete(launchId);
   }
 
   async function handleOperationTimeout(
     error,
     { phase = null, launchId = null } = {},
   ) {
+    const launchContext = launchId ? launchContexts.get(launchId) : null;
+    if (launchContext && !launchContext.app) {
+      const failureName = operationPhase(
+        phase ?? launchContext.phase,
+      ).replaceAll(/[\\/]/gu, "-");
+      void deferFailureCaptureUntilLateLaunch(
+        failureName,
+        {
+          phase: phase ?? launchContext.phase,
+          launchId,
+          reason: "electron-launch-timeout",
+          error: operationErrorMessage(error),
+        },
+        launchId,
+      ).catch(() => undefined);
+      if (laneWatchdogController) {
+        if (!laneWatchdogController.signal.aborted) {
+          laneWatchdogController.abort("timeout");
+        }
+      } else {
+        if (!harnessAbortController.signal.aborted) {
+          harnessAbortController.abort("timeout");
+        }
+      }
+      void error;
+      return;
+    }
     if (laneWatchdogController) {
       if (!laneWatchdogController.signal.aborted) {
         laneWatchdogController.abort("timeout");
@@ -3209,14 +3827,6 @@ export function createProductJourneyHarness({
     }
     if (!harnessAbortController.signal.aborted) {
       harnessAbortController.abort("timeout");
-    }
-    const launchContext = launchId ? launchContexts.get(launchId) : null;
-    if (launchContext && !launchContext.app) {
-      await captureFailureOnce(
-        operationPhase(phase ?? launchContext.phase).replaceAll(/[\\/]/gu, "-"),
-      ).catch(() => undefined);
-      void error;
-      return;
     }
     await captureFailureWithCleanup(
       operationPhase(lastResources.phase).replaceAll(/[\\/]/gu, "-"),
@@ -3260,6 +3870,7 @@ export function createProductJourneyHarness({
       suppressTimeoutCleanup = false,
       onTimeout = null,
       onLateResolve = null,
+      journal = operationJournal,
     } = {},
   ) {
     return withOperationTimeout(operation, fn, {
@@ -3268,7 +3879,7 @@ export function createProductJourneyHarness({
       requestId,
       args,
       timeoutMs,
-      journal: operationJournal,
+      journal,
       signal: useLaneSignal
         ? (laneWatchdogController?.signal ?? harnessAbortController.signal)
         : null,
@@ -3530,13 +4141,16 @@ export function createProductJourneyHarness({
     const rendererCleanPass =
       rendererErrors.length === 0 && pageErrors.length === 0;
     const mainCleanPass = unallowedMainErrors.length === 0;
+    const closeCleanPass = closeDiagnostics.every(
+      (issue) => issue.fatal !== true,
+    );
     const summary = {
       rendererErrorCount: rendererErrors.length,
       pageErrors: pageErrors.map((issue) => ({ ...issue })),
       mainErrorCount: mainErrors.length,
       unallowedMainErrors,
       mainCleanPass,
-      cleanPass: rendererCleanPass && mainCleanPass,
+      cleanPass: rendererCleanPass && mainCleanPass && closeCleanPass,
     };
     if (closeDiagnostics.length > 0) {
       summary.closeDiagnostics = closeDiagnostics.map((issue) => ({
@@ -3555,6 +4169,9 @@ export function createProductJourneyHarness({
     }
     if (!summary.mainCleanPass) {
       throw new MainProcessDiagnosticsError(summary);
+    }
+    if (!summary.cleanPass) {
+      throw new CloseDiagnosticsError(summary);
     }
     return summary;
   }
@@ -3924,12 +4541,22 @@ export function createProductJourneyHarness({
   async function launchRenderer(phase) {
     installSignalHandlers();
     await rm(retainedRendererPath, { force: true });
+    retainedRendererScreenshotPromise = null;
     const launchId = `launch-${randomUUID()}`;
+    let resolveLateLaunch;
+    const lateLaunchCompletion = new Promise((resolve) => {
+      resolveLateLaunch = resolve;
+    });
     const launchContext = {
       phase,
       launchId,
       app: null,
-      appProcess: null,
+      lateLaunchCompletion,
+      resolveLateLaunch,
+      lateLaunchSettled: false,
+      lateLaunchStarted: false,
+      lateLaunchAwaitExpired: false,
+      unverifiedCloseDiagnosticRecorded: false,
     };
     launchContexts.set(launchId, launchContext);
     recordTimeline("launch-requested", { phase, launchId });
@@ -3961,26 +4588,38 @@ export function createProductJourneyHarness({
       receiptCount: 0,
     };
     await requireCleanNarrativeMaintenanceReceiptRoot(receiptState.root, phase);
-    const app = await runHarnessOperation(
-      "electron-launch",
-      () =>
-        electronLauncher.launch({
-          executablePath: electronBin,
-          args: electronArgs,
-          env,
-          timeout: launchTimeoutMs,
-        }),
-      {
-        phase,
-        command: "electron-launch",
-        args: { executablePath: electronBin, args: electronArgs },
-        timeoutMs: launchTimeoutMs,
-        onTimeout: (error) =>
-          handleOperationTimeout(error, { phase, launchId }),
-        onLateResolve: (lateApp) =>
-          handleLateElectronLaunch(lateApp, phase, launchId),
-      },
-    );
+    let app;
+    try {
+      app = await runHarnessOperation(
+        "electron-launch",
+        () =>
+          electronLauncher.launch({
+            executablePath: electronBin,
+            args: electronArgs,
+            env,
+            timeout: launchTimeoutMs,
+          }),
+        {
+          phase,
+          command: "electron-launch",
+          args: { executablePath: electronBin, args: electronArgs },
+          timeoutMs: launchTimeoutMs,
+          onTimeout: (error) =>
+            handleOperationTimeout(error, { phase, launchId }),
+          onLateResolve: (lateApp) =>
+            registerLateElectronLaunch(lateApp, phase, launchId),
+        },
+      );
+    } catch (error) {
+      if (
+        !(error instanceof ProductJourneyOperationTimeoutError) &&
+        !(error instanceof ProductJourneyLaneAbortError)
+      ) {
+        settleLaunchContext(launchContext);
+        launchContexts.delete(launchId);
+      }
+      throw error;
+    }
     launchContext.app = app;
     lastResources.app = app;
     lastResources.page = null;
@@ -3988,7 +4627,44 @@ export function createProductJourneyHarness({
     lastResources.launchId = launchId;
     lastResources.receiptArtifact = null;
     lastResources.heldFreshnessArtifact = null;
-    const appProcess = typeof app.process === "function" ? app.process() : null;
+    let appProcess;
+    try {
+      appProcess = captureElectronChildProcess(app, phase);
+    } catch (error) {
+      recordTimeline("electron-child-capture-failed", {
+        launchId,
+        error: operationErrorMessage(error),
+      });
+      recordLaunchUnverifiedCloseDiagnostic(launchContext);
+      let cleanupFailure = null;
+      try {
+        cleanupFailure = await closeActiveResources(
+          "launch-child-capture-failure",
+          { reportCloseFailure: true },
+        );
+      } catch (closeError) {
+        cleanupFailure = closeError;
+        recordFatalCloseDiagnostic(app, phase, closeError);
+      }
+      const launchFailure = cleanupFailure
+        ? new AggregateError(
+            [error, cleanupFailure],
+            `electron launch failed after child capture and cleanup failure for ${phase}`,
+          )
+        : error;
+      await captureFailureOnce(
+        operationPhase(phase).replaceAll(/[\\/]/gu, "-"),
+        {
+          phase,
+          launchId,
+          reason: "electron-launch-child-capture-failed",
+          error: operationErrorMessage(launchFailure),
+        },
+      ).catch(() => undefined);
+      settleLaunchContext(launchContext);
+      launchContexts.delete(launchId);
+      throw launchFailure;
+    }
     launchContext.appProcess = appProcess;
     trackChild(appProcess);
     appChildProcesses.set(app, appProcess);
@@ -4131,6 +4807,7 @@ export function createProductJourneyHarness({
       recordTimeline("renderer-bridge-ready", { launchId });
       const result = {
         app,
+        appProcess,
         page,
         launchId,
         receiptArtifact: receiptState.artifact,
@@ -4146,6 +4823,7 @@ export function createProductJourneyHarness({
           byteLength: receiptState.artifact?.byteLength ?? null,
         },
       };
+      settleLaunchContext(launchContext);
       launchContexts.delete(launchId);
       return result;
     } catch (error) {
@@ -4154,16 +4832,25 @@ export function createProductJourneyHarness({
   }
 
   async function retainRendererScreenshot(page) {
-    if (!artifactRoot || !page || page.isClosed()) return;
-    await settleWithin(
-      Promise.resolve().then(() =>
-        page.screenshot({
-          path: retainedRendererPath,
-          fullPage: true,
-        }),
-      ),
-      PRODUCT_JOURNEY_SCREENSHOT_TIMEOUT_MS,
-    ).catch(() => undefined);
+    try {
+      if (!artifactRoot || !page) return;
+      if (page.isClosed()) return;
+      if (!retainedRendererScreenshotPromise) {
+        retainedRendererScreenshotPromise = settleWithin(
+          Promise.resolve().then(() =>
+            page.screenshot({
+              path: retainedRendererPath,
+              fullPage: true,
+            }),
+          ),
+          PRODUCT_JOURNEY_SCREENSHOT_TIMEOUT_MS,
+        ).catch(() => undefined);
+      }
+      await retainedRendererScreenshotPromise;
+    } catch {
+      // Renderer screenshots are optional diagnostics. Their availability
+      // must never prevent mandatory close, termination, or final evidence.
+    }
   }
 
   async function close(app, page, phase, options = {}) {
@@ -4171,9 +4858,24 @@ export function createProductJourneyHarness({
       options && typeof options === "object"
         ? options.expectedExitEvidence
         : undefined;
+    const capturedChildProcess = appChildProcesses.get(app);
     if (expectedExitEvidence !== undefined) {
       validateProcessExitEvidence(app, phase, expectedExitEvidence);
     }
+    if (expectedExitEvidence !== undefined && !trustedCloseApp) {
+      const error = new Error(
+        `${phase} post-exit close requires the trusted default close helper`,
+      );
+      recordFatalCloseDiagnostic(app, phase, error, capturedChildProcess);
+      throw error;
+    }
+    const closeOptions = capturedCloseOptions(
+      app,
+      capturedChildProcess,
+      expectedExitEvidence === undefined
+        ? {}
+        : { throwOnPostExitCloseError: true },
+    );
     recordTimeline("close-requested", { phase });
     const receiptState = receiptStates.get(app);
     await readLifecycleTrace(page).catch(() => undefined);
@@ -4181,7 +4883,7 @@ export function createProductJourneyHarness({
     try {
       await runHarnessOperation(
         "electron-close",
-        () => closeApp(app, page, phase, capturedCloseOptions(app)),
+        () => closeApp(app, page, phase, closeOptions),
         {
           phase,
           command: "electron-close",
@@ -4191,35 +4893,52 @@ export function createProductJourneyHarness({
         },
       );
     } catch (error) {
-      if (expectedExitEvidence === undefined) throw error;
-      recordCloseDiagnostic(phase, error);
-      await drainMainDiagnosticStream(app).catch(() => undefined);
-      await drainDiagnosticWork().catch(() => undefined);
-      await consumeNarrativeMaintenanceReceiptAfterProcessExit(
-        app,
-        phase,
-        expectedExitEvidence,
-      );
+      if (
+        expectedExitEvidence === undefined ||
+        !isBoundPostExitCloseError(error, app, phase, capturedChildProcess)
+      ) {
+        recordFatalCloseDiagnostic(app, phase, error, capturedChildProcess);
+        throw error;
+      }
+      recordCloseDiagnostic(app, phase, error, capturedChildProcess);
+      try {
+        await drainMainDiagnosticStream(app);
+        await drainDiagnosticWork();
+        await consumeNarrativeMaintenanceReceiptAfterProcessExit(
+          app,
+          phase,
+          expectedExitEvidence,
+        );
+      } catch (cleanupError) {
+        recordFatalCloseDiagnostic(
+          app,
+          phase,
+          cleanupError,
+          capturedChildProcess,
+        );
+        throw cleanupError;
+      }
       return;
     }
-    const appProcess = appChildProcesses.get(app);
-    if (appProcess) {
-      forgetChild(appProcess);
-      appChildProcesses.delete(app);
+    try {
+      if (receiptState) {
+        await consumeNarrativeMaintenanceReceipt(
+          receiptState,
+          `${phase}/close`,
+          runHarnessOperation,
+        );
+        receiptStates.delete(app);
+      }
+      await drainMainDiagnosticStream(app);
+      // Renderer failures frequently arrive while lifecycle shutdown is
+      // cancelling reads. Do not clear phase authority until every event already
+      // delivered by Playwright has been serialized.
+      await drainDiagnosticWork();
+    } catch (error) {
+      recordFatalCloseDiagnostic(app, phase, error, capturedChildProcess);
+      throw error;
     }
-    if (receiptState) {
-      await consumeNarrativeMaintenanceReceipt(
-        receiptState,
-        `${phase}/close`,
-        runHarnessOperation,
-      );
-      receiptStates.delete(app);
-    }
-    await drainMainDiagnosticStream(app);
-    // Renderer failures frequently arrive while lifecycle shutdown is
-    // cancelling reads. Do not clear phase authority until every event already
-    // delivered by Playwright has been serialized.
-    await drainDiagnosticWork();
+    releaseAppChildProcess(app, capturedChildProcess);
     recordTimeline("closed", { phase });
     if (lastResources.app === app) {
       lastResources.app = null;
@@ -4355,12 +5074,9 @@ export function createProductJourneyHarness({
       );
     }
 
-    if (appChildProcesses.get(app) === trackedChild) {
-      forgetChild(trackedChild);
-      appChildProcesses.delete(app);
-    }
     await drainMainDiagnosticStream(app);
     await drainDiagnosticWork();
+    releaseAppChildProcess(app, trackedChild);
     recordTimeline("closed", { phase });
     if (lastResources.app === app) {
       lastResources.app = null;
@@ -4475,15 +5191,42 @@ export function createProductJourneyHarness({
       children: () => [...trackedChildren],
       captureFailureArtifact: (name, details) =>
         captureFailureOnce(name, details),
-      cleanup: (details) => closeActiveResources(`lane-${details.status}`),
+      recordFailure: ({ error }) =>
+        recordFatalCloseDiagnostic(null, phase, error),
+      recordChildCleanupFailure: ({ child, error }) => {
+        const app = [...appChildProcesses.entries()].find(
+          ([, appChild]) => appChild === child,
+        )?.[0];
+        recordFatalCloseDiagnostic(
+          app ?? null,
+          `${phase}/termination`,
+          error,
+          child,
+        );
+      },
+      cleanup: (details) =>
+        closeActiveResources(`lane-${details.status}`, {
+          reportCloseFailure: true,
+        }),
+      awaitLateResources: () => awaitLateElectronLaunches(),
       journal: operationJournal,
       signal: controller.signal,
       abortController: controller,
     });
     laneWatchdogPromise = watchdog;
+    let watchdogFailed = false;
     try {
       return await watchdog;
+    } catch (error) {
+      watchdogFailed = true;
+      throw error;
     } finally {
+      if (watchdogFailed && !failureCleanupPromise) {
+        // runWithLaneWatchdog rejects only after its bounded cleanup and the
+        // one-shot artifact have settled. Reuse that promise from dispose so
+        // the failed lane cannot issue a second close or kill sequence.
+        failureCleanupPromise = watchdog.catch(() => undefined);
+      }
       if (laneWatchdogController === controller) laneWatchdogController = null;
       if (laneWatchdogPromise === watchdog) laneWatchdogPromise = null;
       if (!lastResources.app && !laneWatchdogController) {
@@ -4629,6 +5372,7 @@ export function createProductJourneyHarness({
       });
       removeSignalHandlers();
       await operationJournal.close().catch(() => undefined);
+      operationJournalClosed = true;
       console.error(`[electron:product] retained temporary root: ${tmpRoot}`);
       return;
     }
@@ -4637,7 +5381,9 @@ export function createProductJourneyHarness({
       await closeActiveResources("dispose");
       await killTrackedChildren();
     }
+    await awaitLateElectronLaunches();
     await operationJournal.close();
+    operationJournalClosed = true;
     await rm(tmpRoot, { recursive: true, force: true });
   }
 

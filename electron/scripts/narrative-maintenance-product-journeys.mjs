@@ -2993,8 +2993,7 @@ async function waitForStableLedger(
   );
 }
 
-async function waitForProcessExit(app, label, timeoutMs = 5_000) {
-  const child = app?.process?.();
+export async function waitForProcessExit(child, label, timeoutMs = 5_000) {
   if (!child)
     throw new Error(`${label}: Electron child process is unavailable`);
   if (child.exitCode !== null || child.signalCode !== null) {
@@ -3919,7 +3918,7 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
     // page-based polling can otherwise race Target closed and hide the real
     // lifecycle failure in teardown.
     interruptedExit = await waitForProcessExit(
-      interruptedLaunch.app,
+      interruptedLaunch.appProcess,
       "process interruption recovery",
     );
     postExitRuns = await readRunLedgerSnapshot(workspace);
