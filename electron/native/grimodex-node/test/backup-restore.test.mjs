@@ -179,6 +179,30 @@ test("listBackupsはdb/db.gzだけを新しい順でcamelCase DTOにする", asy
   assert.ok(listed[0].modifiedMs > listed[1].modifiedMs);
 });
 
+test("C2-ZCのstaged runtime backup名はlist/restoreのproduction契約を通る", async (t) => {
+  const fixture = makeFixture("c2zc-runtime-name");
+  t.after(fixture.cleanup);
+  await fixture.backend.openWorkspace(fixture.workspace);
+
+  await seedVersion(fixture.backend, "fixture");
+  const backupName = "grimodex-c2zc-restore-fixture.backup.db";
+  await writeBackupViaTrustedOpen(
+    fixture.backend,
+    fixture.workspace,
+    join(fixture.backups, backupName),
+  );
+
+  const listed = JSON.parse(await fixture.backend.listBackups());
+  assert.equal(
+    listed.filter(({ fileName }) => fileName === backupName).length,
+    1,
+  );
+
+  await seedVersion(fixture.backend, "live");
+  await fixture.backend.restoreBackup(backupName);
+  assert.equal(await readVersion(fixture.backend), "fixture");
+});
+
 test("restoreBackupは.dbをroundtripし復元直前の安全退避を残す", async (t) => {
   const fixture = makeFixture("plain");
   t.after(fixture.cleanup);

@@ -1,5 +1,18 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+import {
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -19,7 +32,9 @@ import {
   C2ZC_AUTHORITY_SNAPSHOT_QUERIES,
   C2ZC_CANONICAL_PRODUCT_JOURNEY_PHASES,
   C2ZC_PRODUCT_JOURNEY_ID,
+  C2ZC_RESTORE_FIXTURE_BACKUP_NAME,
   C2ZC_RESTORE_FIXTURE_ENV,
+  C2ZC_RUNTIME_RESTORE_BACKUP_NAME,
   C2ZC_VERIFY_COVERAGE_COUNT,
   assertC2ZcFixtureCandidateBinding,
   assertC2ZcFixtureApplicationParity,
@@ -35,7 +50,9 @@ import {
   assertC2ZcVerifyCoverage,
   countC2ZcSqlPlaceholders,
   readC2ZcAuthoritySnapshot,
+  resolveC2ZcRuntimeBackupName,
   resolveC2ZcAuthorityQuery,
+  stageC2ZcRestoreFixture,
 } from "../electron/scripts/c2zc-canonical-product-journey.mjs";
 import {
   createC2ZcFixtureManifest,
@@ -444,6 +461,270 @@ test("offline restore fixture interface is narrow and fail-closed", () => {
       () => assertC2ZcRestoreFixtureInput(invalid),
       /fixture|path|manifest|version/i,
     );
+  }
+});
+
+test("C2-ZC staging publishes the offline fixture through an owned private temp", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-c2zc-stage-"));
+  const fixtureBytes = Buffer.from("fixture-db");
+  const fixtureSha256 = `sha256:${createHash("sha256")
+    .update(fixtureBytes)
+    .digest("hex")}`;
+  const fixtureFor = async (sourceName = C2ZC_RESTORE_FIXTURE_BACKUP_NAME) => {
+    const sourcePath = path.join(root, sourceName);
+    await writeFile(sourcePath, fixtureBytes);
+    return {
+      path: sourcePath,
+      manifest: createC2ZcFixtureManifest({
+        fixturePath: C2ZC_RESTORE_FIXTURE_BACKUP_NAME,
+        databasePath: "c2zc-restore-fixture.db",
+        fixtureSha256,
+        fixtureSizeBytes: fixtureBytes.length,
+      }),
+    };
+  };
+  const backupEntries = async (workspace) =>
+    readdir(path.join(workspace, "backups"));
+  const assertStagingResidue = async (workspace, targetPresent) => {
+    const entries = await backupEntries(workspace);
+    const hidden = entries.filter((entry) => entry.startsWith("."));
+    assert.equal(hidden.length, 1);
+    assert.ok(!hidden[0].startsWith("grimodex-"));
+    assert.equal(
+      entries.filter((entry) => entry.startsWith("grimodex-")).length,
+      targetPresent ? 1 : 0,
+    );
+    return hidden[0];
+  };
+  const workspaceFor = (name) => path.join(root, `${name}-workspace`);
+  const targetFor = (workspace) =>
+    path.join(workspace, "backups", C2ZC_RUNTIME_RESTORE_BACKUP_NAME);
+  const assertStageFailure = async (
+    name,
+    fixture,
+    options,
+    expected,
+    targetPresent = false,
+  ) => {
+    const workspace = workspaceFor(name);
+    const target = targetFor(workspace);
+    await assert.rejects(
+      stageC2ZcRestoreFixture(workspace, fixture, options),
+      expected,
+    );
+    if (!targetPresent) await assert.rejects(lstat(target), { code: "ENOENT" });
+    await assertStagingResidue(workspace, targetPresent);
+    return { target, workspace };
+  };
+  try {
+    const stagingSource = await read(
+      "electron/scripts/c2zc-canonical-product-journey.mjs",
+    );
+    assert.doesNotMatch(stagingSource, /\bunlink\b/);
+
+    const fixture = await fixtureFor();
+    const staged = await stageC2ZcRestoreFixture(
+      path.join(root, "workspace"),
+      fixture,
+    );
+    assert.equal(staged.backupName, C2ZC_RUNTIME_RESTORE_BACKUP_NAME);
+    assert.equal(
+      staged.targetPath,
+      path.join(root, "workspace", "backups", C2ZC_RUNTIME_RESTORE_BACKUP_NAME),
+    );
+    assert.deepEqual(await readFile(staged.targetPath), fixtureBytes);
+    assert.equal(staged.sourceBackupName, C2ZC_RESTORE_FIXTURE_BACKUP_NAME);
+    assert.ok(path.basename(staged.stagingTempPath).startsWith("."));
+    assert.ok(!path.basename(staged.stagingTempPath).startsWith("grimodex-"));
+    const targetMetadata = await lstat(staged.targetPath);
+    const tempMetadata = await lstat(staged.stagingTempPath);
+    assert.equal(targetMetadata.dev, tempMetadata.dev);
+    assert.equal(targetMetadata.ino, tempMetadata.ino);
+    assert.equal(staged.stagingTempDevice, tempMetadata.dev);
+    assert.equal(staged.stagingTempInode, tempMetadata.ino);
+    await assertStagingResidue(path.join(root, "workspace"), true);
+
+    for (const invalid of [
+      "",
+      ".db",
+      ".db.gz",
+      "c2zc-restore-fixture.db",
+      "c2zc-restore-fixture.db.gz",
+      "c2zc-restore-fixture.foo..bar.db",
+      "c2zc-restore-fixture\\backup.db",
+      "C:\\tmp\\c2zc-restore-fixture.backup.db",
+      "../c2zc-restore-fixture.backup.db",
+      "c2zc-../fixture.db",
+    ]) {
+      assert.throws(
+        () => resolveC2ZcRuntimeBackupName(invalid),
+        /relative file name|must be a non-empty string|must be c2zc-restore-fixture/i,
+        invalid,
+      );
+    }
+
+    const existingFixture = await fixtureFor();
+    const existingWorkspace = workspaceFor("existing-file");
+    const existingPath = targetFor(existingWorkspace);
+    await mkdir(path.dirname(existingPath), { recursive: true });
+    await writeFile(existingPath, "keep-existing");
+    await assert.rejects(
+      stageC2ZcRestoreFixture(existingWorkspace, existingFixture),
+      /already exists/,
+    );
+    assert.deepEqual(
+      await readFile(existingPath),
+      Buffer.from("keep-existing"),
+    );
+    assert.deepEqual(await backupEntries(existingWorkspace), [
+      C2ZC_RUNTIME_RESTORE_BACKUP_NAME,
+    ]);
+
+    const sentinelPath = path.join(root, "external-sentinel.txt");
+    await writeFile(sentinelPath, "keep-sentinel");
+    const symlinkWorkspace = workspaceFor("symlink");
+    const symlinkPath = targetFor(symlinkWorkspace);
+    await mkdir(path.dirname(symlinkPath), { recursive: true });
+    await symlink(sentinelPath, symlinkPath);
+    await assert.rejects(
+      stageC2ZcRestoreFixture(symlinkWorkspace, existingFixture),
+      /already exists/,
+    );
+    assert.deepEqual(
+      await readFile(sentinelPath),
+      Buffer.from("keep-sentinel"),
+    );
+    assert.equal((await lstat(symlinkPath)).isSymbolicLink(), true);
+    assert.deepEqual(await backupEntries(symlinkWorkspace), [
+      C2ZC_RUNTIME_RESTORE_BACKUP_NAME,
+    ]);
+
+    const externalBackups = path.join(root, "external-backups");
+    const backupDirectorySymlinkWorkspace = path.join(
+      root,
+      "backup-directory-symlink-workspace",
+    );
+    await mkdir(externalBackups, { recursive: true });
+    await mkdir(backupDirectorySymlinkWorkspace, { recursive: true });
+    await symlink(
+      externalBackups,
+      path.join(backupDirectorySymlinkWorkspace, "backups"),
+      "dir",
+    );
+    await assert.rejects(
+      stageC2ZcRestoreFixture(backupDirectorySymlinkWorkspace, existingFixture),
+      /backup directory must be a real directory/,
+    );
+    assert.equal((await lstat(externalBackups)).isDirectory(), true);
+
+    await assertStageFailure(
+      "partial",
+      existingFixture,
+      {
+        writeFileFn: async (fileHandle, bytes) => {
+          const result = await fileHandle.write(bytes, 0, 2, null);
+          assert.equal(result.bytesWritten, 2);
+          throw new Error("injected partial temp write");
+        },
+      },
+      /partial temp write/,
+    );
+    await assertStageFailure(
+      "corrupt",
+      existingFixture,
+      {
+        writeFileFn: async (fileHandle, bytes, tempPath) => {
+          await fileHandle.write(bytes, 0, bytes.length, null);
+          await writeFile(tempPath, "corrupt-file");
+        },
+      },
+      /bytes do not match/,
+    );
+
+    const beforeLink = await assertStageFailure(
+      "before-link",
+      existingFixture,
+      {
+        linkFn: async (tempPath, targetPath) => {
+          await writeFile(targetPath, "replacement-before-link");
+          return link(tempPath, targetPath);
+        },
+      },
+      /EEXIST|already exists|file exists/i,
+      true,
+    );
+    assert.deepEqual(
+      await readFile(beforeLink.target),
+      Buffer.from("replacement-before-link"),
+    );
+
+    const afterLink = await assertStageFailure(
+      "after-link",
+      existingFixture,
+      {
+        linkFn: async (tempPath, targetPath) => {
+          await link(tempPath, targetPath);
+          await rm(targetPath);
+          await writeFile(targetPath, "replacement-after-link");
+        },
+      },
+      /published restore fixture identity changed/,
+      true,
+    );
+    assert.deepEqual(
+      await readFile(afterLink.target),
+      Buffer.from("replacement-after-link"),
+    );
+
+    let replacedTempPath = null;
+    await assertStageFailure(
+      "residue",
+      existingFixture,
+      {
+        linkFn: async (tempPath) => {
+          replacedTempPath = tempPath;
+          await rm(tempPath);
+          await writeFile(tempPath, "replacement-private-temp");
+          throw new Error("injected private temp replacement");
+        },
+      },
+      /injected private temp replacement/,
+    );
+    assert.ok(replacedTempPath);
+    assert.deepEqual(
+      await readFile(replacedTempPath),
+      Buffer.from("replacement-private-temp"),
+    );
+
+    await assertStageFailure(
+      "unsupported",
+      existingFixture,
+      {
+        linkFn: async () => {
+          const error = new Error("link unsupported");
+          error.code = "EOPNOTSUPP";
+          throw error;
+        },
+      },
+      /link unsupported/,
+    );
+
+    const sourceSymlinkDirectory = path.join(root, "source-link");
+    const sourceSymlink = path.join(
+      sourceSymlinkDirectory,
+      C2ZC_RESTORE_FIXTURE_BACKUP_NAME,
+    );
+    await mkdir(sourceSymlinkDirectory, { recursive: true });
+    await symlink(existingFixture.path, sourceSymlink);
+    await assert.rejects(
+      stageC2ZcRestoreFixture(path.join(root, "source-symlink-workspace"), {
+        ...existingFixture,
+        path: sourceSymlink,
+      }),
+      /regular file/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

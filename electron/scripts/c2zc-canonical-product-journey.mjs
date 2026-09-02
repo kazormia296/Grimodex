@@ -1,7 +1,8 @@
 import {
-  copyFile,
+  link,
   lstat,
   mkdir,
+  open,
   readFile,
   realpath,
   stat,
@@ -28,6 +29,10 @@ export const C2ZC_RESTORE_FIXTURE_MANIFEST_VERSION = 1;
 export const C2ZC_RESTORE_FIXTURE_CONTRACT_VERSION = 1;
 export const C2ZC_RESTORE_FIXTURE_BUILDER_VERSION =
   "c2zc-restore-fixture-builder/v1";
+export const C2ZC_RESTORE_FIXTURE_BACKUP_NAME =
+  "c2zc-restore-fixture.backup.db";
+export const C2ZC_RUNTIME_RESTORE_BACKUP_NAME =
+  "grimodex-c2zc-restore-fixture.backup.db";
 export const C2ZC_VERIFY_COVERAGE_COUNT = C2ZC_RUST_VERIFY_COVERAGE_COUNT;
 export const C2ZC_CANONICAL_PRODUCT_JOURNEY_PHASES = Object.freeze([
   `${C2ZC_PRODUCT_JOURNEY_ID}/restore-fixture`,
@@ -1855,6 +1860,25 @@ export function assertC2ZcRestoreFixtureInput(
   return input;
 }
 
+/**
+ * The offline builder publishes a stable artifact name, while the production
+ * backup route accepts only user-visible `grimodex-*` backup names. Keep that
+ * artifact name unchanged for manifest/receipt identity and adapt only the
+ * copy staged into the live workspace.
+ */
+export function resolveC2ZcRuntimeBackupName(artifactPath) {
+  const name = assertFixtureArtifactPath(
+    artifactPath,
+    "C2-ZC restore fixture artifact path",
+  );
+  if (name !== C2ZC_RESTORE_FIXTURE_BACKUP_NAME) {
+    throw new Error(
+      `C2-ZC restore fixture artifact path must be ${C2ZC_RESTORE_FIXTURE_BACKUP_NAME}`,
+    );
+  }
+  return C2ZC_RUNTIME_RESTORE_BACKUP_NAME;
+}
+
 export function resolveC2ZcRestoreFixtureInput(
   input,
   environment = process.env,
@@ -1875,28 +1899,167 @@ export function resolveC2ZcRestoreFixtureInput(
   return assertC2ZcRestoreFixtureInput(value);
 }
 
-async function stageC2ZcRestoreFixture(workspace, fixture) {
+function sameFileIdentity(left, right) {
+  return (
+    isRegularFileMetadata(left) &&
+    Number.isSafeInteger(left.dev) &&
+    left.dev > 0 &&
+    Number.isSafeInteger(left.ino) &&
+    left.ino > 0 &&
+    left.dev === right?.dev &&
+    left.ino === right?.ino
+  );
+}
+
+function isRegularFileMetadata(metadata) {
+  return metadata?.isFile() === true && metadata?.isSymbolicLink() !== true;
+}
+
+async function rejectExistingPath(filePath, label) {
+  try {
+    await lstat(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw new Error(`${label} could not be inspected`, { cause: error });
+  }
+  throw new Error(`${label} already exists`);
+}
+
+async function writeFixtureBytes(fileHandle, bytes) {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const { bytesWritten } = await fileHandle.write(
+      bytes,
+      offset,
+      bytes.length - offset,
+      null,
+    );
+    if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0) {
+      throw new Error("C2-ZC restore fixture temp write made no progress");
+    }
+    offset += bytesWritten;
+  }
+}
+
+/**
+ * Keep the private staging link for the lifetime of the ephemeral journey
+ * workspace. Workspace teardown owns cleanup after a successful journey; on
+ * failure, retaining the hidden file preserves diagnostics and avoids any
+ * path-replacement race during cleanup.
+ */
+export async function stageC2ZcRestoreFixture(
+  workspace,
+  fixture,
+  { linkFn = link, openFn = open, writeFileFn = writeFixtureBytes } = {},
+) {
+  const backupName = resolveC2ZcRuntimeBackupName(
+    fixture?.manifest?.artifacts?.fixture?.path,
+  );
+  if (path.basename(fixture?.path ?? "") !== C2ZC_RESTORE_FIXTURE_BACKUP_NAME) {
+    throw new Error(
+      `C2-ZC restore fixture source must be named ${C2ZC_RESTORE_FIXTURE_BACKUP_NAME}`,
+    );
+  }
   const sourceMetadata = await lstat(fixture.path);
-  if (!sourceMetadata.isFile()) {
+  if (!sourceMetadata.isFile() || sourceMetadata.isSymbolicLink()) {
     throw new Error("C2-ZC restore fixture path must be a regular file");
   }
   const sourcePath = await realpath(fixture.path);
   const sourceStat = await stat(sourcePath);
   if (!sourceStat.isFile())
     throw new Error("C2-ZC restore fixture path must be a file");
+  await assertFixtureArtifactDigest(
+    sourcePath,
+    fixture.manifest.artifacts.fixture,
+    "C2-ZC restore fixture source",
+  );
+  const sourceBytes = await readFile(sourcePath);
   const backupDirectory = path.join(workspace, "backups");
   await mkdir(backupDirectory, { recursive: true });
-  const targetPath = path.join(
-    backupDirectory,
-    fixture.manifest.artifacts.fixture.path,
-  );
-  await copyFile(sourcePath, targetPath);
-  await assertFixtureArtifactDigest(
+  const backupDirectoryMetadata = await lstat(backupDirectory);
+  if (
+    !backupDirectoryMetadata.isDirectory() ||
+    backupDirectoryMetadata.isSymbolicLink()
+  ) {
+    throw new Error(
+      "C2-ZC restore fixture backup directory must be a real directory",
+    );
+  }
+  const targetPath = path.join(backupDirectory, backupName);
+  await rejectExistingPath(
     targetPath,
-    fixture.manifest.artifacts.fixture,
-    "C2-ZC staged restore fixture",
+    "C2-ZC staged restore fixture destination",
   );
-  return { targetPath, sourcePath, manifest: fixture.manifest };
+  const tempPath = path.join(
+    backupDirectory,
+    `.${backupName}.${randomUUID()}.tmp`,
+  );
+  let tempHandle = null;
+  let tempMetadata;
+  try {
+    tempHandle = await openFn(tempPath, "wx", 0o600);
+    tempMetadata = await tempHandle.stat();
+    if (!isRegularFileMetadata(tempMetadata)) {
+      throw new Error(
+        "C2-ZC private restore fixture temp must be a regular file",
+      );
+    }
+    await writeFileFn(tempHandle, sourceBytes, tempPath);
+    await tempHandle.sync();
+    if (!sameFileIdentity(await tempHandle.stat(), tempMetadata)) {
+      throw new Error(
+        "C2-ZC private restore fixture temp changed while writing",
+      );
+    }
+    await tempHandle.close();
+    tempHandle = null;
+    if (!sameFileIdentity(await lstat(tempPath), tempMetadata)) {
+      throw new Error(
+        "C2-ZC private restore fixture temp changed before publish",
+      );
+    }
+    await assertFixtureArtifactDigest(
+      tempPath,
+      fixture.manifest.artifacts.fixture,
+      "C2-ZC private restore fixture temp",
+    );
+    await rejectExistingPath(
+      targetPath,
+      "C2-ZC staged restore fixture destination",
+    );
+    await linkFn(tempPath, targetPath);
+    const publishedTempMetadata = await lstat(tempPath);
+    const destinationMetadata = await lstat(targetPath);
+    if (
+      !sameFileIdentity(publishedTempMetadata, tempMetadata) ||
+      !sameFileIdentity(destinationMetadata, publishedTempMetadata)
+    ) {
+      throw new Error("C2-ZC published restore fixture identity changed");
+    }
+  } catch (error) {
+    if (tempHandle) {
+      try {
+        await tempHandle.close();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "C2-ZC staged restore fixture temp close failed",
+          { cause: cleanupError },
+        );
+      }
+    }
+    throw error;
+  }
+  return {
+    targetPath,
+    stagingTempPath: tempPath,
+    stagingTempDevice: tempMetadata.dev,
+    stagingTempInode: tempMetadata.ino,
+    sourcePath,
+    backupName,
+    sourceBackupName: fixture.manifest.artifacts.fixture.path,
+    manifest: fixture.manifest,
+  };
 }
 
 async function assertFixtureArtifactDigest(filePath, expected, label) {
@@ -3510,11 +3673,15 @@ export async function runC2ZcCanonicalAuthorityJourney(
   await configureWorkspace(harness, workspace);
   const staged = await stageC2ZcRestoreFixture(workspace, fixture);
   harness.recordTimeline?.(`${C2ZC_PRODUCT_JOURNEY_ID}/restore-fixture`, {
-    backupName: fixture.manifest.artifacts.fixture.path,
+    backupName: staged.backupName,
+    sourceBackupName: staged.sourceBackupName,
     manifestVersion: fixture.manifest.manifestVersion,
     fixtureSha256: fixture.manifest.fixtureSha256,
     fixtureSizeBytes: fixture.manifest.fixtureSizeBytes,
     stagedPath: staged.targetPath,
+    stagingTempPath: staged.stagingTempPath,
+    stagingTempDevice: staged.stagingTempDevice,
+    stagingTempInode: staged.stagingTempInode,
   });
 
   let restoreLaunch = null;
@@ -3530,7 +3697,7 @@ export async function runC2ZcCanonicalAuthorityJourney(
     );
     await restoreBackupThroughSettingsUi(
       { page: restoreLaunch.page, harness },
-      fixture.manifest.artifacts.fixture.path,
+      staged.backupName,
     );
     projectId = await waitForProjectId(
       harness,
@@ -3753,12 +3920,16 @@ export async function runC2ZcCanonicalAuthorityJourney(
     journeyId: C2ZC_PRODUCT_JOURNEY_ID,
     projectId,
     restoreFixture: {
-      backupName: fixture.manifest.artifacts.fixture.path,
+      backupName: staged.backupName,
+      sourceBackupName: staged.sourceBackupName,
       manifestVersion: fixture.manifest.manifestVersion,
       manifestPath: fixture.manifestPath,
       fixtureSha256: fixture.manifest.fixtureSha256,
       fixtureSizeBytes: fixture.manifest.fixtureSizeBytes,
       stagedPath: staged.targetPath,
+      stagingTempPath: staged.stagingTempPath,
+      stagingTempDevice: staged.stagingTempDevice,
+      stagingTempInode: staged.stagingTempInode,
     },
     lifecycle: {
       verifyRunIds: [lifecycle.firstVerify.id, lifecycle.finalVerify.id],
