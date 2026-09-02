@@ -2524,6 +2524,9 @@ test("C2-ZC accepts only settled informational Inbox rows", () => {
     ],
     ["attention entry", { attention: { disposition: "flagged" } }],
     ["active snooze", { is_snoozed_and_active: true }],
+    ["null snooze", { is_snoozed_and_active: null }],
+    ["numeric snooze", { is_snoozed_and_active: 0 }],
+    ["string snooze", { is_snoozed_and_active: "false" }],
   ];
   for (const [label, overrides] of rejectedRows) {
     assert.throws(
@@ -2532,6 +2535,25 @@ test("C2-ZC accepts only settled informational Inbox rows", () => {
           c2zcInboxSnapshot([settledC2ZcInboxEntry(overrides)]),
         ),
       /actionable|Inbox/i,
+      label,
+    );
+  }
+
+  const missingSnooze = settledC2ZcInboxEntry();
+  delete missingSnooze.is_snoozed_and_active;
+  assert.throws(
+    () => assertC2ZcNoActionableInbox(c2zcInboxSnapshot([missingSnooze])),
+    /actionable|Inbox/i,
+    "missing snooze must fail closed",
+  );
+
+  for (const [label, snapshot] of [
+    ["missing Inbox array", { currentEpochId: "e1" }],
+    ["null Inbox array", { currentEpochId: "e1", inboxEntries: null }],
+  ]) {
+    assert.throws(
+      () => assertC2ZcNoActionableInbox(snapshot),
+      /Inbox array/i,
       label,
     );
   }

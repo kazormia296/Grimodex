@@ -649,7 +649,15 @@ function findingRowsOf(snapshot) {
  * read-model contract supplies the epoch scoping for the null observation.
  */
 export function assertC2ZcNoActionableInbox(snapshot, label = "C2-ZC Inbox") {
-  const inbox = snapshot?.inboxEntries ?? snapshot?.inbox ?? [];
+  const hasOwn = (key) =>
+    snapshot !== null &&
+    typeof snapshot === "object" &&
+    Object.prototype.hasOwnProperty.call(snapshot, key);
+  const inbox = hasOwn("inboxEntries")
+    ? snapshot.inboxEntries
+    : hasOwn("inbox")
+      ? snapshot.inbox
+      : undefined;
   if (!Array.isArray(inbox)) {
     throw new Error(`${label} must expose an Inbox array`);
   }
@@ -670,7 +678,7 @@ export function assertC2ZcNoActionableInbox(snapshot, label = "C2-ZC Inbox") {
       entry.build_action !== "none" ||
       entry.latest_observation !== null ||
       entry.attention !== null ||
-      entry.is_snoozed_and_active === true,
+      entry.is_snoozed_and_active !== false,
   );
   if (actionable.length !== 0) {
     throw new Error(`${label} contains actionable Inbox entries`);
