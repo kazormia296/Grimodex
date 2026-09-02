@@ -398,13 +398,17 @@ pub(crate) fn workspace_maintenance_exclusive_waiters(path: &Path) -> usize {
 }
 
 /// `<ws>/backups/` のバックアップファイル名か（無圧縮 `.db` と gzip `.db.gz` の両方）。
-/// `.tmp` ステージングや無関係ファイルは除外。`newest_backup_age_secs` と
-/// `rotate_backups` が**同じ判定**を使うことで新旧形式が 1 つの世代集合として扱われる
-/// （片方が新形式を漏らすと間引き判定が壊れ毎回バックアップし、旧形式がローテ対象外で
-/// 永遠に残る。backup restore Phase 2）。ファイル名の時刻プレフィクスは固定幅なので
-/// 拡張子が混在しても名前ソート＝時系列は維持される。
+/// `.tmp` ステージングや無関係ファイルは除外。restore/list parser の受理確認に使う。
+#[cfg(test)]
 fn is_backup_file(name: &str) -> bool {
     crate::backup_restore::parse_backup_file_name(name).is_some()
+}
+
+/// Auto-backup maintenance candidate. Content-addressed restore aliases are
+/// durable restore artifacts and must not participate in age or rotation.
+fn is_auto_backup_file(name: &str) -> bool {
+    crate::backup_restore::parse_backup_file_name(name)
+        .is_some_and(|(_, expected_digest)| expected_digest.is_none())
 }
 
 /// Age (seconds) of the most recent backup in `dir`, if any.
@@ -413,7 +417,7 @@ fn newest_backup_age_secs(dir: &Path) -> Option<u64> {
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !is_backup_file(&name) {
+        if !is_auto_backup_file(&name) {
             continue;
         }
         if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
@@ -438,7 +442,7 @@ fn rotate_backups(dir: &Path, keep: usize) {
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .map(is_backup_file)
+                .map(is_auto_backup_file)
                 .unwrap_or(false)
         })
         .collect();
@@ -1283,6 +1287,58 @@ mod tests {
         // materialize 用 restore-tmp は "grimodex." 始まり (ハイフン無し) で除外。
         assert!(!is_backup_file("grimodex.db.restore-tmp"));
         assert!(!is_backup_file("other.db"));
+    }
+
+    #[test]
+    fn newest_backup_age_ignores_content_addressed_alias_when_mixed_with_timestamp_backup() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-auto-backup-age-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let alias = format!(
+            "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
+            "a".repeat(64)
+        );
+        std::fs::write(dir.join(&alias), b"content-addressed").expect("write alias");
+
+        assert_eq!(newest_backup_age_secs(&dir), None);
+
+        std::fs::write(dir.join("grimodex-20260101-000000.db"), b"timestamped")
+            .expect("write timestamped backup");
+        assert!(newest_backup_age_secs(&dir).is_some());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rotate_backups_keeps_content_addressed_alias_and_newest_timestamped_backups() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-auto-backup-rotate-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let alias = format!(
+            "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
+            "b".repeat(64)
+        );
+        for name in [
+            "grimodex-20260101-000000.db",
+            "grimodex-20260101-000100.db.gz",
+            "grimodex-20260101-000200.db",
+            &alias,
+        ] {
+            std::fs::write(dir.join(name), name.as_bytes()).expect("write backup");
+        }
+
+        rotate_backups(&dir, 2);
+
+        assert!(!dir.join("grimodex-20260101-000000.db").exists());
+        assert!(dir.join("grimodex-20260101-000100.db.gz").exists());
+        assert!(dir.join("grimodex-20260101-000200.db").exists());
+        assert!(dir.join(alias).exists());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
