@@ -156,9 +156,29 @@ test("live authority snapshots preserve every cursor reservation and run field",
     leaseExpiresAt: "2026-08-29T00:01:00.000Z",
     updatedAt: "2026-08-29T00:00:30.000Z",
   };
+  const run = {
+    id: "freshness-run",
+    projectId: "project-e1",
+    runKind: "freshness-evaluation",
+    consumerId: "narrative-incremental-freshness/v1",
+    workKey: "incremental-freshness:fixture:1:2",
+    status: "completed",
+    semanticEpochId: "e1",
+    specJson: JSON.stringify({ kind: "freshness-evaluation" }),
+    outcomeSummaryJson: JSON.stringify({ throughSequenceInclusive: 2 }),
+    createdAt: "2026-08-29T00:00:01.000Z",
+    startedAt: "2026-08-29T00:00:01.000Z",
+    completedAt: "2026-08-29T00:00:02.000Z",
+    version: 1,
+  };
   const harness = {
     invokeOk: async (_page, command, request) => {
       if (command === "narrative_maintenance_inbox_list") return [];
+      if (request.sql.includes("FROM narrative_extraction_runs")) {
+        assert.match(request.sql, /consumer_id AS consumerId/);
+        assert.match(request.sql, /spec_json AS specJson/);
+        return { rows: [run] };
+      }
       if (request.sql.includes("FROM narrative_change_events")) {
         const placeholderCount = countC2ZcSqlPlaceholders(request.sql);
         assert.equal(placeholderCount, 21);
@@ -176,6 +196,7 @@ test("live authority snapshots preserve every cursor reservation and run field",
   assert.equal(snapshot.feedCursor.cursor.reservedThrough, row.reservedThrough);
   assert.equal(snapshot.feedCursor.cursor.activeRunId, row.activeRunId);
   assert.equal(snapshot.feedCursor.cursor.semanticEpochId, row.semanticEpochId);
+  assert.deepEqual(snapshot.runs, [run]);
   assert.throws(
     () =>
       assertC2ZcFeedCursorSettled(snapshot, {
@@ -184,6 +205,67 @@ test("live authority snapshots preserve every cursor reservation and run field",
         consumerId: row.consumerId,
       }),
     /cursor|acknowledged|active|epoch/i,
+  );
+});
+
+test("live run projection preserves spec-only idle checkpoint provenance", async () => {
+  const run = {
+    id: "idle-freshness-run",
+    projectId: "project-e1",
+    runKind: "freshness-evaluation",
+    consumerId: "narrative-incremental-freshness/v1",
+    workKey: "incremental-freshness:fixture:1:2",
+    status: "completed",
+    semanticEpochId: "e1",
+    specJson: JSON.stringify({
+      kind: "incremental-freshness-idle-checkpoint@1",
+    }),
+    outcomeSummaryJson: JSON.stringify({ throughSequenceInclusive: 2 }),
+    createdAt: "2026-08-29T00:00:01.000Z",
+    startedAt: "2026-08-29T00:00:01.000Z",
+    completedAt: "2026-08-29T00:00:02.000Z",
+    version: 1,
+  };
+  const genericRow = {
+    projectId: "project-e1",
+    consumerKind: "application",
+    consumerKey: "application-e1",
+    applicationId: "application-e1",
+    evidenceFreshness: "fresh",
+    buildAction: "none",
+    semanticEpochId: "e1",
+    lastEvaluatedRunId: run.id,
+    dependencySetDigest: `sha256:${"b".repeat(64)}`,
+    updatedAt: "2026-08-29T00:00:30.000Z",
+  };
+  const harness = {
+    invokeOk: async (_page, command, request) => {
+      if (command === "narrative_maintenance_inbox_list") return [];
+      if (request.sql.includes("FROM narrative_extraction_runs")) {
+        assert.match(request.sql, /consumer_id AS consumerId/);
+        assert.match(request.sql, /spec_json AS specJson/);
+        return { rows: [run] };
+      }
+      if (request.sql.includes("FROM narrative_consumer_freshness")) {
+        return { rows: [genericRow] };
+      }
+      return { rows: [] };
+    },
+  };
+  const snapshot = await readC2ZcAuthoritySnapshot(
+    harness,
+    { id: "page" },
+    "project-e1",
+  );
+  assert.equal(snapshot.runs[0].specJson, run.specJson);
+  assert.throws(
+    () =>
+      assertC2ZcGenericFreshnessStorage(snapshot, {
+        projectId: "project-e1",
+        applicationId: "application-e1",
+        epochId: "e1",
+      }),
+    /producer|Freshness|idle/i,
   );
 });
 
@@ -655,9 +737,11 @@ function restoreBaselineRuns() {
       id: "fixture-freshness-1",
       projectId: "project-e1",
       runKind: "freshness-evaluation",
+      consumerId: "narrative-incremental-freshness/v1",
       workKey: "incremental-freshness:fixture:0:2",
       status: "completed",
       semanticEpochId: "e0",
+      specJson: "{}",
       outcomeSummaryJson: '{"throughSequenceInclusive":2}',
       createdAt: "2026-08-29T00:00:01.000Z",
       startedAt: "2026-08-29T00:00:01.000Z",
@@ -668,9 +752,11 @@ function restoreBaselineRuns() {
       id: "fixture-freshness-2",
       projectId: "project-e1",
       runKind: "freshness-evaluation",
+      consumerId: "narrative-incremental-freshness/v1",
       workKey: "incremental-freshness:fixture:2:3",
       status: "completed",
       semanticEpochId: "e0",
+      specJson: "{}",
       outcomeSummaryJson: '{"throughSequenceInclusive":3}',
       createdAt: "2026-08-29T00:00:03.000Z",
       startedAt: "2026-08-29T00:00:03.000Z",
@@ -2133,8 +2219,10 @@ function settledApplicationSnapshot(
         id: "fresh-1",
         projectId: semantic.projectId,
         runKind: "freshness-evaluation",
+        consumerId: "narrative-incremental-freshness/v1",
         status: "completed",
         semanticEpochId: "e1",
+        specJson: "{}",
       },
     ],
     genericRows: [genericRow],
@@ -2162,11 +2250,30 @@ test("Generic freshness accepts the completed current-Epoch incremental publishe
   const publisher = {
     projectId: context.projectId,
     runKind: "freshness-evaluation",
+    consumerId: "narrative-incremental-freshness/v1",
     status: "completed",
     semanticEpochId: context.epochId,
     workKey: "incremental-freshness:fixture:0:2",
   };
   assert.equal(isC2ZcGenericFreshnessProducer(publisher, context), true);
+  for (const [label, consumerId] of [
+    ["missing consumer", undefined],
+    ["wrong consumer", "narrative-other-consumer/v1"],
+  ]) {
+    assert.equal(
+      isC2ZcGenericFreshnessProducer({ ...publisher, consumerId }, context),
+      false,
+      label,
+    );
+  }
+  assert.equal(
+    isC2ZcGenericFreshnessProducer(
+      { ...publisher, projectId: undefined },
+      context,
+    ),
+    false,
+    "missing project",
+  );
   assert.equal(
     isC2ZcGenericFreshnessProducer(
       { ...publisher, status: "running" },
@@ -2394,8 +2501,10 @@ test("post-marker typed Application requires exact producer provenance and stabl
       id: "typed-freshness",
       projectId: application.projectId,
       runKind: "freshness-evaluation",
+      consumerId: "narrative-incremental-freshness/v1",
       status: "completed",
       semanticEpochId: "e1",
+      specJson: "{}",
     });
     return snapshot;
   };

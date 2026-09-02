@@ -79,6 +79,9 @@ const C2ZC_FRESHNESS_CONSUMER_KIND = "application";
 const C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID =
   "narrative-incremental-freshness/v1";
 const C2ZC_REBUILD_DERIVED_WORK_KEY = "dependency-rebuild-derived";
+const C2ZC_SQLITE_I64_MIN = -(2n ** 63n);
+const C2ZC_SQLITE_I64_MAX = 2n ** 63n - 1n;
+const C2ZC_SQLITE_I64_PATTERN = /^[+-]?\d+$/u;
 const C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS = new Set([
   "dependency-verify",
   "semantic-index-rebuild",
@@ -92,9 +95,11 @@ const C2ZC_CANONICAL_RUN_PROJECTION_KEYS = Object.freeze([
   "id",
   "projectId",
   "runKind",
+  "consumerId",
   "workKey",
   "status",
   "semanticEpochId",
+  "specJson",
   "outcomeSummaryJson",
   "createdAt",
   "startedAt",
@@ -714,6 +719,20 @@ function c2zcRunKindFromJson(value) {
   }
 }
 
+function parseC2ZcSqliteI64(value) {
+  if (typeof value !== "string" || !C2ZC_SQLITE_I64_PATTERN.test(value)) {
+    return null;
+  }
+  try {
+    const parsed = BigInt(value);
+    return parsed >= C2ZC_SQLITE_I64_MIN && parsed <= C2ZC_SQLITE_I64_MAX
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function isC2ZcIdleFreshnessProducer(run) {
   if (
     c2zcRunKindFromJson(run.specJson) ===
@@ -729,20 +748,12 @@ function isC2ZcIdleFreshnessProducer(run) {
     return false;
   }
   const coordinates = run.workKey.slice(prefix.length).split(":");
-  if (
-    coordinates.length !== 4 ||
-    !/^[+-]?\d+$/u.test(coordinates[1]) ||
-    !/^[+-]?\d+$/u.test(coordinates[2])
-  ) {
+  if (coordinates.length !== 4) {
     return false;
   }
-  const from = Number(coordinates[1]);
-  const through = Number(coordinates[2]);
-  return (
-    Number.isSafeInteger(from) &&
-    Number.isSafeInteger(through) &&
-    from === through
-  );
+  const from = parseC2ZcSqliteI64(coordinates[1]);
+  const through = parseC2ZcSqliteI64(coordinates[2]);
+  return from !== null && from === through;
 }
 
 /**
@@ -760,7 +771,7 @@ export function isC2ZcGenericFreshnessProducer(
     !isObject(producer) ||
     producer.status !== "completed" ||
     producer.semanticEpochId !== epochId ||
-    (producer.projectId !== undefined && producer.projectId !== projectId)
+    producer.projectId !== projectId
   ) {
     return false;
   }
@@ -773,10 +784,7 @@ export function isC2ZcGenericFreshnessProducer(
     );
   }
   if (producer.runKind !== "freshness-evaluation") return false;
-  if (
-    producer.consumerId !== undefined &&
-    producer.consumerId !== C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID
-  ) {
+  if (producer.consumerId !== C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID) {
     return false;
   }
   return true;
@@ -2702,8 +2710,10 @@ export const C2ZC_AUTHORITY_SNAPSHOT_QUERIES = Object.freeze({
   ),
   runs: defineC2ZcAuthorityQuery(
     `SELECT id, project_id AS projectId,
-            run_kind AS runKind, work_key AS workKey, status,
+            run_kind AS runKind, consumer_id AS consumerId,
+            work_key AS workKey, status,
             semantic_epoch_id AS semanticEpochId,
+            spec_json AS specJson,
             outcome_summary_json AS outcomeSummaryJson,
             created_at AS createdAt, started_at AS startedAt,
             completed_at AS completedAt, version
