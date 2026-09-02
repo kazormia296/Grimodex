@@ -157,6 +157,163 @@ fn scheduler_heartbeat(
         .expect("mint capability-bound live scheduler receipt")
 }
 
+fn create_ordinary_run(db: &Database, run_id: &str, project_id: &str) {
+    narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: project_id.to_string(),
+            surface_path_id: "narrative.test".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "kind": "c2zc.ordinary-run-test" }),
+            spec_digest: format!("spec-{run_id}"),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![],
+        },
+    )
+    .expect("create ordinary Narrative Run");
+}
+
+#[test]
+fn ordinary_run_epoch_binding_follows_c2zc_cutover_authority() {
+    let db = fixture_db();
+
+    create_ordinary_run(&db, "run-c2zc-pre-marker", PROJECT_ID);
+    db.with_conn(|conn| {
+        let semantic_epoch_id: Option<String> = conn.query_row(
+            "SELECT semantic_epoch_id
+               FROM narrative_extraction_runs
+              WHERE id = 'run-c2zc-pre-marker'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(semantic_epoch_id, None);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("pre-cutover ordinary Run retains NULL Epoch provenance");
+
+    db.with_conn(seed_cutover_ready_application)
+        .expect("seed cutover fixture");
+    let _test_guard = serialize_liveness_test();
+    let evidence = scheduler_heartbeat(&db, "c2zc-run-epoch-authority", 101);
+    db.with_conn(|conn| cut_over_workspace_freshness(conn, &evidence))
+        .expect("activate Generic Consumer Freshness");
+
+    create_ordinary_run(&db, "run-c2zc-post-marker", PROJECT_ID);
+    db.with_conn(|conn| {
+        let semantic_epoch_id: Option<String> = conn.query_row(
+            "SELECT semantic_epoch_id
+               FROM narrative_extraction_runs
+              WHERE id = 'run-c2zc-post-marker'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(semantic_epoch_id.as_deref(), Some(EPOCH_ID));
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("post-cutover ordinary Run binds the current Epoch");
+}
+
+#[test]
+fn ordinary_run_rejects_unsupported_marker_and_missing_current_epoch() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)",
+            params![
+                C2_ZC_CUTOVER_MIGRATION_ID,
+                C2_ZC_CUTOVER_CONTRACT_VERSION + 1,
+                NOW
+            ],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("unsupported marker rejection is atomic");
+
+    let error = narrative_extraction_create_run(
+        &db,
+        CreateRunPayload {
+            run_id: Some("run-c2zc-unsupported-marker".to_string()),
+            project_id: PROJECT_ID.to_string(),
+            surface_path_id: "narrative.test".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({}),
+            spec_digest: "spec-c2zc-unsupported-marker".to_string(),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![],
+        },
+    )
+    .expect_err("unsupported C2-ZC marker must fail closed");
+    assert!(error
+        .to_string()
+        .contains("NEX_C2ZC_CUTOVER_MARKER_UNSUPPORTED"));
+    db.with_conn(|conn| {
+        let run_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs
+              WHERE id = 'run-c2zc-unsupported-marker'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(run_count, 0);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("unsupported marker rejection is atomic");
+
+    let db = fixture_db();
+    db.with_conn(seed_cutover_ready_application)
+        .expect("seed cutover fixture");
+    let _test_guard = serialize_liveness_test();
+    let evidence = scheduler_heartbeat(&db, "c2zc-run-epoch-missing-authority", 102);
+    db.with_conn(|conn| {
+        cut_over_workspace_freshness(conn, &evidence)?;
+        conn.execute(
+            "INSERT INTO projects (id, title) VALUES ('project-c2zc-no-epoch', 'No Epoch')",
+            [],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("activate C2-ZC before missing-Epoch check");
+
+    let error = narrative_extraction_create_run(
+        &db,
+        CreateRunPayload {
+            run_id: Some("run-c2zc-missing-epoch".to_string()),
+            project_id: "project-c2zc-no-epoch".to_string(),
+            surface_path_id: "narrative.test".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({}),
+            spec_digest: "spec-c2zc-missing-epoch".to_string(),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![],
+        },
+    )
+    .expect_err("canonical post-cutover Run requires a current Epoch");
+    assert!(error
+        .to_string()
+        .contains("NEX_C2ZC_RUN_CURRENT_EPOCH_MISSING"));
+    db.with_conn(|conn| {
+        let run_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs
+              WHERE id = 'run-c2zc-missing-epoch'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(run_count, 0);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("missing-Epoch rejection is atomic");
+}
+
 #[test]
 fn database_only_liveness_never_becomes_cutover_evidence() {
     let db = fixture_db();
@@ -240,6 +397,29 @@ fn hidden_scan_staging_project_is_outside_cutover_scope_until_publish() {
     })
     .expect("hidden staging liveness/readiness");
 
+    db.with_conn(|conn| cut_over_workspace_freshness(conn, &evidence))
+        .expect("activate Generic Consumer Freshness with hidden staging excluded");
+    create_ordinary_run(
+        &db,
+        "run-c2zc-hidden-staging-before-publish",
+        HIDDEN_SCAN_PROJECT_ID,
+    );
+    db.with_conn(|conn| {
+        let staging_run_epoch: Option<String> = conn.query_row(
+            "SELECT semantic_epoch_id
+               FROM narrative_extraction_runs
+              WHERE id = 'run-c2zc-hidden-staging-before-publish'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            staging_run_epoch, None,
+            "hidden Scan staging Run remains outside canonical Epoch scope"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("hidden staging Run remains unbound before publish");
+
     publish_scan_staging_project(
         &db,
         ScanStagingProjectPublishPayload {
@@ -253,6 +433,42 @@ fn hidden_scan_staging_project_is_outside_cutover_scope_until_publish() {
         },
     )
     .expect("publish hidden Scan staging project");
+
+    let published_epoch_id: String = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT id
+                   FROM narrative_semantic_epochs
+                  WHERE project_id = ?1
+                  ORDER BY epoch_number DESC, id DESC
+                  LIMIT 1",
+                [HIDDEN_SCAN_PROJECT_ID],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .expect("published Scan project has a birth Epoch");
+    create_ordinary_run(
+        &db,
+        "run-c2zc-hidden-staging-after-publish",
+        HIDDEN_SCAN_PROJECT_ID,
+    );
+    db.with_conn(|conn| {
+        let published_run_epoch: Option<String> = conn.query_row(
+            "SELECT semantic_epoch_id
+               FROM narrative_extraction_runs
+              WHERE id = 'run-c2zc-hidden-staging-after-publish'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            published_run_epoch.as_deref(),
+            Some(published_epoch_id.as_str()),
+            "published Scan project Run binds its newly minted current Epoch"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("published Scan Run carries current-Epoch provenance");
 
     db.with_conn(|conn| {
         let marker: Option<String> = conn
@@ -4000,6 +4216,22 @@ fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
         .expect("read baseline Generic row");
 
     let (run_id, set_id, proposal_id, revision_id) = seed_prepared_application(&db);
+    db.with_conn(|conn| {
+        let prepared_run_epoch: Option<String> = conn.query_row(
+            "SELECT semantic_epoch_id
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            [run_id.as_str()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            prepared_run_epoch.as_deref(),
+            Some(EPOCH_ID),
+            "post-cutover prepared Run must bind the current Semantic Epoch"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("post-cutover prepared Run carries current-Epoch provenance");
     let prepared = narrative_extraction_prepare_commit(
         &db,
         prepared_commit_payload(&run_id, &set_id, &proposal_id, &revision_id),
@@ -4077,6 +4309,7 @@ fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
         }
         other => panic!("Apply Feed must be processed, got {other:?}"),
     };
+    let source_run_id = summary.run_id.clone();
     assert_eq!(summary.affected_edge_count, 1);
     assert_eq!(summary.affected_consumer_count, 1);
 
@@ -4087,7 +4320,14 @@ fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
             canonical.authority,
             CanonicalFreshnessAuthority::GenericConsumerFreshness
         );
+        assert_eq!(canonical.evidence_freshness, "fresh");
+        assert_eq!(canonical.build_action, "none");
         assert_eq!(canonical.semantic_epoch_id, EPOCH_ID);
+        assert_eq!(
+            canonical.last_evaluated_run_id.as_deref(),
+            Some(source_run_id.as_str()),
+            "processed Feed must cite its current-Epoch Freshness publisher Run"
+        );
         let baseline_after: (Option<String>, String) = conn.query_row(
             "SELECT last_evaluated_run_id, updated_at
                FROM narrative_consumer_freshness

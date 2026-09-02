@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
+use super::c2zc_canonical_cutover::current_c2zc_run_epoch_in_tx;
 use super::declaration_storage::{
     write_dependency_declaration_set_in_tx, DependencyDeclarationSetRequest,
 };
@@ -807,14 +808,16 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
+            let semantic_epoch_id = current_c2zc_run_epoch_in_tx(conn, &payload.project_id)?;
             let run_timestamp = next_run_lifecycle_timestamp_in_tx(conn, &payload.project_id)?;
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-                     snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
+                     snapshot_digest, catalog_digest, registry_digest, semantic_epoch_id,
+                     status, coverage_json,
                      created_at, started_at, version)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                         ?12, CASE WHEN ?10 = 'running' THEN ?12 ELSE NULL END, 0)",
+                         ?12, ?13, CASE WHEN ?11 = 'running' THEN ?13 ELSE NULL END, 0)",
                 params![
                     run_id,
                     payload.project_id,
@@ -825,6 +828,7 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
                     payload.snapshot_digest,
                     payload.catalog_digest,
                     payload.registry_digest,
+                    semantic_epoch_id,
                     status,
                     coverage_json,
                     run_timestamp,
@@ -5645,6 +5649,7 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
             snapshot_digest TEXT,
             catalog_digest TEXT,
             registry_digest TEXT,
+            semantic_epoch_id TEXT,
             status TEXT NOT NULL,
             coverage_json TEXT NOT NULL DEFAULT '{}',
             outcome_summary_json TEXT,

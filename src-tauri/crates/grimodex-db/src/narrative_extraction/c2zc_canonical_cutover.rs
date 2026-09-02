@@ -631,6 +631,41 @@ pub(crate) fn is_generic_freshness_canonical(conn: &Connection) -> Result<bool> 
     }
 }
 
+/// Resolve the Semantic Epoch for an ordinary Narrative Run at the C2-ZC
+/// writer boundary. The marker is the only activation switch: before it, the
+/// legacy NULL provenance remains valid. Scan staging Projects are hidden
+/// from the canonical workspace until their publish transaction removes the
+/// staging marker and mints their birth Epoch.
+pub(crate) fn current_c2zc_run_epoch_in_tx(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Option<String>> {
+    match read_cutover_marker(conn)? {
+        None => Ok(None),
+        Some(version) if version == C2_ZC_CUTOVER_CONTRACT_VERSION => {
+            let project_exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            if !project_exists || is_scan_staging_project_in_tx(conn, project_id)? {
+                return Ok(None);
+            }
+            get_current_epoch(conn, project_id)?
+                .map(|epoch| epoch.id)
+                .map(Some)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_C2ZC_RUN_CURRENT_EPOCH_MISSING: project '{project_id}' has no current Semantic Epoch"
+                    )
+                })
+        }
+        Some(version) => anyhow::bail!(
+            "NEX_C2ZC_CUTOVER_MARKER_UNSUPPORTED: marker contract version {version} is not current"
+        ),
+    }
+}
+
 /// The canonical authority event that proves a Project was created by one of
 /// the allowed Project-birth writers.  Each variant keeps its own identity
 /// contract; a generic "any change event" bootstrap would let unrelated
