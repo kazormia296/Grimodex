@@ -17,6 +17,9 @@ use crate::state::{ActiveWorkspace, PinnedWorkspaceDb, WorkspaceAuthority, Works
 use crate::workspace_lease;
 use crate::Database;
 
+const C2ZC_CONTENT_ADDRESSED_BACKUP_PREFIX: &str = "grimodex-c2zc-restore-fixture--sha256-";
+const C2ZC_CONTENT_ADDRESSED_BACKUP_SUFFIX: &str = ".backup.db";
+
 /// One restore candidate under `<workspace>/backups`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -154,16 +157,10 @@ pub fn list_backups_in(dir: &Path) -> Vec<BackupInfo> {
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("grimodex-") {
-            continue;
-        }
-        let format = if name.ends_with(".db.gz") {
-            "db.gz"
-        } else if name.ends_with(".db") {
-            "db"
-        } else {
+        let Some((is_gz, _expected_digest)) = parse_backup_file_name(&name) else {
             continue;
         };
+        let format = if is_gz { "db.gz" } else { "db" };
         let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
             continue;
         };
@@ -216,7 +213,7 @@ pub fn restore_backup_core(
             .path()
             .to_path_buf()
     };
-    let (source, is_gz) = open_backup_source(&ws_path, file_name)?;
+    let (source, is_gz, expected_source_digest) = open_backup_source(&ws_path, file_name)?;
 
     let db_path = ws_path.join("grimodex.db");
     // Remove the legacy fixed-name staging file without following symlinks.
@@ -236,6 +233,14 @@ pub fn restore_backup_core(
     drop(staged_output);
     let restore_source_digest = crate::migration_supervisor::digest_sha256_file(&staged_plain)
         .map_err(|error| anyhow::anyhow!("RESTORE_CANDIDATE_DIGEST_FAILED: {error}"))?;
+    if let Some(expected) = expected_source_digest.as_deref() {
+        if restore_source_digest != expected {
+            return Err(anyhow::anyhow!(
+                "C2ZC_RESTORE_SOURCE_DIGEST_MISMATCH: expected={expected} actual={restore_source_digest}"
+            )
+            .into());
+        }
+    }
     verify_sqlite_ok(&staged_plain)?;
 
     // `quick_check` alone accepts valid SQLite files from a schema version this
@@ -1532,6 +1537,51 @@ pub(crate) fn materialize_candidate_to_plain(
         cleanup_path_best_effort(dest);
         return Err(anyhow::anyhow!("復元DBの同期に失敗しました: {error}").into());
     }
+    drop(output);
+    verify_materialized_backup_digest(relative_key, dest)?;
+    Ok(())
+}
+
+/// Validate the optional content-addressed token after a candidate has been
+/// copied from its already-open source handle.  Legacy backup names have no
+/// token and retain their historical behavior.
+pub(crate) fn verify_materialized_backup_digest(
+    relative_key: &str,
+    materialized_path: &Path,
+) -> AppResult<()> {
+    let parsed = parse_backup_file_name(relative_key);
+    if parsed.is_none()
+        && Path::new(relative_key)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(C2ZC_CONTENT_ADDRESSED_BACKUP_PREFIX))
+    {
+        cleanup_path_best_effort(materialized_path);
+        return Err(anyhow::anyhow!(
+            "C2ZC_RESTORE_SOURCE_DIGEST_INVALID: malformed content-addressed backup name: {relative_key}"
+        )
+        .into());
+    }
+    let Some((_is_gz, expected)) = parsed else {
+        return Ok(());
+    };
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let actual = match crate::migration_supervisor::digest_sha256_file(materialized_path) {
+        Ok(actual) => actual,
+        Err(error) => {
+            cleanup_path_best_effort(materialized_path);
+            return Err(anyhow::anyhow!("RESTORE_CANDIDATE_DIGEST_FAILED: {error}").into());
+        }
+    };
+    if actual != expected {
+        cleanup_path_best_effort(materialized_path);
+        return Err(anyhow::anyhow!(
+            "C2ZC_RESTORE_SOURCE_DIGEST_MISMATCH: expected={expected} actual={actual}"
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -1611,7 +1661,7 @@ pub(crate) fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()
     }
 }
 
-fn open_backup_source(ws_path: &Path, file_name: &str) -> AppResult<(File, bool)> {
+fn open_backup_source(ws_path: &Path, file_name: &str) -> AppResult<(File, bool, Option<String>)> {
     if file_name.is_empty()
         || file_name.contains('/')
         || file_name.contains('\\')
@@ -1620,12 +1670,11 @@ fn open_backup_source(ws_path: &Path, file_name: &str) -> AppResult<(File, bool)
     {
         return Err(anyhow::anyhow!("不正なバックアップ名です: {file_name}").into());
     }
-    let is_gz = file_name.ends_with(".db.gz");
-    if !(is_gz || file_name.ends_with(".db")) {
+    let Some((is_gz, expected_source_digest)) = parse_backup_file_name(file_name) else {
         return Err(
             anyhow::anyhow!("この形式のバックアップは復元に対応していません: {file_name}").into(),
         );
-    }
+    };
     let path = ws_path.join("backups").join(file_name);
     let initial_metadata = std::fs::symlink_metadata(&path)
         .map_err(|_| anyhow::anyhow!("バックアップが見つかりません: {file_name}"))?;
@@ -1657,7 +1706,44 @@ fn open_backup_source(ws_path: &Path, file_name: &str) -> AppResult<(File, bool)
         }
     }
 
-    Ok((file, is_gz))
+    Ok((file, is_gz, expected_source_digest))
+}
+
+/// Parse a user-visible backup basename once for listing, normal restore, and
+/// Safe Mode recovery.  The optional C2-ZC token is deliberately narrow:
+/// `grimodex-c2zc-restore-fixture--sha256-<64 lowercase hex>.backup.db`.
+/// A token on `.db.gz` is rejected instead of being ambiguously interpreted
+/// as the digest of compressed or materialized bytes.  Legacy names remain
+/// accepted unchanged.
+pub(crate) fn parse_backup_file_name(name: &str) -> Option<(bool, Option<String>)> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || !name.starts_with("grimodex-")
+    {
+        return None;
+    }
+    let is_gz = name.ends_with(".db.gz");
+    if !is_gz && !name.ends_with(".db") {
+        return None;
+    }
+    if !name.starts_with(C2ZC_CONTENT_ADDRESSED_BACKUP_PREFIX) {
+        return Some((is_gz, None));
+    }
+    if is_gz {
+        return None;
+    }
+    let token = name
+        .strip_prefix(C2ZC_CONTENT_ADDRESSED_BACKUP_PREFIX)?
+        .strip_suffix(C2ZC_CONTENT_ADDRESSED_BACKUP_SUFFIX)?;
+    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    if token.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return None;
+    }
+    Some((false, Some(token.to_string())))
 }
 
 pub(crate) fn verify_sqlite_ok(path: &Path) -> AppResult<()> {
@@ -1832,18 +1918,39 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("mkdir");
         std::fs::write(dir.join("grimodex-a.db"), b"db").expect("write db");
         std::fs::write(dir.join("grimodex-b.db.gz"), b"gzip").expect("write gz");
+        std::fs::write(
+            dir.join(format!(
+                "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
+                "a".repeat(64)
+            )),
+            b"content-addressed",
+        )
+        .expect("write content-addressed db");
+        std::fs::write(
+            dir.join("grimodex-c2zc-restore-fixture--sha256-ABC.backup.db"),
+            b"malformed",
+        )
+        .expect("write malformed content-addressed db");
         std::fs::write(dir.join("grimodex-c.db.tmp"), b"tmp").expect("write tmp");
         std::fs::write(dir.join("other.db"), b"other").expect("write other");
         std::fs::create_dir(dir.join("grimodex-directory.db")).expect("mkdir candidate");
 
         let listed = list_backups_in(&dir);
-        assert_eq!(listed.len(), 2);
+        assert_eq!(listed.len(), 3);
         assert!(listed
             .iter()
             .any(|item| item.file_name == "grimodex-a.db" && item.format == "db"));
         assert!(listed
             .iter()
             .any(|item| item.file_name == "grimodex-b.db.gz" && item.format == "db.gz"));
+        assert!(listed.iter().any(|item| {
+            item.file_name
+                == format!(
+                    "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
+                    "a".repeat(64)
+                )
+                && item.format == "db"
+        }));
         for item in &listed {
             let json = serde_json::to_value(item).expect("serialize BackupInfo");
             assert!(json.get("fileName").is_some());
@@ -1883,9 +1990,103 @@ mod tests {
             "grimodex\\x.db",
             "evil.db",
             "grimodex-x.db.tmp",
+            "grimodex-c2zc-restore-fixture--sha256-ABC.db",
+            "grimodex-c2zc-restore-fixture--sha256-{}.backup.db.gz",
+            "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
         ] {
             assert!(open_backup_source(ws, bad).is_err(), "accepts {bad:?}");
         }
+    }
+
+    #[test]
+    fn malformed_content_addressed_materialization_is_rejected_and_cleaned() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-backup-restore-content-addressed-malformed-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("create malformed digest fixture");
+        let materialized = dir.join("materialized.db");
+        std::fs::write(&materialized, b"malformed candidate").expect("write materialized db");
+        let error = verify_materialized_backup_digest(
+            "grimodex-c2zc-restore-fixture--sha256-ABC.backup.db",
+            &materialized,
+        )
+        .expect_err("malformed content-addressed name must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("C2ZC_RESTORE_SOURCE_DIGEST_INVALID"),
+            "unexpected malformed name error: {error}"
+        );
+        assert!(
+            !materialized.exists(),
+            "rejected materialization must be cleaned"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn content_addressed_restore_accepts_matching_bytes_and_rejects_target_swap() {
+        let (dir, state) = fixture("content-addressed");
+        set_marker(&state, "before-restore");
+        let legacy_path = dir.join("backups/grimodex-c2zc-source.db");
+        backup_active(&state, &legacy_path);
+        let digest = crate::migration_supervisor::digest_sha256_file(&legacy_path)
+            .expect("digest fixture backup");
+        let matching_name = format!("grimodex-c2zc-restore-fixture--sha256-{digest}.backup.db");
+        let matching_path = dir.join("backups").join(&matching_name);
+        std::fs::rename(&legacy_path, &matching_path).expect("publish digest-bound backup");
+        set_marker(&state, "after-backup");
+
+        restore_backup_core(&state, &matching_name, || {}).expect("matching digest restores");
+        assert_eq!(marker(&state), "before-restore");
+        assert_no_internal_restore_files(&dir);
+
+        let mismatch_dir = std::env::temp_dir().join(format!(
+            "grimodex-backup-restore-content-addressed-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(mismatch_dir.join("backups")).expect("create mismatch fixture");
+        let mismatch_db =
+            Database::new(&mismatch_dir.join("grimodex.db")).expect("open mismatch fixture db");
+        mismatch_db.migrate().expect("migrate mismatch fixture db");
+        let mismatch_authority =
+            WorkspaceAuthority::from_database_for_test(mismatch_db, mismatch_dir.clone())
+                .expect("mismatch fixture authority");
+        let mismatch_state = WorkspaceState {
+            inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(mismatch_authority))),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: AtomicBool::new(false),
+            open_lock: std::sync::Mutex::new(()),
+        };
+        set_marker(&mismatch_state, "mismatch-live");
+        let mismatch_source = mismatch_dir.join("backups/mismatch-source.db");
+        backup_active(&mismatch_state, &mismatch_source);
+        let mismatch_digest = crate::migration_supervisor::digest_sha256_file(&mismatch_source)
+            .expect("digest mismatch fixture backup");
+        let mismatch_name =
+            format!("grimodex-c2zc-restore-fixture--sha256-{mismatch_digest}.backup.db");
+        let mismatch_path = mismatch_dir.join("backups").join(&mismatch_name);
+        std::fs::rename(&mismatch_source, &mismatch_path)
+            .expect("publish digest-bound backup before target swap");
+        // Model the second stage of the adversarial target swap: the path is
+        // valid and published under its digest, then its bytes are replaced
+        // before the native restore opens the held source file.
+        std::fs::write(&mismatch_path, b"target-swapped-after-publication")
+            .expect("replace published digest-bound target bytes");
+        let error = restore_backup_core(&mismatch_state, &mismatch_name, || {})
+            .expect_err("mismatched digest must reject before live replacement");
+        assert!(
+            error
+                .to_string()
+                .contains("C2ZC_RESTORE_SOURCE_DIGEST_MISMATCH"),
+            "unexpected mismatch error: {error}"
+        );
+        assert_eq!(marker(&mismatch_state), "mismatch-live");
+        assert_no_internal_restore_files(&mismatch_dir);
+
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(mismatch_dir);
     }
 
     #[test]

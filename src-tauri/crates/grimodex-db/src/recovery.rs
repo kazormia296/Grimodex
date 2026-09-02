@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use crate::backup_restore::{
     create_persistent_live_safety_artifact, install_staged_workspace_db, list_backups_in,
-    materialize_candidate_to_plain, preflight_candidate, verify_sqlite_ok, BackupInfo,
-    InstallStagedOptions,
+    materialize_candidate_to_plain, preflight_candidate, verify_materialized_backup_digest,
+    verify_sqlite_ok, BackupInfo, InstallStagedOptions,
 };
 use crate::error::{AppError, AppResult};
 use crate::migration_supervisor::{
@@ -594,6 +594,7 @@ fn materialize_candidate_for_restore(
         file.seek(SeekFrom::Start(0)).map_err(anyhow::Error::from)?;
         materialize_open_file_to_plain(&mut file, is_gz, dest)?;
     }
+    verify_materialized_backup_digest(relative_key, dest)?;
     Ok(())
 }
 
@@ -1006,6 +1007,38 @@ mod tests {
             verify_safe_mode_candidate(&state, &candidate_id).expect("plain candidate verifies");
 
         assert_eq!(verified.checksum_status, ChecksumStatus::Unverified);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn content_addressed_recovery_candidate_rejects_target_swap_without_live_mutation() {
+        let ws = temp_ws("content-addressed-swap");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        let source = ws.join("backups/source.db");
+        create_migrated_db(&source, "backup");
+        let digest = crate::migration_supervisor::digest_sha256_file(&source)
+            .expect("digest content-addressed recovery source");
+        let name = format!("grimodex-c2zc-restore-fixture--sha256-{digest}.backup.db");
+        let target = ws.join("backups").join(&name);
+        fs::rename(&source, &target).expect("publish digest-bound recovery candidate");
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, ".backup.db");
+
+        // The registry has already captured the valid target name. Replacing
+        // its bytes afterward must fail at the held-file materialization
+        // boundary before preflight or install can touch the live DB.
+        fs::write(&target, b"target-swapped-after-publication")
+            .expect("replace recovery candidate bytes");
+        let error = restore_safe_mode_candidate(&state, &candidate_id)
+            .expect_err("content-addressed recovery target swap must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("C2ZC_RESTORE_SOURCE_DIGEST_MISMATCH"),
+            "unexpected mismatch error: {error}"
+        );
+        assert_eq!(marker_at(&ws.join("grimodex.db")), "live");
+        assert!(state.safe_mode.is_active());
         let _ = fs::remove_dir_all(&ws);
     }
 

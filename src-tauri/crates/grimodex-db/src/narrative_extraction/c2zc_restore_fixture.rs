@@ -261,6 +261,11 @@ pub struct SemanticSnapshot {
     pub semantic_index_digest: String,
     pub expected_restore_lifecycle: Value,
     pub expected_restore_lifecycle_digest: String,
+    /// Exact ordered canonical Run projection already present in the
+    /// pre-cutover fixture.  The product restore journey treats this as an
+    /// immutable baseline and only verifies the post-open delta.
+    pub restore_canonical_lifecycle_baseline: Value,
+    pub restore_canonical_lifecycle_baseline_digest: String,
     pub contents_digest: String,
 }
 
@@ -1169,6 +1174,7 @@ fn collect_semantic_snapshot_from_connection(
 
     let (feed_cursor, cursor_settled) = load_feed_cursor_snapshot(conn)?;
     let (semantic_index, semantic_index_rows) = load_semantic_index_snapshot(conn)?;
+    let restore_canonical_lifecycle_baseline = load_restore_canonical_lifecycle_baseline(conn)?;
     let derived_state_gap = json!({
         "applicationEdgeStateRows": application_edge_state_count,
         "applicationFreshnessRows": application_freshness_count,
@@ -1191,6 +1197,8 @@ fn collect_semantic_snapshot_from_connection(
     let expected_restore_gap_digest = digest_json(&expected_restore_gap);
     let semantic_index_digest = digest_json(&semantic_index);
     let expected_restore_lifecycle_digest = digest_json(&expected_restore_lifecycle);
+    let restore_canonical_lifecycle_baseline_digest =
+        digest_json(&restore_canonical_lifecycle_baseline);
     let mut semantic = SemanticSnapshot {
         project_id: PROJECT_ID.to_string(),
         scene_id: SCENE_ID.to_string(),
@@ -1237,6 +1245,8 @@ fn collect_semantic_snapshot_from_connection(
         semantic_index_digest,
         expected_restore_lifecycle,
         expected_restore_lifecycle_digest,
+        restore_canonical_lifecycle_baseline,
+        restore_canonical_lifecycle_baseline_digest,
         contents_digest: String::new(),
     };
     semantic.contents_digest = digest_json(&semantic_contents_payload(&semantic));
@@ -1504,6 +1514,7 @@ fn semantic_contents_payload(semantic: &SemanticSnapshot) -> Value {
         "expectedRestoreGap": &semantic.expected_restore_gap,
         "semanticIndex": &semantic.semantic_index,
         "expectedRestoreLifecycle": &semantic.expected_restore_lifecycle,
+        "restoreCanonicalLifecycleBaseline": &semantic.restore_canonical_lifecycle_baseline,
     })
 }
 
@@ -1568,6 +1579,13 @@ fn validate_semantic_payload_digests(semantic: &SemanticSnapshot) -> Result<()> 
             "expectedRestoreLifecycle",
             semantic.expected_restore_lifecycle_digest.as_str(),
             digest_json(&semantic.expected_restore_lifecycle),
+        ),
+        (
+            "restoreCanonicalLifecycleBaseline",
+            semantic
+                .restore_canonical_lifecycle_baseline_digest
+                .as_str(),
+            digest_json(&semantic.restore_canonical_lifecycle_baseline),
         ),
         (
             "contents",
@@ -1736,6 +1754,59 @@ fn validate_fixture_semantics(semantic: &SemanticSnapshot) -> Result<()> {
         "C2ZC_FIXTURE_SEMANTIC_INDEX_PRESENT: {}",
         semantic.semantic_index_rows
     );
+    let baseline_rows = semantic.restore_canonical_lifecycle_baseline["rows"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_RESTORE_BASELINE_ROWS_MISSING"))?;
+    anyhow::ensure!(
+        !baseline_rows.is_empty(),
+        "C2ZC_FIXTURE_RESTORE_BASELINE_EMPTY"
+    );
+    let mut baseline_ids = std::collections::HashSet::new();
+    let mut previous_created_at: Option<(&str, &str)> = None;
+    for row in baseline_rows {
+        let id = row["id"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_RESTORE_BASELINE_ID_MISSING"))?;
+        anyhow::ensure!(
+            baseline_ids.insert(id.to_string()),
+            "C2ZC_FIXTURE_RESTORE_BASELINE_DUPLICATE: {id}"
+        );
+        anyhow::ensure!(
+            row["projectId"] == Value::String(PROJECT_ID.to_string())
+                && matches!(
+                    row["runKind"].as_str(),
+                    Some("dependency-verify")
+                        | Some("semantic-index-rebuild")
+                        | Some("freshness-evaluation")
+                )
+                && row["status"] == Value::String("completed".to_string()),
+            "C2ZC_FIXTURE_RESTORE_BASELINE_PROVENANCE_INVALID: {id}"
+        );
+        let created_at = row["createdAt"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_RESTORE_BASELINE_CREATED_AT_MISSING"))?;
+        let started_at = row["startedAt"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_RESTORE_BASELINE_STARTED_AT_MISSING"))?;
+        let completed_at = row["completedAt"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("C2ZC_FIXTURE_RESTORE_BASELINE_COMPLETED_AT_MISSING"))?;
+        anyhow::ensure!(
+            created_at <= started_at && started_at <= completed_at,
+            "C2ZC_FIXTURE_RESTORE_BASELINE_TIMESTAMP_ORDER_INVALID: {id}"
+        );
+        if let Some((previous_created, previous_id)) = previous_created_at {
+            anyhow::ensure!(
+                (previous_created, previous_id) <= (created_at, id),
+                "C2ZC_FIXTURE_RESTORE_BASELINE_ORDER_INVALID: {id}"
+            );
+        }
+        previous_created_at = Some((created_at, id));
+    }
     anyhow::ensure!(
         !semantic.application_id.is_empty()
             && semantic.application["id"] == Value::String(semantic.application_id.clone())
@@ -1917,6 +1988,45 @@ fn load_backfill_snapshot(conn: &Connection) -> Result<Value> {
             }))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(json!({ "rows": rows }))
+}
+
+/// Read the exact canonical Run projection that exists before the product
+/// restore boundary.  This query is intentionally owned by the Rust fixture
+/// builder: the generated manifest is the immutable source of truth, so the
+/// Electron journey never reopens a mutable pathname to redefine its
+/// baseline.
+fn load_restore_canonical_lifecycle_baseline(conn: &Connection) -> Result<Value> {
+    let rows = query_json_rows(
+        conn,
+        "SELECT id, project_id, run_kind, work_key, status, semantic_epoch_id,
+                outcome_summary_json, created_at, started_at, completed_at, version
+           FROM narrative_extraction_runs
+          WHERE project_id = ?1
+            AND run_kind IN ('dependency-verify', 'semantic-index-rebuild',
+                             'freshness-evaluation')
+          ORDER BY created_at ASC, id ASC",
+        params![PROJECT_ID],
+        |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "projectId": row.get::<_, String>(1)?,
+                "runKind": row.get::<_, String>(2)?,
+                "workKey": row.get::<_, Option<String>>(3)?,
+                "status": row.get::<_, String>(4)?,
+                "semanticEpochId": row.get::<_, Option<String>>(5)?,
+                "outcomeSummaryJson": row.get::<_, Option<String>>(6)?,
+                "createdAt": row.get::<_, String>(7)?,
+                "startedAt": row.get::<_, String>(8)?,
+                "completedAt": row.get::<_, String>(9)?,
+                "version": row.get::<_, i64>(10)?,
+            }))
+        },
+    )?;
+    anyhow::ensure!(
+        !rows.is_empty(),
+        "C2ZC_FIXTURE_RESTORE_BASELINE_EMPTY: canonical lifecycle baseline is empty"
+    );
     Ok(json!({ "rows": rows }))
 }
 

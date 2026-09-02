@@ -1,4 +1,3 @@
-import { execFile as execFileCallback } from "node:child_process";
 import {
   link,
   lstat,
@@ -11,7 +10,6 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
-import { promisify } from "node:util";
 
 import {
   configureJourneyWorkspaceForProductJourney,
@@ -23,8 +21,6 @@ import {
   assertC2ZcRustVerifyCoverage,
   C2ZC_RUST_VERIFY_COVERAGE_COUNT,
 } from "../../scripts/c2zc-verify-contract.mjs";
-
-const execFile = promisify(execFileCallback);
 
 /**
  * C2-ZC is one stateful lifecycle.  The runner owns only observations and
@@ -39,8 +35,9 @@ export const C2ZC_RESTORE_FIXTURE_BUILDER_VERSION =
   "c2zc-restore-fixture-builder/v1";
 export const C2ZC_RESTORE_FIXTURE_BACKUP_NAME =
   "c2zc-restore-fixture.backup.db";
-export const C2ZC_RUNTIME_RESTORE_BACKUP_NAME =
-  "grimodex-c2zc-restore-fixture.backup.db";
+export const C2ZC_RUNTIME_RESTORE_BACKUP_PREFIX =
+  "grimodex-c2zc-restore-fixture--sha256-";
+export const C2ZC_RUNTIME_RESTORE_BACKUP_SUFFIX = ".backup.db";
 export const C2ZC_VERIFY_COVERAGE_COUNT = C2ZC_RUST_VERIFY_COVERAGE_COUNT;
 export const C2ZC_CANONICAL_PRODUCT_JOURNEY_PHASES = Object.freeze([
   `${C2ZC_PRODUCT_JOURNEY_ID}/restore-fixture`,
@@ -185,6 +182,8 @@ const C2ZC_RESTORE_FIXTURE_SEMANTIC_KEYS = Object.freeze([
   "semanticIndexDigest",
   "expectedRestoreLifecycle",
   "expectedRestoreLifecycleDigest",
+  "restoreCanonicalLifecycleBaseline",
+  "restoreCanonicalLifecycleBaselineDigest",
   "contentsDigest",
 ]);
 
@@ -325,6 +324,8 @@ function semanticContentsPayload(semantic) {
     expectedRestoreGap: semantic.expectedRestoreGap,
     semanticIndex: semantic.semanticIndex,
     expectedRestoreLifecycle: semantic.expectedRestoreLifecycle,
+    restoreCanonicalLifecycleBaseline:
+      semantic.restoreCanonicalLifecycleBaseline,
   };
 }
 
@@ -1291,6 +1292,7 @@ function assertC2ZcFixtureSemantic(semantic, label) {
     "expectedRestoreGapDigest",
     "semanticIndexDigest",
     "expectedRestoreLifecycleDigest",
+    "restoreCanonicalLifecycleBaselineDigest",
     "contentsDigest",
   ]) {
     assertFixtureSha256(semantic[field], `${label}.${field}`);
@@ -1312,6 +1314,30 @@ function assertC2ZcFixtureSemantic(semantic, label) {
     if (!isObject(semantic[field])) {
       throw new Error(`${label}.${field} must be an object`);
     }
+  }
+  assertExactKeys(
+    semantic.restoreCanonicalLifecycleBaseline,
+    ["rows"],
+    `${label}.restoreCanonicalLifecycleBaseline`,
+  );
+  const restoreBaseline = assertCanonicalRunSequence(
+    semantic.restoreCanonicalLifecycleBaseline.rows,
+    `${label}.restoreCanonicalLifecycleBaseline`,
+    { requireProjection: true, requireCompleted: true },
+  );
+  if (restoreBaseline.length === 0) {
+    throw new Error(
+      `${label}.restoreCanonicalLifecycleBaseline must be non-empty`,
+    );
+  }
+  if (
+    semantic.restoreCanonicalLifecycleBaseline.rows.some(
+      (run) => run.projectId !== semantic.projectId,
+    )
+  ) {
+    throw new Error(
+      `${label}.restoreCanonicalLifecycleBaseline is not project-bound`,
+    );
   }
   const project = semantic.project;
   assertExactKeys(
@@ -1984,6 +2010,11 @@ function assertC2ZcFixtureSemantic(semantic, label) {
       semantic.expectedRestoreLifecycleDigest,
       semantic.expectedRestoreLifecycle,
     ],
+    [
+      "restoreCanonicalLifecycleBaseline",
+      semantic.restoreCanonicalLifecycleBaselineDigest,
+      semantic.restoreCanonicalLifecycleBaseline,
+    ],
   ];
   for (const [field, actual, value] of payloadDigests) {
     if (actual !== digestJson(value)) {
@@ -2101,12 +2132,12 @@ export function assertC2ZcRestoreFixtureInput(
 }
 
 /**
- * The offline builder publishes a stable artifact name, while the production
- * backup route accepts only user-visible `grimodex-*` backup names. Keep that
- * artifact name unchanged for manifest/receipt identity and adapt only the
- * copy staged into the live workspace.
+ * The offline builder keeps its artifact name stable for manifest identity,
+ * while the production backup route receives a basename-safe,
+ * content-addressed alias.  The Rust restore boundary parses the same token
+ * and compares it with the bytes materialized from its held source handle.
  */
-export function resolveC2ZcRuntimeBackupName(artifactPath) {
+export function resolveC2ZcRuntimeBackupName(artifactPath, fixtureSha256) {
   const name = assertFixtureArtifactPath(
     artifactPath,
     "C2-ZC restore fixture artifact path",
@@ -2116,7 +2147,26 @@ export function resolveC2ZcRuntimeBackupName(artifactPath) {
       `C2-ZC restore fixture artifact path must be ${C2ZC_RESTORE_FIXTURE_BACKUP_NAME}`,
     );
   }
-  return C2ZC_RUNTIME_RESTORE_BACKUP_NAME;
+  assertFixtureSha256(fixtureSha256, "C2-ZC restore fixture artifact digest");
+  return `${C2ZC_RUNTIME_RESTORE_BACKUP_PREFIX}${fixtureSha256.slice("sha256:".length)}${C2ZC_RUNTIME_RESTORE_BACKUP_SUFFIX}`;
+}
+
+export function assertC2ZcRuntimeBackupName(
+  backupName,
+  fixtureSha256,
+  label = "C2-ZC runtime restore backup",
+) {
+  requireText(backupName, `${label} name`);
+  const expected = resolveC2ZcRuntimeBackupName(
+    C2ZC_RESTORE_FIXTURE_BACKUP_NAME,
+    fixtureSha256,
+  );
+  if (backupName !== expected) {
+    throw new Error(
+      `${label} name is not bound to the manifest fixture digest`,
+    );
+  }
+  return backupName;
 }
 
 export function resolveC2ZcRestoreFixtureInput(
@@ -2194,6 +2244,7 @@ export async function stageC2ZcRestoreFixture(
 ) {
   const backupName = resolveC2ZcRuntimeBackupName(
     fixture?.manifest?.artifacts?.fixture?.path,
+    fixture?.manifest?.artifacts?.fixture?.sha256,
   );
   if (path.basename(fixture?.path ?? "") !== C2ZC_RESTORE_FIXTURE_BACKUP_NAME) {
     throw new Error(
@@ -2348,195 +2399,44 @@ export async function loadC2ZcRestoreFixtureInput(
   };
 }
 
-function sqliteTextLiteral(value, label) {
-  requireText(value, label);
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
-function bindC2ZcSqliteParameters(sql, params, label) {
-  if (!Array.isArray(params)) {
-    throw new Error(`${label} parameters must be an array`);
-  }
-  const expected = countC2ZcSqlPlaceholders(sql);
-  if (expected !== params.length) {
-    throw new Error(
-      `${label} parameter arity mismatch: expected ${expected}, got ${params.length}`,
-    );
-  }
-  let result = "";
-  let parameterIndex = 0;
-  let index = 0;
-  while (index < sql.length) {
-    const character = sql[index];
-    if (character === "-" && sql[index + 1] === "-") {
-      const end = sql.indexOf("\n", index + 2);
-      const next = end === -1 ? sql.length : end;
-      result += sql.slice(index, next);
-      index = next;
-      continue;
-    }
-    if (character === "/" && sql[index + 1] === "*") {
-      const end = sql.indexOf("*/", index + 2);
-      const next = end === -1 ? sql.length : end + 2;
-      result += sql.slice(index, next);
-      index = next;
-      continue;
-    }
-    if (
-      character === "'" ||
-      character === '"' ||
-      character === "`" ||
-      character === "["
-    ) {
-      const closingCharacter = character === "[" ? "]" : character;
-      let end = index + 1;
-      while (end < sql.length) {
-        if (sql[end] !== closingCharacter) {
-          end += 1;
-          continue;
-        }
-        if (closingCharacter !== "]" && sql[end + 1] === closingCharacter) {
-          end += 2;
-          continue;
-        }
-        end += 1;
-        break;
-      }
-      result += sql.slice(index, end);
-      index = end;
-      continue;
-    }
-    if (character === "?") {
-      result += sqliteTextLiteral(params[parameterIndex], `${label} parameter`);
-      parameterIndex += 1;
-      index += 1;
-      continue;
-    }
-    result += character;
-    index += 1;
-  }
-  if (parameterIndex !== params.length) {
-    throw new Error(`${label} did not bind every SQLite parameter`);
-  }
-  return result;
-}
-
-async function inspectC2ZcImmutableFixtureDatabase(
-  databasePath,
-  { expectedArtifact, expectedRealPath, expectedFileIdentity },
-  label,
-) {
-  if (
-    typeof databasePath !== "string" ||
-    !path.isAbsolute(databasePath) ||
-    databasePath.includes("\u0000")
-  ) {
-    throw new Error(`${label} database path must be absolute and NUL-free`);
-  }
-  const listed = await lstat(databasePath);
-  if (!isRegularFileMetadata(listed)) {
-    throw new Error(`${label} database must be a regular non-symlink file`);
-  }
-  const resolvedPath = await realpath(databasePath);
-  if (expectedRealPath !== undefined && resolvedPath !== expectedRealPath) {
-    throw new Error(`${label} database realpath changed`);
-  }
-  const metadata = await stat(resolvedPath);
-  if (!isRegularFileMetadata(metadata)) {
-    throw new Error(`${label} database target must be a regular file`);
-  }
-  if (
-    expectedFileIdentity !== undefined &&
-    !sameFileIdentity(metadata, expectedFileIdentity)
-  ) {
-    throw new Error(`${label} database file identity changed`);
-  }
-  const digest = expectedArtifact
-    ? await assertFixtureArtifactDigest(resolvedPath, expectedArtifact, label)
-    : null;
-  return { resolvedPath, metadata, digest };
-}
-
 /**
- * Read the exact canonical Run projection already present in the immutable
- * staged fixture.  The projection is the same descriptor used for live
- * authority snapshots; only its bound project literal is rendered for the
- * read-only sqlite3 process.  Identity, realpath, and manifest digest are
- * checked before and after the query so a path replacement or in-flight
- * mutation fails closed instead of redefining the restore baseline.
+ * Resolve the immutable canonical Run baseline emitted by the Rust fixture
+ * builder.  The manifest semantic payload, rather than a later pathname
+ * reopen, owns this ordered projection and its digest.
  */
-export async function readC2ZcRestoreCanonicalLifecycleBaseline(
-  databasePath,
-  projectId,
-  {
-    expectedArtifact,
-    expectedRealPath,
-    expectedFileIdentity,
-    execFileFn = execFile,
-  } = {},
+export function resolveC2ZcRestoreCanonicalLifecycleBaseline(
+  semantic,
+  label = "C2-ZC restore canonical lifecycle baseline",
 ) {
-  requireText(projectId, "C2-ZC restore baseline projectId");
-  if (!expectedArtifact || !isObject(expectedArtifact)) {
-    throw new Error(
-      "C2-ZC restore baseline requires its manifest fixture artifact",
-    );
+  if (!isObject(semantic)) {
+    throw new Error(`${label} semantic must be an object`);
   }
-  const before = await inspectC2ZcImmutableFixtureDatabase(
-    databasePath,
-    { expectedArtifact, expectedRealPath, expectedFileIdentity },
-    "C2-ZC restore baseline source",
+  assertExactKeys(
+    semantic.restoreCanonicalLifecycleBaseline,
+    ["rows"],
+    `${label} payload`,
   );
-  const request = resolveC2ZcAuthorityQuery(
-    C2ZC_AUTHORITY_SNAPSHOT_QUERIES.runs,
-    { projectId },
+  const baseline = assertCanonicalRunSequence(
+    semantic.restoreCanonicalLifecycleBaseline.rows,
+    label,
+    { requireProjection: true, requireCompleted: true },
   );
-  const query = bindC2ZcSqliteParameters(
-    request.sql,
-    request.params,
-    "C2-ZC restore baseline source query",
-  );
-  let stdout;
-  try {
-    ({ stdout } = await execFileFn(
-      "sqlite3",
-      ["-readonly", "-nofollow", "-json", "--", before.resolvedPath, query],
-      { maxBuffer: 4 * 1024 * 1024 },
-    ));
-  } catch (error) {
-    throw new Error(
-      `C2-ZC restore baseline source query requires sqlite3: ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error },
-    );
+  if (baseline.length === 0) {
+    throw new Error(`${label} must be non-empty`);
   }
-  const after = await inspectC2ZcImmutableFixtureDatabase(
-    databasePath,
-    { expectedArtifact, expectedRealPath, expectedFileIdentity },
-    "C2-ZC restore baseline source after query",
+  assertFixtureSha256(
+    semantic.restoreCanonicalLifecycleBaselineDigest,
+    `${label} digest`,
   );
   if (
-    before.resolvedPath !== after.resolvedPath ||
-    !sameFileIdentity(after.metadata, before.metadata) ||
-    stableJson(before.digest) !== stableJson(after.digest)
+    semantic.restoreCanonicalLifecycleBaselineDigest !==
+    digestJson(semantic.restoreCanonicalLifecycleBaseline)
   ) {
-    throw new Error(
-      "C2-ZC restore baseline source changed during its SQLite read",
-    );
+    throw new Error(`${label} digest does not match its payload`);
   }
-  let parsed;
-  try {
-    parsed = JSON.parse(String(stdout).trim() || "[]");
-  } catch (error) {
-    throw new Error("C2-ZC restore baseline source returned invalid JSON", {
-      cause: error,
-    });
+  if (baseline.some((run) => run.projectId !== semantic.projectId)) {
+    throw new Error(`${label} rows are not bound to the semantic project`);
   }
-  if (!Array.isArray(parsed)) {
-    throw new Error("C2-ZC restore baseline source returned a non-array");
-  }
-  const baseline = parsed.filter((run) =>
-    C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run?.runKind),
-  );
-  assertC2ZcRestoreCanonicalBaseline({ runs: baseline }, baseline);
   return baseline;
 }
 
@@ -4115,27 +4015,13 @@ export async function runC2ZcCanonicalAuthorityJourney(
     workspace,
   );
   const staged = await stageC2ZcRestoreFixture(workspace, fixture);
-  const restoreBaselineRuns = await readC2ZcRestoreCanonicalLifecycleBaseline(
-    staged.stagingTempPath,
-    fixture.manifest.semantic.projectId,
-    {
-      expectedArtifact: fixture.manifest.artifacts.fixture,
-      expectedFileIdentity: {
-        dev: staged.stagingTempDevice,
-        ino: staged.stagingTempInode,
-      },
-    },
-  );
-  await inspectC2ZcImmutableFixtureDatabase(
-    staged.targetPath,
-    {
-      expectedArtifact: fixture.manifest.artifacts.fixture,
-      expectedFileIdentity: {
-        dev: staged.stagingTempDevice,
-        ino: staged.stagingTempInode,
-      },
-    },
+  assertC2ZcRuntimeBackupName(
+    staged.backupName,
+    fixture.manifest.fixtureSha256,
     "C2-ZC staged restore target",
+  );
+  const restoreBaselineRuns = resolveC2ZcRestoreCanonicalLifecycleBaseline(
+    fixture.manifest.semantic,
   );
   harness.recordTimeline?.(`${C2ZC_PRODUCT_JOURNEY_ID}/restore-fixture`, {
     backupName: staged.backupName,

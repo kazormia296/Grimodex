@@ -35,6 +35,36 @@ export function createC2ZcFixtureSemantic({
     sceneSourceRevision.indexOf("@") + 1,
   );
   const backfillSpec = { backfillAlgorithmVersion: "3" };
+  const restoreCanonicalLifecycleBaseline = {
+    rows: [
+      {
+        id: "fixture-freshness-1",
+        projectId,
+        runKind: "freshness-evaluation",
+        workKey: "incremental-freshness:fixture:0:2",
+        status: "completed",
+        semanticEpochId: "e0",
+        outcomeSummaryJson: '{"throughSequenceInclusive":2}',
+        createdAt: "2026-08-29T00:00:01.000Z",
+        startedAt: "2026-08-29T00:00:01.000Z",
+        completedAt: "2026-08-29T00:00:02.000Z",
+        version: 1,
+      },
+      {
+        id: "fixture-freshness-2",
+        projectId,
+        runKind: "freshness-evaluation",
+        workKey: "incremental-freshness:fixture:2:3",
+        status: "completed",
+        semanticEpochId: "e0",
+        outcomeSummaryJson: '{"throughSequenceInclusive":3}',
+        createdAt: "2026-08-29T00:00:03.000Z",
+        startedAt: "2026-08-29T00:00:03.000Z",
+        completedAt: "2026-08-29T00:00:04.000Z",
+        version: 1,
+      },
+    ],
+  };
   const backfillOutcome = {
     maintenancePhase: "backfill-complete",
     backfillAlgorithmVersion: "3",
@@ -225,6 +255,7 @@ export function createC2ZcFixtureSemantic({
       confirmationVerify: "clean",
       marker: "after-confirmation-verify",
     },
+    restoreCanonicalLifecycleBaseline,
   };
   return refreshC2ZcFixtureSemanticDigests(semantic);
 }
@@ -264,6 +295,8 @@ function semanticContentsPayload(semantic) {
     expectedRestoreGap: semantic.expectedRestoreGap,
     semanticIndex: semantic.semanticIndex,
     expectedRestoreLifecycle: semantic.expectedRestoreLifecycle,
+    restoreCanonicalLifecycleBaseline:
+      semantic.restoreCanonicalLifecycleBaseline,
   };
 }
 
@@ -281,6 +314,7 @@ export function refreshC2ZcFixtureSemanticDigests(semantic) {
     "expectedRestoreGap",
     "semanticIndex",
     "expectedRestoreLifecycle",
+    "restoreCanonicalLifecycleBaseline",
   ]) {
     semantic[`${field}Digest`] = fixtureDigest(semantic[field]);
   }

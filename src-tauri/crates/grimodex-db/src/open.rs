@@ -404,7 +404,7 @@ pub(crate) fn workspace_maintenance_exclusive_waiters(path: &Path) -> usize {
 /// 永遠に残る。backup restore Phase 2）。ファイル名の時刻プレフィクスは固定幅なので
 /// 拡張子が混在しても名前ソート＝時系列は維持される。
 fn is_backup_file(name: &str) -> bool {
-    name.starts_with("grimodex-") && (name.ends_with(".db") || name.ends_with(".db.gz"))
+    crate::backup_restore::parse_backup_file_name(name).is_some()
 }
 
 /// Age (seconds) of the most recent backup in `dir`, if any.
@@ -1267,6 +1267,17 @@ mod tests {
     fn test_is_backup_file_accepts_db_and_gz_only() {
         assert!(is_backup_file("grimodex-20260101-000000.db"));
         assert!(is_backup_file("grimodex-20260101-000000.db.gz"));
+        assert!(is_backup_file(&format!(
+            "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
+            "a".repeat(64)
+        )));
+        assert!(!is_backup_file(
+            "grimodex-c2zc-restore-fixture--sha256-ABC.backup.db"
+        ));
+        assert!(!is_backup_file(&format!(
+            "grimodex-c2zc-restore-fixture--sha256-{}.backup.db.gz",
+            "a".repeat(64)
+        )));
         assert!(!is_backup_file("grimodex-20260101-000000.db.tmp"));
         assert!(!is_backup_file("grimodex-20260101-000000.db.gz.tmp"));
         // materialize 用 restore-tmp は "grimodex." 始まり (ハイフン無し) で除外。
