@@ -722,6 +722,39 @@ export function assertC2ZcLegacyProjectionStable(
   return after;
 }
 
+function assertC2ZcLegacyFreshnessRows(
+  snapshot,
+  label = "C2-ZC Legacy Freshness",
+  { requireExactlyOne = false } = {},
+) {
+  const legacyFreshnessRows = snapshot?.legacyFreshnessRows;
+  if (!Array.isArray(legacyFreshnessRows)) {
+    throw new Error(`${label} must retain all legacy Freshness rows`);
+  }
+  if (
+    !Number.isSafeInteger(snapshot.legacyFreshnessRowCount) ||
+    snapshot.legacyFreshnessRowCount !== legacyFreshnessRows.length
+  ) {
+    throw new Error(`${label} row count is inconsistent`);
+  }
+  const legacyProjection = snapshot?.legacyProjection;
+  if (!isObject(legacyProjection)) {
+    throw new Error(`${label} projection is missing`);
+  }
+  if (
+    (legacyFreshnessRows.length === 0 && legacyProjection.freshness !== null) ||
+    (legacyFreshnessRows.length > 0 &&
+      stableJson(legacyProjection.freshness) !==
+        stableJson(legacyFreshnessRows[0]))
+  ) {
+    throw new Error(`${label} projection does not preserve its first row`);
+  }
+  if (requireExactlyOne && legacyFreshnessRows.length !== 1) {
+    throw new Error(`${label} must retain exactly one canonical baseline row`);
+  }
+  return legacyFreshnessRows;
+}
+
 export function assertC2ZcGenericRowsComplete(
   snapshot,
   label = "C2-ZC Generic storage",
@@ -1258,6 +1291,17 @@ export function assertC2ZcFixtureApplicationParity(
   );
   if (genericRows.length !== 1) {
     throw new Error(`${label} must contain exactly one manifest Generic row`);
+  }
+  const legacyFreshnessRows = assertC2ZcLegacyFreshnessRows(
+    snapshot,
+    `${label} Legacy Freshness`,
+  );
+  const expectedLegacyFreshnessRows = [semantic.legacyProjection.freshness];
+  if (
+    legacyFreshnessRows.length !== semantic.legacyProjectionFreshnessCount ||
+    stableJson(legacyFreshnessRows) !== stableJson(expectedLegacyFreshnessRows)
+  ) {
+    throw new Error(`${label} Legacy Freshness rows differ from the manifest`);
   }
   if (
     stableJson(snapshot.legacyProjection) !==
@@ -3128,6 +3172,8 @@ export async function readC2ZcAuthoritySnapshot(harness, page, projectId) {
     runs,
     genericRows,
     dependencyEdges,
+    legacyFreshnessRows,
+    legacyFreshnessRowCount: legacyFreshnessRows.length,
     legacyProjection,
     feedCursor,
     applications,
@@ -3530,6 +3576,27 @@ export function assertC2ZcRestartInvariants({
     restart.legacyProjection,
     `${label} Legacy projection`,
   );
+  const hasLegacyFreshnessRows =
+    before.legacyFreshnessRows !== undefined ||
+    restart.legacyFreshnessRows !== undefined;
+  if (hasLegacyFreshnessRows) {
+    const beforeLegacyFreshnessRows = assertC2ZcLegacyFreshnessRows(
+      before,
+      `${label} before Legacy Freshness`,
+    );
+    const restartLegacyFreshnessRows = assertC2ZcLegacyFreshnessRows(
+      restart,
+      `${label} restart Legacy Freshness`,
+    );
+    if (
+      stableJson(beforeLegacyFreshnessRows) !==
+      stableJson(restartLegacyFreshnessRows)
+    ) {
+      throw new Error(
+        `${label} Legacy Freshness rows changed across the lifecycle boundary`,
+      );
+    }
+  }
   const beforeIds = new Set(
     rows(before.runs, `${label} before runs`).map((run) => run.id),
   );
@@ -3613,6 +3680,9 @@ function assertC2ZcPostMarkerSnapshot(
   if (snapshot.projectSettled !== true) {
     throw new Error(`${label} project is not settled`);
   }
+  assertC2ZcLegacyFreshnessRows(snapshot, `${label} Legacy Freshness`, {
+    requireExactlyOne: true,
+  });
   if (!requireTypedApplication) return { epochId: e1.id };
   const genericRows = rows(snapshot.genericRows, `${label} Generic rows`);
   const targetGenericRows = genericRows.filter(
@@ -3682,7 +3752,7 @@ function assertC2ZcPostMarkerSnapshot(
     !producer ||
     producer.status !== "completed" ||
     producer.semanticEpochId !== e1.id ||
-    producer.runKind !== "application"
+    producer.runKind !== "interpretation"
   ) {
     throw new Error(
       `${label} typed Application producer is not completed in E1`,

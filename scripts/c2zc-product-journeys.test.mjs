@@ -271,6 +271,42 @@ test("live run projection preserves spec-only idle checkpoint provenance", async
   );
 });
 
+test("live authority snapshots retain every legacy Freshness row", async () => {
+  const legacyFreshnessRows = [
+    {
+      applicationId: "application-e1",
+      status: "fresh",
+      reasonJson: null,
+      version: 1,
+      updatedAt: "2026-08-29T00:00:30.000Z",
+    },
+    {
+      applicationId: "typed-application",
+      status: "unknown",
+      reasonJson: JSON.stringify({ source: "typed-application" }),
+      version: 1,
+      updatedAt: "2026-08-29T00:00:31.000Z",
+    },
+  ];
+  const harness = {
+    invokeOk: async (_page, command, request) => {
+      if (command === "narrative_maintenance_inbox_list") return [];
+      if (request.sql.includes("FROM narrative_projection_freshness")) {
+        return { rows: legacyFreshnessRows };
+      }
+      return { rows: [] };
+    },
+  };
+  const snapshot = await readC2ZcAuthoritySnapshot(
+    harness,
+    { id: "page" },
+    "project-e1",
+  );
+  assert.deepEqual(snapshot.legacyFreshnessRows, legacyFreshnessRows);
+  assert.equal(snapshot.legacyFreshnessRowCount, legacyFreshnessRows.length);
+  assert.deepEqual(snapshot.legacyProjection.freshness, legacyFreshnessRows[0]);
+});
+
 test("SQLite placeholder scanner ignores quoted literals and comments", () => {
   const cases = [
     ["SELECT ?", 1],
@@ -2259,6 +2295,10 @@ function settledApplicationSnapshot(
     dependencyEdges: [semantic.edge],
     applications: [structuredClone(semantic.application)],
     legacyProjection,
+    legacyFreshnessRows: legacyProjection.freshness
+      ? [structuredClone(legacyProjection.freshness)]
+      : [],
+    legacyFreshnessRowCount: legacyProjection.freshness ? 1 : 0,
     findingRows: [{ id: "finding-1", lifecycleState: "resolved" }],
     inboxEntries: [],
     feedCursor: {
@@ -2604,7 +2644,7 @@ test("post-marker typed Application requires exact producer provenance and stabl
     snapshot.runs.push({
       id: application.runId,
       projectId: application.projectId,
-      runKind: "application",
+      runKind: "interpretation",
       status: "completed",
       semanticEpochId: "e1",
     });
@@ -2642,6 +2682,23 @@ test("post-marker typed Application requires exact producer provenance and stabl
     },
     (value) => {
       value.afterMutation.genericRows[0].lastEvaluatedRunId = "typed-run";
+    },
+    (value) => {
+      value.afterMutation.runs.find(
+        (run) => run.id === application.runId,
+      ).runKind = "application";
+    },
+    (value) => {
+      value.afterMutation.runs.find(
+        (run) => run.id === application.runId,
+      ).semanticEpochId = "e0";
+    },
+    (value) => {
+      value.afterMutation.legacyFreshnessRows.push({
+        ...value.afterMutation.legacyFreshnessRows[0],
+        applicationId: application.applicationId,
+      });
+      value.afterMutation.legacyFreshnessRowCount += 1;
     },
     (value) => {
       value.restart.runs.push({
