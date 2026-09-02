@@ -11,7 +11,11 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 
-import { restoreBackupThroughSettingsUi } from "./narrative-maintenance-product-journeys.mjs";
+import {
+  configureJourneyWorkspaceForProductJourney,
+  launchRestoreVerifyRebuildVerifyRestorePhaseForProductJourney,
+  restoreBackupThroughSettingsUi,
+} from "./narrative-maintenance-product-journeys.mjs";
 import {
   assertC2ZcRustVerifyContractVersion,
   assertC2ZcRustVerifyCoverage,
@@ -73,6 +77,15 @@ const C2ZC_CUTOVER_CONTRACT_VERSION = 1;
 const C2ZC_FRESHNESS_CONSUMER_KIND = "application";
 const C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID =
   "narrative-incremental-freshness/v1";
+const C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS = new Set([
+  "dependency-verify",
+  "semantic-index-rebuild",
+  "freshness-evaluation",
+]);
+const C2ZC_RESTORE_PRE_CUTOVER_RUN_KINDS = new Set([
+  ...C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS,
+  "incremental-freshness",
+]);
 const C2ZC_WAIT_MS = 60_000;
 const C2ZC_FIXTURE_GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/u;
 const C2ZC_FIXTURE_SHA256 = /^sha256:[0-9a-f]{64}$/u;
@@ -791,6 +804,37 @@ export function assertC2ZcProjectInventory(
     throw new Error(`${label} snapshot project authority changed`);
   }
   return inventory;
+}
+
+/**
+ * The restore launch must observe the pre-cutover image before the explicit
+ * normal-open phase owns C2-ZC. This is intentionally fail-closed: a marker,
+ * canonical lifecycle Run, or Generic authority row means the launch was not
+ * isolated from automatic cutover and the journey must stop before restore.
+ */
+export function assertC2ZcRestorePreCutoverState(
+  snapshot,
+  label = "C2-ZC restore pre-cutover state",
+) {
+  const markerRows = markerRowsOf(snapshot);
+  if (markerRows.length !== 0) {
+    throw new Error(`${label} already contains a C2-ZC cutover marker`);
+  }
+  const lifecycleRuns = rows(snapshot?.runs, `${label} runs`).filter((run) =>
+    C2ZC_RESTORE_PRE_CUTOVER_RUN_KINDS.has(run?.runKind),
+  );
+  if (lifecycleRuns.length !== 0) {
+    throw new Error(
+      `${label} already contains canonical lifecycle Runs: ${lifecycleRuns
+        .map((run) => run.runKind)
+        .join(", ")}`,
+    );
+  }
+  const genericRows = rows(snapshot?.genericRows, `${label} Generic rows`);
+  if (genericRows.length !== 0) {
+    throw new Error(`${label} already contains Generic authority rows`);
+  }
+  return { markerRows, lifecycleRuns, genericRows };
 }
 
 export function assertC2ZcNoDependencyRepair(
@@ -2715,14 +2759,9 @@ export function assertC2ZcRestoreLifecycleOrder(
 ) {
   const runsValue = rows(runValues, `${label} runs`);
   const strict = expectedRestoreLifecycle !== undefined || marker !== undefined;
-  const lifecycleKinds = new Set([
-    "dependency-verify",
-    "semantic-index-rebuild",
-    "freshness-evaluation",
-  ]);
   assertC2ZcNoDependencyRepair({ runs: runsValue }, label);
   const lifecycleRuns = runsValue.filter((run) =>
-    lifecycleKinds.has(run.runKind),
+    C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run.runKind),
   );
   const completed = runsValue.filter((run) => run.status === "completed");
   if (!strict) {
@@ -3670,7 +3709,11 @@ export async function runC2ZcCanonicalAuthorityJourney(
     harness.c2zcRustAcceptanceEvidence?.receipt?.candidate;
   assertC2ZcFixtureCandidateBinding(fixture.manifest.candidate, rustAcceptance);
   const workspace = harness.workspacePath(C2ZC_PRODUCT_JOURNEY_ID);
-  await configureWorkspace(harness, workspace);
+  await configureJourneyWorkspaceForProductJourney(
+    harness,
+    configureWorkspace,
+    workspace,
+  );
   const staged = await stageC2ZcRestoreFixture(workspace, fixture);
   harness.recordTimeline?.(`${C2ZC_PRODUCT_JOURNEY_ID}/restore-fixture`, {
     backupName: staged.backupName,
@@ -3688,12 +3731,22 @@ export async function runC2ZcCanonicalAuthorityJourney(
   let projectId = fixture.manifest.semantic.projectId;
   let restoredSnapshot;
   try {
-    restoreLaunch = await harness.launch(`${C2ZC_PRODUCT_JOURNEY_ID}/restore`);
+    restoreLaunch =
+      await launchRestoreVerifyRebuildVerifyRestorePhaseForProductJourney(
+        harness,
+        `${C2ZC_PRODUCT_JOURNEY_ID}/restore`,
+        {},
+        (phase) => harness.launch(phase),
+      );
     projectId = await waitForProjectId(harness, restoreLaunch.page, projectId);
     const beforeRestore = await readC2ZcAuthoritySnapshot(
       harness,
       restoreLaunch.page,
       projectId,
+    );
+    assertC2ZcRestorePreCutoverState(
+      beforeRestore,
+      "C2-ZC restore launch pre-cutover state",
     );
     await restoreBackupThroughSettingsUi(
       { page: restoreLaunch.page, harness },
@@ -3722,6 +3775,10 @@ export async function runC2ZcCanonicalAuthorityJourney(
       "C2-ZC restored E1 observation",
       C2ZC_WAIT_MS,
       250,
+    );
+    assertC2ZcRestorePreCutoverState(
+      restoredSnapshot,
+      "C2-ZC restored snapshot pre-cutover state",
     );
     restoredEpoch(restoredSnapshot.epochs, "C2-ZC restored Settings UI image");
     assertC2ZcProjectInventory(

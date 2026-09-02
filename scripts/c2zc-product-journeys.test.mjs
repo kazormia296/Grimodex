@@ -42,6 +42,7 @@ import {
   assertC2ZcMarkerExactlyOnce,
   assertC2ZcPostMarkerApplicationPersistence,
   assertC2ZcProjectInventory,
+  assertC2ZcRestorePreCutoverState,
   assertC2ZcRestartInvariants,
   assertC2ZcRestoreFixtureManifest,
   assertC2ZcRestoreFixtureInput,
@@ -54,6 +55,20 @@ import {
   resolveC2ZcAuthorityQuery,
   stageC2ZcRestoreFixture,
 } from "../electron/scripts/c2zc-canonical-product-journey.mjs";
+import {
+  configureJourneyWorkspaceForProductJourney,
+  launchRestoreVerifyRebuildVerifyRestorePhaseForProductJourney,
+  NARRATIVE_FRESHNESS_DISABLE_ENV,
+  NARRATIVE_MAINTENANCE_FAULT_ENV,
+  NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+  NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV,
+  NARRATIVE_MAINTENANCE_FRESHNESS_HOLD_PROJECT_ENV,
+  NARRATIVE_MAINTENANCE_NONCE_ENV,
+  NARRATIVE_MAINTENANCE_SETUP_ENV,
+  NARRATIVE_MAINTENANCE_TRIGGER_ENV,
+} from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import {
   createC2ZcFixtureManifest,
   createC2ZcFixtureSemantic,
@@ -353,12 +368,18 @@ test("canonical source has no independent post-marker lane or old hold seams", a
     assert.doesNotMatch(source, new RegExp(symbol), symbol);
   }
   assert.match(source, /C2ZC_RESTORE_FIXTURE_ENV/);
+  assert.match(source, /configureJourneyWorkspaceForProductJourney/);
+  assert.match(
+    source,
+    /launchRestoreVerifyRebuildVerifyRestorePhaseForProductJourney/,
+  );
   assert.match(source, /restoreBackupThroughSettingsUi/);
   assert.match(source, /assertC2ZcVerifyCoverage/);
   const journeyBody = source.slice(
     source.indexOf("export async function runC2ZcCanonicalAuthorityJourney"),
   );
   assert.match(journeyBody, /assertC2ZcProjectInventory/);
+  assert.match(journeyBody, /assertC2ZcRestorePreCutoverState/);
   assert.match(journeyBody, /assertC2ZcFixtureApplicationParity/);
   assert.match(journeyBody, /assertC2ZcFindingRowsResolved/);
   assert.match(journeyBody, /assertC2ZcPostMarkerApplicationPersistence/);
@@ -380,7 +401,236 @@ test("canonical source has no independent post-marker lane or old hold seams", a
     journeyBody.indexOf("finalLaunch ="),
   );
   assert.match(finalCheckpoint, /assertC2ZcPostMarkerApplicationPersistence/);
+  const restoreCallOffset = journeyBody.indexOf(
+    "await restoreBackupThroughSettingsUi(",
+  );
+  const restoredAssignmentOffset = journeyBody.indexOf(
+    "restoredSnapshot = await harness.waitUntil(",
+  );
+  const restoredReadOffset = journeyBody.indexOf(
+    "const snapshot = await readC2ZcAuthoritySnapshot(",
+    restoredAssignmentOffset,
+  );
+  const restoredAssertionOffset = journeyBody.indexOf(
+    "assertC2ZcRestorePreCutoverState(\n      restoredSnapshot,",
+    restoredAssignmentOffset,
+  );
+  const restoreCloseOffset = journeyBody.indexOf(
+    "  } finally {\n    await closeLaunch(\n      harness,\n      restoreLaunch,\n      `${C2ZC_PRODUCT_JOURNEY_ID}/restore`,\n    );",
+    restoredAssertionOffset,
+  );
+  const normalOpenOffset = journeyBody.indexOf(
+    "openLaunch = await harness.launch(`${C2ZC_PRODUCT_JOURNEY_ID}/open`);",
+    restoreCloseOffset,
+  );
+  assert.ok(
+    restoreCallOffset >= 0 &&
+      restoredAssignmentOffset > restoreCallOffset &&
+      restoredReadOffset > restoredAssignmentOffset &&
+      restoredAssertionOffset > restoredReadOffset &&
+      restoreCloseOffset > restoredAssertionOffset &&
+      normalOpenOffset > restoreCloseOffset,
+    "restore contamination assertion must guard the restored snapshot before close and normal open",
+  );
   assert.doesNotMatch(source, /manifest\.(verifyOutcome|rustOutcome)/);
+});
+
+test("C2-ZC restore setup keeps automatic cutover disabled until normal open", async () => {
+  const previousCi = process.env.CI;
+  const seamEnvs = [
+    NARRATIVE_MAINTENANCE_FAULT_ENV,
+    NARRATIVE_MAINTENANCE_TRIGGER_ENV,
+    NARRATIVE_MAINTENANCE_SETUP_ENV,
+    NARRATIVE_FRESHNESS_DISABLE_ENV,
+    NARRATIVE_MAINTENANCE_FRESHNESS_HOLD_PROJECT_ENV,
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+    NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
+    NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV,
+    NARRATIVE_MAINTENANCE_NONCE_ENV,
+  ];
+  const previousSeamValues = new Map(
+    seamEnvs.map((name) => [name, process.env[name]]),
+  );
+  const observed = [];
+  const snapshotEnvironment = () =>
+    Object.fromEntries(seamEnvs.map((name) => [name, process.env[name]]));
+  const expectedEnvironment = (overrides = {}) => ({
+    ...Object.fromEntries(seamEnvs.map((name) => [name, undefined])),
+    ...overrides,
+  });
+  const assertObservedEnvironment = (phase, expected) => {
+    const observation = observed.find((entry) => entry.phase === phase);
+    assert.ok(observation, `missing environment observation for ${phase}`);
+    for (const name of seamEnvs) {
+      if (expected[name] === "<uuid>") {
+        assert.match(
+          observation.env[name] ?? "",
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu,
+          `${phase} must carry a generated UUIDv4 nonce`,
+        );
+      } else {
+        assert.equal(
+          observation.env[name],
+          expected[name],
+          `${phase} must restore/mask ${name}`,
+        );
+      }
+    }
+  };
+  const harness = {
+    launch: async (phase) => {
+      observed.push({ phase, env: snapshotEnvironment() });
+      if (phase.endsWith("/throw")) {
+        throw new Error(`${phase} launch failed`);
+      }
+      return { phase };
+    },
+  };
+  process.env.CI = "true";
+  for (const name of seamEnvs) delete process.env[name];
+  const activeConfigureEnvironment = expectedEnvironment({
+    [NARRATIVE_MAINTENANCE_SETUP_ENV]: "disabled",
+    [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+    [NARRATIVE_MAINTENANCE_NONCE_ENV]: "<uuid>",
+  });
+  const activeRestoreEnvironment = expectedEnvironment({
+    [NARRATIVE_MAINTENANCE_SETUP_ENV]: "disabled",
+    [NARRATIVE_FRESHNESS_DISABLE_ENV]: "disabled",
+    [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+    [NARRATIVE_MAINTENANCE_NONCE_ENV]: "<uuid>",
+  });
+  const absentEnvironment = expectedEnvironment();
+  const originalEnvironment = Object.fromEntries(
+    seamEnvs.map((name, index) => [name, `original-${index}`]),
+  );
+  try {
+    await configureJourneyWorkspaceForProductJourney(
+      {},
+      async () => {
+        observed.push({ phase: "configure", env: snapshotEnvironment() });
+      },
+      "/tmp/c2-zc-restore-workspace",
+    );
+    await launchRestoreVerifyRebuildVerifyRestorePhaseForProductJourney(
+      harness,
+      "c2-zc-canonical-authority-cutover/restore",
+      {},
+    );
+    await harness.launch("c2-zc-canonical-authority-cutover/normal-open");
+    for (const [name, value] of Object.entries(originalEnvironment)) {
+      process.env[name] = value;
+    }
+    await assert.rejects(
+      configureJourneyWorkspaceForProductJourney(
+        harness,
+        async () => {
+          observed.push({
+            phase: "configure/throw",
+            env: snapshotEnvironment(),
+          });
+          throw new Error("configure failed");
+        },
+        "/tmp/c2-zc-restore-workspace-throw",
+      ),
+      /configure failed/,
+    );
+    await harness.launch(
+      "c2-zc-canonical-authority-cutover/normal-open-after-configure-throw",
+    );
+    await assert.rejects(
+      launchRestoreVerifyRebuildVerifyRestorePhaseForProductJourney(
+        harness,
+        "c2-zc-canonical-authority-cutover/throw",
+        {},
+      ),
+      /launch failed/,
+    );
+    await harness.launch(
+      "c2-zc-canonical-authority-cutover/normal-open-after-restore-throw",
+    );
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    for (const [name, value] of previousSeamValues) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  assert.equal(observed.length, 7);
+  assertObservedEnvironment("configure", activeConfigureEnvironment);
+  assertObservedEnvironment(
+    "c2-zc-canonical-authority-cutover/restore",
+    activeRestoreEnvironment,
+  );
+  assertObservedEnvironment(
+    "c2-zc-canonical-authority-cutover/normal-open",
+    absentEnvironment,
+  );
+  assertObservedEnvironment("configure/throw", activeConfigureEnvironment);
+  assertObservedEnvironment(
+    "c2-zc-canonical-authority-cutover/normal-open-after-configure-throw",
+    originalEnvironment,
+  );
+  assertObservedEnvironment(
+    "c2-zc-canonical-authority-cutover/throw",
+    activeRestoreEnvironment,
+  );
+  assertObservedEnvironment(
+    "c2-zc-canonical-authority-cutover/normal-open-after-restore-throw",
+    originalEnvironment,
+  );
+
+  assert.doesNotThrow(() =>
+    assertC2ZcRestorePreCutoverState({
+      markerRows: [],
+      runs: [
+        { runKind: "legacy-import", status: "completed" },
+        { runKind: "unrelated-maintenance", status: "completed" },
+      ],
+      genericRows: [],
+    }),
+  );
+  assert.throws(
+    () =>
+      assertC2ZcRestorePreCutoverState({
+        markerRows: [
+          {
+            migrationId: "narrative-c2-canonical-freshness-v1",
+            contractVersion: 1,
+            appliedAt: "2026-08-30T00:00:00.000Z",
+          },
+        ],
+        runs: [],
+        genericRows: [],
+      }),
+    /marker/i,
+  );
+  for (const runKind of [
+    "dependency-verify",
+    "semantic-index-rebuild",
+    "freshness-evaluation",
+    "incremental-freshness",
+  ]) {
+    assert.throws(
+      () =>
+        assertC2ZcRestorePreCutoverState({
+          markerRows: [],
+          runs: [{ runKind, status: "completed" }],
+          genericRows: [],
+        }),
+      /lifecycle|Run/i,
+      `must reject ${runKind} before restore`,
+    );
+  }
+  assert.throws(
+    () =>
+      assertC2ZcRestorePreCutoverState({
+        markerRows: [],
+        runs: [],
+        genericRows: [{ consumerKind: "application" }],
+      }),
+    /Generic authority/i,
+  );
 });
 
 test("offline restore fixture interface is narrow and fail-closed", () => {

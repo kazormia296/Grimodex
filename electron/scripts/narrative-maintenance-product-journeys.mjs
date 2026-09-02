@@ -1762,6 +1762,16 @@ export const launchRestoreVerifyRebuildVerifyPhaseForTest =
 export const launchRestoreVerifyRebuildVerifyRestorePhaseForTest =
   launchRestoreVerifyRebuildVerifyRestorePhase;
 
+/**
+ * Product-journey setup helpers shared by the C2-ZC canonical lane. These
+ * keep the pre-restore workspace and restore document outside the automatic
+ * maintenance/cutover owners until the explicitly normal open phase.
+ */
+export const configureJourneyWorkspaceForProductJourney =
+  configureJourneyWorkspace;
+export const launchRestoreVerifyRebuildVerifyRestorePhaseForProductJourney =
+  launchRestoreVerifyRebuildVerifyRestorePhase;
+
 async function configureJourneyWorkspace(
   harness,
   configureWorkspace,
