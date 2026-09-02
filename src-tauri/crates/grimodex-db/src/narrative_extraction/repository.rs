@@ -5639,7 +5639,13 @@ fn row_to_decision_value(row: &Row<'_>) -> rusqlite::Result<Value> {
 /// Test-only DDL helper until migrate.rs adds the production tables.
 pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS narrative_extraction_runs (
+        "CREATE TABLE IF NOT EXISTS schema_data_migrations (
+            migration_id     TEXT NOT NULL,
+            contract_version INTEGER NOT NULL CHECK(contract_version > 0),
+            applied_at       TEXT NOT NULL,
+            PRIMARY KEY(migration_id)
+        );
+        CREATE TABLE IF NOT EXISTS narrative_extraction_runs (
             id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL,
             surface_path_id TEXT NOT NULL,
