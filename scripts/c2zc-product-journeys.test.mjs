@@ -15,6 +15,8 @@ import {
   PRODUCT_JOURNEYS,
 } from "../electron/scripts/product-journeys.mjs";
 import {
+  C2ZC_AUTHORITY_APPLICATION_ROWS_QUERY,
+  C2ZC_AUTHORITY_SNAPSHOT_QUERIES,
   C2ZC_CANONICAL_PRODUCT_JOURNEY_PHASES,
   C2ZC_PRODUCT_JOURNEY_ID,
   C2ZC_RESTORE_FIXTURE_ENV,
@@ -31,7 +33,9 @@ import {
   assertC2ZcRestoreLifecycleOrder,
   assertC2ZcFeedCursorSettled,
   assertC2ZcVerifyCoverage,
+  countC2ZcSqlPlaceholders,
   readC2ZcAuthoritySnapshot,
+  resolveC2ZcAuthorityQuery,
 } from "../electron/scripts/c2zc-canonical-product-journey.mjs";
 import {
   createC2ZcFixtureManifest,
@@ -120,7 +124,7 @@ test("live authority snapshots preserve every cursor reservation and run field",
     invokeOk: async (_page, command, request) => {
       if (command === "narrative_maintenance_inbox_list") return [];
       if (request.sql.includes("FROM narrative_change_events")) {
-        const placeholderCount = (request.sql.match(/\?/g) ?? []).length;
+        const placeholderCount = countC2ZcSqlPlaceholders(request.sql);
         assert.equal(placeholderCount, 21);
         assert.equal(request.params.length, placeholderCount);
         return { rows: [row] };
@@ -137,8 +141,152 @@ test("live authority snapshots preserve every cursor reservation and run field",
   assert.equal(snapshot.feedCursor.cursor.activeRunId, row.activeRunId);
   assert.equal(snapshot.feedCursor.cursor.semanticEpochId, row.semanticEpochId);
   assert.throws(
-    () => assertC2ZcFeedCursorSettled(snapshot, { epochId: "e1" }),
+    () =>
+      assertC2ZcFeedCursorSettled(snapshot, {
+        epochId: "e1",
+        projectId: row.cursorProjectId,
+        consumerId: row.consumerId,
+      }),
     /cursor|acknowledged|active|epoch/i,
+  );
+});
+
+test("SQLite placeholder scanner ignores quoted literals and comments", () => {
+  const cases = [
+    ["SELECT ?", 1],
+    ["SELECT 'it''s ?' AS text, ?", 1],
+    ['SELECT "quoted ""?"" identifier", ?', 1],
+    ["SELECT `?``name`, ?", 1],
+    ["SELECT [?] AS value, ?", 1],
+    [String.raw`SELECT 'a\\' AS text, ?`, 1],
+    ["SELECT ':é @é $é ?' AS text, ? /* :é @é $é ? */ -- :é @é $é ?\n", 1],
+    ["-- ?\nSELECT ? /* block ? */", 1],
+    ["SELECT '?' /* ? */ -- ?\n", 0],
+  ];
+  for (const [sql, expected] of cases) {
+    assert.equal(countC2ZcSqlPlaceholders(sql), expected, sql);
+  }
+  assert.throws(
+    () =>
+      resolveC2ZcAuthorityQuery({
+        sql: "SELECT '?' /* ? */",
+        params: () => ["unexpected"],
+      }),
+    /expected 0, got 1/,
+  );
+  assert.throws(
+    () =>
+      resolveC2ZcAuthorityQuery({
+        sql: "SELECT ? -- ?\n",
+        params: () => [],
+      }),
+    /expected 1, got 0/,
+  );
+  for (const [sql, message] of [
+    ["SELECT ?1", /unsupported numbered SQLite placeholder/],
+    ["SELECT :name", /unsupported named SQLite placeholder/],
+    ["SELECT @name", /unsupported named SQLite placeholder/],
+    ["SELECT $name", /unsupported named SQLite placeholder/],
+    ["SELECT :é", /unsupported named SQLite placeholder/],
+    ["SELECT @é", /unsupported named SQLite placeholder/],
+    ["SELECT $é", /unsupported named SQLite placeholder/],
+    ["SELECT $::foo", /unsupported named SQLite placeholder/],
+  ]) {
+    assert.throws(() => countC2ZcSqlPlaceholders(sql), message, sql);
+    assert.throws(
+      () => resolveC2ZcAuthorityQuery({ sql, params: () => [] }),
+      message,
+      sql,
+    );
+  }
+});
+
+test("authority query descriptors preserve order, aliases, and bind arity", () => {
+  const expectedDescriptorKeys = [
+    "marker",
+    "epochs",
+    "runs",
+    "genericFreshness",
+    "legacyFreshness",
+    "legacyDependencies",
+    "dependencyEdges",
+    "feedCursor",
+    "applications",
+    "codexEntries",
+    "projectInventory",
+    "findingLifecycle",
+  ];
+  assert.deepEqual(
+    Object.keys(C2ZC_AUTHORITY_SNAPSHOT_QUERIES),
+    expectedDescriptorKeys,
+  );
+  assert.equal(expectedDescriptorKeys.length, 12);
+  assert.match(
+    C2ZC_AUTHORITY_SNAPSHOT_QUERIES.codexEntries.sql,
+    /type AS typeSlug/,
+  );
+  assert.equal(
+    countC2ZcSqlPlaceholders(C2ZC_AUTHORITY_SNAPSHOT_QUERIES.feedCursor.sql),
+    21,
+  );
+
+  const projectId = "project-contract";
+  const descriptors = [
+    ...Object.entries(C2ZC_AUTHORITY_SNAPSHOT_QUERIES).map(
+      ([label, definition]) => [label, definition, { projectId }],
+    ),
+    [
+      "applicationRows",
+      C2ZC_AUTHORITY_APPLICATION_ROWS_QUERY,
+      { commitId: "commit-contract" },
+    ],
+  ];
+  assert.equal(descriptors.length, 13);
+  for (const [label, definition, context] of descriptors) {
+    const request = resolveC2ZcAuthorityQuery(definition, context);
+    assert.equal(
+      request.params.length,
+      countC2ZcSqlPlaceholders(request.sql),
+      label + " descriptor arity",
+    );
+  }
+});
+test("settled feed cursor rejects wrong project and consumer identities", () => {
+  const snapshot = {
+    feedCursor: {
+      feedHead: 2,
+      cursor: {
+        projectId: "project-e1",
+        consumerId: "narrative-incremental-freshness/v1",
+        acknowledgedThroughSequence: 2,
+        reservedThrough: null,
+        activeRunId: null,
+        semanticEpochId: null,
+        lastError: null,
+      },
+    },
+  };
+  assert.doesNotThrow(() =>
+    assertC2ZcFeedCursorSettled(snapshot, {
+      projectId: "project-e1",
+      consumerId: "narrative-incremental-freshness/v1",
+    }),
+  );
+  assert.throws(
+    () =>
+      assertC2ZcFeedCursorSettled(snapshot, {
+        projectId: "wrong-project",
+        consumerId: "narrative-incremental-freshness/v1",
+      }),
+    /unexpected project/i,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcFeedCursorSettled(snapshot, {
+        projectId: "project-e1",
+        consumerId: "wrong-consumer",
+      }),
+    /unexpected consumer/i,
   );
 });
 
@@ -1187,6 +1335,8 @@ function settledApplicationSnapshot(
     inboxEntries: [],
     feedCursor: {
       feedHead: 1,
+      projectId: semantic.projectId,
+      consumerId: "narrative-incremental-freshness/v1",
       acknowledgedThrough: 1,
       reservedThrough: null,
       activeRunId: null,

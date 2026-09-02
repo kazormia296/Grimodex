@@ -721,12 +721,18 @@ export function assertC2ZcGenericFreshnessStorage(
 
 export function assertC2ZcFeedCursorSettled(
   snapshot,
-  { epochId } = {},
+  { epochId, projectId, consumerId } = {},
   label = "C2-ZC Change Feed cursor",
 ) {
   const feedCursor = snapshot?.feedCursor;
   if (!isObject(feedCursor)) throw new Error(`${label} is missing its cursor`);
   const cursor = isObject(feedCursor.cursor) ? feedCursor.cursor : feedCursor;
+  if (projectId !== undefined && cursor.projectId !== projectId) {
+    throw new Error(`${label} belongs to an unexpected project`);
+  }
+  if (consumerId !== undefined && cursor.consumerId !== consumerId) {
+    throw new Error(`${label} belongs to an unexpected consumer`);
+  }
   const acknowledgedThrough =
     cursor.acknowledgedThroughSequence ?? cursor.acknowledgedThrough;
   if (
@@ -887,7 +893,11 @@ export function assertC2ZcFixtureApplicationParity(
   assertC2ZcFindingRowsResolved(snapshot, `${label} findings`);
   assertC2ZcFeedCursorSettled(
     snapshot,
-    { epochId: e1.id },
+    {
+      epochId: e1.id,
+      projectId,
+      consumerId: C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+    },
     `${label} feed cursor`,
   );
   return { projectId, applicationId, epochId: e1.id, applicationRow };
@@ -2006,6 +2016,324 @@ export function assertC2ZcFixtureCandidateBinding(
   return fixtureCandidate;
 }
 
+function defineC2ZcAuthorityQuery(sql, params) {
+  return Object.freeze({ sql, params });
+}
+
+/**
+ * Count SQLite anonymous parameter tokens without treating question marks in
+ * literals, quoted identifiers, or comments as bind parameters.  The query
+ * descriptors are intentionally limited to anonymous `?` parameters, but the
+ * scanner understands all quote/comment forms accepted by SQLite so a future
+ * descriptor cannot silently get the wrong arity from a regexp.
+ */
+export function countC2ZcSqlPlaceholders(sql) {
+  if (typeof sql !== "string") {
+    throw new TypeError("C2-ZC SQL must be a string");
+  }
+  let count = 0;
+  let index = 0;
+  while (index < sql.length) {
+    const character = sql[index];
+    if (character === "-") {
+      if (sql[index + 1] === "-") {
+        index += 2;
+        while (index < sql.length && sql[index] !== "\n") index += 1;
+        continue;
+      }
+    } else if (character === "/" && sql[index + 1] === "*") {
+      index += 2;
+      while (
+        index < sql.length &&
+        !(sql[index] === "*" && sql[index + 1] === "/")
+      ) {
+        index += 1;
+      }
+      index = Math.min(sql.length, index + 2);
+      continue;
+    } else if (
+      character === "'" ||
+      character === '"' ||
+      character === "`" ||
+      character === "["
+    ) {
+      const closingCharacter = character === "[" ? "]" : character;
+      index += 1;
+      while (index < sql.length) {
+        if (sql[index] !== closingCharacter) {
+          index += 1;
+          continue;
+        }
+        if (closingCharacter !== "]" && sql[index + 1] === closingCharacter) {
+          index += 2;
+          continue;
+        }
+        index += 1;
+        break;
+      }
+      continue;
+    } else if (character === "?") {
+      if (sql[index + 1] >= "0" && sql[index + 1] <= "9") {
+        throw new Error(
+          "C2-ZC SQL uses unsupported numbered SQLite placeholder '?NNN'",
+        );
+      }
+      count += 1;
+    } else if (character === ":" || character === "@" || character === "$") {
+      throw new Error(
+        `C2-ZC SQL uses unsupported named SQLite placeholder '${character}name'`,
+      );
+    }
+    index += 1;
+  }
+  return count;
+}
+
+export function resolveC2ZcAuthorityQuery(definition, context = {}) {
+  if (!definition || typeof definition.sql !== "string") {
+    throw new Error("C2-ZC authority query definition is invalid");
+  }
+  if (typeof definition.params !== "function") {
+    throw new Error("C2-ZC authority query parameters are invalid");
+  }
+  const params = definition.params(context);
+  if (!Array.isArray(params)) {
+    throw new Error("C2-ZC authority query parameters must be an array");
+  }
+  const placeholderCount = countC2ZcSqlPlaceholders(definition.sql);
+  if (params.length !== placeholderCount) {
+    throw new Error(
+      `C2-ZC authority query parameter arity mismatch: expected ${placeholderCount}, got ${params.length}`,
+    );
+  }
+  return { sql: definition.sql, params };
+}
+
+/**
+ * The live authority snapshot is deliberately assembled from one query
+ * definition set. Contract tests execute these exact SQL strings against a
+ * migrated workspace so a fixture-shaped row cannot hide schema drift.
+ */
+export const C2ZC_AUTHORITY_SNAPSHOT_QUERIES = Object.freeze({
+  marker: defineC2ZcAuthorityQuery(
+    `SELECT migration_id AS migrationId,
+            contract_version AS contractVersion,
+            applied_at AS appliedAt
+       FROM schema_data_migrations
+      WHERE migration_id = ?`,
+    () => [C2ZC_CUTOVER_MIGRATION_ID],
+  ),
+  epochs: defineC2ZcAuthorityQuery(
+    `SELECT id, project_id AS projectId,
+            epoch_number AS epochNumber, reason,
+            created_at AS createdAt
+       FROM narrative_semantic_epochs
+      WHERE project_id = ?
+      ORDER BY epoch_number, id`,
+    ({ projectId }) => [projectId],
+  ),
+  runs: defineC2ZcAuthorityQuery(
+    `SELECT id, project_id AS projectId,
+            run_kind AS runKind, work_key AS workKey, status,
+            semantic_epoch_id AS semanticEpochId,
+            outcome_summary_json AS outcomeSummaryJson,
+            created_at AS createdAt, started_at AS startedAt,
+            completed_at AS completedAt, version
+       FROM narrative_extraction_runs
+      WHERE project_id = ?
+      ORDER BY created_at, id`,
+    ({ projectId }) => [projectId],
+  ),
+  genericFreshness: defineC2ZcAuthorityQuery(
+    `SELECT project_id AS projectId,
+            consumer_kind AS consumerKind,
+            consumer_key AS consumerKey,
+            consumer_key AS applicationId,
+            evidence_freshness AS evidenceFreshness,
+            build_action AS buildAction,
+            semantic_epoch_id AS semanticEpochId,
+            last_evaluated_run_id AS lastEvaluatedRunId,
+            dependency_set_digest AS dependencySetDigest,
+            updated_at AS updatedAt
+       FROM narrative_consumer_freshness
+      WHERE project_id = ? AND consumer_kind = ?
+      ORDER BY consumer_key`,
+    ({ projectId }) => [projectId, C2ZC_FRESHNESS_CONSUMER_KIND],
+  ),
+  legacyFreshness: defineC2ZcAuthorityQuery(
+    `SELECT application.id AS applicationId,
+            freshness.status AS status,
+            freshness.reason_json AS reasonJson,
+            freshness.version AS version,
+            freshness.updated_at AS updatedAt
+       FROM narrative_projection_freshness freshness
+       JOIN narrative_proposal_applications application
+         ON application.id = freshness.application_id
+       JOIN narrative_apply_commits commit_row
+         ON commit_row.id = application.commit_id
+      WHERE commit_row.project_id = ?
+      ORDER BY application.id`,
+    ({ projectId }) => [projectId],
+  ),
+  legacyDependencies: defineC2ZcAuthorityQuery(
+    `SELECT dependency.source_kind AS sourceKind,
+            dependency.source_key AS sourceKey,
+            dependency.observed_revision_token AS observedRevisionToken,
+            dependency.propagation AS propagation
+       FROM narrative_projection_dependencies dependency
+       JOIN narrative_proposal_applications application
+         ON application.id = dependency.application_id
+       JOIN narrative_apply_commits commit_row
+         ON commit_row.id = application.commit_id
+      WHERE commit_row.project_id = ?
+      ORDER BY application.id, dependency.source_kind, dependency.source_key`,
+    ({ projectId }) => [projectId],
+  ),
+  dependencyEdges: defineC2ZcAuthorityQuery(
+    `SELECT id AS id, project_id AS projectId,
+            consumer_kind AS consumerKind,
+            consumer_key AS consumerKey,
+            source_object_identity AS sourceObjectIdentity,
+            read_set_json AS readSetJson,
+            generated_by_transaction_id AS generatedByTransactionId,
+            created_at AS createdAt,
+            owning_run_id AS owningRunId
+       FROM narrative_dependency_edges
+      WHERE project_id = ?
+      ORDER BY id`,
+    ({ projectId }) => [projectId],
+  ),
+  feedCursor: defineC2ZcAuthorityQuery(
+    `SELECT COALESCE(MAX(canonical_sequence), 0) AS feedHead,
+            (SELECT project_id
+               FROM narrative_change_cursors
+              WHERE project_id = ? AND consumer_id = ?
+              LIMIT 1) AS cursorProjectId,
+            (SELECT consumer_id
+               FROM narrative_change_cursors
+              WHERE project_id = ? AND consumer_id = ?
+              LIMIT 1) AS consumerId,
+            (SELECT acknowledged_through_sequence
+               FROM narrative_change_cursors
+              WHERE project_id = ? AND consumer_id = ?
+              LIMIT 1) AS acknowledgedThrough,
+            (SELECT reserved_through_sequence
+               FROM narrative_change_cursors
+              WHERE project_id = ? AND consumer_id = ?
+              LIMIT 1) AS reservedThrough,
+            (SELECT active_run_id
+               FROM narrative_change_cursors
+              WHERE project_id = ? AND consumer_id = ?
+              LIMIT 1) AS activeRunId,
+            (SELECT semantic_epoch_id
+               FROM narrative_change_cursors
+              WHERE project_id = ? AND consumer_id = ?
+              LIMIT 1) AS semanticEpochId,
+            (SELECT last_error
+               FROM narrative_change_cursors
+              WHERE project_id = ? AND consumer_id = ?
+              LIMIT 1) AS lastError,
+            (SELECT lease_owner
+               FROM narrative_change_cursors
+              WHERE project_id = ? AND consumer_id = ?
+              LIMIT 1) AS leaseOwner,
+            (SELECT lease_expires_at
+               FROM narrative_change_cursors
+              WHERE project_id = ? AND consumer_id = ?
+              LIMIT 1) AS leaseExpiresAt,
+            (SELECT updated_at
+               FROM narrative_change_cursors
+              WHERE project_id = ? AND consumer_id = ?
+              LIMIT 1) AS updatedAt
+       FROM narrative_change_events
+      WHERE project_id = ?`,
+    ({ projectId }) => [
+      projectId,
+      C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+      projectId,
+      C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+      projectId,
+      C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+      projectId,
+      C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+      projectId,
+      C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+      projectId,
+      C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+      projectId,
+      C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+      projectId,
+      C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+      projectId,
+      C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+      projectId,
+      C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+      projectId,
+    ],
+  ),
+  applications: defineC2ZcAuthorityQuery(
+    `SELECT application.id AS id,
+            application.commit_id AS commitId,
+            commit_row.project_id AS projectId,
+            commit_row.run_id AS runId,
+            extraction_run.status AS runStatus,
+            commit_row.proposal_set_id AS proposalSetId,
+            commit_row.request_id AS requestId,
+            commit_row.plan_digest AS planDigest,
+            commit_row.status AS commitStatus,
+            commit_row.session_id AS sessionId,
+            commit_row.created_at AS commitCreatedAt,
+            commit_row.completed_at AS completedAt,
+            commit_row.version AS commitVersion,
+            application.proposal_id AS proposalId,
+            application.revision_id AS revisionId,
+            application.applied_entity_kind AS appliedEntityKind,
+            application.applied_entity_id AS appliedEntityId,
+            CASE WHEN application.applied_entity_kind = 'event'
+                 THEN application.applied_entity_id ELSE NULL END AS eventId,
+            application.created_at AS createdAt,
+            application.application_kind AS applicationKind,
+            application.compensates_application_id AS compensatesApplicationId
+       FROM narrative_proposal_applications application
+       JOIN narrative_apply_commits commit_row
+         ON commit_row.id = application.commit_id
+       LEFT JOIN narrative_extraction_runs extraction_run
+         ON extraction_run.id = commit_row.run_id
+        AND extraction_run.project_id = commit_row.project_id
+      WHERE commit_row.project_id = ?
+      ORDER BY application.id`,
+    ({ projectId }) => [projectId],
+  ),
+  codexEntries: defineC2ZcAuthorityQuery(
+    `SELECT id AS entryId, project_id AS projectId, name, type AS typeSlug
+       FROM codex_entries
+      WHERE project_id = ?
+      ORDER BY id`,
+    ({ projectId }) => [projectId],
+  ),
+  projectInventory: defineC2ZcAuthorityQuery(
+    "SELECT id AS projectId FROM projects ORDER BY id",
+    () => [],
+  ),
+  findingLifecycle: defineC2ZcAuthorityQuery(
+    `SELECT id, finding_identity AS findingIdentity,
+            lifecycle_state AS lifecycleState,
+            semantic_epoch_id AS semanticEpochId
+       FROM narrative_maintenance_finding_lifecycle
+      WHERE project_id = ?
+      ORDER BY id`,
+    ({ projectId }) => [projectId],
+  ),
+});
+
+export const C2ZC_AUTHORITY_APPLICATION_ROWS_QUERY = defineC2ZcAuthorityQuery(
+  `SELECT id AS applicationId
+     FROM narrative_proposal_applications
+    WHERE commit_id = ?
+    ORDER BY id`,
+  ({ commitId }) => [commitId],
+);
+
 async function queryRows(harness, page, sql, params = []) {
   return rowsOf(
     await harness.invokeOk(page, "db_execute", {
@@ -2014,6 +2342,11 @@ async function queryRows(harness, page, sql, params = []) {
       method: "all",
     }),
   );
+}
+
+async function queryAuthorityRows(harness, page, definition, context) {
+  const request = resolveC2ZcAuthorityQuery(definition, context);
+  return queryRows(harness, page, request.sql, request.params);
 }
 
 async function readInbox(harness, page, projectId) {
@@ -2036,19 +2369,11 @@ export async function readC2ZcRunLedger(
   existingRuns,
 ) {
   if (Array.isArray(existingRuns)) return existingRuns;
-  return queryRows(
+  return queryAuthorityRows(
     harness,
     page,
-    `SELECT id, project_id AS projectId,
-            run_kind AS runKind, work_key AS workKey, status,
-            semantic_epoch_id AS semanticEpochId,
-            outcome_summary_json AS outcomeSummaryJson,
-            created_at AS createdAt, started_at AS startedAt,
-            completed_at AS completedAt, version
-       FROM narrative_extraction_runs
-      WHERE project_id = ?
-      ORDER BY created_at, id`,
-    [projectId],
+    C2ZC_AUTHORITY_SNAPSHOT_QUERIES.runs,
+    { projectId },
   );
 }
 
@@ -2069,224 +2394,66 @@ export async function readC2ZcAuthoritySnapshot(harness, page, projectId) {
     findingRows,
     inboxEntries,
   ] = await Promise.all([
-    queryRows(
-      harness,
-      page,
-      `SELECT migration_id AS migrationId,
-              contract_version AS contractVersion,
-              applied_at AS appliedAt
-         FROM schema_data_migrations
-        WHERE migration_id = ?`,
-      [C2ZC_CUTOVER_MIGRATION_ID],
-    ),
-    queryRows(
-      harness,
-      page,
-      `SELECT id, project_id AS projectId,
-              epoch_number AS epochNumber, reason,
-              created_at AS createdAt
-         FROM narrative_semantic_epochs
-        WHERE project_id = ?
-        ORDER BY epoch_number, id`,
-      [projectId],
-    ),
+    queryAuthorityRows(harness, page, C2ZC_AUTHORITY_SNAPSHOT_QUERIES.marker, {
+      projectId,
+    }),
+    queryAuthorityRows(harness, page, C2ZC_AUTHORITY_SNAPSHOT_QUERIES.epochs, {
+      projectId,
+    }),
     readC2ZcRunLedger(harness, page, projectId),
-    queryRows(
+    queryAuthorityRows(
       harness,
       page,
-      `SELECT project_id AS projectId,
-              consumer_kind AS consumerKind,
-              consumer_key AS consumerKey,
-              consumer_key AS applicationId,
-              evidence_freshness AS evidenceFreshness,
-              build_action AS buildAction,
-              semantic_epoch_id AS semanticEpochId,
-              last_evaluated_run_id AS lastEvaluatedRunId,
-              dependency_set_digest AS dependencySetDigest,
-              updated_at AS updatedAt
-         FROM narrative_consumer_freshness
-        WHERE project_id = ? AND consumer_kind = ?
-        ORDER BY consumer_key`,
-      [projectId, C2ZC_FRESHNESS_CONSUMER_KIND],
+      C2ZC_AUTHORITY_SNAPSHOT_QUERIES.genericFreshness,
+      { projectId },
     ),
-    queryRows(
+    queryAuthorityRows(
       harness,
       page,
-      `SELECT application.id AS applicationId,
-              freshness.status AS status,
-              freshness.reason_json AS reasonJson,
-              freshness.version AS version,
-              freshness.updated_at AS updatedAt
-         FROM narrative_projection_freshness freshness
-         JOIN narrative_proposal_applications application
-           ON application.id = freshness.application_id
-         JOIN narrative_apply_commits commit_row
-           ON commit_row.id = application.commit_id
-        WHERE commit_row.project_id = ?
-        ORDER BY application.id`,
-      [projectId],
+      C2ZC_AUTHORITY_SNAPSHOT_QUERIES.legacyFreshness,
+      { projectId },
     ),
-    queryRows(
+    queryAuthorityRows(
       harness,
       page,
-      `SELECT dependency.source_kind AS sourceKind,
-              dependency.source_key AS sourceKey,
-              dependency.observed_revision_token AS observedRevisionToken,
-              dependency.propagation AS propagation
-         FROM narrative_projection_dependencies dependency
-         JOIN narrative_proposal_applications application
-           ON application.id = dependency.application_id
-         JOIN narrative_apply_commits commit_row
-           ON commit_row.id = application.commit_id
-        WHERE commit_row.project_id = ?
-        ORDER BY application.id, dependency.source_kind, dependency.source_key`,
-      [projectId],
+      C2ZC_AUTHORITY_SNAPSHOT_QUERIES.legacyDependencies,
+      { projectId },
     ),
-    queryRows(
+    queryAuthorityRows(
       harness,
       page,
-      `SELECT id AS id, project_id AS projectId,
-              consumer_kind AS consumerKind,
-              consumer_key AS consumerKey,
-              source_object_identity AS sourceObjectIdentity,
-              read_set_json AS readSetJson,
-              generated_by_transaction_id AS generatedByTransactionId,
-              created_at AS createdAt,
-              owning_run_id AS owningRunId
-         FROM narrative_dependency_edges
-        WHERE project_id = ?
-        ORDER BY id`,
-      [projectId],
+      C2ZC_AUTHORITY_SNAPSHOT_QUERIES.dependencyEdges,
+      { projectId },
     ),
-    queryRows(
+    queryAuthorityRows(
       harness,
       page,
-      `SELECT COALESCE(MAX(canonical_sequence), 0) AS feedHead,
-              (SELECT project_id
-                 FROM narrative_change_cursors
-                WHERE project_id = ? AND consumer_id = ?
-                LIMIT 1) AS cursorProjectId,
-              (SELECT consumer_id
-                 FROM narrative_change_cursors
-                WHERE project_id = ? AND consumer_id = ?
-                LIMIT 1) AS consumerId,
-              (SELECT acknowledged_through_sequence
-                 FROM narrative_change_cursors
-                WHERE project_id = ? AND consumer_id = ?
-                LIMIT 1) AS acknowledgedThrough,
-              (SELECT reserved_through_sequence
-                 FROM narrative_change_cursors
-                WHERE project_id = ? AND consumer_id = ?
-                LIMIT 1) AS reservedThrough,
-              (SELECT active_run_id
-                 FROM narrative_change_cursors
-                WHERE project_id = ? AND consumer_id = ?
-                LIMIT 1) AS activeRunId,
-              (SELECT semantic_epoch_id
-                 FROM narrative_change_cursors
-                WHERE project_id = ? AND consumer_id = ?
-                LIMIT 1) AS semanticEpochId,
-              (SELECT last_error
-                 FROM narrative_change_cursors
-                WHERE project_id = ? AND consumer_id = ?
-                LIMIT 1) AS lastError,
-              (SELECT lease_owner
-                 FROM narrative_change_cursors
-                WHERE project_id = ? AND consumer_id = ?
-                LIMIT 1) AS leaseOwner,
-              (SELECT lease_expires_at
-                 FROM narrative_change_cursors
-                WHERE project_id = ? AND consumer_id = ?
-                LIMIT 1) AS leaseExpiresAt,
-              (SELECT updated_at
-                 FROM narrative_change_cursors
-                WHERE project_id = ? AND consumer_id = ?
-                LIMIT 1) AS updatedAt
-         FROM narrative_change_events
-        WHERE project_id = ?`,
-      [
-        projectId,
-        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
-        projectId,
-        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
-        projectId,
-        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
-        projectId,
-        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
-        projectId,
-        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
-        projectId,
-        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
-        projectId,
-        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
-        projectId,
-        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
-        projectId,
-        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
-        projectId,
-        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
-        projectId,
-      ],
+      C2ZC_AUTHORITY_SNAPSHOT_QUERIES.feedCursor,
+      { projectId },
     ),
-    queryRows(
+    queryAuthorityRows(
       harness,
       page,
-      `SELECT application.id AS id,
-              application.commit_id AS commitId,
-              commit_row.project_id AS projectId,
-              commit_row.run_id AS runId,
-              extraction_run.status AS runStatus,
-              commit_row.proposal_set_id AS proposalSetId,
-              commit_row.request_id AS requestId,
-              commit_row.plan_digest AS planDigest,
-              commit_row.status AS commitStatus,
-              commit_row.session_id AS sessionId,
-              commit_row.created_at AS commitCreatedAt,
-              commit_row.completed_at AS completedAt,
-              commit_row.version AS commitVersion,
-              application.proposal_id AS proposalId,
-              application.revision_id AS revisionId,
-              application.applied_entity_kind AS appliedEntityKind,
-              application.applied_entity_id AS appliedEntityId,
-              CASE WHEN application.applied_entity_kind = 'event'
-                   THEN application.applied_entity_id ELSE NULL END AS eventId,
-              application.created_at AS createdAt,
-              application.application_kind AS applicationKind,
-              application.compensates_application_id AS compensatesApplicationId
-         FROM narrative_proposal_applications application
-         JOIN narrative_apply_commits commit_row
-           ON commit_row.id = application.commit_id
-         LEFT JOIN narrative_extraction_runs extraction_run
-           ON extraction_run.id = commit_row.run_id
-          AND extraction_run.project_id = commit_row.project_id
-        WHERE commit_row.project_id = ?
-        ORDER BY application.id`,
-      [projectId],
+      C2ZC_AUTHORITY_SNAPSHOT_QUERIES.applications,
+      { projectId },
     ),
-    queryRows(
+    queryAuthorityRows(
       harness,
       page,
-      `SELECT id AS entryId, project_id AS projectId, name, type_slug AS typeSlug
-         FROM codex_entries
-        WHERE project_id = ?
-        ORDER BY id`,
-      [projectId],
+      C2ZC_AUTHORITY_SNAPSHOT_QUERIES.codexEntries,
+      { projectId },
     ),
-    queryRows(
+    queryAuthorityRows(
       harness,
       page,
-      "SELECT id AS projectId FROM projects ORDER BY id",
+      C2ZC_AUTHORITY_SNAPSHOT_QUERIES.projectInventory,
+      {},
     ),
-    queryRows(
+    queryAuthorityRows(
       harness,
       page,
-      `SELECT id, finding_identity AS findingIdentity,
-              lifecycle_state AS lifecycleState,
-              semantic_epoch_id AS semanticEpochId
-         FROM narrative_maintenance_finding_lifecycle
-        WHERE project_id = ?
-        ORDER BY id`,
-      [projectId],
+      C2ZC_AUTHORITY_SNAPSHOT_QUERIES.findingLifecycle,
+      { projectId },
     ),
     readInbox(harness, page, projectId),
   ]);
@@ -2697,12 +2864,24 @@ export function assertC2ZcRestartInvariants({
     assertC2ZcFindingRowsResolved(restart, `${label} restart findings`);
   }
   if (before.feedCursor !== undefined) {
-    assertC2ZcFeedCursorSettled(before, { epochId: beforeEpochs.e1.id }, label);
+    assertC2ZcFeedCursorSettled(
+      before,
+      {
+        epochId: beforeEpochs.e1.id,
+        projectId: before.projectId,
+        consumerId: C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+      },
+      label,
+    );
   }
   if (restart.feedCursor !== undefined) {
     assertC2ZcFeedCursorSettled(
       restart,
-      { epochId: restartEpochs.e1.id },
+      {
+        epochId: restartEpochs.e1.id,
+        projectId: restart.projectId,
+        consumerId: C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+      },
       label,
     );
   }
@@ -2783,7 +2962,11 @@ function assertC2ZcPostMarkerSnapshot(
   assertC2ZcFindingRowsResolved(snapshot, `${label} findings`);
   assertC2ZcFeedCursorSettled(
     snapshot,
-    { epochId: e1.id },
+    {
+      epochId: e1.id,
+      projectId: application.projectId,
+      consumerId: C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+    },
     `${label} feed cursor`,
   );
   if (snapshot.projectSettled !== true) {
@@ -3170,14 +3353,11 @@ export async function createTypedApplicationAfterMarker(
       `C2-ZC typed Commit did not apply: ${JSON.stringify(applied)}`,
     );
   }
-  const applicationRows = await queryRows(
+  const applicationRows = await queryAuthorityRows(
     harness,
     page,
-    `SELECT id AS applicationId
-       FROM narrative_proposal_applications
-      WHERE commit_id = ?
-      ORDER BY id`,
-    [commitId],
+    C2ZC_AUTHORITY_APPLICATION_ROWS_QUERY,
+    { commitId },
   );
   if (applicationRows.length !== 1) {
     throw new Error(
@@ -3234,10 +3414,11 @@ async function waitForProjectId(
 ) {
   return harness.waitUntil(
     async () => {
-      const projects = await queryRows(
+      const projects = await queryAuthorityRows(
         harness,
         page,
-        "SELECT id AS projectId FROM projects ORDER BY id",
+        C2ZC_AUTHORITY_SNAPSHOT_QUERIES.projectInventory,
+        {},
       );
       const match = projects.find((row) => row.projectId === expectedProjectId);
       if (requireExpected && !match) return null;
@@ -3283,6 +3464,8 @@ async function waitForLifecycle(
         }
         assertC2ZcFeedCursorSettled(snapshot, {
           epochId: snapshot.currentEpochId,
+          projectId: snapshot.projectId,
+          consumerId: C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
         });
         return { snapshot, lifecycle };
       } catch {
