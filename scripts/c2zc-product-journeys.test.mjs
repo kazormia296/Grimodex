@@ -43,6 +43,8 @@ import {
   assertC2ZcPostMarkerApplicationPersistence,
   assertC2ZcProjectInventory,
   assertC2ZcRestorePreCutoverState,
+  assertC2ZcRestorePostSettingsState,
+  assertC2ZcRestoreCanonicalBaseline,
   assertC2ZcRestartInvariants,
   assertC2ZcRestoreFixtureManifest,
   assertC2ZcRestoreFixtureInput,
@@ -581,7 +583,7 @@ test("C2-ZC restore setup keeps automatic cutover disabled until normal open", a
   );
 
   assert.doesNotThrow(() =>
-    assertC2ZcRestorePreCutoverState({
+  assertC2ZcRestorePreCutoverState({
       markerRows: [],
       runs: [
         { runKind: "legacy-import", status: "completed" },
@@ -631,6 +633,176 @@ test("C2-ZC restore setup keeps automatic cutover disabled until normal open", a
       }),
     /Generic authority/i,
   );
+});
+
+function restoreBaselineRuns() {
+  return [
+    {
+      id: "fixture-freshness-1",
+      projectId: "project-e1",
+      runKind: "freshness-evaluation",
+      workKey: "incremental-freshness:fixture:0:2",
+      status: "completed",
+      semanticEpochId: "e0",
+      outcomeSummaryJson: '{"throughSequenceInclusive":2}',
+      createdAt: "2026-08-29T00:00:01.000Z",
+      startedAt: "2026-08-29T00:00:01.000Z",
+      completedAt: "2026-08-29T00:00:02.000Z",
+      version: 1,
+    },
+    {
+      id: "fixture-freshness-2",
+      projectId: "project-e1",
+      runKind: "freshness-evaluation",
+      workKey: "incremental-freshness:fixture:2:3",
+      status: "completed",
+      semanticEpochId: "e0",
+      outcomeSummaryJson: '{"throughSequenceInclusive":3}',
+      createdAt: "2026-08-29T00:00:03.000Z",
+      startedAt: "2026-08-29T00:00:03.000Z",
+      completedAt: "2026-08-29T00:00:04.000Z",
+      version: 1,
+    },
+  ];
+}
+
+function validRestoreDeltaRuns() {
+  const coverage = structuredClone(C2ZC_RUST_VERIFY_COVERAGE);
+  const complete = {
+    completed: true,
+    passed: true,
+    issues: [],
+    incomplete: [],
+  };
+  const times = [
+    "2026-08-29T00:00:10.000Z",
+    "2026-08-29T00:00:11.000Z",
+    "2026-08-29T00:00:12.000Z",
+    "2026-08-29T00:00:13.000Z",
+    "2026-08-29T00:00:14.000Z",
+    "2026-08-29T00:00:15.000Z",
+    "2026-08-29T00:00:16.000Z",
+    "2026-08-29T00:00:17.000Z",
+    "2026-08-29T00:00:18.000Z",
+    "2026-08-29T00:00:19.000Z",
+    "2026-08-29T00:00:20.000Z",
+    "2026-08-29T00:00:21.000Z",
+    "2026-08-29T00:00:22.000Z",
+    "2026-08-29T00:00:23.000Z",
+  ];
+  const run = (id, runKind, createdAt, outcomeSummaryJson = undefined) => ({
+    id,
+    projectId: "project-e1",
+    runKind,
+    status: "completed",
+    semanticEpochId: "e1",
+    createdAt,
+    startedAt: times[times.indexOf(createdAt) + 1] ?? createdAt,
+    completedAt: times[times.indexOf(createdAt) + 2] ?? createdAt,
+    ...(outcomeSummaryJson ? { outcomeSummaryJson } : {}),
+  });
+  return [
+    run("verify-1", "dependency-verify", times[0], {
+      report: productionVerifyReport({ first: true }),
+      verifyContractVersion: C2ZC_RUST_VERIFY_CONTRACT_VERSION,
+      checkCoverage: coverage,
+    }),
+    run("rebuild-1", "semantic-index-rebuild", times[3]),
+    run("verify-2", "dependency-verify", times[6], {
+      report: productionVerifyReport(),
+      verifyContractVersion: C2ZC_RUST_VERIFY_CONTRACT_VERSION,
+      checkCoverage: coverage,
+    }),
+    run("fresh-1", "freshness-evaluation", times[9]),
+  ];
+}
+
+test("C2-ZC restore baseline preserves fixture lifecycle rows exactly", () => {
+  const baseline = restoreBaselineRuns();
+  assert.deepEqual(
+    assertC2ZcRestoreCanonicalBaseline(
+      { runs: structuredClone(baseline) },
+      baseline,
+    ),
+    baseline,
+  );
+  assert.doesNotThrow(() =>
+    assertC2ZcRestorePostSettingsState(
+      {
+        markerRows: [],
+        genericRows: [],
+        runs: structuredClone(baseline),
+      },
+      baseline,
+    ),
+  );
+
+  for (const [label, mutate] of [
+    ["extra", (runs) => runs.push({ ...runs[0], id: "extra" })],
+    ["missing", (runs) => runs.splice(1, 1)],
+    ["mutated", (runs) => (runs[0].outcomeSummaryJson = '{"changed":true}')],
+    ["duplicate", (runs) => runs.splice(1, 0, structuredClone(runs[0]))],
+    ["reordered", (runs) => runs.reverse()],
+  ]) {
+    const observed = structuredClone(baseline);
+    mutate(observed);
+    assert.throws(
+      () =>
+        assertC2ZcRestoreCanonicalBaseline(
+          { runs: observed },
+          baseline,
+          `C2-ZC restore baseline ${label}`,
+        ),
+      /baseline|canonical|lifecycle|changed|duplicate|order/i,
+      label,
+    );
+  }
+});
+
+test("C2-ZC lifecycle verifier isolates an exact four-run delta after baseline", () => {
+  const baseline = restoreBaselineRuns();
+  const delta = validRestoreDeltaRuns();
+  const fixture = strictLifecycleRuns();
+  const allRuns = [...baseline, ...delta];
+  assert.doesNotThrow(() =>
+    assertC2ZcRestoreLifecycleOrder(allRuns, {
+      currentEpochId: "e1",
+      restoreEpochId: "e1",
+      expectedRestoreLifecycle: fixture.expectedRestoreLifecycle,
+      marker: fixture.marker,
+      rustOutcome: fixture.rustOutcome,
+      fixtureSemantic: fixtureSemantic(),
+      baselineRuns: baseline,
+    }),
+  );
+  for (const [label, mutate] of [
+    ["baseline-mutated", (runs) => (runs[0].outcomeSummaryJson = '{"changed":true}')],
+    ["baseline-missing", (runs) => runs.splice(1, 1)],
+    ["baseline-extra", (runs) => runs.splice(1, 0, { ...runs[0], id: "extra" })],
+    ["delta-missing", (runs) => runs.splice(-1, 1)],
+    ["delta-extra", (runs) => runs.push({ ...runs.at(-1), id: "extra-delta" })],
+    ["delta-order", (runs) => {
+      const last = runs.pop();
+      runs.splice(baseline.length, 0, last);
+    }],
+  ]) {
+    const mutated = structuredClone(allRuns);
+    mutate(mutated);
+    assert.throws(
+      () =>
+        assertC2ZcRestoreLifecycleOrder(mutated, {
+          currentEpochId: "e1",
+          restoreEpochId: "e1",
+          expectedRestoreLifecycle: fixture.expectedRestoreLifecycle,
+          marker: fixture.marker,
+          rustOutcome: fixture.rustOutcome,
+          fixtureSemantic: fixtureSemantic(),
+          baselineRuns: baseline,
+        }),
+      /baseline|canonical|lifecycle|changed|delta|order|four|4|Verify|Freshness/i,
+      label,
+    );
+  }
 });
 
 test("offline restore fixture interface is narrow and fail-closed", () => {
