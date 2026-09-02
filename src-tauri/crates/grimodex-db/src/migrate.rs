@@ -1190,8 +1190,9 @@ impl Database {
             -- Title uses the language-neutral schema default 'Untitled Project' (a placeholder
             -- the user renames) so an English user landing on the bootstrap project does not see
             -- a hardcoded Japanese title. Language stays the documented 'ja' fallback.
-            INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
-              VALUES ('default-project', 'Untitled Project', 'ja', datetime('now'), datetime('now'));",
+            INSERT INTO projects (id, title, language, created_at, updated_at)
+              SELECT 'default-project', 'Untitled Project', 'ja', datetime('now'), datetime('now')
+               WHERE NOT EXISTS (SELECT 1 FROM projects);",
         )?;
 
         // Foreshadow register tables (added post-initial schema)
@@ -9575,6 +9576,67 @@ mod tests {
             std::env::temp_dir().join(format!("grimodex-migrate-{label}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create migration test directory");
         dir.join("grimodex.db")
+    }
+
+    #[test]
+    fn restore_preflight_preserves_a_custom_only_project_inventory() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM projects", [])?;
+            conn.execute(
+                "INSERT INTO projects (id, title, language)
+                 VALUES ('custom-project', 'Custom project', 'en')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed custom-only project");
+
+        db.migrate_for_restore_preflight()
+            .expect("restore preflight must preserve custom-only inventory");
+
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare("SELECT id FROM projects ORDER BY id ASC")?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(ids, vec!["custom-project"]);
+            Ok(())
+        })
+        .expect("read custom-only project inventory");
+    }
+
+    #[test]
+    fn restore_preflight_seeds_default_project_for_a_fresh_database() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+
+        db.migrate_for_restore_preflight()
+            .expect("fresh restore preflight must create the bootstrap project");
+
+        db.with_conn(|conn| {
+            let mut statement =
+                conn.prepare("SELECT id, title, language FROM projects ORDER BY id ASC")?;
+            let projects = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                projects,
+                vec![(
+                    "default-project".to_string(),
+                    "Untitled Project".to_string(),
+                    "ja".to_string(),
+                )]
+            );
+            Ok(())
+        })
+        .expect("read fresh bootstrap project");
     }
 
     fn seed_finding_identity_migration_fixture(db: &Database, ambiguous: bool) {

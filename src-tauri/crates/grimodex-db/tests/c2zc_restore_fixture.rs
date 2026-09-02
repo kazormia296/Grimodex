@@ -1,7 +1,6 @@
 #![cfg(feature = "c2zc-fixture-builder")]
 
 use grimodex_db::backup_restore::restore_backup_core;
-use grimodex_db::domain_writes::{project_delete, ProjectDeletePayload};
 use grimodex_db::narrative_extraction::c2zc_restore_fixture::{
     build_offline_restore_fixture, verify_manifest, verify_manifest_against_candidate,
     FixtureBuildOptions, FixtureBuildResult,
@@ -337,23 +336,6 @@ fn restore_fixture_through_production_path(
     assert_c2zc_marker_count(&state, 0);
     restore_backup_core(&state, RESTORE_BACKUP_NAME, || {})
         .expect("install fixture through production restore_backup_core");
-    // The production restore preflight runs the idempotent full migration on
-    // the staged copy; that migration seeds the fresh-workspace bootstrap
-    // project even when the backup is otherwise current.  Remove only that
-    // known migration bootstrap through the same trusted domain writer used
-    // by the fixture builder, so cutover readiness covers the fixture's one
-    // restored project rather than an unrelated migration artifact.
-    assert_project_ids(&state, &["c2zc-restore-fixture-project", "default-project"]);
-    with_db_state(&state, |db| {
-        project_delete(
-            db,
-            ProjectDeletePayload {
-                project_id: "default-project".to_string(),
-            },
-        )
-        .map_err(Into::into)
-    })
-    .expect("remove production migration bootstrap project through typed writer");
     assert_project_ids(&state, &["c2zc-restore-fixture-project"]);
     (workspace, state)
 }
