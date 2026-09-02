@@ -50,6 +50,7 @@ import {
   assertC2ZcRestoreFixtureInput,
   assertC2ZcRestoreLifecycleOrder,
   assertC2ZcFeedCursorSettled,
+  assertC2ZcCanonicalLifecycleDelta,
   assertC2ZcGenericFreshnessStorage,
   assertC2ZcVerifyCoverage,
   countC2ZcSqlPlaceholders,
@@ -737,11 +738,9 @@ function restoreBaselineRuns() {
       id: "fixture-freshness-1",
       projectId: "project-e1",
       runKind: "freshness-evaluation",
-      consumerId: "narrative-incremental-freshness/v1",
       workKey: "incremental-freshness:fixture:0:2",
       status: "completed",
       semanticEpochId: "e0",
-      specJson: "{}",
       outcomeSummaryJson: '{"throughSequenceInclusive":2}',
       createdAt: "2026-08-29T00:00:01.000Z",
       startedAt: "2026-08-29T00:00:01.000Z",
@@ -752,11 +751,9 @@ function restoreBaselineRuns() {
       id: "fixture-freshness-2",
       projectId: "project-e1",
       runKind: "freshness-evaluation",
-      consumerId: "narrative-incremental-freshness/v1",
       workKey: "incremental-freshness:fixture:2:3",
       status: "completed",
       semanticEpochId: "e0",
-      specJson: "{}",
       outcomeSummaryJson: '{"throughSequenceInclusive":3}',
       createdAt: "2026-08-29T00:00:03.000Z",
       startedAt: "2026-08-29T00:00:03.000Z",
@@ -876,6 +873,36 @@ test("C2-ZC restore baseline preserves fixture lifecycle rows exactly", () => {
       label,
     );
   }
+});
+
+test("live run provenance stays enriched without changing the immutable baseline", () => {
+  const semantic = fixtureSemantic();
+  const baseline = resolveC2ZcRestoreCanonicalLifecycleBaseline(semantic);
+  const liveRuns = baseline.map((run) => ({
+    ...run,
+    consumerId: "narrative-incremental-freshness/v1",
+    specJson: "{}",
+  }));
+
+  assert.doesNotThrow(() =>
+    assertC2ZcRestoreCanonicalBaseline({ runs: liveRuns }, baseline),
+  );
+  assert.deepEqual(assertC2ZcCanonicalLifecycleDelta(liveRuns, baseline), []);
+  assert.equal(
+    isC2ZcGenericFreshnessProducer(liveRuns[0], {
+      projectId: semantic.projectId,
+      epochId: "e0",
+    }),
+    true,
+  );
+
+  const unexpectedBaselineField = structuredClone(semantic);
+  unexpectedBaselineField.restoreCanonicalLifecycleBaseline.rows[0].consumerId =
+    "narrative-incremental-freshness/v1";
+  assert.throws(
+    () => resolveC2ZcRestoreCanonicalLifecycleBaseline(unexpectedBaselineField),
+    /unexpected keys/i,
+  );
 });
 
 test("C2-ZC lifecycle verifier isolates an exact four-run delta after baseline", () => {

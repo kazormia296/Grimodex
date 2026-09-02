@@ -95,16 +95,19 @@ const C2ZC_CANONICAL_RUN_PROJECTION_KEYS = Object.freeze([
   "id",
   "projectId",
   "runKind",
-  "consumerId",
   "workKey",
   "status",
   "semanticEpochId",
-  "specJson",
   "outcomeSummaryJson",
   "createdAt",
   "startedAt",
   "completedAt",
   "version",
+]);
+const C2ZC_LIVE_RUN_PROJECTION_KEYS = Object.freeze([
+  ...C2ZC_CANONICAL_RUN_PROJECTION_KEYS,
+  "consumerId",
+  "specJson",
 ]);
 const C2ZC_WAIT_MS = 60_000;
 const C2ZC_FIXTURE_GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/u;
@@ -943,6 +946,12 @@ function canonicalLifecycleRunsOf(value, label) {
   ).filter((run) => C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run?.runKind));
 }
 
+function canonicalRunBaselineProjectionOf(run) {
+  return Object.fromEntries(
+    C2ZC_CANONICAL_RUN_PROJECTION_KEYS.map((key) => [key, run[key]]),
+  );
+}
+
 function assertCanonicalRunSequence(
   value,
   label,
@@ -1006,8 +1015,9 @@ function assertCanonicalRunSequence(
  * Prove that the restored Settings image retained exactly the canonical Run
  * rows that were already present in the manifest-bound fixture.  The source
  * fixture owns this baseline; a live snapshot is never allowed to redefine
- * it.  Comparing the complete projection also rejects duplicate, reordered,
- * missing, and field-mutated rows.
+ * it.  Comparing the immutable baseline projection also rejects duplicate,
+ * reordered, missing, and field-mutated rows while allowing live-only
+ * provenance columns to remain available for producer validation.
  */
 export function assertC2ZcRestoreCanonicalBaseline(
   snapshotOrRuns,
@@ -1026,7 +1036,8 @@ export function assertC2ZcRestoreCanonicalBaseline(
     throw new Error(`${label} expected rows must be non-empty`);
   }
   const observed = canonicalLifecycleRunsOf(snapshotOrRuns, label);
-  if (stableJson(observed) !== stableJson(baseline)) {
+  const observedBaseline = observed.map(canonicalRunBaselineProjectionOf);
+  if (stableJson(observedBaseline) !== stableJson(baseline)) {
     throw new Error(`${label} changed across the restore boundary`);
   }
   return baseline;
@@ -1059,7 +1070,9 @@ export function assertC2ZcCanonicalLifecycleDelta(
   if (observed.length < baseline.length) {
     throw new Error(`${label} is missing fixture baseline rows`);
   }
-  const observedBaseline = observed.slice(0, baseline.length);
+  const observedBaseline = observed
+    .slice(0, baseline.length)
+    .map(canonicalRunBaselineProjectionOf);
   if (stableJson(observedBaseline) !== stableJson(baseline)) {
     throw new Error(`${label} fixture baseline changed or was reordered`);
   }
@@ -2947,11 +2960,17 @@ export async function readC2ZcRunLedger(
   existingRuns,
 ) {
   if (Array.isArray(existingRuns)) return existingRuns;
-  return queryAuthorityRows(
-    harness,
-    page,
-    C2ZC_AUTHORITY_SNAPSHOT_QUERIES.runs,
-    { projectId },
+  return (
+    await queryAuthorityRows(
+      harness,
+      page,
+      C2ZC_AUTHORITY_SNAPSHOT_QUERIES.runs,
+      { projectId },
+    )
+  ).map((run) =>
+    Object.fromEntries(
+      C2ZC_LIVE_RUN_PROJECTION_KEYS.map((key) => [key, run[key]]),
+    ),
   );
 }
 
