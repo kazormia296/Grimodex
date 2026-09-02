@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   link,
@@ -15,6 +16,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import {
   NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
@@ -45,6 +47,7 @@ import {
   assertC2ZcRestorePreCutoverState,
   assertC2ZcRestorePostSettingsState,
   assertC2ZcRestoreCanonicalBaseline,
+  readC2ZcRestoreCanonicalLifecycleBaseline,
   assertC2ZcRestartInvariants,
   assertC2ZcRestoreFixtureManifest,
   assertC2ZcRestoreFixtureInput,
@@ -82,6 +85,7 @@ import {
 } from "./c2zc-verify-contract.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
+const execFile = promisify(execFileCallback);
 
 async function read(relativePath) {
   return readFile(path.join(repoRoot, relativePath), "utf8");
@@ -382,6 +386,12 @@ test("canonical source has no independent post-marker lane or old hold seams", a
   );
   assert.match(journeyBody, /assertC2ZcProjectInventory/);
   assert.match(journeyBody, /assertC2ZcRestorePreCutoverState/);
+  assert.match(journeyBody, /assertC2ZcRestorePostSettingsState/);
+  assert.match(journeyBody, /readC2ZcRestoreCanonicalLifecycleBaseline/);
+  assert.match(
+    journeyBody,
+    /readC2ZcRestoreCanonicalLifecycleBaseline\(\s*staged\.stagingTempPath,/s,
+  );
   assert.match(journeyBody, /assertC2ZcFixtureApplicationParity/);
   assert.match(journeyBody, /assertC2ZcFindingRowsResolved/);
   assert.match(journeyBody, /assertC2ZcPostMarkerApplicationPersistence/);
@@ -409,12 +419,15 @@ test("canonical source has no independent post-marker lane or old hold seams", a
   const restoredAssignmentOffset = journeyBody.indexOf(
     "restoredSnapshot = await harness.waitUntil(",
   );
+  const baselineReadOffset = journeyBody.indexOf(
+    "await readC2ZcRestoreCanonicalLifecycleBaseline(",
+  );
   const restoredReadOffset = journeyBody.indexOf(
     "const snapshot = await readC2ZcAuthoritySnapshot(",
     restoredAssignmentOffset,
   );
   const restoredAssertionOffset = journeyBody.indexOf(
-    "assertC2ZcRestorePreCutoverState(\n      restoredSnapshot,",
+    "assertC2ZcRestorePostSettingsState(\n      restoredSnapshot,",
     restoredAssignmentOffset,
   );
   const restoreCloseOffset = journeyBody.indexOf(
@@ -428,6 +441,8 @@ test("canonical source has no independent post-marker lane or old hold seams", a
   assert.ok(
     restoreCallOffset >= 0 &&
       restoredAssignmentOffset > restoreCallOffset &&
+      baselineReadOffset >= 0 &&
+      baselineReadOffset < restoreCallOffset &&
       restoredReadOffset > restoredAssignmentOffset &&
       restoredAssertionOffset > restoredReadOffset &&
       restoreCloseOffset > restoredAssertionOffset &&
@@ -583,7 +598,7 @@ test("C2-ZC restore setup keeps automatic cutover disabled until normal open", a
   );
 
   assert.doesNotThrow(() =>
-  assertC2ZcRestorePreCutoverState({
+    assertC2ZcRestorePreCutoverState({
       markerRows: [],
       runs: [
         { runKind: "legacy-import", status: "completed" },
@@ -668,12 +683,6 @@ function restoreBaselineRuns() {
 
 function validRestoreDeltaRuns() {
   const coverage = structuredClone(C2ZC_RUST_VERIFY_COVERAGE);
-  const complete = {
-    completed: true,
-    passed: true,
-    issues: [],
-    incomplete: [],
-  };
   const times = [
     "2026-08-29T00:00:10.000Z",
     "2026-08-29T00:00:11.000Z",
@@ -736,6 +745,30 @@ test("C2-ZC restore baseline preserves fixture lifecycle rows exactly", () => {
       baseline,
     ),
   );
+  assert.throws(
+    () =>
+      assertC2ZcRestorePostSettingsState(
+        {
+          markerRows: [{ migrationId: "narrative-c2-canonical-freshness-v1" }],
+          genericRows: [],
+          runs: structuredClone(baseline),
+        },
+        baseline,
+      ),
+    /marker/i,
+  );
+  assert.throws(
+    () =>
+      assertC2ZcRestorePostSettingsState(
+        {
+          markerRows: [],
+          genericRows: [{ consumerKind: "application" }],
+          runs: structuredClone(baseline),
+        },
+        baseline,
+      ),
+    /Generic authority/i,
+  );
 
   for (const [label, mutate] of [
     ["extra", (runs) => runs.push({ ...runs[0], id: "extra" })],
@@ -776,15 +809,24 @@ test("C2-ZC lifecycle verifier isolates an exact four-run delta after baseline",
     }),
   );
   for (const [label, mutate] of [
-    ["baseline-mutated", (runs) => (runs[0].outcomeSummaryJson = '{"changed":true}')],
+    [
+      "baseline-mutated",
+      (runs) => (runs[0].outcomeSummaryJson = '{"changed":true}'),
+    ],
     ["baseline-missing", (runs) => runs.splice(1, 1)],
-    ["baseline-extra", (runs) => runs.splice(1, 0, { ...runs[0], id: "extra" })],
+    [
+      "baseline-extra",
+      (runs) => runs.splice(1, 0, { ...runs[0], id: "extra" }),
+    ],
     ["delta-missing", (runs) => runs.splice(-1, 1)],
     ["delta-extra", (runs) => runs.push({ ...runs.at(-1), id: "extra-delta" })],
-    ["delta-order", (runs) => {
-      const last = runs.pop();
-      runs.splice(baseline.length, 0, last);
-    }],
+    [
+      "delta-order",
+      (runs) => {
+        const last = runs.pop();
+        runs.splice(baseline.length, 0, last);
+      },
+    ],
   ]) {
     const mutated = structuredClone(allRuns);
     mutate(mutated);
@@ -802,6 +844,127 @@ test("C2-ZC lifecycle verifier isolates an exact four-run delta after baseline",
       /baseline|canonical|lifecycle|changed|delta|order|four|4|Verify|Freshness/i,
       label,
     );
+  }
+});
+
+test("C2-ZC baseline reader binds the exact runs projection and fails closed on TOCTOU", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "c2zc-baseline-reader-"));
+  const databasePath = path.join(root, "fixture.backup.db");
+  const bytes = Buffer.from("immutable-fixture-image\n", "utf8");
+  await writeFile(databasePath, bytes, { mode: 0o600 });
+  const baseline = restoreBaselineRuns();
+  const expectedArtifact = {
+    path: "c2zc-restore-fixture.backup.db",
+    sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    sizeBytes: bytes.length,
+  };
+  const calls = [];
+  try {
+    const observed = await readC2ZcRestoreCanonicalLifecycleBaseline(
+      databasePath,
+      "project-e1",
+      {
+        expectedArtifact,
+        execFileFn: async (command, args) => {
+          calls.push({ command, args });
+          return {
+            stdout: JSON.stringify([
+              ...baseline,
+              {
+                id: "not-canonical",
+                projectId: "project-e1",
+                runKind: "interpretation",
+              },
+            ]),
+          };
+        },
+      },
+    );
+    assert.deepEqual(observed, baseline);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, "sqlite3");
+    assert.deepEqual(calls[0].args.slice(0, 4), [
+      "-readonly",
+      "-nofollow",
+      "-json",
+      "--",
+    ]);
+    assert.match(calls[0].args.at(-1), /FROM narrative_extraction_runs/);
+    assert.doesNotMatch(calls[0].args.at(-1), /\?/);
+
+    await assert.rejects(
+      readC2ZcRestoreCanonicalLifecycleBaseline(databasePath, "project-e1", {
+        expectedArtifact,
+        execFileFn: async () => {
+          await writeFile(databasePath, Buffer.from("changed-image\n"));
+          return { stdout: JSON.stringify(baseline) };
+        },
+      }),
+      /changed|TOCTOU|digest|baseline source/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("C2-ZC baseline reader executes the projection through real readonly SQLite", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "c2zc-baseline-sqlite-"));
+  const databasePath = path.join(root, "fixture.backup.db");
+  const baseline = restoreBaselineRuns();
+  const sqlText = (value) => `'${String(value).replaceAll("'", "''")}'`;
+  try {
+    await execFile("sqlite3", [
+      databasePath,
+      [
+        `CREATE TABLE narrative_extraction_runs (
+          id TEXT,
+          project_id TEXT,
+          run_kind TEXT,
+          work_key TEXT,
+          status TEXT,
+          semantic_epoch_id TEXT,
+          outcome_summary_json TEXT,
+          created_at TEXT,
+          started_at TEXT,
+          completed_at TEXT,
+          version INTEGER
+        );`,
+        ...baseline.map(
+          (run) =>
+            `INSERT INTO narrative_extraction_runs VALUES (${[
+              run.id,
+              run.projectId,
+              run.runKind,
+              run.workKey,
+              run.status,
+              run.semanticEpochId,
+              run.outcomeSummaryJson,
+              run.createdAt,
+              run.startedAt,
+              run.completedAt,
+              run.version,
+            ]
+              .map((value) => sqlText(value))
+              .join(",")});`,
+        ),
+        "INSERT INTO narrative_extraction_runs VALUES ('other','project-e1','interpretation',NULL,'completed',NULL,NULL,'2026-08-29T00:00:05.000Z','2026-08-29T00:00:05.000Z','2026-08-29T00:00:05.000Z',1);",
+      ].join("\n"),
+    ]);
+    const bytes = await readFile(databasePath);
+    const observed = await readC2ZcRestoreCanonicalLifecycleBaseline(
+      databasePath,
+      "project-e1",
+      {
+        expectedArtifact: {
+          path: "c2zc-restore-fixture.backup.db",
+          sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+          sizeBytes: bytes.length,
+        },
+      },
+    );
+    assert.deepEqual(observed, baseline);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

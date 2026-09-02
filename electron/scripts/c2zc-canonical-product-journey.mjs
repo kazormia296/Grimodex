@@ -1,3 +1,4 @@
+import { execFile as execFileCallback } from "node:child_process";
 import {
   link,
   lstat,
@@ -10,6 +11,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
+import { promisify } from "node:util";
 
 import {
   configureJourneyWorkspaceForProductJourney,
@@ -21,6 +23,8 @@ import {
   assertC2ZcRustVerifyCoverage,
   C2ZC_RUST_VERIFY_COVERAGE_COUNT,
 } from "../../scripts/c2zc-verify-contract.mjs";
+
+const execFile = promisify(execFileCallback);
 
 /**
  * C2-ZC is one stateful lifecycle.  The runner owns only observations and
@@ -85,6 +89,19 @@ const C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS = new Set([
 const C2ZC_RESTORE_PRE_CUTOVER_RUN_KINDS = new Set([
   ...C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS,
   "incremental-freshness",
+]);
+const C2ZC_CANONICAL_RUN_PROJECTION_KEYS = Object.freeze([
+  "id",
+  "projectId",
+  "runKind",
+  "workKey",
+  "status",
+  "semanticEpochId",
+  "outcomeSummaryJson",
+  "createdAt",
+  "startedAt",
+  "completedAt",
+  "version",
 ]);
 const C2ZC_WAIT_MS = 60_000;
 const C2ZC_FIXTURE_GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/u;
@@ -835,6 +852,185 @@ export function assertC2ZcRestorePreCutoverState(
     throw new Error(`${label} already contains Generic authority rows`);
   }
   return { markerRows, lifecycleRuns, genericRows };
+}
+
+function canonicalLifecycleRunsOf(value, label) {
+  return rows(
+    Array.isArray(value) ? value : value?.runs,
+    `${label} runs`,
+  ).filter((run) => C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run?.runKind));
+}
+
+function assertCanonicalRunSequence(
+  value,
+  label,
+  { requireProjection = false, requireCompleted = false } = {},
+) {
+  const sequence = rows(value, `${label} rows`);
+  const ids = new Set();
+  let previous = null;
+  for (const [index, run] of sequence.entries()) {
+    if (!isObject(run))
+      throw new Error(`${label} row ${index} must be an object`);
+    if (!C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run.runKind)) {
+      throw new Error(`${label} row ${index} is not a canonical lifecycle Run`);
+    }
+    requireText(run.id, `${label} row ${index}.id`);
+    if (ids.has(run.id)) {
+      throw new Error(`${label} contains a duplicate Run id: ${run.id}`);
+    }
+    ids.add(run.id);
+    if (requireProjection) {
+      assertExactKeys(
+        run,
+        C2ZC_CANONICAL_RUN_PROJECTION_KEYS,
+        `${label} row ${index}`,
+      );
+      assertCanonicalTimestamp(
+        run.createdAt,
+        `${label} row ${index}.createdAt`,
+      );
+      assertCanonicalTimestamp(
+        run.startedAt,
+        `${label} row ${index}.startedAt`,
+      );
+      assertCanonicalTimestamp(
+        run.completedAt,
+        `${label} row ${index}.completedAt`,
+      );
+      if (
+        Date.parse(run.createdAt) > Date.parse(run.startedAt) ||
+        Date.parse(run.startedAt) > Date.parse(run.completedAt)
+      ) {
+        throw new Error(`${label} row ${index} has non-monotonic timestamps`);
+      }
+    }
+    if (requireCompleted && run.status !== "completed") {
+      throw new Error(`${label} row ${index} is not completed`);
+    }
+    if (
+      previous &&
+      (Date.parse(previous.createdAt) > Date.parse(run.createdAt) ||
+        (previous.createdAt === run.createdAt && previous.id > run.id))
+    ) {
+      throw new Error(`${label} is not ordered by createdAt, id`);
+    }
+    previous = run;
+  }
+  return sequence;
+}
+
+/**
+ * Prove that the restored Settings image retained exactly the canonical Run
+ * rows that were already present in the manifest-bound fixture.  The source
+ * fixture owns this baseline; a live snapshot is never allowed to redefine
+ * it.  Comparing the complete projection also rejects duplicate, reordered,
+ * missing, and field-mutated rows.
+ */
+export function assertC2ZcRestoreCanonicalBaseline(
+  snapshotOrRuns,
+  baselineRuns,
+  label = "C2-ZC restore canonical baseline",
+) {
+  const baseline = assertCanonicalRunSequence(
+    baselineRuns,
+    `${label} expected`,
+    {
+      requireProjection: true,
+      requireCompleted: true,
+    },
+  );
+  if (baseline.length === 0) {
+    throw new Error(`${label} expected rows must be non-empty`);
+  }
+  const observed = canonicalLifecycleRunsOf(snapshotOrRuns, label);
+  if (stableJson(observed) !== stableJson(baseline)) {
+    throw new Error(`${label} changed across the restore boundary`);
+  }
+  return baseline;
+}
+
+/**
+ * Remove only the exact fixture baseline from the ordered canonical Run
+ * ledger.  The baseline must be an unchanged prefix; any insertion before it
+ * or between its rows is a restore-boundary mutation, not a new lifecycle
+ * event.  The returned rows are the only rows considered by the lifecycle
+ * verifier.
+ */
+export function assertC2ZcCanonicalLifecycleDelta(
+  runValues,
+  baselineRuns,
+  label = "C2-ZC canonical lifecycle delta",
+) {
+  const baseline = assertCanonicalRunSequence(
+    baselineRuns,
+    `${label} expected`,
+    {
+      requireProjection: true,
+      requireCompleted: true,
+    },
+  );
+  if (baseline.length === 0) {
+    throw new Error(`${label} expected baseline must be non-empty`);
+  }
+  const observed = canonicalLifecycleRunsOf(runValues, label);
+  if (observed.length < baseline.length) {
+    throw new Error(`${label} is missing fixture baseline rows`);
+  }
+  const observedBaseline = observed.slice(0, baseline.length);
+  if (stableJson(observedBaseline) !== stableJson(baseline)) {
+    throw new Error(`${label} fixture baseline changed or was reordered`);
+  }
+  const delta = observed.slice(baseline.length);
+  assertCanonicalRunSequence(delta, `${label} new rows`);
+  const baselineIds = new Set(baseline.map((run) => run.id));
+  if (delta.some((run) => baselineIds.has(run.id))) {
+    throw new Error(`${label} repeats a fixture baseline Run id`);
+  }
+  return delta;
+}
+
+/**
+ * Restore-specific boundary contract: the fixture baseline may retain only
+ * its pre-existing Freshness rows.  Verify, Rebuild, the marker, and Generic
+ * authority must still be absent until the explicit normal-open phase.
+ */
+export function assertC2ZcRestorePostSettingsState(
+  snapshot,
+  baselineRuns,
+  label = "C2-ZC restored Settings state",
+) {
+  const markerRows = markerRowsOf(snapshot);
+  if (markerRows.length !== 0) {
+    throw new Error(`${label} already contains a C2-ZC cutover marker`);
+  }
+  const genericRows = rows(snapshot?.genericRows, `${label} Generic rows`);
+  if (genericRows.length !== 0) {
+    throw new Error(`${label} already contains Generic authority rows`);
+  }
+  const baseline = assertC2ZcRestoreCanonicalBaseline(
+    snapshot,
+    baselineRuns,
+    label,
+  );
+  if (
+    baseline.some(
+      (run) =>
+        run.runKind === "dependency-verify" ||
+        run.runKind === "semantic-index-rebuild",
+    )
+  ) {
+    throw new Error(
+      `${label} baseline unexpectedly contains Verify or Rebuild`,
+    );
+  }
+  const incrementalRuns = rows(snapshot?.runs, `${label} runs`).filter(
+    (run) => run?.runKind === "incremental-freshness",
+  );
+  if (incrementalRuns.length !== 0) {
+    throw new Error(`${label} already contains incremental Freshness Runs`);
+  }
+  return { markerRows, baseline, genericRows };
 }
 
 export function assertC2ZcNoDependencyRepair(
@@ -2152,6 +2348,198 @@ export async function loadC2ZcRestoreFixtureInput(
   };
 }
 
+function sqliteTextLiteral(value, label) {
+  requireText(value, label);
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function bindC2ZcSqliteParameters(sql, params, label) {
+  if (!Array.isArray(params)) {
+    throw new Error(`${label} parameters must be an array`);
+  }
+  const expected = countC2ZcSqlPlaceholders(sql);
+  if (expected !== params.length) {
+    throw new Error(
+      `${label} parameter arity mismatch: expected ${expected}, got ${params.length}`,
+    );
+  }
+  let result = "";
+  let parameterIndex = 0;
+  let index = 0;
+  while (index < sql.length) {
+    const character = sql[index];
+    if (character === "-" && sql[index + 1] === "-") {
+      const end = sql.indexOf("\n", index + 2);
+      const next = end === -1 ? sql.length : end;
+      result += sql.slice(index, next);
+      index = next;
+      continue;
+    }
+    if (character === "/" && sql[index + 1] === "*") {
+      const end = sql.indexOf("*/", index + 2);
+      const next = end === -1 ? sql.length : end + 2;
+      result += sql.slice(index, next);
+      index = next;
+      continue;
+    }
+    if (
+      character === "'" ||
+      character === '"' ||
+      character === "`" ||
+      character === "["
+    ) {
+      const closingCharacter = character === "[" ? "]" : character;
+      let end = index + 1;
+      while (end < sql.length) {
+        if (sql[end] !== closingCharacter) {
+          end += 1;
+          continue;
+        }
+        if (closingCharacter !== "]" && sql[end + 1] === closingCharacter) {
+          end += 2;
+          continue;
+        }
+        end += 1;
+        break;
+      }
+      result += sql.slice(index, end);
+      index = end;
+      continue;
+    }
+    if (character === "?") {
+      result += sqliteTextLiteral(params[parameterIndex], `${label} parameter`);
+      parameterIndex += 1;
+      index += 1;
+      continue;
+    }
+    result += character;
+    index += 1;
+  }
+  if (parameterIndex !== params.length) {
+    throw new Error(`${label} did not bind every SQLite parameter`);
+  }
+  return result;
+}
+
+async function inspectC2ZcImmutableFixtureDatabase(
+  databasePath,
+  { expectedArtifact, expectedRealPath, expectedFileIdentity },
+  label,
+) {
+  if (
+    typeof databasePath !== "string" ||
+    !path.isAbsolute(databasePath) ||
+    databasePath.includes("\u0000")
+  ) {
+    throw new Error(`${label} database path must be absolute and NUL-free`);
+  }
+  const listed = await lstat(databasePath);
+  if (!isRegularFileMetadata(listed)) {
+    throw new Error(`${label} database must be a regular non-symlink file`);
+  }
+  const resolvedPath = await realpath(databasePath);
+  if (expectedRealPath !== undefined && resolvedPath !== expectedRealPath) {
+    throw new Error(`${label} database realpath changed`);
+  }
+  const metadata = await stat(resolvedPath);
+  if (!isRegularFileMetadata(metadata)) {
+    throw new Error(`${label} database target must be a regular file`);
+  }
+  if (
+    expectedFileIdentity !== undefined &&
+    !sameFileIdentity(metadata, expectedFileIdentity)
+  ) {
+    throw new Error(`${label} database file identity changed`);
+  }
+  const digest = expectedArtifact
+    ? await assertFixtureArtifactDigest(resolvedPath, expectedArtifact, label)
+    : null;
+  return { resolvedPath, metadata, digest };
+}
+
+/**
+ * Read the exact canonical Run projection already present in the immutable
+ * staged fixture.  The projection is the same descriptor used for live
+ * authority snapshots; only its bound project literal is rendered for the
+ * read-only sqlite3 process.  Identity, realpath, and manifest digest are
+ * checked before and after the query so a path replacement or in-flight
+ * mutation fails closed instead of redefining the restore baseline.
+ */
+export async function readC2ZcRestoreCanonicalLifecycleBaseline(
+  databasePath,
+  projectId,
+  {
+    expectedArtifact,
+    expectedRealPath,
+    expectedFileIdentity,
+    execFileFn = execFile,
+  } = {},
+) {
+  requireText(projectId, "C2-ZC restore baseline projectId");
+  if (!expectedArtifact || !isObject(expectedArtifact)) {
+    throw new Error(
+      "C2-ZC restore baseline requires its manifest fixture artifact",
+    );
+  }
+  const before = await inspectC2ZcImmutableFixtureDatabase(
+    databasePath,
+    { expectedArtifact, expectedRealPath, expectedFileIdentity },
+    "C2-ZC restore baseline source",
+  );
+  const request = resolveC2ZcAuthorityQuery(
+    C2ZC_AUTHORITY_SNAPSHOT_QUERIES.runs,
+    { projectId },
+  );
+  const query = bindC2ZcSqliteParameters(
+    request.sql,
+    request.params,
+    "C2-ZC restore baseline source query",
+  );
+  let stdout;
+  try {
+    ({ stdout } = await execFileFn(
+      "sqlite3",
+      ["-readonly", "-nofollow", "-json", "--", before.resolvedPath, query],
+      { maxBuffer: 4 * 1024 * 1024 },
+    ));
+  } catch (error) {
+    throw new Error(
+      `C2-ZC restore baseline source query requires sqlite3: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+  const after = await inspectC2ZcImmutableFixtureDatabase(
+    databasePath,
+    { expectedArtifact, expectedRealPath, expectedFileIdentity },
+    "C2-ZC restore baseline source after query",
+  );
+  if (
+    before.resolvedPath !== after.resolvedPath ||
+    !sameFileIdentity(after.metadata, before.metadata) ||
+    stableJson(before.digest) !== stableJson(after.digest)
+  ) {
+    throw new Error(
+      "C2-ZC restore baseline source changed during its SQLite read",
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(String(stdout).trim() || "[]");
+  } catch (error) {
+    throw new Error("C2-ZC restore baseline source returned invalid JSON", {
+      cause: error,
+    });
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("C2-ZC restore baseline source returned a non-array");
+  }
+  const baseline = parsed.filter((run) =>
+    C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run?.runKind),
+  );
+  assertC2ZcRestoreCanonicalBaseline({ runs: baseline }, baseline);
+  return baseline;
+}
+
 function observedCandidateOf(value, label) {
   const candidate = value?.receipt?.candidate ?? value?.candidate ?? value;
   if (!isObject(candidate)) {
@@ -2754,16 +3142,26 @@ export function assertC2ZcRestoreLifecycleOrder(
     expectedRestoreLifecycle,
     marker,
     fixtureSemantic,
+    baselineRuns,
   } = {},
   label = "C2-ZC restore lifecycle",
 ) {
   const runsValue = rows(runValues, `${label} runs`);
   const strict = expectedRestoreLifecycle !== undefined || marker !== undefined;
   assertC2ZcNoDependencyRepair({ runs: runsValue }, label);
-  const lifecycleRuns = runsValue.filter((run) =>
-    C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run.runKind),
-  );
-  const completed = runsValue.filter((run) => run.status === "completed");
+  const lifecycleRuns =
+    baselineRuns === undefined
+      ? runsValue.filter((run) =>
+          C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run.runKind),
+        )
+      : assertC2ZcCanonicalLifecycleDelta(
+          runsValue,
+          baselineRuns,
+          `${label} baseline`,
+        );
+  const completed = (
+    baselineRuns === undefined ? runsValue : lifecycleRuns
+  ).filter((run) => run.status === "completed");
   if (!strict) {
     const verifyRuns = completed.filter(
       (run) => run.runKind === "dependency-verify",
@@ -3641,6 +4039,7 @@ async function waitForLifecycle(
     rustOutcome,
     expectedRestoreLifecycle,
     fixtureSemantic,
+    baselineRuns,
   } = {},
 ) {
   return harness.waitUntil(
@@ -3658,6 +4057,7 @@ async function waitForLifecycle(
           expectedRestoreLifecycle,
           marker: snapshot.marker,
           fixtureSemantic,
+          baselineRuns,
         });
         assertC2ZcMarkerExactlyOnce(snapshot);
         assertC2ZcFindingRowsResolved(snapshot);
@@ -3715,12 +4115,36 @@ export async function runC2ZcCanonicalAuthorityJourney(
     workspace,
   );
   const staged = await stageC2ZcRestoreFixture(workspace, fixture);
+  const restoreBaselineRuns = await readC2ZcRestoreCanonicalLifecycleBaseline(
+    staged.stagingTempPath,
+    fixture.manifest.semantic.projectId,
+    {
+      expectedArtifact: fixture.manifest.artifacts.fixture,
+      expectedFileIdentity: {
+        dev: staged.stagingTempDevice,
+        ino: staged.stagingTempInode,
+      },
+    },
+  );
+  await inspectC2ZcImmutableFixtureDatabase(
+    staged.targetPath,
+    {
+      expectedArtifact: fixture.manifest.artifacts.fixture,
+      expectedFileIdentity: {
+        dev: staged.stagingTempDevice,
+        ino: staged.stagingTempInode,
+      },
+    },
+    "C2-ZC staged restore target",
+  );
   harness.recordTimeline?.(`${C2ZC_PRODUCT_JOURNEY_ID}/restore-fixture`, {
     backupName: staged.backupName,
     sourceBackupName: staged.sourceBackupName,
     manifestVersion: fixture.manifest.manifestVersion,
     fixtureSha256: fixture.manifest.fixtureSha256,
     fixtureSizeBytes: fixture.manifest.fixtureSizeBytes,
+    baselineRunIds: restoreBaselineRuns.map((run) => run.id),
+    baselineRunsDigest: digestJson(restoreBaselineRuns),
     stagedPath: staged.targetPath,
     stagingTempPath: staged.stagingTempPath,
     stagingTempDevice: staged.stagingTempDevice,
@@ -3776,8 +4200,9 @@ export async function runC2ZcCanonicalAuthorityJourney(
       C2ZC_WAIT_MS,
       250,
     );
-    assertC2ZcRestorePreCutoverState(
+    assertC2ZcRestorePostSettingsState(
       restoredSnapshot,
+      restoreBaselineRuns,
       "C2-ZC restored snapshot pre-cutover state",
     );
     restoredEpoch(restoredSnapshot.epochs, "C2-ZC restored Settings UI image");
@@ -3816,6 +4241,7 @@ export async function runC2ZcCanonicalAuthorityJourney(
         expectedRestoreLifecycle:
           fixture.manifest.semantic.expectedRestoreLifecycle,
         fixtureSemantic: fixture.manifest.semantic,
+        baselineRuns: restoreBaselineRuns,
       },
     );
     openSnapshot = settled.snapshot;
