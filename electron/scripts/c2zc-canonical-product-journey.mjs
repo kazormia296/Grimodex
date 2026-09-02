@@ -78,6 +78,7 @@ const C2ZC_CUTOVER_CONTRACT_VERSION = 1;
 const C2ZC_FRESHNESS_CONSUMER_KIND = "application";
 const C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID =
   "narrative-incremental-freshness/v1";
+const C2ZC_REBUILD_DERIVED_WORK_KEY = "dependency-rebuild-derived";
 const C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS = new Set([
   "dependency-verify",
   "semantic-index-rebuild",
@@ -702,6 +703,85 @@ export function assertC2ZcGenericRowsComplete(
   return genericRows;
 }
 
+function c2zcRunKindFromJson(value) {
+  if (isObject(value)) return value.kind;
+  if (typeof value !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return isObject(parsed) ? parsed.kind : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isC2ZcIdleFreshnessProducer(run) {
+  if (
+    c2zcRunKindFromJson(run.specJson) ===
+      "incremental-freshness-idle-checkpoint@1" ||
+    c2zcRunKindFromJson(run.outcomeSummaryJson) ===
+      "current-epoch-idle-checkpoint"
+  ) {
+    return true;
+  }
+
+  const prefix = "incremental-freshness:";
+  if (typeof run.workKey !== "string" || !run.workKey.startsWith(prefix)) {
+    return false;
+  }
+  const coordinates = run.workKey.slice(prefix.length).split(":");
+  if (
+    coordinates.length !== 4 ||
+    !/^[+-]?\d+$/u.test(coordinates[1]) ||
+    !/^[+-]?\d+$/u.test(coordinates[2])
+  ) {
+    return false;
+  }
+  const from = Number(coordinates[1]);
+  const through = Number(coordinates[2]);
+  return (
+    Number.isSafeInteger(from) &&
+    Number.isSafeInteger(through) &&
+    from === through
+  );
+}
+
+/**
+ * Match the shared-Rust provenance accepted for a Generic Freshness row.
+ * Incremental Freshness publishes through its cursor-owned run; a completed
+ * current-Epoch Rebuild may also publish when it is the canonical
+ * dependency-rebuild-derived lifecycle. Idle checkpoints are scheduler
+ * evidence only and never a publisher.
+ */
+export function isC2ZcGenericFreshnessProducer(
+  producer,
+  { projectId, epochId } = {},
+) {
+  if (
+    !isObject(producer) ||
+    producer.status !== "completed" ||
+    producer.semanticEpochId !== epochId ||
+    (producer.projectId !== undefined && producer.projectId !== projectId)
+  ) {
+    return false;
+  }
+
+  if (isC2ZcIdleFreshnessProducer(producer)) return false;
+  if (producer.runKind === "semantic-index-rebuild") {
+    return (
+      producer.projectId === projectId &&
+      producer.workKey === C2ZC_REBUILD_DERIVED_WORK_KEY
+    );
+  }
+  if (producer.runKind !== "freshness-evaluation") return false;
+  if (
+    producer.consumerId !== undefined &&
+    producer.consumerId !== C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function assertC2ZcGenericFreshnessStorage(
   snapshot,
   { projectId, applicationId, epochId } = {},
@@ -733,14 +813,7 @@ export function assertC2ZcGenericFreshnessStorage(
   const producer = rows(snapshot?.runs, `${label} runs`).find(
     (run) => run.id === row.lastEvaluatedRunId,
   );
-  if (
-    !producer ||
-    producer.status !== "completed" ||
-    producer.runKind !== "freshness-evaluation" ||
-    producer.semanticEpochId !== epochId ||
-    producer.runKind === "dependency-repair" ||
-    (producer.projectId !== undefined && producer.projectId !== projectId)
-  ) {
+  if (!isC2ZcGenericFreshnessProducer(producer, { projectId, epochId })) {
     throw new Error(`${label} row has no completed current-Epoch producer`);
   }
   const application = rows(

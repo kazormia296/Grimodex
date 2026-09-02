@@ -50,8 +50,10 @@ import {
   assertC2ZcRestoreFixtureInput,
   assertC2ZcRestoreLifecycleOrder,
   assertC2ZcFeedCursorSettled,
+  assertC2ZcGenericFreshnessStorage,
   assertC2ZcVerifyCoverage,
   countC2ZcSqlPlaceholders,
+  isC2ZcGenericFreshnessProducer,
   readC2ZcAuthoritySnapshot,
   resolveC2ZcRestoreCanonicalLifecycleBaseline,
   resolveC2ZcRuntimeBackupName,
@@ -2154,6 +2156,117 @@ function settledApplicationSnapshot(
     projectSettled: true,
   };
 }
+
+test("Generic freshness accepts the completed current-Epoch incremental publisher", () => {
+  const context = { projectId: "project-e1", epochId: "e1" };
+  const publisher = {
+    projectId: context.projectId,
+    runKind: "freshness-evaluation",
+    status: "completed",
+    semanticEpochId: context.epochId,
+    workKey: "incremental-freshness:fixture:0:2",
+  };
+  assert.equal(isC2ZcGenericFreshnessProducer(publisher, context), true);
+  assert.equal(
+    isC2ZcGenericFreshnessProducer(
+      { ...publisher, status: "running" },
+      context,
+    ),
+    false,
+  );
+  assert.equal(
+    isC2ZcGenericFreshnessProducer(
+      { ...publisher, runKind: "dependency-repair" },
+      context,
+    ),
+    false,
+  );
+  assert.equal(
+    isC2ZcGenericFreshnessProducer(
+      {
+        ...publisher,
+        workKey: "incremental-freshness:fixture:4:4:idle",
+      },
+      context,
+    ),
+    false,
+  );
+  assert.equal(
+    isC2ZcGenericFreshnessProducer(
+      {
+        ...publisher,
+        workKey: "incremental-freshness:fixture:4:5:non-idle",
+        outcomeSummaryJson: JSON.stringify({
+          kind: "current-epoch-idle-checkpoint",
+        }),
+      },
+      context,
+    ),
+    false,
+  );
+  assert.equal(
+    isC2ZcGenericFreshnessProducer(
+      {
+        ...publisher,
+        specJson: JSON.stringify({
+          kind: "incremental-freshness-idle-checkpoint@1",
+        }),
+      },
+      context,
+    ),
+    false,
+  );
+});
+
+test("Generic freshness accepts only the exact completed current-Epoch Rebuild publisher", () => {
+  const semantic = fixtureSemantic();
+  const snapshot = settledApplicationSnapshot();
+  const producer = snapshot.runs.find((run) => run.id === "fresh-1");
+  producer.runKind = "semantic-index-rebuild";
+  producer.workKey = "dependency-rebuild-derived";
+  assert.equal(
+    isC2ZcGenericFreshnessProducer(producer, {
+      projectId: semantic.projectId,
+      epochId: "e1",
+    }),
+    true,
+  );
+  assert.doesNotThrow(() =>
+    assertC2ZcGenericFreshnessStorage(
+      snapshot,
+      {
+        projectId: semantic.projectId,
+        applicationId: semantic.applicationId,
+        epochId: "e1",
+      },
+      "valid Rebuild publisher",
+    ),
+  );
+
+  for (const [label, mutate] of [
+    ["wrong work key", (run) => (run.workKey = "dependency-rebuild-other")],
+    ["wrong project", (run) => (run.projectId = "project-other")],
+    ["wrong epoch", (run) => (run.semanticEpochId = "e0")],
+    ["incomplete", (run) => (run.status = "running")],
+  ]) {
+    const invalid = structuredClone(snapshot);
+    mutate(invalid.runs.find((run) => run.id === "fresh-1"));
+    assert.throws(
+      () =>
+        assertC2ZcGenericFreshnessStorage(
+          invalid,
+          {
+            projectId: semantic.projectId,
+            applicationId: semantic.applicationId,
+            epochId: "e1",
+          },
+          `${label} Rebuild publisher`,
+        ),
+      /producer|Freshness|Generic/i,
+      label,
+    );
+  }
+});
 
 test("pre-marker Application evidence rejects zero Generic rows and mismatched parity", () => {
   const semantic = fixtureSemantic();
