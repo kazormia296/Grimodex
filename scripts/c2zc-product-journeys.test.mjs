@@ -120,6 +120,9 @@ test("live authority snapshots preserve every cursor reservation and run field",
     invokeOk: async (_page, command, request) => {
       if (command === "narrative_maintenance_inbox_list") return [];
       if (request.sql.includes("FROM narrative_change_events")) {
+        const placeholderCount = (request.sql.match(/\?/g) ?? []).length;
+        assert.equal(placeholderCount, 21);
+        assert.equal(request.params.length, placeholderCount);
         return { rows: [row] };
       }
       return { rows: [] };

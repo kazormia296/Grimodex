@@ -2224,6 +2224,8 @@ export async function readC2ZcAuthoritySnapshot(harness, page, projectId) {
         projectId,
         C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
         projectId,
+        C2ZC_INCREMENTAL_FRESHNESS_CONSUMER_ID,
+        projectId,
       ],
     ),
     queryRows(
