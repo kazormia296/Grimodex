@@ -38,6 +38,7 @@ import {
   assertC2ZcFixtureCandidateBinding,
   assertC2ZcFixtureApplicationParity,
   assertC2ZcFindingRowsResolved,
+  assertC2ZcNoActionableInbox,
   assertC2ZcMarkerExactlyOnce,
   assertC2ZcPostMarkerApplicationPersistence,
   assertC2ZcProjectInventory,
@@ -476,6 +477,7 @@ test("canonical source has no independent post-marker lane or old hold seams", a
   assert.match(journeyBody, /assertC2ZcRuntimeBackupName/);
   assert.match(journeyBody, /assertC2ZcFixtureApplicationParity/);
   assert.match(journeyBody, /assertC2ZcFindingRowsResolved/);
+  assert.match(journeyBody, /assertC2ZcNoActionableInbox/);
   assert.match(journeyBody, /assertC2ZcPostMarkerApplicationPersistence/);
   const openCheckpoint = journeyBody.slice(
     journeyBody.indexOf("openLaunch ="),
@@ -483,6 +485,7 @@ test("canonical source has no independent post-marker lane or old hold seams", a
   );
   assert.match(openCheckpoint, /waitForLifecycle/);
   assert.match(openCheckpoint, /assertC2ZcFindingRowsResolved/);
+  assert.match(openCheckpoint, /assertC2ZcNoActionableInbox/);
   assert.match(openCheckpoint, /assertC2ZcFixtureApplicationParity/);
   const restartCheckpoint = journeyBody.slice(
     journeyBody.indexOf("restartLaunch ="),
@@ -2474,13 +2477,72 @@ test("finding acceptance ignores resolved history but rejects unresolved lifecyc
       }),
     /unresolved|Finding/i,
   );
+});
+
+function settledC2ZcInboxEntry(overrides = {}) {
+  return {
+    entry_kind: "consumer-freshness",
+    consumer_kind: "application",
+    consumer_key: "application-1",
+    evidence_freshness: "fresh",
+    build_action: "none",
+    finding_key: "application:application-1",
+    latest_observation: null,
+    attention: null,
+    is_snoozed_and_active: false,
+    ...overrides,
+  };
+}
+
+function c2zcInboxSnapshot(inboxEntries) {
+  return { currentEpochId: "e1", inboxEntries };
+}
+
+test("C2-ZC accepts only settled informational Inbox rows", () => {
+  const settledRows = [
+    settledC2ZcInboxEntry(),
+    settledC2ZcInboxEntry({
+      consumer_kind: "proposal",
+      consumer_key: "proposal-1",
+      finding_key: "proposal:proposal-1",
+    }),
+  ];
+  assert.deepEqual(
+    assertC2ZcNoActionableInbox(c2zcInboxSnapshot(settledRows)),
+    settledRows,
+  );
+
+  const rejectedRows = [
+    ["stale evidence", { evidence_freshness: "stale" }],
+    ["source-missing evidence", { evidence_freshness: "source-missing" }],
+    ["rebuild-required action", { build_action: "rebuild-required" }],
+    ["fresh revalidate action", { build_action: "revalidate-exact" }],
+    ["terminal failure", { entry_kind: "terminal-failure" }],
+    [
+      "unresolved observation",
+      { latest_observation: { semantic_epoch_id: "e1" } },
+    ],
+    ["attention entry", { attention: { disposition: "flagged" } }],
+    ["active snooze", { is_snoozed_and_active: true }],
+  ];
+  for (const [label, overrides] of rejectedRows) {
+    assert.throws(
+      () =>
+        assertC2ZcNoActionableInbox(
+          c2zcInboxSnapshot([settledC2ZcInboxEntry(overrides)]),
+        ),
+      /actionable|Inbox/i,
+      label,
+    );
+  }
+
   assert.throws(
     () =>
-      assertC2ZcFindingRowsResolved({
-        ...valid,
-        inboxEntries: [{ id: "inbox-1" }],
+      assertC2ZcNoActionableInbox({
+        inboxEntries: [settledC2ZcInboxEntry()],
       }),
-    /Inbox|inbox/i,
+    /epoch/i,
+    "non-empty Inbox requires current epoch evidence",
   );
 });
 

@@ -637,15 +637,53 @@ function findingRowsOf(snapshot) {
   return [];
 }
 
+/**
+ * C2-ZC accepts only informational Consumer Freshness Inbox rows after the
+ * lifecycle has settled.  The Rust read model deliberately exposes its
+ * serialized snake_case fields here; a missing or differently-shaped field
+ * fails closed as actionable evidence.
+ *
+ * `InboxEntry` does not carry a separate epoch field when it has no
+ * observation.  Require the surrounding authority snapshot to expose its
+ * current epoch before accepting a non-empty settled Inbox, while the
+ * read-model contract supplies the epoch scoping for the null observation.
+ */
+export function assertC2ZcNoActionableInbox(snapshot, label = "C2-ZC Inbox") {
+  const inbox = snapshot?.inboxEntries ?? snapshot?.inbox ?? [];
+  if (!Array.isArray(inbox)) {
+    throw new Error(`${label} must expose an Inbox array`);
+  }
+  if (inbox.length === 0) return inbox;
+
+  const currentEpochId = snapshot?.currentEpochId;
+  if (typeof currentEpochId !== "string" || currentEpochId.trim() === "") {
+    throw new Error(
+      `${label} cannot accept entries without current Semantic Epoch`,
+    );
+  }
+
+  const actionable = inbox.filter(
+    (entry) =>
+      !isObject(entry) ||
+      entry.entry_kind !== "consumer-freshness" ||
+      entry.evidence_freshness !== "fresh" ||
+      entry.build_action !== "none" ||
+      entry.latest_observation !== null ||
+      entry.attention !== null ||
+      entry.is_snoozed_and_active === true,
+  );
+  if (actionable.length !== 0) {
+    throw new Error(`${label} contains actionable Inbox entries`);
+  }
+  return inbox;
+}
+
 export function assertC2ZcFindingRowsResolved(
   snapshot,
   label = "C2-ZC findings",
 ) {
   const findingRows = findingRowsOf(snapshot);
   const inbox = snapshot?.inboxEntries ?? snapshot?.inbox ?? [];
-  if (!Array.isArray(inbox)) {
-    throw new Error(`${label} must expose an Inbox array`);
-  }
   const unresolved = findingRows.filter((finding) => {
     const state = String(
       finding?.lifecycleState ?? finding?.state ?? finding?.status ?? "",
@@ -662,18 +700,7 @@ export function assertC2ZcFindingRowsResolved(
       throw new Error(`${label} contains unresolved findings`);
     }
   }
-  if (inbox.length !== 0) {
-    throw new Error(`${label} contains Inbox entries`);
-  }
   return { findingRows, unresolved: [], inbox };
-}
-
-export function assertC2ZcFindingInboxEmpty(
-  snapshot,
-  label = "C2-ZC findings",
-) {
-  assertC2ZcFindingRowsResolved(snapshot, label);
-  return true;
 }
 
 export function assertC2ZcLegacyProjectionStable(
@@ -1231,6 +1258,7 @@ export function assertC2ZcFixtureApplicationParity(
     throw new Error(`${label} Legacy/Generic projection parity changed`);
   }
   assertC2ZcFindingRowsResolved(snapshot, `${label} findings`);
+  assertC2ZcNoActionableInbox(snapshot, `${label} Inbox`);
   assertC2ZcFeedCursorSettled(
     snapshot,
     {
@@ -3461,9 +3489,11 @@ export function assertC2ZcRestartInvariants({
   if (restart.runs !== undefined) assertC2ZcNoDependencyRepair(restart, label);
   if (before.findingRows !== undefined || before.inboxEntries !== undefined) {
     assertC2ZcFindingRowsResolved(before, `${label} before findings`);
+    assertC2ZcNoActionableInbox(before, `${label} before Inbox`);
   }
   if (restart.findingRows !== undefined || restart.inboxEntries !== undefined) {
     assertC2ZcFindingRowsResolved(restart, `${label} restart findings`);
+    assertC2ZcNoActionableInbox(restart, `${label} restart Inbox`);
   }
   if (before.feedCursor !== undefined) {
     assertC2ZcFeedCursorSettled(
@@ -3562,6 +3592,7 @@ function assertC2ZcPostMarkerSnapshot(
   }
   assertC2ZcNoDependencyRepair(snapshot, label);
   assertC2ZcFindingRowsResolved(snapshot, `${label} findings`);
+  assertC2ZcNoActionableInbox(snapshot, `${label} Inbox`);
   assertC2ZcFeedCursorSettled(
     snapshot,
     {
@@ -4063,6 +4094,7 @@ async function waitForLifecycle(
         });
         assertC2ZcMarkerExactlyOnce(snapshot);
         assertC2ZcFindingRowsResolved(snapshot);
+        assertC2ZcNoActionableInbox(snapshot);
         if (fixtureSemantic !== undefined) {
           assertC2ZcFixtureApplicationParity(snapshot, fixtureSemantic);
         }
@@ -4235,6 +4267,7 @@ export async function runC2ZcCanonicalAuthorityJourney(
     openSnapshot = settled.snapshot;
     lifecycle = settled.lifecycle;
     assertC2ZcFindingRowsResolved(openSnapshot, "C2-ZC open findings");
+    assertC2ZcNoActionableInbox(openSnapshot, "C2-ZC open Inbox");
     assertC2ZcFixtureApplicationParity(
       openSnapshot,
       fixture.manifest.semantic,
