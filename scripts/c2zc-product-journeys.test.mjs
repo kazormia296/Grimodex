@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import {
-  link,
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rm,
@@ -1130,7 +1130,7 @@ test("offline restore fixture interface is narrow and fail-closed", () => {
   }
 });
 
-test("C2-ZC staging publishes the offline fixture through an owned private temp", async () => {
+test("C2-ZC staging places the offline fixture through an exclusive digest-bound target", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-c2zc-stage-"));
   const fixtureBytes = Buffer.from("fixture-db");
   const fixtureSha256 = `sha256:${createHash("sha256")
@@ -1151,16 +1151,14 @@ test("C2-ZC staging publishes the offline fixture through an owned private temp"
   };
   const backupEntries = async (workspace) =>
     readdir(path.join(workspace, "backups"));
-  const assertStagingResidue = async (workspace, targetPresent) => {
+  const assertStagingEntries = async (workspace, targetPresent) => {
     const entries = await backupEntries(workspace);
-    const hidden = entries.filter((entry) => entry.startsWith("."));
-    assert.equal(hidden.length, 1);
-    assert.ok(!hidden[0].startsWith("grimodex-"));
+    assert.equal(entries.filter((entry) => entry.startsWith(".")).length, 0);
     assert.equal(
       entries.filter((entry) => entry.startsWith("grimodex-")).length,
       targetPresent ? 1 : 0,
     );
-    return hidden[0];
+    return entries;
   };
   const workspaceFor = (name) => path.join(root, `${name}-workspace`);
   const targetFor = (workspace, fixture) =>
@@ -1185,25 +1183,40 @@ test("C2-ZC staging publishes the offline fixture through an owned private temp"
       stageC2ZcRestoreFixture(workspace, fixture, options),
       expected,
     );
-    if (!targetPresent) await assert.rejects(lstat(target), { code: "ENOENT" });
-    await assertStagingResidue(workspace, targetPresent);
+    if (targetPresent) {
+      assert.ok((await lstat(target)).isFile());
+    } else {
+      await assert.rejects(lstat(target), { code: "ENOENT" });
+    }
+    await assertStagingEntries(workspace, targetPresent);
     return { target, workspace };
   };
   try {
-    const stagingSource = await read(
-      "electron/scripts/c2zc-canonical-product-journey.mjs",
-    );
-    assert.doesNotMatch(stagingSource, /\bunlink\b/);
-
     const fixture = await fixtureFor();
-    const staged = await stageC2ZcRestoreFixture(
-      path.join(root, "workspace"),
-      fixture,
-    );
     const expectedBackupName = resolveC2ZcRuntimeBackupName(
       fixture.manifest.artifacts.fixture.path,
       fixture.manifest.artifacts.fixture.sha256,
     );
+    const expectedTarget = path.join(
+      root,
+      "workspace",
+      "backups",
+      expectedBackupName,
+    );
+    const openCalls = [];
+    const staged = await stageC2ZcRestoreFixture(
+      path.join(root, "workspace"),
+      fixture,
+      {
+        openFn: async (targetPath, flags, mode) => {
+          openCalls.push({ targetPath, flags, mode });
+          return open(targetPath, flags, mode);
+        },
+      },
+    );
+    assert.deepEqual(openCalls, [
+      { targetPath: expectedTarget, flags: "wx", mode: 0o600 },
+    ]);
     assert.equal(staged.backupName, expectedBackupName);
     assertC2ZcRuntimeBackupName(
       staged.backupName,
@@ -1215,15 +1228,14 @@ test("C2-ZC staging publishes the offline fixture through an owned private temp"
     );
     assert.deepEqual(await readFile(staged.targetPath), fixtureBytes);
     assert.equal(staged.sourceBackupName, C2ZC_RESTORE_FIXTURE_BACKUP_NAME);
-    assert.ok(path.basename(staged.stagingTempPath).startsWith("."));
-    assert.ok(!path.basename(staged.stagingTempPath).startsWith("grimodex-"));
-    const targetMetadata = await lstat(staged.targetPath);
-    const tempMetadata = await lstat(staged.stagingTempPath);
-    assert.equal(targetMetadata.dev, tempMetadata.dev);
-    assert.equal(targetMetadata.ino, tempMetadata.ino);
-    assert.equal(staged.stagingTempDevice, tempMetadata.dev);
-    assert.equal(staged.stagingTempInode, tempMetadata.ino);
-    await assertStagingResidue(path.join(root, "workspace"), true);
+    assert.deepEqual(Object.keys(staged).sort(), [
+      "backupName",
+      "manifest",
+      "sourceBackupName",
+      "sourcePath",
+      "targetPath",
+    ]);
+    await assertStagingEntries(path.join(root, "workspace"), true);
 
     for (const invalid of [
       "",
@@ -1305,89 +1317,33 @@ test("C2-ZC staging publishes the offline fixture through an owned private temp"
         writeFileFn: async (fileHandle, bytes) => {
           const result = await fileHandle.write(bytes, 0, 2, null);
           assert.equal(result.bytesWritten, 2);
-          throw new Error("injected partial temp write");
+          throw new Error("injected partial staged write");
         },
       },
-      /partial temp write/,
+      /partial staged write/,
+      true,
     );
-    await assertStageFailure(
+    const corrupt = await assertStageFailure(
       "corrupt",
       existingFixture,
       {
-        writeFileFn: async (fileHandle, bytes, tempPath) => {
-          await fileHandle.write(bytes, 0, bytes.length, null);
-          await writeFile(tempPath, "corrupt-file");
+        writeFileFn: async (fileHandle) => {
+          const corruptBytes = Buffer.from("corrupt-file");
+          await fileHandle.write(
+            corruptBytes,
+            0,
+            corruptBytes.length,
+            null,
+          );
+          await fileHandle.truncate(corruptBytes.length);
         },
       },
       /bytes do not match/,
-    );
-
-    const beforeLink = await assertStageFailure(
-      "before-link",
-      existingFixture,
-      {
-        linkFn: async (tempPath, targetPath) => {
-          await writeFile(targetPath, "replacement-before-link");
-          return link(tempPath, targetPath);
-        },
-      },
-      /EEXIST|already exists|file exists/i,
       true,
     );
     assert.deepEqual(
-      await readFile(beforeLink.target),
-      Buffer.from("replacement-before-link"),
-    );
-
-    const afterLink = await assertStageFailure(
-      "after-link",
-      existingFixture,
-      {
-        linkFn: async (tempPath, targetPath) => {
-          await link(tempPath, targetPath);
-          await rm(targetPath);
-          await writeFile(targetPath, "replacement-after-link");
-        },
-      },
-      /published restore fixture identity changed/,
-      true,
-    );
-    assert.deepEqual(
-      await readFile(afterLink.target),
-      Buffer.from("replacement-after-link"),
-    );
-
-    let replacedTempPath = null;
-    await assertStageFailure(
-      "residue",
-      existingFixture,
-      {
-        linkFn: async (tempPath) => {
-          replacedTempPath = tempPath;
-          await rm(tempPath);
-          await writeFile(tempPath, "replacement-private-temp");
-          throw new Error("injected private temp replacement");
-        },
-      },
-      /injected private temp replacement/,
-    );
-    assert.ok(replacedTempPath);
-    assert.deepEqual(
-      await readFile(replacedTempPath),
-      Buffer.from("replacement-private-temp"),
-    );
-
-    await assertStageFailure(
-      "unsupported",
-      existingFixture,
-      {
-        linkFn: async () => {
-          const error = new Error("link unsupported");
-          error.code = "EOPNOTSUPP";
-          throw error;
-        },
-      },
-      /link unsupported/,
+      await readFile(corrupt.target),
+      Buffer.from("corrupt-file"),
     );
 
     const sourceSymlinkDirectory = path.join(root, "source-link");

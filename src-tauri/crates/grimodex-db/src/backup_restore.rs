@@ -2026,7 +2026,8 @@ mod tests {
     }
 
     #[test]
-    fn content_addressed_restore_accepts_matching_bytes_and_rejects_target_swap() {
+    fn content_addressed_restore_accepts_matching_bytes_and_rejects_materialized_digest_corruption()
+    {
         let (dir, state) = fixture("content-addressed");
         set_marker(&state, "before-restore");
         let legacy_path = dir.join("backups/grimodex-c2zc-source.db");
@@ -2068,12 +2069,11 @@ mod tests {
             format!("grimodex-c2zc-restore-fixture--sha256-{mismatch_digest}.backup.db");
         let mismatch_path = mismatch_dir.join("backups").join(&mismatch_name);
         std::fs::rename(&mismatch_source, &mismatch_path)
-            .expect("publish digest-bound backup before target swap");
-        // Model the second stage of the adversarial target swap: the path is
-        // valid and published under its digest, then its bytes are replaced
-        // before the native restore opens the held source file.
-        std::fs::write(&mismatch_path, b"target-swapped-after-publication")
-            .expect("replace published digest-bound target bytes");
+            .expect("publish digest-bound backup before materialized corruption");
+        // A candidate with valid content-addressed naming but corrupted bytes
+        // must fail before the native restore can replace the live DB.
+        std::fs::write(&mismatch_path, b"corrupted-materialized-candidate")
+            .expect("corrupt published digest-bound candidate bytes");
         let error = restore_backup_core(&mismatch_state, &mismatch_name, || {})
             .expect_err("mismatched digest must reject before live replacement");
         assert!(

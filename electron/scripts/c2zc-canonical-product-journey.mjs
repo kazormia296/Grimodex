@@ -1,5 +1,4 @@
 import {
-  link,
   lstat,
   mkdir,
   open,
@@ -2363,22 +2362,6 @@ export function resolveC2ZcRestoreFixtureInput(
   return assertC2ZcRestoreFixtureInput(value);
 }
 
-function sameFileIdentity(left, right) {
-  return (
-    isRegularFileMetadata(left) &&
-    Number.isSafeInteger(left.dev) &&
-    left.dev > 0 &&
-    Number.isSafeInteger(left.ino) &&
-    left.ino > 0 &&
-    left.dev === right?.dev &&
-    left.ino === right?.ino
-  );
-}
-
-function isRegularFileMetadata(metadata) {
-  return metadata?.isFile() === true && metadata?.isSymbolicLink() !== true;
-}
-
 async function rejectExistingPath(filePath, label) {
   try {
     await lstat(filePath);
@@ -2399,22 +2382,21 @@ async function writeFixtureBytes(fileHandle, bytes) {
       null,
     );
     if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0) {
-      throw new Error("C2-ZC restore fixture temp write made no progress");
+      throw new Error("C2-ZC restore fixture staged write made no progress");
     }
     offset += bytesWritten;
   }
 }
 
 /**
- * Keep the private staging link for the lifetime of the ephemeral journey
- * workspace. Workspace teardown owns cleanup after a successful journey; on
- * failure, retaining the hidden file preserves diagnostics and avoids any
- * path-replacement race during cleanup.
+ * Place verified fixture bytes directly at the digest-bound destination. The
+ * destination is exclusively created and held open while the bytes are
+ * written, then validated after the handle is synced and closed.
  */
 export async function stageC2ZcRestoreFixture(
   workspace,
   fixture,
-  { linkFn = link, openFn = open, writeFileFn = writeFixtureBytes } = {},
+  { openFn = open, writeFileFn = writeFixtureBytes } = {},
 ) {
   const backupName = resolveC2ZcRuntimeBackupName(
     fixture?.manifest?.artifacts?.fixture?.path,
@@ -2455,60 +2437,26 @@ export async function stageC2ZcRestoreFixture(
     targetPath,
     "C2-ZC staged restore fixture destination",
   );
-  const tempPath = path.join(
-    backupDirectory,
-    `.${backupName}.${randomUUID()}.tmp`,
-  );
-  let tempHandle = null;
-  let tempMetadata;
+  let targetHandle = null;
   try {
-    tempHandle = await openFn(tempPath, "wx", 0o600);
-    tempMetadata = await tempHandle.stat();
-    if (!isRegularFileMetadata(tempMetadata)) {
-      throw new Error(
-        "C2-ZC private restore fixture temp must be a regular file",
-      );
-    }
-    await writeFileFn(tempHandle, sourceBytes, tempPath);
-    await tempHandle.sync();
-    if (!sameFileIdentity(await tempHandle.stat(), tempMetadata)) {
-      throw new Error(
-        "C2-ZC private restore fixture temp changed while writing",
-      );
-    }
-    await tempHandle.close();
-    tempHandle = null;
-    if (!sameFileIdentity(await lstat(tempPath), tempMetadata)) {
-      throw new Error(
-        "C2-ZC private restore fixture temp changed before publish",
-      );
-    }
+    targetHandle = await openFn(targetPath, "wx", 0o600);
+    await writeFileFn(targetHandle, sourceBytes, targetPath);
+    await targetHandle.sync();
+    await targetHandle.close();
+    targetHandle = null;
     await assertFixtureArtifactDigest(
-      tempPath,
-      fixture.manifest.artifacts.fixture,
-      "C2-ZC private restore fixture temp",
-    );
-    await rejectExistingPath(
       targetPath,
-      "C2-ZC staged restore fixture destination",
+      fixture.manifest.artifacts.fixture,
+      "C2-ZC staged restore fixture target",
     );
-    await linkFn(tempPath, targetPath);
-    const publishedTempMetadata = await lstat(tempPath);
-    const destinationMetadata = await lstat(targetPath);
-    if (
-      !sameFileIdentity(publishedTempMetadata, tempMetadata) ||
-      !sameFileIdentity(destinationMetadata, publishedTempMetadata)
-    ) {
-      throw new Error("C2-ZC published restore fixture identity changed");
-    }
   } catch (error) {
-    if (tempHandle) {
+    if (targetHandle) {
       try {
-        await tempHandle.close();
+        await targetHandle.close();
       } catch (cleanupError) {
         throw new AggregateError(
           [error, cleanupError],
-          "C2-ZC staged restore fixture temp close failed",
+          "C2-ZC staged restore fixture target close failed",
           { cause: cleanupError },
         );
       }
@@ -2517,9 +2465,6 @@ export async function stageC2ZcRestoreFixture(
   }
   return {
     targetPath,
-    stagingTempPath: tempPath,
-    stagingTempDevice: tempMetadata.dev,
-    stagingTempInode: tempMetadata.ino,
     sourcePath,
     backupName,
     sourceBackupName: fixture.manifest.artifacts.fixture.path,
@@ -4244,9 +4189,6 @@ export async function runC2ZcCanonicalAuthorityJourney(
     baselineRunIds: restoreBaselineRuns.map((run) => run.id),
     baselineRunsDigest: digestJson(restoreBaselineRuns),
     stagedPath: staged.targetPath,
-    stagingTempPath: staged.stagingTempPath,
-    stagingTempDevice: staged.stagingTempDevice,
-    stagingTempInode: staged.stagingTempInode,
   });
 
   let restoreLaunch = null;
@@ -4509,9 +4451,6 @@ export async function runC2ZcCanonicalAuthorityJourney(
       fixtureSha256: fixture.manifest.fixtureSha256,
       fixtureSizeBytes: fixture.manifest.fixtureSizeBytes,
       stagedPath: staged.targetPath,
-      stagingTempPath: staged.stagingTempPath,
-      stagingTempDevice: staged.stagingTempDevice,
-      stagingTempInode: staged.stagingTempInode,
     },
     lifecycle: {
       verifyRunIds: [lifecycle.firstVerify.id, lifecycle.finalVerify.id],

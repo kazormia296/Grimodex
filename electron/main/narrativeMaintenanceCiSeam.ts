@@ -611,24 +611,11 @@ type HeldFreshnessRequestVisibility = {
   /** Bytes captured from the descriptor opened at callback invocation. */
   readonly bytes: Buffer;
   readonly contentSha256: string;
-  readonly dev: number;
-  readonly ino: number;
-  readonly size: number;
-  readonly mtimeMs: number;
-  readonly ctimeMs: number;
-  /** The nonce directory is part of the publication boundary. */
-  readonly directoryDev: number;
-  readonly directoryIno: number;
-  readonly directoryMtimeMs: number;
-  readonly directoryCtimeMs: number;
 };
 
-type HeldFreshnessDirectoryMetadata = {
-  readonly dev: number;
-  readonly ino: number;
-  readonly mtimeMs: number;
-  readonly ctimeMs: number;
-  readonly isDirectory: () => boolean;
+type HeldFreshnessFileMetadata = {
+  readonly size: number;
+  readonly isFile: () => boolean;
   readonly isSymbolicLink: () => boolean;
 };
 
@@ -871,14 +858,23 @@ function noFollowReadOnlyFlags(): number {
   );
 }
 
+function isBoundedRegularFile(metadata: HeldFreshnessFileMetadata): boolean {
+  return (
+    metadata.isFile() &&
+    !metadata.isSymbolicLink() &&
+    Number.isSafeInteger(metadata.size) &&
+    metadata.size >= 0 &&
+    metadata.size <= NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_MAX_BYTES
+  );
+}
+
 /**
  * Read exactly the byte count obtained from fstat without following a later
- * path lookup.  A second descriptor/stat check rejects append/truncate races
+ * path lookup. A second descriptor/stat check rejects append/truncate races
  * that occur while this descriptor is being read.
  */
 function readHeldFreshnessRequestSnapshot(
   requestPath: string,
-  directory: HeldFreshnessDirectoryMetadata,
 ): HeldFreshnessRequestVisibility | null {
   let descriptor: number | null = null;
   try {
@@ -886,21 +882,14 @@ function readHeldFreshnessRequestSnapshot(
     // open so a contained symlink/junction cannot redirect the descriptor to
     // an outside regular JSON file on that platform.
     const pathMetadata = lstatSync(requestPath);
-    if (
-      !pathMetadata.isFile() ||
-      pathMetadata.isSymbolicLink() ||
-      pathMetadata.size < 0 ||
-      pathMetadata.size > NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_MAX_BYTES
-    ) {
+    if (!isBoundedRegularFile(pathMetadata)) {
       return null;
     }
     descriptor = openSync(requestPath, noFollowReadOnlyFlags());
     const metadata = fstatSync(descriptor);
     if (
-      !metadata.isFile() ||
-      !sameHeldFreshnessFileMetadata(pathMetadata, metadata) ||
-      metadata.size < 0 ||
-      metadata.size > NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_MAX_BYTES
+      !isBoundedRegularFile(metadata) ||
+      metadata.size !== pathMetadata.size
     ) {
       return null;
     }
@@ -918,35 +907,22 @@ function readHeldFreshnessRequestSnapshot(
       offset += bytesRead;
     }
     const afterRead = fstatSync(descriptor);
-    if (
-      !afterRead.isFile() ||
-      !sameHeldFreshnessFileMetadata(metadata, afterRead)
-    ) {
+    if (!isBoundedRegularFile(afterRead) || afterRead.size !== metadata.size) {
       return null;
     }
     // The descriptor remains the source of truth for bytes.  This final path
-    // metadata check only detects a replacement of request.json while the
-    // descriptor was being read; it deliberately does not reopen the path.
+    // size check only detects a replacement or resize of request.json while
+    // the descriptor was being read; publication separately compares bytes.
     const afterReadPath = lstatSync(requestPath);
     if (
-      !afterReadPath.isFile() ||
-      afterReadPath.isSymbolicLink() ||
-      !sameHeldFreshnessFileMetadata(afterReadPath, afterRead)
+      !isBoundedRegularFile(afterReadPath) ||
+      afterReadPath.size !== afterRead.size
     ) {
       return null;
     }
     return {
       bytes,
       contentSha256: createHash("sha256").update(bytes).digest("hex"),
-      dev: metadata.dev,
-      ino: metadata.ino,
-      size: metadata.size,
-      mtimeMs: metadata.mtimeMs,
-      ctimeMs: metadata.ctimeMs,
-      directoryDev: directory.dev,
-      directoryIno: directory.ino,
-      directoryMtimeMs: directory.mtimeMs,
-      directoryCtimeMs: directory.ctimeMs,
     };
   } catch {
     return null;
@@ -955,49 +931,18 @@ function readHeldFreshnessRequestSnapshot(
   }
 }
 
-function sameHeldFreshnessFileMetadata(
-  left: {
-    readonly dev: number;
-    readonly ino: number;
-    readonly size: number;
-    readonly mtimeMs: number;
-    readonly ctimeMs: number;
-  },
-  right: {
-    readonly dev: number;
-    readonly ino: number;
-    readonly size: number;
-    readonly mtimeMs: number;
-    readonly ctimeMs: number;
-  },
-): boolean {
-  return (
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.size === right.size &&
-    left.mtimeMs === right.mtimeMs &&
-    left.ctimeMs === right.ctimeMs
-  );
-}
-
 type HeldFreshnessRequestBarrier = {
-  readonly fingerprint: HeldFreshnessRequestVisibility;
+  readonly request: HeldFreshnessRequestVisibility;
   readonly requestPublishedAtMs: number;
   readonly requestBarrierCycleGeneration: number;
 };
 
-function sameHeldFreshnessRequestFingerprint(
+function sameHeldFreshnessRequestContent(
   left: HeldFreshnessRequestVisibility,
   right: HeldFreshnessRequestVisibility,
 ): boolean {
   return (
-    sameHeldFreshnessFileMetadata(left, right) &&
-    left.contentSha256 === right.contentSha256 &&
-    left.bytes.equals(right.bytes) &&
-    left.directoryDev === right.directoryDev &&
-    left.directoryIno === right.directoryIno &&
-    left.directoryMtimeMs === right.directoryMtimeMs &&
-    left.directoryCtimeMs === right.directoryCtimeMs
+    left.contentSha256 === right.contentSha256 && left.bytes.equals(right.bytes)
   );
 }
 
@@ -1046,27 +991,43 @@ function syncHeldFreshnessRequestAndDirectoryStrict(
   let descriptor: number | null = null;
   try {
     const pathMetadata = lstatSync(requestPath);
-    if (
-      !pathMetadata.isFile() ||
-      pathMetadata.isSymbolicLink() ||
-      !sameHeldFreshnessFileMetadata(snapshot, pathMetadata)
-    ) {
+    if (!isBoundedRegularFile(pathMetadata)) {
       throw new Error("held Freshness request changed before fsync");
     }
     descriptor = openSync(requestPath, noFollowReadOnlyFlags());
     const metadata = fstatSync(descriptor);
     if (
-      !metadata.isFile() ||
-      !sameHeldFreshnessFileMetadata(snapshot, metadata)
+      !isBoundedRegularFile(metadata) ||
+      metadata.size !== pathMetadata.size ||
+      metadata.size !== snapshot.bytes.byteLength
+    ) {
+      throw new Error("held Freshness request changed during fsync");
+    }
+    const bytes = Buffer.alloc(metadata.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const bytesRead = readSync(
+        descriptor,
+        bytes,
+        offset,
+        bytes.byteLength - offset,
+        null,
+      );
+      if (bytesRead === 0) {
+        throw new Error("held Freshness request changed during fsync");
+      }
+      offset += bytesRead;
+    }
+    const contentSha256 = createHash("sha256").update(bytes).digest("hex");
+    if (
+      contentSha256 !== snapshot.contentSha256 ||
+      !bytes.equals(snapshot.bytes)
     ) {
       throw new Error("held Freshness request changed during fsync");
     }
     fsyncSync(descriptor);
     const afterSync = fstatSync(descriptor);
-    if (
-      !afterSync.isFile() ||
-      !sameHeldFreshnessFileMetadata(snapshot, afterSync)
-    ) {
+    if (!isBoundedRegularFile(afterSync) || afterSync.size !== metadata.size) {
       throw new Error("held Freshness request changed after fsync");
     }
     closeSync(descriptor);
@@ -1098,25 +1059,16 @@ function heldFreshnessRequestStillCurrent(
 ): boolean {
   try {
     const directory = lstatSync(nonceDir);
-    if (
-      !directory.isDirectory() ||
-      directory.isSymbolicLink() ||
-      directory.dev !== snapshot.directoryDev ||
-      directory.ino !== snapshot.directoryIno
-    ) {
+    if (!directory.isDirectory() || directory.isSymbolicLink()) {
       return false;
     }
     const requestPath = path.join(
       nonceDir,
       NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
     );
-    const current = readHeldFreshnessRequestSnapshot(requestPath, directory);
+    const current = readHeldFreshnessRequestSnapshot(requestPath);
     if (current === null) return false;
-    return (
-      sameHeldFreshnessFileMetadata(snapshot, current) &&
-      current.contentSha256 === snapshot.contentSha256 &&
-      current.bytes.equals(snapshot.bytes)
-    );
+    return sameHeldFreshnessRequestContent(snapshot, current);
   } catch {
     return false;
   }
@@ -1126,7 +1078,7 @@ function heldFreshnessRequestStillCurrent(
  * Capture request visibility before the Freshness callback enters its async
  * queue.  A request renamed after callback invocation belongs to a later
  * cycle even if the queued operation has not reached its reader yet.  The
- * async reader still rechecks the durable mtime and file identity below.
+ * async reader still rechecks the durable request bytes below.
  */
 function captureHeldFreshnessRequestVisibility(
   userDataDir: string,
@@ -1148,16 +1100,12 @@ function captureHeldFreshnessRequestVisibility(
     }
     const directory = lstatSync(nonceDir);
     if (!directory.isDirectory() || directory.isSymbolicLink()) return null;
-    const snapshot = readHeldFreshnessRequestSnapshot(requestPath, directory);
+    const snapshot = readHeldFreshnessRequestSnapshot(requestPath);
     if (snapshot === null) return null;
     const afterReadDirectory = lstatSync(nonceDir);
     if (
       !afterReadDirectory.isDirectory() ||
-      afterReadDirectory.isSymbolicLink() ||
-      afterReadDirectory.dev !== directory.dev ||
-      afterReadDirectory.ino !== directory.ino ||
-      afterReadDirectory.mtimeMs !== directory.mtimeMs ||
-      afterReadDirectory.ctimeMs !== directory.ctimeMs
+      afterReadDirectory.isSymbolicLink()
     ) {
       return null;
     }
@@ -1254,9 +1202,8 @@ async function writeHeldFreshnessEvidence(
     await handle.close();
   }
   // Recheck the request only after the evidence bytes are durable and
-  // immediately before the no-replace publication. Creating the temporary
-  // hard-link source changes directory metadata, so the recheck binds the
-  // directory identity (dev/ino) and exact request bytes instead.
+  // immediately before the no-replace publication. The recheck binds the
+  // exact canonical request bytes captured at callback entry.
   if (!heldFreshnessRequestStillCurrent(nonceDir, requestSnapshot)) {
     try {
       unlinkSync(temporaryPath);
@@ -1399,8 +1346,8 @@ function createHeldFreshnessWriter(
           (candidateGeneration as number) > 0 &&
           (candidateGeneration as number) > lastCycleGeneration &&
           (requestBarrier === null ||
-            !sameHeldFreshnessRequestFingerprint(
-              requestBarrier.fingerprint,
+            !sameHeldFreshnessRequestContent(
+              requestBarrier.request,
               requestVisibility,
             ))
         ) {
@@ -1431,7 +1378,7 @@ function createHeldFreshnessWriter(
             );
           }
           requestBarrier = {
-            fingerprint: requestVisibility,
+            request: requestVisibility,
             requestPublishedAtMs,
             requestBarrierCycleGeneration: candidateGeneration as number,
           };
@@ -1551,8 +1498,8 @@ function createHeldFreshnessWriter(
           }
           if (
             requestBarrier === null ||
-            !sameHeldFreshnessRequestFingerprint(
-              requestBarrier.fingerprint,
+            !sameHeldFreshnessRequestContent(
+              requestBarrier.request,
               requestVisibility,
             )
           ) {

@@ -1011,8 +1011,9 @@ mod tests {
     }
 
     #[test]
-    fn content_addressed_recovery_candidate_rejects_target_swap_without_live_mutation() {
-        let ws = temp_ws("content-addressed-swap");
+    fn content_addressed_recovery_candidate_rejects_materialized_digest_corruption_without_live_mutation(
+    ) {
+        let ws = temp_ws("content-addressed-mismatch");
         create_migrated_db(&ws.join("grimodex.db"), "live");
         let source = ws.join("backups/source.db");
         create_migrated_db(&source, "backup");
@@ -1024,13 +1025,13 @@ mod tests {
         let state = safe_mode_state(&ws);
         let candidate_id = candidate_id_for(&state, ".backup.db");
 
-        // The registry has already captured the valid target name. Replacing
-        // its bytes afterward must fail at the held-file materialization
-        // boundary before preflight or install can touch the live DB.
-        fs::write(&target, b"target-swapped-after-publication")
-            .expect("replace recovery candidate bytes");
+        // The registry has already captured the valid candidate name. Corrupt
+        // bytes must fail at the held-file materialization digest boundary
+        // before preflight or install can touch the live DB.
+        fs::write(&target, b"corrupted-materialized-candidate")
+            .expect("corrupt recovery candidate bytes");
         let error = restore_safe_mode_candidate(&state, &candidate_id)
-            .expect_err("content-addressed recovery target swap must reject");
+            .expect_err("content-addressed materialized digest mismatch must reject");
         assert!(
             error
                 .to_string()
