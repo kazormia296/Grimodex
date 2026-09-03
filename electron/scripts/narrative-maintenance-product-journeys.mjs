@@ -821,6 +821,52 @@ function assertImmutableForegroundMarker(run, expected, originalMarker, label) {
   return marker;
 }
 
+/**
+ * The post-patch ledger read can race the native foreground release.  Keep
+ * accepting only the exact immutable marked Run: a running observation proves
+ * the patch completed before release, while a completed observation is valid
+ * only when its durable lifecycle encloses the full patch interval.
+ */
+export function assertForegroundPatchRunObservation(
+  run,
+  expectedRunId,
+  expected,
+  originalMarker,
+  patchStartedAt,
+  patchCompletedAt,
+  label = "foreground Run at tree_node_patch completion",
+) {
+  if (!run) {
+    throw new Error(
+      `${label} is missing exact Run ${expectedRunId}: ${JSON.stringify(run)}`,
+    );
+  }
+  if (run.id !== expectedRunId) {
+    throw new Error(
+      `${label} did not match expected Run ${expectedRunId}: ${JSON.stringify(
+        run,
+      )}`,
+    );
+  }
+  if (run.status !== "running" && run.status !== "completed") {
+    throw new Error(
+      `${label} must be running or completed, got ${String(run.status)}`,
+    );
+  }
+  assertImmutableForegroundMarker(run, expected, originalMarker, label);
+  assertForegroundLifecycle(run, run.status, label);
+  if (run.status === "completed") {
+    assertWallClockIntervalContains(
+      patchStartedAt,
+      patchCompletedAt,
+      run.startedAt,
+      run.completedAt,
+      label,
+    );
+  }
+  return run;
+}
+
 export function foregroundMarkedRuns(rows, baselineRows, expected) {
   const fresh = rowsAfter(rows, baselineRows);
   return fresh.filter((run) => {
@@ -4375,22 +4421,13 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
     const runAtPatchCompletion = (await context.runs()).find(
       (row) => row.id === schedulerRun.id,
     );
-    if (!runAtPatchCompletion || runAtPatchCompletion.status !== "running") {
-      throw new Error(
-        `foreground tree_node_patch did not complete while the exact native barrier Run was held: ${JSON.stringify(
-          runAtPatchCompletion,
-        )}`,
-      );
-    }
-    assertForegroundLifecycle(
+    assertForegroundPatchRunObservation(
       runAtPatchCompletion,
-      "running",
-      "foreground lifecycle at tree_node_patch completion",
-    );
-    assertImmutableForegroundMarker(
-      runAtPatchCompletion,
+      schedulerRun.id,
       markerExpectation,
       originalMarker,
+      foregroundPatchStartedAt,
+      foregroundPatchCompletedAt,
       "foreground Run at tree_node_patch completion",
     );
     const completedSchedulerRun = await waitForLedger(

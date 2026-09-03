@@ -35,6 +35,7 @@ import {
   assertRestoreFixturePreGapReadiness,
   assertRestoreVerifyRebuildVerifyCausality,
   assertForegroundLifecycle,
+  assertForegroundPatchRunObservation,
   assertForegroundTargetBaseline,
   assertForegroundRunMarker,
   assertTerminalFailureEvidence,
@@ -291,6 +292,172 @@ test("foreground lifecycle proof rejects wrong child identity and non-monotonic 
       new RegExp(field),
     );
   }
+});
+
+test("foreground patch observation accepts only a running or interval-covering completed Run", () => {
+  const expected = {
+    barrierId: "patch-barrier",
+    correlation: "patch-correlation",
+    trigger: "workspace-opened",
+  };
+  const marker = {
+    trigger: expected.trigger,
+    canonicalWorkKey:
+      "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v3",
+    authorityId: "authority-1",
+    generation: 7,
+    productJourneyBarrierId: expected.barrierId,
+    correlation: expected.correlation,
+  };
+  const makeRun = (status, overrides = {}) => {
+    const specJson = JSON.stringify({ systemWork: marker });
+    const terminal =
+      status === "completed"
+        ? {
+            completedAt: "2026-08-23T00:00:00.003000000Z",
+            taskCompletedAt: "2026-08-23T00:00:00.003000000Z",
+            lastAttemptCompletedAt: "2026-08-23T00:00:00.003000000Z",
+          }
+        : {};
+    return {
+      id: "foreground-run",
+      projectId: "project-1",
+      runKind: "backfill",
+      workKey: "legacy-dependency-backfill:v3",
+      status,
+      taskCount: 1,
+      attemptCount: 1,
+      taskKind: "maintenance-backfill",
+      taskAttemptCount: 1,
+      lastAttemptNumber: 1,
+      maxAttemptNumber: 1,
+      taskStatus: status,
+      lastAttemptStatus: status,
+      specJson,
+      taskInputJson: specJson,
+      createdAt: "2026-08-23T00:00:00.000000000Z",
+      startedAt: "2026-08-23T00:00:00.001000000Z",
+      taskCreatedAt: "2026-08-23T00:00:00.001000000Z",
+      taskStartedAt: "2026-08-23T00:00:00.001000000Z",
+      lastAttemptStartedAt: "2026-08-23T00:00:00.001000000Z",
+      ...terminal,
+      ...overrides,
+    };
+  };
+  const patchStartedAt = Date.parse("2026-08-23T00:00:00.001500Z");
+  const patchCompletedAt = Date.parse("2026-08-23T00:00:00.002500Z");
+
+  assert.equal(
+    assertForegroundPatchRunObservation(
+      makeRun("running"),
+      "foreground-run",
+      expected,
+      marker,
+      patchStartedAt,
+      patchCompletedAt,
+    ).status,
+    "running",
+  );
+  assert.equal(
+    assertForegroundPatchRunObservation(
+      makeRun("completed"),
+      "foreground-run",
+      expected,
+      marker,
+      patchStartedAt,
+      patchCompletedAt,
+    ).status,
+    "completed",
+    "a ledger read racing the release may observe the already-completed Run",
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        makeRun("completed", {
+          completedAt: "2026-08-23T00:00:00.001400000Z",
+          taskCompletedAt: "2026-08-23T00:00:00.001400000Z",
+          lastAttemptCompletedAt: "2026-08-23T00:00:00.001400000Z",
+        }),
+        "foreground-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /overlap/,
+    "a completed Run that ended before the patch must remain rejected",
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        makeRun("completed", {
+          specJson: JSON.stringify({
+            systemWork: { ...marker, generation: marker.generation + 1 },
+          }),
+          taskInputJson: JSON.stringify({
+            systemWork: { ...marker, generation: marker.generation + 1 },
+          }),
+        }),
+        "foreground-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /changed immutable systemWork\.generation/,
+    "a completed Run with marker drift must remain rejected",
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        makeRun("completed", { taskStatus: "running" }),
+        "foreground-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /lifecycle status mismatch/,
+    "a completed Run with a non-terminal child lifecycle must remain rejected",
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        undefined,
+        "foreground-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /missing exact Run/,
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        makeRun("failed"),
+        "foreground-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /must be running or completed/,
+    "failed and other terminal states must not satisfy the foreground proof",
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        makeRun("running"),
+        "different-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /did not match expected Run/,
+    "a different Run with the same marker cannot satisfy the proof",
+  );
 });
 
 test("terminal fault evidence requires the exact failed Run, Task, and Attempt triplet", () => {
