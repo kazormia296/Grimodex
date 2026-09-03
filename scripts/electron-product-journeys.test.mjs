@@ -2234,7 +2234,10 @@ test("late launch without a child fails closed without a second process lookup",
   );
   await assert.rejects(launch, /timed out/);
   resolveLaunch(app);
-  await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
+  await harness.dispose({
+    success: false,
+    name: "late-child-capture-failure",
+  });
 
   assert.equal(processCalls, 1);
   assert.equal(closeCalls, 1);
@@ -2978,7 +2981,10 @@ test("late launch without a child aggregates Playwright cleanup failure", async 
   );
   await assert.rejects(launch, /timed out/);
   resolveLaunch(app);
-  await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
+  await harness.dispose({
+    success: false,
+    name: "late-child-capture-close-failure",
+  });
 
   assert.equal(processCalls, 1);
   assert.equal(closeCalls, 1);
