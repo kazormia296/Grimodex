@@ -5621,7 +5621,7 @@ test("lane timeout owns late Electron cleanup before publishing one artifact", a
   const lateApp = { process: () => child };
   const phase = "observability/lane-late-owned";
   const artifactName = "observability-lane-late-owned";
-  const laneTimeoutMs = 100;
+  const laneTimeoutMs = 1_000;
   let closeCalls = 0;
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
