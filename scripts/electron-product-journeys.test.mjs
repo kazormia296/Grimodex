@@ -2792,11 +2792,7 @@ test("late valid launches persist close and termination failures before capture"
     try {
       await assert.rejects(harness.launch(scenario.name), /timed out/);
       resolveLaunch(app);
-      if (scenario.name.endsWith("hang")) {
-        await new Promise((resolve) => setTimeout(resolve, 5_200));
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
+      await harness.dispose({ success: false, name: scenario.name });
       const retainedDiagnostics = JSON.parse(
         await readFile(
           path.join(
@@ -2885,7 +2881,7 @@ test("late close timeout treats a concurrent verified exit as authoritative", as
     try {
       await assert.rejects(harness.launch(phase), /timed out/);
       resolveLaunch(app);
-      await new Promise((resolve) => setTimeout(resolve, 5_300));
+      await harness.dispose({ success: false, name: artifactName });
 
       const retainedDiagnostics = await readRetainedDiagnostics(
         artifactRoot,
