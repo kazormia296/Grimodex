@@ -1979,6 +1979,7 @@ export const PRODUCT_JOURNEY_ELECTRON_PHASES = Object.freeze([
   "c2-5b-no-automatic-repair/restore-fixture",
   "c2-5b-no-automatic-repair/open",
   "c2-5b-foreground-write-workspace-wake/settle-primary",
+  "c2-5b-foreground-write-workspace-wake/settle-post-freshness",
   "c2-5b-foreground-write-workspace-wake/authoring",
   "c2-5b-incremental-liveness/before-restart",
   "c2-5b-incremental-liveness/after-restart",

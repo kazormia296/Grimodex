@@ -2718,6 +2718,26 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
   );
   assert.match(
     foregroundJourneyBody,
+    /sceneCreationBaseline = await readRunLedgerSnapshot\(workspaceB\);\s*await createSceneIfNeeded\(settledContext, "foreground-primary-settled"\)/s,
+    "foreground workspace-wake must snapshot B immediately before scene creation",
+  );
+  assert.match(
+    foregroundJourneyBody,
+    /harness\.launch\(`\$\{id\}\/settle-post-freshness`\)/,
+    "foreground workspace-wake must settle B after scene Freshness before the marker launch",
+  );
+  assert.match(
+    foregroundJourneyBody,
+    /waitForRunSequence\(\s*postFreshnessContext,\s*\["freshness-evaluation",\s*"dependency-verify"\][\s\S]*?foreground primary post-freshness Verify/s,
+    "foreground workspace-wake must observe the scene Freshness -> Verify sequence from the unmarked B reopen",
+  );
+  assert.match(
+    foregroundJourneyBody,
+    /waitForStableLedger\(\s*postFreshnessContext,\s*sceneCreationBaseline,[\s\S]*?foreground primary post-freshness ledger stable/s,
+    "foreground workspace-wake must stabilize B's post-Freshness ledger before the marker launch",
+  );
+  assert.match(
+    foregroundJourneyBody,
     /getByTestId\("workspace-menu-trigger"\)/,
     "foreground workspace-wake must switch A through the canonical WorkspaceMenu",
   );

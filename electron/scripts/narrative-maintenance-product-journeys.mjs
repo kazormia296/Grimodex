@@ -130,6 +130,7 @@ export const NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES = Object.freeze([
   "c2-5b-no-automatic-repair/restore-fixture",
   "c2-5b-no-automatic-repair/open",
   "c2-5b-foreground-write-workspace-wake/settle-primary",
+  "c2-5b-foreground-write-workspace-wake/settle-post-freshness",
   "c2-5b-foreground-write-workspace-wake/authoring",
   "c2-5b-incremental-liveness/before-restart",
   "c2-5b-incremental-liveness/after-restart",
@@ -4112,6 +4113,7 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
     { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
     () => harness.launch(`${id}/settle-primary`),
   );
+  let sceneCreationBaseline;
   try {
     const settledContext = await contextForLaunch(
       harness,
@@ -4122,6 +4124,7 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
     // An empty setup-disabled workspace has no Freshness Run to satisfy the
     // readiness contract. Seed the ordinary B authoring Source before the
     // barrier; this launch is outside the foreground marker seam.
+    sceneCreationBaseline = await readRunLedgerSnapshot(workspaceB);
     await createSceneIfNeeded(settledContext, "foreground-primary-settled");
     await waitForReadiness(settledContext, "foreground primary settled", {
       requireMaintenanceSettled: true,
@@ -4134,6 +4137,45 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       settledPrimary.app,
       settledPrimary.page,
       `${id}/settle-primary`,
+    );
+  }
+
+  // Scene creation advances Freshness after the first Verify has sealed its
+  // skip evidence. Carry the live pre-scene baseline across a marker-free B
+  // reopen so an earlier Freshness -> Verify chain cannot satisfy this gate.
+  const settledPostFreshness = await withLaunchEnvironment(
+    { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
+    () => harness.launch(`${id}/settle-post-freshness`),
+  );
+  try {
+    const postFreshnessContext = await contextForLaunch(
+      harness,
+      settledPostFreshness,
+      workspaceB,
+      id,
+      sceneCreationBaseline,
+    );
+    await waitForRunSequence(
+      postFreshnessContext,
+      ["freshness-evaluation", "dependency-verify"],
+      "foreground primary post-freshness Verify",
+      NARRATIVE_MAINTENANCE_WAIT_MS,
+      { baselineRows: sceneCreationBaseline },
+    );
+    await waitForStableLedger(
+      postFreshnessContext,
+      sceneCreationBaseline,
+      "foreground primary post-freshness ledger stable",
+    );
+    postFreshnessContext.record("foreground-primary-post-freshness-settled", {
+      workspace: workspaceB,
+      baselineRunCount: sceneCreationBaseline.length,
+    });
+  } finally {
+    await harness.close(
+      settledPostFreshness.app,
+      settledPostFreshness.page,
+      `${id}/settle-post-freshness`,
     );
   }
 
