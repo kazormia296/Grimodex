@@ -208,6 +208,30 @@ function canonicalValueText(value) {
   return JSON.stringify(value);
 }
 
+function createPromiseBarrier() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function awaitPromiseBarrierBeforeOperationSettles(barrier, operation, label) {
+  return new Promise((resolve, reject) => {
+    barrier.promise.then(resolve);
+    operation.then(
+      () =>
+        reject(new Error(`${label} settled before its launcher-start barrier`)),
+      (error) =>
+        reject(
+          new Error(`${label} settled before its launcher-start barrier`, {
+            cause: error,
+          }),
+        ),
+    );
+  });
+}
+
 function heldFreshnessReceipt(
   sequence = 1,
   nonce = RECEIPT_NONCE,
@@ -2160,6 +2184,7 @@ test("late launch without a child fails closed without a second process lookup",
   const launchPromise = new Promise((resolve) => {
     resolveLaunch = resolve;
   });
+  const electronLaunchStarted = createPromiseBarrier();
   let processCalls = 0;
   let closeCalls = 0;
   const app = {
@@ -2178,7 +2203,10 @@ test("late launch without a child fails closed without a second process lookup",
     launchTimeoutMs: 10,
     operationTimeoutMs: 10,
     electronLauncher: {
-      launch: () => launchPromise,
+      launch: () => {
+        electronLaunchStarted.resolve();
+        return launchPromise;
+      },
     },
   });
   t.after(async () => {
@@ -2198,10 +2226,13 @@ test("late launch without a child fails closed without a second process lookup",
     else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
   });
 
-  await assert.rejects(
-    harness.launch("late-child-capture-failure"),
-    /timed out/,
+  const launch = harness.launch("late-child-capture-failure");
+  await awaitPromiseBarrierBeforeOperationSettles(
+    electronLaunchStarted,
+    launch,
+    "late-child-capture-failure",
   );
+  await assert.rejects(launch, /timed out/);
   resolveLaunch(app);
   await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
 
@@ -2428,6 +2459,7 @@ test("lane watchdog waits for late Electron cleanup before publishing evidence",
   const launchPromise = new Promise((resolve) => {
     resolveLaunch = resolve;
   });
+  const electronLaunchStarted = createPromiseBarrier();
   const childProcess = childProcessStub({ pid: 424300 });
   childProcess.killSignals = [];
   childProcess.kill = (signal) => {
@@ -2444,6 +2476,7 @@ test("lane watchdog waits for late Electron cleanup before publishing evidence",
     },
   };
   const phase = "probe/lane-late-finalizer";
+  const laneTimeoutMs = 100;
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
@@ -2451,7 +2484,11 @@ test("lane watchdog waits for late Electron cleanup before publishing evidence",
     launchTimeoutMs: 1_000,
     operationTimeoutMs: 1_000,
     electronLauncher: {
-      launch: () => launchPromise,
+      launch: () => {
+        electronLaunchStarted.resolve();
+        setTimeout(() => resolveLaunch(app), laneTimeoutMs + 50);
+        return launchPromise;
+      },
     },
     closeApp: async (value, page, reason, options) =>
       app.close(value, page, reason, options),
@@ -2466,9 +2503,13 @@ test("lane watchdog waits for late Electron cleanup before publishing evidence",
 
   const running = harness.withLaneWatchdog(() => harness.launch(phase), {
     phase,
-    timeoutMs: 15,
+    timeoutMs: laneTimeoutMs,
   });
-  setTimeout(() => resolveLaunch(app), 30);
+  await awaitPromiseBarrierBeforeOperationSettles(
+    electronLaunchStarted,
+    running,
+    phase,
+  );
   await assert.rejects(running, /watchdog|aborted|timed out/i);
 
   assert.equal(closeCalls, 1);
@@ -2888,6 +2929,7 @@ test("late launch without a child aggregates Playwright cleanup failure", async 
   const launchPromise = new Promise((resolve) => {
     resolveLaunch = resolve;
   });
+  const electronLaunchStarted = createPromiseBarrier();
   let processCalls = 0;
   let closeCalls = 0;
   const app = {
@@ -2906,7 +2948,10 @@ test("late launch without a child aggregates Playwright cleanup failure", async 
     launchTimeoutMs: 10,
     operationTimeoutMs: 10,
     electronLauncher: {
-      launch: () => launchPromise,
+      launch: () => {
+        electronLaunchStarted.resolve();
+        return launchPromise;
+      },
     },
   });
   t.after(async () => {
@@ -2925,10 +2970,13 @@ test("late launch without a child aggregates Playwright cleanup failure", async 
     else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
   });
 
-  await assert.rejects(
-    harness.launch("late-child-capture-close-failure"),
-    /timed out/,
+  const launch = harness.launch("late-child-capture-close-failure");
+  await awaitPromiseBarrierBeforeOperationSettles(
+    electronLaunchStarted,
+    launch,
+    "late-child-capture-close-failure",
   );
+  await assert.rejects(launch, /timed out/);
   resolveLaunch(app);
   await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
 
@@ -5567,9 +5615,11 @@ test("lane timeout owns late Electron cleanup before publishing one artifact", a
   const launchResult = new Promise((resolve) => {
     resolveLaunch = resolve;
   });
+  const electronLaunchStarted = createPromiseBarrier();
   const lateApp = { process: () => child };
   const phase = "observability/lane-late-owned";
   const artifactName = "observability-lane-late-owned";
+  const laneTimeoutMs = 100;
   let closeCalls = 0;
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -5577,7 +5627,13 @@ test("lane timeout owns late Electron cleanup before publishing one artifact", a
     artifactRoot,
     operationTimeoutMs: 100,
     launchTimeoutMs: 10_000,
-    electronLauncher: { launch: async () => launchResult },
+    electronLauncher: {
+      launch: async () => {
+        electronLaunchStarted.resolve();
+        setTimeout(() => resolveLaunch(lateApp), laneTimeoutMs + 50);
+        return launchResult;
+      },
+    },
     closeApp: async (app) => {
       closeCalls += 1;
       app.closed = true;
@@ -5592,11 +5648,14 @@ test("lane timeout owns late Electron cleanup before publishing one artifact", a
 
   const running = harness.withLaneWatchdog(() => harness.launch(phase), {
     phase,
-    timeoutMs: 15,
+    timeoutMs: laneTimeoutMs,
   });
-  const resolutionTimer = setTimeout(() => resolveLaunch(lateApp), 25);
+  await awaitPromiseBarrierBeforeOperationSettles(
+    electronLaunchStarted,
+    running,
+    phase,
+  );
   await assert.rejects(running, /watchdog.*lane-late-owned/i);
-  clearTimeout(resolutionTimer);
   assert.equal(closeCalls, 1);
   assert.equal(lateApp.closed, true);
   assert.deepEqual(child.killSignals, ["SIGTERM"]);
@@ -5636,7 +5695,9 @@ test("lane timeout records pending Electron launch cleanup without duplicate art
   );
   const phase = "observability/lane-pending-forever";
   const artifactName = "observability-lane-pending-forever";
+  const laneTimeoutMs = 100;
   let launchCalls = 0;
+  const electronLaunchStarted = createPromiseBarrier();
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
@@ -5646,6 +5707,7 @@ test("lane timeout records pending Electron launch cleanup without duplicate art
     electronLauncher: {
       launch: () => {
         launchCalls += 1;
+        electronLaunchStarted.resolve();
         return new Promise(() => {});
       },
     },
@@ -5657,13 +5719,16 @@ test("lane timeout records pending Electron launch cleanup without duplicate art
   });
 
   const startedAt = Date.now();
-  await assert.rejects(
-    harness.withLaneWatchdog(() => harness.launch(phase), {
-      phase,
-      timeoutMs: 15,
-    }),
-    /watchdog.*lane-pending-forever/i,
+  const running = harness.withLaneWatchdog(() => harness.launch(phase), {
+    phase,
+    timeoutMs: laneTimeoutMs,
+  });
+  await awaitPromiseBarrierBeforeOperationSettles(
+    electronLaunchStarted,
+    running,
+    phase,
   );
+  await assert.rejects(running, /watchdog.*lane-pending-forever/i);
   assert.ok(Date.now() - startedAt < 7_000);
   assert.equal(launchCalls, 1);
 
@@ -5710,16 +5775,24 @@ test("late Electron close rejection is retained as a fatal diagnostic", async (t
   const launchResult = new Promise((resolve) => {
     resolveLaunch = resolve;
   });
+  const electronLaunchStarted = createPromiseBarrier();
   const lateApp = { process: () => child };
   const phase = "observability/late-close-reject";
   const artifactName = "observability-late-close-reject";
+  const laneTimeoutMs = 100;
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
     artifactRoot,
     operationTimeoutMs: 100,
     launchTimeoutMs: 10_000,
-    electronLauncher: { launch: async () => launchResult },
+    electronLauncher: {
+      launch: async () => {
+        electronLaunchStarted.resolve();
+        setTimeout(() => resolveLaunch(lateApp), laneTimeoutMs + 50);
+        return launchResult;
+      },
+    },
     closeApp: async () => {
       throw new Error("late close rejected");
     },
@@ -5733,11 +5806,14 @@ test("late Electron close rejection is retained as a fatal diagnostic", async (t
 
   const running = harness.withLaneWatchdog(() => harness.launch(phase), {
     phase,
-    timeoutMs: 15,
+    timeoutMs: laneTimeoutMs,
   });
-  const resolutionTimer = setTimeout(() => resolveLaunch(lateApp), 25);
+  await awaitPromiseBarrierBeforeOperationSettles(
+    electronLaunchStarted,
+    running,
+    phase,
+  );
   await assert.rejects(running, /watchdog.*late-close-reject/i);
-  clearTimeout(resolutionTimer);
   await harness.dispose({ success: false, name: artifactName });
 
   assert.deepEqual(await readdir(artifactRoot), [artifactName]);
@@ -5788,16 +5864,24 @@ test("late Electron close hang is bounded and retained as a fatal diagnostic", a
   const launchResult = new Promise((resolve) => {
     resolveLaunch = resolve;
   });
+  const electronLaunchStarted = createPromiseBarrier();
   const lateApp = { process: () => child };
   const phase = "observability/late-close-hang";
   const artifactName = "observability-late-close-hang";
+  const laneTimeoutMs = 100;
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
     artifactRoot,
     operationTimeoutMs: 100,
     launchTimeoutMs: 10_000,
-    electronLauncher: { launch: async () => launchResult },
+    electronLauncher: {
+      launch: async () => {
+        electronLaunchStarted.resolve();
+        setTimeout(() => resolveLaunch(lateApp), laneTimeoutMs + 50);
+        return launchResult;
+      },
+    },
     closeApp: async () => new Promise(() => {}),
   });
   t.after(async () => {
@@ -5810,11 +5894,14 @@ test("late Electron close hang is bounded and retained as a fatal diagnostic", a
   const startedAt = Date.now();
   const running = harness.withLaneWatchdog(() => harness.launch(phase), {
     phase,
-    timeoutMs: 15,
+    timeoutMs: laneTimeoutMs,
   });
-  const resolutionTimer = setTimeout(() => resolveLaunch(lateApp), 25);
+  await awaitPromiseBarrierBeforeOperationSettles(
+    electronLaunchStarted,
+    running,
+    phase,
+  );
   await assert.rejects(running, /watchdog.*late-close-hang/i);
-  clearTimeout(resolutionTimer);
   const elapsedMs = Date.now() - startedAt;
   assert.ok(elapsedMs < 7_000, `late cleanup exceeded bound: ${elapsedMs}ms`);
   await harness.dispose({ success: false, name: artifactName });
@@ -5875,16 +5962,24 @@ test("late Electron child kill false or throw is fatal and preserves tracking", 
     const launchResult = new Promise((resolve) => {
       resolveLaunch = resolve;
     });
+    const electronLaunchStarted = createPromiseBarrier();
     const lateApp = { process: () => child };
     const phase = `observability/late-kill-${label}`;
     const artifactName = `observability-late-kill-${label}`;
+    const laneTimeoutMs = 100;
     const harness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
       artifactRoot,
       operationTimeoutMs: 100,
       launchTimeoutMs: 10_000,
-      electronLauncher: { launch: async () => launchResult },
+      electronLauncher: {
+        launch: async () => {
+          electronLaunchStarted.resolve();
+          setTimeout(() => resolveLaunch(lateApp), laneTimeoutMs + 50);
+          return launchResult;
+        },
+      },
       closeApp: async () => undefined,
     });
     t.after(async () => {
@@ -5897,11 +5992,14 @@ test("late Electron child kill false or throw is fatal and preserves tracking", 
     const startedAt = Date.now();
     const running = harness.withLaneWatchdog(() => harness.launch(phase), {
       phase,
-      timeoutMs: 15,
+      timeoutMs: laneTimeoutMs,
     });
-    const resolutionTimer = setTimeout(() => resolveLaunch(lateApp), 25);
+    await awaitPromiseBarrierBeforeOperationSettles(
+      electronLaunchStarted,
+      running,
+      phase,
+    );
     await assert.rejects(running, new RegExp(`watchdog.*late-kill-${label}`));
-    clearTimeout(resolutionTimer);
     assert.ok(Date.now() - startedAt < 3_000);
     await harness.dispose({ success: false, name: artifactName });
 
