@@ -576,7 +576,7 @@ fn materialize_candidate_for_restore(
     relative_key: &str,
     kind: RecoveryCandidateKind,
     dest: &Path,
-) -> AppResult<()> {
+) -> AppResult<String> {
     let mut file = File::open(absolute_path).map_err(anyhow::Error::from)?;
     let meta = file.metadata().map_err(anyhow::Error::from)?;
     if kind == RecoveryCandidateKind::MigrationSnapshot {
@@ -594,8 +594,8 @@ fn materialize_candidate_for_restore(
         file.seek(SeekFrom::Start(0)).map_err(anyhow::Error::from)?;
         materialize_open_file_to_plain(&mut file, is_gz, dest)?;
     }
-    verify_materialized_backup_digest(relative_key, dest)?;
-    Ok(())
+    let digest = verify_materialized_backup_digest(relative_key, dest)?;
+    Ok(digest)
 }
 
 fn reverify_migration_snapshot_locked(
@@ -759,7 +759,7 @@ pub fn restore_safe_mode_candidate(ws_state: &WorkspaceState, candidate_id: &str
     // materialize so symlink/hardlink TOCTOU cannot race the copy.
     let exclusive = workspace_lease::acquire_exclusive_for_migration(&workspace_path)?;
     ensure_path_inside_workspace(&workspace_path, &absolute_path)?;
-    materialize_candidate_for_restore(
+    let materialized_candidate_digest = materialize_candidate_for_restore(
         &workspace_path,
         &absolute_path,
         &relative_key,
@@ -768,12 +768,9 @@ pub fn restore_safe_mode_candidate(ws_state: &WorkspaceState, candidate_id: &str
     )?;
     preflight_candidate(&staged)?;
 
-    let result = install_staged_workspace_db(
-        ws_state,
-        &workspace_path,
-        &staged,
-        InstallStagedOptions::safe_mode(exclusive),
-    );
+    let mut install_options = InstallStagedOptions::safe_mode(exclusive);
+    install_options.restore_source_digest = Some(materialized_candidate_digest);
+    let result = install_staged_workspace_db(ws_state, &workspace_path, &staged, install_options);
     if result.is_ok() {
         staged_cleanup.disarm();
     }
@@ -1564,6 +1561,72 @@ mod tests {
             .unwrap_or_default()
             .starts_with("restore-image-sha256:"));
         drop(opened);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn safe_mode_restore_reuses_materialized_digest_for_older_schema_candidate() {
+        let ws = temp_ws("restore-older-schema-identity");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        let candidate = ws.join("backups/grimodex-older-safe-mode.db");
+        create_migrated_db(&candidate, "older-schema");
+        {
+            let db = Database::new(&candidate).expect("open older-schema candidate");
+            let deleted = db
+                .with_conn(|conn| {
+                    Ok(conn.execute(
+                        "DELETE FROM schema_data_migrations
+                          WHERE migration_id = 'narrative-c2-consumer-grain-v30'",
+                        [],
+                    )?)
+                })
+                .expect("remove v30 marker");
+            assert_eq!(
+                deleted, 1,
+                "older-schema fixture must remove exactly one v30 marker"
+            );
+        }
+        let source_digest = crate::migration_supervisor::digest_sha256_file(&candidate)
+            .expect("digest older-schema candidate before preflight");
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, "grimodex-older-safe-mode.db");
+
+        let read_restore_epoch = || {
+            let db = Database::new(&ws.join("grimodex.db")).expect("open restored database");
+            let rows = db
+                .execute(
+                    "SELECT COUNT(*) AS restores,
+                            MAX(triggered_by_change_event_uid) AS identity,
+                            MAX(CASE WHEN reason = 'restore' THEN id END) AS epoch_id
+                       FROM narrative_semantic_epochs
+                      WHERE project_id = 'default-project' AND reason = 'restore'",
+                    &[],
+                    "read Safe Mode restore epoch",
+                )
+                .expect("read restore epoch");
+            (
+                rows[0]["restores"].as_i64().unwrap_or_default(),
+                rows[0]["identity"].as_str().unwrap_or_default().to_string(),
+                rows[0]["epoch_id"].as_str().unwrap_or_default().to_string(),
+            )
+        };
+
+        restore_safe_mode_candidate(&state, &candidate_id).expect("first Safe Mode restore");
+        let first = read_restore_epoch();
+        assert_eq!(first.0, 1);
+        assert_eq!(
+            first.1,
+            format!("restore-image-sha256:{source_digest}"),
+            "restore identity must use the pre-preflight materialized bytes"
+        );
+        assert!(!first.2.is_empty(), "restore epoch must be durable");
+
+        restore_safe_mode_candidate(&state, &candidate_id).expect("retry Safe Mode restore");
+        let second = read_restore_epoch();
+        assert_eq!(
+            second, first,
+            "same older-schema candidate must be exactly-once"
+        );
         let _ = fs::remove_dir_all(&ws);
     }
 

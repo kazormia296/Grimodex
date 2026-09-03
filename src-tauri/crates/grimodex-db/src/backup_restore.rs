@@ -543,22 +543,25 @@ pub fn install_staged_workspace_db(
     // Consumer Freshness as current on the next normal open. The pre-Epoch
     // digest is the stable input to a domain-separated identity; retrying the
     // same backup then observes the same identity and does not rotate twice.
-    let materialized_candidate_digest =
-        crate::migration_supervisor::digest_sha256_file(staged_plain)
-            .map_err(|error| anyhow::anyhow!("RESTORE_CANDIDATE_DIGEST_FAILED: {error}"))?;
+    // Safe Mode passes the digest captured from the materialized image before
+    // its mutating preflight. Direct callers retain the historical fallback
+    // of hashing the staged image at this boundary.
+    let restore_seed = match options.restore_source_digest.as_deref() {
+        Some(digest) => digest.to_string(),
+        None => crate::migration_supervisor::digest_sha256_file(staged_plain)
+            .map_err(|error| anyhow::anyhow!("RESTORE_CANDIDATE_DIGEST_FAILED: {error}"))?,
+    };
     if let Err(error) = crate::migration_supervisor::seal_sqlite_image(staged_plain) {
         return Err(anyhow::anyhow!(
             "復元候補の seal に失敗したため中止しました（live未置換）: {error}"
         )
         .into());
     }
-    let restore_seed = options
-        .restore_source_digest
-        .as_deref()
-        .unwrap_or(materialized_candidate_digest.as_str());
     let restore_identity = format!(
         "restore-image-sha256:{}",
-        restore_seed.strip_prefix("sha256:").unwrap_or(restore_seed)
+        restore_seed
+            .strip_prefix("sha256:")
+            .unwrap_or(restore_seed.as_str())
     );
     #[cfg(feature = "test-failpoints")]
     hit_restore_failpoint(options.failpoint, RestoreFailpoint::BeforeRestoreEpochMint)
@@ -1612,7 +1615,7 @@ pub(crate) fn materialize_candidate_to_plain(
 pub(crate) fn verify_materialized_backup_digest(
     relative_key: &str,
     materialized_path: &Path,
-) -> AppResult<()> {
+) -> AppResult<String> {
     let parsed = parse_backup_file_name(relative_key);
     if parsed.is_none()
         && Path::new(relative_key)
@@ -1626,18 +1629,18 @@ pub(crate) fn verify_materialized_backup_digest(
         )
         .into());
     }
-    let Some((_is_gz, expected)) = parsed else {
-        return Ok(());
-    };
-    let Some(expected) = expected else {
-        return Ok(());
-    };
     let actual = match crate::migration_supervisor::digest_sha256_file(materialized_path) {
         Ok(actual) => actual,
         Err(error) => {
             cleanup_path_best_effort(materialized_path);
             return Err(anyhow::anyhow!("RESTORE_CANDIDATE_DIGEST_FAILED: {error}").into());
         }
+    };
+    let Some((_is_gz, expected)) = parsed else {
+        return Ok(actual);
+    };
+    let Some(expected) = expected else {
+        return Ok(actual);
     };
     if actual != expected {
         cleanup_path_best_effort(materialized_path);
@@ -1646,7 +1649,7 @@ pub(crate) fn verify_materialized_backup_digest(
         )
         .into());
     }
-    Ok(())
+    Ok(actual)
 }
 
 fn copy_path_into(src: &Path, output: &mut File) -> io::Result<()> {
