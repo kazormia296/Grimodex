@@ -1848,7 +1848,9 @@ mod tests {
         workspace_maintenance_exclusive_waiters,
     };
     use crate::with_db_state;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    #[cfg(feature = "test-failpoints")]
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
     fn fixture(label: &str) -> (PathBuf, WorkspaceState) {
