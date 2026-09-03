@@ -59,6 +59,8 @@ pub enum RestoreFailpoint {
     LiveVerifyFailure,
     BeforeRestoreEpochMint,
     AfterRestoreEpochMint,
+    /// Simulate restore-session marker finalization failure after publication.
+    FailFinalizeMarker,
 }
 
 #[cfg(feature = "test-failpoints")]
@@ -73,6 +75,7 @@ impl RestoreFailpoint {
             Self::LiveVerifyFailure => "restore.live_verify_failure",
             Self::BeforeRestoreEpochMint => "restore.before_epoch_mint",
             Self::AfterRestoreEpochMint => "restore.after_epoch_mint",
+            Self::FailFinalizeMarker => "restore.fail_finalize_marker",
         }
     }
 }
@@ -192,8 +195,8 @@ pub fn list_backups_in(dir: &Path) -> Vec<BackupInfo> {
 /// Replace the active workspace DB with a selected backup.
 ///
 /// `on_reopened` runs after the restored database has opened successfully and
-/// before it becomes active. Each shell injects invalidation for its DB-derived
-/// in-memory caches here.
+/// its authority has become active. Each shell injects invalidation for its
+/// DB-derived in-memory caches here.
 pub fn restore_backup_core(
     ws_state: &WorkspaceState,
     file_name: &str,
@@ -1031,14 +1034,17 @@ pub fn install_staged_workspace_db(
 
     match publish_active_workspace(ws_state, ws_path.to_path_buf(), exclusive_lease) {
         Ok(_) => {
-            // The authority is live and the restored data is intact, but a
-            // finalize failure means the next open would still enter Safe
-            // Mode: that is not a clean success and must not be reported as
-            // one.
-            finalize_restore_session_marker(ws_path)?;
+            // Publication makes the restored authority live before marker
+            // finalization. Invalidate shell caches immediately so a marker
+            // cleanup failure cannot leave the live authority with stale
+            // in-memory state.
             if let Some(on_reopened) = options.on_reopened.take() {
                 on_reopened();
             }
+            #[cfg(feature = "test-failpoints")]
+            hit_restore_failpoint(options.failpoint, RestoreFailpoint::FailFinalizeMarker)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            finalize_restore_session_marker(ws_path)?;
             Ok(())
         }
         Err(restore_error) => {
@@ -1158,27 +1164,57 @@ fn read_live_c2zc_marker_for_restore(
             .into())
         }
     }
-    let conn =
-        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|error| {
-                anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}")
-            })?;
-    let marker_table_exists: bool = conn
-        .query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM sqlite_master
-                  WHERE type = 'table' AND name = 'schema_data_migrations'
-             )",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}"))?;
+    let conn = match rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(conn) => conn,
+        Err(error) if is_corrupt_sqlite_error(&error) => {
+            tracing::warn!(
+                "restore: Safe Mode live DB is corrupt while reading C2-ZC marker; treating it as having no prior authority: {error}"
+            );
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into())
+        }
+    };
+    let marker_table_exists: bool = match conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master
+              WHERE type = 'table' AND name = 'schema_data_migrations'
+         )",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(exists) => exists,
+        Err(error) if is_corrupt_sqlite_error(&error) => {
+            tracing::warn!(
+                "restore: Safe Mode live DB is corrupt while reading sqlite_master; treating it as having no prior C2-ZC authority: {error}"
+            );
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into())
+        }
+    };
     if !marker_table_exists {
-        let schema_version: i32 = conn
+        let schema_version: i32 = match conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
-            .map_err(|error| {
-                anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}")
-            })?;
+        {
+            Ok(version) => version,
+            Err(error) if is_corrupt_sqlite_error(&error) => {
+                tracing::warn!(
+                    "restore: Safe Mode live DB is corrupt while reading user_version; treating it as having no prior C2-ZC authority: {error}"
+                );
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(
+                    anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into(),
+                )
+            }
+        };
         if (0..Database::SCHEMA_DATA_MIGRATIONS_INTRODUCED_SCHEMA_VERSION).contains(&schema_version)
         {
             // SCHEMA 0-22 predate both the marker table and the C2-ZC
@@ -1193,8 +1229,36 @@ fn read_live_c2zc_marker_for_restore(
         )
         .into());
     }
-    Database::read_c2zc_cutover_marker(&conn).map_err(|error| {
-        anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into()
+    match Database::read_c2zc_cutover_marker(&conn) {
+        Ok(marker) => Ok(marker),
+        Err(error) if is_corrupt_sqlite_anyhow_error(&error) => {
+            tracing::warn!(
+                "restore: Safe Mode live DB is corrupt while reading C2-ZC marker row; treating it as having no prior authority: {error}"
+            );
+            Ok(None)
+        }
+        Err(error) => {
+            Err(anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into())
+        }
+    }
+}
+
+fn is_corrupt_sqlite_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if matches!(
+                failure.code,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+            )
+    )
+}
+
+fn is_corrupt_sqlite_anyhow_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(is_corrupt_sqlite_error)
     })
 }
 
@@ -1784,7 +1848,7 @@ mod tests {
         workspace_maintenance_exclusive_waiters,
     };
     use crate::with_db_state;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     fn fixture(label: &str) -> (PathBuf, WorkspaceState) {
@@ -2109,6 +2173,50 @@ mod tests {
         assert!(list_backups(&state).expect("list safety copies").len() >= 2);
         assert!(!dir.join("grimodex.db.restore-tmp").exists());
         assert_no_internal_restore_files(&dir);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    #[test]
+    fn finalize_marker_failpoint_keeps_restored_authority_and_runs_hook_once() {
+        let (dir, state) = fixture("finalize-marker-failpoint");
+        set_marker(&state, "before-restore");
+        let staged = dir.join("staged-fail-finalize.db");
+        backup_active(&state, &staged);
+        set_marker(&state, "live-after-backup");
+
+        let hook_calls = AtomicUsize::new(0);
+        let error = install_staged_workspace_db(
+            &state,
+            &dir,
+            &staged,
+            InstallStagedOptions::normal_restore_with_failpoint(
+                || {
+                    hook_calls.fetch_add(1, Ordering::SeqCst);
+                },
+                RestoreFailpoint::FailFinalizeMarker,
+            ),
+        )
+        .expect_err("finalize marker failpoint must report an error");
+        assert!(
+            error.to_string().contains("restore.fail_finalize_marker"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(marker(&state), "before-restore");
+        assert!(
+            state.inner.lock().expect("workspace state lock").is_some(),
+            "published restored authority must remain live"
+        );
+        assert!(
+            !state.switching.load(Ordering::SeqCst),
+            "switching guard must be released after failpoint"
+        );
+        let session = read_incomplete_restore_session(&dir)
+            .expect("read restore session marker")
+            .expect("restore session marker remains for recovery");
+        assert_eq!(session.phase, "epoch-minted");
 
         let _ = std::fs::remove_dir_all(dir);
     }

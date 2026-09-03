@@ -551,6 +551,19 @@
           "cwd": "src-tauri"
         },
         {
+          "label": "Migration recovery failpoint library tests",
+          "command": "cargo",
+          "args": [
+            "test",
+            "-p",
+            "grimodex-db",
+            "--features",
+            "test-failpoints",
+            "--lib"
+          ],
+          "cwd": "src-tauri"
+        },
+        {
           "label": "Safe Mode structured outcome",
           "command": "cargo",
           "args": [

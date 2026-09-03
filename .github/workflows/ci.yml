@@ -943,6 +943,10 @@ jobs:
           --features test-failpoints
           --test workspace_migration_supervisor
 
+      - name: Migration recovery failpoint library tests
+        working-directory: src-tauri
+        run: cargo test -p grimodex-db --features test-failpoints --lib
+
       - name: Safe Mode structured outcome + restore-by-id
         working-directory: src-tauri
         run: >-
