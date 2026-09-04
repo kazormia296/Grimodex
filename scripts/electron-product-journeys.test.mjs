@@ -5781,7 +5781,10 @@ test("late Electron close rejection is retained as a fatal diagnostic", async (t
   const lateApp = { process: () => child };
   const phase = "observability/late-close-reject";
   const artifactName = "observability-late-close-reject";
-  const laneTimeoutMs = 100;
+  // The harness performs journal fsync and receipt preflight before invoking
+  // Electron; allow that deterministic setup to complete under the loaded
+  // Electron contract worker while keeping the late-launch offset intact.
+  const laneTimeoutMs = 1_000;
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
