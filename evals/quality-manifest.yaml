@@ -125,6 +125,7 @@ requirements:
     title: Missing inputs, policies, confirmation, or tools stop before mutation.
     definedIn: policies/quality/iron-laws.md#GDX-PRECHECK-001
     implementedBy:
+      - AGENTS.md
       - .agents/skills/adversarial-review/SKILL.md
       - .agents/skills/rerun-sandbox-eperm/SKILL.md
       - src/features/chat/turn/resolveTurnRoute.ts
