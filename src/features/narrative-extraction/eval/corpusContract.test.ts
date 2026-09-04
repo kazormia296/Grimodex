@@ -113,6 +113,34 @@ describe("Chronicle Human Gold corpus", () => {
         expect(validated.ok, suite.id).toBe(true);
         if (!validated.ok) continue;
 
+        if (suite.id === "chronicle-motif-boundary-v1") {
+          for (const observation of validated.value.expected.observations
+            .required) {
+            if (observation.dimensions.eventDetection === false) {
+              expect(
+                validated.value.criticalViolationClasses.some(
+                  (violation) =>
+                    violation.match.semanticKey === observation.semanticKey &&
+                    violation.match.dimension === "eventDetection" &&
+                    violation.match.value === true,
+                ),
+                `${validated.value.id}: missing eventDetection=true violation class`,
+              ).toBe(true);
+            }
+            if (observation.dimensions.proposalGate === "suppress") {
+              expect(
+                validated.value.criticalViolationClasses.some(
+                  (violation) =>
+                    violation.match.semanticKey === observation.semanticKey &&
+                    violation.match.dimension === "proposalGate" &&
+                    violation.match.value === "propose",
+                ),
+                `${validated.value.id}: missing proposalGate=propose violation class`,
+              ).toBe(true);
+            }
+          }
+        }
+
         expect(allCaseIds.has(validated.value.id), validated.value.id).toBe(
           false,
         );

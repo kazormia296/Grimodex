@@ -268,6 +268,18 @@ cases:
           semanticKey: dario-sword-weapon-claim
           dimension: proposalGate
           value: propose
+      - id: sword-refutation-as-event
+        description: An explicit refutation of sword use must not be reported as a sword attack event.
+        match:
+          semanticKey: ceremonial-sword-attack-refutation
+          dimension: eventDetection
+          value: true
+      - id: sword-refutation-proposed
+        description: An explicit refutation of sword use must not become a Chronicle proposal.
+        match:
+          semanticKey: ceremonial-sword-attack-refutation
+          dimension: proposalGate
+          value: propose
 
   - schemaVersion: 1
     id: chronicle.micro.sword-atmosphere-019
