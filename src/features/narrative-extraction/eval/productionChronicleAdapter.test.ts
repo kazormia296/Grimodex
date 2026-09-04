@@ -426,6 +426,17 @@ describe("productionChronicleAdapter", () => {
     ).toBe(false);
   });
 
+  it("never certifies a diagnostic-only report", async () => {
+    const { evaluation } = await runPassingCase();
+
+    expect(
+      isCertificationEligible({
+        diagnosticOnly: true,
+        cases: [{ evaluation }],
+      }),
+    ).toBe(false);
+  });
+
   it("fails closed when the production observation response has the wrong shape", async () => {
     const prepared = await prepareProductionChronicleEvalCase(miniCase());
     const artifacts = await runProductionChroniclePipeline(prepared, {

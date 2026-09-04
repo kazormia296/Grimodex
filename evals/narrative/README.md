@@ -1,10 +1,10 @@
 # Narrative Extraction 評価データ
 
-このディレクトリは、Narrative Extraction の意味品質を測るための、バージョン付き評価データの正本です。最初の suite は Chronicle Vertical Slice の micro corpus です。
+このディレクトリは、Narrative Extraction の意味品質を測るための、バージョン付き評価データの正本です。Chronicle Vertical Slice では、14件の認証用 micro corpus と、5件の motif-boundary 診断用 corpus を管理します。
 
 ## Gold の扱い
 
-`cases/chronicle-micro-v1.yaml` の `expected` は、人間がレビューした Human Gold です。イベントタイトルなどの表層文字列を一致させるのではなく、次の意味軸を比較します。
+各 case file の `expected` は、人間がレビューした Human Gold です。イベントタイトルなどの表層文字列を一致させるのではなく、次の意味軸を比較します。
 
 - Event Detection
 - Actuality
@@ -23,9 +23,12 @@
 
 - `manifest.yaml`: suite、要件、件数、release gate の正本
 - `schemas/case-v1.schema.json`: 個々の case の JSON Schema
-- `cases/chronicle-micro-v1.yaml`: 14件の Chronicle micro case
+- `cases/chronicle-micro-v1.yaml`: 14件の Chronicle 認証用 micro case
+- `cases/chronicle-motif-boundary-v1.yaml`: 015/016 の matched minimal pair と 017-019 の adversarial variants からなる、motif 過剰解釈を測る5件の診断用ケース
 
 ケースは `schemaVersion: 1` を持ち、`scope`、固定 locale/timezone/time、corpus coverage、documents、Human Gold、critical violation class を自己完結して保持します。同じ case の実行は、他 case の状態や artifact を共有してはいけません。
+
+`corpusContract.test.ts` は manifest に登録された全 suite を列挙し、case count、JSON Schema、semantic validator、Evidence resolver、case ID の一意性を検証します。また、suite 全体に少なくとも1件の required observation が存在することを要求し、何も抽出しない null extractor が負例だけで有利になることを防ぎます。個々の静的描写 case は、required observation が空でも構いません。
 
 ## Evidence と Coverage
 
@@ -33,8 +36,36 @@ Evidence は `{ documentId, quote }` だけを Gold とし、モデル由来の�
 
 `coverage.mode: partial` では、`omittedDocumentIds` に未取得 document を明示します。部分 corpus の結果から「ほかにイベントは存在しない」と断定してはいけません。
 
-## 初期 corpus の狙い
+## 認証用 micro corpus
 
-micro corpus は、実際の出来事、計画、噂、阻止された試み、夢、仮定、回想、複数 Scene の重複言及、非イベント、紛らわしい引用、否定、帰属の反証、partial coverage、重要度の選別を含みます。
+`chronicle-micro-v1` は、実際の出来事、計画、噂、阻止された試み、夢、仮定、回想、複数 Scene の重複言及、非イベント、紛らわしい引用、否定、帰属の反証、partial coverage、重要度の選別を含みます。
 
-この14件は評価カーネルと最初の baseline を成立させるための最小セットです。作品単位の一般化や release 判定には、chapter/full-work/mutation case と独立 holdout を追加します。
+この14件は評価カーネルと最初の baseline を成立させるための最小セットです。既存の Chronicle 認証件数と release gate は、この suite のまま維持します。
+
+## Motif Boundary 診断 suite
+
+`chronicle-motif-boundary-v1` は、同じ「壁に掛かった儀礼剣」という目立つモチーフを使った5件の診断ケースです。`015` と `016` は matched minimal pair、`017`〜`019` は adversarial variants です。
+
+1. `015`（matched minimal pair）: 後の Scene で実際に使用される
+2. `016`（matched minimal pair）: 最後まで使用されず、未使用が明示される
+3. `017`（adversarial variant）: 凶器らしく見えるが、別の手段が確定する
+4. `018`（adversarial variant）: 登場人物だけが凶器だと推測し、本文が反証する
+5. `019`（adversarial variant）: 反復する幻想的描写があるが、剣の状態変化は明示的に否定される
+
+この suite が測るのは「伏線を発見できるか」ではありません。目立つ物体、反復描写、人物の推測、誤誘導から、Evidence に無い出来事や因果関係を Chronicle event として確定しないことを測ります。Foreshadow は NIR-0 `scene-event@1` の採点軸へ追加しません。
+
+manifest では `diagnosticOnly: true` とし、既存14件の認証結果を変更しません。Gold は現在の blocking-key や scorer の能力に合わせて弱めず、未達の意味品質を診断として保持します。
+
+### 現行 scorer v1 での強制範囲
+
+現行 scorer v1 は `expected.observations.forbidden` を直接採点しません。そのため、この suite は forbidden entry だけを合否根拠にせず、次の既存経路でも失敗が観測されるよう設計しています。
+
+- 抽出すべき出来事は `required` とし、欠落を false negative にする
+- Gold に対応しない捏造 observation は unmatched false positive にする
+- 否定、帰属、actuality、proposal gate の既知の誤昇格は `criticalViolationClasses` に置く
+
+`forbidden` は Human Gold として残しますが、Evaluation Contract v2 が content matcher と独立した forbidden scoring を導入するまでは、それだけで違反を検出できたとは扱いません。特に「正しい Evidence 引用を使って別の命題を捏造する」blind spot は、この fixture 追加だけでは閉じません。
+
+## 今後の corpus
+
+作品単位の一般化や release 判定には、chapter/full-work/mutation case と独立 holdout を追加します。章規模の推理 fixture、motif-rich fantasy、予言・伝承、意味感度 A/B は、評価契約と実行能力を明示した上で段階的に追加します。
