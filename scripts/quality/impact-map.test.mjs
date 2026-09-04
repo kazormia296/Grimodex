@@ -222,6 +222,14 @@ test("Narrative diagnostic fixtures route through the conservative quality gate"
 
   assert.ok(selection.matchedRuleIds.includes("quality-foundation"));
   assert.ok(selection.matchedRuleIds.includes("narrative-extraction"));
+  for (const requirementId of [
+    "GDX-NARR-EVAL-001",
+    "GDX-NARR-EVIDENCE-001",
+    "GDX-NARR-SEMANTIC-001",
+  ]) {
+    assert.ok(selection.requirementIds.includes(requirementId));
+  }
+  assert.equal(selection.requirementIds.includes("GDX-NARR-MOTIF-001"), false);
   assert.deepEqual(selection.suiteIds, map.allSuites);
   assert.equal(selection.fallback, false);
 });

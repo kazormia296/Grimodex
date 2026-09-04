@@ -18,6 +18,7 @@ interface NarrativeEvalManifestSuite {
   readonly caseCount: number;
   readonly caseFile: string;
   readonly caseSchema: string;
+  readonly requirementIds: readonly string[];
   readonly certification?: {
     readonly diagnosticOnly?: boolean;
   };
@@ -51,10 +52,21 @@ describe("Chronicle Human Gold corpus", () => {
     expect(certificationSuite?.certification?.diagnosticOnly ?? false).toBe(
       false,
     );
+    expect(certificationSuite?.requirementIds).toEqual([
+      "GDX-NARR-EVAL-001",
+      "GDX-NARR-EVIDENCE-001",
+      "GDX-NARR-SEMANTIC-001",
+      "GDX-NARR-COVERAGE-001",
+    ]);
     const diagnosticSuite = manifest.suites.find(
       (suite) => suite.id === "chronicle-motif-boundary-v1",
     );
     expect(diagnosticSuite?.caseCount).toBe(5);
+    expect(diagnosticSuite?.requirementIds).toEqual([
+      "GDX-NARR-EVAL-001",
+      "GDX-NARR-EVIDENCE-001",
+      "GDX-NARR-SEMANTIC-001",
+    ]);
     expect(diagnosticSuite?.certification?.diagnosticOnly).toBe(true);
 
     const allCaseIds = new Set<string>();
