@@ -45,6 +45,9 @@ description: >
    ```
 
 3. Full receiptの`resolvedBaseSha`、`resolvedHeadSha`、`currentHeadSha`、clean状態を記録する。
+   `candidate.resolvedHeadSha` が current accepted HEAD と一致することを確認し、`acceptedHeadSha` は
+   既存の `candidate.resolvedHeadSha`、`acceptedTreeSha` は既存の `candidate.resolvedHeadTreeSha` から記録する。
+   これらを Full receipt に直接束縛する。
    `--from`によるpartial runと`--dry-run`は診断用であり、merge証跡にしない。partial runが
    成功しても、merge前には`--from`なしのFullを最初から実行する。
 4. command、toolchain、依存、host capabilityの不足、失敗、candidate不一致はgate failureとして
@@ -107,8 +110,13 @@ GitHub connector が利用できる場合は PR mutation と状態取得に優�
 2. 可能なら expected head SHA を指定できる GitHub mutation を使う。`gh` では `--match-head-commit <sha>` を使う。
 3. merge 成功後、PR が `merged` になったことと merge commit SHA を取得する。
 4. `git fetch origin master` を実行し、merge commit が `origin/master` に含まれることを確認する。
-5. remote branch を削除した場合も、local branch や worktree を破壊的に削除しない。
-6. `master` が別 worktree で checkout 済みなら無理に switch せず、`origin/master` で反映を検証する。
+   これは accepted tree の比較とは別条件である。
+5. Full receipt と current accepted HEAD から事前に記録した `acceptedTreeSha` と、取得した merge
+   commit の tree（remote merge tree）が一致することを確認する。`acceptedTreeSha` と
+   `git rev-parse <merge-sha>^{tree}` を比較する。不一致なら receipt を無効化し、cleanな
+   Full-from-stage-1 + verify を完了するまで成功扱いにしない。
+6. remote branch を削除した場合も、local branch や worktree を破壊的に削除しない。
+7. `master` が別 worktree で checkout 済みなら無理に switch せず、`origin/master` で反映を検証する。
 
 ## 停止条件
 

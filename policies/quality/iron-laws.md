@@ -59,6 +59,37 @@ omitted value and representation retained. Owner labels without evidence do not 
 Load required references and verify inputs, permissions, tool availability, freshness, and output
 shape before mutation. Missing prerequisites are classified as `[precheck]`; they are not guessed.
 
+Security-sensitive threat models remain `draft` until explicit user confirmation of trusted/untrusted
+actors, in-scope and out-of-scope attacks, mandatory defenses, and acceptance implications. Material
+changes require reconfirmation. Subagents and reviewers may propose a change, but may not silently
+freeze or change the threat model. Missing confirmation is a blocking precheck and must stop as
+`[precheck]` before mutation.
+
+Long or high-risk work uses one integrator, implementer(s), and candidate-untouched independent
+acceptance reviewer(s). Keep separate implementation and acceptance reviewers; these roles do not
+overlap, and acceptance reviewer(s) must not edit the candidate. A single candidate ledger records
+the requested base, head, tree, clean state, receipt directory, and user-confirmed threat-model
+version/ref. Large cross-boundary changes are split into reviewable lanes, while the critical
+candidate stays minimal. Focused gates must pass before the candidate freezes. After freeze, no edits
+are allowed: a finding reopens the candidate and invalidates its receipts.
+
+Before an expensive Full, use a focused preflight for risk-derived applicable late stages only.
+Runtime performance/fresh Xvfb, migration/recovery, and real product journeys are examples, not
+blanket requirements. Do not require or block on an inapplicable host capability. These checks are
+diagnostic only and never replace a clean Full-from-stage-1 + verify. An unexplained runtime failure remains
+an unattributed runtime blocker until causal evidence exists. Do not infer environment or product
+status from touched paths; correlate rAF and event-loop behavior, wake/discovery counts,
+memory-sampler duration, process CPU/I/O, and device/PSI, while preserving the exact failed receipt.
+Diagnostic/P3 debt stays separate from the critical candidate unless the user explicitly authorizes
+including it.
+
+For an external Claude review, fix its data categories, permission, model, effort, and Fast service
+tier in a start-of-work precheck before execution. Confirm data categories and permission before
+sending. The current default when the user requests that review is requested model `claude-fable-5-1`
+with effort `high`, unless the user overrides it. Record requested and effective model, effort, and
+Fast service tier; never silently substitute. This confirmation is scoped to the approved data and
+is not blanket permission to send all repositories or logs.
+
 ## GDX-AI-CONSENT-001 — Disclose AI data use and obtain route-scoped consent
 
 Before Web Editor Local LLM or BYOK sends any manuscript, prompt, selected context, conversation,
@@ -202,6 +233,17 @@ the requested and resolved base and head, current HEAD and tree, worktree state,
 Dirty Quick receipts additionally bind the tracked diff and untracked file-content fingerprint.
 Partial `--from` runs, dry runs, stale receipts, missing prerequisites, and release-only coverage are
 never converted into merge or release passes.
+
+Decisive acceptance evidence is either directly candidate-bound, or transitively bound through a
+verified parent receipt that is itself candidate-bound. When metrics or artifacts are quoted or adopted
+independently of that parent receipt, bind them directly to candidate identity, commit/tree/run, and
+artifact digest; without that direct binding, the standalone evidence is diagnostic-only. Missing direct
+binding is tracked hardening debt and does not by itself retroactively invalidate a complete parent
+receipt. For merge verification, record `acceptedTreeSha` from the Full receipt's existing
+`candidate.resolvedHeadTreeSha` after confirming it belongs to the current accepted HEAD. After merge,
+separately verify that the merge commit is included in `origin/master`, then compare that recorded
+accepted tree SHA directly with the remote merge tree; if they differ, invalidate the receipts and
+rerun a clean Full-from-stage-1 + verify.
 
 ## Evaluation evidence boundaries
 

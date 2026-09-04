@@ -54,6 +54,35 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
   skipped、deferred、古いreceipt、Windows以外で実行不能なrelease-only項目をpassedへ
   読み替えない。Windows NSISの最終compileは手動Full CI／tag releaseで別途検証する。
 
+## 高リスク作業の運用規律
+
+- セキュリティに関わる `security-sensitive threat model` は `draft` のまま保持する。信頼主体／未信頼主体
+  （trusted/untrusted actors）、対象内／対象外の攻撃（in-scope and out-of-scope attacks）、必須防御
+  （mandatory defenses）、受入れ条件への影響（acceptance implications）を確認し、explicit user confirmation
+  （ユーザーの明示確認）が得られるまで固定しない。material changes には reconfirmation（再確認）が必要である。
+  サブエージェントとレビュー担当は提案だけを行い、脅威モデルを無断で固定・変更しない。確認未了は blocking
+  precheck として `[precheck]` で停止する。
+- 長期または高リスクの作業は、実装担当と独立した受入れレビュー担当を分離する。`one integrator`（統合担当1名）、
+  `implementer(s)`（実装担当）、`candidate-untouched independent acceptance reviewer(s)`（候補を編集していない
+  独立受入れレビュー担当）を置き、役割を重複させない。受入れレビュー担当は候補を編集しない。候補台帳
+  （`single candidate ledger`）に `base`、`head`、`tree`、`clean state`、`receipt directory`、ユーザー確認済み
+  `threat-model version/ref` を記録し、`focused gates` を通過してから `freeze` する。大規模な横断変更は
+  `reviewable lanes` に分割し、`critical candidate` は必要最小限に保つ。`freeze` 後は編集せず、finding があれば
+  候補を再開して receipt を無効化する。
+- 高コストな Full の前には、リスク評価で適用対象となった late stage に限り focused preflight を実施する
+  （`risk-derived applicable late stages only`）。runtime performance／fresh Xvfb、migration/recovery、real product
+  journeys は例示（examples）であり、一律要件（blanket requirements）ではない。該当しない host capability は
+  要求せず、block条件にも使わない。各 preflight は診断専用（diagnostic only）で、clean Full-from-stage-1 + verify
+  を置き換えない。
+- 原因不明の runtime failure は、因果関係を示す causal evidence が得られるまで `unattributed runtime blocker`
+  として扱う。変更したパスだけから環境または製品の状態を推定しない。rAF、event-loop、wake/discovery counts、
+  memory-sampler duration、process CPU/I/O、device/PSI を相関させ、exact failed receipt を保存する。
+- `diagnostic/P3 debt` は、ユーザーの明示的な許可がない限り `critical candidate` から分離する。
+- 外部 Claude review では、送信前に data categories（データ分類）と permission（送信許可）を確認する。ユーザーが
+  override しない限り、`claude-fable-5-1` を effort `high` で使う。requested/effective model・effort・Fast を記録し、
+  silently substitute しない。外部 review の条件は実施する作業の開始時 precheck で固定し、確認は承認済みデータに限る。
+  すべてのリポジトリやログを送る包括許可にはしない。
+
 ## GitHub認証（Codex sandbox）
 
 - 通常のユーザー端末では `gh auth status` が成功していても、Codex の sandbox 内では
@@ -131,31 +160,3 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 | 「リリースノート」「広報文」「告知文」「README冒頭」「日英リリースノート」                                  | /write-grimodex-copy       | 正本確認→事実整理→日英整合→公開前確認  |
 | 「バージョン上げて」「リリースタグ」「リリース準備」                                                        | /bump-version              | version→文面→PR→tag→Draft確認          |
 | 「PR出して」「プルリク作って」「pushしてマージ」「shipして」                                                | /ship-branch               | push→PR→CI・レビュー→squash merge      |
-
-## Cursor Cloud specific instructions
-
-Cursor Cloud VM 固有の非自明な注意点だけを記す。コマンド一覧は上の「コマンド」節が正本。
-起動時の update script は `pnpm install --frozen-lockfile` と Electron バイナリ取得のみを行う。
-
-- **sudo は使用不可**（cloud harness がブロックする）。Electron 実行 / N-API ビルドに必要な
-  システムライブラリ（`libgtk-3-0t64` / `libnss3` / `libgbm1` / `libsecret-1-dev` / build-essential 等）は
-  ベースイメージに導入済みなので、通常は追加の apt インストールは不要。新しい system パッケージが
-  どうしても要る場合は、勝手に回避策を探さずユーザーへ依頼する。
-- **Rust の C++ リンク（重要・非自明）**: 新しめの stable Rust は x86_64-unknown-linux-gnu で
-  self-contained な `rust-lld` を既定リンカにするが、これは gcc 私有ディレクトリを検索しないため、
-  C++ を引く crate（tokenizers / ort / lindera＝`grimodex-node` や共有 Rust のテストバイナリ）が
-  `unable to find library -lstdc++` で失敗する。マシン全体の cargo 設定
-  `/usr/local/cargo/config.toml`（CARGO_HOME）に `-L /usr/lib/gcc/x86_64-linux-gnu/13` を追加して
-  回避済み。この 1 行が消えると `pnpm napi:build` と `cargo test/clippy --all-targets` が壊れる。
-- **N-API ネイティブモジュール**: `electron/native/grimodex-node/grimodex-node.node`（約260MB）は
-  snapshot に prebuild 済み。`src-tauri/crates/*` か N-API crate（`electron/native/grimodex-node`）を
-  変更したときだけ `pnpm napi:build` で再ビルドする（release ビルドで約3〜5分）。未ビルドでも
-  Electron は fail-soft 起動し、DB/AI 系 IPC が `IPC_BACKEND_UNAVAILABLE` を返すだけになる。
-- **Electron バイナリ**: `.npmrc` に `ignore-scripts=true` があるため `pnpm install` では
-  Electron 本体バイナリがダウンロードされない。`node node_modules/electron/install.js`（冪等）で取得する。
-  update script がこれを実行するので通常は手動不要。
-- **アプリの起動（GUI）**: `DISPLAY=:1` の Xvfb 上で動く。コンテナに Chromium サンドボックスが無いため
-  `ELECTRON_DISABLE_SANDBOX=1 pnpm electron:dev` で起動すること。起動ログに出る
-  `Failed to connect to the bus`（dbus）系エラーは system D-Bus 不在によるもので無害。
-  `pnpm electron:dev` は Vite(1430) + esbuild watch + Electron を一括起動する。初回は利用規約同意
-  ダイアログ→ランチャー→「新規プロジェクト...」の順で入る。
