@@ -27,6 +27,7 @@ import {
   narrativeEvalSuiteIdFromEnv,
   type LoadedNarrativeEvalSuite,
 } from "./narrativeEvalSuite";
+import { chronicleProductionStableReportRoot } from "./chronicleProductionReportPaths";
 import type { NarrativeEvalCaseV1 } from "./types";
 
 vi.mock("@/features/ai-policy/policyGuard", () => ({
@@ -318,15 +319,13 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
         "utf8",
       );
       // Archived Gate B2 evidence still uses the legacy stable path. Local
-      // qualification keeps its detailed source report in an ephemeral root.
-      const stableRoot = binding.localQualification
-        ? null
-        : path.join(
-            repoRoot,
-            ".artifacts",
-            "narrative-eval",
-            "chronicle-production-live",
-          );
+      // qualification and diagnostic suites keep their detailed source report
+      // in an ephemeral, run-specific root.
+      const stableRoot = chronicleProductionStableReportRoot({
+        repoRoot,
+        diagnosticOnly,
+        localQualification: binding.localQualification,
+      });
       if (stableRoot) {
         await mkdir(stableRoot, { recursive: true });
         await writeFile(

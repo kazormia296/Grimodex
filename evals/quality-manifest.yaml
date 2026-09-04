@@ -376,6 +376,7 @@ requirements:
       - src/features/narrative-extraction/eval/replay.ts
       - src/features/narrative-extraction/eval/liveRunner.ts
       - src/features/narrative-extraction/eval/narrativeEvalSuite.ts
+      - src/features/narrative-extraction/eval/chronicleProductionReportPaths.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.ts
       - src/features/narrative-extraction/eval/productionChronicleScoring.ts
       - src/features/narrative-extraction/eval/productionChronicleTypes.ts
@@ -385,6 +386,7 @@ requirements:
       - src/features/narrative-extraction/eval/replay.test.ts
       - src/features/narrative-extraction/eval/liveRunner.test.ts
       - src/features/narrative-extraction/eval/narrativeEvalSuite.test.ts
+      - src/features/narrative-extraction/eval/chronicleProductionReportPaths.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
     heavyTests:
