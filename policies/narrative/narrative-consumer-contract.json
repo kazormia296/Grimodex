@@ -45,7 +45,7 @@
       "status": "declared",
       "consumerKeyMeaning": "narrative_proposal_applications.id -- one applied Projection of one Proposal Revision.",
       "durableIdentitySource": "narrative_proposal_applications.id",
-      "notes": "This is the identity legacy narrative_projection_freshness is already keyed by (application_id PRIMARY KEY). C2-ZB's legacy Backfill Producer declares Edges under this kind using application_id; every such Edge must carry an existing same-project owning Run. Canonical Freshness readers remain unchanged until C2-ZC."
+      "notes": "This is the identity legacy narrative_projection_freshness is already keyed by (application_id PRIMARY KEY). C2-ZB's legacy Backfill Producer declares Edges under this kind using application_id; every such Edge must carry an existing same-project owning Run. After the C2-ZC marker, canonical Freshness reads use the Generic Consumer row only; this Legacy identity remains compatibility data for parity and diagnostics."
     },
     {
       "kind": "application-contribution",
@@ -66,7 +66,7 @@
       "status": "reserved",
       "consumerKeyMeaning": "narrative_semantic_index_metadata.index_key -- one index a project builds (for example a lexical index and an embedding index are two Consumers).",
       "durableIdentitySource": "narrative_semantic_index_metadata.index_key",
-      "notes": "The table's primary key is (project_id, index_key); only index_key belongs in the Consumer key, because narrative_consumer_freshness already carries project_id as its own column and a Consumer key must never repeat the project scope. An Index is not an authority -- semantic-core-authorities.json fixes it as rebuildable -- so its Freshness is a rebuild trigger, never a truth claim. No Producer declares Edges under this kind yet."
+      "notes": "The table's primary key is (project_id, index_key); only index_key belongs in the Consumer key, because narrative_consumer_freshness already carries project_id as its own column and a Consumer key must never repeat the project scope. semantic-core-authorities.json keeps semantic-index reserved with no Narrative dependency authority claim. While reserved, no semantic-index Generic Freshness/metadata rows are permitted; any non-zero footprint is manual-terminal evidence and never a Rebuild-Derived target. Only existing Scene/Codex/Event/Chat embedding chunk rows are rebuildable acceleration, and they cannot imply Narrative dependency authority. No Producer declares Edges under this kind yet."
     },
     {
       "kind": "narrative-ir-revision",
@@ -119,7 +119,7 @@
     "compatibilityMirrorRole": "compatibility-only",
     "secondaryFreshnessAuthorityPolicy": "forbid",
     "cutoverGate": "C2-Z",
-    "note": "Matches semantic-core-authorities.json's evidence-freshness row (canonicalAuthority: the C2 consumer freshness evaluator, compatibilityMirror: legacy projection freshness, writePolicy: canonical-only) and narrative-finding-contract.json's currentFreshnessLookup. narrative_projection_freshness is keyed by application_id alone and cannot express any other Consumer kind; per narrative-run-kind-policy.json's cutover block it still serves reads until C2-Z, which does not make it a second authority -- it is the mirror, and no third Freshness store may be created."
+    "note": "Matches semantic-core-authorities.json's evidence-freshness row (canonicalAuthority: the C2 consumer freshness evaluator, compatibilityMirror: legacy projection freshness, writePolicy: canonical-only) and narrative-finding-contract.json's currentFreshnessLookup. narrative_projection_freshness is keyed by application_id alone and cannot express any other Consumer kind; before the C2-Z marker it is the compatibility read path, while after the marker it is never consulted by canonical reads. It is the mirror, not a second authority, and no third Freshness store may be created."
   },
   "dependencySetDigest": {
     "column": "narrative_consumer_freshness.dependency_set_digest",

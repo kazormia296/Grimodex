@@ -26,6 +26,15 @@ import {
   type CanonicalWriteContext,
   type CanonicalWriteReceipt,
 } from "@/features/native-writes/writeContext";
+import {
+  runTimelapseBodyReplacement,
+  runTimelapseBodyWrite,
+  runTimelapseMutation,
+} from "@/features/timelapse/bodyWriteMode";
+import type {
+  TimelapseCoverageProof,
+  TimelapseDocumentRef,
+} from "@/features/timelapse/documentCoverage";
 
 export {
   listCodexMatchTargets,
@@ -244,48 +253,64 @@ export async function createCodexEntry(
   },
 ): Promise<CodexEntryWriteResult> {
   const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
-  const result = await invoke<NativeCodexWriteResult>("codex_create", {
-    payload: {
-      ...writeContext,
-      canonicalPayload: {
-        type: data.type,
+  const write = async (): Promise<CodexEntryWriteResult> => {
+    const result = await invoke<NativeCodexWriteResult>("codex_create", {
+      payload: {
+        ...writeContext,
+        canonicalPayload: {
+          type: data.type,
+          name: data.name,
+          parentId: data.parentId ?? null,
+        },
+        entryId: data.id,
+        projectId: data.projectId,
+        surface: "manual",
+        typeSlug: data.type,
         name: data.name,
+        summary: data.summary ?? null,
+        content: data.content ?? null,
+        aliases: data.aliases ?? null,
+        excludedAliases: data.excludedAliases ?? null,
+        readings: data.readings ?? null,
+        tagsCache: data.tagsCache ?? null,
         parentId: data.parentId ?? null,
+        contextMode: data.contextMode ?? null,
+        icon: data.icon ?? null,
+        childrenBudget: data.childrenBudget ?? null,
+        notes: data.notes ?? null,
+        sourceChatMessageId: data.sourceChatMessageId ?? null,
+        model: null,
+        chatMessageId: null,
+        traceId: null,
+        authorshipSpans: [],
       },
-      entryId: data.id,
+    });
+    const created = await getCodexEntry(data.projectId, result.entityId);
+    if (!created)
+      throw new Error(`Codex entry ${result.entityId} was not created`);
+    scheduleCodexIndex(created.id);
+    if (!opts?.suppressImeExport) scheduleImeExportRefresh(data.projectId);
+    return attachWriteReceipt(created, {
+      changeEventUid: result.changeEventUid,
+      maintenanceTransactionId: result.maintenanceTransactionId,
+      undoJournalId: result.undoJournalId,
+    });
+  };
+  if (data.content === undefined) {
+    return runTimelapseMutation(data.projectId, write);
+  }
+  return runTimelapseBodyReplacement(
+    {
       projectId: data.projectId,
-      surface: "manual",
-      typeSlug: data.type,
-      name: data.name,
-      summary: data.summary ?? null,
-      content: data.content ?? null,
-      aliases: data.aliases ?? null,
-      excludedAliases: data.excludedAliases ?? null,
-      readings: data.readings ?? null,
-      tagsCache: data.tagsCache ?? null,
-      parentId: data.parentId ?? null,
-      contextMode: data.contextMode ?? null,
-      icon: data.icon ?? null,
-      childrenBudget: data.childrenBudget ?? null,
-      notes: data.notes ?? null,
-      sourceChatMessageId: data.sourceChatMessageId ?? null,
-      model: null,
-      chatMessageId: null,
-      traceId: null,
-      authorshipSpans: [],
+      documentIdentity: {
+        projectId: data.projectId,
+        domain: "codex",
+        entityType: "codex_entry",
+        entityId: data.id,
+      },
     },
-  });
-  const created = await getCodexEntry(data.projectId, result.entityId);
-  if (!created)
-    throw new Error(`Codex entry ${result.entityId} was not created`);
-  // 段階3: 新規エントリを semantic index へ (debounce + Rust 側 hash 再検証で冪等)。
-  scheduleCodexIndex(created.id);
-  if (!opts?.suppressImeExport) scheduleImeExportRefresh(data.projectId);
-  return attachWriteReceipt(created, {
-    changeEventUid: result.changeEventUid,
-    maintenanceTransactionId: result.maintenanceTransactionId,
-    undoJournalId: result.undoJournalId,
-  });
+    { commit: write, project: async (created) => created },
+  );
 }
 
 type CodexEntryUpdateData = Partial<
@@ -328,6 +353,10 @@ interface CodexEntryUpdateOptions {
   baseVersion?: number;
   suppressImeExport?: boolean;
   writeContext?: CanonicalWriteContext;
+  /** Opaque proof source issued by the loaded TipTap document. */
+  timelapseDocument?: TimelapseDocumentRef;
+  /** Draft was admitted before a lifecycle lease began draining autosaves. */
+  preexistingDraft?: boolean;
   /**
    * 読み登録の read-modify-write で照合した取得時表記。指定された場合、version
    * を増やさない legacy writer による改名・alias・除外・読み変更も比較検出する。
@@ -338,12 +367,17 @@ interface CodexEntryUpdateOptions {
   >;
 }
 
-export async function updateCodexEntry(
+interface CodexUpdateCommit {
+  result: NativeCodexWriteResult;
+}
+
+async function commitCodexEntryUpdate(
   projectId: string,
   id: string,
   data: CodexEntryUpdateData,
-  opts?: CodexEntryUpdateOptions,
-): Promise<CodexEntryWriteResult | undefined> {
+  opts: CodexEntryUpdateOptions | undefined,
+  coverage: TimelapseCoverageProof | undefined,
+): Promise<CodexUpdateCommit | null> {
   if (
     Object.prototype.hasOwnProperty.call(data, "contextMode") &&
     data.contextMode !== "always" &&
@@ -354,7 +388,7 @@ export async function updateCodexEntry(
     await markImpactBaselinePhasesRestricted(id);
   }
   const current = await getCodexEntry(projectId, id);
-  if (!current) return undefined;
+  if (!current) return null;
   // Native writers always use OCC. Preserve the legacy surface comparison before
   // crossing the boundary so a stale read-modify-write cannot overwrite a rename.
   const baseSurface = opts?.baseSurface;
@@ -385,7 +419,10 @@ export async function updateCodexEntry(
           ? { summary: nativeNullable(data.summary) }
           : {}),
         ...(data.content !== undefined
-          ? { content: nativeNullable(data.content) }
+          ? {
+              content: nativeNullable(data.content),
+              ...(coverage ? { timelapseDocStepCoverage: coverage } : {}),
+            }
           : {}),
         ...(data.aliases !== undefined
           ? { aliases: nativeNullable(data.aliases) }
@@ -425,11 +462,22 @@ export async function updateCodexEntry(
     }
     throw error;
   }
+  return { result };
+}
+
+async function projectCodexEntryUpdate(
+  projectId: string,
+  id: string,
+  data: CodexEntryUpdateData,
+  opts: CodexEntryUpdateOptions | undefined,
+  committed: CodexUpdateCommit | null,
+): Promise<CodexEntryWriteResult | undefined> {
+  if (!committed) return undefined;
   const updated = await getCodexEntry(projectId, id);
   if (!updated) return undefined;
-  if (result?.relatedForeshadows?.length) {
+  if (committed.result.relatedForeshadows?.length) {
     publishAuthoritativeForeshadowRows(
-      result.relatedForeshadows.map(normalizeForeshadowRow),
+      committed.result.relatedForeshadows.map(normalizeForeshadowRow),
     );
   }
 
@@ -457,10 +505,52 @@ export async function updateCodexEntry(
     scheduleImeExportRefresh(projectId);
 
   return attachWriteReceipt(updated, {
-    changeEventUid: result.changeEventUid,
-    maintenanceTransactionId: result.maintenanceTransactionId,
-    undoJournalId: result.undoJournalId,
+    changeEventUid: committed.result.changeEventUid,
+    maintenanceTransactionId: committed.result.maintenanceTransactionId,
+    undoJournalId: committed.result.undoJournalId,
   });
+}
+
+export function updateCodexEntry(
+  projectId: string,
+  id: string,
+  data: CodexEntryUpdateData,
+  opts?: CodexEntryUpdateOptions,
+): Promise<CodexEntryWriteResult | undefined> {
+  const commit = (coverage: TimelapseCoverageProof | undefined) =>
+    commitCodexEntryUpdate(projectId, id, data, opts, coverage);
+  const project = (committed: CodexUpdateCommit | null) =>
+    projectCodexEntryUpdate(projectId, id, data, opts, committed);
+
+  if (data.content !== undefined) {
+    return runTimelapseBodyWrite(
+      {
+        projectId,
+        content: data.content ?? "",
+        documentIdentity: {
+          projectId,
+          domain: "codex",
+          entityType: "codex_entry",
+          entityId: id,
+        },
+        ...(opts?.timelapseDocument
+          ? { coverageReceipt: opts.timelapseDocument }
+          : {}),
+        ...(opts?.preexistingDraft ? { preexistingDraft: true } : {}),
+      },
+      {
+        commit,
+        didCommit: (committed) => committed !== null,
+        project,
+      },
+    );
+  }
+
+  return runTimelapseMutation(
+    projectId,
+    async () => project(await commit(undefined)),
+    opts?.preexistingDraft ? { preexistingDraft: true } : undefined,
+  );
 }
 
 export async function deleteCodexEntry(
@@ -471,31 +561,33 @@ export async function deleteCodexEntry(
   const deletionAuthority = tryAcquireChatAnchorDeletionLease();
   if (!deletionAuthority) throw new ChatAnchorDeletionBlockedError();
   try {
-    chatPersistenceDeletionGuard.assertDeletionAllowed();
-    const existing = await getCodexEntry(projectId, id);
-    const baseVersion = opts?.baseVersion ?? existing?.version;
-    if (baseVersion === undefined) return undefined;
-    const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
-    const result = await invoke<NativeCodexWriteResult>("codex_delete", {
-      payload: {
-        ...writeContext,
-        canonicalPayload: {
-          name: existing?.name ?? null,
-          type: existing?.type ?? null,
+    return await runTimelapseMutation(projectId, async () => {
+      chatPersistenceDeletionGuard.assertDeletionAllowed();
+      const existing = await getCodexEntry(projectId, id);
+      const baseVersion = opts?.baseVersion ?? existing?.version;
+      if (baseVersion === undefined) return undefined;
+      const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
+      const result = await invoke<NativeCodexWriteResult>("codex_delete", {
+        payload: {
+          ...writeContext,
+          canonicalPayload: {
+            name: existing?.name ?? null,
+            type: existing?.type ?? null,
+          },
+          projectId,
+          surface: "manual",
+          entryId: id,
+          baseVersion,
         },
-        projectId,
-        surface: "manual",
-        entryId: id,
-        baseVersion,
-      },
+      });
+      notifyCodexAnchorDeletedIfRegistered(id);
+      scheduleImeExportRefresh(projectId);
+      return {
+        changeEventUid: result.changeEventUid,
+        maintenanceTransactionId: result.maintenanceTransactionId,
+        undoJournalId: result.undoJournalId,
+      };
     });
-    notifyCodexAnchorDeletedIfRegistered(id);
-    scheduleImeExportRefresh(projectId);
-    return {
-      changeEventUid: result.changeEventUid,
-      maintenanceTransactionId: result.maintenanceTransactionId,
-      undoJournalId: result.undoJournalId,
-    };
   } finally {
     deletionAuthority.release();
   }

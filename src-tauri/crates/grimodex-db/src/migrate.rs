@@ -24,6 +24,8 @@ impl Database {
     /// checkpoint or silently acquire a second marker-writing authority.
     pub(crate) const C2_ZC_CUTOVER_MIGRATION_ID: &'static str =
         "narrative-c2-canonical-freshness-v1";
+    pub(crate) const C2_ZC_CUTOVER_MIGRATION_ID_PREFIX: &'static str =
+        "narrative-c2-canonical-freshness-";
     pub(crate) const C2_ZC_CUTOVER_CONTRACT_VERSION: i64 = 1;
 
     pub(crate) fn read_c2zc_cutover_marker(conn: &Connection) -> anyhow::Result<Option<i64>> {
@@ -45,6 +47,37 @@ impl Database {
         )
         .optional()
         .map_err(Into::into)
+    }
+
+    /// Read every marker in the C2-ZC cutover namespace without interpreting
+    /// its version. Import boundaries must reject current, future, and
+    /// foreign versions before native migration can repair or publish them.
+    pub(crate) fn read_c2zc_cutover_marker_rows(
+        conn: &Connection,
+    ) -> anyhow::Result<Vec<(String, i64)>> {
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                  WHERE type = 'table' AND name = 'schema_data_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(Vec::new());
+        }
+        let like_pattern = format!("{}%", Self::C2_ZC_CUTOVER_MIGRATION_ID_PREFIX);
+        let mut statement = conn.prepare(
+            "SELECT migration_id, contract_version
+               FROM schema_data_migrations
+              WHERE migration_id = ?1 OR migration_id LIKE ?2
+              ORDER BY migration_id ASC",
+        )?;
+        let rows = statement.query_map(
+            [Self::C2_ZC_CUTOVER_MIGRATION_ID, like_pattern.as_str()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub(crate) fn record_c2zc_cutover_marker(
@@ -1157,8 +1190,9 @@ impl Database {
             -- Title uses the language-neutral schema default 'Untitled Project' (a placeholder
             -- the user renames) so an English user landing on the bootstrap project does not see
             -- a hardcoded Japanese title. Language stays the documented 'ja' fallback.
-            INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
-              VALUES ('default-project', 'Untitled Project', 'ja', datetime('now'), datetime('now'));",
+            INSERT INTO projects (id, title, language, created_at, updated_at)
+              SELECT 'default-project', 'Untitled Project', 'ja', datetime('now'), datetime('now')
+               WHERE NOT EXISTS (SELECT 1 FROM projects);",
         )?;
 
         // Foreshadow register tables (added post-initial schema)
@@ -1745,6 +1779,8 @@ impl Database {
                 ON change_events(project_id, timestamp);
             CREATE INDEX IF NOT EXISTS idx_change_events_scene_ts
                 ON change_events(scene_id, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_change_events_project_domain_op_entity_seq
+                ON change_events(project_id, domain, op_type, entity_id, sequence);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_change_events_project_seq
                 ON change_events(project_id, sequence);
 
@@ -1763,7 +1799,9 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_state_snap_project_seq
                 ON state_snapshots(project_id, anchor_sequence);
             CREATE INDEX IF NOT EXISTS idx_state_snap_domain_seq
-                ON state_snapshots(project_id, domain, anchor_sequence);",
+                ON state_snapshots(project_id, domain, anchor_sequence);
+            CREATE INDEX IF NOT EXISTS idx_state_snap_project_domain_type_entity_seq
+                ON state_snapshots(project_id, domain, entity_id, entity_type, anchor_sequence);",
         )?;
         Self::add_column_if_missing(&conn, "change_events", "event_uid", "TEXT")?;
         // The unique index MUST be created here, AFTER add_column_if_missing.
@@ -1776,6 +1814,7 @@ impl Database {
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_change_events_project_uid
                 ON change_events(project_id, event_uid);",
         )?;
+        Self::repair_timelapse_query_indexes(&conn)?;
 
         // Complete AI-use audit ledger. Project/scene/message identifiers are
         // intentionally not foreign keys: mutable content deletion must not
@@ -2288,6 +2327,10 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent ON tree_nodes(parent_id);
              CREATE INDEX IF NOT EXISTS idx_tree_nodes_location ON tree_nodes(location_id);
              CREATE INDEX IF NOT EXISTS idx_tree_nodes_pov ON tree_nodes(pov_character_id);
+             CREATE INDEX IF NOT EXISTS idx_change_events_project_domain_op_entity_seq
+                 ON change_events(project_id, domain, op_type, entity_id, sequence);
+             CREATE INDEX IF NOT EXISTS idx_state_snap_project_domain_type_entity_seq
+                 ON state_snapshots(project_id, domain, entity_id, entity_type, anchor_sequence);
              CREATE INDEX IF NOT EXISTS idx_ai_usage_scene_node ON ai_usage(scene_node_id);
              CREATE INDEX IF NOT EXISTS idx_map_node_positions_ai_branch ON map_node_positions(ai_branch_id);
              CREATE INDEX IF NOT EXISTS idx_map_node_positions_snippet ON map_node_positions(snippet_id);
@@ -3633,6 +3676,7 @@ impl Database {
             ",
         )?;
         Self::repair_narrative_v2_monotonicity_trigger(&conn)?;
+        Self::repair_timelapse_creation_baseline_triggers(&conn)?;
 
         // Epoch markers used to advance the durable Project object head with
         // their synthetic reset state; the writer no longer does, and any
@@ -4030,6 +4074,1162 @@ impl Database {
                         target: "narrative.migrate",
                         %unwind,
                         "failed to unwind C2A trigger repair"
+                    );
+                }
+                return Err(error.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// SCHEMA 34 in-version repair: a body lifecycle becomes replayable only
+    /// after its canonical Change Event has a sequence. Narrative Change Feed
+    /// events are the first central write point that can see both that sequence
+    /// and the already-inserted trusted body, so these triggers append the
+    /// creation baseline inside the caller-owned transaction. Scene and
+    /// Snippet lifecycles remain tail-bound; the Codex trigger has one narrow
+    /// pre-Feed root-recovery exception, guarded by the complete protected
+    /// commit provenance and an exact immutable body snapshot.
+    fn repair_timelapse_creation_baseline_triggers(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch("SAVEPOINT timelapse_creation_baseline_trigger_repair")?;
+        let repair = conn.execute_batch(
+            r#"
+            DROP TRIGGER IF EXISTS timelapse_scene_creation_baseline;
+            CREATE TRIGGER timelapse_scene_creation_baseline
+                AFTER INSERT ON narrative_change_events
+                WHEN NEW.mutation_kind IN ('create', 'restore')
+                 AND json_extract(NEW.object_key_json, '$.kind') = 'scene'
+                 AND NOT EXISTS (
+                    SELECT 1
+                      FROM project_settings
+                     WHERE project_id = NEW.project_id
+                       AND key = 'timelapse.enabled'
+                       AND value = 'false'
+                 )
+                BEGIN
+                    SELECT CASE
+                        WHEN NOT EXISTS (
+                            SELECT 1
+                             FROM change_events canonical
+                             WHERE canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                               AND canonical.sequence BETWEEN 1 AND 9007199254740991
+                               AND canonical.sequence = (
+                                    SELECT MAX(sequence)
+                                      FROM change_events
+                                     WHERE project_id = NEW.project_id
+                               )
+                               AND canonical.timestamp BETWEEN 0 AND 9007199254740991
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR')
+                    END;
+                    SELECT CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                              JOIN tree_nodes node
+                                ON node.project_id = NEW.project_id
+                               AND node.id = json_extract(NEW.object_key_json, '$.sceneId')
+                               AND node.node_type = 'scene'
+                              JOIN change_events canonical
+                                ON canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'editor'
+                               AND snapshot.entity_id = node.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                               AND (
+                                    (snapshot.entity_type IS NOT NULL
+                                     AND snapshot.entity_type <> 'scene')
+                                    OR snapshot.anchor_timestamp IS NOT canonical.timestamp
+                                    OR snapshot.payload IS NOT node.content
+                                    OR snapshot.encoding IS NOT 'json'
+                               )
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_SNAPSHOT_MISMATCH')
+                    END;
+                    SELECT CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                              FROM narrative_change_events sibling
+                             WHERE sibling.project_id = NEW.project_id
+                               AND sibling.canonical_sequence = NEW.canonical_sequence
+                               AND sibling.mutation_kind IN ('create', 'restore')
+                               AND sibling.id <> NEW.id
+                               AND json_extract(sibling.object_key_json, '$.kind') = 'scene'
+                               AND json_extract(sibling.object_key_json, '$.sceneId') =
+                                   json_extract(NEW.object_key_json, '$.sceneId')
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_DUPLICATE_LIFECYCLE')
+                    END;
+                    INSERT INTO state_snapshots
+                        (project_id, domain, entity_type, entity_id,
+                         anchor_sequence, anchor_timestamp, payload, encoding, created_at)
+                    SELECT NEW.project_id, 'editor', 'scene', node.id,
+                           NEW.canonical_sequence, canonical.timestamp,
+                           node.content, 'json', canonical.timestamp
+                      FROM tree_nodes node
+                      JOIN change_events canonical
+                        ON canonical.project_id = NEW.project_id
+                       AND canonical.event_uid = NEW.canonical_change_event_uid
+                       AND canonical.sequence = NEW.canonical_sequence
+                     WHERE node.project_id = NEW.project_id
+                       AND node.id = json_extract(NEW.object_key_json, '$.sceneId')
+                       AND node.node_type = 'scene'
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'editor'
+                               AND snapshot.entity_id = node.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                       );
+                    SELECT CASE
+                        WHEN NOT EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                              JOIN tree_nodes node
+                                ON node.project_id = NEW.project_id
+                               AND node.id = json_extract(NEW.object_key_json, '$.sceneId')
+                               AND node.node_type = 'scene'
+                              JOIN change_events canonical
+                                ON canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'editor'
+                               AND (snapshot.entity_type = 'scene'
+                                    OR snapshot.entity_type IS NULL)
+                               AND snapshot.entity_id = node.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                               AND snapshot.anchor_timestamp = canonical.timestamp
+                               AND snapshot.payload = node.content
+                               AND snapshot.encoding = 'json'
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_BODY_MISSING')
+                    END;
+                END;
+
+            DROP TRIGGER IF EXISTS timelapse_codex_creation_baseline;
+            CREATE TRIGGER timelapse_codex_creation_baseline
+                AFTER INSERT ON narrative_change_events
+                WHEN NEW.mutation_kind IN ('create', 'restore')
+                 AND json_extract(NEW.object_key_json, '$.kind') = 'codex-entry'
+                 AND NOT EXISTS (
+                    SELECT 1
+                      FROM project_settings
+                     WHERE project_id = NEW.project_id
+                       AND key = 'timelapse.enabled'
+                       AND value = 'false'
+                 )
+                BEGIN
+                    SELECT CASE
+                        WHEN NOT EXISTS (
+                            SELECT 1
+                             FROM change_events canonical
+                             WHERE canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                               AND canonical.sequence BETWEEN 1 AND 9007199254740991
+                               AND canonical.timestamp BETWEEN 0 AND 9007199254740991
+                               AND (
+                                    canonical.sequence = (
+                                        SELECT MAX(sequence)
+                                          FROM change_events
+                                         WHERE project_id = NEW.project_id
+                                    )
+                                    OR (
+                                        NEW.mutation_kind = 'create'
+                                        AND EXISTS (
+                                        SELECT 1
+                                          FROM narrative_change_transactions tx
+                                          JOIN narrative_apply_commits apply_commit
+                                            ON apply_commit.project_id = tx.project_id
+                                           AND apply_commit.id = tx.commit_id
+                                          JOIN narrative_commit_journals commit_journal
+                                            ON commit_journal.project_id = tx.project_id
+                                           AND commit_journal.id = tx.journal_id
+                                           AND commit_journal.commit_id = apply_commit.id
+                                          JOIN change_events apply_event
+                                            ON apply_event.project_id = tx.project_id
+                                           AND apply_event.event_uid = tx.source_change_event_uid
+                                           AND apply_event.sequence = tx.source_change_event_sequence
+                                          JOIN codex_entries entry
+                                            ON entry.project_id = tx.project_id
+                                           AND entry.id = json_extract(
+                                                NEW.object_key_json, '$.entryId'
+                                           )
+                                          JOIN json_each(
+                                               CASE
+                                                   WHEN json_valid(commit_journal.after_json)
+                                                   THEN commit_journal.after_json
+                                                   ELSE '{}'
+                                               END,
+                                               '$.entities'
+                                          ) journal_entity
+                                         WHERE tx.project_id = NEW.project_id
+                                           AND tx.id = NEW.transaction_id
+                                           AND tx.source_domain = 'narrative.commit.apply'
+                                           AND tx.source_change_event_uid = NEW.canonical_change_event_uid
+                                           AND tx.source_change_event_sequence = NEW.canonical_sequence
+                                           AND tx.cause_kind = 'forward'
+                                           AND tx.origin = 'ai-apply'
+                                           AND tx.original_transaction_id IS NULL
+                                           AND tx.undo_journal_id IS NULL
+                                           AND tx.commit_id IS NOT NULL
+                                           AND tx.journal_id IS NOT NULL
+                                           AND tx.request_id = apply_commit.request_id
+                                           AND apply_commit.status = 'undone'
+                                           AND (
+                                                apply_commit.session_id IS NULL
+                                                OR apply_event.session_id = apply_commit.session_id
+                                           )
+                                           AND apply_event.domain = 'narrative'
+                                           AND apply_event.op_type = 'narrative.commit.apply'
+                                           AND apply_event.entity_type = 'narrative_apply_commit'
+                                           AND apply_event.entity_id = apply_commit.id
+                                           AND json_valid(apply_commit.receipt_json)
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.commitId'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.requestId'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.planDigest'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.status'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.changeEventUid'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.journalId'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.commitId'
+                                           ) = apply_commit.id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.requestId'
+                                           ) = apply_commit.request_id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.planDigest'
+                                           ) = apply_commit.plan_digest
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.journalId'
+                                           ) = commit_journal.id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.journalId'
+                                           ) = tx.journal_id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.status'
+                                           ) = 'undone'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.maintenanceTransactionId'
+                                           ) IS NULL
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.maintenanceOriginalTransactionId'
+                                           ) IS NULL
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.maintenanceEventIds'
+                                           ) IS NULL
+                                           AND EXISTS (
+                                                SELECT 1
+                                                  FROM change_events undo_event
+                                                 WHERE undo_event.project_id = apply_commit.project_id
+                                                   AND undo_event.event_uid = json_extract(
+                                                        CASE
+                                                            WHEN json_valid(apply_commit.receipt_json)
+                                                            THEN apply_commit.receipt_json
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.changeEventUid'
+                                                   )
+                                                   AND undo_event.domain = 'narrative'
+                                                   AND undo_event.op_type = 'narrative.commit.undo'
+                                                   AND undo_event.entity_type = 'narrative_apply_commit'
+                                                   AND undo_event.entity_id = apply_commit.id
+                                                   AND undo_event.sequence > apply_event.sequence
+                                                   AND json_valid(undo_event.payload)
+                                                   AND json_type(
+                                                        CASE
+                                                            WHEN json_valid(undo_event.payload)
+                                                            THEN undo_event.payload
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.commitId'
+                                                   ) = 'text'
+                                                   AND json_extract(
+                                                        CASE
+                                                            WHEN json_valid(undo_event.payload)
+                                                            THEN undo_event.payload
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.commitId'
+                                                   ) = apply_commit.id
+                                                   AND json_type(
+                                                        CASE
+                                                            WHEN json_valid(undo_event.payload)
+                                                            THEN undo_event.payload
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.applyRequestId'
+                                                   ) = 'text'
+                                                   AND json_extract(
+                                                        CASE
+                                                            WHEN json_valid(undo_event.payload)
+                                                            THEN undo_event.payload
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.applyRequestId'
+                                                   ) = apply_commit.request_id
+                                                   AND undo_event.sequence = (
+                                                        SELECT MAX(latest_undo.sequence)
+                                                          FROM change_events latest_undo
+                                                         WHERE latest_undo.project_id = apply_commit.project_id
+                                                           AND latest_undo.domain = 'narrative'
+                                                           AND latest_undo.op_type = 'narrative.commit.undo'
+                                                           AND latest_undo.entity_type = 'narrative_apply_commit'
+                                                           AND latest_undo.entity_id = apply_commit.id
+                                                   )
+                                           )
+                                           AND json_valid(apply_event.payload)
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.commitId'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.requestId'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.planDigest'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.commitId'
+                                           ) = apply_commit.id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.requestId'
+                                           ) = apply_commit.request_id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.planDigest'
+                                           ) = apply_commit.plan_digest
+                                           AND json_valid(tx.application_ids_json)
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(tx.application_ids_json)
+                                                    THEN tx.application_ids_json
+                                                    ELSE '[]'
+                                                END,
+                                                '$'
+                                           ) = 'array'
+                                           AND json_array_length(
+                                                CASE
+                                                    WHEN json_valid(tx.application_ids_json)
+                                                    THEN tx.application_ids_json
+                                                    ELSE '[]'
+                                                END
+                                           ) = (
+                                                SELECT COUNT(*)
+                                                  FROM narrative_proposal_applications application
+                                                 WHERE application.commit_id = apply_commit.id
+                                           )
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(tx.application_ids_json)
+                                                           THEN tx.application_ids_json
+                                                           ELSE '[]'
+                                                       END
+                                                  ) transaction_application
+                                                 WHERE transaction_application.type IS NOT 'text'
+                                                    OR NOT EXISTS (
+                                                        SELECT 1
+                                                          FROM narrative_proposal_applications application
+                                                         WHERE application.id = transaction_application.value
+                                                           AND application.commit_id = apply_commit.id
+                                                    )
+                                           )
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM narrative_proposal_applications application
+                                                 WHERE application.commit_id = apply_commit.id
+                                                   AND NOT EXISTS (
+                                                        SELECT 1
+                                                          FROM json_each(
+                                                               CASE
+                                                                   WHEN json_valid(tx.application_ids_json)
+                                                                   THEN tx.application_ids_json
+                                                                   ELSE '[]'
+                                                               END
+                                                          ) transaction_application
+                                                         WHERE transaction_application.value IS application.id
+                                                   )
+                                           )
+                                           AND EXISTS (
+                                                SELECT 1
+                                                  FROM narrative_proposal_applications target_application
+                                                 WHERE target_application.commit_id = apply_commit.id
+                                                   AND target_application.applied_entity_kind = 'codex_entry'
+                                                   AND target_application.applied_entity_id = entry.id
+                                           )
+                                           AND (
+                                                SELECT COUNT(*)
+                                                  FROM narrative_proposal_applications target_application
+                                                 WHERE target_application.commit_id = apply_commit.id
+                                                   AND target_application.applied_entity_kind = 'codex_entry'
+                                                   AND target_application.applied_entity_id = entry.id
+                                           ) = 1
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) journal_candidate
+                                                 WHERE json_extract(
+                                                        CASE
+                                                            WHEN json_valid(journal_candidate.value)
+                                                            THEN journal_candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                   ) = 'codex_entry'
+                                                   AND NOT EXISTS (
+                                                        SELECT 1
+                                                          FROM narrative_proposal_applications application
+                                                         WHERE application.commit_id = apply_commit.id
+                                                           AND application.applied_entity_kind = 'codex_entry'
+                                                           AND application.applied_entity_id = json_extract(
+                                                                CASE
+                                                                    WHEN json_valid(journal_candidate.value)
+                                                                    THEN journal_candidate.value
+                                                                    ELSE '{}'
+                                                                END,
+                                                                '$.entityId'
+                                                           )
+                                                           AND EXISTS (
+                                                                SELECT 1
+                                                                  FROM json_each(
+                                                                       CASE
+                                                                           WHEN json_valid(tx.application_ids_json)
+                                                                           THEN tx.application_ids_json
+                                                                           ELSE '[]'
+                                                                       END
+                                                                  ) transaction_application
+                                                                 WHERE transaction_application.value IS application.id
+                                                           )
+                                                   )
+                                           )
+                                           AND EXISTS (
+                                                SELECT 1
+                                                  FROM narrative_proposal_applications target_application
+                                                 WHERE target_application.commit_id = apply_commit.id
+                                                   AND target_application.applied_entity_kind = 'codex_entry'
+                                                   AND target_application.applied_entity_id = entry.id
+                                                   AND EXISTS (
+                                                        SELECT 1
+                                                          FROM json_each(
+                                                               CASE
+                                                                   WHEN json_valid(tx.application_ids_json)
+                                                                   THEN tx.application_ids_json
+                                                                   ELSE '[]'
+                                                               END
+                                                          ) transaction_application
+                                                         WHERE transaction_application.value IS target_application.id
+                                                   )
+                                           )
+                                           AND json_valid(commit_journal.after_json)
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(commit_journal.after_json)
+                                                    THEN commit_journal.after_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entities'
+                                           ) = 'array'
+                                           AND json_array_length(
+                                                CASE
+                                                    WHEN json_valid(commit_journal.after_json)
+                                                    THEN commit_journal.after_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entities'
+                                           ) > 0
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) candidate
+                                                 WHERE json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$'
+                                                    ) IS NOT 'object'
+                                                    OR json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                    ) IS NOT 'text'
+                                                    OR json_extract(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                    ) NOT IN (
+                                                        'event',
+                                                        'codex_entry',
+                                                        'codex_relation',
+                                                        'codex_detail_value',
+                                                        'codex_phase',
+                                                        'codex_semantic_binding',
+                                                        'temporal_node',
+                                                        'temporal_constraint',
+                                                        'temporal_scene_chronicle',
+                                                        'temporal_event_chronicle',
+                                                        'temporal_scene_story_order',
+                                                        'temporal_projection',
+                                                        'plot_thread',
+                                                        'plot_thread_marker',
+                                                        'plot_thread_branch',
+                                                        'foreshadow'
+                                                    )
+                                                    OR json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityId'
+                                                    ) IS NOT 'text'
+                                                    OR json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.version'
+                                                    ) IS NOT 'integer'
+                                                    OR json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.opKind'
+                                                    ) IS NOT 'text'
+                                           )
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) entity_a
+                                                  JOIN json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) entity_b
+                                                    ON entity_a.key < entity_b.key
+                                                 WHERE json_extract(
+                                                        CASE
+                                                            WHEN json_valid(entity_a.value)
+                                                            THEN entity_a.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                   ) IS json_extract(
+                                                        CASE
+                                                            WHEN json_valid(entity_b.value)
+                                                            THEN entity_b.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                   )
+                                                   AND json_extract(
+                                                        CASE
+                                                            WHEN json_valid(entity_a.value)
+                                                            THEN entity_a.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityId'
+                                                   ) IS json_extract(
+                                                        CASE
+                                                            WHEN json_valid(entity_b.value)
+                                                            THEN entity_b.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityId'
+                                                   )
+                                           )
+                                           AND (
+                                                SELECT COUNT(*)
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) candidate
+                                                 WHERE json_extract(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                   ) = 'codex_entry'
+                                                   AND json_extract(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityId'
+                                                   ) = entry.id
+                                           ) = 1
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entityKind'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entityKind'
+                                           ) = 'codex_entry'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entityId'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entityId'
+                                           ) = entry.id
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.opKind'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.opKind'
+                                           ) = 'create'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.version'
+                                           ) = 'integer'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.version'
+                                           ) = entry.version
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot'
+                                           ) = 'object'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.id'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.id'
+                                           ) = entry.id
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.projectId'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.projectId'
+                                           ) = entry.project_id
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.content'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.content'
+                                           ) = entry.content
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.version'
+                                           ) = 'integer'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.version'
+                                           ) = entry.version
+                                           AND NEW.change_kind = 'metadata'
+                                           AND NEW.before_version IS NULL
+                                           AND NEW.before_digest IS NULL
+                                           AND NEW.after_version = entry.version
+                                           AND NEW.changed_paths_json = '["/"]'
+                                           AND NEW.occurred_at = tx.created_at
+                                           AND (
+                                                SELECT COUNT(*)
+                                                  FROM state_snapshots snapshot
+                                                 WHERE snapshot.project_id = entry.project_id
+                                                   AND snapshot.domain = 'codex'
+                                                   AND snapshot.entity_id = entry.id
+                                                   AND snapshot.anchor_sequence = canonical.sequence
+                                           ) = 1
+                                           AND (
+                                                SELECT COUNT(*)
+                                                  FROM state_snapshots snapshot
+                                                 WHERE snapshot.project_id = entry.project_id
+                                                   AND snapshot.domain = 'codex'
+                                                   AND snapshot.entity_id = entry.id
+                                                   AND (snapshot.entity_type = 'codex_entry'
+                                                        OR snapshot.entity_type IS NULL)
+                                                   AND snapshot.anchor_sequence = canonical.sequence
+                                                   AND snapshot.anchor_timestamp = canonical.timestamp
+                                                   AND snapshot.payload = entry.content
+                                                   AND snapshot.encoding = 'json'
+                                           ) = 1
+                                    )
+                               )
+                        )
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR')
+                    END;
+                    SELECT CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                              JOIN codex_entries entry
+                                ON entry.project_id = NEW.project_id
+                               AND entry.id = json_extract(NEW.object_key_json, '$.entryId')
+                              JOIN change_events canonical
+                                ON canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'codex'
+                               AND snapshot.entity_id = entry.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                               AND (
+                                    (snapshot.entity_type IS NOT NULL
+                                     AND snapshot.entity_type <> 'codex_entry')
+                                    OR snapshot.anchor_timestamp IS NOT canonical.timestamp
+                                    OR snapshot.payload IS NOT entry.content
+                                    OR snapshot.encoding IS NOT 'json'
+                               )
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_SNAPSHOT_MISMATCH')
+                    END;
+                    SELECT CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                              FROM narrative_change_events sibling
+                             WHERE sibling.project_id = NEW.project_id
+                               AND sibling.canonical_sequence = NEW.canonical_sequence
+                               AND sibling.mutation_kind IN ('create', 'restore')
+                               AND sibling.id <> NEW.id
+                               AND json_extract(sibling.object_key_json, '$.kind') = 'codex-entry'
+                               AND json_extract(sibling.object_key_json, '$.entryId') =
+                                   json_extract(NEW.object_key_json, '$.entryId')
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_DUPLICATE_LIFECYCLE')
+                    END;
+                    INSERT INTO state_snapshots
+                        (project_id, domain, entity_type, entity_id,
+                         anchor_sequence, anchor_timestamp, payload, encoding, created_at)
+                    SELECT NEW.project_id, 'codex', 'codex_entry', entry.id,
+                           NEW.canonical_sequence, canonical.timestamp,
+                           entry.content, 'json', canonical.timestamp
+                      FROM codex_entries entry
+                      JOIN change_events canonical
+                        ON canonical.project_id = NEW.project_id
+                       AND canonical.event_uid = NEW.canonical_change_event_uid
+                       AND canonical.sequence = NEW.canonical_sequence
+                     WHERE entry.project_id = NEW.project_id
+                       AND entry.id = json_extract(NEW.object_key_json, '$.entryId')
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'codex'
+                               AND snapshot.entity_id = entry.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                       );
+                    SELECT CASE
+                        WHEN NOT EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                              JOIN codex_entries entry
+                                ON entry.project_id = NEW.project_id
+                               AND entry.id = json_extract(NEW.object_key_json, '$.entryId')
+                              JOIN change_events canonical
+                                ON canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'codex'
+                               AND (snapshot.entity_type = 'codex_entry'
+                                    OR snapshot.entity_type IS NULL)
+                               AND snapshot.entity_id = entry.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                               AND snapshot.anchor_timestamp = canonical.timestamp
+                               AND snapshot.payload = entry.content
+                               AND snapshot.encoding = 'json'
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_BODY_MISSING')
+                    END;
+                END;
+
+            DROP TRIGGER IF EXISTS timelapse_snippet_creation_baseline;
+            CREATE TRIGGER timelapse_snippet_creation_baseline
+                AFTER INSERT ON narrative_change_events
+                WHEN NEW.mutation_kind IN ('create', 'restore')
+                 AND json_extract(NEW.object_key_json, '$.kind') = 'component'
+                 AND substr(
+                        json_extract(NEW.object_key_json, '$.componentId'),
+                        1,
+                        length('snippet:')
+                     ) = 'snippet:'
+                 AND NOT EXISTS (
+                    SELECT 1
+                      FROM project_settings
+                     WHERE project_id = NEW.project_id
+                       AND key = 'timelapse.enabled'
+                       AND value = 'false'
+                 )
+                BEGIN
+                    SELECT CASE
+                        WHEN NOT EXISTS (
+                            SELECT 1
+                             FROM change_events canonical
+                             WHERE canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                               AND canonical.sequence BETWEEN 1 AND 9007199254740991
+                               AND canonical.sequence = (
+                                    SELECT MAX(sequence)
+                                      FROM change_events
+                                     WHERE project_id = NEW.project_id
+                               )
+                               AND canonical.timestamp BETWEEN 0 AND 9007199254740991
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR')
+                    END;
+                    SELECT CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                              JOIN snippets snippet
+                                ON snippet.project_id = NEW.project_id
+                               AND snippet.id = substr(
+                                    json_extract(NEW.object_key_json, '$.componentId'),
+                                    length('snippet:') + 1
+                               )
+                              JOIN change_events canonical
+                                ON canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'snippet'
+                               AND snapshot.entity_id = snippet.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                               AND (
+                                    (snapshot.entity_type IS NOT NULL
+                                     AND snapshot.entity_type <> 'snippet')
+                                    OR snapshot.anchor_timestamp IS NOT canonical.timestamp
+                                    OR snapshot.payload IS NOT snippet.content
+                                    OR snapshot.encoding IS NOT 'json'
+                               )
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_SNAPSHOT_MISMATCH')
+                    END;
+                    SELECT CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                              FROM narrative_change_events sibling
+                             WHERE sibling.project_id = NEW.project_id
+                               AND sibling.canonical_sequence = NEW.canonical_sequence
+                               AND sibling.mutation_kind IN ('create', 'restore')
+                               AND sibling.id <> NEW.id
+                               AND json_extract(sibling.object_key_json, '$.kind') = 'component'
+                               AND json_extract(sibling.object_key_json, '$.componentId') =
+                                   json_extract(NEW.object_key_json, '$.componentId')
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_DUPLICATE_LIFECYCLE')
+                    END;
+                    INSERT INTO state_snapshots
+                        (project_id, domain, entity_type, entity_id,
+                         anchor_sequence, anchor_timestamp, payload, encoding, created_at)
+                    SELECT NEW.project_id, 'snippet', 'snippet', snippet.id,
+                           NEW.canonical_sequence, canonical.timestamp,
+                           snippet.content, 'json', canonical.timestamp
+                      FROM snippets snippet
+                      JOIN change_events canonical
+                        ON canonical.project_id = NEW.project_id
+                       AND canonical.event_uid = NEW.canonical_change_event_uid
+                       AND canonical.sequence = NEW.canonical_sequence
+                     WHERE snippet.project_id = NEW.project_id
+                       AND snippet.id = substr(
+                            json_extract(NEW.object_key_json, '$.componentId'),
+                            length('snippet:') + 1
+                       )
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'snippet'
+                               AND snapshot.entity_id = snippet.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                       );
+                    SELECT CASE
+                        WHEN NOT EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                              JOIN snippets snippet
+                                ON snippet.project_id = NEW.project_id
+                               AND snippet.id = substr(
+                                    json_extract(NEW.object_key_json, '$.componentId'),
+                                    length('snippet:') + 1
+                               )
+                              JOIN change_events canonical
+                                ON canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'snippet'
+                               AND (snapshot.entity_type = 'snippet'
+                                    OR snapshot.entity_type IS NULL)
+                               AND snapshot.entity_id = snippet.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                               AND snapshot.anchor_timestamp = canonical.timestamp
+                               AND snapshot.payload = snippet.content
+                               AND snapshot.encoding = 'json'
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_BODY_MISSING')
+                    END;
+                END;
+            "#,
+        );
+        match repair {
+            Ok(()) => {
+                if let Err(error) =
+                    conn.execute_batch("RELEASE timelapse_creation_baseline_trigger_repair")
+                {
+                    if let Err(unwind) = conn.execute_batch(
+                        "ROLLBACK TO timelapse_creation_baseline_trigger_repair;
+                         RELEASE timelapse_creation_baseline_trigger_repair",
+                    ) {
+                        tracing::error!(
+                            target: "timelapse.migrate",
+                            %unwind,
+                            "failed to unwind timelapse trigger repair after release failure"
+                        );
+                    }
+                    return Err(error.into());
+                }
+            }
+            Err(error) => {
+                if let Err(unwind) = conn.execute_batch(
+                    "ROLLBACK TO timelapse_creation_baseline_trigger_repair;
+                     RELEASE timelapse_creation_baseline_trigger_repair",
+                ) {
+                    tracing::error!(
+                        target: "timelapse.migrate",
+                        %unwind,
+                        "failed to unwind timelapse trigger repair"
                     );
                 }
                 return Err(error.into());
@@ -8228,6 +9428,100 @@ impl Database {
         Ok(())
     }
 
+    /// Repair the timelapse eligibility indexes even when a prerelease build
+    /// created the right name with the wrong column order. `CREATE INDEX IF NOT
+    /// EXISTS` cannot repair that case, and leaving the checkpoint false would
+    /// otherwise make every current-schema open replay the migration forever.
+    fn repair_timelapse_query_indexes(conn: &Connection) -> anyhow::Result<()> {
+        const SAVEPOINT: &str = "timelapse_query_index_repair";
+        conn.execute_batch(&format!("SAVEPOINT {SAVEPOINT}"))?;
+        let repair = (|| -> anyhow::Result<()> {
+            for (table, name, columns) in [
+                (
+                    "change_events",
+                    "idx_change_events_project_domain_op_entity_seq",
+                    vec!["project_id", "domain", "op_type", "entity_id", "sequence"],
+                ),
+                (
+                    "state_snapshots",
+                    "idx_state_snap_project_domain_type_entity_seq",
+                    vec![
+                        "project_id",
+                        "domain",
+                        "entity_id",
+                        "entity_type",
+                        "anchor_sequence",
+                    ],
+                ),
+            ] {
+                let index_table = conn
+                    .query_row(
+                        "SELECT tbl_name FROM sqlite_master
+                          WHERE type = 'index' AND name = ?1",
+                        [name],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                anyhow::ensure!(
+                    index_table
+                        .as_deref()
+                        .is_none_or(|index_table| index_table == table),
+                    "TIMELAPSE_QUERY_INDEX_NAME_COLLISION: index '{name}' belongs to '{index_table:?}', expected '{table}'"
+                );
+                let properties = conn
+                    .query_row(
+                        &format!(
+                            "SELECT \"unique\", partial
+                               FROM pragma_index_list('{table}')
+                              WHERE name = ?1"
+                        ),
+                        [name],
+                        |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+                    )
+                    .optional()?;
+                let actual_columns = if properties.is_some() {
+                    conn.prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")?
+                        .query_map([name], |row| row.get::<_, String>(0))?
+                        .collect::<Result<Vec<_>, _>>()?
+                } else {
+                    Vec::new()
+                };
+                if properties != Some((false, false)) || actual_columns != columns {
+                    conn.execute(&format!("DROP INDEX IF EXISTS \"{name}\""), [])?;
+                }
+                conn.execute(
+                    &format!(
+                        "CREATE INDEX IF NOT EXISTS \"{name}\" ON \"{table}\"({})",
+                        columns.join(", ")
+                    ),
+                    [],
+                )?;
+            }
+            Ok(())
+        })();
+        match repair {
+            Ok(()) => match conn.execute_batch(&format!("RELEASE {SAVEPOINT}")) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    let _ = conn
+                        .execute_batch(&format!("ROLLBACK TO {SAVEPOINT}; RELEASE {SAVEPOINT}"));
+                    Err(error.into())
+                }
+            },
+            Err(error) => {
+                if let Err(unwind) =
+                    conn.execute_batch(&format!("ROLLBACK TO {SAVEPOINT}; RELEASE {SAVEPOINT}"))
+                {
+                    tracing::error!(
+                        %unwind,
+                        "failed to unwind timelapse query index repair"
+                    );
+                }
+                Err(error)
+            }
+        }
+    }
+
     /// Add a column to an existing table if it does not already exist.
     /// `column_def` is the SQL fragment after the column name, e.g. `"TEXT NOT NULL DEFAULT '[]'"`.
     /// Use for additive schema changes — SQLite ALTER TABLE only supports a narrow subset, so
@@ -8267,7 +9561,14 @@ impl Database {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use rusqlite::{params, Connection};
+    use rusqlite::{
+        hooks::{AuthAction, AuthContext, Authorization},
+        params, Connection,
+    };
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     use std::time::{Duration, Instant};
 
     fn temp_database_path(label: &str) -> std::path::PathBuf {
@@ -8275,6 +9576,67 @@ mod tests {
             std::env::temp_dir().join(format!("grimodex-migrate-{label}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create migration test directory");
         dir.join("grimodex.db")
+    }
+
+    #[test]
+    fn restore_preflight_preserves_a_custom_only_project_inventory() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM projects", [])?;
+            conn.execute(
+                "INSERT INTO projects (id, title, language)
+                 VALUES ('custom-project', 'Custom project', 'en')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed custom-only project");
+
+        db.migrate_for_restore_preflight()
+            .expect("restore preflight must preserve custom-only inventory");
+
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare("SELECT id FROM projects ORDER BY id ASC")?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(ids, vec!["custom-project"]);
+            Ok(())
+        })
+        .expect("read custom-only project inventory");
+    }
+
+    #[test]
+    fn restore_preflight_seeds_default_project_for_a_fresh_database() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+
+        db.migrate_for_restore_preflight()
+            .expect("fresh restore preflight must create the bootstrap project");
+
+        db.with_conn(|conn| {
+            let mut statement =
+                conn.prepare("SELECT id, title, language FROM projects ORDER BY id ASC")?;
+            let projects = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                projects,
+                vec![(
+                    "default-project".to_string(),
+                    "Untitled Project".to_string(),
+                    "ja".to_string(),
+                )]
+            );
+            Ok(())
+        })
+        .expect("read fresh bootstrap project");
     }
 
     fn seed_finding_identity_migration_fixture(db: &Database, ambiguous: bool) {
@@ -8548,6 +9910,127 @@ mod tests {
         drop(db);
         std::fs::remove_dir_all(path.parent().expect("test directory"))
             .expect("remove migration test directory");
+    }
+
+    #[test]
+    fn current_schema_migrate_repairs_wrong_shape_timelapse_indexes() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "DROP INDEX idx_change_events_project_domain_op_entity_seq;
+                 CREATE INDEX idx_change_events_project_domain_op_entity_seq
+                     ON change_events(project_id, domain, entity_id, op_type, sequence);
+                 DROP INDEX idx_state_snap_project_domain_type_entity_seq;
+                 CREATE INDEX idx_state_snap_project_domain_type_entity_seq
+                     ON state_snapshots(project_id, domain, entity_type, entity_id, anchor_sequence);",
+            )?;
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+                "wrong-shape indexes must invalidate the current checkpoint"
+            );
+            Ok(())
+        })
+        .expect("seed wrong-shape indexes");
+
+        let first_index_dropped = Arc::new(AtomicBool::new(false));
+        let first_index_dropped_for_hook = Arc::clone(&first_index_dropped);
+        db.with_conn(|conn| {
+            conn.authorizer(Some(move |context: AuthContext<'_>| match context.action {
+                AuthAction::DropIndex {
+                    index_name: "idx_change_events_project_domain_op_entity_seq",
+                    ..
+                } => {
+                    first_index_dropped_for_hook.store(true, Ordering::SeqCst);
+                    Authorization::Allow
+                }
+                AuthAction::CreateIndex { index_name, .. }
+                    if index_name == "idx_change_events_project_domain_op_entity_seq"
+                        && first_index_dropped_for_hook.load(Ordering::SeqCst) =>
+                {
+                    Authorization::Deny
+                }
+                _ => Authorization::Allow,
+            }))?;
+            Ok(())
+        })
+        .expect("install index-repair failure hook");
+        let error = db
+            .migrate()
+            .expect_err("a failed second index create must abort the repair savepoint");
+        assert!(first_index_dropped.load(Ordering::SeqCst));
+        assert!(error.to_string().contains("not authorized"));
+        db.with_conn(|conn| {
+            conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+            let change_columns = conn
+                .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")?
+                .query_map(["idx_change_events_project_domain_op_entity_seq"], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let snapshot_columns = conn
+                .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")?
+                .query_map(["idx_state_snap_project_domain_type_entity_seq"], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(
+                change_columns,
+                vec!["project_id", "domain", "entity_id", "op_type", "sequence"]
+            );
+            assert_eq!(
+                snapshot_columns,
+                vec![
+                    "project_id",
+                    "domain",
+                    "entity_type",
+                    "entity_id",
+                    "anchor_sequence"
+                ]
+            );
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+                "failed repair must leave the checkpoint unsatisfied"
+            );
+            Ok(())
+        })
+        .expect("inspect rolled-back index repair");
+
+        db.migrate().expect("repair wrong-shape indexes");
+        db.with_conn(|conn| {
+            for (name, expected) in [
+                (
+                    "idx_change_events_project_domain_op_entity_seq",
+                    vec!["project_id", "domain", "op_type", "entity_id", "sequence"],
+                ),
+                (
+                    "idx_state_snap_project_domain_type_entity_seq",
+                    vec![
+                        "project_id",
+                        "domain",
+                        "entity_id",
+                        "entity_type",
+                        "anchor_sequence",
+                    ],
+                ),
+            ] {
+                let columns = conn
+                    .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")?
+                    .query_map([name], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert_eq!(columns, expected, "repaired index {name}");
+            }
+            assert!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+                "repaired indexes must satisfy the current checkpoint"
+            );
+            Ok(())
+        })
+        .expect("inspect repaired indexes");
+
+        // A second open must remain converged after the repair rather than
+        // dropping/recreating the indexes on every current-schema open.
+        db.migrate().expect("reopen repaired schema");
     }
 
     #[test]

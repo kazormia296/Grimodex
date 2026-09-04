@@ -27,6 +27,7 @@ const {
   mockTreeState,
   mockLoadTabState,
   mockInitAutoSave,
+  mockRebaselineScenesAtTail,
 } = vi.hoisted(() => ({
   mockUpdateNode: vi.fn().mockResolvedValue(undefined),
   mockListAllNodes: vi.fn(),
@@ -68,6 +69,7 @@ const {
   },
   mockLoadTabState: vi.fn(),
   mockInitAutoSave: vi.fn(),
+  mockRebaselineScenesAtTail: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/features/tree/api", async (importOriginal) => {
@@ -137,6 +139,10 @@ vi.mock("@/features/editor/persistSceneBody", () => ({
   scheduleBodyMentionScan: mockScheduleBodyMentionScan,
 }));
 
+vi.mock("@/features/timelapse/rebaseline", () => ({
+  rebaselineScenesAtTail: mockRebaselineScenesAtTail,
+}));
+
 vi.mock("./api", () => ({
   readExternalFile: (...args: unknown[]) => mockReadExternalFile(...args),
   getExternalFileMtime: (...args: unknown[]) =>
@@ -202,11 +208,19 @@ import {
   _resetQuiescenceLeasesForTests,
   acquireQuiescenceLease,
 } from "@/application/lifecycle/quiescenceLease";
+import {
+  _resetTimelapseGenesisBarriersForTests,
+  awaitTimelapseGenesisBarrier,
+  beginTimelapseGenesisBarrier,
+} from "@/features/timelapse/genesisBarrier";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 beforeEach(() => {
   _resetMountAuthorityForTests();
   _resetQuiescenceLeasesForTests();
+  _resetTimelapseGenesisBarriersForTests();
   mockCurrentProject.id = "p1";
+  publishCurrentProjectId("p1");
   mockWorkspaceIdentity.current = null;
   useExternalWriteStore.getState().clear();
 });
@@ -398,13 +412,20 @@ describe("addExternalMount", () => {
     await addExternalMount("/mnt/novel", "Novel");
 
     expect(expectedCharCount).toBeGreaterThan(0);
-    expect(mockSaveSceneContent).toHaveBeenCalledWith(
-      expect.any(String),
+    const sceneCall = mockCreateNode.mock.calls.find(
+      ([params]) => params.nodeType === "scene",
+    );
+    expect(sceneCall?.[0]).toMatchObject({
+      content: pmJson,
+    });
+    expect(sceneCall?.[1]).toEqual(
       expect.objectContaining({
-        content: pmJson,
-        charCount: expectedCharCount,
+        timelapseDocumentIdentity: expect.objectContaining({
+          storage: "file",
+        }),
       }),
     );
+    expect(mockSaveSceneContent).not.toHaveBeenCalled();
   });
 
   it("persists non-zero charCount when reconciling an existing scene", async () => {
@@ -1549,6 +1570,106 @@ describe("initializeExternalMounts", () => {
     });
 
     expect(mockLoadTree).toHaveBeenCalledWith("p1", 27);
+  });
+
+  it("does not rewrite or rebaseline an unchanged normalized boot body", async () => {
+    const root = { id: "root-1", path: "/mnt", label: "M" };
+    const sourceUri = buildSourceUri(root.id, "same.md");
+    const persisted = JSON.stringify(markdownToPmJson("same\n"));
+    mockGetProjectSetting.mockResolvedValue(JSON.stringify([root]));
+    mockRegisterMount.mockResolvedValue({
+      dirs: [],
+      files: [
+        {
+          relPath: "same.md",
+          content: "same\n",
+          mtime: "2026-08-31T01:00:00.000Z",
+          contentHash: "raw-hash",
+        },
+      ],
+    });
+    mockListAllNodes.mockResolvedValue([
+      node({
+        id: "mount-folder",
+        nodeType: "folder",
+        sourceUri: buildMountFolderUri(root.id),
+      }),
+      node({ id: "scene-1", parentId: "mount-folder", sourceUri }),
+    ]);
+    mockLoadSceneContents.mockResolvedValue(new Map([["scene-1", persisted]]));
+
+    await initializeExternalMounts({
+      projectId: "p1",
+      workspaceOpenRevision: 1,
+    });
+
+    expect(mockSaveSceneContent).not.toHaveBeenCalled();
+    expect(mockRebaselineScenesAtTail).not.toHaveBeenCalled();
+    expect(mockUpdateNode).toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({
+        sourceMtime: "2026-08-31T01:00:00.000Z",
+      }),
+    );
+  });
+
+  it("orders an offline body change after genesis and rebaselines after both Native writes", async () => {
+    const root = { id: "root-1", path: "/mnt", label: "M" };
+    const sourceUri = buildSourceUri(root.id, "changed.md");
+    mockGetProjectSetting.mockResolvedValue(JSON.stringify([root]));
+    mockRegisterMount.mockResolvedValue({
+      dirs: [],
+      files: [
+        {
+          relPath: "changed.md",
+          content: "disk winner\n",
+          mtime: "2026-08-31T02:00:00.000Z",
+          contentHash: "raw-hash",
+        },
+      ],
+    });
+    mockListAllNodes.mockResolvedValue([
+      node({
+        id: "mount-folder",
+        nodeType: "folder",
+        sourceUri: buildMountFolderUri(root.id),
+      }),
+      node({ id: "scene-1", parentId: "mount-folder", sourceUri }),
+    ]);
+    mockLoadSceneContents.mockResolvedValue(
+      new Map([["scene-1", JSON.stringify(markdownToPmJson("stale db\n"))]]),
+    );
+    const genesis = beginTimelapseGenesisBarrier("p1");
+    mockSaveSceneContent.mockImplementationOnce(async () => {
+      await awaitTimelapseGenesisBarrier("p1");
+      return {
+        placedBeatPreview: null,
+        contentVersion: 8,
+        contentUpdatedAt: "2026-08-31T02:00:00.000Z",
+      };
+    });
+
+    const initialization = initializeExternalMounts({
+      projectId: "p1",
+      workspaceOpenRevision: 2,
+    });
+    await vi.waitFor(() => expect(mockSaveSceneContent).toHaveBeenCalledOnce());
+    expect(mockUpdateNode).not.toHaveBeenCalledWith(
+      "scene-1",
+      expect.anything(),
+    );
+    expect(mockRebaselineScenesAtTail).not.toHaveBeenCalled();
+
+    genesis.complete();
+    await initialization;
+
+    expect(mockSaveSceneContent.mock.invocationCallOrder[0]).toBeLessThan(
+      mockUpdateNode.mock.invocationCallOrder[0]!,
+    );
+    expect(mockUpdateNode.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRebaselineScenesAtTail.mock.invocationCallOrder[0]!,
+    );
+    expect(mockRebaselineScenesAtTail).toHaveBeenCalledWith("p1", ["scene-1"]);
   });
 
   it("archives external folders that disappeared from the latest directory scan", async () => {

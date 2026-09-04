@@ -40,10 +40,14 @@ describe("createNarrativeFreshnessScheduler", () => {
     vi.restoreAllMocks();
   });
 
-  function createScheduler(backend: unknown, warn = vi.fn()) {
+  function createScheduler(
+    backend: unknown,
+    warn = vi.fn(),
+    options: Record<string, unknown> = {},
+  ) {
     const scheduler = createNarrativeFreshnessScheduler(
       backend as Parameters<typeof createNarrativeFreshnessScheduler>[0],
-      { warn },
+      { warn, ...options },
     );
     schedulers.push(scheduler);
     return { scheduler, warn };
@@ -93,6 +97,25 @@ describe("createNarrativeFreshnessScheduler", () => {
     expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
   });
 
+  it("C2-ZCのexpected NOT_READYだけをactivation ownerへ通知する", async () => {
+    const runNarrativeFreshnessCycle = vi
+      .fn()
+      .mockResolvedValue(
+        JSON.stringify({ hasMore: false, cutoverNotReady: true }),
+      );
+    const onCutoverNotReady = vi.fn();
+    const scheduler = createNarrativeFreshnessScheduler(
+      { runNarrativeFreshnessCycle },
+      { warn: vi.fn(), onCutoverNotReady },
+    );
+    schedulers.push(scheduler);
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(onCutoverNotReady).toHaveBeenCalledOnce();
+  });
+
   it("in-flight cycleを重複実行しない", async () => {
     const first = deferred<string | null>();
     const runNarrativeFreshnessCycle = vi
@@ -111,6 +134,73 @@ describe("createNarrativeFreshnessScheduler", () => {
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
     expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it("cycle完了後かつin-flight解放後にだけmain observationを通知する", async () => {
+    const first = deferred<string | null>();
+    const runNarrativeFreshnessCycle = vi.fn().mockReturnValue(first.promise);
+    const onCycleCompleted = vi.fn();
+    const { scheduler } = createScheduler(
+      { runNarrativeFreshnessCycle },
+      vi.fn(),
+      { onCycleCompleted },
+    );
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(onCycleCompleted).not.toHaveBeenCalled();
+
+    first.resolve(summary(false));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onCycleCompleted).toHaveBeenCalledOnce();
+    const [observation] = onCycleCompleted.mock.calls[0] as [
+      { cycleStartedAtMs: number; observedAtMs: number },
+    ];
+    expect(observation.cycleStartedAtMs).toBeLessThanOrEqual(
+      observation.observedAtMs,
+    );
+    expect(onCycleCompleted).toHaveBeenCalledWith({
+      cycleGeneration: 1,
+      cycleStartedAtMs: expect.any(Number),
+      observedAtMs: expect.any(Number),
+      inFlight: false,
+      hasMore: false,
+      noWrite: false,
+      heldProjectId: null,
+      cutoverNotReady: false,
+      wakePending: false,
+      timerScheduled: true,
+      nextCycleGuardStateDigest: null,
+      quiescenceState: undefined,
+    });
+  });
+
+  it("captures cycle start before the native callback advances the clock", async () => {
+    const t1 = 10_000;
+    const t2 = 20_000;
+    vi.setSystemTime(t1 - INITIAL_DELAY_MS);
+    let nativeEnteredAtMs = 0;
+    const runNarrativeFreshnessCycle = vi.fn().mockImplementation(async () => {
+      vi.setSystemTime(t2);
+      nativeEnteredAtMs = Date.now();
+      return summary(false);
+    });
+    const onCycleCompleted = vi.fn();
+    const { scheduler } = createScheduler(
+      { runNarrativeFreshnessCycle },
+      vi.fn(),
+      { onCycleCompleted },
+    );
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    const [observation] = onCycleCompleted.mock.calls[0] as [
+      { cycleStartedAtMs: number },
+    ];
+    expect(observation.cycleStartedAtMs).toBe(t1);
+    expect(observation.cycleStartedAtMs).toBeLessThan(nativeEnteredAtMs);
   });
 
   it("cycle失敗をwarnして有界retryを継続する", async () => {

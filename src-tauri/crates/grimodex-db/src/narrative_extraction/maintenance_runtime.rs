@@ -37,11 +37,19 @@ use super::maintenance_skip_evidence::{
     CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
 };
 use super::restore_rebuild::{
-    is_canonical_graph_state_digest, validate_graph_state_digest, DependencyGraphVerifyReport,
-    RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
+    is_canonical_graph_state_digest, validate_canonical_verify_outcome_digest,
+    validate_graph_state_digest, validate_report_rebuild_required, validate_verify_check_coverage,
+    DependencyGraphVerifyReport, RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION,
+    VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
+
+/// Exact renderer-owned marker used to hide an in-progress Scan publication.
+/// C2-ZC inventory selectors reuse this predicate so maintenance and cutover
+/// cannot drift on which Projects are visible during staging.
+pub(crate) const SCAN_IMPORT_STATE_KEY: &str = "scan.import.state";
+pub(crate) const SCAN_IMPORT_STAGING_VALUE: &str = "staging";
 
 /// The only Run Kinds that an automatic maintenance planner may describe.
 /// Human-only destructive work is deliberately not representable here.
@@ -286,6 +294,10 @@ pub struct NarrativeMaintenanceCiConfig {
     pub fault: Option<NarrativeMaintenanceCiFault>,
     pub trigger: Option<NarrativeMaintenanceCiTrigger>,
     pub setup: Option<NarrativeMaintenanceCiSetup>,
+    /// Acceptance-only Freshness hold. The main/N-API seam may select one
+    /// existing project for a deterministic two-project cursor gate; normal
+    /// and production callers leave this unset.
+    pub freshness_hold_project_id: Option<String>,
     pub product_journey_barrier_id: Option<String>,
     pub correlation: Option<String>,
 }
@@ -300,6 +312,9 @@ impl NarrativeMaintenanceCiConfig {
             self.owner_token == NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN,
             "NEX_MAINTENANCE_CI_SEAM_OWNER_MISMATCH: product journey owner token is not canonical"
         );
+        if let Some(project_id) = self.freshness_hold_project_id.as_deref() {
+            validate_ci_identifier(project_id, "freshnessHoldProjectId")?;
+        }
         match (
             self.product_journey_barrier_id.as_deref(),
             self.correlation.as_deref(),
@@ -779,6 +794,16 @@ pub(crate) fn validate_phase_success_outcome(
                     )
                 },
             )?;
+            validate_canonical_verify_outcome_digest(outcome).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_OUTCOME_INVALID: Verify outcome digest is invalid: {error}"
+                )
+            })?;
+            validate_verify_check_coverage(outcome).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_OUTCOME_INVALID: Verify check coverage is invalid: {error}"
+                )
+            })?;
             let report_digest = object
                 .get("reportDigest")
                 .and_then(Value::as_str)
@@ -933,6 +958,25 @@ pub fn complete_foreground_system_work_run(
                     epoch_id.as_deref(),
                     &completed_outcome,
                 )?;
+                if run_kind == VERIFY_RUN_KIND {
+                    // A completed foreground Run is already terminal.  Its
+                    // duplicate release is an idempotent lifecycle replay,
+                    // including after a later Semantic Epoch rotation has
+                    // changed the live graph-state digest.  Keep the stored
+                    // repairability bit bound to current durable inputs, but
+                    // do not re-run the pre-completion graph CAS here.
+                    let report: DependencyGraphVerifyReport = serde_json::from_value(
+                        completed_outcome
+                            .get("report")
+                            .cloned()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: completed foreground Verify outcome has no report"
+                                )
+                            })?,
+                    )?;
+                    validate_report_rebuild_required(conn, &project_id, &report)?;
+                }
                 load_completed_maintenance_run_in_tx(conn, &barrier.run_id)?;
                 return Ok(());
             }
@@ -959,23 +1003,32 @@ pub fn complete_foreground_system_work_run(
                 epoch_id.as_deref(),
                 &outcome,
             )?;
-            let outcome_object = outcome.as_object_mut().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: foreground Run outcome is not an object"
-                )
-            })?;
-            outcome_object.insert(
-                "foregroundBarrierReleased".to_string(),
-                Value::Bool(true),
-            );
-            outcome_object.insert(
-                "productJourneyBarrierId".to_string(),
-                Value::String(barrier.marker.product_journey_barrier_id.clone()),
-            );
-            outcome_object.insert(
-                "correlation".to_string(),
-                Value::String(barrier.marker.correlation.clone()),
-            );
+            if run_kind == VERIFY_RUN_KIND {
+                validate_live_verify_outcome_rebuild_requirement(conn, &project_id, &outcome)?;
+            }
+            {
+                let outcome_object = outcome.as_object_mut().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: foreground Run outcome is not an object"
+                    )
+                })?;
+                outcome_object.insert(
+                    "foregroundBarrierReleased".to_string(),
+                    Value::Bool(true),
+                );
+                outcome_object.insert(
+                    "productJourneyBarrierId".to_string(),
+                    Value::String(barrier.marker.product_journey_barrier_id.clone()),
+                );
+                outcome_object.insert(
+                    "correlation".to_string(),
+                    Value::String(barrier.marker.correlation.clone()),
+                );
+            }
+            if run_kind == VERIFY_RUN_KIND {
+                let outcome_digest = super::restore_rebuild::canonical_verify_outcome_digest(&outcome)?;
+                outcome["outcomeDigest"] = Value::String(outcome_digest);
+            }
             super::repository::record_run_outcome_in_tx(conn, &barrier.run_id, &outcome)?;
             let finalized_at = release_foreground_maintenance_run_in_tx(conn, &handle)?;
             if run_kind == VERIFY_RUN_KIND {
@@ -1159,6 +1212,13 @@ impl MaintenanceCycleRequest {
             anyhow::ensure!(
                 !item.reasons.is_empty(),
                 "NEX_MAINTENANCE_INVALID_REQUEST: at least one reason is required"
+            );
+            anyhow::ensure!(
+                !item
+                    .reasons
+                    .iter()
+                    .any(|reason| reason == BEFORE_CUTOVER_FOLLOW_UP_REASON),
+                "NEX_MAINTENANCE_INVALID_REQUEST: C2-ZC follow-up reason is Rust-internal"
             );
             let epoch = item
                 .semantic_epoch_id
@@ -1674,6 +1734,58 @@ pub fn discover_durable_maintenance_work(
     discover_durable_maintenance_work_with_coordinates(db, project_id, reason, None)
 }
 
+/// Discover the first durable work item for a C2-ZC readiness wake.
+///
+/// `BeforeCutover` is a Verify-owned trigger: even when a previous clean
+/// Verify is reusable, the trigger must execute one current Verify before its
+/// Rebuild decision. Once that Verify/Rebuild/confirmation chain has already
+/// completed, a repeated freshness wake is a no-op. Keeping this distinction
+/// in the Rust state machine makes the wake restart-safe without asking main
+/// to infer phase state from a process-local flag.
+pub fn discover_before_cutover_maintenance_work_with_coordinates(
+    db: &Database,
+    project_id: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+) -> anyhow::Result<Option<DesiredWork>> {
+    let discovered = discover_durable_maintenance_work_with_coordinates(
+        db,
+        project_id,
+        "before-cutover",
+        coordinates,
+    )?;
+    if discovered.is_some() {
+        return Ok(discovered);
+    }
+
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            if is_scan_staging_project_in_tx(conn, project_id)? {
+                return Ok(None);
+            }
+            let Some(current_epoch_id) =
+                super::semantic_epoch::get_current_epoch(conn, project_id)?.map(|epoch| epoch.id)
+            else {
+                return Ok(None);
+            };
+            let runs = load_durable_maintenance_runs(conn, project_id)?;
+            let latest_completed_rebuild =
+                select_latest_relevant_run(&runs, Some(&current_epoch_id), false, |run| {
+                    run.run_kind == "semantic-index-rebuild" && run.status == "completed"
+                })?;
+            if latest_completed_rebuild.as_ref().is_some_and(|run| {
+                completed_rebuild_outcome_is_current(project_id, &current_epoch_id, run)
+            }) {
+                return Ok(None);
+            }
+            let trigger = MaintenanceTrigger::BeforeCutover {
+                project_id: project_id.to_string(),
+                semantic_epoch_id: current_epoch_id,
+            };
+            Ok(plan_maintenance_trigger(&trigger)?.into_iter().next())
+        })
+    })
+}
+
 /// Discover durable work using one effective coordinate set selected by the
 /// native caller. The coordinate set is computed once per live authority
 /// operation and is used only for Verify skip evidence; the durable ledger
@@ -1696,12 +1808,37 @@ pub fn discover_durable_maintenance_work_with_coordinates(
     })
 }
 
+pub(crate) fn is_scan_staging_project_in_tx(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+              FROM project_settings
+             WHERE project_id = ?1
+               AND key = ?2
+               AND value = ?3
+        )",
+        params![project_id, SCAN_IMPORT_STATE_KEY, SCAN_IMPORT_STAGING_VALUE],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
 pub(crate) fn discover_durable_maintenance_work_in_tx(
     conn: &Connection,
     project_id: &str,
     reason: &str,
     coordinates: Option<&MaintenanceContractCoordinates>,
 ) -> anyhow::Result<Option<DesiredWork>> {
+    if is_scan_staging_project_in_tx(conn, project_id)? {
+        // Scan staging Projects are intentionally hidden until the publish
+        // writer removes the exact marker. No wake, including BeforeCutover
+        // and workspace-opened, may mint maintenance authority for them.
+        return Ok(None);
+    }
+
     let (current_epoch_id, latest, active, completed_backfill, latest_completed_rebuild) = {
         let current_epoch_id =
             super::semantic_epoch::get_current_epoch(conn, project_id)?.map(|epoch| epoch.id);
@@ -1847,6 +1984,33 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
                         reason.to_string(),
                     )?));
                 }
+                if reason == BEFORE_CUTOVER_FOLLOW_UP_REASON
+                    && !latest_completed_rebuild.as_ref().is_some_and(|run| {
+                        completed_rebuild_outcome_is_current(project_id, &current_epoch_id, run)
+                    })
+                {
+                    // The first BeforeCutover wake is deliberately Verify-
+                    // owned. Once that Verify has completed, this internal
+                    // follow-up reason is the durable hand-off to the
+                    // conditional Rebuild; it is never accepted from a
+                    // renderer or an arbitrary N-API caller.
+                    return Ok(Some(DesiredWork::new_with_epoch(
+                        project_id.to_string(),
+                        AutomaticRunKind::RebuildDerived,
+                        REBUILD_DERIVED_WORK_KEY,
+                        Some(current_epoch_id),
+                        reason.to_string(),
+                    )?));
+                }
+                return Ok(None);
+            }
+            if report.is_incomplete_only() {
+                // Missing evidence is transient at this boundary. In
+                // particular, a new project's feed may exist before the
+                // Freshness cursor is published. Wait for that durable
+                // producer anchor so a later wake can rediscover and
+                // re-Verify; do not turn incomplete evidence into a manual
+                // graph-repair Finding.
                 return Ok(None);
             }
             // Non-clean and not rebuildable: duplicate Edges, cross-project
@@ -1924,6 +2088,25 @@ fn completed_rebuild_outcome_is_current(
     .is_ok()
 }
 
+const BEFORE_CUTOVER_FOLLOW_UP_REASON: &str = "before-cutover-follow-up";
+
+fn maintenance_rediscovery_reason(item: &DesiredWork) -> &str {
+    if item.run_kind == AutomaticRunKind::Verify
+        && item.reasons.iter().any(|reason| {
+            matches!(
+                reason.as_str(),
+                "before-cutover" | BEFORE_CUTOVER_FOLLOW_UP_REASON
+            )
+        })
+    {
+        return BEFORE_CUTOVER_FOLLOW_UP_REASON;
+    }
+    item.reasons
+        .first()
+        .map(String::as_str)
+        .unwrap_or("durable-wake")
+}
+
 fn validate_discovered_verify_outcome(
     conn: &Connection,
     project_id: &str,
@@ -1949,17 +2132,44 @@ fn validate_discovered_verify_outcome(
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("Verify outcome has no graph state digest"))?,
     )?;
-    anyhow::ensure!(
-        outcome.get("failure").is_none(),
-        "NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: completed Verify outcome carries failure detail"
-    );
-    serde_json::from_value(
+    let report: DependencyGraphVerifyReport = serde_json::from_value(
         outcome
             .get("report")
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Verify outcome has no report"))?,
     )
-    .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify report shape is invalid")
+    .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify report shape is invalid")?;
+    validate_report_rebuild_required(conn, project_id, &report).context(
+        "NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: rebuildRequired does not match live repairability",
+    )?;
+    anyhow::ensure!(
+        outcome.get("failure").is_none(),
+        "NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: completed Verify outcome carries failure detail"
+    );
+    validate_canonical_verify_outcome_digest(&outcome)
+        .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify outcome digest is invalid")?;
+    validate_verify_check_coverage(&outcome)
+        .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify check coverage is invalid")?;
+    Ok(report)
+}
+
+fn validate_live_verify_outcome_rebuild_requirement(
+    conn: &Connection,
+    project_id: &str,
+    outcome: &Value,
+) -> anyhow::Result<()> {
+    let graph_state_digest = outcome
+        .get("graphStateDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Verify outcome has no graph state digest"))?;
+    validate_graph_state_digest(conn, project_id, graph_state_digest)?;
+    let report: DependencyGraphVerifyReport = serde_json::from_value(
+        outcome
+            .get("report")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Verify outcome has no report"))?,
+    )?;
+    validate_report_rebuild_required(conn, project_id, &report)
 }
 
 /// Discover durable work with a CI-only trigger resolved by Native. This
@@ -2054,7 +2264,7 @@ fn foreground_owned_run_matches_work(
 fn is_backfill_wake(reason: &str) -> bool {
     matches!(
         reason,
-        "workspace-opened" | "legacy-backfill-required" | "durable-wake"
+        "workspace-opened" | "legacy-backfill-required" | "durable-wake" | "before-cutover"
     )
 }
 
@@ -2270,7 +2480,14 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
 
         // Verify-only completed-run skip is checked before recovery. Rebuild
         // completed rows are intentionally never reused.
-        if item.run_kind == AutomaticRunKind::Verify {
+        if item.run_kind == AutomaticRunKind::Verify
+            && !item.reasons.iter().any(|reason| {
+                matches!(
+                    reason.as_str(),
+                    "before-cutover" | BEFORE_CUTOVER_FOLLOW_UP_REASON
+                )
+            })
+        {
             let expected = verify_skip_expectation(
                 &item.project_id,
                 item.semantic_epoch_id.as_deref().unwrap_or_default(),
@@ -2281,10 +2498,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                 let next = discover_durable_maintenance_work_with_coordinates(
                     db,
                     &item.project_id,
-                    item.reasons
-                        .first()
-                        .map(String::as_str)
-                        .unwrap_or("durable-wake"),
+                    maintenance_rediscovery_reason(&item),
                     Some(&effective_coordinates),
                 )?;
                 match next {
@@ -2336,10 +2550,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                     if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                         db,
                         &item.project_id,
-                        item.reasons
-                            .first()
-                            .map(String::as_str)
-                            .unwrap_or("durable-wake"),
+                        maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
                     )? {
                         queue.push_back(next);
@@ -2474,10 +2685,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                     let next = discover_durable_maintenance_work_with_coordinates(
                         db,
                         &item.project_id,
-                        item.reasons
-                            .first()
-                            .map(String::as_str)
-                            .unwrap_or("durable-wake"),
+                        maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
                     )?;
                     match next {
@@ -2517,10 +2725,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                     if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                         db,
                         &item.project_id,
-                        item.reasons
-                            .first()
-                            .map(String::as_str)
-                            .unwrap_or("durable-wake"),
+                        maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
                     )? {
                         queue.push_back(next);
@@ -2564,10 +2769,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                 if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                     db,
                     &item.project_id,
-                    item.reasons
-                        .first()
-                        .map(String::as_str)
-                        .unwrap_or("durable-wake"),
+                    maintenance_rediscovery_reason(&item),
                     Some(&effective_coordinates),
                 )? {
                     queue.push_back(next);
@@ -3919,6 +4121,8 @@ fn retry_not_before(db: &Database, work: &WorkKey) -> anyhow::Result<RetryEviden
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::narrative_extraction::build_maintenance_inbox;
+    use crate::narrative_extraction::dependency_edges::consumer_dependency_set_digest;
     use crate::narrative_extraction::execution_state::{
         transition_run_status_in_tx, NarrativeRunStatus,
     };
@@ -3926,6 +4130,7 @@ mod tests {
     use crate::narrative_extraction::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
     use crate::narrative_extraction::restore_rebuild::DependencyGraphVerifyReport;
     use crate::narrative_extraction::run_dependency_verify_for_project;
+    use crate::narrative_extraction::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
     use crate::Database;
     use rusqlite::params;
     use serde_json::json;
@@ -4041,6 +4246,523 @@ mod tests {
             )?;
         }
         Ok(())
+    }
+
+    fn seed_graph_repair_verify_fixture(db: &Database) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, content)
+                 VALUES ('scene-live', 'project-1', 'scene', 'Scene',
+                         '{\"type\":\"doc\",\"content\":[]}')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            let backfill_spec =
+                json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
+            let backfill_outcome = json!({
+                "maintenancePhase": "backfill-complete",
+                "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+                "semanticEpochId": "epoch-1",
+                "summary": {
+                    "epoch_created": true,
+                    "contributions_created": 0,
+                    "edges_created": 0,
+                    "applications_without_run_id": 0
+                }
+            });
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json,
+                     spec_digest, status, coverage_json, outcome_summary_json,
+                     created_at, completed_at, run_kind, semantic_epoch_id,
+                     work_key)
+                 VALUES ('backfill-complete', 'project-1', 'maintenance', '{}',
+                         ?1, 'sha256:backfill', 'completed', '{}', ?2,
+                         '2026-01-01T00:00:00.000Z',
+                         '2026-01-01T00:00:00.000Z', 'backfill', 'epoch-1', ?3)",
+                params![
+                    backfill_spec.to_string(),
+                    backfill_outcome.to_string(),
+                    LEGACY_BACKFILL_WORK_KEY,
+                ],
+            )?;
+            // This is a durable row written around the Producer writer. The
+            // declared graph has current derived rows, so Verify can isolate
+            // the unsupported Consumer as a non-rebuildable graph defect.
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-repair', 'project-1', 'unsupported-consumer',
+                         'consumer-1', 'project:scene:scene-live', '[]',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_dependency_edge_states
+                    (edge_id, project_id, evidence_freshness, reason_code,
+                     build_action, evaluated_at_epoch_id, evaluated_at)
+                 VALUES ('edge-repair', 'project-1', 'unknown', NULL, 'manual',
+                         'epoch-1', '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            let dependency_set_digest = consumer_dependency_set_digest(
+                conn,
+                "project-1",
+                "unsupported-consumer",
+                "consumer-1",
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness,
+                     build_action, semantic_epoch_id, dependency_set_digest,
+                     updated_at)
+                 VALUES ('project-1', 'unsupported-consumer', 'consumer-1',
+                         'unknown', 'manual', 'epoch-1', ?1,
+                         '2026-01-01T00:00:00.000Z')",
+                params![dependency_set_digest],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed graph-repair Verify fixture");
+    }
+
+    fn seed_project_feed_event_without_cursor(db: &Database) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, content)
+                 VALUES ('scene-live', 'project-1', 'scene', 'Scene',
+                         '{\"type\":\"doc\",\"content\":[]}')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            let backfill_spec =
+                json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
+            let backfill_outcome = json!({
+                "maintenancePhase": "backfill-complete",
+                "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+                "semanticEpochId": "epoch-1",
+                "summary": {
+                    "epoch_created": true,
+                    "contributions_created": 0,
+                    "edges_created": 0,
+                    "applications_without_run_id": 0
+                }
+            });
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json,
+                     spec_digest, status, coverage_json, outcome_summary_json,
+                     created_at, completed_at, run_kind, semantic_epoch_id,
+                     work_key)
+                 VALUES ('backfill-complete', 'project-1', 'maintenance', '{}',
+                         ?1, 'sha256:backfill', 'completed', '{}', ?2,
+                         '2026-01-01T00:00:00.000Z',
+                         '2026-01-01T00:00:00.000Z', 'backfill', 'epoch-1', ?3)",
+                params![
+                    backfill_spec.to_string(),
+                    backfill_outcome.to_string(),
+                    LEGACY_BACKFILL_WORK_KEY,
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO change_events
+                    (event_uid, project_id, scene_id, domain, op_type,
+                     entity_type, entity_id, payload, session_id, sequence,
+                     timestamp, prev_hash, hash)
+                 VALUES ('feed-event-1', 'project-1', 'scene-live',
+                         'scene.update', 'scene.update', 'scene', 'scene-live',
+                         '{}', 'feed-test', 1, 1767225600000, 'prev', 'hash')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_transactions
+                    (id, project_id, request_id, source_domain,
+                     source_change_event_uid, source_change_event_sequence,
+                     cause_kind, origin, application_ids_json, payload_digest,
+                     created_at)
+                 VALUES ('feed-transaction-1', 'project-1', 'feed-request-1',
+                         'scene.update', 'feed-event-1', 1, 'forward', 'human',
+                         '[]', 'sha256:feed-payload',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_events
+                    (id, project_id, transaction_id, canonical_change_event_uid,
+                     canonical_sequence, event_ordinal, object_key_json,
+                     change_kind, mutation_kind, before_version, before_digest,
+                     after_version, after_digest, changed_paths_json,
+                     text_impact_json, structural_impact_json, occurred_at)
+                 VALUES ('feed-event-row-1', 'project-1', 'feed-transaction-1',
+                         'feed-event-1', 1, 0,
+                         '{\"kind\":\"scene\",\"sceneId\":\"scene-live\"}',
+                         'content', 'update', 1, 'sha256:before', 2,
+                         'sha256:after', '[\"/content\"]', NULL, NULL,
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed new-project feed event without cursor");
+    }
+
+    #[test]
+    fn graph_repair_finding_resolves_from_sealed_verify_outcome_after_defect_removed() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        seed_graph_repair_verify_fixture(&db);
+
+        let first = run_dependency_verify_for_project(&db, "project-1")
+            .expect("defective Verify should complete");
+        assert!(!first.report.is_clean());
+        assert!(!first.report.requires_rebuild());
+        assert_eq!(
+            first.report.edge_ids_with_unresolvable_consumer_scope,
+            vec!["edge-repair".to_string()]
+        );
+        let graph_repair_discovery =
+            discover_durable_maintenance_work(&db, "project-1", "durable-wake")
+                .expect("discover graph-repair finding");
+        assert!(
+            graph_repair_discovery.is_none(),
+            "graph defect should halt with a Finding, got {graph_repair_discovery:?}"
+        );
+
+        let finding_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1'
+                        AND id LIKE 'terminal-failure:v1:NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR:%'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count graph-repair finding");
+        assert_eq!(finding_count, 1);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_dependency_edges
+                  WHERE id = 'edge-repair' AND project_id = 'project-1'",
+                [],
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_consumer_freshness
+                  WHERE project_id = 'project-1'
+                    AND consumer_kind = 'unsupported-consumer'
+                    AND consumer_key = 'consumer-1'",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("remove graph defect");
+
+        let clean = run_dependency_verify_for_project(&db, "project-1")
+            .expect("clean confirmation Verify should resolve the finding");
+        assert!(clean.report.is_clean());
+
+        let inbox = db
+            .with_conn(|conn| {
+                build_maintenance_inbox(conn, "project-1", "2026-01-02T00:00:00.000Z")
+            })
+            .expect("build maintenance inbox");
+        assert!(
+            inbox.is_empty(),
+            "resolved graph finding must leave the inbox"
+        );
+        let lifecycle_state: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT lifecycle_state
+                       FROM narrative_maintenance_finding_lifecycle
+                      WHERE project_id = 'project-1'
+                      ORDER BY julianday(observed_at) DESC
+                      LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read graph finding lifecycle");
+        assert_eq!(lifecycle_state, "resolved");
+
+        let work = WorkKey::new_for_epoch(
+            "project-1",
+            AutomaticRunKind::Verify,
+            "dependency-verify:epoch-1",
+            "epoch-1",
+        )
+        .expect("Verify work key");
+        assert!(matches!(
+            retry_not_before(&db, &work).expect("read Verify retry evidence"),
+            RetryEvidence::NoFailedAttempt
+        ));
+    }
+
+    #[test]
+    fn corrupt_graph_repair_verify_anchor_stays_fail_closed_on_clean_confirmation() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        seed_graph_repair_verify_fixture(&db);
+        let first = run_dependency_verify_for_project(&db, "project-1")
+            .expect("defective Verify should complete");
+        discover_durable_maintenance_work(&db, "project-1", "durable-wake")
+            .expect("discover graph-repair finding");
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET outcome_summary_json = json_set(outcome_summary_json,
+                        '$.reportDigest', 'sha256:corrupted-report')
+                  WHERE id = ?1",
+                params![first.run_id],
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_dependency_edges
+                  WHERE id = 'edge-repair' AND project_id = 'project-1'",
+                [],
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_consumer_freshness
+                  WHERE project_id = 'project-1'
+                    AND consumer_kind = 'unsupported-consumer'
+                    AND consumer_key = 'consumer-1'",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("corrupt sealed Verify anchor and remove defect");
+
+        let error = run_dependency_verify_for_project(&db, "project-1")
+            .expect_err("corrupt sealed Verify anchor must block resolution");
+        assert!(
+            error.to_string().contains("Verify outcome")
+                || error.to_string().contains("NEX_FINDING"),
+            "unexpected fail-closed error: {error:#}"
+        );
+        let resolved_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_lifecycle
+                      WHERE project_id = 'project-1' AND lifecycle_state = 'resolved'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count resolved findings");
+        assert_eq!(resolved_count, 0);
+    }
+
+    #[test]
+    fn non_rebuildable_verify_issue_still_projects_manual_finding() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        seed_graph_repair_verify_fixture(&db);
+
+        let report = run_dependency_verify_for_project(&db, "project-1")
+            .expect("defective Verify should complete")
+            .report;
+        assert!(report.has_consistency_issues());
+        assert!(!report.is_incomplete_only());
+        assert!(!report.requires_rebuild());
+        discover_durable_maintenance_work(&db, "project-1", "durable-wake")
+            .expect("discover non-rebuildable Verify");
+
+        let finding_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1'
+                        AND id LIKE 'terminal-failure:v1:NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR:%'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count manual graph finding");
+        assert_eq!(finding_count, 1);
+    }
+
+    #[test]
+    fn new_project_feed_without_cursor_waits_for_freshness_before_manual_finding() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        seed_project_feed_event_without_cursor(&db);
+
+        let incomplete = run_dependency_verify_for_project(&db, "project-1")
+            .expect("incomplete Verify should complete with a report");
+        assert!(
+            !incomplete.report.is_consistent(),
+            "missing cursor must not claim a clean consistency result"
+        );
+        assert!(incomplete.report.is_incomplete_only());
+        assert!(!incomplete.report.is_complete());
+        assert!(incomplete
+            .report
+            .cursor_and_feed_head_consistency
+            .incomplete
+            .iter()
+            .any(|item| item == "incremental-cursor-missing-with-feed-events"));
+        discover_durable_maintenance_work(&db, "project-1", "durable-wake")
+            .expect("discover incomplete Verify");
+        let finding_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count incomplete Verify findings");
+        assert_eq!(finding_count, 0);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_change_cursors
+                    (project_id, consumer_id, acknowledged_through_sequence,
+                     updated_at)
+                 VALUES ('project-1', ?1, 0, '2026-01-02T00:00:00.000Z')",
+                params![INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("publish the Freshness cursor");
+
+        let rediscovered = discover_durable_maintenance_work(&db, "project-1", "freshness-wake")
+            .expect("rediscover after Freshness cursor appears")
+            .expect("cursor coordinate change must request Verify");
+        assert_eq!(rediscovered.run_kind, AutomaticRunKind::Verify);
+        let clean = run_dependency_verify_for_project(&db, "project-1")
+            .expect("cursor-complete Verify should finish cleanly");
+        assert!(clean.report.is_clean());
+        assert!(
+            discover_durable_maintenance_work(&db, "project-1", "cutover-wake")
+                .expect("discover post-cursor clean state")
+                .is_none()
+        );
+        let finding_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count post-cursor findings");
+        assert_eq!(finding_count, 0);
+    }
+
+    #[test]
+    fn pre_marker_visible_project_enters_backfill_on_before_cutover_without_reopen() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('pre-marker-project', 'Visible')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed visible pre-marker project");
+
+        let work = discover_durable_maintenance_work(&db, "pre-marker-project", "before-cutover")
+            .expect("discover BeforeCutover maintenance")
+            .expect("visible epoch-less project must enter Backfill without reopen");
+        assert_eq!(work.run_kind, AutomaticRunKind::Backfill);
+        assert_eq!(work.reasons, ["before-cutover"]);
+        assert_eq!(work.semantic_epoch_id, None);
+    }
+
+    #[test]
+    fn hidden_scan_staging_project_is_not_discovered_until_marker_is_removed() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('scan-staging-project', 'Hidden')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-staging-project', 'scan.import.state', 'staging')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed hidden Scan staging project");
+
+        crate::narrative_extraction::narrative_extraction_bootstrap_legacy_backfill(&db);
+        for reason in ["workspace-opened", "before-cutover"] {
+            assert_eq!(
+                discover_durable_maintenance_work(&db, "scan-staging-project", reason)
+                    .expect("discover hidden staging project"),
+                None,
+                "hidden staging project must not be eligible for {reason}"
+            );
+        }
+        db.with_conn(|conn| {
+            let counts: (i64, i64) = conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM narrative_semantic_epochs
+                      WHERE project_id = 'scan-staging-project'),
+                    (SELECT COUNT(*) FROM narrative_extraction_runs
+                      WHERE project_id = 'scan-staging-project')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(counts, (0, 0));
+            conn.execute(
+                "DELETE FROM project_settings
+                  WHERE project_id = 'scan-staging-project'
+                    AND key = 'scan.import.state'
+                    AND value = 'staging'",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("remove Scan staging marker");
+
+        let visible_work =
+            discover_durable_maintenance_work(&db, "scan-staging-project", "before-cutover")
+                .expect("discover visible project")
+                .expect("marker removal makes the project eligible");
+        assert_eq!(visible_work.run_kind, AutomaticRunKind::Backfill);
+        assert_eq!(visible_work.semantic_epoch_id, None);
     }
 
     fn recovery_shape(
@@ -4233,6 +4955,27 @@ mod tests {
     }
 
     #[test]
+    fn preflight_rejects_rust_internal_c2zc_follow_up_reason() {
+        let request = MaintenanceCycleRequest {
+            work: vec![MaintenanceWorkRequest {
+                project_id: "project".to_string(),
+                run_kind: AutomaticRunKind::Verify,
+                work_key: "verify:epoch-1".to_string(),
+                semantic_epoch_id: Some("epoch-1".to_string()),
+                reasons: vec![BEFORE_CUTOVER_FOLLOW_UP_REASON.to_string()],
+            }],
+            wake_project_ids: Vec::new(),
+            workspace_binding: None,
+        };
+        let error = request
+            .normalized_work()
+            .expect_err("internal follow-up must not be accepted on the wire");
+        assert!(error
+            .to_string()
+            .contains("C2-ZC follow-up reason is Rust-internal"));
+    }
+
+    #[test]
     fn product_journey_marker_has_exact_native_owned_shape() {
         let config = NarrativeMaintenanceCiConfig {
             is_packaged: false,
@@ -4241,6 +4984,7 @@ mod tests {
             fault: None,
             trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
             setup: None,
+            freshness_hold_project_id: None,
             product_journey_barrier_id: Some("barrier-1".to_string()),
             correlation: Some("correlation-1".to_string()),
         };
@@ -4323,6 +5067,7 @@ mod tests {
             fault: None,
             trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
             setup: None,
+            freshness_hold_project_id: None,
             product_journey_barrier_id: Some("barrier-expected".to_string()),
             correlation: Some("correlation-expected".to_string()),
         };
@@ -4606,6 +5351,7 @@ mod tests {
             fault: None,
             trigger: Some(trigger),
             setup: None,
+            freshness_hold_project_id: None,
             product_journey_barrier_id: None,
             correlation: None,
         }

@@ -1248,6 +1248,47 @@ describe("codexStore", () => {
       expect(findCodexUpdateEvent()).toBeFalsy();
     });
 
+    it("forwards a preexisting-draft permit to the Codex API", async () => {
+      useCodexStore.setState({ entries: [{ ...baseEntry, version: 7 }] });
+      mockUpdateCodexEntry.mockResolvedValue({
+        ...baseEntry,
+        content: pmDoc("new body"),
+        version: 8,
+      });
+
+      const options = { baseVersion: 7, preexistingDraft: true };
+      await useCodexStore
+        .getState()
+        .updateText("codex-1", { content: pmDoc("new body") }, options);
+
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
+        "default-project",
+        "codex-1",
+        { content: pmDoc("new body") },
+        { baseVersion: 7, preexistingDraft: true },
+      );
+    });
+
+    it("does not add a preexisting-draft permit to ordinary text saves", async () => {
+      useCodexStore.setState({ entries: [{ ...baseEntry, version: 7 }] });
+      mockUpdateCodexEntry.mockResolvedValue({
+        ...baseEntry,
+        notes: "new notes",
+        version: 8,
+      });
+
+      await useCodexStore
+        .getState()
+        .updateText("codex-1", { notes: "new notes" }, { baseVersion: 7 });
+
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
+        "default-project",
+        "codex-1",
+        { notes: "new notes" },
+        { baseVersion: 7 },
+      );
+    });
+
     it("records nothing when a body field is set but unchanged", async () => {
       useCodexStore.setState({ entries: [baseEntry] });
       mockUpdateCodexEntry.mockResolvedValue(baseEntry);

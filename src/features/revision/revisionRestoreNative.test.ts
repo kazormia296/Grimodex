@@ -1,13 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
+const recorderMocks = vi.hoisted(() => ({
+  flushStrict: vi.fn(() => Promise.resolve()),
+  acquireTimelapseReplacementFence: vi.fn(() => ({
+    commit: vi.fn(),
+    release: vi.fn(),
+  })),
+}));
 
 vi.mock("@/lib/tauri", () => ({ invoke: mocks.invoke }));
+vi.mock("@/features/timelapse/recorder", () => recorderMocks);
 
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { _resetTimelapseGenesisBarriersForTests } from "@/features/timelapse/genesisBarrier";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { restoreSceneRevisionNative } from "./revisionRestoreNative";
 
 describe("restoreSceneRevisionNative", () => {
   beforeEach(() => {
+    _resetTimelapseGenesisBarriersForTests();
+    publishCurrentProjectId("project-1");
+    setCurrentWorkspaceIdentity({
+      path: "/workspace/revision-restore-native.test.gdx",
+      openRevision: 1,
+    });
+
+    recorderMocks.flushStrict.mockClear();
+    recorderMocks.acquireTimelapseReplacementFence.mockClear();
     mocks.invoke.mockReset();
     mocks.invoke.mockResolvedValue({
       sceneId: "scene-1",

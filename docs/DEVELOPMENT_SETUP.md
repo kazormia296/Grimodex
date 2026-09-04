@@ -223,8 +223,10 @@ pnpm ci:local:list
 使えません。部分実行で修正を確認した後も、`--from`なしのFullを最初から実行してください。
 必須toolchain、依存、host capabilityが不足した場合はblockedであり、skipやpassへ読み替えません。
 
-実行結果はversion 2の`.artifacts/local-ci/<profile>.json`へ保存され、requested／resolved
+実行結果はversion 3の`.artifacts/local-ci/<profile>.json`へ保存され、requested／resolved
 base・head SHA、現在HEAD、tree、worktreeのclean状態と内容fingerprint、complete／partialを記録します。
+Full receiptには、canonical product-journey catalog digest、全journeyのpassed／clean結果、
+results／audit manifestと各build artifactのrealpath・SHA256がcandidateへ結び付いて記録されます。
 Fullはdirty worktreeを拒否し、実行中または実行後にcandidateが変わったreceiptはverifyで
 拒否されます。Linux/macOSでは再現できない
 Windows NSISの最終compileだけはrelease-onlyとして明示され、手動Full CIまたはtag releaseで

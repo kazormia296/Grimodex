@@ -11,8 +11,11 @@ import {
   linkScenesToEvent,
   setEventParticipants,
 } from "@/features/chronicle/api";
-import { createNode, listNodes, saveSceneContent } from "@/features/tree/api";
-import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
+import { createNode, listNodes } from "@/features/tree/api";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+} from "@/features/native-writes/writeContext";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import {
@@ -21,10 +24,7 @@ import {
   updateProject,
 } from "@/features/project/api";
 import { useProjectStore } from "@/features/project/projectStore";
-import {
-  deleteProjectSetting,
-  setProjectSetting,
-} from "@/features/settings/api";
+import { setProjectSetting } from "@/features/settings/api";
 import { seedProjectSettingsFromDefaults } from "@/features/settings/migration";
 import { fieldValueToProseMirror } from "../importApi";
 import type { ImportedNode } from "../importTypes";
@@ -37,10 +37,13 @@ import type {
   ScanRelationImportPlan,
 } from "./scanImportPlan";
 import { deriveScanImportId } from "./scanImportPlan";
-import { SCAN_IMPORT_STATE_KEY } from "./scanImportState";
-import { createScanStagingProject } from "./scanStagingProject";
+import {
+  createScanStagingProject,
+  publishScanStagingProject,
+} from "./scanStagingProject";
 import type {
   ScanImportApplyOperations,
+  ScanImportPublishReceipt,
   ScanImportStageResult,
 } from "./applyScanImportPlan";
 
@@ -57,31 +60,6 @@ function sceneContent(node: Extract<ImportedNode, { kind: "scene" }>): string {
   // warning-level fallback so an unsupported rich body cannot become raw HTML.
   if (node.bodyMarkdown) return fieldValueToProseMirror(node.bodyMarkdown);
   return "{}";
-}
-
-function sceneCharCount(content: string): number {
-  try {
-    const parsed = JSON.parse(content) as {
-      content?: Array<{ text?: string; content?: unknown[] }>;
-    };
-    const walk = (
-      nodes: Array<{ text?: string; content?: unknown[] }>,
-    ): number =>
-      nodes.reduce(
-        (total, node) =>
-          total +
-          (node.text?.length ?? 0) +
-          (Array.isArray(node.content)
-            ? walk(
-                node.content as Array<{ text?: string; content?: unknown[] }>,
-              )
-            : 0),
-        0,
-      );
-    return walk(parsed.content ?? []);
-  } catch {
-    return 0;
-  }
 }
 
 async function importNodes(
@@ -133,16 +111,10 @@ async function importNodes(
           nodeType: "scene",
           title: node.title || "Untitled",
           sortOrder,
+          content,
         },
         { writeContext: createCanonicalWriteContext("import") },
       );
-      if (content !== "{}") {
-        await saveSceneContent(node.id, {
-          content,
-          charCount: sceneCharCount(content),
-          writeContext: createCanonicalWriteContext("import"),
-        });
-      }
       imported++;
     }
   }
@@ -212,6 +184,7 @@ async function importCodex(
         name: entry.name,
         aliases: JSON.stringify(entry.aliases),
         summary: entry.summary,
+        content: fieldValueToProseMirror(entry.summary ?? ""),
       },
       {
         suppressImeExport: true,
@@ -220,19 +193,21 @@ async function importCodex(
     );
   }
   for (const entry of entries) {
-    await updateCodexEntry(
-      projectId,
-      entry.id,
-      {
-        ...(entry.parentId ? { parentId: entry.parentId } : {}),
-        content: fieldValueToProseMirror(entry.summary ?? ""),
-        notes: provenanceNote(entry),
-      },
-      {
-        suppressImeExport: true,
-        writeContext: createCanonicalWriteContext("import"),
-      },
-    );
+    const notes = provenanceNote(entry);
+    if (entry.parentId || notes) {
+      await updateCodexEntry(
+        projectId,
+        entry.id,
+        {
+          ...(entry.parentId ? { parentId: entry.parentId } : {}),
+          ...(notes ? { notes } : {}),
+        },
+        {
+          suppressImeExport: true,
+          writeContext: createCanonicalWriteContext("import"),
+        },
+      );
+    }
   }
   return result(entries.length);
 }
@@ -419,8 +394,15 @@ export function createScanImportOperations(): ScanImportApplyOperations {
         metadata.sourceFingerprint,
       );
     },
-    async publishStagingProject(projectId) {
-      await deleteProjectSetting(projectId, SCAN_IMPORT_STATE_KEY);
+    async publishStagingProject(projectId): Promise<ScanImportPublishReceipt> {
+      // One apply operation owns one canonical publish identity. The publish
+      // adapter retains this context while replaying an ambiguous transport
+      // outcome; each separately invoked operation gets a fresh identity.
+      const publishContext: CanonicalWriteContext =
+        createCanonicalWriteContext("import");
+      return publishScanStagingProject(projectId, publishContext);
+    },
+    async refreshPublishedProject(projectId, _receipt) {
       await useProjectStore.getState().refreshProjects();
       await useProjectStore.getState().loadProject(projectId);
       scheduleImeExportRefresh(projectId);

@@ -1,4 +1,5 @@
 import { invoke } from "@/lib/tauri";
+import { runTimelapseBodyReplacement } from "@/features/timelapse/bodyWriteMode";
 
 export interface RestoreSceneRevisionPayload {
   requestId: string;
@@ -31,7 +32,23 @@ export interface RestoreSceneRevisionResult {
 export async function restoreSceneRevisionNative(
   payload: RestoreSceneRevisionPayload,
 ): Promise<RestoreSceneRevisionResult> {
-  return invoke<RestoreSceneRevisionResult>("revision_scene_restore", {
-    payload,
-  });
+  return runTimelapseBodyReplacement(
+    {
+      projectId: payload.projectId,
+      documentIdentity: {
+        projectId: payload.projectId,
+        domain: "editor",
+        entityType: "scene",
+        entityId: payload.entityId,
+        storage: "database",
+      },
+    },
+    {
+      commit: () =>
+        invoke<RestoreSceneRevisionResult>("revision_scene_restore", {
+          payload,
+        }),
+      project: async (result) => result,
+    },
+  );
 }

@@ -15,6 +15,8 @@
       "electron",
       "electron-native",
       "rust",
+      "c2-zc-rust-acceptance-gate",
+      "c2-zc-restore-fixture-builder",
       "migration-recovery-gate",
       "electron-runtime-performance",
       "electron-product-journeys"
@@ -438,6 +440,83 @@
         }
       ]
     },
+    "c2-zc-rust-acceptance-gate": {
+      "label": "Candidate-bound C2-ZC Rust acceptance receipt",
+      "env": {
+        "GRIMODEX_C2ZC_RUST_RECEIPT_PATH": ".artifacts/local-ci/c2-zc-rust-acceptance.json",
+        "GRIMODEX_C2ZC_RUST_REQUESTED_BASE": "origin/master",
+        "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD": "HEAD"
+      },
+      "commands": [
+        {
+          "label": "Run exact C2-ZC Rust acceptance gates",
+          "command": "node",
+          "args": [
+            "scripts/c2zc-rust-acceptance-receipt.mjs",
+            "--output",
+            ".artifacts/local-ci/c2-zc-rust-acceptance.json"
+          ],
+          "cwd": "."
+        }
+      ]
+    },
+    "c2-zc-restore-fixture-builder": {
+      "label": "Candidate-bound C2-ZC offline restore fixture",
+      "commands": [
+        {
+          "label": "Build C2-ZC offline restore fixture",
+          "command": "cargo",
+          "args": [
+            "run",
+            "-p",
+            "grimodex-db",
+            "--manifest-path",
+            "src-tauri/Cargo.toml",
+            "--features",
+            "c2zc-fixture-builder",
+            "--bin",
+            "c2zc-restore-fixture",
+            "--",
+            "build",
+            "--repo-root",
+            ".",
+            "--output-dir",
+            "__C2ZC_RESTORE_FIXTURE_OUTPUT_DIR__",
+            "--candidate",
+            "HEAD",
+            "--expected-head",
+            "__C2ZC_RESTORE_FIXTURE_EXPECTED_HEAD__",
+            "--expected-tree",
+            "__C2ZC_RESTORE_FIXTURE_EXPECTED_TREE__"
+          ],
+          "cwd": "."
+        },
+        {
+          "label": "Verify C2-ZC offline restore fixture",
+          "command": "cargo",
+          "args": [
+            "run",
+            "-p",
+            "grimodex-db",
+            "--manifest-path",
+            "src-tauri/Cargo.toml",
+            "--features",
+            "c2zc-fixture-builder",
+            "--bin",
+            "c2zc-restore-fixture",
+            "--",
+            "verify",
+            "--manifest",
+            "__C2ZC_RESTORE_FIXTURE_MANIFEST__",
+            "--repo-root",
+            ".",
+            "--candidate",
+            "HEAD"
+          ],
+          "cwd": "."
+        }
+      ]
+    },
     "migration-recovery-gate": {
       "label": "Migration recovery checks",
       "env": {
@@ -468,6 +547,19 @@
             "test-failpoints",
             "--test",
             "workspace_migration_supervisor"
+          ],
+          "cwd": "src-tauri"
+        },
+        {
+          "label": "Migration recovery failpoint library tests",
+          "command": "cargo",
+          "args": [
+            "test",
+            "-p",
+            "grimodex-db",
+            "--features",
+            "test-failpoints",
+            "--lib"
           ],
           "cwd": "src-tauri"
         },
@@ -559,7 +651,13 @@
         "CI": "true",
         "CARGO_PROFILE_DEV_DEBUG": "0",
         "CARGO_PROFILE_TEST_DEBUG": "0",
-        "GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR": ".artifacts/product-journeys"
+        "GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR": ".artifacts/product-journeys",
+        "GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL": "true",
+        "GRIMODEX_PRODUCT_JOURNEY_IDS": "",
+        "GRIMODEX_PRODUCT_JOURNEY_SET": "",
+        "GRIMODEX_C2ZC_RUST_RECEIPT_PATH": ".artifacts/local-ci/c2-zc-rust-acceptance.json",
+        "GRIMODEX_C2ZC_RUST_REQUESTED_BASE": "origin/master",
+        "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD": "HEAD"
       },
       "commands": [
         {

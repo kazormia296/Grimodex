@@ -25,7 +25,10 @@ use sha2::{Digest, Sha256};
 use super::change_feed::{
     get_changes_since, NarrativeChangeEventRecord, CANONICAL_TEXT_NORMALIZER_VERSION,
 };
-use super::consumer_identity::{is_declared_consumer_kind, APPLICATION_CONSUMER_KIND};
+use super::commit::digest_plan;
+use super::consumer_identity::{
+    is_declared_consumer_kind, is_reserved_semantic_index_consumer_kind, APPLICATION_CONSUMER_KIND,
+};
 use super::cursor_reservation::{
     acknowledge_cursor_reservation_in_tx, release_cursor_reservation_in_tx,
     reserve_cursor_range_in_tx,
@@ -42,7 +45,8 @@ use super::evaluator::{
     evaluate_edge, unknown_edge_observation, EdgeComparisonInput, EdgeObservation,
 };
 use super::execution_state::{
-    supersede_run_in_tx, transition_run_status_in_tx, NarrativeRunStatus,
+    next_run_lifecycle_timestamp_in_tx, parse_run_lifecycle_instant, supersede_run_in_tx,
+    transition_run_status_in_tx, NarrativeRunStatus,
 };
 use super::models::ClaimTaskPayload;
 use super::publish_runtime::{
@@ -60,10 +64,12 @@ use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
 
 const CURSOR_CONSUMER_ID: &str = INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
 const TASK_KIND: &str = "incremental-freshness-batch";
+const IDLE_CHECKPOINT_KIND: &str = "current-epoch-idle-checkpoint";
+const IDLE_CHECKPOINT_VERSION: i64 = 1;
 const MAX_CANONICAL_SEQUENCES_PER_BATCH: i64 = 32;
 const TASK_LEASE_DURATION_SECS: i64 = 300;
 const FAILURE_POLICY_VERSION: &str = "v1";
-const MAX_ATTEMPTS_PER_BATCH: i64 = 3;
+pub(crate) const MAX_ATTEMPTS_PER_BATCH: i64 = 3;
 const LEASE_HEARTBEAT_EDGE_INTERVAL: usize = 64;
 pub const NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME: &str = "NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME";
 
@@ -113,9 +119,19 @@ pub struct IncrementalFreshnessShadowConsumerSummary {
     pub compatibility_primary_action: String,
 }
 
+/// A CI-only deterministic hold stops one selected project before any
+/// reservation is created. It is intentionally distinct from `Idle`: the
+/// scheduler must be able to prove that a real candidate was held and that
+/// the normal cutover attempt therefore returned NOT_READY.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct IncrementalFreshnessHeldSummary {
+    pub project_id: String,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IncrementalFreshnessCycleOutcome {
     Idle,
+    Held(IncrementalFreshnessHeldSummary),
     Processed(IncrementalFreshnessBatchSummary),
 }
 
@@ -153,6 +169,7 @@ struct ClaimedBatch {
     events: Vec<NarrativeChangeEventRecord>,
     preparation_error: Option<String>,
     has_more: bool,
+    idle_checkpoint: bool,
 }
 
 #[derive(Debug)]
@@ -179,6 +196,7 @@ struct PreparedChangeEvents {
 #[derive(Debug)]
 enum ReservationOutcome {
     Idle,
+    Held(String),
     Claimed(Box<ClaimedBatch>),
 }
 
@@ -194,6 +212,23 @@ struct EvaluationPlan {
     v2_declaration_head_snapshots: Vec<(String, String, ActiveDependencyDeclarationSetRead)>,
     v2_shadow_scope: V2ShadowSelectionScope,
     v2_shadow: IncrementalFreshnessShadowSummary,
+}
+
+impl EvaluationPlan {
+    fn empty() -> Self {
+        Self {
+            by_consumer: BTreeMap::new(),
+            affected_edge_count: 0,
+            edge_declaration_guards: Vec::new(),
+            source_state_guards: Vec::new(),
+            producer_epoch_guards: Vec::new(),
+            v2_declaration_guards: Vec::new(),
+            v2_declaration_head_keys: Vec::new(),
+            v2_declaration_head_snapshots: Vec::new(),
+            v2_shadow_scope: V2ShadowSelectionScope::SourceBounded(Vec::new()),
+            v2_shadow: IncrementalFreshnessShadowSummary::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -233,11 +268,22 @@ enum V2ShadowSelectionScope {
 pub fn run_incremental_freshness_cycle(
     db: &Database,
 ) -> anyhow::Result<IncrementalFreshnessCycleOutcome> {
+    run_incremental_freshness_cycle_with_hold(db, None)
+}
+
+/// Run one bounded automatic Freshness cycle with an optional CI-only project
+/// hold. The hold is checked against the selected candidate before the
+/// reservation path creates or resumes a Run/cursor lease, so a held cycle is
+/// provably no-write. Production callers use the public no-argument wrapper.
+pub fn run_incremental_freshness_cycle_with_hold(
+    db: &Database,
+    freshness_hold_project_id: Option<&str>,
+) -> anyhow::Result<IncrementalFreshnessCycleOutcome> {
     let _cycle_guard = CYCLE_SERIALIZER.lock().map_err(|error| {
         anyhow::anyhow!("NEX_INCREMENTAL_FRESHNESS_SERIALIZER_POISONED: {error}")
     })?;
 
-    db.with_background_connection_priority(|| run_serialized_cycle(db))
+    db.with_background_connection_priority(|| run_serialized_cycle(db, freshness_hold_project_id))
 }
 
 /// Run a bounded Freshness cycle and return the one-use liveness capability
@@ -250,7 +296,21 @@ pub fn run_incremental_freshness_cycle_with_liveness_capability(
     IncrementalFreshnessCycleOutcome,
     SuccessfulIncrementalFreshnessCycle,
 )> {
-    let outcome = run_incremental_freshness_cycle(db)?;
+    run_incremental_freshness_cycle_with_liveness_capability_and_hold(db, None)
+}
+
+/// CI/main wrapper that forwards the effective native seam hold without
+/// making it a renderer or IPC surface. The liveness capability is retained
+/// for a held cycle so the normal cutover attempt can run and fail closed on
+/// its durable readiness gate.
+pub fn run_incremental_freshness_cycle_with_liveness_capability_and_hold(
+    db: &Database,
+    freshness_hold_project_id: Option<&str>,
+) -> anyhow::Result<(
+    IncrementalFreshnessCycleOutcome,
+    SuccessfulIncrementalFreshnessCycle,
+)> {
+    let outcome = run_incremental_freshness_cycle_with_hold(db, freshness_hold_project_id)?;
     let completed_at = Instant::now();
     // The capability must belong to the same live SQLite authority that will
     // mint the scheduler receipt.  Capturing its connection epoch here keeps
@@ -307,19 +367,34 @@ pub(crate) fn initialize_application_freshness_in_tx(
     )
 }
 
-fn run_serialized_cycle(db: &Database) -> anyhow::Result<IncrementalFreshnessCycleOutcome> {
-    let reservation =
-        db.with_conn(|conn| with_immediate_transaction(conn, reserve_or_resume_batch_in_tx))?;
+fn run_serialized_cycle(
+    db: &Database,
+    freshness_hold_project_id: Option<&str>,
+) -> anyhow::Result<IncrementalFreshnessCycleOutcome> {
+    let reservation = db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            reserve_or_resume_batch_in_tx(conn, freshness_hold_project_id)
+        })
+    })?;
 
     let batch = match reservation {
         ReservationOutcome::Idle => return Ok(IncrementalFreshnessCycleOutcome::Idle),
+        ReservationOutcome::Held(project_id) => {
+            return Ok(IncrementalFreshnessCycleOutcome::Held(
+                IncrementalFreshnessHeldSummary { project_id },
+            ))
+        }
         ReservationOutcome::Claimed(batch) => batch,
     };
 
     // Deliberately release the Database mutex between reservation/evaluation
     // and publication.  A foreground editor waiter can acquire the live
     // authority while this bounded worker computes its read-only plan.
-    let plan = match evaluate_batch(db, &batch) {
+    let plan = match if batch.idle_checkpoint {
+        Ok(EvaluationPlan::empty())
+    } else {
+        evaluate_batch(db, &batch)
+    } {
         Ok(plan) => plan,
         Err(error) => {
             requeue_after_failure(db, &batch, &error)?;
@@ -366,9 +441,35 @@ fn run_serialized_cycle(db: &Database) -> anyhow::Result<IncrementalFreshnessCyc
     ))
 }
 
-fn reserve_or_resume_batch_in_tx(conn: &Connection) -> anyhow::Result<ReservationOutcome> {
-    let Some(project_id) = select_next_project(conn)? else {
-        return Ok(ReservationOutcome::Idle);
+fn reserve_or_resume_batch_in_tx(
+    conn: &Connection,
+    freshness_hold_project_id: Option<&str>,
+) -> anyhow::Result<ReservationOutcome> {
+    let next_project = match freshness_hold_project_id {
+        Some(held_project_id) => select_next_project_excluding(conn, held_project_id)?,
+        None => select_next_project(conn)?,
+    };
+    let Some(project_id) = next_project else {
+        let idle_project = match freshness_hold_project_id {
+            Some(held_project_id) => {
+                select_idle_checkpoint_project_excluding(conn, held_project_id)?
+            }
+            None => select_idle_checkpoint_project(conn)?,
+        };
+        let Some((project_id, semantic_epoch_id, feed_head)) = idle_project else {
+            if let Some(held_project_id) = freshness_hold_project_id {
+                if held_project_is_next_candidate(conn, held_project_id)? {
+                    return Ok(ReservationOutcome::Held(held_project_id.to_owned()));
+                }
+            }
+            return Ok(ReservationOutcome::Idle);
+        };
+        return create_and_claim_idle_checkpoint_in_tx(
+            conn,
+            &project_id,
+            &semantic_epoch_id,
+            feed_head,
+        );
     };
     let Some(epoch) = get_current_epoch(conn, &project_id)? else {
         // Epoch creation belongs to the semantic-epoch-event authority. The
@@ -449,6 +550,16 @@ struct ActiveReservation {
     acknowledged_through_sequence: i64,
     run_status: Option<String>,
     terminal_reason_code: Option<String>,
+}
+
+#[derive(Debug)]
+struct IdleCheckpointCursorState {
+    acknowledged_through_sequence: i64,
+    lease_owner: Option<String>,
+    lease_expires_at: Option<String>,
+    last_error: Option<String>,
+    reserved_through_sequence: Option<i64>,
+    active_run_id: Option<String>,
 }
 
 fn load_active_reservation(
@@ -532,6 +643,214 @@ fn select_next_project(conn: &Connection) -> anyhow::Result<Option<String>> {
     )
     .optional()
     .map_err(Into::into)
+}
+
+/// Select the next candidate while a CI-only hold is active. The production
+/// selector above remains unchanged; this copy excludes the held project at
+/// both the active-reservation and pending-Feed branches so another project
+/// can make progress before the held candidate is reported.
+fn select_next_project_excluding(
+    conn: &Connection,
+    excluded_project_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let active: Option<String> = conn
+        .query_row(
+            "SELECT cursor.project_id
+               FROM narrative_change_cursors cursor
+               LEFT JOIN narrative_extraction_runs run ON run.id = cursor.active_run_id
+               JOIN narrative_semantic_epochs epoch
+                 ON epoch.id = (
+                   SELECT current.id FROM narrative_semantic_epochs current
+                    WHERE current.project_id = cursor.project_id
+                    ORDER BY current.epoch_number DESC LIMIT 1
+                 )
+              WHERE cursor.consumer_id = ?1
+                AND cursor.project_id <> ?2
+                AND cursor.active_run_id IS NOT NULL
+                AND (
+                  cursor.semantic_epoch_id IS NULL
+                  OR cursor.semantic_epoch_id <> epoch.id
+                  OR run.status IS NULL
+                  OR run.status <> 'failed'
+                  OR COALESCE(run.terminal_reason_code, '') <>
+                     'NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED'
+                )
+              ORDER BY cursor.updated_at ASC, cursor.project_id ASC
+              LIMIT 1",
+            params![CURSOR_CONSUMER_ID, excluded_project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if active.is_some() {
+        return Ok(active);
+    }
+
+    conn.query_row(
+        "SELECT event.project_id
+           FROM narrative_change_events event
+           LEFT JOIN narrative_change_cursors cursor
+             ON cursor.project_id = event.project_id
+            AND cursor.consumer_id = ?1
+          WHERE event.project_id <> ?2
+            AND event.canonical_sequence >
+                COALESCE(cursor.acknowledged_through_sequence, 0)
+            AND cursor.active_run_id IS NULL
+            AND EXISTS (
+              SELECT 1 FROM narrative_semantic_epochs epoch
+               WHERE epoch.project_id = event.project_id
+            )
+          GROUP BY event.project_id
+          ORDER BY MIN(event.canonical_sequence) ASC, event.project_id ASC
+          LIMIT 1",
+        params![CURSOR_CONSUMER_ID, excluded_project_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn held_project_is_next_candidate(
+    conn: &Connection,
+    held_project_id: &str,
+) -> anyhow::Result<bool> {
+    if select_next_project(conn)?.as_deref() == Some(held_project_id) {
+        return Ok(true);
+    }
+    Ok(select_idle_checkpoint_project(conn)?
+        .map(|(project_id, _, _)| project_id)
+        .as_deref()
+        == Some(held_project_id))
+}
+
+/// Find one project whose current Epoch has no Feed work left but still lacks
+/// a current-Epoch Freshness Run. The zero-width checkpoint is intentionally
+/// conservative: a missing cursor is valid only for an empty Feed, while an
+/// existing cursor must be fully acknowledged, unreserved, lease-free, and
+/// error-free. Any current-Epoch Freshness Run, including a failed or
+/// cancelled one, blocks the checkpoint so a malformed history cannot be
+/// papered over by a new success row.
+fn select_idle_checkpoint_project(
+    conn: &Connection,
+) -> anyhow::Result<Option<(String, String, i64)>> {
+    let mut statement = conn.prepare(
+        "SELECT project.id, epoch.id,
+                COALESCE((SELECT MAX(event.canonical_sequence)
+                            FROM narrative_change_events event
+                           WHERE event.project_id = project.id), 0)
+           FROM projects project
+           JOIN narrative_semantic_epochs epoch
+             ON epoch.project_id = project.id
+            AND epoch.epoch_number = (
+                SELECT MAX(current.epoch_number)
+                  FROM narrative_semantic_epochs current
+                 WHERE current.project_id = project.id
+            )
+           LEFT JOIN narrative_change_cursors cursor
+             ON cursor.project_id = project.id
+            AND cursor.consumer_id = ?1
+          WHERE NOT EXISTS (
+                SELECT 1
+                  FROM narrative_extraction_runs run
+                 WHERE run.project_id = project.id
+                   AND run.run_kind = 'freshness-evaluation'
+                   AND run.semantic_epoch_id = epoch.id
+            )
+            AND (
+              (
+                cursor.project_id IS NULL
+                AND COALESCE((SELECT MAX(event.canonical_sequence)
+                                FROM narrative_change_events event
+                               WHERE event.project_id = project.id), 0) = 0
+              )
+              OR (
+                cursor.acknowledged_through_sequence =
+                  COALESCE((SELECT MAX(event.canonical_sequence)
+                              FROM narrative_change_events event
+                             WHERE event.project_id = project.id), 0)
+                AND COALESCE(cursor.last_error, '') = ''
+                AND cursor.lease_owner IS NULL
+                AND cursor.lease_expires_at IS NULL
+                AND cursor.active_run_id IS NULL
+                AND cursor.reserved_through_sequence IS NULL
+                AND cursor.semantic_epoch_id IS NULL
+              )
+            )
+          ORDER BY project.id ASC
+          LIMIT 1",
+    )?;
+    let row = statement
+        .query_row([CURSOR_CONSUMER_ID], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .optional()?;
+    Ok(row)
+}
+
+fn select_idle_checkpoint_project_excluding(
+    conn: &Connection,
+    excluded_project_id: &str,
+) -> anyhow::Result<Option<(String, String, i64)>> {
+    let mut statement = conn.prepare(
+        "SELECT project.id, epoch.id,
+                COALESCE((SELECT MAX(event.canonical_sequence)
+                            FROM narrative_change_events event
+                           WHERE event.project_id = project.id), 0)
+           FROM projects project
+           JOIN narrative_semantic_epochs epoch
+             ON epoch.project_id = project.id
+            AND epoch.epoch_number = (
+                SELECT MAX(current.epoch_number)
+                  FROM narrative_semantic_epochs current
+                 WHERE current.project_id = project.id
+            )
+           LEFT JOIN narrative_change_cursors cursor
+             ON cursor.project_id = project.id
+            AND cursor.consumer_id = ?1
+          WHERE project.id <> ?2
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM narrative_extraction_runs run
+                 WHERE run.project_id = project.id
+                   AND run.run_kind = 'freshness-evaluation'
+                   AND run.semantic_epoch_id = epoch.id
+            )
+            AND (
+              (
+                cursor.project_id IS NULL
+                AND COALESCE((SELECT MAX(event.canonical_sequence)
+                                FROM narrative_change_events event
+                               WHERE event.project_id = project.id), 0) = 0
+              )
+              OR (
+                cursor.acknowledged_through_sequence =
+                  COALESCE((SELECT MAX(event.canonical_sequence)
+                              FROM narrative_change_events event
+                             WHERE event.project_id = project.id), 0)
+                AND COALESCE(cursor.last_error, '') = ''
+                AND cursor.lease_owner IS NULL
+                AND cursor.lease_expires_at IS NULL
+                AND cursor.active_run_id IS NULL
+                AND cursor.reserved_through_sequence IS NULL
+                AND cursor.semantic_epoch_id IS NULL
+              )
+            )
+          ORDER BY project.id ASC
+          LIMIT 1",
+    )?;
+    statement
+        .query_row(params![CURSOR_CONSUMER_ID, excluded_project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .optional()
+        .map_err(Into::into)
 }
 
 fn load_change_batch_envelope(
@@ -1052,45 +1371,345 @@ fn create_and_claim_batch_in_tx(
     )
 }
 
+fn create_and_claim_idle_checkpoint_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    semantic_epoch_id: &str,
+    feed_head: i64,
+) -> anyhow::Result<ReservationOutcome> {
+    anyhow::ensure!(
+        feed_head >= 0,
+        "NEX_INCREMENTAL_FRESHNESS_FEED_HEAD_INVALID"
+    );
+    let live_feed_head = current_feed_head(conn, project_id)?;
+    anyhow::ensure!(
+        live_feed_head == feed_head,
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_STALE: Feed head changed before reservation"
+    );
+    let epoch = get_current_epoch(conn, project_id)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_EPOCH_MISSING: project '{project_id}' has no current Semantic Epoch"
+        )
+    })?;
+    anyhow::ensure!(
+        epoch.id == semantic_epoch_id,
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_EPOCH_STALE: current Semantic Epoch changed before reservation"
+    );
+    ensure_idle_checkpoint_cursor_is_clean(conn, project_id, feed_head)?;
+    ensure_no_current_epoch_incremental_run(conn, project_id, semantic_epoch_id)?;
+
+    let input_payload = json!({
+        "kind": IDLE_CHECKPOINT_KIND,
+        "version": IDLE_CHECKPOINT_VERSION,
+        "projectId": project_id,
+        "semanticEpochId": semantic_epoch_id,
+        "fromSequenceExclusive": feed_head,
+        "throughSequenceInclusive": feed_head,
+        "feedHead": feed_head,
+    });
+    let input_digest = idle_checkpoint_digest(&input_payload);
+    let task_input = idle_checkpoint_task_input(&input_payload, &input_digest)?;
+    let spec_json = json!({
+        "kind": "incremental-freshness-idle-checkpoint@1",
+        "inputDigest": input_digest,
+    });
+    let spec_digest = idle_checkpoint_digest(&spec_json);
+    let work_key = format!(
+        "incremental-freshness:{semantic_epoch_id}:{feed_head}:{feed_head}:{}",
+        input_digest.trim_start_matches("sha256:")
+    );
+    let created = create_system_run_in_tx(
+        conn,
+        project_id,
+        "freshness-evaluation",
+        semantic_epoch_id,
+        &work_key,
+        &spec_json,
+        &spec_digest,
+        SystemRunWorkKeyReuse::None,
+        None,
+    )?;
+    let run_id = required_json_string(&created, "runId")?.to_string();
+    conn.execute(
+        "UPDATE narrative_extraction_runs
+            SET consumer_id = ?1
+          WHERE id = ?2 AND project_id = ?3
+            AND (consumer_id IS NULL OR consumer_id = ?1)",
+        params![CURSOR_CONSUMER_ID, run_id, project_id],
+    )?;
+    reserve_cursor_range_in_tx(
+        conn,
+        project_id,
+        CURSOR_CONSUMER_ID,
+        semantic_epoch_id,
+        &run_id,
+        feed_head,
+    )?;
+    ensure_idle_checkpoint_task_in_tx(conn, &run_id, &task_input)?;
+    let claimed = claim_reserved_batch_in_tx(
+        conn,
+        project_id,
+        semantic_epoch_id,
+        &run_id,
+        feed_head,
+        feed_head,
+        Vec::new(),
+        None,
+        false,
+    )?;
+    anyhow::ensure!(
+        matches!(claimed, ReservationOutcome::Claimed(ref batch) if batch.idle_checkpoint),
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_CLAIM_FAILED: checkpoint Task was not claimable"
+    );
+    Ok(claimed)
+}
+
+fn idle_checkpoint_task_input(payload: &Value, input_digest: &str) -> anyhow::Result<Value> {
+    let mut input = payload
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("idle checkpoint payload must be an object"))?
+        .clone();
+    input.insert(
+        "inputDigest".to_owned(),
+        Value::String(input_digest.to_owned()),
+    );
+    Ok(Value::Object(input))
+}
+
+fn ensure_idle_checkpoint_task_in_tx(
+    conn: &Connection,
+    run_id: &str,
+    task_input: &Value,
+) -> anyhow::Result<()> {
+    let task_id = format!("{run_id}:batch");
+    // Task/Attempt timestamps are part of the idle checkpoint's readiness
+    // envelope.  Use the project-scoped Run lifecycle allocator rather than
+    // wall-clock time so an imported/future Run cannot make its own producer
+    // evidence appear causally inverted.
+    let created_at = idle_checkpoint_lifecycle_timestamp_in_tx(conn, run_id)?;
+    conn.execute(
+        "INSERT INTO narrative_extraction_tasks
+            (id, run_id, task_kind, status, input_json, priority,
+             attempt_count, created_at, version)
+         VALUES (?1, ?2, ?3, 'queued', ?4, 100, 0, ?5, 0)",
+        params![
+            task_id,
+            run_id,
+            TASK_KIND,
+            serde_json::to_string(task_input)?,
+            created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Return a canonical lifecycle instant for an idle checkpoint entity.
+///
+/// Automatic system Runs use a project-wide lifecycle allocator because an
+/// imported workspace may legitimately contain future-dated Run evidence.
+/// Idle Task/Attempt rows must share that authority: a wall-clock timestamp
+/// is not a valid lower bound when the owning Run starts in the future.  Include
+/// existing idle Task/Attempt timestamps as well so retries and recovery never
+/// move the envelope backwards, while leaving ordinary Feed timestamps on
+/// their existing path.
+fn idle_checkpoint_lifecycle_timestamp_in_tx(
+    conn: &Connection,
+    run_id: &str,
+) -> anyhow::Result<String> {
+    let project_id: String = conn.query_row(
+        "SELECT project_id FROM narrative_extraction_runs WHERE id = ?1",
+        [run_id],
+        |row| row.get(0),
+    )?;
+    let allocator_timestamp = next_run_lifecycle_timestamp_in_tx(conn, &project_id)?;
+    let mut latest = parse_run_lifecycle_instant(&allocator_timestamp)?;
+
+    let mut task_statement = conn.prepare(
+        "SELECT created_at, started_at, completed_at
+           FROM narrative_extraction_tasks
+          WHERE run_id = ?1",
+    )?;
+    let tasks = task_statement.query_map([run_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    for task in tasks {
+        let (created_at, started_at, completed_at) = task?;
+        for value in [Some(created_at), started_at, completed_at]
+            .into_iter()
+            .flatten()
+        {
+            latest = latest.max(parse_run_lifecycle_instant(&value)?);
+        }
+    }
+
+    let mut attempt_statement = conn.prepare(
+        "SELECT attempt.started_at, attempt.completed_at
+           FROM narrative_extraction_attempts attempt
+           JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+          WHERE task.run_id = ?1",
+    )?;
+    let attempts = attempt_statement.query_map([run_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+    for attempt in attempts {
+        let (started_at, completed_at) = attempt?;
+        for value in [Some(started_at), completed_at].into_iter().flatten() {
+            latest = latest.max(parse_run_lifecycle_instant(&value)?);
+        }
+    }
+
+    Ok(latest.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+}
+
+fn current_feed_head(conn: &Connection, project_id: &str) -> anyhow::Result<i64> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(canonical_sequence), 0)
+           FROM narrative_change_events
+          WHERE project_id = ?1",
+        [project_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn ensure_idle_checkpoint_cursor_is_clean(
+    conn: &Connection,
+    project_id: &str,
+    feed_head: i64,
+) -> anyhow::Result<()> {
+    let cursor: Option<IdleCheckpointCursorState> = conn
+        .query_row(
+            "SELECT acknowledged_through_sequence, lease_owner, lease_expires_at,
+                    last_error, reserved_through_sequence, active_run_id
+               FROM narrative_change_cursors
+              WHERE project_id = ?1 AND consumer_id = ?2",
+            params![project_id, CURSOR_CONSUMER_ID],
+            |row| {
+                Ok(IdleCheckpointCursorState {
+                    acknowledged_through_sequence: row.get(0)?,
+                    lease_owner: row.get(1)?,
+                    lease_expires_at: row.get(2)?,
+                    last_error: row.get(3)?,
+                    reserved_through_sequence: row.get(4)?,
+                    active_run_id: row.get(5)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(cursor) = cursor else {
+        anyhow::ensure!(
+            feed_head == 0,
+            "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_CURSOR_MISSING: non-empty Feed requires a cursor"
+        );
+        return Ok(());
+    };
+    anyhow::ensure!(
+        cursor.acknowledged_through_sequence == feed_head,
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_CURSOR_NOT_AT_HEAD: acknowledged {}, feed head {feed_head}",
+        cursor.acknowledged_through_sequence
+    );
+    anyhow::ensure!(
+        cursor.lease_owner.is_none()
+            && cursor.lease_expires_at.is_none()
+            && cursor.reserved_through_sequence.is_none()
+            && cursor.active_run_id.is_none()
+            && cursor
+                .last_error
+                .as_deref()
+                .is_none_or(|error| error.trim().is_empty()),
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_CURSOR_NOT_CLEAN: cursor has an active reservation, lease, or error"
+    );
+    Ok(())
+}
+
+fn ensure_no_current_epoch_incremental_run(
+    conn: &Connection,
+    project_id: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<()> {
+    let existing: bool = conn.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM narrative_extraction_runs
+            WHERE project_id = ?1
+              AND run_kind = 'freshness-evaluation'
+              AND semantic_epoch_id = ?2
+         )",
+        params![project_id, semantic_epoch_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        !existing,
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_RUN_EXISTS: current Epoch already has a Freshness Run"
+    );
+    Ok(())
+}
+
 fn resume_active_batch_in_tx(
     conn: &Connection,
     project_id: &str,
     semantic_epoch_id: &str,
     active: ActiveReservation,
 ) -> anyhow::Result<ReservationOutcome> {
+    let idle_checkpoint = idle_checkpoint_intent_in_tx(conn, &active, semantic_epoch_id)?;
     let exhausted_interrupted_task: Option<String> = conn
         .query_row(
             "SELECT id
                FROM narrative_extraction_tasks
-              WHERE run_id = ?1 AND task_kind = ?2 AND status = 'running'
-                AND attempt_count >= ?3
+              WHERE run_id = ?1 AND status = 'running'
+                AND attempt_count >= ?2
                 AND lease_expires_at IS NOT NULL
                 AND julianday(lease_expires_at) < julianday('now')
               LIMIT 1",
-            params![active.run_id, TASK_KIND, MAX_ATTEMPTS_PER_BATCH],
+            params![active.run_id, MAX_ATTEMPTS_PER_BATCH],
             |row| row.get(0),
         )
         .optional()?;
     if let Some(task_id) = exhausted_interrupted_task {
         let message = "incremental Freshness worker was interrupted and exhausted its retry budget";
-        conn.execute(
-            "UPDATE narrative_extraction_attempts
-                SET status = 'failed', completed_at = datetime('now'),
-                    error_message = ?1,
-                    failure_code = 'NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED',
-                    retry_disposition = 'terminal', policy_version = ?2,
-                    next_attempt_at = NULL
-              WHERE status = 'running' AND task_id = ?3",
-            params![message, FAILURE_POLICY_VERSION, task_id],
-        )?;
-        let task_updated = conn.execute(
-            "UPDATE narrative_extraction_tasks
-                SET status = 'failed', error_message = ?1,
-                    lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
-                    completed_at = datetime('now'), version = version + 1
-              WHERE id = ?2 AND run_id = ?3 AND status = 'running'",
-            params![message, task_id, active.run_id],
-        )?;
+        let task_updated = if idle_checkpoint {
+            let lifecycle_at = idle_checkpoint_lifecycle_timestamp_in_tx(conn, &active.run_id)?;
+            conn.execute(
+                "UPDATE narrative_extraction_attempts
+                    SET status = 'failed', completed_at = ?1,
+                        error_message = ?2,
+                        failure_code = 'NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED',
+                        retry_disposition = 'terminal', policy_version = ?3,
+                        next_attempt_at = NULL
+                  WHERE status = 'running' AND task_id = ?4",
+                params![lifecycle_at, message, FAILURE_POLICY_VERSION, task_id],
+            )?;
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET status = 'failed', error_message = ?1,
+                        lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+                        completed_at = ?2, version = version + 1
+                  WHERE id = ?3 AND run_id = ?4 AND status = 'running'",
+                params![message, lifecycle_at, task_id, active.run_id],
+            )?
+        } else {
+            conn.execute(
+                "UPDATE narrative_extraction_attempts
+                    SET status = 'failed', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                        error_message = ?1,
+                        failure_code = 'NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED',
+                        retry_disposition = 'terminal', policy_version = ?2,
+                        next_attempt_at = NULL
+                  WHERE status = 'running' AND task_id = ?3",
+                params![message, FAILURE_POLICY_VERSION, task_id],
+            )?;
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET status = 'failed', error_message = ?1,
+                        lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+                        completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), version = version + 1
+                  WHERE id = ?2 AND run_id = ?3 AND status = 'running'",
+                params![message, task_id, active.run_id],
+            )?
+        };
         anyhow::ensure!(
             task_updated == 1,
             "NEX_INCREMENTAL_FRESHNESS_LEASE_LOST: exhausted interrupted Task changed owner"
@@ -1125,6 +1744,68 @@ fn resume_active_batch_in_tx(
         return Ok(ReservationOutcome::Idle);
     }
 
+    // claim_next_task can reclaim an expired Task but does not terminalize
+    // the displaced Attempt.  Close it first so recovery never leaves two
+    // durable `running` Attempts for one Task.
+    if idle_checkpoint {
+        let lifecycle_at = idle_checkpoint_lifecycle_timestamp_in_tx(conn, &active.run_id)?;
+        conn.execute(
+            "UPDATE narrative_extraction_attempts
+                SET status = 'failed', completed_at = ?1,
+                    error_message = 'incremental Freshness worker was interrupted',
+                    failure_code = 'NEX_INCREMENTAL_FRESHNESS_INTERRUPTED',
+                    retry_disposition = 'retryable', policy_version = ?2,
+                    next_attempt_at = ?1
+              WHERE status = 'running'
+                AND task_id IN (
+                  SELECT id FROM narrative_extraction_tasks
+                   WHERE run_id = ?3 AND status = 'running'
+                     AND lease_expires_at IS NOT NULL
+                     AND julianday(lease_expires_at) < julianday('now')
+                )",
+            params![lifecycle_at, FAILURE_POLICY_VERSION, active.run_id],
+        )?;
+    } else {
+        conn.execute(
+            "UPDATE narrative_extraction_attempts
+                SET status = 'failed', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    error_message = 'incremental Freshness worker was interrupted',
+                    failure_code = 'NEX_INCREMENTAL_FRESHNESS_INTERRUPTED',
+                    retry_disposition = 'retryable', policy_version = ?1,
+                    next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+              WHERE status = 'running'
+                AND task_id IN (
+                  SELECT id FROM narrative_extraction_tasks
+                   WHERE run_id = ?2 AND status = 'running'
+                     AND lease_expires_at IS NOT NULL
+                     AND julianday(lease_expires_at) < julianday('now')
+                )",
+            params![FAILURE_POLICY_VERSION, active.run_id],
+        )?;
+    }
+
+    if idle_checkpoint {
+        anyhow::ensure!(
+            active.acknowledged_through_sequence == active.through_sequence,
+            "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_SHAPE_INVALID: resumed checkpoint is not zero-width"
+        );
+        anyhow::ensure!(
+            current_feed_head(conn, project_id)? == active.through_sequence,
+            "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_STALE: Feed head changed before resume"
+        );
+        return claim_reserved_batch_in_tx(
+            conn,
+            project_id,
+            semantic_epoch_id,
+            &active.run_id,
+            active.acknowledged_through_sequence,
+            active.through_sequence,
+            Vec::new(),
+            None,
+            false,
+        );
+    }
+
     let prepared = prepare_reserved_change_events(
         conn,
         project_id,
@@ -1133,26 +1814,6 @@ fn resume_active_batch_in_tx(
         active.through_sequence,
     );
     let has_more = has_changes_after(conn, project_id, active.through_sequence)?;
-
-    // claim_next_task can reclaim an expired Task but does not terminalize
-    // the displaced Attempt.  Close it first so recovery never leaves two
-    // durable `running` Attempts for one Task.
-    conn.execute(
-        "UPDATE narrative_extraction_attempts
-            SET status = 'failed', completed_at = datetime('now'),
-                error_message = 'incremental Freshness worker was interrupted',
-                failure_code = 'NEX_INCREMENTAL_FRESHNESS_INTERRUPTED',
-                retry_disposition = 'retryable', policy_version = ?1,
-                next_attempt_at = datetime('now')
-          WHERE status = 'running'
-            AND task_id IN (
-              SELECT id FROM narrative_extraction_tasks
-               WHERE run_id = ?2 AND status = 'running'
-                 AND lease_expires_at IS NOT NULL
-                 AND julianday(lease_expires_at) < julianday('now')
-            )",
-        params![FAILURE_POLICY_VERSION, active.run_id],
-    )?;
 
     claim_reserved_batch_in_tx(
         conn,
@@ -1180,6 +1841,15 @@ fn claim_reserved_batch_in_tx(
     has_more: bool,
 ) -> anyhow::Result<ReservationOutcome> {
     let lease_owner = format!("{CURSOR_CONSUMER_ID}:{}", std::process::id());
+    let task_kinds = if from_sequence_exclusive == through_sequence_inclusive {
+        // A zero-width reservation is the idle-checkpoint seam.  Claim any
+        // task attached to that reservation so a corrupted task_kind cannot
+        // divert recovery into the normal Feed branch; publication then
+        // rejects the malformed lifecycle through the strict idle validator.
+        None
+    } else {
+        Some(vec![TASK_KIND.to_string()])
+    };
     let Some(claimed) = claim_next_task(
         conn,
         &ClaimTaskPayload {
@@ -1187,12 +1857,31 @@ fn claim_reserved_batch_in_tx(
             project_id: project_id.to_string(),
             lease_owner: lease_owner.clone(),
             lease_duration_secs: Some(TASK_LEASE_DURATION_SECS),
-            task_kinds: Some(vec![TASK_KIND.to_string()]),
+            task_kinds,
         },
     )?
     else {
         return Ok(ReservationOutcome::Idle);
     };
+    let idle_checkpoint = from_sequence_exclusive == through_sequence_inclusive
+        || task_input_has_idle_checkpoint_tag(&claimed.input_json);
+    if idle_checkpoint {
+        let lifecycle_at = idle_checkpoint_lifecycle_timestamp_in_tx(conn, run_id)?;
+        if claimed.attempt_number == 1 {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET started_at = ?1
+                  WHERE id = ?2 AND run_id = ?3 AND status = 'running'",
+                params![lifecycle_at, claimed.task_id, run_id],
+            )?;
+        }
+        conn.execute(
+            "UPDATE narrative_extraction_attempts
+                SET started_at = ?1
+              WHERE id = ?2 AND task_id = ?3 AND status = 'running'",
+            params![lifecycle_at, claimed.attempt_id, claimed.task_id],
+        )?;
+    }
     let updated = conn.execute(
         "UPDATE narrative_change_cursors
             SET lease_owner = ?1, lease_expires_at = ?2, last_error = NULL,
@@ -1227,7 +1916,67 @@ fn claim_reserved_batch_in_tx(
         events,
         preparation_error,
         has_more,
+        idle_checkpoint,
     })))
+}
+
+fn idle_checkpoint_intent_in_tx(
+    conn: &Connection,
+    active: &ActiveReservation,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<bool> {
+    let (spec_json, work_key): (String, String) = conn.query_row(
+        "SELECT spec_json, work_key
+           FROM narrative_extraction_runs
+          WHERE id = ?1",
+        [active.run_id.as_str()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let spec_is_idle = serde_json::from_str::<Value>(&spec_json)
+        .ok()
+        .and_then(|spec| spec.get("kind").and_then(Value::as_str).map(str::to_owned))
+        .as_deref()
+        == Some("incremental-freshness-idle-checkpoint@1");
+    let work_key_prefix = format!(
+        "incremental-freshness:{semantic_epoch_id}:{}:{}:",
+        active.acknowledged_through_sequence, active.through_sequence
+    );
+    let work_key_is_idle = work_key
+        .strip_prefix(&work_key_prefix)
+        .is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+        });
+    let task_exists: bool = conn.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM narrative_extraction_tasks
+            WHERE run_id = ?1
+         )",
+        params![active.run_id],
+        |row| row.get(0),
+    )?;
+    if !task_exists || active.acknowledged_through_sequence != active.through_sequence {
+        return Ok(false);
+    }
+    if spec_is_idle || work_key_is_idle {
+        return Ok(true);
+    }
+    // A zero-width reservation cannot be represented by a Change Set (the
+    // schema requires through > from). Treat a malformed idle descriptor as
+    // an idle intent too, so publication reaches the strict tagged-input
+    // validator and requeues/terminalizes instead of taking the normal Feed
+    // path and accidentally bypassing the checkpoint contract.
+    Ok(true)
+}
+
+fn task_input_has_idle_checkpoint_tag(input_json: &str) -> bool {
+    serde_json::from_str::<Value>(input_json)
+        .ok()
+        .and_then(|input| input.get("kind").and_then(Value::as_str).map(str::to_owned))
+        .as_deref()
+        == Some(IDLE_CHECKPOINT_KIND)
 }
 
 fn ensure_batch_task_in_tx(
@@ -1327,6 +2076,12 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
             renew_batch_lease(db, batch)?;
         }
         edge_declaration_guards.push(edge.clone());
+        if is_reserved_semantic_index_consumer_kind(&edge.consumer_kind) {
+            // The Semantic Index owns its metadata/D1/V1 surface. Keep the
+            // Edge declaration CAS guard, but do not route this reserved Edge
+            // through the Generic Freshness evaluator or publisher.
+            continue;
+        }
         if !is_declared_consumer_kind(&edge.consumer_kind) {
             // A forward-version or reserved Consumer kind has no evaluator in
             // this build. Publish an explicit Unknown/Manual observation so a
@@ -2064,6 +2819,10 @@ fn publish_batch_in_tx(
         &batch.semantic_epoch_id,
         batch.through_sequence_inclusive,
     )?;
+    if batch.idle_checkpoint {
+        publish_idle_checkpoint_in_tx(conn, batch)?;
+        return Ok(None);
+    }
     for edge in &plan.edge_declaration_guards {
         let current_edge = load_edge_by_id(conn, &edge.project_id, &edge.id)?;
         anyhow::ensure!(
@@ -2161,6 +2920,225 @@ fn publish_batch_in_tx(
     Ok(v2_shadow_drift)
 }
 
+fn publish_idle_checkpoint_in_tx(conn: &Connection, batch: &ClaimedBatch) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        batch.from_sequence_exclusive == batch.through_sequence_inclusive
+            && !batch.has_more
+            && batch.events.is_empty()
+            && batch.preparation_error.is_none(),
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_SHAPE_INVALID: checkpoint is not zero-width"
+    );
+    let (task_kind, input_json): (String, String) = conn.query_row(
+        "SELECT task_kind, input_json
+           FROM narrative_extraction_tasks
+          WHERE id = ?1 AND run_id = ?2",
+        params![batch.task_id, batch.run_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    anyhow::ensure!(
+        task_kind == TASK_KIND,
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_TASK_KIND_INVALID: Task kind is not the canonical Freshness batch"
+    );
+    let input_digest = validate_idle_checkpoint_task_input(&input_json, batch)?;
+    validate_idle_checkpoint_run_metadata(conn, batch, &input_digest)?;
+    let epoch = get_current_epoch(conn, &batch.project_id)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_EPOCH_MISSING: current Semantic Epoch disappeared before publication"
+        )
+    })?;
+    anyhow::ensure!(
+        epoch.id == batch.semantic_epoch_id,
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_EPOCH_STALE: current Semantic Epoch changed before publication"
+    );
+    anyhow::ensure!(
+        current_feed_head(conn, &batch.project_id)? == batch.through_sequence_inclusive,
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_STALE: Feed head changed before publication"
+    );
+
+    let output = json!({
+        "kind": IDLE_CHECKPOINT_KIND,
+        "version": IDLE_CHECKPOINT_VERSION,
+        "projectId": batch.project_id,
+        "runId": batch.run_id,
+        "fromSequenceExclusive": batch.from_sequence_exclusive,
+        "throughSequenceInclusive": batch.through_sequence_inclusive,
+        "affectedEdgeCount": 0,
+        "affectedConsumerCount": 0,
+        "hasMore": false,
+    });
+    let output_json = serde_json::to_string(&output)?;
+    let completed_at = idle_checkpoint_lifecycle_timestamp_in_tx(conn, &batch.run_id)?;
+    let attempt_updated = conn.execute(
+        "UPDATE narrative_extraction_attempts
+            SET status = 'completed', completed_at = ?1, output_json = ?2,
+                error_message = NULL
+          WHERE id = ?3 AND task_id = ?4 AND status = 'running'",
+        params![completed_at, output_json, batch.attempt_id, batch.task_id],
+    )?;
+    anyhow::ensure!(
+        attempt_updated == 1,
+        "incremental Freshness idle checkpoint Attempt is not running"
+    );
+    let task_updated = conn.execute(
+        "UPDATE narrative_extraction_tasks
+            SET status = 'completed', output_json = ?1, error_message = NULL,
+                lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+                completed_at = ?2, version = version + 1
+          WHERE id = ?3 AND run_id = ?4 AND status = 'running'
+            AND lease_owner = ?5",
+        params![
+            output_json,
+            completed_at,
+            batch.task_id,
+            batch.run_id,
+            batch.lease_owner
+        ],
+    )?;
+    anyhow::ensure!(
+        task_updated == 1,
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_LEASE_LOST: Task lease was lost"
+    );
+    record_run_outcome_in_tx(conn, &batch.run_id, &output)?;
+    transition_run_status_in_tx(conn, &batch.run_id, NarrativeRunStatus::Completed)?;
+    acknowledge_cursor_reservation_in_tx(
+        conn,
+        &batch.project_id,
+        CURSOR_CONSUMER_ID,
+        &batch.run_id,
+        &batch.semantic_epoch_id,
+        batch.through_sequence_inclusive,
+    )?;
+    Ok(())
+}
+
+fn validate_idle_checkpoint_task_input(
+    input_json: &str,
+    batch: &ClaimedBatch,
+) -> anyhow::Result<String> {
+    let input: Value = serde_json::from_str(input_json).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_INPUT_INVALID: input JSON is malformed: {error}"
+        )
+    })?;
+    anyhow::ensure!(
+        input.get("kind").and_then(Value::as_str) == Some(IDLE_CHECKPOINT_KIND)
+            && input.get("version").and_then(Value::as_i64) == Some(IDLE_CHECKPOINT_VERSION),
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_INPUT_INVALID: task input tag/version is invalid"
+    );
+    anyhow::ensure!(
+        input.get("projectId").and_then(Value::as_str) == Some(batch.project_id.as_str())
+            && input.get("semanticEpochId").and_then(Value::as_str)
+                == Some(batch.semantic_epoch_id.as_str())
+            && input
+                .get("fromSequenceExclusive")
+                .and_then(Value::as_i64)
+                == Some(batch.from_sequence_exclusive)
+            && input
+                .get("throughSequenceInclusive")
+                .and_then(Value::as_i64)
+                == Some(batch.through_sequence_inclusive)
+            && input.get("feedHead").and_then(Value::as_i64)
+                == Some(batch.through_sequence_inclusive),
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_INPUT_INVALID: task input coordinates do not match the reservation"
+    );
+    let input_digest = input
+        .get("inputDigest")
+        .and_then(Value::as_str)
+        .filter(|digest| digest.starts_with("sha256:") && digest.len() == "sha256:".len() + 64)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_INPUT_INVALID: inputDigest is not a SHA-256 token"
+            )
+        })?;
+    const INPUT_KEYS: [&str; 8] = [
+        "kind",
+        "version",
+        "projectId",
+        "semanticEpochId",
+        "fromSequenceExclusive",
+        "throughSequenceInclusive",
+        "feedHead",
+        "inputDigest",
+    ];
+    let input_object = input
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("idle checkpoint task input must be an object"))?;
+    anyhow::ensure!(
+        input_object.len() == INPUT_KEYS.len()
+            && input_object
+                .keys()
+                .all(|key| INPUT_KEYS.contains(&key.as_str())),
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_INPUT_INVALID: task input contains unknown fields"
+    );
+    let mut payload = input
+        .as_object()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("idle checkpoint task input must be an object"))?;
+    payload.remove("inputDigest");
+    let expected_digest = idle_checkpoint_digest(&Value::Object(payload));
+    anyhow::ensure!(
+        input_digest == expected_digest,
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_INPUT_INVALID: inputDigest does not match tagged coordinates"
+    );
+    Ok(input_digest.to_owned())
+}
+
+fn validate_idle_checkpoint_run_metadata(
+    conn: &Connection,
+    batch: &ClaimedBatch,
+    input_digest: &str,
+) -> anyhow::Result<()> {
+    let (spec_json, spec_digest, work_key): (String, String, String) = conn.query_row(
+        "SELECT spec_json, spec_digest, work_key
+           FROM narrative_extraction_runs
+          WHERE id = ?1 AND project_id = ?2
+            AND run_kind = 'freshness-evaluation'
+            AND semantic_epoch_id = ?3",
+        params![batch.run_id, batch.project_id, batch.semantic_epoch_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let spec: Value = serde_json::from_str(&spec_json).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_SPEC_INVALID: spec JSON is malformed: {error}"
+        )
+    })?;
+    let spec_object = spec.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_SPEC_INVALID: spec must be an object"
+        )
+    })?;
+    const SPEC_KEYS: [&str; 2] = ["kind", "inputDigest"];
+    anyhow::ensure!(
+        spec_object.len() == SPEC_KEYS.len()
+            && spec_object
+                .keys()
+                .all(|key| SPEC_KEYS.contains(&key.as_str())),
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_SPEC_INVALID: spec contains unknown fields"
+    );
+    anyhow::ensure!(
+        spec.get("kind").and_then(Value::as_str)
+            == Some("incremental-freshness-idle-checkpoint@1")
+            && spec.get("inputDigest").and_then(Value::as_str) == Some(input_digest),
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_SPEC_INVALID: spec kind or inputDigest does not match task input"
+    );
+    anyhow::ensure!(
+        idle_checkpoint_digest(&spec) == spec_digest,
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_SPEC_INVALID: spec_digest does not match spec JSON"
+    );
+    let expected_work_key = format!(
+        "incremental-freshness:{}:{}:{}:{}",
+        batch.semantic_epoch_id,
+        batch.from_sequence_exclusive,
+        batch.through_sequence_inclusive,
+        input_digest.trim_start_matches("sha256:")
+    );
+    anyhow::ensure!(
+        work_key == expected_work_key,
+        "NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_SPEC_INVALID: work_key does not match checkpoint coordinates"
+    );
+    Ok(())
+}
+
 fn requeue_after_failure(
     db: &Database,
     batch: &ClaimedBatch,
@@ -2183,42 +3161,88 @@ fn requeue_after_failure(
                 "NEX_INCREMENTAL_FRESHNESS_RETRYABLE"
             };
             let retry_disposition = if terminal { "terminal" } else { "retryable" };
-            let attempt_updated = conn.execute(
-                "UPDATE narrative_extraction_attempts
-                    SET status = 'failed', completed_at = datetime('now'), error_message = ?1,
-                        failure_code = ?2, retry_disposition = ?3, policy_version = ?4,
-                        next_attempt_at = CASE
-                          WHEN ?3 = 'retryable' THEN datetime('now') ELSE NULL END
-                  WHERE id = ?5 AND task_id = ?6 AND status = 'running'",
-                params![
-                    message,
-                    failure_code,
-                    retry_disposition,
-                    FAILURE_POLICY_VERSION,
-                    batch.attempt_id,
-                    batch.task_id
-                ],
-            )?;
+            let lifecycle_at = if batch.idle_checkpoint {
+                Some(idle_checkpoint_lifecycle_timestamp_in_tx(conn, &batch.run_id)?)
+            } else {
+                None
+            };
+            let attempt_updated = if let Some(lifecycle_at) = lifecycle_at.as_deref() {
+                let next_attempt_at = (!terminal).then(|| lifecycle_at.to_owned());
+                conn.execute(
+                    "UPDATE narrative_extraction_attempts
+                        SET status = 'failed', completed_at = ?1, error_message = ?2,
+                            failure_code = ?3, retry_disposition = ?4, policy_version = ?5,
+                            next_attempt_at = ?6
+                      WHERE id = ?7 AND task_id = ?8 AND status = 'running'",
+                    params![
+                        lifecycle_at,
+                        message,
+                        failure_code,
+                        retry_disposition,
+                        FAILURE_POLICY_VERSION,
+                        next_attempt_at,
+                        batch.attempt_id,
+                        batch.task_id
+                    ],
+                )?
+            } else {
+                conn.execute(
+                    "UPDATE narrative_extraction_attempts
+                        SET status = 'failed', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), error_message = ?1,
+                            failure_code = ?2, retry_disposition = ?3, policy_version = ?4,
+                            next_attempt_at = CASE
+                              WHEN ?3 = 'retryable' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END
+                      WHERE id = ?5 AND task_id = ?6 AND status = 'running'",
+                    params![
+                        message,
+                        failure_code,
+                        retry_disposition,
+                        FAILURE_POLICY_VERSION,
+                        batch.attempt_id,
+                        batch.task_id
+                    ],
+                )?
+            };
             if attempt_updated == 0 {
                 return Ok(());
             }
             let task_status = if terminal { "failed" } else { "queued" };
-            let task_updated = conn.execute(
-                "UPDATE narrative_extraction_tasks
-                    SET status = ?1, error_message = ?2,
-                        lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
-                        completed_at = CASE WHEN ?1 = 'failed' THEN datetime('now') ELSE NULL END,
-                        version = version + 1
-                  WHERE id = ?3 AND run_id = ?4 AND status = 'running'
-                    AND lease_owner = ?5",
-                params![
-                    task_status,
-                    message,
-                    batch.task_id,
-                    batch.run_id,
-                    batch.lease_owner
-                ],
-            )?;
+            let task_updated = if let Some(lifecycle_at) = lifecycle_at.as_deref() {
+                let completed_at = terminal.then(|| lifecycle_at.to_owned());
+                conn.execute(
+                    "UPDATE narrative_extraction_tasks
+                        SET status = ?1, error_message = ?2,
+                            lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+                            completed_at = ?3, version = version + 1
+                      WHERE id = ?4 AND run_id = ?5 AND status = 'running'
+                        AND lease_owner = ?6",
+                    params![
+                        task_status,
+                        message,
+                        completed_at,
+                        batch.task_id,
+                        batch.run_id,
+                        batch.lease_owner
+                    ],
+                )?
+            } else {
+                conn.execute(
+                    "UPDATE narrative_extraction_tasks
+                        SET status = ?1, error_message = ?2,
+                            lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+                            completed_at = CASE WHEN ?1 = 'failed' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END,
+                            version = version + 1
+                      WHERE id = ?3 AND run_id = ?4 AND status = 'running'
+                        AND lease_owner = ?5",
+                    params![
+                        task_status,
+                        message,
+                        batch.task_id,
+                        batch.run_id,
+                        batch.lease_owner
+                    ],
+                )?
+            };
             anyhow::ensure!(
                 task_updated == 1,
                 "NEX_INCREMENTAL_FRESHNESS_LEASE_LOST: failed Attempt lost its Task lease"
@@ -2896,6 +3920,14 @@ fn digest_json(value: &Value) -> anyhow::Result<String> {
     ))
 }
 
+/// Idle checkpoints are scheduler evidence, so their descriptors must have
+/// one stable digest across producer, recovery, and readiness readers.  Keep
+/// the legacy insertion-order digest for ordinary Feed payloads: changing it
+/// would invalidate existing change-set work keys and cursor proofs.
+fn idle_checkpoint_digest(value: &Value) -> String {
+    format!("sha256:{}", digest_plan(value))
+}
+
 fn now_string() -> String {
     chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -2904,9 +3936,11 @@ fn now_string() -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::c2z_preparation::{inspect_project_cutover_readiness, ReadinessState};
     use super::super::declaration_storage::{
         write_dependency_declaration_set, DependencyDeclaration, DependencyDeclarationSetRequest,
     };
+    use super::super::dependency_edges::record_dependency_edge_in_tx;
     use super::*;
     use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 
@@ -2915,6 +3949,11 @@ mod tests {
     const SCENE_ID: &str = "scene-c2-1-phase-cas";
     const EDGE_ID: &str = "edge-c2-1-phase-cas";
     const CONSUMER_RUN_ID: &str = "consumer-run-c2-1-phase-cas";
+    const HELD_PROJECT_ID: &str = "a-project-c2-1-held";
+    const HELD_EPOCH_ID: &str = "epoch-c2-1-held";
+    const HELD_SCENE_ID: &str = "scene-c2-1-held";
+    const HELD_IDLE_PROJECT_ID: &str = "a-project-c2-1-held-idle";
+    const HELD_IDLE_EPOCH_ID: &str = "epoch-c2-1-held-idle";
     const OCCURRED_AT: &str = "2026-08-19T00:00:00.000Z";
     const SOURCE_UPDATED_AT: &str = "2026-08-19T00:00:02.000Z";
 
@@ -3070,6 +4109,1522 @@ mod tests {
         .expect("seed component-contract D2 head");
     }
 
+    fn seed_completed_incremental_run(
+        conn: &Connection,
+        run_id: &str,
+        epoch_id: &str,
+        completed_at: &str,
+    ) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, outcome_summary_json, created_at, started_at,
+                 completed_at, version, run_kind, consumer_id, semantic_epoch_id, work_key)
+             VALUES (?1, ?2, 'freshness-evaluation', '{}', '{}', 'digest-idle-fixture',
+                     'completed', '{}', ?3, ?4, ?4, ?5, 0, 'freshness-evaluation',
+                     ?6, ?7, ?8)",
+            params![
+                run_id,
+                PROJECT_ID,
+                serde_json::to_string(&json!({
+                    "runId": run_id,
+                    "projectId": PROJECT_ID,
+                    "fromSequenceExclusive": 0,
+                    "throughSequenceInclusive": 1,
+                    "hasMore": false,
+                }))?,
+                OCCURRED_AT,
+                completed_at,
+                CURSOR_CONSUMER_ID,
+                epoch_id,
+                format!("incremental-freshness:{epoch_id}:0:1:fixture"),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn rotated_idle_checkpoint_db() -> Database {
+        let db = fixture_db();
+        db.with_conn(|conn| {
+            seed_completed_incremental_run(
+                conn,
+                "incremental-e0-completed",
+                EPOCH_ID,
+                "2026-08-19T00:00:03.000Z",
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-c2-1-idle-e1', ?1, 1, 'restore',
+                         '2026-08-19T00:00:10.000Z')",
+                [PROJECT_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_cursors
+                    (project_id, consumer_id, acknowledged_through_sequence, updated_at)
+                 VALUES (?1, ?2, 1, '2026-08-19T00:00:11.000Z')",
+                params![PROJECT_ID, CURSOR_CONSUMER_ID],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed rotated idle-checkpoint fixture");
+        db
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct HeldProjectDurableSnapshot {
+        run_count: i64,
+        task_count: i64,
+        attempt_count: i64,
+        feed_event_count: i64,
+        cursor: Option<HeldProjectCursor>,
+    }
+
+    type HeldProjectCursor = (
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+
+    fn held_project_fixture_db() -> Database {
+        let db = fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES (?1, 'Held project')",
+                [HELD_PROJECT_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES (?1, ?2, 0, 'initial', ?3)",
+                params![HELD_EPOCH_ID, HELD_PROJECT_ID, OCCURRED_AT],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, content, version, updated_at)
+                 VALUES (?1, ?2, 'scene', 'Held scene', '{}', 2, ?3)",
+                params![HELD_SCENE_ID, HELD_PROJECT_ID, SOURCE_UPDATED_AT],
+            )?;
+            conn.execute(
+                "INSERT INTO change_events
+                    (event_uid, project_id, scene_id, domain, op_type, entity_type, entity_id,
+                     payload, session_id, sequence, timestamp, prev_hash, hash)
+                 VALUES ('canonical-c2-1-held', ?1, ?2, 'scene', 'scene.update', 'scene', ?2,
+                         '{}', 'c2-1-held', 1, 1787078400001,
+                         'fixture-prev-held', 'fixture-hash-held')",
+                params![HELD_PROJECT_ID, HELD_SCENE_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_transactions
+                    (id, project_id, request_id, source_domain, source_change_event_uid,
+                     source_change_event_sequence, cause_kind, origin, application_ids_json,
+                     payload_digest, created_at)
+                 VALUES ('transaction-c2-1-held', ?1, 'request-c2-1-held', 'scene.update',
+                         'canonical-c2-1-held', 1, 'forward', 'human', '[]',
+                         'sha256:c2-1-held-payload', ?2)",
+                params![HELD_PROJECT_ID, OCCURRED_AT],
+            )?;
+            for (ordinal, slug) in ["character", "location", "item", "lore"]
+                .into_iter()
+                .enumerate()
+            {
+                conn.execute(
+                    r#"INSERT INTO narrative_change_events
+                        (id, project_id, transaction_id, canonical_change_event_uid,
+                         canonical_sequence, event_ordinal, object_key_json, change_kind,
+                         mutation_kind, before_version, before_digest, after_version,
+                             after_digest, changed_paths_json, text_impact_json,
+                             structural_impact_json, occurred_at)
+                     VALUES (?1, ?2, 'transaction-c2-1-held',
+                             'canonical-c2-1-held', 1, ?3, ?4, 'catalog', 'create',
+                             NULL, NULL, NULL, ?5, '["/"]', NULL,
+                             '{"changedPaths":["/"]}', ?6)"#,
+                    params![
+                        format!("event-c2-1-held-{slug}"),
+                        HELD_PROJECT_ID,
+                        i64::try_from(ordinal)?,
+                        format!(
+                            r#"{{"kind":"component","componentId":"codex-type:{HELD_PROJECT_ID}-{slug}"}}"#
+                        ),
+                        format!("sha256:held-{slug}-after"),
+                        OCCURRED_AT,
+                    ],
+                )?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed held-project fixture");
+        db
+    }
+
+    fn empty_held_project_fixture_db() -> Database {
+        let db = fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES (?1, 'Held idle project')",
+                [HELD_IDLE_PROJECT_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES (?1, ?2, 0, 'initial', ?3)",
+                params![HELD_IDLE_EPOCH_ID, HELD_IDLE_PROJECT_ID, OCCURRED_AT],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed held idle-project fixture");
+        db
+    }
+
+    fn held_project_durable_snapshot_for(
+        db: &Database,
+        project_id: &str,
+    ) -> HeldProjectDurableSnapshot {
+        db.with_conn(|conn| {
+            let run_count = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            let task_count = conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_extraction_tasks task
+                   JOIN narrative_extraction_runs run ON run.id = task.run_id
+                  WHERE run.project_id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            let attempt_count = conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_extraction_attempts attempt
+                   JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+                   JOIN narrative_extraction_runs run ON run.id = task.run_id
+                  WHERE run.project_id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            let feed_event_count = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_events WHERE project_id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            let cursor = conn
+                .query_row(
+                    "SELECT acknowledged_through_sequence,
+                            reserved_through_sequence,
+                            active_run_id,
+                            semantic_epoch_id,
+                            last_error
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1
+                        AND consumer_id = ?2",
+                    params![project_id, CURSOR_CONSUMER_ID],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            Ok(HeldProjectDurableSnapshot {
+                run_count,
+                task_count,
+                attempt_count,
+                feed_event_count,
+                cursor,
+            })
+        })
+        .expect("read held-project durable snapshot")
+    }
+
+    fn held_project_durable_snapshot(db: &Database) -> HeldProjectDurableSnapshot {
+        held_project_durable_snapshot_for(db, HELD_PROJECT_ID)
+    }
+
+    #[test]
+    fn held_candidate_returns_no_write_before_reservation_or_ack() {
+        let db = held_project_fixture_db();
+        let first = run_incremental_freshness_cycle_with_hold(&db, Some(HELD_PROJECT_ID))
+            .expect("non-held primary project should process before the held candidate");
+        assert!(matches!(
+            first,
+            IncrementalFreshnessCycleOutcome::Processed(summary)
+                if summary.project_id == PROJECT_ID
+        ));
+        let before = held_project_durable_snapshot(&db);
+        assert_eq!(before.feed_event_count, 4);
+        let held = run_incremental_freshness_cycle_with_hold(&db, Some(HELD_PROJECT_ID))
+            .expect("held candidate should return an explicit outcome");
+        assert_eq!(
+            held,
+            IncrementalFreshnessCycleOutcome::Held(IncrementalFreshnessHeldSummary {
+                project_id: HELD_PROJECT_ID.to_owned(),
+            })
+        );
+        assert_eq!(before, held_project_durable_snapshot(&db));
+    }
+
+    #[test]
+    fn held_empty_feed_checkpoint_returns_no_write_before_zero_width_claim() {
+        let db = empty_held_project_fixture_db();
+        let first = run_incremental_freshness_cycle_with_hold(&db, Some(HELD_IDLE_PROJECT_ID))
+            .expect("non-held primary project should process before the held idle checkpoint");
+        assert!(matches!(
+            first,
+            IncrementalFreshnessCycleOutcome::Processed(summary)
+                if summary.project_id == PROJECT_ID
+        ));
+        let before = held_project_durable_snapshot_for(&db, HELD_IDLE_PROJECT_ID);
+        let held = run_incremental_freshness_cycle_with_hold(&db, Some(HELD_IDLE_PROJECT_ID))
+            .expect("held idle candidate should return an explicit outcome");
+        assert_eq!(
+            held,
+            IncrementalFreshnessCycleOutcome::Held(IncrementalFreshnessHeldSummary {
+                project_id: HELD_IDLE_PROJECT_ID.to_owned(),
+            })
+        );
+        assert_eq!(
+            before,
+            held_project_durable_snapshot_for(&db, HELD_IDLE_PROJECT_ID)
+        );
+    }
+
+    const IDLE_SURFACE_TABLES: &[&str] = &[
+        "narrative_change_sets",
+        "narrative_projection_freshness",
+        "narrative_projection_dependencies",
+        "narrative_application_contributions",
+        "narrative_temporal_nodes",
+        "narrative_temporal_constraints",
+        "narrative_temporal_projections",
+        "narrative_dependency_edges",
+        "narrative_dependency_edge_states",
+        "narrative_consumer_freshness",
+        "narrative_maintenance_finding_observations",
+        "narrative_maintenance_finding_lifecycle",
+        "narrative_maintenance_attention",
+        "narrative_semantic_index_metadata",
+        "narrative_dependency_declaration_sets",
+        "narrative_dependency_declaration_entries",
+        "narrative_dependency_declaration_heads",
+    ];
+
+    fn idle_surface_snapshot(conn: &Connection) -> anyhow::Result<Vec<(String, Vec<String>)>> {
+        IDLE_SURFACE_TABLES
+            .iter()
+            .map(|table| {
+                let columns = conn
+                    .prepare(&format!("PRAGMA table_info(\"{table}\")"))?
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                anyhow::ensure!(
+                    !columns.is_empty(),
+                    "idle surface table {table} has no columns"
+                );
+                let projection = columns
+                    .iter()
+                    .map(|column| format!("quote(\"{column}\")"))
+                    .collect::<Vec<_>>()
+                    .join(" || '|' || ");
+                let mut rows = conn
+                    .prepare(&format!("SELECT {projection} FROM \"{table}\""))?
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows.sort();
+                Ok(((*table).to_owned(), rows))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn idle_current_epoch_checkpoint_after_epoch_rotation_is_not_idle() {
+        let db = rotated_idle_checkpoint_db();
+        let before_surfaces = db
+            .with_conn(idle_surface_snapshot)
+            .expect("snapshot idle surfaces before checkpoint");
+
+        let first = run_incremental_freshness_cycle(&db)
+            .expect("idle checkpoint cycle should complete without an error");
+        let IncrementalFreshnessCycleOutcome::Processed(summary) = first else {
+            panic!("a clean current Epoch at the Feed head requires one zero-width checkpoint");
+        };
+        assert_eq!(summary.project_id, PROJECT_ID);
+        assert_eq!(summary.from_sequence_exclusive, 1);
+        assert_eq!(summary.through_sequence_inclusive, 1);
+        assert_eq!(summary.affected_edge_count, 0);
+        assert_eq!(summary.affected_consumer_count, 0);
+        assert!(!summary.has_more);
+
+        let run_id = db
+            .with_conn(|conn| {
+                let run: (String, String, String, String, String, String, String) = conn
+                    .query_row(
+                        "SELECT id, status, run_kind, consumer_id, semantic_epoch_id,
+                                work_key, outcome_summary_json
+                           FROM narrative_extraction_runs
+                          WHERE project_id = ?1 AND run_kind = 'freshness-evaluation'
+                            AND consumer_id = ?2 AND semantic_epoch_id = 'epoch-c2-1-idle-e1'",
+                        params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                                row.get(6)?,
+                            ))
+                        },
+                    )?;
+                assert_eq!(run.1, "completed");
+                assert_eq!(run.2, "freshness-evaluation");
+                assert_eq!(run.3, CURSOR_CONSUMER_ID);
+                assert_eq!(run.4, "epoch-c2-1-idle-e1");
+                assert!(run
+                    .5
+                    .starts_with("incremental-freshness:epoch-c2-1-idle-e1:1:1:"));
+                let outcome: Value = serde_json::from_str(&run.6)?;
+                assert_eq!(outcome["runId"].as_str(), Some(run.0.as_str()));
+                assert_eq!(outcome["projectId"].as_str(), Some(PROJECT_ID));
+                assert_eq!(outcome["fromSequenceExclusive"].as_i64(), Some(1));
+                assert_eq!(outcome["throughSequenceInclusive"].as_i64(), Some(1));
+                assert_eq!(outcome["hasMore"].as_bool(), Some(false));
+                assert_eq!(outcome["affectedEdgeCount"].as_i64(), Some(0));
+                assert_eq!(outcome["affectedConsumerCount"].as_i64(), Some(0));
+                let (task_kind, input_json, task_status, attempt_status): (
+                    String,
+                    String,
+                    String,
+                    String,
+                ) = conn.query_row(
+                    "SELECT t.task_kind, t.input_json, t.status, a.status
+                       FROM narrative_extraction_tasks t
+                       JOIN narrative_extraction_attempts a ON a.task_id = t.id
+                      WHERE t.run_id = ?1",
+                    [run.0.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                assert_eq!(task_kind, TASK_KIND);
+                assert_eq!(task_status, "completed");
+                assert_eq!(attempt_status, "completed");
+                let input: Value = serde_json::from_str(&input_json)?;
+                assert_eq!(
+                    input["kind"].as_str(),
+                    Some("current-epoch-idle-checkpoint")
+                );
+                assert_eq!(
+                    input["semanticEpochId"].as_str(),
+                    Some("epoch-c2-1-idle-e1")
+                );
+                assert_eq!(input["fromSequenceExclusive"].as_i64(), Some(1));
+                assert_eq!(input["throughSequenceInclusive"].as_i64(), Some(1));
+                assert!(input["inputDigest"].as_str().is_some());
+                let change_set_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_change_sets WHERE project_id = ?1",
+                    [PROJECT_ID],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(
+                    change_set_count, 0,
+                    "zero-width checkpoints cannot create Change Sets"
+                );
+                let cursor: (i64, Option<String>, Option<i64>, Option<String>) = conn.query_row(
+                    "SELECT acknowledged_through_sequence, active_run_id,
+                            reserved_through_sequence, last_error
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1 AND consumer_id = ?2",
+                    params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                assert_eq!(cursor, (1, None, None, None));
+                Ok::<_, anyhow::Error>(run.0)
+            })
+            .expect("inspect zero-width checkpoint lifecycle");
+
+        let second =
+            run_incremental_freshness_cycle(&db).expect("the next clean wake should remain idle");
+        assert_eq!(second, IncrementalFreshnessCycleOutcome::Idle);
+        let after_surfaces = db
+            .with_conn(idle_surface_snapshot)
+            .expect("snapshot idle surfaces after checkpoint");
+        assert_eq!(
+            before_surfaces, after_surfaces,
+            "zero-width checkpoint must not mutate Generic, Edge, Finding, D2, or Change Set surfaces"
+        );
+        db.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'freshness-evaluation'
+                    AND consumer_id = ?2 AND semantic_epoch_id = 'epoch-c2-1-idle-e1'",
+                params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 1);
+            let persisted_id: String = conn.query_row(
+                "SELECT id FROM narrative_extraction_runs WHERE id = ?1",
+                [run_id.as_str()],
+                |row| row.get(0),
+            )?;
+            assert_eq!(persisted_id, run_id);
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("confirm one-shot idle checkpoint");
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_accepts_the_producer_digest_shape() {
+        let db = rotated_idle_checkpoint_db();
+        let outcome = run_incremental_freshness_cycle(&db)
+            .expect("idle checkpoint producer should complete successfully");
+        assert!(matches!(
+            outcome,
+            IncrementalFreshnessCycleOutcome::Processed(_)
+        ));
+
+        let readiness = db
+            .with_conn(|conn| inspect_project_cutover_readiness(conn, PROJECT_ID))
+            .expect("inspect current-Epoch readiness after idle checkpoint");
+        assert_eq!(
+            readiness.incremental_runtime.state,
+            ReadinessState::Incomplete,
+            "unexpected readiness: {readiness:?}"
+        );
+        assert_eq!(
+            readiness.incremental_runtime.reasons,
+            vec!["incremental-freshness-scheduler-liveness-evidence-unavailable"],
+            "a producer-created idle checkpoint must satisfy all durable metadata checks"
+        );
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_accepts_producer_after_future_imported_run_lifecycle() {
+        let db = rotated_idle_checkpoint_db();
+        seed_future_imported_run_lifecycle(&db);
+
+        let outcome = run_incremental_freshness_cycle(&db)
+            .expect("idle checkpoint producer should continue future lifecycle");
+        assert!(matches!(
+            outcome,
+            IncrementalFreshnessCycleOutcome::Processed(_)
+        ));
+
+        let readiness = db
+            .with_conn(|conn| inspect_project_cutover_readiness(conn, PROJECT_ID))
+            .expect("inspect current-Epoch readiness after future lifecycle checkpoint");
+        assert_eq!(
+            readiness.incremental_runtime.state,
+            ReadinessState::Incomplete,
+            "unexpected readiness: {readiness:?}"
+        );
+        assert_eq!(
+            readiness.incremental_runtime.reasons,
+            vec!["incremental-freshness-scheduler-liveness-evidence-unavailable"],
+            "a producer-created idle checkpoint must follow imported Run lifecycle authority"
+        );
+    }
+
+    fn seed_future_imported_run_lifecycle(db: &Database) {
+        db.with_conn(|conn| {
+            // Imported projects may carry a lifecycle authority ahead of the
+            // wall clock. Every recovery branch must continue that authority
+            // for its Attempt, Task, and Run timestamps.
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, created_at, started_at, completed_at,
+                     run_kind, semantic_epoch_id)
+                 VALUES ('imported-future-lifecycle-variants', ?1, 'imported', '{}', '{}',
+                         'sha256:future-import-variants', 'completed', '{}',
+                         '2099-01-01T00:00:00.000Z',
+                         '2099-01-01T00:00:00.001Z',
+                         '2099-01-01T00:00:00.002Z',
+                         'interpretation', ?2)",
+                params![PROJECT_ID, EPOCH_ID],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed future imported Run lifecycle variant");
+    }
+
+    fn reserve_claimed_idle_checkpoint(db: &Database) -> ClaimedBatch {
+        let reservation = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| reserve_or_resume_batch_in_tx(conn, None))
+            })
+            .expect("reserve idle checkpoint for recovery fixture");
+        let ReservationOutcome::Claimed(batch) = reservation else {
+            panic!("fixture must produce an idle checkpoint reservation");
+        };
+        assert!(batch.idle_checkpoint);
+        *batch
+    }
+
+    fn reserve_unpublished_idle_checkpoint(db: &Database) -> (String, String) {
+        let batch = reserve_claimed_idle_checkpoint(db);
+        let run_id = batch.run_id.clone();
+        let task_id = batch.task_id.clone();
+        db.with_conn(|conn| {
+            // Model a worker crash after claim. The durable reservation and
+            // tagged input remain, while both leases are expired so the next
+            // wake must use the normal claim/Attempt recovery path.
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET lease_expires_at = '2000-01-01T00:00:00.000Z',
+                        heartbeat_at = '2000-01-01T00:00:00.000Z'
+                  WHERE id = ?1 AND run_id = ?2",
+                params![task_id, run_id],
+            )?;
+            conn.execute(
+                "UPDATE narrative_change_cursors
+                    SET lease_expires_at = '2000-01-01T00:00:00.000Z'
+                  WHERE project_id = ?1 AND consumer_id = ?2 AND active_run_id = ?3",
+                params![PROJECT_ID, CURSOR_CONSUMER_ID, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("expire idle checkpoint leases");
+        (run_id, task_id)
+    }
+
+    #[test]
+    fn idle_current_epoch_checkpoint_resumes_tagged_task_after_expired_lease() {
+        let db = rotated_idle_checkpoint_db();
+        let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+
+        let resumed = run_incremental_freshness_cycle(&db)
+            .expect("expired idle checkpoint should resume through the durable lifecycle");
+        let IncrementalFreshnessCycleOutcome::Processed(summary) = resumed else {
+            panic!("expired idle checkpoint must be reclaimed and completed");
+        };
+        assert_eq!(summary.run_id, run_id);
+        assert_eq!(summary.from_sequence_exclusive, 1);
+        assert_eq!(summary.through_sequence_inclusive, 1);
+        assert_eq!(summary.affected_edge_count, 0);
+        assert_eq!(summary.affected_consumer_count, 0);
+
+        db.with_conn(|conn| {
+            let statuses: (i64, i64) = conn.query_row(
+                "SELECT
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)
+                   FROM narrative_extraction_attempts
+                  WHERE task_id = ?1",
+                [task_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(
+                statuses,
+                (1, 1),
+                "recovery must close the displaced Attempt"
+            );
+            let (task_status, run_status, change_sets): (String, String, i64) = conn.query_row(
+                "SELECT task.status, run.status,
+                        (SELECT COUNT(*) FROM narrative_change_sets WHERE project_id = ?1)
+                   FROM narrative_extraction_tasks task
+                   JOIN narrative_extraction_runs run ON run.id = task.run_id
+                  WHERE task.id = ?2 AND run.id = ?3",
+                params![PROJECT_ID, task_id, run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(task_status, "completed");
+            assert_eq!(run_status, "completed");
+            assert_eq!(change_sets, 0, "idle recovery must not create a Change Set");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect resumed idle checkpoint lifecycle");
+    }
+
+    #[test]
+    fn future_imported_idle_checkpoint_recovery_resumes_to_success_and_only_lacks_scheduler_liveness(
+    ) {
+        let db = rotated_idle_checkpoint_db();
+        seed_future_imported_run_lifecycle(&db);
+        let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+
+        let resumed = run_incremental_freshness_cycle(&db)
+            .expect("future imported idle checkpoint should resume successfully");
+        assert!(matches!(
+            resumed,
+            IncrementalFreshnessCycleOutcome::Processed(summary)
+                if summary.run_id == run_id
+                    && summary.from_sequence_exclusive == 1
+                    && summary.through_sequence_inclusive == 1
+        ));
+
+        db.with_conn(|conn| {
+            let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
+            assert_eq!(
+                readiness.incremental_runtime.reasons,
+                vec!["incremental-freshness-scheduler-liveness-evidence-unavailable"]
+            );
+            let statuses: (i64, i64) = conn.query_row(
+                "SELECT
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)
+                   FROM narrative_extraction_attempts
+                  WHERE task_id = ?1",
+                [task_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(statuses, (1, 1));
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect future imported recovery readiness");
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_accepts_failed_retry_metadata_before_completion() {
+        let db = rotated_idle_checkpoint_db();
+        let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = 'corrupted-idle-checkpoint-kind'
+                  WHERE id = ?1 AND run_id = ?2",
+                params![task_id, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("corrupt idle task kind to exercise retry metadata");
+
+        let first_error = run_incremental_freshness_cycle(&db)
+            .expect_err("the first malformed idle retry must fail closed");
+        assert!(first_error
+            .to_string()
+            .contains("NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_TASK_KIND_INVALID"));
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = ?1
+                  WHERE id = ?2 AND run_id = ?3",
+                params![TASK_KIND, task_id, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("restore canonical idle task kind before retry");
+
+        let second = run_incremental_freshness_cycle(&db)
+            .expect("a corrected idle retry must complete the same Run");
+        assert!(matches!(
+            second,
+            IncrementalFreshnessCycleOutcome::Processed(_)
+        ));
+        db.with_conn(|conn| {
+            let mut rows = conn.prepare(
+                "SELECT attempt_number, status, completed_at, failure_code,
+                        retry_disposition, policy_version, next_attempt_at
+                   FROM narrative_extraction_attempts
+                  WHERE task_id = ?1
+                  ORDER BY attempt_number",
+            )?;
+            let attempts = rows
+                .query_map([task_id.as_str()], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(attempts.len(), 3);
+            assert_eq!(attempts[0].0, 1);
+            assert_eq!(attempts[1].0, 2);
+            assert_eq!(attempts[2].0, 3);
+            for failed in &attempts[..2] {
+                assert_eq!(failed.1, "failed");
+                assert!(failed.2.contains('T') && failed.2.ends_with('Z'));
+                assert!(failed
+                    .3
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("NEX_")));
+                assert_eq!(failed.4.as_deref(), Some("retryable"));
+                assert_eq!(failed.5.as_deref(), Some("v1"));
+                assert!(failed
+                    .6
+                    .as_deref()
+                    .is_some_and(|value| value.contains('T') && value.ends_with('Z')));
+            }
+            assert_eq!(attempts[2].1, "completed");
+            assert!(attempts[2].2.contains('T') && attempts[2].2.ends_with('Z'));
+            assert_eq!(attempts[2].3, None);
+            assert_eq!(attempts[2].4, None);
+            assert_eq!(attempts[2].5, None);
+            assert_eq!(attempts[2].6, None);
+            let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
+            assert_eq!(
+                readiness.incremental_runtime.reasons,
+                vec!["incremental-freshness-scheduler-liveness-evidence-unavailable"]
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect failed-retry idle readiness topology");
+    }
+
+    #[test]
+    fn future_imported_idle_checkpoint_retry_repair_has_monotonic_failed_attempts_and_readiness() {
+        let db = rotated_idle_checkpoint_db();
+        seed_future_imported_run_lifecycle(&db);
+        let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = 'corrupted-idle-checkpoint-kind'
+                  WHERE id = ?1 AND run_id = ?2",
+                params![task_id, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("corrupt future imported idle task kind");
+
+        let first_error = run_incremental_freshness_cycle(&db)
+            .expect_err("future imported malformed idle retry must fail closed");
+        assert!(first_error
+            .to_string()
+            .contains("NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_TASK_KIND_INVALID"));
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = ?1
+                  WHERE id = ?2 AND run_id = ?3",
+                params![TASK_KIND, task_id, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("repair future imported idle task kind");
+
+        assert!(matches!(
+            run_incremental_freshness_cycle(&db)
+                .expect("future imported malformed idle retry should repair to success"),
+            IncrementalFreshnessCycleOutcome::Processed(_)
+        ));
+
+        db.with_conn(|conn| {
+            let mut rows = conn.prepare(
+                "SELECT attempt_number, status, started_at, completed_at, next_attempt_at
+                   FROM narrative_extraction_attempts
+                  WHERE task_id = ?1
+                  ORDER BY attempt_number",
+            )?;
+            let attempts = rows
+                .query_map([task_id.as_str()], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(attempts.len(), 3);
+            for pair in attempts.windows(2) {
+                assert!(
+                    pair[0].3 <= pair[1].2,
+                    "attempt timestamps must be monotonic: previous={:?}, next={:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            for attempt in &attempts[..2] {
+                let next_attempt_at = attempt
+                    .4
+                    .as_deref()
+                    .expect("failed Attempt must have next_attempt_at");
+                assert!(
+                    attempt.2.as_str() <= attempt.3.as_str()
+                        && attempt.3.as_str() <= next_attempt_at,
+                    "failed Attempt timestamps must be monotonic: {attempt:?}"
+                );
+            }
+            let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
+            assert_eq!(
+                readiness.incremental_runtime.reasons,
+                vec!["incremental-freshness-scheduler-liveness-evidence-unavailable"]
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect future imported retry timestamps and readiness");
+    }
+
+    #[test]
+    fn corrupted_idle_task_kind_at_retry_limit_terminalizes_without_fourth_attempt() {
+        let db = rotated_idle_checkpoint_db();
+        let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = 'corrupted-idle-checkpoint-kind', attempt_count = ?1
+                  WHERE id = ?2 AND run_id = ?3",
+                params![MAX_ATTEMPTS_PER_BATCH, task_id, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("corrupt idle task kind at retry limit");
+
+        let outcome = run_incremental_freshness_cycle(&db)
+            .expect("an exhausted corrupted idle reservation must terminalize safely");
+        assert_eq!(outcome, IncrementalFreshnessCycleOutcome::Idle);
+        db.with_conn(|conn| {
+            let (task_status, run_status, terminal_reason, attempts): (
+                String,
+                String,
+                Option<String>,
+                i64,
+            ) = conn.query_row(
+                "SELECT task.status, run.status, run.terminal_reason_code,
+                        (SELECT COUNT(*) FROM narrative_extraction_attempts
+                          WHERE task_id = task.id)
+                   FROM narrative_extraction_tasks task
+                   JOIN narrative_extraction_runs run ON run.id = task.run_id
+                  WHERE task.id = ?1 AND run.id = ?2",
+                params![task_id, run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(task_status, "failed");
+            assert_eq!(run_status, "failed");
+            assert_eq!(
+                terminal_reason.as_deref(),
+                Some("NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED")
+            );
+            assert_eq!(attempts, 1, "recovery must not claim a fourth Attempt");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect exhausted corrupted idle reservation");
+    }
+
+    #[test]
+    fn future_imported_idle_checkpoint_exhaustion_has_no_fourth_attempt_and_monotonic_lifecycle() {
+        let db = rotated_idle_checkpoint_db();
+        seed_future_imported_run_lifecycle(&db);
+        let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET task_kind = 'corrupted-idle-checkpoint-kind', attempt_count = ?1
+                  WHERE id = ?2 AND run_id = ?3",
+                params![MAX_ATTEMPTS_PER_BATCH, task_id, run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("corrupt future imported idle task at retry limit");
+
+        assert_eq!(
+            run_incremental_freshness_cycle(&db)
+                .expect("future imported exhausted idle checkpoint should terminalize"),
+            IncrementalFreshnessCycleOutcome::Idle
+        );
+        db.with_conn(|conn| {
+            let (
+                run_created_at,
+                run_started_at,
+                run_completed_at,
+                task_created_at,
+                task_started_at,
+                task_completed_at,
+                attempt_count,
+                attempts,
+            ): (String, String, String, String, String, String, i64, i64) = conn.query_row(
+                "SELECT run.created_at, run.started_at, run.completed_at,
+                        task.created_at, task.started_at, task.completed_at,
+                        task.attempt_count,
+                        (SELECT COUNT(*) FROM narrative_extraction_attempts
+                          WHERE task_id = task.id)
+                   FROM narrative_extraction_tasks task
+                   JOIN narrative_extraction_runs run ON run.id = task.run_id
+                  WHERE task.id = ?1 AND run.id = ?2",
+                params![task_id, run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )?;
+            let (attempt_started_at, attempt_completed_at): (String, String) = conn.query_row(
+                "SELECT started_at, completed_at
+                   FROM narrative_extraction_attempts
+                  WHERE task_id = ?1
+                  ORDER BY attempt_number",
+                [task_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let timestamps = [
+                run_created_at,
+                run_started_at,
+                task_created_at,
+                task_started_at,
+                attempt_started_at,
+                attempt_completed_at,
+                task_completed_at,
+                run_completed_at,
+            ];
+            for pair in timestamps.windows(2) {
+                assert!(
+                    pair[0] <= pair[1],
+                    "future imported lifecycle timestamps must be nondecreasing: {pair:?}"
+                );
+            }
+            assert_eq!(attempt_count, MAX_ATTEMPTS_PER_BATCH);
+            assert_eq!(attempts, 1, "exhaustion must not claim a fourth Attempt");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect future imported exhaustion lifecycle");
+    }
+
+    #[test]
+    fn malformed_idle_checkpoint_tag_requeues_and_terminalizes_without_feed_surfaces() {
+        let db = rotated_idle_checkpoint_db();
+        let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+        db.with_conn(|conn| {
+            let mut input: Value = conn
+                .query_row(
+                    "SELECT input_json FROM narrative_extraction_tasks WHERE id = ?1",
+                    [task_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .and_then(|json| {
+                    serde_json::from_str(&json)
+                        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+                })?;
+            input["kind"] = json!("incremental-freshness-batch");
+            conn.execute(
+                "UPDATE narrative_extraction_tasks SET input_json = ?1 WHERE id = ?2",
+                params![serde_json::to_string(&input)?, task_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("corrupt idle checkpoint tag");
+
+        // The crashed claim already consumed the first Attempt. Two
+        // malformed retries therefore reach the configured terminal limit.
+        for attempt in 1..=(MAX_ATTEMPTS_PER_BATCH - 1) {
+            let error = run_incremental_freshness_cycle(&db)
+                .expect_err("malformed checkpoint tag must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_INPUT_INVALID"),
+                "unexpected attempt {attempt} error: {error:#}"
+            );
+            if attempt < MAX_ATTEMPTS_PER_BATCH - 1 {
+                db.with_conn(|conn| {
+                    let status: String = conn.query_row(
+                        "SELECT status FROM narrative_extraction_tasks WHERE id = ?1",
+                        [task_id.as_str()],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(status, "queued");
+                    Ok::<_, anyhow::Error>(())
+                })
+                .expect("retryable malformed checkpoint should be queued");
+            }
+        }
+
+        db.with_conn(|conn| {
+            let (task_status, run_status, change_sets): (String, String, i64) = conn.query_row(
+                "SELECT task.status, run.status,
+                        (SELECT COUNT(*) FROM narrative_change_sets WHERE project_id = ?1)
+                   FROM narrative_extraction_tasks task
+                   JOIN narrative_extraction_runs run ON run.id = task.run_id
+                  WHERE task.id = ?2 AND run.id = ?3",
+                params![PROJECT_ID, task_id, run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(task_status, "failed");
+            assert_eq!(run_status, "failed");
+            assert_eq!(change_sets, 0);
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect terminal malformed checkpoint");
+        assert_eq!(
+            run_incremental_freshness_cycle(&db).expect("terminal checkpoint wake"),
+            IncrementalFreshnessCycleOutcome::Idle
+        );
+    }
+
+    #[test]
+    fn malformed_idle_checkpoint_digest_requeues_without_bypassing_validation() {
+        let db = rotated_idle_checkpoint_db();
+        let (_run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+        db.with_conn(|conn| {
+            let mut input: Value = conn
+                .query_row(
+                    "SELECT input_json FROM narrative_extraction_tasks WHERE id = ?1",
+                    [task_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .and_then(|json| {
+                    serde_json::from_str(&json)
+                        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+                })?;
+            input["inputDigest"] = json!(format!("sha256:{}", "0".repeat(64)));
+            conn.execute(
+                "UPDATE narrative_extraction_tasks SET input_json = ?1 WHERE id = ?2",
+                params![serde_json::to_string(&input)?, task_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("corrupt idle checkpoint digest");
+
+        let error = run_incremental_freshness_cycle(&db)
+            .expect_err("malformed checkpoint digest must fail closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_INPUT_INVALID"));
+        db.with_conn(|conn| {
+            let status: String = conn.query_row(
+                "SELECT status FROM narrative_extraction_tasks WHERE id = ?1",
+                [task_id.as_str()],
+                |row| row.get(0),
+            )?;
+            assert_eq!(status, "queued");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("malformed digest should use the ordinary retry disposition");
+    }
+
+    #[test]
+    fn idle_checkpoint_run_metadata_is_bound_to_task_digest_and_work_key() {
+        for mutation in [
+            "spec-kind",
+            "spec-input-digest",
+            "spec-extra",
+            "spec-digest",
+            "work-key",
+        ] {
+            let db = rotated_idle_checkpoint_db();
+            let (run_id, task_id) = reserve_unpublished_idle_checkpoint(&db);
+            db.with_conn(|conn| {
+                let (input_json, spec_json): (String, String) = conn.query_row(
+                    "SELECT task.input_json, run.spec_json
+                       FROM narrative_extraction_tasks task
+                       JOIN narrative_extraction_runs run ON run.id = task.run_id
+                      WHERE task.id = ?1 AND run.id = ?2",
+                    params![task_id, run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                let input: Value = serde_json::from_str(&input_json)?;
+                let input_digest = input["inputDigest"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("fixture input digest missing"))?;
+                match mutation {
+                    "spec-kind" => {
+                        let mut spec: Value = serde_json::from_str(&spec_json)?;
+                        spec["kind"] = json!("incremental-freshness-batch@1");
+                        conn.execute(
+                            "UPDATE narrative_extraction_runs SET spec_json = ?1 WHERE id = ?2",
+                            params![serde_json::to_string(&spec)?, run_id],
+                        )?;
+                    }
+                    "spec-input-digest" => {
+                        let mut spec: Value = serde_json::from_str(&spec_json)?;
+                        spec["inputDigest"] = json!(format!("sha256:{}", "1".repeat(64)));
+                        conn.execute(
+                            "UPDATE narrative_extraction_runs SET spec_json = ?1 WHERE id = ?2",
+                            params![serde_json::to_string(&spec)?, run_id],
+                        )?;
+                    }
+                    "spec-extra" => {
+                        let mut spec: Value = serde_json::from_str(&spec_json)?;
+                        spec["unexpected"] = json!(true);
+                        let recalculated_digest = idle_checkpoint_digest(&spec);
+                        conn.execute(
+                            "UPDATE narrative_extraction_runs
+                                SET spec_json = ?1, spec_digest = ?2
+                              WHERE id = ?3",
+                            params![serde_json::to_string(&spec)?, recalculated_digest, run_id],
+                        )?;
+                    }
+                    "spec-digest" => {
+                        conn.execute(
+                            "UPDATE narrative_extraction_runs SET spec_digest = ?1 WHERE id = ?2",
+                            params![format!("sha256:{}", "2".repeat(64)), run_id],
+                        )?;
+                    }
+                    "work-key" => {
+                        conn.execute(
+                            "UPDATE narrative_extraction_runs
+                                SET work_key = ?1
+                              WHERE id = ?2",
+                            params![
+                                format!(
+                                    "incremental-freshness:epoch-c2-1-idle-e1:1:1:{}",
+                                    "3".repeat(64)
+                                ),
+                                run_id
+                            ],
+                        )?;
+                    }
+                    _ => unreachable!("test mutation is exhaustive"),
+                }
+                assert!(!input_digest.is_empty());
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("corrupt idle checkpoint Run metadata");
+
+            let error = run_incremental_freshness_cycle(&db)
+                .expect_err("Run metadata corruption must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_SPEC_INVALID"),
+                "mutation {mutation} returned unexpected error: {error:#}"
+            );
+            db.with_conn(|conn| {
+                let status: String = conn.query_row(
+                    "SELECT status FROM narrative_extraction_tasks WHERE id = ?1",
+                    [task_id.as_str()],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(status, "queued", "mutation {mutation} should be retryable");
+                let change_sets: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_change_sets WHERE project_id = ?1",
+                    [PROJECT_ID],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(change_sets, 0);
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("inspect metadata-corruption retry");
+        }
+    }
+
+    #[test]
+    fn malformed_current_epoch_freshness_run_blocks_idle_checkpoint() {
+        for status in ["failed", "cancelled", "pending"] {
+            let db = rotated_idle_checkpoint_db();
+            db.with_conn(|conn| {
+                seed_completed_incremental_run(
+                    conn,
+                    "incremental-e1-malformed-run",
+                    "epoch-c2-1-idle-e1",
+                    "2026-08-19T00:00:12.000Z",
+                )?;
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET consumer_id = NULL, status = ?1,
+                            terminal_reason_code = NULL
+                      WHERE id = 'incremental-e1-malformed-run'",
+                    [status],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed malformed current-Epoch run");
+            assert_eq!(
+                run_incremental_freshness_cycle(&db)
+                    .expect("malformed current-Epoch run should suppress minting"),
+                IncrementalFreshnessCycleOutcome::Idle,
+                "status {status} must block an idle checkpoint"
+            );
+            db.with_conn(|conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_extraction_runs
+                      WHERE project_id = ?1 AND semantic_epoch_id = 'epoch-c2-1-idle-e1'",
+                    [PROJECT_ID],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1);
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("inspect suppressed malformed current-Epoch run");
+        }
+    }
+
+    fn empty_epoch_db() -> Database {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open empty test database");
+        db.migrate().expect("migrate empty test database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-empty', 'Empty')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-empty', 'project-empty', 0, 'initial',
+                         '2026-08-19T00:00:00.000Z')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed empty current Epoch");
+        db
+    }
+
+    #[test]
+    fn idle_current_epoch_checkpoint_allows_absent_cursor_only_at_feed_head_zero() {
+        let db = empty_epoch_db();
+        let first = run_incremental_freshness_cycle(&db).expect("head-zero checkpoint cycle");
+        let IncrementalFreshnessCycleOutcome::Processed(summary) = first else {
+            panic!("an empty Feed with no cursor requires one durable checkpoint");
+        };
+        assert_eq!(summary.project_id, "project-empty");
+        assert_eq!(summary.from_sequence_exclusive, 0);
+        assert_eq!(summary.through_sequence_inclusive, 0);
+        assert_eq!(summary.affected_edge_count, 0);
+        assert_eq!(summary.affected_consumer_count, 0);
+        assert_eq!(
+            run_incremental_freshness_cycle(&db).expect("head-zero second wake"),
+            IncrementalFreshnessCycleOutcome::Idle
+        );
+        db.with_conn(|conn| {
+            let (runs, acknowledged, change_sets): (i64, i64, i64) = conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM narrative_extraction_runs
+                      WHERE project_id = 'project-empty'
+                        AND run_kind = 'freshness-evaluation'),
+                    (SELECT acknowledged_through_sequence
+                       FROM narrative_change_cursors
+                      WHERE project_id = 'project-empty'
+                        AND consumer_id = ?1),
+                    (SELECT COUNT(*) FROM narrative_change_sets
+                      WHERE project_id = 'project-empty')",
+                [CURSOR_CONSUMER_ID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!((runs, acknowledged, change_sets), (1, 0, 0));
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect head-zero checkpoint");
+    }
+
+    #[test]
+    fn idle_checkpoint_processes_one_empty_project_per_wake_in_id_order() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open multi-project db");
+        db.migrate().expect("migrate multi-project db");
+        db.with_conn(|conn| {
+            for (project_id, epoch_id) in [
+                ("project-idle-a", "epoch-idle-a"),
+                ("project-idle-b", "epoch-idle-b"),
+            ] {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES (?1, 'Idle project')",
+                    [project_id],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_semantic_epochs
+                        (id, project_id, epoch_number, reason, created_at)
+                     VALUES (?1, ?2, 0, 'initial', '2026-08-19T00:00:00.000Z')",
+                    params![epoch_id, project_id],
+                )?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed two empty current Epochs");
+
+        let first = run_incremental_freshness_cycle(&db).expect("first bounded wake");
+        let IncrementalFreshnessCycleOutcome::Processed(first) = first else {
+            panic!("first empty project must receive the checkpoint");
+        };
+        assert_eq!(first.project_id, "project-idle-a");
+        let second = run_incremental_freshness_cycle(&db).expect("second bounded wake");
+        let IncrementalFreshnessCycleOutcome::Processed(second) = second else {
+            panic!("second empty project must receive the checkpoint on the next wake");
+        };
+        assert_eq!(second.project_id, "project-idle-b");
+        assert_eq!(
+            run_incremental_freshness_cycle(&db).expect("third bounded wake"),
+            IncrementalFreshnessCycleOutcome::Idle
+        );
+        db.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_runs
+                  WHERE run_kind = 'freshness-evaluation'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 2, "one checkpoint per project, no same-wake churn");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("inspect bounded multi-project wake");
+    }
+
+    #[test]
+    fn idle_checkpoint_suppresses_missing_epoch_and_unclean_cursor_candidates() {
+        let missing_epoch = Database::new(std::path::Path::new(":memory:")).expect("open db");
+        missing_epoch.migrate().expect("migrate db");
+        missing_epoch
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-no-epoch', 'No epoch')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project without an Epoch");
+        assert_eq!(
+            run_incremental_freshness_cycle(&missing_epoch).expect("missing epoch wake"),
+            IncrementalFreshnessCycleOutcome::Idle
+        );
+
+        for mutation in [
+            "missing",
+            "ack-mismatch",
+            "error",
+            "reservation",
+            "lease",
+            "epoch",
+        ] {
+            let db = rotated_idle_checkpoint_db();
+            db.with_conn(|conn| {
+                if mutation == "missing" {
+                    conn.execute(
+                        "DELETE FROM narrative_change_cursors
+                          WHERE project_id = ?1 AND consumer_id = ?2",
+                        params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                    )?;
+                    return Ok::<_, anyhow::Error>(());
+                }
+                conn.execute(
+                    "UPDATE narrative_change_cursors
+                        SET acknowledged_through_sequence = 1,
+                            lease_owner = NULL, lease_expires_at = NULL,
+                            last_error = NULL, reserved_through_sequence = NULL,
+                            active_run_id = NULL, semantic_epoch_id = NULL
+                      WHERE project_id = ?1 AND consumer_id = ?2",
+                    params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                )?;
+                match mutation {
+                    "ack-mismatch" => conn.execute(
+                        "UPDATE narrative_change_cursors
+                            SET acknowledged_through_sequence = 0
+                          WHERE project_id = ?1 AND consumer_id = ?2",
+                        params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                    )?,
+                    "error" => conn.execute(
+                        "UPDATE narrative_change_cursors SET last_error = 'cursor failure'
+                          WHERE project_id = ?1 AND consumer_id = ?2",
+                        params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                    )?,
+                    "reservation" => conn.execute(
+                        "UPDATE narrative_change_cursors
+                            SET reserved_through_sequence = 1,
+                                active_run_id = 'incremental-e0-completed',
+                                semantic_epoch_id = 'epoch-c2-1-idle-e1'
+                          WHERE project_id = ?1 AND consumer_id = ?2",
+                        params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                    )?,
+                    "lease" => conn.execute(
+                        "UPDATE narrative_change_cursors SET lease_owner = 'stale-owner'
+                          WHERE project_id = ?1 AND consumer_id = ?2",
+                        params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                    )?,
+                    "epoch" => conn.execute(
+                        "UPDATE narrative_change_cursors SET semantic_epoch_id = ?3
+                          WHERE project_id = ?1 AND consumer_id = ?2",
+                        params![PROJECT_ID, CURSOR_CONSUMER_ID, EPOCH_ID],
+                    )?,
+                    _ => unreachable!("test mutation is exhaustive"),
+                };
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed unclean cursor");
+            let outcome = run_incremental_freshness_cycle(&db).expect("unclean cursor wake");
+            if matches!(mutation, "missing" | "ack-mismatch") {
+                let IncrementalFreshnessCycleOutcome::Processed(summary) = outcome else {
+                    panic!("a missing/behind cursor with Feed work must process real Feed work");
+                };
+                assert_eq!(summary.from_sequence_exclusive, 0);
+                assert_eq!(summary.through_sequence_inclusive, 1);
+                db.with_conn(|conn| {
+                    let idle_runs: i64 = conn.query_row(
+                        "SELECT COUNT(*)
+                           FROM narrative_extraction_runs
+                          WHERE project_id = ?1 AND semantic_epoch_id = 'epoch-c2-1-idle-e1'
+                            AND work_key LIKE 'incremental-freshness:%:1:1:%'",
+                        [PROJECT_ID],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(idle_runs, 0);
+                    Ok::<_, anyhow::Error>(())
+                })
+                .expect("inspect ack-mismatch non-idle processing");
+            } else {
+                assert_eq!(
+                    outcome,
+                    IncrementalFreshnessCycleOutcome::Idle,
+                    "cursor mutation {mutation} must not mint a checkpoint"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn idle_checkpoint_publish_rejects_epoch_rotation_and_feed_advance() {
+        for mutation in ["epoch", "feed"] {
+            let db = rotated_idle_checkpoint_db();
+            let batch = reserve_claimed_idle_checkpoint(&db);
+            db.with_conn(|conn| {
+                match mutation {
+                    "epoch" => {
+                        conn.execute(
+                            "INSERT INTO narrative_semantic_epochs
+                                (id, project_id, epoch_number, reason, created_at)
+                             VALUES ('epoch-c2-1-idle-e2', ?1, 2, 'restore',
+                                     '2026-08-19T00:00:20.000Z')",
+                            [PROJECT_ID],
+                        )?;
+                    }
+                    "feed" => {
+                        conn.execute(
+                            "UPDATE narrative_change_events
+                                SET canonical_sequence = 2
+                              WHERE id = 'event-phase-cas' AND project_id = ?1",
+                            [PROJECT_ID],
+                        )?;
+                    }
+                    _ => unreachable!("test mutation is exhaustive"),
+                }
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("mutate idle checkpoint publish authority");
+            let error = db
+                .with_conn(|conn| {
+                    with_immediate_transaction(conn, |conn| {
+                        publish_batch_in_tx(conn, &batch, &EvaluationPlan::empty())
+                    })
+                })
+                .expect_err("stale idle checkpoint must not publish");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_PUBLISH_RUNTIME_STALE_RESERVATION")
+                    || error
+                        .to_string()
+                        .contains("NEX_INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT_STALE"),
+                "mutation {mutation} returned unexpected stale error: {error:#}"
+            );
+            db.with_conn(|conn| {
+                let change_sets: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_change_sets WHERE project_id = ?1",
+                    [PROJECT_ID],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(change_sets, 0);
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("inspect stale idle checkpoint publication");
+        }
+    }
+
     fn mark_component_schema_change(db: &Database) {
         db.with_conn(|conn| {
             conn.execute(
@@ -3089,7 +5644,9 @@ mod tests {
 
     fn reserve_and_evaluate_batch(db: &Database) -> (ClaimedBatch, EvaluationPlan) {
         let reservation = db
-            .with_conn(|conn| with_immediate_transaction(conn, reserve_or_resume_batch_in_tx))
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| reserve_or_resume_batch_in_tx(conn, None))
+            })
             .expect("reserve deterministic Feed range");
         let ReservationOutcome::Claimed(batch) = reservation else {
             panic!("fixture must produce a claimed batch");
@@ -3343,6 +5900,226 @@ mod tests {
             "unexpected publish failure: {error:#}"
         );
         assert_publish_rolled_back(&db, &batch);
+    }
+
+    #[test]
+    fn incremental_feed_skips_reserved_semantic_index_without_mutating_any_surface() {
+        let db = fixture_db();
+        let (semantic_existing_edge_id, semantic_absent_edge_id) = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_semantic_index_metadata
+                        (project_id, index_key, generation, built_at, source_digest,
+                         dependency_set_digest, dirty_cache_flag)
+                     VALUES (?1, 'lexical', 7, '2026-08-15T00:00:00.000Z',
+                             'source-before', 'dependency-before', 0)",
+                    params![PROJECT_ID],
+                )?;
+                let existing = record_dependency_edge_in_tx(
+                    conn,
+                    PROJECT_ID,
+                    "semantic-index",
+                    "lexical-existing",
+                    &format!("project:scene:{SCENE_ID}"),
+                    r#"["/body"]"#,
+                    None,
+                    None,
+                    OCCURRED_AT,
+                )?;
+                let absent = record_dependency_edge_in_tx(
+                    conn,
+                    PROJECT_ID,
+                    "semantic-index",
+                    "lexical-absent",
+                    &format!("project:scene:{SCENE_ID}"),
+                    r#"["/content"]"#,
+                    None,
+                    None,
+                    OCCURRED_AT,
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edge_states
+                        (edge_id, project_id, evidence_freshness, reason_code, build_action,
+                         evaluated_at_epoch_id, evaluated_at)
+                     VALUES (?1, ?2, 'stale', 'source-revision-changed',
+                             'rebuild-required', ?3, '2026-08-15T00:00:02.000Z')",
+                    params![existing, PROJECT_ID, EPOCH_ID],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_consumer_freshness
+                        (project_id, consumer_kind, consumer_key, evidence_freshness,
+                         build_action, semantic_epoch_id, last_evaluated_run_id, updated_at)
+                     VALUES (?1, 'semantic-index', 'lexical-existing', 'stale',
+                             'rebuild-required', ?2, 'previous-run', '2026-08-15T00:00:02.000Z')",
+                    params![PROJECT_ID, EPOCH_ID],
+                )?;
+                Ok::<_, anyhow::Error>((existing, absent))
+            })
+            .expect("seed reserved Semantic Index Feed fixture");
+
+        let before = db
+            .with_conn(|conn| {
+                let existing_state: (String, Option<String>, String, String, String) = conn
+                    .query_row(
+                        "SELECT evidence_freshness, reason_code, build_action,
+                                evaluated_at_epoch_id, evaluated_at
+                           FROM narrative_dependency_edge_states
+                          WHERE edge_id = ?1",
+                        params![semantic_existing_edge_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
+                    )?;
+                let existing_freshness: (String, String, String, Option<String>, String) = conn
+                    .query_row(
+                        "SELECT evidence_freshness, build_action, semantic_epoch_id,
+                                last_evaluated_run_id, updated_at
+                           FROM narrative_consumer_freshness
+                          WHERE project_id = ?1 AND consumer_kind = 'semantic-index'
+                            AND consumer_key = 'lexical-existing'",
+                        params![PROJECT_ID],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
+                    )?;
+                let edge_snapshot: (String, String) = conn.query_row(
+                    "SELECT consumer_key, read_set_json
+                       FROM narrative_dependency_edges WHERE id = ?1",
+                    params![semantic_existing_edge_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                let metadata: (i64, String, String, i64) = conn.query_row(
+                    "SELECT generation, source_digest, dependency_set_digest, dirty_cache_flag
+                       FROM narrative_semantic_index_metadata
+                      WHERE project_id = ?1 AND index_key = 'lexical'",
+                    params![PROJECT_ID],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                let finding_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_maintenance_finding_observations
+                      WHERE project_id = ?1 AND finding_key LIKE 'semantic-index:%'",
+                    params![PROJECT_ID],
+                    |row| row.get(0),
+                )?;
+                Ok::<_, anyhow::Error>((
+                    existing_state,
+                    existing_freshness,
+                    edge_snapshot,
+                    metadata,
+                    finding_count,
+                ))
+            })
+            .expect("capture reserved surfaces before Feed cycle");
+
+        let outcome = run_incremental_freshness_cycle(&db).expect("run incremental Feed cycle");
+        let IncrementalFreshnessCycleOutcome::Processed(summary) = outcome else {
+            panic!("the fixture Feed must produce one processed cycle");
+        };
+        assert_eq!(summary.affected_edge_count, 1);
+        assert_eq!(summary.affected_consumer_count, 1);
+
+        db.with_conn(|conn| {
+            let after_state: (String, Option<String>, String, String, String) = conn.query_row(
+                "SELECT evidence_freshness, reason_code, build_action,
+                        evaluated_at_epoch_id, evaluated_at
+                   FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                params![semantic_existing_edge_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+            assert_eq!(after_state, before.0);
+            let after_freshness: (String, String, String, Option<String>, String) = conn
+                .query_row(
+                    "SELECT evidence_freshness, build_action, semantic_epoch_id,
+                            last_evaluated_run_id, updated_at
+                       FROM narrative_consumer_freshness
+                      WHERE project_id = ?1 AND consumer_kind = 'semantic-index'
+                        AND consumer_key = 'lexical-existing'",
+                    params![PROJECT_ID],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )?;
+            assert_eq!(after_freshness, before.1);
+            let absent_edge_state_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                params![semantic_absent_edge_id],
+                |row| row.get(0),
+            )?;
+            let absent_freshness_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_consumer_freshness
+                  WHERE project_id = ?1 AND consumer_kind = 'semantic-index'
+                    AND consumer_key = 'lexical-absent'",
+                params![PROJECT_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(absent_edge_state_count, 0);
+            assert_eq!(absent_freshness_count, 0);
+            let edge_snapshot: (String, String) = conn.query_row(
+                "SELECT consumer_key, read_set_json
+                   FROM narrative_dependency_edges WHERE id = ?1",
+                params![semantic_existing_edge_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(edge_snapshot, before.2);
+            let metadata: (i64, String, String, i64) = conn.query_row(
+                "SELECT generation, source_digest, dependency_set_digest, dirty_cache_flag
+                   FROM narrative_semantic_index_metadata
+                  WHERE project_id = ?1 AND index_key = 'lexical'",
+                params![PROJECT_ID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(metadata, before.3);
+            let finding_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_maintenance_finding_observations
+                  WHERE project_id = ?1 AND finding_key LIKE 'semantic-index:%'",
+                params![PROJECT_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(finding_count, before.4);
+            let supported_freshness: String = conn.query_row(
+                "SELECT evidence_freshness FROM narrative_consumer_freshness
+                  WHERE project_id = ?1 AND consumer_kind = 'narrative-extraction-run'
+                    AND consumer_key = ?2",
+                params![PROJECT_ID, CONSUMER_RUN_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(supported_freshness, "stale");
+            let acknowledged: i64 = conn.query_row(
+                "SELECT acknowledged_through_sequence FROM narrative_change_cursors
+                  WHERE project_id = ?1 AND consumer_id = ?2",
+                params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(acknowledged, 1, "Feed cycle must acknowledge its range");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("reserved surfaces must remain unchanged after Feed cycle");
     }
 
     #[test]

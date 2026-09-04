@@ -2084,8 +2084,7 @@ fn validate_commit_plan(
     )?;
     anyhow::ensure!(set_ok == 1, "proposal set not found for run/project");
 
-    let current_chronicle =
-        current_chronicle_run_spec_for_run(conn, ctx.project_id, ctx.run_id)?;
+    let current_chronicle = current_chronicle_run_spec_for_run(conn, ctx.project_id, ctx.run_id)?;
     let mut chronicle_document_authority = None;
 
     let has_chronicle = ctx.operations.iter().any(|op| is_chronicle_op(&op.kind));
@@ -2253,13 +2252,12 @@ fn validate_commit_plan(
 
         if !op.proposal_id.is_empty() {
             if current_chronicle && chronicle_document_authority.is_none() {
-                chronicle_document_authority = Some(
-                    load_verified_chronicle_commit_document_authority(
+                chronicle_document_authority =
+                    Some(load_verified_chronicle_commit_document_authority(
                         conn,
                         ctx.project_id,
                         ctx.run_id,
-                    )?,
-                );
+                    )?);
             }
             let operation_chronicle_authority = if current_chronicle {
                 ChronicleCommitPlanAuthority::Current(

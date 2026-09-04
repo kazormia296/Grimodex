@@ -307,6 +307,15 @@ pub(crate) struct TerminalFailureResolutionWrite<'a> {
     pub rule_id: &'a str,
     pub rule_version: u32,
     pub material_basis_digest: &'a str,
+    /// The immutable Observation anchor selected by the terminal resolver.
+    /// Resolution must derive any detail evidence from this exact Run rather
+    /// than accepting a caller-selected row or digest.
+    pub prior_observation_id: &'a str,
+    pub prior_observation_run_id: &'a str,
+    /// Rule-declared detail evidence folded into the prior Observation's
+    /// digests. Terminal graph-repair findings reconstruct this from their
+    /// sealed Verify outcome; other terminal findings leave it absent.
+    pub evidence_detail_digest: Option<&'a str>,
     pub observed_at: &'a str,
 }
 
@@ -1077,25 +1086,23 @@ pub(crate) fn resolve_terminal_failure_lifecycle_in_tx(
         expected_identity == write.finding_identity,
         "NEX_FINDING_LIFECYCLE_RESOLVED_IDENTITY_MISMATCH: terminal identity is not proven by its work subject"
     );
-    let prior: Option<(String, String, String, String, String)> = conn
+    let prior: Option<(String, String, String, String, String, String)> = conn
         .query_row(
-            "SELECT o.id, o.observation_digest, o.material_basis_digest,
+            "SELECT o.run_id, o.id, o.observation_digest, o.material_basis_digest,
                     o.reason_code, o.evidence_freshness_snapshot
                FROM narrative_maintenance_finding_observations AS o
-              WHERE o.project_id = ?1 AND o.semantic_epoch_id = ?2
-                AND o.finding_identity = ?3 AND o.finding_key = ?4
-                AND o.rule_id = ?5 AND o.rule_version = ?6
-                AND o.edge_id IS NULL AND o.material_basis_digest = ?7
-              ORDER BY julianday(o.observed_at) DESC
-              LIMIT 1",
+              WHERE o.id = ?1 AND o.project_id = ?2 AND o.semantic_epoch_id = ?3
+                AND o.finding_identity = ?4 AND o.finding_key = ?5
+                AND o.rule_id = ?6 AND o.rule_version = ?7
+                AND o.edge_id IS NULL",
             params![
+                write.prior_observation_id,
                 write.project_id,
                 write.semantic_epoch_id,
                 write.finding_identity,
                 write.finding_key,
                 write.rule_id,
                 i64::from(write.rule_version),
-                write.material_basis_digest,
             ],
             |row| {
                 Ok((
@@ -1104,11 +1111,13 @@ pub(crate) fn resolve_terminal_failure_lifecycle_in_tx(
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             },
         )
         .optional()?;
     let Some((
+        prior_observation_run_id,
         observation_id,
         stored_observation_digest,
         prior_material_basis_digest,
@@ -1118,6 +1127,14 @@ pub(crate) fn resolve_terminal_failure_lifecycle_in_tx(
     else {
         return Ok(None);
     };
+    anyhow::ensure!(
+        prior_observation_run_id == write.prior_observation_run_id,
+        "NEX_FINDING_LIFECYCLE_RESOLVED_ANCHOR_MISMATCH: terminal resolution selected a different Observation anchor"
+    );
+    anyhow::ensure!(
+        observation_id == write.prior_observation_id,
+        "NEX_FINDING_LIFECYCLE_RESOLVED_ANCHOR_MISMATCH: terminal resolution selected a different Observation anchor"
+    );
     let failure_code = decode_terminal_failure_observation_id(&observation_id)?;
     let reason_code = FindingReasonCode::try_from(stored_reason_code.as_str())?;
     let freshness = EvidenceFreshness::try_from(stored_freshness.as_str())?;
@@ -1130,7 +1147,7 @@ pub(crate) fn resolve_terminal_failure_lifecycle_in_tx(
             failure_code: Some(&failure_code),
             reason_code: reason_code.as_str(),
             evidence_freshness: freshness.as_str(),
-            evidence_detail_digest: None,
+            evidence_detail_digest: write.evidence_detail_digest,
         },
     )?;
     anyhow::ensure!(
@@ -1146,7 +1163,7 @@ pub(crate) fn resolve_terminal_failure_lifecycle_in_tx(
             failure_code: Some(&failure_code),
             reason_code: reason_code.as_str(),
             evidence_freshness: freshness.as_str(),
-            evidence_detail_digest: None,
+            evidence_detail_digest: write.evidence_detail_digest,
         },
     )?;
     anyhow::ensure!(
@@ -1728,12 +1745,13 @@ pub(crate) fn list_terminal_failure_finding_keys_for_epoch(
     Ok(keys)
 }
 
-/// Return the terminal Observation's durable observed-at time and material
-/// basis. Resolution compares that immutable time with the successful Run's
-/// durable completion time using strict SQLite `julianday` ordering. The
-/// Observation remains readable after its Run ledger row is deleted or
-/// logically restored; no implicit SQLite rowid participates in this order.
-pub(crate) fn latest_terminal_failure_observation_order(
+/// Return the terminal Observation's durable anchor, id, observed-at time,
+/// and material basis. Resolution compares that immutable time with the
+/// successful Run's durable completion time using strict SQLite `julianday`
+/// ordering. The Observation remains readable after its Run ledger row is
+/// deleted or logically restored; no implicit SQLite rowid participates in
+/// this order.
+pub(crate) fn latest_terminal_failure_observation_anchor(
     conn: &Connection,
     project_id: &str,
     semantic_epoch_id: &str,
@@ -1741,7 +1759,7 @@ pub(crate) fn latest_terminal_failure_observation_order(
     finding_key: &str,
     rule_id: &str,
     rule_version: u32,
-) -> anyhow::Result<Option<(String, String)>> {
+) -> anyhow::Result<Option<(String, String, String, String)>> {
     let invalid_timestamp_count: i64 = conn.query_row(
         "SELECT COUNT(*)
            FROM narrative_maintenance_finding_observations AS o
@@ -1811,7 +1829,7 @@ pub(crate) fn latest_terminal_failure_observation_order(
         "NEX_FINDING_OBSERVATION_ORDER_AMBIGUOUS: multiple terminal observations share the latest observed_at"
     );
     conn.query_row(
-        "SELECT o.observed_at, o.material_basis_digest
+        "SELECT o.observed_at, o.material_basis_digest, o.run_id, o.id
            FROM narrative_maintenance_finding_observations AS o
           WHERE o.project_id = ?1 AND o.semantic_epoch_id = ?2
             AND o.finding_identity = ?3 AND o.finding_key = ?4
@@ -1827,10 +1845,37 @@ pub(crate) fn latest_terminal_failure_observation_order(
             i64::from(rule_version),
             latest_julian,
         ],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )
     .optional()
     .map_err(Into::into)
+}
+
+/// Return only the terminal Observation chronology and basis for callers
+/// that do not need the durable Run anchor.
+pub(crate) fn latest_terminal_failure_observation_order(
+    conn: &Connection,
+    project_id: &str,
+    semantic_epoch_id: &str,
+    finding_identity: &str,
+    finding_key: &str,
+    rule_id: &str,
+    rule_version: u32,
+) -> anyhow::Result<Option<(String, String)>> {
+    Ok(latest_terminal_failure_observation_anchor(
+        conn,
+        project_id,
+        semantic_epoch_id,
+        finding_identity,
+        finding_key,
+        rule_id,
+        rule_version,
+    )?
+    .map(
+        |(observed_at, material_basis_digest, _run_id, _observation_id)| {
+            (observed_at, material_basis_digest)
+        },
+    ))
 }
 
 #[cfg(test)]

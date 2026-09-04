@@ -42,8 +42,9 @@ use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendar
 use grimodex_db::domain_writes::{
     self, ApplyAiTreePlanPayload, CodexRenameApplyPayload, CodexRenameUndoPayload,
     CreateScanStagingProjectPayload, ProjectCreatePayload, ProjectDeletePayload,
-    ProjectPatchPayload, ReplaceAuthorshipLanePayload, SetEntityTagsPayload, TreeNodeCreatePayload,
-    TreeNodeDeletePayload, TreeNodePatchPayload, UndoAiTreePlanPayload,
+    ProjectPatchPayload, ReplaceAuthorshipLanePayload, ScanStagingProjectPublishPayload,
+    SetEntityTagsPayload, TreeNodeCreatePayload, TreeNodeDeletePayload, TreeNodePatchPayload,
+    UndoAiTreePlanPayload,
 };
 use grimodex_db::editor_stickies;
 use grimodex_db::events::EventSink;
@@ -99,6 +100,7 @@ use grimodex_db::state::{
     active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
     PinnedWorkspaceDb,
 };
+use grimodex_db::timelapse::{TimelapseBodySnapshotTarget, TimelapseGenesisBaselineKind};
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload, TrashBinRestorePayload};
 use grimodex_db::web_editor_handoff;
 use grimodex_db::workspace::{self, GlobalSettings};
@@ -113,6 +115,23 @@ use uuid::Uuid;
 
 const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
 const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT: &str = "narrative-maintenance:epoch-rotated";
+
+type NarrativeCiProjectCursorRow = (
+    Option<String>,
+    i64,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TimelapseBodyBaselineTargetWire {
+    kind: String,
+    id: String,
+}
 
 fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
     // Workspace metadata survives a process restart, while the recovery gate
@@ -129,6 +148,198 @@ fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
         }
     }
     format!("authority:{}", authority.identity())
+}
+
+fn is_expected_c2zc_cutover_not_ready(error: &anyhow::Error) -> bool {
+    error.to_string().starts_with("NEX_C2ZC_CUTOVER_NOT_READY:")
+}
+
+fn require_held_cutover_not_ready(cutover_not_ready: bool) -> std::result::Result<(), AppError> {
+    if cutover_not_ready {
+        Ok(())
+    } else {
+        Err(AppError::Anyhow(anyhow::anyhow!(
+            "NEX_MAINTENANCE_CI_FRESHNESS_HOLD_CUTOVER_READY: held Freshness candidate unexpectedly passed the canonical cutover gate"
+        )))
+    }
+}
+
+/// Return the post-cycle state that a CI product journey may use to bind a
+/// main-process quiescence receipt.  This deliberately lives beside the
+/// existing freshness scheduler call instead of becoming a read/N-API
+/// command: the values are read from the same pinned Database after the
+/// successful cycle has been revalidated.
+fn narrative_ci_quiescence_state(
+    db: &Database,
+    binding: &MaintenanceWorkspaceBinding,
+    freshness_hold_project_id: Option<&str>,
+    held_project_id: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
+    narrative_ci_quiescence_state_with_snapshot_hook(
+        db,
+        binding,
+        freshness_hold_project_id,
+        held_project_id,
+        None,
+    )
+}
+
+fn narrative_ci_quiescence_state_with_snapshot_hook(
+    db: &Database,
+    binding: &MaintenanceWorkspaceBinding,
+    freshness_hold_project_id: Option<&str>,
+    held_project_id: Option<&str>,
+    after_project_ids: Option<&dyn Fn()>,
+) -> anyhow::Result<serde_json::Value> {
+    binding.validate()?;
+    if let Some(held_project_id) = held_project_id {
+        anyhow::ensure!(
+            freshness_hold_project_id == Some(held_project_id),
+            "NEX_MAINTENANCE_CI_FRESHNESS_HOLD_RESULT_MISMATCH: held project does not match the effective CI hold"
+        );
+    }
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN DEFERRED TRANSACTION")?;
+        let result = (|| -> anyhow::Result<serde_json::Value> {
+            let project_ids: Vec<String> = {
+                let mut statement = conn.prepare("SELECT id FROM projects ORDER BY id ASC")?;
+                let project_ids = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                project_ids
+            };
+            if let Some(after_project_ids) = after_project_ids {
+                after_project_ids();
+            }
+            let mut projects = Vec::with_capacity(project_ids.len());
+            for project_id in project_ids {
+                let (
+                    current_epoch_id,
+                    feed_head,
+                    acknowledged_through,
+                    reserved_through,
+                    active_run_id,
+                    cursor_epoch_id,
+                    last_error,
+                ): NarrativeCiProjectCursorRow = conn.query_row(
+                    "SELECT
+                    (SELECT id
+                       FROM narrative_semantic_epochs
+                      WHERE project_id = ?1
+                      ORDER BY epoch_number DESC, id DESC
+                      LIMIT 1),
+                    COALESCE((SELECT MAX(canonical_sequence)
+                                FROM narrative_change_events
+                               WHERE project_id = ?1), 0),
+                    (SELECT acknowledged_through_sequence
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1
+                        AND consumer_id = 'narrative-incremental-freshness/v1'
+                      LIMIT 1),
+                    (SELECT reserved_through_sequence
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1
+                        AND consumer_id = 'narrative-incremental-freshness/v1'
+                      LIMIT 1),
+                    (SELECT active_run_id
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1
+                        AND consumer_id = 'narrative-incremental-freshness/v1'
+                      LIMIT 1),
+                    (SELECT semantic_epoch_id
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1
+                        AND consumer_id = 'narrative-incremental-freshness/v1'
+                      LIMIT 1),
+                    (SELECT last_error
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1
+                        AND consumer_id = 'narrative-incremental-freshness/v1'
+                      LIMIT 1)",
+                    [project_id.as_str()],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                        ))
+                    },
+                )?;
+                projects.push(serde_json::json!({
+                    "projectId": project_id,
+                    "currentEpochId": current_epoch_id,
+                    "feedHead": feed_head,
+                    "cursor": {
+                        "acknowledgedThrough": acknowledged_through,
+                        "reservedThrough": reserved_through,
+                        "activeRunId": active_run_id,
+                        "semanticEpochId": cursor_epoch_id,
+                        "lastError": last_error,
+                    },
+                }));
+            }
+
+            let (marker_migration_id, marker_contract_version, marker_applied_at): (
+                Option<String>,
+                Option<i64>,
+                Option<String>,
+            ) = conn.query_row(
+                "SELECT
+                (SELECT migration_id
+                   FROM schema_data_migrations
+                  WHERE migration_id = ?1
+                  ORDER BY applied_at DESC
+                  LIMIT 1),
+                (SELECT contract_version
+                   FROM schema_data_migrations
+                  WHERE migration_id = ?1
+                  ORDER BY applied_at DESC
+                  LIMIT 1),
+                (SELECT applied_at
+                   FROM schema_data_migrations
+                  WHERE migration_id = ?1
+                  ORDER BY applied_at DESC
+                  LIMIT 1)",
+                [grimodex_db::narrative_extraction::C2_ZC_CUTOVER_MIGRATION_ID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            let marker = marker_migration_id.map(|migration_id| {
+                serde_json::json!({
+                    "migrationId": migration_id,
+                    "contractVersion": marker_contract_version,
+                    "appliedAt": marker_applied_at,
+                })
+            });
+            let mut state = serde_json::json!({
+                "authorityId": binding.authority_id.clone(),
+                "generation": binding.generation,
+                "freshnessHoldProjectId": freshness_hold_project_id,
+                "heldProjectId": held_project_id,
+                "projects": projects,
+                "marker": marker,
+            });
+            let digest = format!(
+                "sha256:{}",
+                grimodex_db::narrative_extraction::digest_plan(&state)
+            );
+            state["stateDigest"] = serde_json::Value::String(digest);
+            Ok(state)
+        })();
+        match result {
+            Ok(state) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(state)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -404,7 +615,6 @@ mod narrative_freshness_restore_lock_tests {
             .expect("freshness cycle completed before authority recheck");
 
         let restore_state = Arc::clone(&state);
-        let restore_started_at = Instant::now();
         let restore_thread = std::thread::spawn(move || {
             let state_for_hook = Arc::clone(&restore_state);
             restore_backup_core(&restore_state.ws, backup_name, move || {
@@ -439,13 +649,10 @@ mod narrative_freshness_restore_lock_tests {
             .expect("release freshness finalization");
 
         let restore_result = restore_thread.join().expect("restore thread");
-        let restore_elapsed = restore_started_at.elapsed();
         let cycle_result = cycle_thread.join().expect("freshness thread");
+        // wait_for_sole_owner() owns the bounded pin-drain failure; keep
+        // unrelated restore I/O latency out of this ordering contract.
         restore_result.expect("restore must not time out waiting for freshness authority");
-        assert!(
-            restore_elapsed < Duration::from_secs(10),
-            "restore crossed the sole-owner timeout boundary: {restore_elapsed:?}"
-        );
         assert!(
             cycle_result
                 .expect("workspace replacement is a fail-soft scheduler outcome")
@@ -540,7 +747,6 @@ mod narrative_freshness_restore_lock_tests {
             .expect("maintenance cycle completed before authority recheck");
 
         let restore_state = Arc::clone(&state);
-        let restore_started_at = Instant::now();
         let restore_thread = std::thread::spawn(move || {
             let state_for_hook = Arc::clone(&restore_state);
             restore_backup_core(&restore_state.ws, backup_name, move || {
@@ -571,13 +777,10 @@ mod narrative_freshness_restore_lock_tests {
             .expect("release maintenance finalization");
 
         let restore_result = restore_thread.join().expect("restore thread");
-        let restore_elapsed = restore_started_at.elapsed();
         let revalidation_result = revalidation_thread.join().expect("revalidation thread");
+        // wait_for_sole_owner() owns the bounded pin-drain failure; keep
+        // unrelated restore I/O latency out of this ordering contract.
         restore_result.expect("restore must not time out waiting for maintenance authorities");
-        assert!(
-            restore_elapsed < Duration::from_secs(10),
-            "restore crossed the sole-owner timeout boundary: {restore_elapsed:?}"
-        );
         assert!(
             !revalidation_result.expect("maintenance revalidation"),
             "replacement authority must reject the completed old cycle"
@@ -591,6 +794,203 @@ mod narrative_freshness_restore_lock_tests {
         drop(state);
         drop(cleanup);
         assert!(!root.exists(), "fixture must clean up");
+    }
+
+    #[test]
+    fn freshness_scheduler_keeps_not_ready_workspace_fail_soft() {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-freshness-cutover-not-ready-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = TestRoot(root.clone());
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        std::fs::create_dir_all(&workspace_path).expect("workspace directory");
+
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project");
+
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
+        let state = Arc::new(
+            AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+                .expect("app state"),
+        );
+        *state.ws.inner.lock().expect("workspace state") = Some(ActiveWorkspace::new(authority));
+
+        let result = run_narrative_freshness_cycle_inner(&state, || {})
+            .expect("not-ready cutover is an expected scheduler outcome");
+        let result = result.expect("not-ready cutover must notify the activation owner");
+        let result: serde_json::Value =
+            serde_json::from_str(&result).expect("not-ready result JSON");
+        assert_eq!(result["hasMore"], false);
+        assert_eq!(result["cutoverNotReady"], true);
+
+        let active = state.ws.inner.lock().expect("workspace state").take();
+        drop(active);
+        drop(state);
+        drop(cleanup);
+        assert!(!root.exists(), "fixture must clean up");
+    }
+
+    #[test]
+    fn freshness_scheduler_surfaces_unexpected_cutover_marker_errors() {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-freshness-cutover-marker-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = TestRoot(root.clone());
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        let metadata_dir = workspace_path.join(".grimodex");
+        std::fs::create_dir_all(&metadata_dir).expect("workspace metadata directory");
+        std::fs::write(
+            metadata_dir.join("workspace.json"),
+            serde_json::json!({
+                "id": "freshness-cutover-marker",
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO schema_data_migrations
+                        (migration_id, contract_version, applied_at)
+                     VALUES (?1, 999, '2026-01-01T00:00:00.000Z')",
+                    [grimodex_db::narrative_extraction::C2_ZC_CUTOVER_MIGRATION_ID],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed unsupported cutover marker");
+
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
+        let state = Arc::new(
+            AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+                .expect("app state"),
+        );
+        *state.ws.inner.lock().expect("workspace state") = Some(ActiveWorkspace::new(authority));
+
+        let error = run_narrative_freshness_cycle_inner(&state, || {})
+            .expect_err("scheduler must surface an unexpected marker/schema error");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_C2ZC_CUTOVER_MARKER_UNSUPPORTED"),
+            "unexpected scheduler error: {error}"
+        );
+
+        let active = state.ws.inner.lock().expect("workspace state").take();
+        drop(active);
+        drop(state);
+        drop(cleanup);
+        assert!(!root.exists(), "fixture must clean up");
+    }
+}
+
+#[cfg(test)]
+mod narrative_freshness_result_contract_tests {
+    use super::*;
+
+    #[test]
+    fn held_result_uses_app_error_for_unexpected_cutover_ready() {
+        require_held_cutover_not_ready(true).expect("held NOT_READY evidence is accepted");
+        let error = require_held_cutover_not_ready(false)
+            .expect_err("held result must fail when cutover unexpectedly succeeds");
+        assert!(error
+            .to_string()
+            .starts_with("NEX_MAINTENANCE_CI_FRESHNESS_HOLD_CUTOVER_READY:"));
+    }
+}
+
+#[cfg(test)]
+mod narrative_ci_quiescence_snapshot_tests {
+    use super::*;
+    use grimodex_db::state::WorkspaceAuthority;
+
+    #[test]
+    fn quiescence_projection_keeps_one_read_snapshot_across_external_mutation() {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-quiescence-snapshot-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let workspace_path = root.join("workspace");
+        std::fs::create_dir_all(workspace_path.join(".grimodex"))
+            .expect("workspace metadata directory");
+        std::fs::write(
+            workspace_path.join(".grimodex/workspace.json"),
+            serde_json::json!({
+                "id": "quiescence-snapshot",
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project");
+        let db_path = workspace_path.join("grimodex.db");
+        let authority =
+            WorkspaceAuthority::from_database_for_test(database, workspace_path.clone())
+                .expect("workspace authority");
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority:quiescence-snapshot".to_string(),
+            generation: 1,
+        };
+        let external_path = db_path.clone();
+        let state = narrative_ci_quiescence_state_with_snapshot_hook(
+            authority.db(),
+            &binding,
+            None,
+            None,
+            Some(&|| {
+                let external = Database::new(&external_path).expect("external database");
+                external
+                    .with_conn(|conn| {
+                        conn.execute(
+                            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+                             VALUES (?1, 1, '2026-01-01T00:00:00.000Z')",
+                            [grimodex_db::narrative_extraction::C2_ZC_CUTOVER_MIGRATION_ID],
+                        )?;
+                        Ok::<_, anyhow::Error>(())
+                    })
+                    .expect("external marker mutation");
+            }),
+        )
+        .expect("snapshot state");
+        // `migrate()` seeds the bootstrap project; the explicit fixture row
+        // above makes the pre-hook snapshot contain both rows.  The external
+        // mutation only adds the cutover marker, so the project projection
+        // must still contain that original two-row set.
+        assert_eq!(state["projects"].as_array().expect("projects").len(), 2);
+        assert!(state["marker"].is_null());
+        drop(authority);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 
@@ -1267,6 +1667,35 @@ fn validate_ai_audit_workspace(
     if active != expected {
         return Err(AppError::Anyhow(anyhow::anyhow!(
             "AI_AUDIT_WORKSPACE_CHANGED: expected {}, active {}",
+            expected.display(),
+            active.display()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_timelapse_workspace(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_workspace_path: &str,
+) -> std::result::Result<(), AppError> {
+    if expected_workspace_path.is_empty()
+        || expected_workspace_path.trim() != expected_workspace_path
+        || expected_workspace_path.chars().count() > 16_384
+    {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "TIMELAPSE_GENESIS_BASELINE_INVALID_WORKSPACE_PATH: expectedWorkspacePath must be exact, non-empty, and at most 16384 characters"
+        )));
+    }
+    let active = workspace
+        .path()
+        .canonicalize()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+    let expected = PathBuf::from(expected_workspace_path)
+        .canonicalize()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+    if active != expected {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "TIMELAPSE_GENESIS_BASELINE_WORKSPACE_CHANGED: expected {}, active {}",
             expected.display(),
             active.display()
         )));
@@ -2185,6 +2614,7 @@ fn run_narrative_freshness_cycle_inner(
     state: &AppState,
     after_cycle: impl FnOnce(),
 ) -> std::result::Result<Option<String>, AppError> {
+    let ci_config = state.narrative_maintenance_ci_seam.config();
     let authority = match active_database(&state.ws) {
         Ok(authority) => authority,
         Err(AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive) => {
@@ -2194,13 +2624,38 @@ fn run_narrative_freshness_cycle_inner(
     };
     let binding = narrative_maintenance_binding_for_authority(state, &authority);
     binding.validate()?;
+    if let Some(config) = ci_config.as_ref() {
+        state
+            .narrative_maintenance_ci_seam
+            .validate_freshness_hold_binding(&binding)
+            .map_err(AppError::Anyhow)?;
+        if let Some(hold_project_id) = config.freshness_hold_project_id.as_deref() {
+            let hold_exists = authority.db().with_conn(|conn| {
+                let project_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM projects WHERE id = ?1",
+                    [hold_project_id],
+                    |row| row.get(0),
+                )?;
+                Ok::<_, anyhow::Error>(project_count == 1)
+            })?;
+            if !hold_exists {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_CI_FRESHNESS_HOLD_PROJECT_NOT_FOUND: effective hold project '{}' is not in the active workspace",
+                    hold_project_id
+                )));
+            }
+        }
+    }
     // Liveness is minted only after the bounded cycle has returned
     // successfully. A failed graph evaluation, cursor reservation,
     // or publication therefore cannot attest a live scheduler or
     // activate the canonical authority.
     let (cycle_outcome, successful_cycle) =
-        narrative_extraction::run_incremental_freshness_cycle_with_liveness_capability(
+        narrative_extraction::run_incremental_freshness_cycle_with_liveness_capability_and_hold(
             authority.db(),
+            ci_config
+                .as_ref()
+                .and_then(|config| config.freshness_hold_project_id.as_deref()),
         )?;
     // A workspace swap may complete while the bounded cycle is
     // evaluating its pinned old authority. Re-resolve the active
@@ -2216,19 +2671,90 @@ fn run_narrative_freshness_cycle_inner(
     else {
         return Ok(None);
     };
-    // C2-ZC canonical cutover stays an unaccepted authority boundary:
-    // this wake only mints durable liveness evidence and must not
-    // call cut_over_workspace_freshness until the roadmap unblocks
-    // the canonical read-authority switch.
-    narrative_extraction::record_live_scheduler_heartbeat(
+    // The existing main-only scheduler wake is the production owner of
+    // automatic C2-ZC activation.  Durable readiness may still be incomplete
+    // for a newly opened or recovering workspace, so that one expected state
+    // is fail-soft and will be retried by the next wake.  Marker/schema,
+    // malformed evidence, or any other unexpected failure remains visible to
+    // the scheduler caller instead of silently leaving a split authority.
+    let liveness_evidence = narrative_extraction::record_live_scheduler_heartbeat(
         current_workspace.authority.db(),
         &binding.authority_id,
         binding.generation,
         successful_cycle,
     )?;
+    let cutover_result = current_workspace.authority.db().with_conn(|conn| {
+        narrative_extraction::cut_over_workspace_freshness(conn, &liveness_evidence)
+    });
+    let mut cutover_not_ready = false;
+    if let Err(error) = cutover_result {
+        if !is_expected_c2zc_cutover_not_ready(&error) {
+            return Err(AppError::Anyhow(error));
+        }
+        cutover_not_ready = true;
+    }
+
+    // The quiescence state is an acceptance-only extension of the existing
+    // freshness result. Production launches keep the historical lightweight
+    // result and therefore pay no extra workspace-wide read cost.
+    let held_project_id = match &cycle_outcome {
+        narrative_extraction::IncrementalFreshnessCycleOutcome::Held(summary) => {
+            Some(summary.project_id.as_str())
+        }
+        _ => None,
+    };
+    let ci_quiescence_state = if ci_config.is_some() {
+        Some(
+            narrative_ci_quiescence_state(
+                current_workspace.authority.db(),
+                &binding,
+                ci_config
+                    .as_ref()
+                    .and_then(|config| config.freshness_hold_project_id.as_deref()),
+                held_project_id,
+            )
+            .map_err(AppError::Anyhow)?,
+        )
+    } else {
+        None
+    };
 
     match cycle_outcome {
-        narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => Ok(None),
+        narrative_extraction::IncrementalFreshnessCycleOutcome::Held(summary) => {
+            require_held_cutover_not_ready(cutover_not_ready)?;
+            let result = serde_json::json!({
+                "hasMore": false,
+                "noWrite": true,
+                "held": true,
+                "heldProjectId": summary.project_id,
+                "cutoverNotReady": true,
+                "quiescenceState": ci_quiescence_state,
+            });
+            Ok(Some(result.to_string()))
+        }
+        narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => {
+            if let Some(state) = ci_quiescence_state {
+                let mut result = serde_json::json!({
+                    "hasMore": false,
+                    "noWrite": true,
+                    "quiescenceState": state,
+                });
+                if cutover_not_ready {
+                    result["cutoverNotReady"] = serde_json::json!(true);
+                }
+                Ok(Some(result.to_string()))
+            } else if cutover_not_ready {
+                Ok(Some(
+                    serde_json::json!({
+                        "hasMore": false,
+                        "cutoverNotReady": true,
+                    })
+                    .to_string(),
+                ))
+            } else {
+                Ok(None)
+            }
+        }
         narrative_extraction::IncrementalFreshnessCycleOutcome::Processed(summary) => {
             // D2 shadow diagnostics stay out of the durable Freshness
             // authority, but they must not be silently discarded at
@@ -2237,18 +2763,26 @@ fn run_narrative_freshness_cycle_inner(
             // and effect diagnostics.
             let v2_shadow =
                 serde_json::to_value(&summary.v2_shadow).map_err(anyhow::Error::from)?;
-            Ok(Some(
-                serde_json::json!({
-                    "projectId": summary.project_id,
-                    "fromSequenceExclusive": summary.from_sequence_exclusive,
-                    "throughSequenceInclusive": summary.through_sequence_inclusive,
-                    "affectedEdgeCount": summary.affected_edge_count,
-                    "affectedConsumerCount": summary.affected_consumer_count,
-                    "hasMore": summary.has_more,
-                    "v2Shadow": v2_shadow,
-                })
-                .to_string(),
-            ))
+            let mut result = serde_json::json!({
+                "projectId": summary.project_id,
+                "fromSequenceExclusive": summary.from_sequence_exclusive,
+                "throughSequenceInclusive": summary.through_sequence_inclusive,
+                "affectedEdgeCount": summary.affected_edge_count,
+                "affectedConsumerCount": summary.affected_consumer_count,
+                "hasMore": summary.has_more,
+                "v2Shadow": v2_shadow,
+            });
+            if let Some(state) = ci_quiescence_state {
+                // A processed batch necessarily crossed a durable cursor/run
+                // boundary. The following idle/no-write cycle is the only
+                // state eligible to publish a quiescence receipt.
+                result["noWrite"] = serde_json::json!(false);
+                result["quiescenceState"] = state;
+            }
+            if cutover_not_ready {
+                result["cutoverNotReady"] = serde_json::json!(true);
+            }
+            Ok(Some(result.to_string()))
         }
     }
 }
@@ -2392,7 +2926,8 @@ impl Backend {
 
     /// Electron main scheduler 専用の Change Feed freshness cycle。
     /// renderer IPC には登録せず、1 call で共有runtimeの有界batchを最大1件だけ
-    /// 処理する。workspace未open・切替中・Safe Mode・feed空はJS nullを返す。
+    /// 処理する。workspace未open・切替中・Safe Mode・通常のfeed空はJS nullを返し、
+    /// C2-ZCのexpected NOT_READYだけはmain activation owner向けの小さなJSONを返す。
     #[napi]
     pub async fn run_narrative_freshness_cycle(&self) -> Result<Option<String>> {
         let state = Arc::clone(&self.state);
@@ -3881,6 +4416,20 @@ impl Backend {
     }
 
     #[napi]
+    pub async fn scan_staging_project_publish(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: ScanStagingProjectPublishPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &domain_writes::publish_scan_staging_project(db, payload)?,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
     pub async fn project_create(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
@@ -4556,9 +5105,148 @@ impl Backend {
         run_blocking(move || {
             let events: Vec<AppendChangeEvent> = from_wire("events", events)?;
             with_db_state(&state.ws, |db| {
-                let result = db.append_change_events(&project_id, &session_id, &events)?;
+                let result = db.append_renderer_change_events(&project_id, &session_id, &events)?;
                 Ok(serde_json::to_string(&result)?)
             })
+        })
+        .await
+    }
+
+    /// Append missing genesis editor-body baselines in one native transaction.
+    /// Any existing same-entity snapshot (including a later rebaseline) makes
+    /// that entity ineligible. The renderer supplies identity only; trusted
+    /// workspace tables own payload, domain, entityType, and project membership.
+    #[napi]
+    pub async fn timelapse_genesis_baselines_append(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        kind: String,
+        entity_ids: Vec<String>,
+        anchor_timestamp: i64,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_timelapse_workspace(&workspace, &expected_workspace_path)?;
+            let kind = TimelapseGenesisBaselineKind::parse(&kind)?;
+            let summary = workspace.db().append_timelapse_genesis_baselines(
+                &project_id,
+                kind,
+                &entity_ids,
+                anchor_timestamp,
+            )?;
+            Ok(serde_json::to_string(&summary).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Append body baselines at the current canonical tail. Renderer callers
+    /// provide identities only; Native resolves ownership and body payload
+    /// from the trusted workspace tables inside one immediate transaction.
+    #[napi]
+    pub async fn timelapse_body_baselines_append(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        targets: serde_json::Value,
+        expected_anchor_sequence: Option<i64>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let wires: Vec<TimelapseBodyBaselineTargetWire> = from_wire("targets", targets)?;
+            let targets = wires
+                .into_iter()
+                .map(|target| {
+                    let kind = TimelapseGenesisBaselineKind::parse(&target.kind)?;
+                    Ok::<_, anyhow::Error>(match kind {
+                        TimelapseGenesisBaselineKind::Scene => {
+                            TimelapseBodySnapshotTarget::scene(target.id)
+                        }
+                        TimelapseGenesisBaselineKind::Codex => {
+                            TimelapseBodySnapshotTarget::codex(target.id)
+                        }
+                        TimelapseGenesisBaselineKind::Snippet => {
+                            TimelapseBodySnapshotTarget::snippet(target.id)
+                        }
+                    })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_timelapse_workspace(&workspace, &expected_workspace_path)?;
+            let summary = workspace.db().append_timelapse_body_baselines(
+                &project_id,
+                &targets,
+                expected_anchor_sequence,
+            )?;
+            Ok(serde_json::to_string(&summary).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Logically reset timelapse history for the authorized project in one
+    /// transaction. Canonical `change_events` and their hash chain remain
+    /// intact; project `state_snapshots` are deleted and Native advances the
+    /// trusted `resetSequence` cutoff. The summary reports the logical event
+    /// count hidden by the new cutoff and the snapshots deleted.
+    #[napi]
+    pub async fn timelapse_history_purge(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_timelapse_workspace(&workspace, &expected_workspace_path)?;
+            let summary = workspace.db().purge_timelapse_history(&project_id)?;
+            Ok(serde_json::to_string(&summary).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Set `timelapse.enabled` under the same exact workspace binding used by
+    /// the protected timelapse writers. This prevents a switch from redirecting
+    /// an enable/rollback to a project with the same id in another database.
+    #[napi]
+    pub async fn timelapse_enabled_set(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        enabled: bool,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_timelapse_workspace(&workspace, &expected_workspace_path)?;
+            let summary = workspace.db().set_timelapse_enabled(&project_id, enabled)?;
+            Ok(serde_json::to_string(&summary).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Record a renderer UI snapshot under the fixed
+    /// `layout/workspace/workspace` scope. Native derives the anchor timestamp
+    /// and checks the optional observed canonical tail.
+    #[napi]
+    pub async fn timelapse_layout_snapshot_record(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        payload: serde_json::Value,
+        expected_anchor_sequence: Option<i64>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_timelapse_workspace(&workspace, &expected_workspace_path)?;
+            let payload = serde_json::to_string(&payload).map_err(anyhow::Error::from)?;
+            let summary = workspace.db().append_timelapse_layout_snapshot(
+                &project_id,
+                &payload,
+                expected_anchor_sequence,
+            )?;
+            Ok(serde_json::to_string(&summary).map_err(anyhow::Error::from)?)
         })
         .await
     }
@@ -4923,8 +5611,8 @@ impl Backend {
     }
 
     /// FTS optimize (commands/integrity.rs の写像 — 実装は grimodex-db の
-    /// `Database::fts_optimize` を Tauri と共用)。workspace open 後のアイドル
-    /// タイミングで呼ばれる fail-soft コマンド。
+    /// `Database::fts_optimize` を Tauri と共用)。明示的なメンテナンス用であり、
+    /// workspace open からは自動実行しない。
     #[napi]
     pub async fn fts_optimize(&self) -> Result<()> {
         let state = Arc::clone(&self.state);
@@ -9119,6 +9807,205 @@ mod ime_workspace_tests {
 }
 
 #[cfg(test)]
+mod timelapse_genesis_baseline_tests {
+    use super::*;
+    use grimodex_db::state::ActiveWorkspace;
+    use grimodex_db::Database;
+
+    fn backend_with_scene() -> (Backend, std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-timelapse-genesis-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let workspace_path = root.join("workspace");
+        let nested = workspace_path.join("nested");
+        std::fs::create_dir_all(&nested).expect("workspace dirs");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("schema");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title, language)
+                     VALUES ('project-a', 'A', 'ja')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO tree_nodes (id, project_id, node_type, title, content)
+                     VALUES ('scene-a', 'project-a', 'scene', 'Scene A',
+                             '{\"type\":\"doc\",\"content\":[]}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("seed database");
+        let authority = grimodex_db::WorkspaceAuthority::from_database_for_test(
+            database,
+            workspace_path.clone(),
+        )
+        .expect("authority");
+        let resources = root.join("resources");
+        let state = AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+            .expect("app state");
+        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
+        (
+            Backend {
+                state: Arc::new(state),
+            },
+            root,
+            workspace_path,
+        )
+    }
+
+    #[tokio::test]
+    async fn adapter_pins_canonical_workspace_and_serializes_typed_summary() {
+        let (backend, root, workspace_path) = backend_with_scene();
+        let equivalent_path = workspace_path.join("nested").join("..");
+        let wire = backend
+            .timelapse_genesis_baselines_append(
+                equivalent_path.to_string_lossy().into_owned(),
+                "project-a".into(),
+                "scene".into(),
+                vec!["scene-a".into()],
+                123,
+            )
+            .await
+            .expect("append baseline");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&wire).expect("summary JSON"),
+            serde_json::json!({
+                "insertedCount": 1,
+                "skippedExistingBaselineCount": 0,
+                "skippedExistingBodyStepCount": 0,
+            })
+        );
+
+        let wrong_workspace = root.join("wrong-workspace");
+        std::fs::create_dir_all(&wrong_workspace).expect("wrong workspace dir");
+        let error = backend
+            .timelapse_genesis_baselines_append(
+                wrong_workspace.to_string_lossy().into_owned(),
+                "project-a".into(),
+                "scene".into(),
+                vec!["scene-a".into()],
+                124,
+            )
+            .await
+            .expect_err("wrong workspace must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("TIMELAPSE_GENESIS_BASELINE_WORKSPACE_CHANGED"),
+            "unexpected error: {error}"
+        );
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn typed_timelapse_commands_bind_workspace_and_preserve_native_scopes() {
+        let (backend, root, workspace_path) = backend_with_scene();
+        let expected_workspace_path = workspace_path.to_string_lossy().into_owned();
+        let equivalent_path = workspace_path.join("nested").join("..");
+
+        let body_wire = backend
+            .timelapse_body_baselines_append(
+                equivalent_path.to_string_lossy().into_owned(),
+                "project-a".into(),
+                serde_json::json!([{ "kind": "scene", "id": "scene-a" }]),
+                None,
+            )
+            .await
+            .expect("append body baseline through N-API");
+        let body_summary =
+            serde_json::from_str::<serde_json::Value>(&body_wire).expect("body summary JSON");
+        assert_eq!(body_summary["insertedCount"], serde_json::json!(1));
+        assert_eq!(body_summary["skippedExistingCount"], serde_json::json!(0));
+        assert_eq!(body_summary["anchorSequence"], serde_json::json!(0));
+        assert!(body_summary["anchorTimestamp"].is_i64());
+
+        let layout_wire = backend
+            .timelapse_layout_snapshot_record(
+                expected_workspace_path.clone(),
+                "project-a".into(),
+                serde_json::json!({
+                    "layout": { "regions": {} },
+                    "activePresetId": null,
+                    "hiddenStripePanels": ["chat"],
+                }),
+                Some(0),
+            )
+            .await
+            .expect("append layout snapshot through N-API");
+        let layout_summary =
+            serde_json::from_str::<serde_json::Value>(&layout_wire).expect("layout summary JSON");
+        assert_eq!(layout_summary["inserted"], serde_json::json!(true));
+        assert_eq!(layout_summary["anchorSequence"], serde_json::json!(0));
+
+        let enabled_wire = backend
+            .timelapse_enabled_set(expected_workspace_path.clone(), "project-a".into(), true)
+            .await
+            .expect("set timelapse flag through N-API");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&enabled_wire).expect("enabled summary JSON"),
+            serde_json::json!({ "enabled": true })
+        );
+
+        let snapshot = active_workspace_snapshot(&backend.state.ws).expect("active workspace");
+        snapshot
+            .db()
+            .with_conn(|conn| {
+                let body_scope: (String, String, String) = conn.query_row(
+                    "SELECT domain, entity_type, entity_id FROM state_snapshots
+                      WHERE project_id = 'project-a' AND domain = 'editor'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                assert_eq!(
+                    body_scope,
+                    ("editor".into(), "scene".into(), "scene-a".into())
+                );
+                let layout_scope: (String, String, String) = conn.query_row(
+                    "SELECT domain, entity_type, entity_id FROM state_snapshots
+                      WHERE project_id = 'project-a' AND domain = 'layout'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                assert_eq!(
+                    layout_scope,
+                    ("layout".into(), "workspace".into(), "workspace".into())
+                );
+                let enabled: String = conn.query_row(
+                    "SELECT value FROM project_settings
+                      WHERE project_id = 'project-a' AND key = 'timelapse.enabled'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(enabled, "true");
+                Ok(())
+            })
+            .expect("verify N-API writer scopes");
+
+        let wrong_workspace = root.join("wrong-workspace");
+        std::fs::create_dir_all(&wrong_workspace).expect("wrong workspace dir");
+        let error = backend
+            .timelapse_history_purge(
+                wrong_workspace.to_string_lossy().into_owned(),
+                "project-a".into(),
+            )
+            .await
+            .expect_err("wrong workspace must fail closed for purge");
+        assert!(
+            error
+                .to_string()
+                .contains("TIMELAPSE_GENESIS_BASELINE_WORKSPACE_CHANGED"),
+            "unexpected workspace binding error: {error}"
+        );
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
 mod semantic_reranker_lane_tests {
     use super::*;
     use grimodex_db::state::ActiveWorkspace;
@@ -9401,6 +10288,7 @@ mod narrative_maintenance_fault_red_tests {
                 fault: Some(NarrativeMaintenanceCiFault::ContractViolation),
                 trigger: None,
                 setup: None,
+                freshness_hold_project_id: None,
                 product_journey_barrier_id: None,
                 correlation: None,
             })
@@ -9580,6 +10468,7 @@ mod narrative_maintenance_foreground_release_tests {
                 fault: None,
                 trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
                 setup: None,
+                freshness_hold_project_id: None,
                 product_journey_barrier_id: Some("barrier-test".to_string()),
                 correlation: Some("correlation-test".to_string()),
             })

@@ -51,9 +51,10 @@ beforeEach(() => {
 
 describe("BackupRestoreSection", () => {
   it("バックアップ一覧を表示し、各行に復元ボタンを出す", async () => {
+    const fileName = "grimodex-20260707-120000.db";
     apiMock.listBackups.mockResolvedValue([
       {
-        fileName: "grimodex-20260707-120000.db",
+        fileName,
         sizeBytes: 2_500_000,
         modifiedMs: 1,
         format: "db",
@@ -63,6 +64,9 @@ describe("BackupRestoreSection", () => {
     await waitFor(() => expect(apiMock.listBackups).toHaveBeenCalled());
     await screen.findByText(/2\.4 MB/);
     expect(screen.getByRole("button", { name: "復元" })).toBeInTheDocument();
+    expect(
+      screen.getByTestId(`backup-restore-${encodeURIComponent(fileName)}`),
+    ).toBeInTheDocument();
   });
 
   it("復元は 2 クリック確認後に fileName で restoreBackup を呼び reload する", async () => {

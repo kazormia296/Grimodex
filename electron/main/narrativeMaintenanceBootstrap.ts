@@ -85,6 +85,9 @@ export function bootstrapNarrativeMaintenance(
       );
     },
   });
+  // The coordinator and scheduler retain their production owners. No
+  // maintenance/scheduler callback is allowed to arm acceptance evidence;
+  // the held-Freshness writer is fed directly by the Freshness scheduler.
   coordinator = createCoordinator(backend, scheduler);
   scheduler.start();
 

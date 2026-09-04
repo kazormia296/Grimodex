@@ -14,9 +14,11 @@ import Ajv2020 from "ajv/dist/2020.js";
 
 import {
   validateArtifactAuthorityContract,
+  validateConsumerContract,
   validateDependencyRoleContract,
   validateInterpreterBoundary,
   validateScopeRelationContract,
+  validateSemanticIndexReservation,
   validateSemanticCoreBoundary,
 } from "./validate-semantic-core-boundary.mjs";
 
@@ -263,6 +265,205 @@ function validateArtifactFixtureContract(fixture) {
 }
 
 describe("validate-semantic-core-boundary", () => {
+  it("pins the reserved Semantic Index footprint and dormant NIR-1 binding", () => {
+    const matrix = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/semantic-core-authorities.json",
+        ),
+        "utf8",
+      ),
+    );
+    const errors = [];
+
+    validateSemanticIndexReservation(matrix, errors);
+
+    assert.deepEqual(errors, []);
+    assert.equal(matrix.semanticIndexReservation.status, "reserved");
+    const searchGeneration = matrix.authorities.find(
+      (authority) => authority.concern === "search-generation",
+    );
+    assert.equal(
+      searchGeneration.canonicalAuthority,
+      "none (semantic-index reserved; NIR-1 pending)",
+    );
+    assert.equal(searchGeneration.writePolicy, "reserved-no-writer");
+    assert.deepEqual(
+      matrix.semanticIndexReservation.authorityFootprint.surfaces,
+      [
+        {
+          id: "metadataRows",
+          relation: "narrative_semantic_index_metadata",
+          rowSet: "all-project-rows",
+          predicate: "project_id = ?1",
+        },
+        {
+          id: "activeD1HeadRows",
+          relation: "narrative_dependency_declaration_heads",
+          rowSet: "active-sealed-D1-heads",
+          predicate: "project_id = ?1 AND consumer_kind = 'semantic-index'",
+        },
+        {
+          id: "v1EdgeRows",
+          relation: "narrative_dependency_edges",
+          rowSet: "V1-edges",
+          predicate: "project_id = ?1 AND consumer_kind = 'semantic-index'",
+        },
+        {
+          id: "consumerFreshnessRows",
+          relation: "narrative_consumer_freshness",
+          rowSet: "consumer-freshness",
+          predicate: "project_id = ?1 AND consumer_kind = 'semantic-index'",
+        },
+      ],
+    );
+    assert.equal(
+      matrix.semanticIndexReservation.authorityFootprint.passCondition,
+      "all-zero",
+    );
+    assert.equal(
+      matrix.semanticIndexReservation.authorityFootprint.nonZeroDisposition,
+      "manual-terminal",
+    );
+    assert.equal(
+      matrix.semanticIndexReservation.authorityFootprint.rebuildTarget,
+      "forbidden",
+    );
+    assert.equal(
+      matrix.semanticIndexReservation.futureBinding.approvalGate,
+      "NIR-1",
+    );
+    assert.equal(
+      matrix.semanticIndexReservation.futureBinding.status,
+      "dormant",
+    );
+  });
+
+  it("rejects a Semantic Index reservation that permits Rebuild or omits a footprint surface", () => {
+    const matrix = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/semantic-core-authorities.json",
+        ),
+        "utf8",
+      ),
+    );
+    matrix.semanticIndexReservation.authorityFootprint.surfaces.pop();
+    matrix.semanticIndexReservation.authorityFootprint.rebuildTarget =
+      "allowed";
+    const errors = [];
+
+    validateSemanticIndexReservation(matrix, errors);
+
+    assert.ok(
+      errors.some((error) => /four required authority footprint surfaces/i.test(error)),
+      `missing footprint surface must fail closed: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) => /Rebuild-Derived.*not.*target|rebuild.*forbidden/i.test(error)),
+      `Rebuild target mutation must fail closed: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("keeps the Semantic Index consumer reserved without a Narrative authority claim", () => {
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-consumer-contract.json",
+        ),
+        "utf8",
+      ),
+    );
+    const semanticIndex = contract.consumerKinds.find(
+      (entry) => entry.kind === "semantic-index",
+    );
+    semanticIndex.status = "declared";
+    semanticIndex.notes = "declared producer authority";
+    const errors = [];
+
+    validateConsumerContract(REPO_ROOT, contract, errors);
+
+    assert.ok(
+      errors.some((error) => /semantic-index consumer must remain reserved/i.test(error)),
+      `semantic-index activation mutation must fail closed: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) => /no Narrative dependency authority claim/i.test(error)),
+      `semantic-index authority claim mutation must fail closed: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("keeps reserved Semantic Index Freshness distinct from rebuildable chunk acceleration", () => {
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-consumer-contract.json",
+        ),
+        "utf8",
+      ),
+    );
+    const semanticIndex = contract.consumerKinds.find(
+      (entry) => entry.kind === "semantic-index",
+    );
+
+    assert.match(
+      semanticIndex.notes,
+      /no semantic-index Generic Freshness\/metadata rows are permitted/,
+    );
+    assert.match(semanticIndex.notes, /non-zero footprint is manual-terminal/);
+    assert.match(
+      semanticIndex.notes,
+      /Only existing Scene\/Codex\/Event\/Chat embedding chunk rows are rebuildable acceleration/,
+    );
+    assert.match(
+      semanticIndex.notes,
+      /cannot imply Narrative dependency authority/,
+    );
+
+    const errors = [];
+    validateConsumerContract(REPO_ROOT, contract, errors);
+    assert.deepEqual(errors, []);
+  });
+
+  it("rejects the former Semantic Index Freshness-as-acceleration note", () => {
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-consumer-contract.json",
+        ),
+        "utf8",
+      ),
+    );
+    const semanticIndex = contract.consumerKinds.find(
+      (entry) => entry.kind === "semantic-index",
+    );
+    semanticIndex.notes =
+      "semantic-index remains reserved without the required reservation details";
+    const errors = [];
+
+    validateConsumerContract(REPO_ROOT, contract, errors);
+
+    assert.ok(
+      errors.some((error) =>
+        /Generic Freshness\/metadata rows are permitted/i.test(error),
+      ),
+      `reserved Freshness/metadata boundary must fail closed: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) =>
+        /Only existing Scene\/Codex\/Event\/Chat embedding chunk rows/i.test(
+          error,
+        ),
+      ),
+      `chunk-only acceleration boundary must fail closed: ${JSON.stringify(errors)}`,
+    );
+  });
+
   it("accepts the repository's ratified semantic contract", () => {
     const result = validateSemanticCoreBoundary({ repoRoot: REPO_ROOT });
     assert.deepEqual(result.errors, []);

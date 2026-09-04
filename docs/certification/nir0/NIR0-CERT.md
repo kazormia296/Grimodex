@@ -150,7 +150,8 @@ The following remain outside this certificate:
 - the consumed retrieval holdout and other unrelated blocked Heavy evidence;
 - Windows NSIS final compilation, retained as release-only/manual coverage;
 - D2 full V2 authority cutover and replacement of the existing V1
-  Source-grained canonical Freshness path;
+  Source-grained semantic path (distinct from the focused-green C2-ZC
+  candidate; its final acceptance is still pending);
 - Scope Disclosure production admission and Retrieval connection;
 - Chronicle `revise`, `retract`, `merge`, and `split`;
 - human Assertion Core edits without an `author-declaration` Source;
@@ -159,10 +160,29 @@ The following remain outside this certificate:
 - the diagnostic-only motif fixture work in PR #554 and future Evaluation
   Contract v2/content-aware alignment work.
 
+## Post-certification C2-ZC candidate closeout
+
+NIR0-CERT remains a bounded certificate for the Chronicle `scene-event@1`
+`add` pilot and does not retroactively include later authority changes. The
+separate C2-ZC work produced a focused-green candidate: the main/N-API
+Freshness wake is intended to activate Generic Consumer Freshness only after
+current-Epoch Verify/Rebuild/parity/no-active-maintenance/liveness gates pass.
+The product journey, clean Full CI plus receipt verification, and Sol final are
+still pending, so the durable marker and canonical no-fallback behavior are
+not an accepted cutover. Canonical project births are exactly
+`project.create`, `import.session.apply`, and `scan.import.publish`.
+`scan.staging-project.create` is a hidden, noncanonical staging allocation and
+is not product project-create proof; promotion requires the typed
+`scan_staging_project_publish` route. The candidate evidence is recorded in
+the [C2-ZC impact
+matrix](../plans/narrative-c2zc-canonical-cutover-impact-matrix.md) and its
+focused Rust/N-API contract tests.
+
 ## Certification verdict
 
 The tested and integrated implementation satisfies NIR-0 for the bounded
 Chronicle `scene-event@1` `add` pilot. NIR-0 is therefore **PASS** when this
-closeout record lands. C2-ZC remains the next explicit authority boundary, and
-NIR-1 remains blocked on that cutover rather than being silently activated by
-this certificate.
+closeout record lands. C2-ZC is a separate focused-green candidate, not an
+accepted post-certification authority boundary; its final product journey,
+Full/receipt, and Sol evidence remain pending, so NIR-1 is blocked and is not
+silently activated by this certificate.

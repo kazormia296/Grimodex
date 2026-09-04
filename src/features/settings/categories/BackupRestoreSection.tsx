@@ -25,6 +25,11 @@ function formatBytes(bytes: number): string {
   return `${(mb / 1024).toFixed(2)} GB`;
 }
 
+/** Stable row identity for product journeys and accessible automation. */
+export function backupRestoreTestId(fileName: string): string {
+  return `backup-restore-${encodeURIComponent(fileName)}`;
+}
+
 /**
  * バックアップ一覧＋復元 UI（backup restore Phase 1）。設定 > データ >
  * バックアップ セクションに埋め込む。復元は破壊的（ワークスペース全体を置換）
@@ -160,6 +165,7 @@ export function BackupRestoreSection() {
                   type="button"
                   onClick={() => void handleRestore(b)}
                   disabled={disabled || !supported}
+                  data-testid={backupRestoreTestId(b.fileName)}
                   title={
                     supported
                       ? undefined

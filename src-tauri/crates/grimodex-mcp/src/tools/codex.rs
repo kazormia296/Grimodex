@@ -452,6 +452,7 @@ pub async fn update_codex_entry(
             name,
             summary,
             content: content_pm,
+            timelapse_doc_step_coverage: None,
             aliases: aliases_str,
             excluded_aliases: None,
             readings: None,
@@ -501,6 +502,27 @@ mod tests {
 
     fn make_writable_server() -> GrimodexServer {
         let conn = make_simple_db();
+        conn.execute_batch(
+            "CREATE TABLE project_settings (
+                project_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT,
+                PRIMARY KEY (project_id, key)
+            );
+            CREATE TABLE state_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL,
+                domain TEXT NOT NULL,
+                entity_type TEXT,
+                entity_id TEXT,
+                anchor_sequence INTEGER NOT NULL,
+                anchor_timestamp INTEGER NOT NULL,
+                payload TEXT NOT NULL,
+                encoding TEXT NOT NULL DEFAULT 'json',
+                created_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO projects (id, title) VALUES ('p1', 'Novel')",
             [],
@@ -624,7 +646,7 @@ mod tests {
                     name: Some("Alice Updated".to_string()),
                     aliases: None,
                     summary: None,
-                    content: None,
+                    content: Some("Updated body".to_string()),
                     tags: Some(vec!["lead".to_string()]),
                 },
             )
@@ -633,10 +655,11 @@ mod tests {
         }
 
         let conn = server.conn.lock().unwrap();
-        let (name, version, transactions, feed_events): (String, i64, i64, i64) = conn
-            .query_row(
+        let (name, content, version, transactions, feed_events): (String, String, i64, i64, i64) =
+            conn.query_row(
                 "SELECT
                     name,
+                    content,
                     version,
                     (SELECT COUNT(*) FROM narrative_change_transactions
                       WHERE project_id = 'p1' AND request_id = ?2),
@@ -648,12 +671,63 @@ mod tests {
                    FROM codex_entries
                   WHERE id = ?1",
                 rusqlite::params![entry_id, request_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .unwrap();
         assert_eq!(name, "Alice Updated");
+        assert_eq!(content, sanitize::markdown_to_prosemirror("Updated body"));
         assert_eq!(version, 2);
         assert_eq!((transactions, feed_events), (1, 1));
+
+        let (canonical_tail, snapshot_anchor, snapshot_payload, snapshots): (
+            i64,
+            i64,
+            String,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT
+                    (SELECT sequence FROM change_events
+                      WHERE project_id = 'p1'
+                      ORDER BY sequence DESC LIMIT 1),
+                    (SELECT anchor_sequence FROM state_snapshots
+                      WHERE project_id = 'p1'
+                        AND domain = 'codex'
+                        AND entity_type = 'codex_entry'
+                        AND entity_id = ?1
+                      ORDER BY anchor_sequence DESC, id DESC LIMIT 1),
+                    (SELECT payload FROM state_snapshots
+                      WHERE project_id = 'p1'
+                        AND domain = 'codex'
+                        AND entity_type = 'codex_entry'
+                        AND entity_id = ?1
+                      ORDER BY anchor_sequence DESC, id DESC LIMIT 1),
+                    (SELECT COUNT(*) FROM state_snapshots
+                      WHERE project_id = 'p1'
+                        AND domain = 'codex'
+                        AND entity_type = 'codex_entry'
+                        AND entity_id = ?1)",
+                [&entry_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(snapshot_anchor, canonical_tail);
+        assert_eq!(
+            snapshot_payload,
+            sanitize::markdown_to_prosemirror("Updated body")
+        );
+        assert_eq!(
+            snapshots, 1,
+            "same-request retry must not duplicate the snapshot"
+        );
     }
 
     #[tokio::test]

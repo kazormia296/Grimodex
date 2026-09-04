@@ -21,7 +21,7 @@ export interface NarrativeMaintenanceRequest {
   semanticEpochId?: string | null;
 }
 
-/** DTO delivered to the future main-only NAPI cycle method. */
+/** DTO delivered to the main-only NAPI maintenance cycle method. */
 export interface NarrativeMaintenanceWork {
   projectId: string;
   runKind: NarrativeMaintenanceRunKind;
@@ -47,7 +47,7 @@ interface PendingNarrativeMaintenanceWork extends NarrativeMaintenanceWork {
 }
 
 /**
- * Request delivered to the future main-only NAPI cycle method. Empty `work`
+ * Request delivered to the main-only NAPI maintenance cycle method. Empty `work`
  * is valid only when `wakeProjectIds` names the durable native backlog scope;
  * this keeps an empty wake meaningful across scheduler/backend boundaries.
  */
@@ -146,6 +146,15 @@ export interface NarrativeMaintenanceScheduler {
     work: readonly NarrativeMaintenanceRequest[],
     binding: NarrativeMaintenanceWorkspaceBinding,
   ): void;
+  /** Main-only synchronous state recheck for the CI quiescence writer. */
+  getQuiescenceState?(): {
+    mutationRevision: number;
+    workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null;
+    queueIdle: boolean;
+    inFlight: boolean;
+    hasMore: boolean;
+    timerScheduled: boolean;
+  };
   dispose(): void;
 }
 
@@ -155,6 +164,20 @@ export interface NarrativeMaintenanceSchedulerOptions {
   onWorkspaceBindingMismatch?: () => void | Promise<void>;
   /** Let the main-only discovery owner advance Rust-owned durable phases. */
   onCycleAccepted?: () => void | Promise<void>;
+  /**
+   * Publish one completed main scheduler observation to the CI-only
+   * quiescence receipt owner. This never crosses the renderer boundary.
+   */
+  onCycleSettled?: (observation: {
+    cycleGeneration: number;
+    observedAtMs: number;
+    workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null;
+    cycleAccepted: boolean;
+    queueIdle: boolean;
+    inFlight: boolean;
+    hasMore: boolean;
+    timerScheduled: boolean;
+  }) => void | Promise<void>;
   /** Schedule the authorized main-only CI interruption after the running
    * lifecycle has been returned to the product journey for observation. */
   onCiProcessInterruption?: (
@@ -646,7 +669,9 @@ function deliveryFailureReceiptAccepted(raw: unknown): boolean {
   ) {
     return false;
   }
-  throw new Error("native maintenance delivery failure receipt was not accepted");
+  throw new Error(
+    "native maintenance delivery failure receipt was not accepted",
+  );
 }
 
 const NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE =
@@ -802,6 +827,9 @@ export function createNarrativeMaintenanceScheduler(
   let started = false;
   let disposed = false;
   let inFlight = false;
+  let cycleGeneration = 0;
+  let mutationRevision = 0;
+  let lastHasMore = false;
   const pending = new Map<string, PendingNarrativeMaintenanceWork>();
   const retryCounts = new Map<string, number>();
   const sharedCoordinator = backend ? processCoordinator : null;
@@ -825,8 +853,13 @@ export function createNarrativeMaintenanceScheduler(
   const deferredWakeProjects = new Set<string>();
   let cancelCoordinatorWait: (() => void) | null = null;
 
+  const noteMutation = (): void => {
+    mutationRevision += 1;
+  };
+
   const clearTimer = (): void => {
     if (timer === null) return;
+    noteMutation();
     clearTimeout(timer);
     timer = null;
   };
@@ -840,7 +873,9 @@ export function createNarrativeMaintenanceScheduler(
     if (disposed) return;
     clearCoordinatorWait();
     clearTimer();
+    noteMutation();
     timer = setTimeout(() => {
+      noteMutation();
       timer = null;
       void runCycle();
     }, delayMs);
@@ -861,6 +896,7 @@ export function createNarrativeMaintenanceScheduler(
   };
 
   const requeueWork = (work: PendingNarrativeMaintenanceWork): void => {
+    noteMutation();
     const key = scopedWorkKey(work);
     const existing = pending.get(key);
     if (existing) {
@@ -929,6 +965,7 @@ export function createNarrativeMaintenanceScheduler(
     if (typeof method !== "function") return;
 
     if (pending.size === 0 && durableWakeProjects.size === 0) return;
+    noteMutation();
 
     const candidates = [...pending.values()].filter(
       (work) => !deferredWorkKeys.has(scopedWorkKey(work)),
@@ -1022,12 +1059,14 @@ export function createNarrativeMaintenanceScheduler(
       pending.delete(scopedWorkKey(work));
     }
     inFlight = true;
+    noteMutation();
     let nextDelayMs = NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS;
     let shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
     let workspaceUnavailable = false;
     let workspaceMismatch = false;
     let deferredCycle = false;
     let haltForProcessInterruption = false;
+    let settledCycleResult: NarrativeMaintenanceCycleResult | null = null;
     try {
       // N-API class methods must be invoked through backend to preserve self.
       const result = await method.call(backend, {
@@ -1044,6 +1083,11 @@ export function createNarrativeMaintenanceScheduler(
       // intentionally after the await and before clearing the claimed work:
       // the catch path requeues the exact batch and wake scope.
       const cycleResult = normalizeCycleResult(result);
+      settledCycleResult = cycleResult;
+      lastHasMore =
+        (cycleResult.status === "accepted" ||
+          cycleResult.status === "coalesced") &&
+        cycleResult.hasMore === true;
       if (cycleResult.status === "ci-process-interruption-pending") {
         // The running triplet is deliberately not sent through ordinary ACK,
         // recovery, or follow-up handling.  A binding mismatch is fail-closed
@@ -1342,6 +1386,7 @@ export function createNarrativeMaintenanceScheduler(
     } finally {
       sharedCoordinator?.release(claimedProjects);
       inFlight = false;
+      noteMutation();
       if (
         !disposed &&
         !haltForProcessInterruption &&
@@ -1361,6 +1406,58 @@ export function createNarrativeMaintenanceScheduler(
           schedule(nextDelayMs);
         }
       }
+      cycleGeneration += 1;
+      noteMutation();
+      let settledBinding: NarrativeMaintenanceWorkspaceBinding | null = null;
+      try {
+        const candidate = cycleBinding ?? captureWorkspaceBinding();
+        settledBinding = candidate === undefined ? null : candidate;
+      } catch (error) {
+        warn(
+          "[narrative-maintenance] quiescence binding observation failed:",
+          error,
+        );
+      }
+      const cycleAccepted =
+        settledCycleResult?.status === "accepted" ||
+        settledCycleResult?.status === "coalesced";
+      const hasMore =
+        cycleAccepted &&
+        settledCycleResult !== null &&
+        "hasMore" in settledCycleResult
+          ? settledCycleResult.hasMore
+          : false;
+      const queueIdle =
+        !disposed &&
+        !inFlight &&
+        timer === null &&
+        pending.size === 0 &&
+        durableWakeProjects.size === 0 &&
+        deferredWorkKeys.size === 0 &&
+        deferredWakeProjects.size === 0;
+      try {
+        const observation = options.onCycleSettled?.({
+          cycleGeneration,
+          observedAtMs: Date.now(),
+          workspaceBinding: settledBinding,
+          cycleAccepted,
+          queueIdle,
+          inFlight: false,
+          hasMore,
+          timerScheduled: timer !== null,
+        });
+        void Promise.resolve(observation).catch((callbackError: unknown) => {
+          warn(
+            "[narrative-maintenance] quiescence observation callback failed:",
+            callbackError,
+          );
+        });
+      } catch (callbackError) {
+        warn(
+          "[narrative-maintenance] quiescence observation callback failed:",
+          callbackError,
+        );
+      }
     }
   };
 
@@ -1369,6 +1466,7 @@ export function createNarrativeMaintenanceScheduler(
     explicitBinding?: NarrativeMaintenanceWorkspaceBinding,
   ): void => {
     if (disposed) return;
+    noteMutation();
     const work = validateRequest(rawWork);
     const capturedBinding =
       explicitBinding === undefined
@@ -1411,6 +1509,7 @@ export function createNarrativeMaintenanceScheduler(
     start(): void {
       if (started || disposed) return;
       started = true;
+      noteMutation();
       if (typeof backend?.runNarrativeMaintenanceCycle !== "function") {
         warn(
           "[narrative-maintenance] background runtime disabled: native method unavailable",
@@ -1449,9 +1548,35 @@ export function createNarrativeMaintenanceScheduler(
       }
     },
 
+    getQuiescenceState() {
+      let workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null = null;
+      try {
+        const candidate = captureWorkspaceBinding();
+        workspaceBinding = candidate ?? null;
+      } catch {
+        workspaceBinding = null;
+      }
+      return {
+        mutationRevision,
+        workspaceBinding,
+        queueIdle:
+          !disposed &&
+          !inFlight &&
+          timer === null &&
+          pending.size === 0 &&
+          durableWakeProjects.size === 0 &&
+          deferredWorkKeys.size === 0 &&
+          deferredWakeProjects.size === 0,
+        inFlight,
+        hasMore: lastHasMore,
+        timerScheduled: timer !== null,
+      };
+    },
+
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      noteMutation();
       clearTimer();
       clearCoordinatorWait();
       pending.clear();

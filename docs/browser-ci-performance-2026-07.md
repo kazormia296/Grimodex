@@ -23,7 +23,8 @@
 - Storybook: 2 files / 8 tests
 - retry: 0
 - 各候補はfresh runnerで3回。共通候補は独立した2回のmatrixで計6回実行した。
-- wall timeはwrapperを含むtest command、CPUはGNU time、RSS/PSSは100 ms間隔のprocess-tree sample。
+- wall timeはwrapperを含むtest command、CPUはGNU time、RSS/PSSは2,000 ms間隔のprocess-tree sample。watchdogは固定5分、終了後の最終sampleは固定5秒capで、失敗を再実行しない。Linuxの既知process group以外（setsid等で逃げた子孫）の終了は保証せず、証跡はfail-closedとする。
+- Vitest JSONはrunごとにnonce付き出力先を使い、preflightで既存ファイルを削除する。mtimeや古いreportを成功の根拠にせず、suite/test/assertion数とchild close／terminationの証跡が揃った場合だけ成功sampleとして集計する。
 - PSS取得は比較用matrixだけで有効にした。通常CIでは計測オーバーヘッドを避け、RSSを記録する。
 
 証跡:

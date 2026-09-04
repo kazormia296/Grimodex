@@ -3,8 +3,8 @@
 ## Status
 
 - **Lifecycle:** Active mutable roadmap
-- **Last updated:** 2026-08-27
-- **Current focus:** C2-ZC canonical authority cutover after NIR-0 certification
+- **Last updated:** 2026-08-28
+- **Current focus:** C2-ZC canonical-authority evidence; NIR-1 remains blocked
 - **North star:** **本文に追従し、根拠を示し、人間の修正を覚える Living Story Bible**
 
 This document is the canonical **mutable implementation and product roadmap** for Narrative Semantic Core, AI-assisted extraction, incremental maintenance, and the Living Story Bible product surface.
@@ -61,8 +61,8 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 | C2-5B contract-aware activation    | **Complete** | Durable Backfill/Verify/Rebuild lifecycle ownership, current-contract evidence, bounded recovery, live-authority dispatch, Maintenance Inbox routing, and product journeys are merged through PR #556 and PR #559.                                                                                                                                                               |
 | C2-ZA cutover preparation          | **Complete** | SELECT-only legacy/Generic parity measurement, fail-closed per-workspace readiness, and `application` re-key dry-run classification are merged without changing the canonical read authority.                                                                                                                                                                                    |
 | C2-ZB Application re-key migration | **Complete** | SCHEMA 32 performs the schema-owned, all-project preflighted Application re-key, Finding/Attention re-home, derived invalidation, migration Epoch, and final marker atomically. PR #559 closed the remaining ownership, restart, and compatibility findings.                                                                                                                        |
-| C2-ZC canonical cutover            | **Blocked — next explicit boundary** | Generic Consumer Freshness remains shadow until the separately accepted current Verify/rebuild/parity/runtime-liveness gate switches the canonical read authority. NIR-0 certification does not perform this irreversible transition.                                                                                                                                            |
-| First Retrieval Vertical Slice     | **Planned**  | Begins after C2-ZC; the minimum shared Narrative IR contract is now certified.                                                                                                                                                                                                                                                                                                   |
+| C2-ZC canonical cutover            | **Blocked — code candidate only** | Focused code and contract evidence are green, but the production product journey, clean Full CI plus receipt verification, and Sol final are not complete. The candidate therefore does not establish a canonical cutover or unblock NIR-1. |
+| First Retrieval Vertical Slice     | **Blocked**  | NIR-1 cannot start until C2-ZC final acceptance is recorded. The minimum shared Narrative IR contract is certified by NIR-0, but the retrieval dependency on the C2-ZC authority remains unmet. |
 | Living Story Bible product Epics   | **Planned**  | Correction Memory, live Structure Health, Change Review, reports, graph exploration, and Map proposals are defined below.                                                                                                                                                                                                                                                        |
 
 ## Critical path
@@ -76,7 +76,7 @@ C2-ZA: parity/readiness/re-key dry-run ── complete
 C2-ZB: `application` re-key + Attention re-home migration ── complete
 NIR-0: Chronicle `scene-event@1` add-only pilot ── certified
   ↓
-C2-ZC: Generic Consumer Freshness becomes canonical ── next explicit authority boundary
+C2-ZC: Generic Consumer Freshness becomes canonical ── candidate; final acceptance pending
   ↓
 First Retrieval Vertical Slice
   ↓
@@ -91,7 +91,7 @@ Readable reports and graph exploration
 Map draft proposals and later visualization products
 ```
 
-The ordering after PR #536 remains intentional: **Consumer granularity → Finding identity → lifecycle activation → Application re-key → canonical cutover**. The first four joins are now merged. The canonical authority switch remains last because it must be accepted from durable current evidence and must not be smuggled into NIR-0 certification or an ordinary scheduler wake.
+The ordering after PR #536 remains intentional: **Consumer granularity → Finding identity → lifecycle activation → Application re-key → canonical cutover**. The first four joins are complete, while the C2-ZC authority switch remains a focused-green candidate pending its final evidence gates. The scheduler owns the one-way activation; later NIR-1 work must not reopen it or smuggle another authority into NIR-0 certification.
 
 ### Parallel branch ownership
 
@@ -203,6 +203,25 @@ Narrative Change Feed event
 - **Complete** — Source deletion, anchor mismatch, exact relocation, read-set drift, normalizer incompatibility, and component-schema compatibility changes have explicit deterministic comparison paths.
 - **Complete** — Expired Attempts are terminalized before a replacement claim; interrupted Runs, Tasks, Attempts, stale-Epoch reservations, and retryable failures retain or recover the same bounded range without skipping it. Retry exhaustion fails the Task and Run after three Attempts, keeps the range reserved without a lease, and waits for a canonical Epoch rotation to release and reprocess it under a new Run.
 
+The existing `incremental-freshness` Run Kind also owns an
+`idleCheckpoint` contract for the no-backlog case; it does not add a new Run
+Kind. The checkpoint is an exact tagged, zero-width current-Epoch
+`freshness-evaluation` Run with one `incremental-freshness-batch` Task, a
+clean cursor acknowledged at `feedHead`, and deterministic one-project-per-
+wake selection. Missing cursors are accepted only at head 0, and any
+current-Epoch Freshness Run in any status suppresses minting. The exact Task
+input, spec, and Work Key share the canonical JSON SHA-256 input digest. Its
+terminal shape is one completed Task and one completed Attempt with no active
+Attempt; the Task is `completed`, its `attempt_count` equals the Attempt row
+count, Attempt numbers are contiguous `1..N`, only failed/completed Attempts
+are allowed with the completed Attempt last, failed retry history precedes
+completion, and malformed `task_kind` values cannot evade the retry cap. Idle writes are limited to
+Run/Task/Attempt state and the Freshness cursor; no Change Set, Generic
+Consumer Freshness, Edge State, Finding, Attention/Domain, D2 declaration or
+shadow, or Semantic Index write is permitted. A completed checkpoint avoids
+next-wake churn, but database state alone does not prove scheduler liveness or
+C2-ZC cutover, and the normal Feed-backed path remains unchanged.
+
 ### Implementation evidence
 
 - Shared runtime: [`src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs`](../../src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs)
@@ -283,7 +302,7 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 ## C2-Z: Canonical authority cutover
 
-**State:** C2-ZB complete; C2-ZC remains blocked as the next explicit authority boundary
+**State:** C2-ZC candidate — final acceptance pending
 
 ### C2-ZA read-only preparation
 
@@ -302,14 +321,28 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 ### C2-ZC canonical switch boundary
 
-**State:** Blocked / next
+**State:** Blocked — focused-green code candidate; final acceptance pending
 
-- Run only after C2-5B and every per-workspace gate below passes from durable current evidence.
-- Switching the read authority and removing the possibility of silent dual-authority divergence is an explicit later change, not part of C2-ZA, C2-ZB, or NIR-0 certification.
-- The ordinary Freshness scheduler may run its bounded cycle and register
-  liveness evidence, but it must not write the C2-ZC marker or activate the
-  canonical read/write switch. That irreversible transition remains a
-  separately accepted authority boundary.
+Canonical project births are exactly `project.create`,
+`import.session.apply`, and `scan.import.publish`. Scan staging allocation is
+an explicitly hidden, noncanonical workspace operation and is not product
+project-create proof; the typed `scan_staging_project_publish` route is the
+only promotion path into the canonical scan import operation.
+
+- The existing main-only Freshness scheduler runs one bounded cycle, revalidates
+  the current workspace authority/generation, and mints a capability-bound
+  liveness receipt before it attempts cutover.
+- The shared-Rust cutover is fail-soft only for the exact
+  `NEX_C2ZC_CUTOVER_NOT_READY:` readiness result. Marker, schema, evidence, and
+  authority failures surface to the scheduler caller and are retried through
+  the normal scheduler error policy.
+- Marker persistence and canonical reader/writer selection remain inside the
+  shared-Rust/database authority boundary; renderer and preload gain no
+  cutover surface.
+
+Focused evidence does not constitute acceptance. The product journey, clean
+Full CI and its receipt verification, and the Sol final remain required before
+the marker can be treated as an accepted canonical cutover.
 
 ### Per-Workspace cutover requirements
 
@@ -320,12 +353,56 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 - Legacy and Generic Freshness parity is within the ratified contract.
 - No active Backfill or Repair Run.
 - Incremental runtime is live and cursor-consistent.
+- All 13 named Verify checks remain required and have production coverage
+  13/13; this set may not be reduced.
+- The reserved `semantic-index` authority footprint is directly scanned across
+  metadata rows, active sealed D1 heads, V1 semantic-index Edges, and
+  semantic-index Consumer Freshness. Only an all-zero result passes; any
+  non-zero footprint is manual/terminal evidence and is not a Rebuild target.
+- The incremental Freshness idle checkpoint, when present, is only durable
+  current-Epoch Run/Task/Attempt and cursor evidence. It cannot be a Generic
+  Consumer Freshness publisher, and its database checkpoint does not replace
+  scheduler-liveness or cutover evidence.
 
 ### Exit criteria
 
-- Generic Consumer Freshness is the only canonical Freshness read authority.
-- Legacy Freshness becomes compatibility-only and can no longer diverge silently.
-- Rollback or recovery never creates a second durable Freshness authority.
+Each criterion below is met if and only if the complete C2-ZC gate receipt
+exists; without that receipt, C2-ZC and NIR-1 remain blocked.
+
+- **Met iff the complete gate receipt exists** — Generic Consumer Freshness is
+  the accepted sole canonical Freshness read authority.
+- **Met iff the complete gate receipt exists** — Legacy Freshness is
+  compatibility-only without silent divergence.
+- **Met iff the complete gate receipt exists** — Rollback or recovery never
+  creates a second durable Freshness authority, with the product/Full/Sol
+  evidence package recorded.
+
+### Reserved Semantic Index status
+
+`semantic-index` is a reserved consumer and has no active Narrative dependency
+authority. C2-ZC acceptance requires an all-zero direct scan of exactly these
+four project-scoped surfaces: all project rows in
+`narrative_semantic_index_metadata`, and rows with
+`consumer_kind = 'semantic-index'` in active sealed D1 declaration heads, V1
+`narrative_dependency_edges`, and `narrative_consumer_freshness`. Any
+non-zero footprint is manual/terminal and is not a Rebuild-Derived target.
+
+Scene, Codex, Event, and Chat embedding chunk rows may exist as rebuildable
+acceleration. They must never be inferred or migrated into a Narrative
+dependency authority claim.
+
+The dormant NIR-1 binding algorithm is only a future proposal:
+
+- `metadata.index_key = D1 consumer_key = freshness.consumer_key`;
+- `metadata.generation = active sealed D1 head consumer-scoped
+  producer_generation`;
+- `metadata.dependency_set_digest = active sealed D1 set digest`.
+
+Fixed keys, producer registry, Source identities, writers, D1 declarations,
+metadata migration, restore invalidation, and `reserved` → `declared`
+activation require NIR-1 approval. NIR-1's first candidate may use one shared
+producer, but producer granularity, metadata producer identity composition,
+dirty/pending semantics, and Codex Source granularity remain unapproved.
 
 ---
 
@@ -380,7 +457,14 @@ evaluations remain explicitly deferred and were not counted as passing evidence.
 
 ## NIR-1: First Retrieval Vertical Slice
 
-**State:** Blocked on C2-ZC canonical cutover
+**State:** Blocked — C2-ZC final acceptance is not complete
+
+NIR-1 cannot start from focused-green code evidence. Its start condition is a
+recorded C2-ZC product journey, clean Full CI with receipt verification, and
+Sol final, with the complete Verify set at production coverage 13/13 and the
+reserved Semantic Index four-surface scan at all zero. The first candidate is
+one shared producer; the producer/data-contract decisions listed in the C2-ZC
+reserved-boundary section remain unapproved until NIR-1.
 
 ### Canonical slice
 

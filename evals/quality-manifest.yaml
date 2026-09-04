@@ -213,6 +213,10 @@ requirements:
       - agent-tool-manifest.json
       - policies/narrative/narrative-run-kind-policy.json
       - scripts/quality/validate-run-kind-policy.mjs
+      - policies/narrative/change-feed-writers.json
+      - scripts/quality/validate-change-feed-writers.mjs
+      - src/features/import/scan/scanImportOperations.ts
+      - src/features/import/scan/scanStagingProject.ts
       - policies/narrative/narrative-failure-policy.json
       - scripts/quality/validate-execution-state-authority.mjs
       - electron/main/narrativeFreshness.ts
@@ -240,10 +244,12 @@ requirements:
       - src-tauri/crates/grimodex-db/src/backup_restore.rs
       - src-tauri/crates/grimodex-core/src/workspace_schema.rs
       - electron/scripts/narrative-maintenance-product-journeys.mjs
+      - electron/scripts/c2zc-canonical-product-journey.mjs
       - electron/scripts/product-journeys.mjs
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/validate-run-kind-policy.test.mjs
+      - scripts/quality/validate-change-feed-writers.test.mjs
       - scripts/quality/validate-execution-state-authority.test.mjs
       - scripts/quality/narrative-maintenance-boundary.test.mjs
       - electron/main/narrativeFreshness.test.ts
@@ -252,6 +258,7 @@ requirements:
       - src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs
       - scripts/product-journey-phase1.test.mjs
       - scripts/c2-5b-product-journeys.test.mjs
+      - scripts/c2zc-product-journeys.test.mjs
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:
@@ -421,7 +428,7 @@ requirements:
     evaluatedBy:
       - eval-narrative-semantic-frame
   - id: GDX-NARR-SEMANTIC-CONTRACT-001
-    title: Narrative authority, artifact lifecycle, Interpreter boundaries, Scope relation, Dependency role, state axes, and disclosure contracts remain ratified.
+    title: Narrative authority, artifact lifecycle, Interpreter boundaries, Scope relation, Dependency role, state axes, disclosure contracts, and the reserved C2-ZC Semantic Index boundary remain ratified.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-SEMANTIC-CONTRACT-001
     implementedBy:
       - docs/adr/005-narrative-semantic-core-boundary.md
@@ -432,7 +439,10 @@ requirements:
       - policies/narrative/mutation-authority-routes.json
       - policies/narrative/semantic-state-vocabulary.json
       - policies/narrative/semantic-core-authorities.json
+      - policies/narrative/narrative-consumer-contract.json
       - policies/narrative/narrative-artifact-authority.json
+      - policies/narrative/change-feed-writers.json
+      - policies/narrative/README.md
       - policies/narrative/fixtures/artifact-authority.json
       - policies/narrative/narrative-ir-contract.json
       - policies/narrative/retrieval-disclosure.json
@@ -446,6 +456,7 @@ requirements:
       - policies/narrative/schemas/mutation-authority-routes.schema.json
       - policies/narrative/schemas/semantic-state-vocabulary.schema.json
       - policies/narrative/schemas/semantic-core-authorities.schema.json
+      - policies/narrative/schemas/narrative-consumer-contract.schema.json
       - policies/narrative/schemas/retrieval-disclosure.schema.json
       - policies/narrative/schemas/narrative-scope-relation-contract.schema.json
       - policies/narrative/schemas/narrative-scope-authority-basis-v2.schema.json
@@ -471,8 +482,16 @@ requirements:
       - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
       - src-tauri/crates/grimodex-core/src/narrative_scope_authority_basis.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
+      - scripts/quality/validate-semantic-core-boundary.test.mjs
+      - scripts/quality/validate-change-feed-writers.mjs
+      - scripts/quality/validate-change-feed-writers.test.mjs
       - scripts/quality/validate-narrative-ir-contract.mjs
       - docs/plans/narrative-ir-nir0-implementation-plan.md
+      - docs/plans/narrative-c2zc-canonical-cutover-impact-matrix.md
+      - docs/plans/narrative-semantic-core-roadmap.md
+      - docs/plans/nir0-d2-impact-matrix.md
+      - docs/certification/nir0/NIR0-CERT.md
+      - scripts/c2zc-product-journeys.test.mjs
       - src/features/narrative-extraction/reconciler/stageExecution.ts
       - src/features/narrative-extraction/reconciler/stageProvenance.ts
       - src/features/narrative-extraction/reconciler/types.ts

@@ -54,6 +54,13 @@ const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_delete",
 ]);
 
+// Scan publication is an import-only canonical writer. Keep it out of the
+// generic renderer writer set so a forged human/AI origin cannot select a
+// different authority route at the main boundary.
+const IMPORT_ONLY_CANONICAL_WRITER_COMMANDS = new Set([
+  "scan_staging_project_publish",
+]);
+
 // Codex has two renderer-facing writer families. The `agent_codex_*` commands
 // are reserved for capability-bound Agent tool calls; these aliases preserve
 // the human/import/history renderer API without weakening that boundary.
@@ -1727,6 +1734,10 @@ function authorityRouteForRendererCommand(
     );
   }
 
+  if (IMPORT_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
+    return authorityRouteForUnambiguousOrigin(payload.origin, ["import-apply"]);
+  }
+
   if (HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
     return payload.origin === "human" ? "human-direct" : undefined;
   }
@@ -1779,6 +1790,7 @@ export function bindRendererAuthorityForIpc(
   if (!route) {
     const requiresAuthority =
       GENERIC_CANONICAL_WRITER_COMMANDS.has(cmd) ||
+      IMPORT_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||
       CODEX_RENDERER_COMMANDS.has(cmd) ||
       RENDERER_CHRONICLE_COMMANDS.has(cmd) ||
       HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||

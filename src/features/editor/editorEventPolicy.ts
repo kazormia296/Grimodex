@@ -53,6 +53,8 @@ export interface EditorTimelapsePolicyInput {
   id: string | null;
   isEntryMode: boolean;
   isCodexMode: boolean;
+  /** Phase overrides have no matching genesis entity/baseline yet. */
+  isCodexPhaseMode?: boolean;
   isSnippetMode: boolean;
   isChronicleEventMode: boolean;
   isApplyingExternalUpdate: boolean;
@@ -63,11 +65,19 @@ export function getEditorTimelapseCapture({
   id,
   isEntryMode,
   isCodexMode,
+  isCodexPhaseMode,
   isSnippetMode,
   isChronicleEventMode,
   isApplyingExternalUpdate,
 }: EditorTimelapsePolicyInput): EditorTimelapseCapture | null {
-  if (!id || isApplyingExternalUpdate || isChronicleEventMode) return null;
+  if (
+    !id ||
+    isApplyingExternalUpdate ||
+    isChronicleEventMode ||
+    isCodexPhaseMode
+  ) {
+    return null;
+  }
 
   if (isCodexMode) {
     return {

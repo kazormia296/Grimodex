@@ -8,7 +8,7 @@
       "existingRunKindColumnValue": "backfill",
       "purpose": "Deterministic versioned transform from the existing limited Application Dependency data to the Generic Dependency Graph, once per project after a schema upgrade.",
       "trigger": "automatic-once-after-schema-upgrade",
-      "triggerDetail": "The SCHEMA 32 owner performs the C2-ZB Application re-key atomically for durable legacy evidence. A post-open bootstrap Backfill still runs the v3 transform for evidence created outside that migration boundary; it creates the fresh owning Run after workspace open and never switches the canonical Freshness readers (that remains C2-ZC).",
+      "triggerDetail": "The SCHEMA 32 owner performs the C2-ZB Application re-key atomically for durable legacy evidence. A post-open bootstrap Backfill still runs the v3 transform for evidence created outside that migration boundary and creates the fresh owning Run after workspace open. Its completion is one prerequisite for the scheduler-owned C2-ZC canonical-authority activation.",
       "sameWorkKeyReuse": "reuse-running-and-completed",
       "epochBound": true,
       "cursorBound": false,
@@ -79,13 +79,6 @@
         "integrity-repair-completed",
         "dependency-rule-or-normalizer-contract-digest-changed"
       ],
-      "futureTriggerObligations": [
-        {
-          "condition": "before-c2z-cutover",
-          "gate": "C2-ZC",
-          "satisfiesCurrentWiredStatus": false
-        }
-      ],
       "manualTriggerAllowed": true,
       "sameWorkKeyReuse": "reuse-running-only",
       "completedRunManualRepeat": true,
@@ -118,6 +111,11 @@
         "cursor-and-feed-head-consistency",
         "semantic-index-generation-correspondence"
       ],
+      "verifyCoverage": {
+        "requiredCheckCount": 13,
+        "productionCoverage": "13/13",
+        "reductionForbidden": true
+      },
       "forbidSideEffectRepair": true,
       "adminCommands": ["verifyNarrativeDependencyGraph"],
       "runtimeRoute": {
@@ -139,7 +137,6 @@
         "narrative_consumer_freshness",
         "narrative_maintenance_finding_observations",
         "reanchor-candidates",
-        "semantic-index-generation-cache",
         "freshness-evaluator-cursor-reservation"
       ],
       "trigger": "automatic-when-derived-state-absent-or-invalid",
@@ -150,13 +147,6 @@
         "dependency-set-digest-mismatch",
         "verify-reports-derived-rebuild-required",
         "restore-completed"
-      ],
-      "futureTriggerObligations": [
-        {
-          "condition": "before-c2z-cutover",
-          "gate": "C2-ZC",
-          "satisfiesCurrentWiredStatus": false
-        }
       ],
       "manualTriggerAllowed": true,
       "sameWorkKeyReuse": "reuse-running-only",
@@ -206,6 +196,104 @@
       "maxCanonicalSequencesPerBatch": 32,
       "executionAuthority": "serialized-live-workspace-authority",
       "missingSemanticEpochBehavior": "wait-for-canonical-epoch-authority",
+      "idleCheckpoint": {
+        "kind": "current-epoch-idle-checkpoint",
+        "version": 1,
+        "specKind": "incremental-freshness-idle-checkpoint@1",
+        "runKind": "freshness-evaluation",
+        "taskKind": "incremental-freshness-batch",
+        "zeroWidthRange": {
+          "fromSequenceExclusive": "feedHead",
+          "throughSequenceInclusive": "feedHead",
+          "feedHead": "feedHead"
+        },
+        "epochBinding": "current-semantic-epoch",
+        "cursor": {
+          "acknowledgedThroughSequence": "feedHead",
+          "requiresClean": true,
+          "missingAllowedOnlyAtFeedHead": 0
+        },
+        "projectSelection": {
+          "projectsPerWake": 1,
+          "order": "project-id-ascending"
+        },
+        "suppression": {
+          "existingCurrentEpochFreshnessRunAnyStatus": true
+        },
+        "descriptorBinding": {
+          "digestAlgorithm": "sha256-canonical-json",
+          "inputDigestBinding": "task-input-to-spec-and-work-key",
+          "taskInput": {
+            "exactKeys": [
+              "kind",
+              "version",
+              "projectId",
+              "semanticEpochId",
+              "fromSequenceExclusive",
+              "throughSequenceInclusive",
+              "feedHead",
+              "inputDigest"
+            ],
+            "kind": "current-epoch-idle-checkpoint",
+            "version": 1,
+            "digestField": "inputDigest",
+            "digestInput": "canonical-payload-without-inputDigest"
+          },
+          "spec": {
+            "exactKeys": ["kind", "inputDigest"],
+            "kind": "incremental-freshness-idle-checkpoint@1",
+            "inputDigest": "same-as-task-input",
+            "digestField": "specDigest",
+            "digestInput": "canonical-spec-object"
+          },
+          "workKey": {
+            "format": "incremental-freshness:{semanticEpochId}:{fromSequenceExclusive}:{throughSequenceInclusive}:{inputDigestHex}",
+            "digestInput": "task-input-inputDigest-without-sha256-prefix"
+          }
+        },
+        "lifecycle": {
+          "taskCount": 1,
+          "completedTaskCount": 1,
+          "taskStatus": "completed",
+          "taskAttemptCountEqualsAttemptRows": true,
+          "attemptNumbering": "1..N-contiguous",
+          "attemptStatuses": ["failed", "completed"],
+          "completedAttemptCount": 1,
+          "runningAttemptCount": 0,
+          "activeAttemptCount": 0,
+          "noActiveAttempt": true,
+          "failedRetryHistoryAllowed": true,
+          "failedRetryHistoryOrder": "failed-before-completed-only",
+          "completedAttemptMustBeLast": true,
+          "retryCap": {
+            "maxAttemptsPerTask": 3,
+            "corruptedTaskKindCannotBypass": true
+          }
+        },
+        "nextWake": {
+          "noChurn": true
+        },
+        "databaseEvidence": {
+          "schedulerLiveness": "not-proven",
+          "canonicalCutover": "not-proven"
+        },
+        "writesAllowed": [
+          "run-task-attempt-state",
+          "freshness-evaluator-cursor"
+        ],
+        "forbiddenWrites": [
+          "narrative-change-set",
+          "consumer-freshness",
+          "dependency-edge-state",
+          "finding-observation",
+          "attention",
+          "domain-state",
+          "d2-declarations",
+          "d2-shadow",
+          "semantic-index"
+        ],
+        "forbiddenPublishers": ["generic-consumer-freshness"]
+      },
       "retryPolicy": {
         "maxAttemptsPerTask": 3,
         "exhaustedFailureCode": "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",

@@ -25,6 +25,8 @@ import { matchesMod } from "@/lib/platform";
 import { compareInstantValues } from "@/lib/time";
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import type { Snippet } from "./api";
+import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
+import type { QuiescenceProviderFlushOptions } from "@/lib/quiescenceProviders";
 import { GridCardSkeletonList } from "@/components/ui/skeleton-patterns";
 
 export function SnippetPanel() {
@@ -365,7 +367,11 @@ export function SnippetPanel() {
     (
       id: string,
       data: Partial<{ title: string; content: string }>,
-      options: { baseVersion: number },
+      options: {
+        baseVersion: number;
+        timelapseDocument?: TimelapseDocumentRef;
+        preexistingDraft?: QuiescenceProviderFlushOptions["preexistingDraft"];
+      },
     ) => update(id, data, options),
     [update],
   );

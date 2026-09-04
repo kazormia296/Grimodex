@@ -518,6 +518,32 @@ describe("updatePovCharacter / updateLocation (tracked)", () => {
   });
 });
 
+describe("Chronicle draft permit propagation", () => {
+  beforeEach(() => reset());
+
+  it("passes an explicit preexisting-draft permit through scene synopsis writes", async () => {
+    await useTreeStore.getState().updateSynopsis("scene-1", "queued synopsis", {
+      preexistingDraft: true,
+    });
+
+    expect(api.updateNode).toHaveBeenCalledWith(
+      "scene-1",
+      { synopsis: "queued synopsis" },
+      { preexistingDraft: true },
+    );
+  });
+
+  it("does not add a lifecycle permit to ordinary scene synopsis writes", async () => {
+    await useTreeStore
+      .getState()
+      .updateSynopsis("scene-1", "ordinary synopsis");
+
+    expect(api.updateNode).toHaveBeenCalledWith("scene-1", {
+      synopsis: "ordinary synopsis",
+    });
+  });
+});
+
 describe("nullable metadata undo", () => {
   beforeEach(() => reset());
 

@@ -25,7 +25,10 @@ use crate::narrative_extraction::change_feed::{
     require_replay_lineage_in_project, scene_text_impact, AppendNarrativeChangeTransactionInput,
     NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
 };
-use crate::narrative_extraction::mint_c2zc_project_birth_epoch_in_tx;
+use crate::narrative_extraction::{
+    mint_c2zc_project_birth_epoch_in_tx, mint_c2zc_scan_publish_project_birth_epoch_in_tx,
+    with_immediate_transaction,
+};
 
 fn json_pointer_segment(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
@@ -709,6 +712,23 @@ fn validate_codex_rename_updates(updates: &[CodexRenameUndoUpdate]) -> anyhow::R
     Ok(())
 }
 
+fn codex_rename_body_snapshot_targets(
+    updates: &[CodexRenameUndoUpdate],
+) -> Vec<crate::timelapse::TimelapseBodySnapshotTarget> {
+    updates
+        .iter()
+        .filter_map(|update| match update.kind.as_str() {
+            "scene-body" => Some(crate::timelapse::TimelapseBodySnapshotTarget::scene(
+                update.ref_id.clone(),
+            )),
+            "codex-content" => Some(crate::timelapse::TimelapseBodySnapshotTarget::codex(
+                update.ref_id.clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Apply one side (forward or undo) of a rename propagation batch inside an
 /// already-open transaction. Shared by `apply_codex_rename` (forward, new
 /// value) and `undo_codex_rename` (undo, old value) — both pass the target
@@ -1105,6 +1125,13 @@ pub fn undo_codex_rename(db: &Database, payload: CodexRenameUndoPayload) -> anyh
                 events: feed_events,
             },
         )?;
+        crate::timelapse::append_timelapse_body_snapshots_in_tx(
+            &tx,
+            &payload.project_id,
+            append.canonical.tail_sequence,
+            timestamp,
+            &codex_rename_body_snapshot_targets(&payload.updates),
+        )?;
         let response = json!({
             "versions": versions,
             "changeEventUid": payload.event_uid,
@@ -1284,6 +1311,13 @@ pub fn apply_codex_rename(
                     events: feed_events,
                 },
             )?;
+            crate::timelapse::append_timelapse_body_snapshots_in_tx(
+                conn,
+                &payload.project_id,
+                append.canonical.tail_sequence,
+                payload.timestamp,
+                &codex_rename_body_snapshot_targets(&payload.updates),
+            )?;
             let response = json!({
                 "entityId": payload.entry_id,
                 "version": versions.last().and_then(|item| item.get("version")).and_then(Value::as_i64).unwrap_or(0),
@@ -1321,6 +1355,20 @@ pub struct CreateScanStagingProjectPayload {
     pub title: String,
     pub language: String,
     pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanStagingProjectPublishPayload {
+    pub project_id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2075,6 +2123,174 @@ pub fn create_scan_staging_project(
     })
 }
 
+/// Publish a Scan staging Project through the one trusted import writer.
+///
+/// The staging marker is the visibility boundary: all audit, Narrative Change
+/// Feed, C2-ZC birth Epoch, marker removal, and the retry receipt share one
+/// immediate SQLite transaction. A failed marker/authority/feed check thus
+/// cannot expose a partially published Project.
+pub fn publish_scan_staging_project(
+    db: &Database,
+    payload: ScanStagingProjectPublishPayload,
+) -> anyhow::Result<Value> {
+    for (value, field) in [
+        (&payload.project_id, "projectId"),
+        (&payload.request_id, "requestId"),
+        (&payload.session_id, "sessionId"),
+        (&payload.event_uid, "eventUid"),
+    ] {
+        require_non_empty(value, field)?;
+    }
+    anyhow::ensure!(
+        payload.origin == NarrativeChangeOrigin::Import
+            && payload.original_transaction_id.is_none()
+            && payload.undo_journal_id.is_none(),
+        "Scan staging publish requires import origin without replay lineage"
+    );
+    let request_hash =
+        canonical_write_payload_fingerprint("scan_staging_project_publish", &payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "scan_staging_project_publish",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "SCAN_STAGING_PROJECT_PUBLISH_REQUEST_CONFLICT",
+    };
+
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |tx| {
+            if let Some(response) = load_idempotent_response(tx, &idempotency_request)? {
+                return Ok(response);
+            }
+
+            let project_exists: Option<i64> = tx
+                .query_row(
+                    "SELECT 1 FROM projects WHERE id = ?1",
+                    params![payload.project_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            anyhow::ensure!(
+                project_exists.is_some(),
+                "scan staging project '{}' was not created",
+                payload.project_id
+            );
+
+            let staging_marker: Option<String> = tx
+                .query_row(
+                    "SELECT value FROM project_settings
+                  WHERE project_id = ?1 AND key = 'scan.import.state'",
+                    params![payload.project_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match staging_marker.as_deref() {
+                None => anyhow::bail!(
+                "NEX_C2ZC_SCAN_PUBLISH_STAGING_MARKER_MISSING: project '{}' has no staging marker",
+                payload.project_id
+            ),
+                Some("staging") => {}
+                Some(value) => anyhow::bail!(
+                "NEX_C2ZC_SCAN_PUBLISH_STAGING_MARKER_MISMATCH: project '{}' has marker '{value}'",
+                payload.project_id
+            ),
+            }
+
+            let timestamp = chrono::Utc::now().timestamp_millis();
+            let canonical_payload = json!({
+                "projectId": payload.project_id,
+                "requestId": payload.request_id,
+                "sessionId": payload.session_id,
+            });
+            let before = json!({
+                "id": payload.project_id,
+                "visibility": "hidden",
+            });
+            let after = json!({
+                "id": payload.project_id,
+                "visibility": "visible",
+            });
+            let append = append_canonical_and_narrative_change_in_tx(
+                tx,
+                &payload.project_id,
+                &payload.session_id,
+                &AppendChangeEvent {
+                    event_uid: payload.event_uid.clone(),
+                    scene_id: None,
+                    domain: "scan".to_string(),
+                    op_type: "scan.import.publish".to_string(),
+                    entity_type: Some("project".to_string()),
+                    entity_id: Some(payload.project_id.clone()),
+                    payload: canonical_payload.to_string(),
+                    timestamp,
+                },
+                &AppendNarrativeChangeTransactionInput {
+                    project_id: payload.project_id.clone(),
+                    request_id: payload.request_id.clone(),
+                    source_domain: "scan.import.publish".to_string(),
+                    source_change_event_uid: payload.event_uid.clone(),
+                    cause_kind: NarrativeChangeCauseKind::Forward,
+                    origin: payload.origin,
+                    original_transaction_id: None,
+                    commit_id: None,
+                    journal_id: None,
+                    undo_journal_id: None,
+                    application_ids: Vec::new(),
+                    occurred_at: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    events: vec![NarrativeChangeEventInput {
+                        object_key: json!({
+                            "kind": "project",
+                            "projectId": payload.project_id,
+                        }),
+                        change_kind: "metadata".to_string(),
+                        mutation_kind: "update".to_string(),
+                        before_version: None,
+                        before_digest: Some(narrative_snapshot_digest(&before)?),
+                        after_version: None,
+                        after_digest: Some(narrative_snapshot_digest(&after)?),
+                        changed_paths: vec!["/visibility".to_string()],
+                        text_impact: None,
+                        structural_impact: Some(json!({
+                            "changedPaths": ["/visibility"],
+                        })),
+                    }],
+                },
+            )?;
+            let semantic_epoch_id = mint_c2zc_scan_publish_project_birth_epoch_in_tx(
+                tx,
+                &payload.project_id,
+                &payload.request_id,
+                &payload.session_id,
+                &payload.event_uid,
+            )?;
+            let removed = tx.execute(
+                "DELETE FROM project_settings
+              WHERE project_id = ?1
+                AND key = 'scan.import.state'
+                AND value = 'staging'",
+                params![payload.project_id],
+            )?;
+            anyhow::ensure!(
+            removed == 1,
+            "NEX_C2ZC_SCAN_PUBLISH_STAGING_MARKER_MISSING: project '{}' staging marker disappeared",
+            payload.project_id
+        );
+
+            let response = json!({
+                "projectId": payload.project_id,
+                "semanticEpochId": semantic_epoch_id,
+                "__writeReceipt": {
+                    "changeEventUid": payload.event_uid,
+                    "maintenanceTransactionId": append.narrative.transaction_id,
+                    "undoJournalId": null,
+                },
+            });
+            insert_idempotent_response(tx, &idempotency_request, &payload.project_id, &response)?;
+            Ok(response)
+        })
+    })
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TreeNodeCreatePayload {
@@ -2139,6 +2355,8 @@ pub struct TreeNodePatchPayload {
     pub bump_version: bool,
     pub updated_at: String,
     pub change_event: Option<TreeNodePatchChangeEvent>,
+    #[serde(default)]
+    pub timelapse_doc_step_coverage: Option<crate::timelapse::TimelapseDocStepCoverageProof>,
     pub origin: NarrativeChangeOrigin,
     #[serde(default)]
     pub original_transaction_id: Option<String>,
@@ -2542,11 +2760,12 @@ struct TreeFeedAppend<'a> {
     events: Vec<NarrativeChangeEventInput>,
 }
 
-fn append_tree_feed(
+fn append_tree_feed_result(
     conn: &rusqlite::Connection,
     input: TreeFeedAppend<'_>,
-) -> anyhow::Result<String> {
-    let append = append_canonical_and_narrative_change_in_tx(
+) -> anyhow::Result<crate::narrative_extraction::change_feed::AppendCanonicalNarrativeChangeResult>
+{
+    append_canonical_and_narrative_change_in_tx(
         conn,
         input.project_id,
         input.session_id,
@@ -2575,8 +2794,16 @@ fn append_tree_feed(
             occurred_at: input.occurred_at.to_string(),
             events: input.events,
         },
-    )?;
-    Ok(append.narrative.transaction_id)
+    )
+}
+
+fn append_tree_feed(
+    conn: &rusqlite::Connection,
+    input: TreeFeedAppend<'_>,
+) -> anyhow::Result<String> {
+    Ok(append_tree_feed_result(conn, input)?
+        .narrative
+        .transaction_id)
 }
 
 fn tree_patch_path(key: &str) -> Option<&'static str> {
@@ -2816,12 +3043,14 @@ pub fn tree_node_create_with_authority(
             ensure_tree_parent_in_project(&tx, &payload.project_id, parent_id)?;
         }
         let now = chrono::Utc::now().to_rfc3339();
+        let content = payload.content.clone().unwrap_or_else(|| "{}".to_string());
+        let char_count = grimodex_core::pm_text::pm_doc_text_len(&content);
         Database::execute_with_conn(
             &tx,
             "INSERT INTO tree_nodes
               (id, project_id, parent_id, node_type, title, sort_order, synopsis, status,
-               source_uri, source_mtime, content, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+               source_uri, source_mtime, content, char_count, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
             &[
                 Value::String(payload.id.clone()),
                 Value::String(payload.project_id.clone()),
@@ -2839,7 +3068,8 @@ pub fn tree_node_create_with_authority(
                     .source_mtime
                     .clone()
                     .map_or(Value::Null, Value::String),
-                Value::String(payload.content.clone().unwrap_or_else(|| "{}".to_string())),
+                Value::String(content),
+                Value::from(char_count),
                 Value::String(now.clone()),
             ],
             "run",
@@ -3324,7 +3554,14 @@ pub fn tree_node_patch_with_authority(
             "tree node changeEvent identity must match writer identity"
         );
     }
-    let request_hash = canonical_write_payload_fingerprint("tree_node_patch", &payload)?;
+    // Coverage is an optimization proof, not the canonical body-write intent.
+    // Normalize it out so transport retries that re-materialize or omit the
+    // proof still resolve to the same receipt (while a changed body remains a
+    // request conflict).
+    let mut fingerprint_payload = payload.clone();
+    fingerprint_payload.timelapse_doc_step_coverage = None;
+    let request_hash =
+        canonical_write_payload_fingerprint("tree_node_patch", &fingerprint_payload)?;
     let idempotency_request = IdempotencyRequest {
         domain: "tree_node_patch",
         request_id: Some(&payload.request_id),
@@ -3344,34 +3581,33 @@ pub fn tree_node_patch_with_authority(
         "tree.node.patch"
     };
     db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        if let Some(response) = load_idempotent_response(&tx, &idempotency_request)? {
-            tx.commit()?;
+        with_immediate_transaction(conn, |tx| {
+        if let Some(response) = load_idempotent_response(tx, &idempotency_request)? {
             return Ok(response);
         }
         validate_tree_replay_lineage_in_tx(
-            &tx,
+            tx,
             &payload.project_id,
             payload.origin,
             payload.original_transaction_id.as_deref(),
             payload.undo_journal_id.as_deref(),
         )?;
         validate_tree_replay_target_in_tx(
-            &tx,
+            tx,
             &payload.project_id,
             payload.origin,
             payload.undo_journal_id.as_deref(),
             &payload.node_id,
             "patch",
         )?;
-        let before = select_tree_node(&tx, &payload.project_id, &payload.node_id)?;
+        let before = select_tree_node(tx, &payload.project_id, &payload.node_id)?;
         let before_live_scene_subtree_count = if before
             .get("nodeType")
             .and_then(Value::as_str)
             == Some("folder")
         {
             Some(live_scene_subtree_count(
-                &tx,
+                tx,
                 &payload.project_id,
                 &payload.node_id,
             )?)
@@ -3398,12 +3634,12 @@ pub fn tree_node_patch_with_authority(
                 Value::Null => {}
                 Value::String(parent_id) => {
                     ensure_tree_parent_does_not_cycle(
-                        &tx,
+                        tx,
                         &payload.project_id,
                         &payload.node_id,
                         parent_id,
                     )?;
-                    ensure_tree_parent_in_project(&tx, &payload.project_id, parent_id)?;
+                    ensure_tree_parent_in_project(tx, &payload.project_id, parent_id)?;
                 }
                 _ => anyhow::bail!("tree node parentId must be a string or null"),
             }
@@ -3416,7 +3652,7 @@ pub fn tree_node_patch_with_authority(
                 match entry_id {
                     Value::Null => {}
                     Value::String(entry_id) => ensure_tree_codex_reference_in_project(
-                        &tx,
+                        tx,
                         &payload.project_id,
                         field,
                         entry_id,
@@ -3426,7 +3662,7 @@ pub fn tree_node_patch_with_authority(
             }
         }
 
-        Database::execute_with_conn(&tx, &sql, &params, "run")?;
+        Database::execute_with_conn(tx, &sql, &params, "run")?;
         let updated = tx.changes();
         if updated != 1 {
             if let Some(base_version) = payload.base_version {
@@ -3442,7 +3678,7 @@ pub fn tree_node_patch_with_authority(
                 payload.project_id
             );
         }
-        let row = select_tree_node(&tx, &payload.project_id, &payload.node_id)?;
+        let row = select_tree_node(tx, &payload.project_id, &payload.node_id)?;
         if let Some(base_version) = payload.base_version {
             let expected_version = if payload.bump_version {
                 base_version
@@ -3480,7 +3716,7 @@ pub fn tree_node_patch_with_authority(
                     .and_then(Value::as_i64)
                     .ok_or_else(|| anyhow::anyhow!("tree node row has no version"))?;
                 crate::narrative_extraction::record_human_field_write(
-                    &tx,
+                    tx,
                     &payload.project_id,
                     "scene",
                     &payload.node_id,
@@ -3490,7 +3726,7 @@ pub fn tree_node_patch_with_authority(
                 let source_key = format!("project:scene:{}", payload.node_id);
                 let source_token = format!("v{version}@{updated_at}");
                 crate::narrative_extraction::propagate_source_change_freshness_in_tx(
-                    &tx,
+                    tx,
                     &payload.project_id,
                     "scene-body",
                     &source_key,
@@ -3516,12 +3752,21 @@ pub fn tree_node_patch_with_authority(
             changed_paths.push("/updatedAt".to_string());
         }
         let is_scene = row.get("nodeType").and_then(Value::as_str) == Some("scene");
+        let append_body_snapshot = if is_scene && payload.patch.contains_key("content") {
+            // Renderer coverage is deliberately not trusted as a snapshot
+            // authority. The body row just written is the source of truth, so
+            // retain its full snapshot for forward and history replay writes
+            // until a sealed Native proof exists.
+            true
+        } else {
+            false
+        };
         let live_scene_subtree_impact = if row.get("nodeType").and_then(Value::as_str)
             == Some("folder")
         {
             Some((
                 before_live_scene_subtree_count.unwrap_or(0),
-                live_scene_subtree_count(&tx, &payload.project_id, &payload.node_id)?,
+                live_scene_subtree_count(tx, &payload.project_id, &payload.node_id)?,
             ))
         } else {
             None
@@ -3551,7 +3796,7 @@ pub fn tree_node_patch_with_authority(
             NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
         ) {
             crate::undo_journal::insert_undo_journal_in_tx(
-                &tx,
+                tx,
                 crate::undo_journal::UndoJournalInsert {
                     id: &journal_id,
                     project_id: &payload.project_id,
@@ -3567,8 +3812,8 @@ pub fn tree_node_patch_with_authority(
                 },
             )?;
         }
-        let maintenance_transaction_id = append_tree_feed(
-            &tx,
+        let append = append_tree_feed_result(
+            tx,
             TreeFeedAppend {
                 project_id: &payload.project_id,
                 request_id: &payload.request_id,
@@ -3607,6 +3852,18 @@ pub fn tree_node_patch_with_authority(
                 undo_journal_id: Some(&journal_id),
             },
         )?;
+        if append_body_snapshot {
+            crate::timelapse::append_timelapse_body_snapshots_in_tx(
+                tx,
+                &payload.project_id,
+                append.canonical.tail_sequence,
+                timestamp,
+                &[crate::timelapse::TimelapseBodySnapshotTarget::scene(
+                    payload.node_id.clone(),
+                )],
+            )?;
+        }
+        let maintenance_transaction_id = append.narrative.transaction_id;
         let response = tree_write_response(
             row,
             &payload.event_uid,
@@ -3614,13 +3871,13 @@ pub fn tree_node_patch_with_authority(
             &journal_id,
         );
         insert_idempotent_response(
-            &tx,
+            tx,
             &idempotency_request,
             &payload.project_id,
             &response,
         )?;
-        tx.commit()?;
         Ok(response)
+        })
     })
 }
 
@@ -5527,6 +5784,8 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
 mod tests {
     use std::path::Path;
 
+    use crate::narrative_extraction::{discover_durable_maintenance_work, AutomaticRunKind};
+
     use super::*;
 
     fn tree_create_payload(
@@ -5574,6 +5833,7 @@ mod tests {
             bump_version: base_version.is_some(),
             updated_at: updated_at.to_string(),
             change_event: None,
+            timelapse_doc_step_coverage: None,
             origin: NarrativeChangeOrigin::Human,
             original_transaction_id: None,
             undo_journal_id: None,
@@ -5679,6 +5939,46 @@ mod tests {
             created_at: "2026-08-13T00:00:00.000Z".to_string(),
             updated_at: "2026-08-13T00:00:00.000Z".to_string(),
         }
+    }
+
+    fn scan_publish_payload(
+        project_id: &str,
+        request_id: &str,
+        event_uid: &str,
+    ) -> ScanStagingProjectPublishPayload {
+        ScanStagingProjectPublishPayload {
+            project_id: project_id.to_string(),
+            request_id: request_id.to_string(),
+            session_id: "scan-session".to_string(),
+            event_uid: event_uid.to_string(),
+            origin: NarrativeChangeOrigin::Import,
+            original_transaction_id: None,
+            undo_journal_id: None,
+        }
+    }
+
+    fn scan_publish_side_effect_counts(
+        db: &Database,
+        project_id: &str,
+        request_id: &str,
+    ) -> (i64, i64, i64, i64) {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM change_events
+                     WHERE project_id = ?1 AND op_type = 'scan.import.publish'),
+                   (SELECT COUNT(*) FROM narrative_change_transactions
+                     WHERE project_id = ?1 AND source_domain = 'scan.import.publish'),
+                   (SELECT COUNT(*) FROM narrative_semantic_epochs
+                     WHERE project_id = ?1),
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE domain = 'scan_staging_project_publish' AND request_id = ?2)",
+                params![project_id, request_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .map_err(Into::into)
+        })
+        .expect("inspect Scan publish side effects")
     }
 
     fn project_patch_payload(
@@ -6818,6 +7118,342 @@ mod tests {
     }
 
     #[test]
+    fn scan_staging_project_publish_is_atomic_and_replays_the_same_receipt_and_epoch() {
+        let db = fixture();
+        create_scan_staging_project(
+            &db,
+            CreateScanStagingProjectPayload {
+                id: "scan-pre-marker".to_string(),
+                title: "Imported before cutover".to_string(),
+                language: "en".to_string(),
+                created_at: "2026-08-30T00:00:00.000Z".to_string(),
+            },
+        )
+        .expect("create pre-marker staging project");
+        let pre_marker = scan_publish_payload(
+            "scan-pre-marker",
+            "scan-pre-marker-request",
+            "scan-pre-marker-event",
+        );
+        let pre_response = publish_scan_staging_project(&db, pre_marker.clone())
+            .expect("publish pre-marker staging project");
+        assert_eq!(pre_response["projectId"], "scan-pre-marker");
+        assert_eq!(pre_response["semanticEpochId"], Value::Null);
+        assert!(pre_response["__writeReceipt"]["maintenanceTransactionId"]
+            .as_str()
+            .is_some());
+        let pre_replay =
+            publish_scan_staging_project(&db, pre_marker).expect("replay pre-marker publish");
+        assert_eq!(pre_replay, pre_response);
+        assert_eq!(
+            scan_publish_side_effect_counts(&db, "scan-pre-marker", "scan-pre-marker-request"),
+            (1, 1, 0, 1)
+        );
+        let pre_work = discover_durable_maintenance_work(&db, "scan-pre-marker", "before-cutover")
+            .expect("discover published pre-marker project")
+            .expect("published marker removal makes Scan project eligible");
+        assert_eq!(pre_work.run_kind, AutomaticRunKind::Backfill);
+        assert_eq!(pre_work.semantic_epoch_id, None);
+
+        db.with_conn(|conn| Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z"))
+            .expect("activate C2-ZC marker");
+        create_scan_staging_project(
+            &db,
+            CreateScanStagingProjectPayload {
+                id: "scan-current".to_string(),
+                title: "Imported after cutover".to_string(),
+                language: "ja".to_string(),
+                created_at: "2026-08-30T00:01:00.000Z".to_string(),
+            },
+        )
+        .expect("create current-marker staging project");
+        let current_marker =
+            scan_publish_payload("scan-current", "scan-current-request", "scan-current-event");
+        let current_response = publish_scan_staging_project(&db, current_marker.clone())
+            .expect("publish current-marker staging project");
+        let epoch_id = current_response["semanticEpochId"]
+            .as_str()
+            .expect("current-marker publish returns an Epoch");
+        assert!(!epoch_id.is_empty());
+        let current_replay = publish_scan_staging_project(&db, current_marker)
+            .expect("replay current-marker publish");
+        assert_eq!(current_replay, current_response);
+        assert_eq!(
+            scan_publish_side_effect_counts(&db, "scan-current", "scan-current-request"),
+            (1, 1, 1, 1)
+        );
+        db.with_conn(|conn| {
+            let marker: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM project_settings
+                      WHERE project_id = 'scan-current' AND key = 'scan.import.state'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            assert_eq!(marker, None, "marker removal is the visibility publication");
+            let (event_payload, event_entity_type, event_entity_id): (String, String, String) =
+                conn.query_row(
+                    "SELECT payload, entity_type, entity_id FROM change_events
+                      WHERE project_id = 'scan-current'
+                        AND op_type = 'scan.import.publish'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+            assert_eq!(event_entity_type, "project");
+            assert_eq!(event_entity_id, "scan-current");
+            assert_eq!(
+                serde_json::from_str::<Value>(&event_payload)?,
+                json!({
+                    "projectId": "scan-current",
+                    "requestId": "scan-current-request",
+                    "sessionId": "scan-session",
+                })
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("verify Scan publish ledgers");
+    }
+
+    #[test]
+    fn scan_staging_project_publish_rejects_missing_or_mismatched_marker_without_authority() {
+        let db = fixture();
+        create_scan_staging_project(
+            &db,
+            CreateScanStagingProjectPayload {
+                id: "scan-marker-failure".to_string(),
+                title: "Marker failure".to_string(),
+                language: "ja".to_string(),
+                created_at: "2026-08-30T00:00:00.000Z".to_string(),
+            },
+        )
+        .expect("create staging project");
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM project_settings
+                  WHERE project_id = 'scan-marker-failure'
+                    AND key = 'scan.import.state'",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("remove marker for missing-marker case");
+        let missing_error = publish_scan_staging_project(
+            &db,
+            scan_publish_payload(
+                "scan-marker-failure",
+                "scan-marker-missing-request",
+                "scan-marker-missing-event",
+            ),
+        )
+        .expect_err("missing marker must remain hidden");
+        assert!(missing_error
+            .to_string()
+            .contains("NEX_C2ZC_SCAN_PUBLISH_STAGING_MARKER_MISSING"));
+        assert_eq!(
+            scan_publish_side_effect_counts(
+                &db,
+                "scan-marker-failure",
+                "scan-marker-missing-request"
+            ),
+            (0, 0, 0, 0)
+        );
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-marker-failure', 'scan.import.state', 'not-staging')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed mismatched marker");
+        let mismatch_error = publish_scan_staging_project(
+            &db,
+            scan_publish_payload(
+                "scan-marker-failure",
+                "scan-marker-mismatch-request",
+                "scan-marker-mismatch-event",
+            ),
+        )
+        .expect_err("mismatched marker must remain hidden");
+        assert!(mismatch_error
+            .to_string()
+            .contains("NEX_C2ZC_SCAN_PUBLISH_STAGING_MARKER_MISMATCH"));
+        db.with_conn(|conn| {
+            let marker: String = conn.query_row(
+                "SELECT value FROM project_settings
+                  WHERE project_id = 'scan-marker-failure'
+                    AND key = 'scan.import.state'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(marker, "not-staging");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("verify mismatched marker remains");
+        assert_eq!(
+            scan_publish_side_effect_counts(
+                &db,
+                "scan-marker-failure",
+                "scan-marker-mismatch-request"
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn scan_staging_project_publish_rolls_back_for_future_marker_epoch_conflict_and_feed_failure() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    Database::C2_ZC_CUTOVER_MIGRATION_ID,
+                    Database::C2_ZC_CUTOVER_CONTRACT_VERSION + 1,
+                    "2026-08-30T00:00:00.000Z",
+                ],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed unsupported C2-ZC marker");
+        create_scan_staging_project(
+            &db,
+            CreateScanStagingProjectPayload {
+                id: "scan-future-marker".to_string(),
+                title: "Future marker".to_string(),
+                language: "ja".to_string(),
+                created_at: "2026-08-30T00:00:00.000Z".to_string(),
+            },
+        )
+        .expect("create future-marker staging project");
+        let future_error = publish_scan_staging_project(
+            &db,
+            scan_publish_payload(
+                "scan-future-marker",
+                "scan-future-request",
+                "scan-future-event",
+            ),
+        )
+        .expect_err("future marker must fail closed");
+        assert!(future_error
+            .to_string()
+            .contains("NEX_C2ZC_SCAN_PUBLISH_MARKER_UNSUPPORTED"));
+        assert_eq!(
+            scan_publish_side_effect_counts(&db, "scan-future-marker", "scan-future-request"),
+            (0, 0, 0, 0)
+        );
+
+        let db = fixture();
+        db.with_conn(|conn| Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z"))
+            .expect("activate C2-ZC marker");
+        create_scan_staging_project(
+            &db,
+            CreateScanStagingProjectPayload {
+                id: "scan-epoch-conflict".to_string(),
+                title: "Epoch conflict".to_string(),
+                language: "ja".to_string(),
+                created_at: "2026-08-30T00:00:00.000Z".to_string(),
+            },
+        )
+        .expect("create epoch-conflict staging project");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('scan-existing-epoch', 'scan-epoch-conflict', 0, 'initial', ?1)",
+                ["2026-08-30T00:00:00.000Z"],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed duplicate Epoch");
+        let conflict_error = publish_scan_staging_project(
+            &db,
+            scan_publish_payload(
+                "scan-epoch-conflict",
+                "scan-epoch-conflict-request",
+                "scan-epoch-conflict-event",
+            ),
+        )
+        .expect_err("duplicate Epoch must fail closed");
+        assert!(conflict_error
+            .to_string()
+            .contains("NEX_C2ZC_SCAN_PUBLISH_EPOCH_CONFLICT"));
+        assert_eq!(
+            scan_publish_side_effect_counts(
+                &db,
+                "scan-epoch-conflict",
+                "scan-epoch-conflict-request"
+            ),
+            (0, 0, 1, 0)
+        );
+        db.with_conn(|conn| {
+            let marker: String = conn.query_row(
+                "SELECT value FROM project_settings
+                  WHERE project_id = 'scan-epoch-conflict'
+                    AND key = 'scan.import.state'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(marker, "staging");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("verify epoch-conflict project remains hidden");
+
+        let db = fixture();
+        db.with_conn(|conn| Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z"))
+            .expect("activate C2-ZC marker");
+        create_scan_staging_project(
+            &db,
+            CreateScanStagingProjectPayload {
+                id: "scan-feed-failure".to_string(),
+                title: "Feed failure".to_string(),
+                language: "ja".to_string(),
+                created_at: "2026-08-30T00:00:00.000Z".to_string(),
+            },
+        )
+        .expect("create feed-failure staging project");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_scan_publish_feed
+                   BEFORE INSERT ON narrative_change_transactions
+                   BEGIN SELECT RAISE(ABORT, 'forced scan publish feed failure'); END;",
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("install feed failure trigger");
+        let feed_error = publish_scan_staging_project(
+            &db,
+            scan_publish_payload(
+                "scan-feed-failure",
+                "scan-feed-failure-request",
+                "scan-feed-failure-event",
+            ),
+        )
+        .expect_err("feed failure must roll back Scan publish");
+        assert!(feed_error
+            .to_string()
+            .contains("forced scan publish feed failure"));
+        assert_eq!(
+            scan_publish_side_effect_counts(&db, "scan-feed-failure", "scan-feed-failure-request"),
+            (0, 0, 0, 0)
+        );
+        db.with_conn(|conn| {
+            let marker: String = conn.query_row(
+                "SELECT value FROM project_settings
+                  WHERE project_id = 'scan-feed-failure'
+                    AND key = 'scan.import.state'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(marker, "staging");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("verify feed-failure project remains hidden");
+    }
+
+    #[test]
     fn codex_rename_undo_is_project_scoped_and_rolls_back_as_one_unit() {
         let db = fixture();
         let (original_transaction_id, undo_journal_id) = seed_rename_lineage(&db, "scope");
@@ -7236,6 +7872,267 @@ mod tests {
     }
 
     #[test]
+    fn codex_rename_body_replacements_snapshot_scene_and_codex_on_forward_undo_redo() {
+        let db = fixture();
+        let scene_before = r#"{"type":"doc","content":[{"type":"text","text":"scene-old"}]}"#;
+        let scene_after = r#"{"type":"doc","content":[{"type":"text","text":"scene-new😀"}]}"#;
+        let codex_before = r#"{"type":"doc","content":[{"type":"text","text":"codex-old"}]}"#;
+        let codex_after = r#"{"type":"doc","content":[{"type":"text","text":"codex-new"}]}"#;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET content = ?1, char_count = 9 WHERE id = 'moved'",
+                [scene_before],
+            )?;
+            conn.execute(
+                "UPDATE codex_entries SET content = ?1 WHERE id = 'c1'",
+                [codex_before],
+            )?;
+            Ok(())
+        })
+        .expect("seed rename body states");
+
+        let updates = |scene: &str, codex: &str, base_version: i64| {
+            vec![
+                CodexRenameUndoUpdate {
+                    kind: "scene-body".to_string(),
+                    ref_id: "moved".to_string(),
+                    detail_definition_id: None,
+                    base_version,
+                    value: scene.to_string(),
+                    char_count: Some(grimodex_core::pm_text::pm_doc_text_len(scene)),
+                    placed_beat_preview: None,
+                },
+                CodexRenameUndoUpdate {
+                    kind: "codex-content".to_string(),
+                    ref_id: "c1".to_string(),
+                    detail_definition_id: None,
+                    base_version,
+                    value: codex.to_string(),
+                    char_count: None,
+                    placed_beat_preview: None,
+                },
+            ]
+        };
+        let forward = CodexRenameApplyPayload {
+            request_id: "rename-body-forward-request".to_string(),
+            project_id: "p1".to_string(),
+            session_id: "rename-body-session".to_string(),
+            surface: Some("rename-test".to_string()),
+            entry_id: "c1".to_string(),
+            updated_at: "2026-08-13T00:00:01Z".to_string(),
+            updates: updates(scene_after, codex_after, 0),
+            event_summary: "{}".to_string(),
+            event_uid: "rename-body-forward-event".to_string(),
+            timestamp: 100,
+            redo: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+        };
+        let forward_result = apply_codex_rename(&db, forward.clone()).expect("forward body rename");
+        let mut retry = forward;
+        retry.session_id = "rename-body-session-after-restart".to_string();
+        retry.event_uid = "rename-body-forward-event-after-restart".to_string();
+        assert_eq!(
+            apply_codex_rename(&db, retry).expect("retry forward body rename"),
+            forward_result
+        );
+        let original_transaction_id = forward_result["maintenanceTransactionId"]
+            .as_str()
+            .expect("forward transaction")
+            .to_string();
+        let undo_journal_id = forward_result["undoJournalId"]
+            .as_str()
+            .expect("forward journal")
+            .to_string();
+
+        undo_codex_rename(
+            &db,
+            CodexRenameUndoPayload {
+                request_id: "rename-body-undo-request".to_string(),
+                event_uid: "rename-body-undo-event".to_string(),
+                original_transaction_id: original_transaction_id.clone(),
+                undo_journal_id: undo_journal_id.clone(),
+                project_id: "p1".to_string(),
+                updated_at: "2026-08-13T00:00:02Z".to_string(),
+                updates: updates(scene_before, codex_before, 1),
+                session_id: Some("rename-body-session".to_string()),
+            },
+        )
+        .expect("undo body rename");
+        apply_codex_rename(
+            &db,
+            CodexRenameApplyPayload {
+                request_id: "rename-body-redo-request".to_string(),
+                project_id: "p1".to_string(),
+                session_id: "rename-body-session".to_string(),
+                surface: Some("rename-test".to_string()),
+                entry_id: "c1".to_string(),
+                updated_at: "2026-08-13T00:00:03Z".to_string(),
+                updates: updates(scene_after, codex_after, 2),
+                event_summary: "{}".to_string(),
+                event_uid: "rename-body-redo-event".to_string(),
+                timestamp: 300,
+                redo: true,
+                original_transaction_id: Some(original_transaction_id),
+                undo_journal_id: Some(undo_journal_id),
+            },
+        )
+        .expect("redo body rename");
+
+        db.with_conn(|conn| {
+            let snapshots = conn
+                .prepare(
+                    "SELECT domain, entity_id, anchor_sequence, payload
+                       FROM state_snapshots
+                      WHERE project_id = 'p1' AND entity_id IN ('moved', 'c1')
+                      ORDER BY anchor_sequence, domain",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                snapshots,
+                vec![
+                    (
+                        "codex".to_string(),
+                        "c1".to_string(),
+                        1,
+                        codex_after.to_string()
+                    ),
+                    (
+                        "editor".to_string(),
+                        "moved".to_string(),
+                        1,
+                        scene_after.to_string()
+                    ),
+                    (
+                        "codex".to_string(),
+                        "c1".to_string(),
+                        2,
+                        codex_before.to_string()
+                    ),
+                    (
+                        "editor".to_string(),
+                        "moved".to_string(),
+                        2,
+                        scene_before.to_string()
+                    ),
+                    (
+                        "codex".to_string(),
+                        "c1".to_string(),
+                        3,
+                        codex_after.to_string()
+                    ),
+                    (
+                        "editor".to_string(),
+                        "moved".to_string(),
+                        3,
+                        scene_after.to_string()
+                    ),
+                ]
+            );
+            Ok(())
+        })
+        .expect("inspect rename body snapshots");
+    }
+
+    #[test]
+    fn codex_rename_snapshot_failure_rolls_back_bodies_and_all_ledgers() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_codex_rename_snapshot
+                   BEFORE INSERT ON state_snapshots
+                   BEGIN SELECT RAISE(ABORT, 'forced codex rename snapshot failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("install snapshot failure trigger");
+
+        let error = apply_codex_rename(
+            &db,
+            CodexRenameApplyPayload {
+                request_id: "rename-snapshot-failure-request".to_string(),
+                project_id: "p1".to_string(),
+                session_id: "rename-session".to_string(),
+                surface: Some("rename-test".to_string()),
+                entry_id: "c1".to_string(),
+                updated_at: "2026-08-13T00:00:01Z".to_string(),
+                updates: vec![
+                    CodexRenameUndoUpdate {
+                        kind: "scene-body".to_string(),
+                        ref_id: "moved".to_string(),
+                        detail_definition_id: None,
+                        base_version: 0,
+                        value: r#"{"type":"doc","content":[]}"#.to_string(),
+                        char_count: Some(0),
+                        placed_beat_preview: None,
+                    },
+                    CodexRenameUndoUpdate {
+                        kind: "codex-content".to_string(),
+                        ref_id: "c1".to_string(),
+                        detail_definition_id: None,
+                        base_version: 0,
+                        value: r#"{"type":"doc","content":[]}"#.to_string(),
+                        char_count: None,
+                        placed_beat_preview: None,
+                    },
+                ],
+                event_summary: "{}".to_string(),
+                event_uid: "rename-snapshot-failure-event".to_string(),
+                timestamp: 1,
+                redo: false,
+                original_transaction_id: None,
+                undo_journal_id: None,
+            },
+        )
+        .expect_err("snapshot failure must abort the whole rename");
+        assert!(error
+            .to_string()
+            .contains("forced codex rename snapshot failure"));
+
+        db.with_conn(|conn| {
+            let state: (String, i64, String, i64, i64, i64, i64, i64) = conn.query_row(
+                "SELECT
+                   (SELECT content FROM tree_nodes WHERE id = 'moved'),
+                   (SELECT version FROM tree_nodes WHERE id = 'moved'),
+                   (SELECT content FROM codex_entries WHERE id = 'c1'),
+                   (SELECT version FROM codex_entries WHERE id = 'c1'),
+                   (SELECT COUNT(*) FROM undo_journal WHERE project_id = 'p1'),
+                   (SELECT COUNT(*) FROM change_events WHERE project_id = 'p1'),
+                   (SELECT COUNT(*) FROM narrative_change_transactions WHERE project_id = 'p1'),
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE domain = 'codex_rename_apply')",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )?;
+            assert_eq!(
+                state,
+                ("{}".to_string(), 0, "{}".to_string(), 0, 0, 0, 0, 0)
+            );
+            Ok(())
+        })
+        .expect("verify snapshot rollback");
+    }
+
+    #[test]
     fn codex_rename_feed_failure_rolls_back_domain_undo_and_canonical_event() {
         let db = fixture();
         db.with_conn(|conn| {
@@ -7426,6 +8323,60 @@ mod tests {
             Ok(())
         })
         .expect("inspect tree replay");
+    }
+
+    #[test]
+    fn tree_scene_create_persists_utf16_char_count_atomically_and_replays_receipt() {
+        let db = fixture();
+        let rich_content = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Hello😀"}]}]}"#;
+        let empty_content = r#"{"type":"doc","content":[]}"#;
+        let mut rich = tree_create_payload("counted-scene", "scene", "a8", Some("root"));
+        rich.content = Some(rich_content.to_string());
+        let first = tree_node_create(&db, rich.clone()).expect("create counted scene");
+
+        let mut retry = rich;
+        retry.session_id = "tree-count-session-after-restart".to_string();
+        retry.event_uid = "tree-count-event-after-restart".to_string();
+        let replayed = tree_node_create(&db, retry).expect("replay counted scene create");
+        assert_eq!(replayed, first);
+
+        let mut empty = tree_create_payload("empty-scene", "scene", "a9", Some("root"));
+        empty.content = Some(empty_content.to_string());
+        tree_node_create(&db, empty).expect("create empty scene");
+
+        db.with_conn(|conn| {
+            let rich_row: (String, i64) = conn.query_row(
+                "SELECT content, char_count FROM tree_nodes
+                  WHERE project_id = 'p1' AND id = 'counted-scene'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let empty_row: (String, i64) = conn.query_row(
+                "SELECT content, char_count FROM tree_nodes
+                  WHERE project_id = 'p1' AND id = 'empty-scene'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(rich_row, (rich_content.to_string(), 7));
+            assert_eq!(empty_row, (empty_content.to_string(), 0));
+
+            let counts: (i64, i64, i64, i64) = conn.query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM tree_nodes WHERE id = 'counted-scene'),
+                   (SELECT COUNT(*) FROM change_events
+                     WHERE project_id = 'p1' AND entity_id = 'counted-scene'),
+                   (SELECT COUNT(*) FROM state_snapshots
+                     WHERE project_id = 'p1' AND entity_id = 'counted-scene'),
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE domain = 'tree_node_create'
+                       AND request_id = 'create-counted-scene-request')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(counts, (1, 1, 1, 1));
+            Ok(())
+        })
+        .expect("inspect atomic scene create");
     }
 
     #[test]
@@ -8091,6 +9042,29 @@ mod tests {
                 parsed[0]["newCanonicalDigest"],
                 parsed[2]["newCanonicalDigest"]
             );
+            let snapshots = conn
+                .prepare(
+                    "SELECT anchor_sequence, payload
+                       FROM state_snapshots
+                      WHERE project_id = 'p1'
+                        AND domain = 'editor'
+                        AND entity_type = 'scene'
+                        AND entity_id = 'moved'
+                      ORDER BY anchor_sequence, id",
+                )?
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                snapshots,
+                vec![
+                    (1, content_a.to_string()),
+                    (2, content_b.to_string()),
+                    (3, content_a.to_string()),
+                ],
+                "forward, undo, and redo body snapshots must retain their exact canonical tails"
+            );
             Ok(())
         })
         .expect("verify forward undo redo text impacts");
@@ -8123,6 +9097,7 @@ mod tests {
                     session_id: "revision-session".to_string(),
                     timestamp: 1,
                 }),
+                timelapse_doc_step_coverage: None,
                 origin: NarrativeChangeOrigin::Restore,
                 original_transaction_id: None,
                 undo_journal_id: None,
@@ -8212,6 +9187,7 @@ mod tests {
                     session_id: "revision-session".to_string(),
                     timestamp: 1,
                 }),
+                timelapse_doc_step_coverage: None,
                 origin: NarrativeChangeOrigin::Restore,
                 original_transaction_id: None,
                 undo_journal_id: None,

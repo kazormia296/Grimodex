@@ -650,6 +650,9 @@ fn replay_is_idle_without_duplicate_findings_or_freshness_regression() {
         IncrementalFreshnessCycleOutcome::Processed(_) => {
             panic!("an acknowledged range must not be processed twice")
         }
+        IncrementalFreshnessCycleOutcome::Held(_) => {
+            panic!("a replay cycle must not be interpreted as a held success")
+        }
     }
 
     let after = db

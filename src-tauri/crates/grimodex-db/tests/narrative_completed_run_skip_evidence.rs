@@ -11,7 +11,9 @@ use grimodex_db::narrative_extraction::maintenance_skip_evidence::{
     CompletedRunSkipReason,
 };
 use grimodex_db::narrative_extraction::{
-    digest_plan, durable_graph_state_digest, ensure_test_schema, REBUILD_RUN_KIND_CONTRACT_VERSION,
+    canonical_verify_outcome_digest, digest_plan, durable_graph_state_digest, ensure_test_schema,
+    production_verify_check_coverage, REBUILD_RUN_KIND_CONTRACT_VERSION,
+    VERIFY_RUN_KIND_CONTRACT_VERSION,
 };
 use grimodex_db::Database;
 use rusqlite::{params, Connection};
@@ -26,7 +28,7 @@ const GRAPH_DIGEST: &str =
 const RULE_DIGEST: &str = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
 const PRODUCER_DIGEST: &str =
     "sha256:3333333333333333333333333333333333333333333333333333333333333333";
-const RUN_CONTRACT_VERSION: &str = "8";
+const RUN_CONTRACT_VERSION: &str = VERIFY_RUN_KIND_CONTRACT_VERSION;
 const REBUILD_RUN_ID: &str = "run-c2-5b-b-rebuild";
 
 fn fixture_db() -> Database {
@@ -57,6 +59,29 @@ fn graph_state_digest() -> String {
 }
 
 fn report() -> serde_json::Value {
+    // This suite exercises the skip-evidence codec in isolation. Keep the
+    // fixture's report wire shape aligned with a real zero-footprint
+    // production Verify (including the four reserved Semantic Index counts);
+    // the maintenance-runtime and canonical-cutover suites obtain reports
+    // from the production verifier itself.
+    let complete_check = json!({
+        "completed": true,
+        "passed": true,
+        "issues": [],
+        "incomplete": [],
+    });
+    let complete_semantic_check = json!({
+        "completed": true,
+        "passed": true,
+        "issues": [],
+        "incomplete": [],
+        "observedCounts": {
+            "metadataRows": 0,
+            "activeD1HeadRows": 0,
+            "v1EdgeRows": 0,
+            "consumerFreshnessRows": 0,
+        },
+    });
     json!({
         "totalEdges": 0,
         "edgeIdsWithMissingSource": [],
@@ -73,6 +98,12 @@ fn report() -> serde_json::Value {
         "consumerKeysWithUncomputedDependencySetDigest": [],
         "orphanedAttentionFindingKeys": [],
         "orphanedAttentionRehomeAmbiguities": [],
+        "applicationRevisionArtifactReferences": complete_check.clone(),
+        "semanticIndexDependencySetDigest": complete_semantic_check.clone(),
+        "contributionToApplicationCommitCorrespondence": complete_check.clone(),
+        "legacyMirrorMigrationParity": complete_check.clone(),
+        "cursorAndFeedHeadConsistency": complete_check.clone(),
+        "semanticIndexGenerationCorrespondence": complete_semantic_check,
         "rebuildRequired": false
     })
 }
@@ -244,13 +275,17 @@ fn insert_rebuild_run_with_metadata(
 }
 
 fn successful_outcome() -> serde_json::Value {
-    json!({
+    let mut outcome = json!({
         "verifyContractVersion": RUN_CONTRACT_VERSION,
         "semanticEpochId": EPOCH_ID,
         "reportDigest": report_digest(),
         "graphStateDigest": graph_state_digest(),
         "report": report(),
-    })
+        "checkCoverage": production_verify_check_coverage(),
+    });
+    outcome["outcomeDigest"] =
+        json!(canonical_verify_outcome_digest(&outcome).expect("digest Verify outcome"));
+    outcome
 }
 
 fn raw_outcome_summary_json(db: &Database, run_id: &str) -> String {
@@ -348,6 +383,33 @@ fn exact_contract_match_returns_skip_with_the_durable_report_digest() {
         .with_conn(|conn| read_completed_run_skip_evidence(conn, PROJECT_ID, "dependency-verify"))
         .expect("read tampered evidence");
     assert_eq!(rejected, None);
+}
+
+#[test]
+fn recomputed_digests_cannot_make_reserved_semantic_counts_look_clean() {
+    let db = fixture_db();
+    let mut outcome = successful_outcome();
+    for check in [
+        "semanticIndexDependencySetDigest",
+        "semanticIndexGenerationCorrespondence",
+    ] {
+        outcome["report"][check]["observedCounts"]["metadataRows"] = json!(1);
+    }
+    let report_digest = format!(
+        "sha256:{}",
+        digest_plan(outcome.get("report").expect("Verify report"))
+    );
+    outcome["reportDigest"] = json!(report_digest.clone());
+    outcome["outcomeDigest"] =
+        json!(canonical_verify_outcome_digest(&outcome).expect("recompute whole-outcome digest"));
+    let mut stored_evidence = evidence();
+    stored_evidence.report_digest = report_digest;
+    insert_completed_verify_run(&db, "completed", Some(outcome));
+
+    assert!(
+        persist_completed_run_skip_evidence(&db, RUN_ID, &stored_evidence).is_err(),
+        "nonzero reserved Semantic footprint must remain incomplete even when every digest is recomputed"
+    );
 }
 
 #[test]
@@ -819,15 +881,15 @@ fn old_outcome_contract_version_forces_a_rerun_even_with_current_evidence() {
 #[test]
 fn failed_terminal_and_missing_report_digest_cannot_be_sealed_as_skip_evidence() {
     let db = fixture_db();
-    insert_completed_verify_run(
-        &db,
-        "completed",
-        Some(json!({
-            "verifyContractVersion": RUN_CONTRACT_VERSION,
-            "semanticEpochId": EPOCH_ID,
-            "report": report(),
-        })),
-    );
+    let mut outcome = successful_outcome();
+    outcome
+        .as_object_mut()
+        .expect("Verify outcome object")
+        .remove("reportDigest");
+    outcome["outcomeDigest"] =
+        json!(canonical_verify_outcome_digest(&outcome)
+            .expect("digest outcome without report digest"));
+    insert_completed_verify_run(&db, "completed", Some(outcome));
     let error = persist_completed_run_skip_evidence(&db, RUN_ID, &evidence())
         .expect_err("missing report digest must not be sealed");
     assert!(error.to_string().contains("report digest"));

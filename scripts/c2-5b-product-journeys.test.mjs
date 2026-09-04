@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import yaml from "js-yaml";
 
@@ -15,18 +19,23 @@ import {
   NARRATIVE_MAINTENANCE_FOREGROUND_SYSTEM_WORK_MARKER,
   NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER,
   NARRATIVE_MAINTENANCE_INTERRUPTED_CODE,
+  NARRATIVE_MAINTENANCE_NONCE_ENV,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV,
   NARRATIVE_MAINTENANCE_RETRY_OBSERVATION_MS,
   NARRATIVE_MAINTENANCE_SEAM_CONTRACT,
+  NARRATIVE_MAINTENANCE_SETUP_ENV,
+  NARRATIVE_FRESHNESS_DISABLE_ENV,
   NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
   NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
   NARRATIVE_MAINTENANCE_TRIGGERS,
   assertRestoreFixtureEvidence,
+  assertRestoreFixturePreGapReadiness,
   assertRestoreVerifyRebuildVerifyCausality,
   assertForegroundLifecycle,
+  assertForegroundPatchRunObservation,
   assertForegroundTargetBaseline,
   assertForegroundRunMarker,
   assertTerminalFailureEvidence,
@@ -38,24 +47,29 @@ import {
   selectInterruptedRunFromExitSnapshot,
   selectInterruptedRecoveryFromStableLedger,
   terminalRetryCandidates,
+  runRestoreVerifyRebuildVerifyScenario,
+  selectChangedDigestRun,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import * as narrativeMaintenanceProductJourneys from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import {
   NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB,
   NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_DOMAIN_RULES,
 } from "../electron/scripts/product-journey-catalog.mjs";
-import { PRODUCT_JOURNEY_ELECTRON_PHASES } from "../electron/scripts/product-journey-harness.mjs";
+import {
+  expectedNarrativeMaintenanceCiReceipt,
+  PRODUCT_JOURNEY_ELECTRON_PHASES,
+} from "../electron/scripts/product-journey-harness.mjs";
 import {
   resolveProductJourneyImpactCatalog,
   selectProductJourneys,
 } from "../electron/scripts/product-journey-impact.mjs";
-import {
-  parseImpactMap,
-  selectImpact,
-} from "./quality/impact-map.mjs";
+import { parseImpactMap, selectImpact } from "./quality/impact-map.mjs";
+
+const execFile = promisify(execFileCallback);
 
 test("Run ledger scopes attempt evidence through task and Run ownership", async () => {
   const source = await readFile(
@@ -142,14 +156,14 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
     "INSERT INTO narrative_extraction_runs (id, project_id, created_at) VALUES (?, ?, ?)",
     ["run-2", "project-1", "2026-08-23T00:00:01.000Z"],
   );
-  insert(
-    "INSERT INTO narrative_extraction_tasks (id, run_id) VALUES (?, ?)",
-    ["task-1", "run-1"],
-  );
-  insert(
-    "INSERT INTO narrative_extraction_tasks (id, run_id) VALUES (?, ?)",
-    ["task-2", "run-2"],
-  );
+  insert("INSERT INTO narrative_extraction_tasks (id, run_id) VALUES (?, ?)", [
+    "task-1",
+    "run-1",
+  ]);
+  insert("INSERT INTO narrative_extraction_tasks (id, run_id) VALUES (?, ?)", [
+    "task-2",
+    "run-2",
+  ]);
   insert(
     "INSERT INTO narrative_extraction_attempts (id, task_id, attempt_number, status, started_at, failure_code) VALUES (?, ?, ?, ?, ?, ?)",
     [
@@ -249,8 +263,8 @@ test("foreground lifecycle proof rejects wrong child identity and non-monotonic 
     maxAttemptNumber: 1,
     taskStatus: "completed",
     lastAttemptStatus: "completed",
-    specJson: "{\"backfillAlgorithmVersion\":\"3\"}",
-    taskInputJson: "{\"backfillAlgorithmVersion\":\"3\"}",
+    specJson: '{"backfillAlgorithmVersion":"3"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"3"}',
     createdAt: "2026-08-23T00:00:00.000Z",
     startedAt: "2026-08-23T00:00:00.000Z",
     taskCreatedAt: "2026-08-23T00:00:00.000Z",
@@ -273,10 +287,177 @@ test("foreground lifecycle proof rejects wrong child identity and non-monotonic 
   ]) {
     const corrupted = { ...valid, [field]: value };
     assert.throws(
-      () => assertForegroundLifecycle(corrupted, "completed", `corrupt ${field}`),
+      () =>
+        assertForegroundLifecycle(corrupted, "completed", `corrupt ${field}`),
       new RegExp(field),
     );
   }
+});
+
+test("foreground patch observation accepts only a running or interval-covering completed Run", () => {
+  const expected = {
+    barrierId: "patch-barrier",
+    correlation: "patch-correlation",
+    trigger: "workspace-opened",
+  };
+  const marker = {
+    trigger: expected.trigger,
+    canonicalWorkKey:
+      "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v3",
+    authorityId: "authority-1",
+    generation: 7,
+    productJourneyBarrierId: expected.barrierId,
+    correlation: expected.correlation,
+  };
+  const makeRun = (status, overrides = {}) => {
+    const specJson = JSON.stringify({ systemWork: marker });
+    const terminal =
+      status === "completed"
+        ? {
+            completedAt: "2026-08-23T00:00:00.003000000Z",
+            taskCompletedAt: "2026-08-23T00:00:00.003000000Z",
+            lastAttemptCompletedAt: "2026-08-23T00:00:00.003000000Z",
+          }
+        : {};
+    return {
+      id: "foreground-run",
+      projectId: "project-1",
+      runKind: "backfill",
+      workKey: "legacy-dependency-backfill:v3",
+      status,
+      taskCount: 1,
+      attemptCount: 1,
+      taskKind: "maintenance-backfill",
+      taskAttemptCount: 1,
+      lastAttemptNumber: 1,
+      maxAttemptNumber: 1,
+      taskStatus: status,
+      lastAttemptStatus: status,
+      specJson,
+      taskInputJson: specJson,
+      createdAt: "2026-08-23T00:00:00.000000000Z",
+      startedAt: "2026-08-23T00:00:00.001000000Z",
+      taskCreatedAt: "2026-08-23T00:00:00.001000000Z",
+      taskStartedAt: "2026-08-23T00:00:00.001000000Z",
+      lastAttemptStartedAt: "2026-08-23T00:00:00.001000000Z",
+      ...terminal,
+      ...overrides,
+    };
+  };
+  const patchStartedAt = Date.parse("2026-08-23T00:00:00.001500Z");
+  const patchCompletedAt = Date.parse("2026-08-23T00:00:00.002500Z");
+
+  assert.equal(
+    assertForegroundPatchRunObservation(
+      makeRun("running"),
+      "foreground-run",
+      expected,
+      marker,
+      patchStartedAt,
+      patchCompletedAt,
+    ).status,
+    "running",
+  );
+  assert.equal(
+    assertForegroundPatchRunObservation(
+      makeRun("completed"),
+      "foreground-run",
+      expected,
+      marker,
+      patchStartedAt,
+      patchCompletedAt,
+    ).status,
+    "completed",
+    "a ledger read racing the release may observe the already-completed Run",
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        makeRun("completed", {
+          completedAt: "2026-08-23T00:00:00.001400000Z",
+          taskCompletedAt: "2026-08-23T00:00:00.001400000Z",
+          lastAttemptCompletedAt: "2026-08-23T00:00:00.001400000Z",
+        }),
+        "foreground-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /overlap/,
+    "a completed Run that ended before the patch must remain rejected",
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        makeRun("completed", {
+          specJson: JSON.stringify({
+            systemWork: { ...marker, generation: marker.generation + 1 },
+          }),
+          taskInputJson: JSON.stringify({
+            systemWork: { ...marker, generation: marker.generation + 1 },
+          }),
+        }),
+        "foreground-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /changed immutable systemWork\.generation/,
+    "a completed Run with marker drift must remain rejected",
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        makeRun("completed", { taskStatus: "running" }),
+        "foreground-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /lifecycle status mismatch/,
+    "a completed Run with a non-terminal child lifecycle must remain rejected",
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        undefined,
+        "foreground-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /missing exact Run/,
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        makeRun("failed"),
+        "foreground-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /must be running or completed/,
+    "failed and other terminal states must not satisfy the foreground proof",
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        makeRun("running"),
+        "different-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /did not match expected Run/,
+    "a different Run with the same marker cannot satisfy the proof",
+  );
 });
 
 test("terminal fault evidence requires the exact failed Run, Task, and Attempt triplet", () => {
@@ -334,8 +515,8 @@ test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
     lastAttemptNumber: 1,
     taskStatus: "running",
     lastAttemptStatus: "running",
-    specJson: "{\"backfillAlgorithmVersion\":\"3\"}",
-    taskInputJson: "{\"backfillAlgorithmVersion\":\"3\"}",
+    specJson: '{"backfillAlgorithmVersion":"3"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"3"}',
     createdAt: "2026-08-23T00:00:00.000Z",
     startedAt: "2026-08-23T00:00:00.000Z",
     taskCreatedAt: "2026-08-23T00:00:00.000Z",
@@ -343,7 +524,11 @@ test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
     lastAttemptStartedAt: "2026-08-23T00:00:00.000Z",
   };
   assert.doesNotThrow(() =>
-    assertForegroundLifecycle(valid, "running", "canonical timestamp lifecycle"),
+    assertForegroundLifecycle(
+      valid,
+      "running",
+      "canonical timestamp lifecycle",
+    ),
   );
   assert.doesNotThrow(() =>
     assertForegroundLifecycle(
@@ -405,10 +590,8 @@ test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
 });
 
 test("wall-clock bounds and overlap use the exact instant representation", () => {
-  const {
-    assertWallClockIntervalContains,
-    assertWallClockLowerBound,
-  } = narrativeMaintenanceProductJourneys;
+  const { assertWallClockIntervalContains, assertWallClockLowerBound } =
+    narrativeMaintenanceProductJourneys;
   assert.equal(typeof assertWallClockLowerBound, "function");
   assert.equal(typeof assertWallClockIntervalContains, "function");
 
@@ -515,10 +698,7 @@ test("legacy naive timestamps preserve Chrono signed proleptic years", () => {
   assert.doesNotThrow(() => parseInstant("-0001-01-01 00:00:00"));
   assert.doesNotThrow(() => parseInstant("+10000-01-01 00:00:00"));
   assert.equal(
-    compareInstants(
-      "-0001-01-01 00:00:00",
-      "+10000-01-01 00:00:00",
-    ),
+    compareInstants("-0001-01-01 00:00:00", "+10000-01-01 00:00:00"),
     -1,
   );
   assert.doesNotThrow(() => parseInstant("-262143-01-01 00:00:00"));
@@ -615,11 +795,7 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
   };
   assert.doesNotThrow(() => sequenceValidator([failed, completed]));
   assert.throws(
-    () =>
-      sequenceValidator([
-        failed,
-        { ...completed, taskKind: "wrong-kind" },
-      ]),
+    () => sequenceValidator([failed, { ...completed, taskKind: "wrong-kind" }]),
     /Task kind/,
   );
   assert.throws(
@@ -655,7 +831,13 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
     /strictly increasing/,
   );
   assert.throws(
-    () => sequenceValidator([failed, completed, { ...completed, id: "third-completed" }, { ...completed, id: "fourth-completed" }]),
+    () =>
+      sequenceValidator([
+        failed,
+        completed,
+        { ...completed, id: "third-completed" },
+        { ...completed, id: "fourth-completed" },
+      ]),
     /at most three/,
   );
   assert.throws(
@@ -704,8 +886,64 @@ test("C2-5B fault and trigger seams are closed enums", () => {
   ]);
 });
 
+test("digest-change journey waits past canonical Verify runs for the changed coordinate", () => {
+  const evidence = {
+    graphContractDigest: "sha256:graph-current",
+    ruleRegistryDigest: "sha256:rule-current",
+    producerGenerationSetDigest: "sha256:producer-current",
+    graphStateDigest: "sha256:state-before",
+  };
+  const run = (id, status, nextEvidence) => ({
+    id,
+    runKind: "dependency-verify",
+    status,
+    outcomeSummaryJson: JSON.stringify({ skipEvidence: nextEvidence }),
+  });
+  const baseline = run("baseline", "completed", evidence);
+  const canonical = run("canonical", "completed", {
+    ...evidence,
+    graphStateDigest: "sha256:state-after",
+  });
+  const pendingChanged = run("pending-changed", "running", {
+    ...evidence,
+    graphContractDigest: "sha256:graph-changed",
+    graphStateDigest: "sha256:state-after",
+  });
+  const changed = run("changed", "completed", {
+    ...evidence,
+    graphContractDigest: "sha256:graph-changed",
+    graphStateDigest: "sha256:state-after",
+  });
+
+  assert.equal(
+    selectChangedDigestRun(
+      [baseline, canonical, pendingChanged],
+      [baseline],
+      "graphContractDigest",
+      evidence,
+    ),
+    null,
+    "an intervening canonical or incomplete Verify must not end the wait",
+  );
+  assert.deepEqual(
+    selectChangedDigestRun(
+      [baseline, canonical, pendingChanged, changed],
+      [baseline],
+      "graphContractDigest",
+      evidence,
+    ),
+    {
+      run: changed,
+      evidence: JSON.parse(changed.outcomeSummaryJson).skipEvidence,
+    },
+  );
+});
+
 test("C2-5B journey seam constants keep exact durable failure contracts", () => {
-  assert.equal(NARRATIVE_MAINTENANCE_TRANSIENT_CODE, "NEX_MAINTENANCE_TRANSIENT");
+  assert.equal(
+    NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+    "NEX_MAINTENANCE_TRANSIENT",
+  );
   assert.equal(
     NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
     "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
@@ -744,6 +982,527 @@ test("C2-5B journey seam constants keep exact durable failure contracts", () => 
     "productJourneyBarrierId",
     "correlation",
   ]);
+});
+
+test("C2-5B restore scenario phases capture an active owner receipt per launch", async () => {
+  const restoreLaunchPhase =
+    narrativeMaintenanceProductJourneys.launchRestoreVerifyRebuildVerifyRestorePhaseForTest;
+  const launchPhase =
+    narrativeMaintenanceProductJourneys.launchRestoreVerifyRebuildVerifyPhaseForTest;
+  assert.equal(
+    typeof restoreLaunchPhase,
+    "function",
+    "the production restore phase launcher must expose only a narrow test injection seam",
+  );
+  assert.equal(
+    typeof launchPhase,
+    "function",
+    "the production phase launcher must expose only a narrow test injection seam",
+  );
+
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  const previousSetup = process.env[NARRATIVE_MAINTENANCE_SETUP_ENV];
+  const previousFreshness = process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+  const unrelatedEnv = "GRIMODEX_PRODUCT_JOURNEY_UNRELATED_SENTINEL";
+  const previousUnrelated = process.env[unrelatedEnv];
+  const inheritedOwner = "pre-existing-owner-value";
+  const inheritedNonce = "00000000-0000-4000-8000-000000000001";
+  const inheritedSetup = "pre-existing-setup-value";
+  const inheritedFreshness = "pre-existing-freshness-value";
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = inheritedOwner;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = inheritedNonce;
+  process.env[NARRATIVE_MAINTENANCE_SETUP_ENV] = inheritedSetup;
+  process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = inheritedFreshness;
+  process.env[unrelatedEnv] = "preserve-me";
+
+  const captured = [];
+  const phases = [
+    {
+      launcher: restoreLaunchPhase,
+      name: "c2-5b-restore-verify-rebuild-verify/restore",
+      environment: {},
+      expectedEnvironment: {
+        setup: NARRATIVE_MAINTENANCE_SEAM_CONTRACT.setupDisabledValue,
+        freshness: NARRATIVE_MAINTENANCE_SEAM_CONTRACT.freshnessDisabledValue,
+      },
+    },
+    {
+      launcher: launchPhase,
+      name: "c2-5b-restore-verify-rebuild-verify/open",
+      environment: { trigger: "dependency-gap" },
+      expectedEnvironment: { setup: undefined, freshness: undefined },
+    },
+    {
+      launcher: launchPhase,
+      name: "c2-5b-restore-verify-rebuild-verify/restart",
+      environment: { trigger: "dependency-gap" },
+      expectedEnvironment: { setup: undefined, freshness: undefined },
+    },
+  ];
+  const fakeHarness = {};
+  const injectedLaunch = async (phase) => {
+    const childEnv = { ...process.env };
+    const expectedReceipt = expectedNarrativeMaintenanceCiReceipt(childEnv);
+    assert.ok(expectedReceipt, `${phase} must expect an active receipt`);
+    assert.equal(expectedReceipt.active, true);
+    assert.equal(
+      expectedReceipt.nonce,
+      childEnv[NARRATIVE_MAINTENANCE_NONCE_ENV],
+    );
+    assert.equal(process.env[unrelatedEnv], "preserve-me");
+    captured.push({
+      phase,
+      ownerPresent: Object.hasOwn(
+        childEnv,
+        NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+      ),
+      owner: childEnv[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV],
+      nonce: childEnv[NARRATIVE_MAINTENANCE_NONCE_ENV],
+      setup: childEnv[NARRATIVE_MAINTENANCE_SETUP_ENV],
+      freshness: childEnv[NARRATIVE_FRESHNESS_DISABLE_ENV],
+      receipt: {
+        active: expectedReceipt.active,
+        nativeAck: expectedReceipt.nativeAck,
+        nonce: expectedReceipt.nonce,
+        type: expectedReceipt.type,
+      },
+    });
+    return { app: { phase }, page: { phase } };
+  };
+
+  try {
+    for (const { launcher, name, environment, expectedEnvironment } of phases) {
+      const originalEnvironment = { ...environment };
+      await launcher(fakeHarness, name, environment, injectedLaunch);
+      assert.deepEqual(
+        environment,
+        originalEnvironment,
+        `${name} must not mutate the caller's unrelated scenario environment`,
+      );
+      assert.equal(
+        process.env[unrelatedEnv],
+        "preserve-me",
+        `${name} must not leak or overwrite unrelated process environment`,
+      );
+      const latest = captured.at(-1);
+      assert.deepEqual(
+        { setup: latest.setup, freshness: latest.freshness },
+        expectedEnvironment,
+        `${name} must receive only its phase-specific maintenance environment`,
+      );
+      assert.equal(
+        process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV],
+        inheritedOwner,
+        `${name} owner token must be restored after launch`,
+      );
+      assert.equal(
+        process.env[NARRATIVE_MAINTENANCE_NONCE_ENV],
+        inheritedNonce,
+        `${name} nonce must be restored after launch`,
+      );
+      assert.equal(
+        process.env[NARRATIVE_MAINTENANCE_SETUP_ENV],
+        inheritedSetup,
+        `${name} setup seam must be restored after launch`,
+      );
+      assert.equal(
+        process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+        inheritedFreshness,
+        `${name} freshness seam must be restored after launch`,
+      );
+    }
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    }
+    if (previousNonce === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+    }
+    if (previousSetup === undefined) {
+      delete process.env[NARRATIVE_MAINTENANCE_SETUP_ENV];
+    } else {
+      process.env[NARRATIVE_MAINTENANCE_SETUP_ENV] = previousSetup;
+    }
+    if (previousFreshness === undefined) {
+      delete process.env[NARRATIVE_FRESHNESS_DISABLE_ENV];
+    } else {
+      process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = previousFreshness;
+    }
+    if (previousUnrelated === undefined) delete process.env[unrelatedEnv];
+    else process.env[unrelatedEnv] = previousUnrelated;
+  }
+
+  assert.deepEqual(
+    captured.map(({ phase, ownerPresent, owner, nonce, setup, freshness }) => ({
+      phase,
+      ownerPresent,
+      owner,
+      nonce,
+      setup,
+      freshness,
+    })),
+    phases.map(({ name, expectedEnvironment }) => ({
+      phase: name,
+      ownerPresent: true,
+      owner: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+      nonce: captured.find((entry) => entry.phase === name)?.nonce,
+      ...expectedEnvironment,
+    })),
+  );
+  assert.equal(new Set(captured.map(({ nonce }) => nonce)).size, phases.length);
+  assert.ok(
+    captured.every(({ nonce }) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+        nonce,
+      ),
+    ),
+    "every injected launch must receive a UUIDv4 nonce",
+  );
+  assert.deepEqual(
+    captured.map(({ receipt }) => receipt),
+    captured.map(({ nonce }) => ({
+      active: true,
+      nativeAck: true,
+      nonce,
+      type: "grimodex:narrative-maintenance-ci-receipt",
+    })),
+    "every launch must expose the active main-maintenance-receipt expectation",
+  );
+});
+
+test("C2-5B restore reopens the normal scheduler in a fresh Electron process", async () => {
+  const restorePhase = "c2-5b-restore-verify-rebuild-verify/restore";
+  const source = await readFile(
+    new URL(
+      "../electron/scripts/narrative-maintenance-product-journeys.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const journeyBody = source.match(
+    /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
+  )?.[0];
+  assert.ok(
+    journeyBody,
+    "C2-5B restore journey caller must remain inspectable",
+  );
+  assert.ok(
+    NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES.includes(restorePhase),
+    "C2-5B restore phase must be registered for diagnostics",
+  );
+  assert.ok(
+    PRODUCT_JOURNEY_ELECTRON_PHASES.includes(restorePhase),
+    "C2-5B restore phase must be registered in the harness phase allowlist",
+  );
+  assert.match(
+    journeyBody,
+    /restorePhase:\s*"restore",\s*openPhase:\s*"open",/s,
+    "C2-5B must close the disabled restore process before opening a normal scheduler process",
+  );
+  assert.match(
+    journeyBody,
+    /onRestore:\s*\(/,
+    "C2-5B must retain the post-restore observation before the fresh open",
+  );
+  assert.match(
+    journeyBody,
+    /onOpen:\s*\(/,
+    "C2-5B must retain the normal Verify/Rebuild/Verify observation",
+  );
+});
+
+test("C2-5B restore scenario runs restore then close then normal open dynamically", async () => {
+  const id = "c2-5b-restore-verify-rebuild-verify";
+  const restorePhase = id + "/restore";
+  const openPhase = id + "/open";
+  const beforeEpochs = [
+    { id: "epoch-initial", epochNumber: 0, reason: "initial" },
+  ];
+  const restoreEpoch = {
+    id: "epoch-restore",
+    epochNumber: 1,
+    reason: "restore",
+    createdAt: "2026-08-23T00:00:00.000Z",
+  };
+  const phaseRuns = [
+    {
+      id: "verify-1",
+      runKind: "dependency-verify",
+      semanticEpochId: restoreEpoch.id,
+      status: "completed",
+      createdAt: "2026-08-23T00:00:01.000Z",
+      completedAt: "2026-08-23T00:00:01.500Z",
+    },
+    {
+      id: "rebuild-1",
+      runKind: "semantic-index-rebuild",
+      semanticEpochId: restoreEpoch.id,
+      status: "completed",
+      createdAt: "2026-08-23T00:00:02.000Z",
+      completedAt: "2026-08-23T00:00:02.500Z",
+    },
+    {
+      id: "verify-2",
+      runKind: "dependency-verify",
+      semanticEpochId: restoreEpoch.id,
+      status: "completed",
+      createdAt: "2026-08-23T00:00:03.000Z",
+      completedAt: "2026-08-23T00:00:03.500Z",
+    },
+  ];
+  const createContext = (phase, runs, epochs) => ({
+    projectId: "project-1",
+    phase,
+    runs: async () => runs,
+    epochs: async () => epochs,
+  });
+  const contexts = [
+    createContext(restorePhase, [], beforeEpochs),
+    createContext(restorePhase, [], [...beforeEpochs, restoreEpoch]),
+    createContext(openPhase, phaseRuns, [...beforeEpochs, restoreEpoch]),
+  ];
+  const events = [];
+  const launches = [];
+  let contextIndex = 0;
+  const unrelatedEnv = "GRIMODEX_PRODUCT_JOURNEY_UNRELATED_SENTINEL";
+  const environmentNames = [
+    "CI",
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+    NARRATIVE_MAINTENANCE_NONCE_ENV,
+    NARRATIVE_MAINTENANCE_SETUP_ENV,
+    NARRATIVE_FRESHNESS_DISABLE_ENV,
+    unrelatedEnv,
+  ];
+  const previousEnvironment = new Map(
+    environmentNames.map((name) => [name, process.env[name]]),
+  );
+  const inheritedEnvironment = {
+    CI: "true",
+    [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]: "inherited-owner",
+    [NARRATIVE_MAINTENANCE_NONCE_ENV]: "00000000-0000-4000-8000-000000000001",
+    [NARRATIVE_MAINTENANCE_SETUP_ENV]: "inherited-setup",
+    [NARRATIVE_FRESHNESS_DISABLE_ENV]: "inherited-freshness",
+    [unrelatedEnv]: "preserve-me",
+  };
+  for (const [name, value] of Object.entries(inheritedEnvironment)) {
+    process.env[name] = value;
+  }
+
+  let observedEnvironment;
+  let scenarioResult;
+  try {
+    scenarioResult = await runRestoreVerifyRebuildVerifyScenario(
+      {
+        workspacePath: (requestedId) => {
+          assert.equal(requestedId, id);
+          return "/tmp/c2-5b-restore-phase-sequence-test";
+        },
+        launch: async (phase) => {
+          const childEnvironment = { ...process.env };
+          const receipt =
+            expectedNarrativeMaintenanceCiReceipt(childEnvironment);
+          assert.ok(receipt, phase + " must publish an active receipt");
+          launches.push({
+            phase,
+            owner: childEnvironment[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV],
+            nonce: childEnvironment[NARRATIVE_MAINTENANCE_NONCE_ENV],
+            setup: childEnvironment[NARRATIVE_MAINTENANCE_SETUP_ENV],
+            freshness: childEnvironment[NARRATIVE_FRESHNESS_DISABLE_ENV],
+            receipt: {
+              type: receipt.type,
+              active: receipt.active,
+              nativeAck: receipt.nativeAck,
+              nonce: receipt.nonce,
+              setup: receipt.setup,
+              freshness: receipt.freshness,
+            },
+          });
+          events.push({ type: "launch", phase });
+          return {
+            app: { phase },
+            page: { phase },
+          };
+        },
+        close: async (app, page, phase) => {
+          assert.equal(app.phase, phase);
+          assert.equal(page.phase, phase);
+          events.push({ type: "close", phase });
+        },
+        waitUntil: async (predicate, label) => {
+          const result = await predicate();
+          assert.ok(result, label + " must settle in the injected harness");
+          return result;
+        },
+      },
+      async (_harness, workspace) => {
+        assert.equal(workspace, "/tmp/c2-5b-restore-phase-sequence-test");
+        events.push({ type: "configure" });
+      },
+      {
+        id,
+        restorePhase: "restore",
+        openPhase: "open",
+        restoreThroughSettingsUi: async (_context, backupName) => {
+          assert.equal(backupName, "restore-fixture.db");
+          events.push({ type: "restore-click" });
+        },
+        testHooks: {
+          fixtureEvidence: { backupName: "restore-fixture.db" },
+          readRunSnapshot: async () => [],
+          contextForLaunch: async (_harness, launch) => {
+            const context = contexts[contextIndex++];
+            assert.ok(
+              context,
+              "unexpected contextForLaunch call for " + launch.app.phase,
+            );
+            assert.equal(launch.app.phase, context.phase);
+            return context;
+          },
+          waitForReadiness: async () => {},
+          waitForRestorePhaseRows: async () => phaseRuns,
+        },
+        onRestore: async ({ context, fixtureEvidence }) => {
+          assert.equal(context.phase, restorePhase);
+          assert.equal(fixtureEvidence.backupName, "restore-fixture.db");
+          events.push({ type: "restore-observed" });
+        },
+        onOpen: async ({
+          openLaunch,
+          phaseRuns: observedPhaseRuns,
+          beforeEpochs: observedBeforeEpochs,
+          epochs,
+        }) => {
+          assert.equal(openLaunch.app.phase, openPhase);
+          assert.deepEqual(observedPhaseRuns, phaseRuns);
+          assert.deepEqual(
+            observedBeforeEpochs,
+            beforeEpochs,
+            "open callback must receive the pre-restore Epoch baseline",
+          );
+          const observedRestoreEpoch =
+            assertRestoreVerifyRebuildVerifyCausality(
+              observedPhaseRuns,
+              observedBeforeEpochs,
+              epochs,
+            );
+          assert.equal(observedRestoreEpoch.id, restoreEpoch.id);
+          events.push({ type: "open-observed" });
+        },
+      },
+    );
+    observedEnvironment = Object.fromEntries(
+      environmentNames.map((name) => [name, process.env[name]]),
+    );
+  } finally {
+    for (const [name, value] of previousEnvironment) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+
+  assert.equal(contextIndex, contexts.length);
+  assert.deepEqual(
+    events.filter(({ type }) => type !== "configure"),
+    [
+      { type: "launch", phase: restorePhase },
+      { type: "restore-click" },
+      { type: "restore-observed" },
+      { type: "close", phase: restorePhase },
+      { type: "launch", phase: openPhase },
+      { type: "open-observed" },
+      { type: "close", phase: openPhase },
+    ],
+    "the scenario must close restore before launching the normal open process",
+  );
+  assert.deepEqual(
+    launches.map(({ phase, setup, freshness }) => ({
+      phase,
+      setup,
+      freshness,
+    })),
+    [
+      { phase: restorePhase, setup: "disabled", freshness: "disabled" },
+      { phase: openPhase, setup: undefined, freshness: undefined },
+    ],
+  );
+  assert.deepEqual(
+    launches.map(({ owner, receipt: { active, nativeAck, nonce, type } }) => ({
+      owner,
+      active,
+      nativeAck,
+      nonce,
+      type,
+    })),
+    launches.map(({ nonce }) => ({
+      owner: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+      active: true,
+      nativeAck: true,
+      nonce,
+      type: "grimodex:narrative-maintenance-ci-receipt",
+    })),
+  );
+  assert.equal(
+    new Set(launches.map(({ nonce }) => nonce)).size,
+    launches.length,
+    "restore and open launches must have distinct nonces",
+  );
+  assert.ok(
+    launches.every(({ nonce }) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+        nonce,
+      ),
+    ),
+    "restore and open launch nonces must be UUIDv4",
+  );
+  assert.notEqual(
+    scenarioResult.restore.context,
+    scenarioResult.open.context,
+    "normal open must bind a fresh process context after restore closes",
+  );
+  assert.equal(scenarioResult.restore.context.phase, restorePhase);
+  assert.equal(scenarioResult.open.context.phase, openPhase);
+  assert.equal(
+    observedEnvironment.CI,
+    inheritedEnvironment.CI,
+    "scenario must restore CI after all phase launches",
+  );
+  assert.equal(
+    observedEnvironment[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV],
+    inheritedEnvironment[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV],
+    "scenario must restore inherited owner environment",
+  );
+  assert.equal(
+    observedEnvironment[NARRATIVE_MAINTENANCE_NONCE_ENV],
+    inheritedEnvironment[NARRATIVE_MAINTENANCE_NONCE_ENV],
+    "scenario must restore inherited nonce environment",
+  );
+  assert.equal(
+    observedEnvironment[NARRATIVE_MAINTENANCE_SETUP_ENV],
+    inheritedEnvironment[NARRATIVE_MAINTENANCE_SETUP_ENV],
+    "scenario must restore inherited setup environment",
+  );
+  assert.equal(
+    observedEnvironment[NARRATIVE_FRESHNESS_DISABLE_ENV],
+    inheritedEnvironment[NARRATIVE_FRESHNESS_DISABLE_ENV],
+    "scenario must restore inherited freshness environment",
+  );
+  assert.equal(observedEnvironment[unrelatedEnv], "preserve-me");
+  assert.deepEqual(
+    Object.fromEntries(
+      environmentNames.map((name) => [name, process.env[name]]),
+    ),
+    Object.fromEntries(previousEnvironment),
+    "scenario cleanup must restore the process environment after assertions",
+  );
 });
 
 test("restore fixture evidence is canonical and an empty fixture stays red", () => {
@@ -801,13 +1560,65 @@ test("restore fixture captures the derived-state gap before the normal launch se
   )?.[0];
   assert.ok(seedBody, "restore fixture seeding helper must remain inspectable");
   assert.ok(
-    seedBody.indexOf("createRestoreFixtureDerivedStateGap(context") >= 0,
+    /createRestoreFixtureDerivedStateGap\(\s*context/.test(seedBody),
     "restore fixture must create a real derived-state gap before backup",
   );
   assert.ok(
-    seedBody.indexOf("createRestoreFixtureDerivedStateGap(context") <
+    seedBody.search(/createRestoreFixtureDerivedStateGap\(\s*context/) <
       seedBody.indexOf("createRestoreBackupFixture(workspace)"),
     "the gap must be captured in the WAL-safe backup",
+  );
+  const gapAt = seedBody.search(
+    /createRestoreFixtureDerivedStateGap\(\s*context/,
+  );
+  const readinessMatch = seedBody.match(
+    /waitForReadiness\(\s*context,\s*"restore fixture pre-gap freshness settled",[\s\S]*?\n\s*\);/,
+  );
+  const readinessAt = readinessMatch?.index ?? -1;
+  assert.ok(
+    readinessAt >= 0 && readinessAt < gapAt,
+    "restore fixture must settle production Freshness/cursor before deleting derived state",
+  );
+  const readinessBlock = seedBody.slice(readinessAt, gapAt);
+  assert.match(
+    readinessBlock,
+    /requireMaintenanceSettled:\s*true/,
+    "pre-gap readiness must exclude active maintenance Runs",
+  );
+  assert.match(
+    readinessBlock,
+    /minimumFeedHead:/,
+    "pre-gap readiness must wait for the observed Change Feed head",
+  );
+  assert.match(
+    readinessBlock,
+    /baselineRuns:\s*preSceneRuns/,
+    "pre-gap readiness must compare against the pre-scene Run baseline",
+  );
+  assert.match(
+    readinessBlock,
+    /minimumFeedHead:\s*postSceneFeedAndCursor\.feedHead/,
+    "pre-gap readiness must wait for the post-scene Change Feed head",
+  );
+  assert.match(
+    readinessBlock,
+    /requireFreshRun:\s*true/,
+    "pre-gap readiness must require Freshness after source seeding",
+  );
+  const preSceneRunsAt = seedBody.indexOf("const preSceneRuns");
+  const sceneCreationAt = seedBody.indexOf(
+    'createSceneIfNeeded(context, "restore-fixture-source")',
+  );
+  assert.ok(
+    preSceneRunsAt >= 0 && preSceneRunsAt < sceneCreationAt,
+    "the Freshness Run baseline must be captured before scene creation",
+  );
+  const postSceneFeedAndCursorAt = seedBody.indexOf(
+    "const postSceneFeedAndCursor",
+  );
+  assert.ok(
+    postSceneFeedAndCursorAt >= 0 && postSceneFeedAndCursorAt < readinessAt,
+    "the observed post-scene feed head must be captured before readiness polling",
   );
   const journeyBody = source.match(
     /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
@@ -818,6 +1629,295 @@ test("restore fixture captures the derived-state gap before the normal launch se
     false,
     "normal launch must restore the pre-settled gap image, not create a post-settle clean backup",
   );
+});
+
+test("restore fixture readiness requires a current completed Freshness and released cursor", () => {
+  const makeReadiness = () => ({
+    epoch: { id: "epoch-1" },
+    freshness: { status: "completed", semanticEpochId: "epoch-1" },
+    feedAndCursor: {
+      feedHead: 3,
+      cursor: {
+        acknowledgedThrough: 3,
+        reservedThrough: null,
+        activeRunId: null,
+        semanticEpochId: null,
+        lastError: null,
+      },
+    },
+  });
+  const mutate = (change) => {
+    const readiness = makeReadiness();
+    change(readiness);
+    return readiness;
+  };
+
+  assert.doesNotThrow(() =>
+    assertRestoreFixturePreGapReadiness(makeReadiness()),
+  );
+  assert.doesNotThrow(() => {
+    const zeroHead = makeReadiness();
+    zeroHead.feedAndCursor.feedHead = 0;
+    zeroHead.feedAndCursor.cursor.acknowledgedThrough = 0;
+    assertRestoreFixturePreGapReadiness(zeroHead);
+  }, "zero is a valid settled Change Feed head");
+
+  const invalidCases = [
+    ["missing readiness", null],
+    ["missing epoch", mutate((readiness) => (readiness.epoch = undefined))],
+    ["empty epoch id", mutate((readiness) => (readiness.epoch.id = ""))],
+    [
+      "whitespace epoch id",
+      mutate((readiness) => (readiness.epoch.id = "   ")),
+    ],
+    [
+      "missing Freshness",
+      mutate((readiness) => (readiness.freshness = undefined)),
+    ],
+    [
+      "pending Freshness",
+      mutate((readiness) => (readiness.freshness.status = "pending")),
+    ],
+    [
+      "running Freshness",
+      mutate((readiness) => (readiness.freshness.status = "running")),
+    ],
+    [
+      "failed Freshness",
+      mutate((readiness) => (readiness.freshness.status = "failed")),
+    ],
+    [
+      "stale Freshness epoch",
+      mutate(
+        (readiness) => (readiness.freshness.semanticEpochId = "epoch-old"),
+      ),
+    ],
+    [
+      "missing feed head",
+      mutate((readiness) => (readiness.feedAndCursor.feedHead = undefined)),
+    ],
+    [
+      "fractional feed head",
+      mutate((readiness) => (readiness.feedAndCursor.feedHead = 3.5)),
+    ],
+    [
+      "fractional feed and acknowledged head",
+      mutate((readiness) => {
+        readiness.feedAndCursor.feedHead = 3.5;
+        readiness.feedAndCursor.cursor.acknowledgedThrough = 3.5;
+      }),
+    ],
+    [
+      "unsafe feed head",
+      mutate(
+        (readiness) =>
+          (readiness.feedAndCursor.feedHead = Number.MAX_SAFE_INTEGER + 1),
+      ),
+    ],
+    [
+      "unsafe feed and acknowledged head",
+      mutate((readiness) => {
+        readiness.feedAndCursor.feedHead = Number.MAX_SAFE_INTEGER + 1;
+        readiness.feedAndCursor.cursor.acknowledgedThrough =
+          Number.MAX_SAFE_INTEGER + 1;
+      }),
+    ],
+    [
+      "fractional acknowledged head",
+      mutate(
+        (readiness) =>
+          (readiness.feedAndCursor.cursor.acknowledgedThrough = 2.5),
+      ),
+    ],
+    [
+      "unequal acknowledged head",
+      mutate(
+        (readiness) => (readiness.feedAndCursor.cursor.acknowledgedThrough = 2),
+      ),
+    ],
+    [
+      "missing cursor",
+      mutate((readiness) => (readiness.feedAndCursor.cursor = undefined)),
+    ],
+    [
+      "reserved cursor",
+      mutate(
+        (readiness) => (readiness.feedAndCursor.cursor.reservedThrough = 4),
+      ),
+    ],
+    [
+      "active cursor Run",
+      mutate(
+        (readiness) => (readiness.feedAndCursor.cursor.activeRunId = "run-1"),
+      ),
+    ],
+    [
+      "cursor epoch",
+      mutate(
+        (readiness) =>
+          (readiness.feedAndCursor.cursor.semanticEpochId = "epoch-1"),
+      ),
+    ],
+    [
+      "cursor error",
+      mutate(
+        (readiness) =>
+          (readiness.feedAndCursor.cursor.lastError = "NEX_TEST_FAILURE"),
+      ),
+    ],
+    [
+      "null cursor",
+      mutate((readiness) => (readiness.feedAndCursor.cursor = null)),
+    ],
+  ];
+
+  for (const [label, readiness] of invalidCases) {
+    assert.throws(
+      () => assertRestoreFixturePreGapReadiness(readiness, label),
+      new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      `invalid restore readiness must be rejected: ${label}`,
+    );
+  }
+});
+
+test("restore fixture backup readiness reads the online backup snapshot, not the live DB", async () => {
+  await execFile("sqlite3", ["--version"]);
+  const root = await mkdtemp(path.join(tmpdir(), "c2-5b-backup-reader-"));
+  const workspace = path.join(root, "workspace");
+  const databasePath = path.join(workspace, "grimodex.db");
+  const backupName = "restore-fixture.db";
+  const backupPath = path.join(workspace, "backups", backupName);
+  const projectId = "project-backup-reader";
+  try {
+    await mkdir(path.dirname(backupPath), { recursive: true });
+    await execFile("sqlite3", [
+      databasePath,
+      `
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE narrative_semantic_epochs (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          epoch_number INTEGER NOT NULL,
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE narrative_extraction_runs (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          run_kind TEXT NOT NULL,
+          status TEXT NOT NULL,
+          semantic_epoch_id TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE narrative_change_events (
+          canonical_sequence INTEGER NOT NULL,
+          project_id TEXT NOT NULL
+        );
+        CREATE TABLE narrative_change_cursors (
+          project_id TEXT NOT NULL,
+          consumer_id TEXT NOT NULL,
+          acknowledged_through_sequence INTEGER,
+          reserved_through_sequence INTEGER,
+          active_run_id TEXT,
+          semantic_epoch_id TEXT,
+          last_error TEXT
+        );
+        INSERT INTO narrative_semantic_epochs
+          (id, project_id, epoch_number, reason, created_at)
+        VALUES
+          ('epoch-1', '${projectId}', 0, 'initial', '2026-08-28T16:05:00.000Z');
+        INSERT INTO narrative_extraction_runs
+          (id, project_id, run_kind, status, semantic_epoch_id, created_at)
+        VALUES
+          ('freshness-1', '${projectId}', 'freshness-evaluation', 'completed',
+           'epoch-1', '2026-08-28T16:05:01.000Z');
+        INSERT INTO narrative_change_events (canonical_sequence, project_id)
+        VALUES (1, '${projectId}');
+        INSERT INTO narrative_change_cursors
+          (project_id, consumer_id, acknowledged_through_sequence,
+           reserved_through_sequence, active_run_id, semantic_epoch_id, last_error)
+        VALUES
+          ('${projectId}', 'narrative-incremental-freshness/v1', 1, NULL, NULL, NULL, NULL);
+      `,
+    ]);
+    await execFile("sqlite3", [
+      databasePath,
+      `.backup '${backupPath.replaceAll("'", "''")}'`,
+    ]);
+    await execFile("sqlite3", [
+      databasePath,
+      `
+        INSERT INTO narrative_semantic_epochs
+          (id, project_id, epoch_number, reason, created_at)
+        VALUES
+          ('epoch-2', '${projectId}', 1, 'live-only-change', '2026-08-28T16:05:02.000Z');
+        INSERT INTO narrative_extraction_runs
+          (id, project_id, run_kind, status, semantic_epoch_id, created_at)
+        VALUES
+          ('freshness-2', '${projectId}', 'freshness-evaluation', 'completed',
+           'epoch-2', '2026-08-28T16:05:03.000Z');
+        INSERT INTO narrative_change_events (canonical_sequence, project_id)
+        VALUES (2, '${projectId}');
+        UPDATE narrative_change_cursors
+           SET acknowledged_through_sequence = 2
+         WHERE project_id = '${projectId}'
+           AND consumer_id = 'narrative-incremental-freshness/v1';
+      `,
+    ]);
+    const { stdout: liveStdout } = await execFile("sqlite3", [
+      "-json",
+      databasePath,
+      `
+        SELECT
+          (SELECT id FROM narrative_semantic_epochs
+            WHERE project_id = '${projectId}'
+            ORDER BY epoch_number DESC LIMIT 1) AS epochId,
+          (SELECT id FROM narrative_extraction_runs
+            WHERE project_id = '${projectId}'
+              AND run_kind = 'freshness-evaluation'
+            ORDER BY created_at DESC LIMIT 1) AS freshnessRunId,
+          (SELECT MAX(canonical_sequence) FROM narrative_change_events
+            WHERE project_id = '${projectId}') AS feedHead,
+          (SELECT acknowledged_through_sequence FROM narrative_change_cursors
+            WHERE project_id = '${projectId}') AS acknowledgedThrough;
+      `,
+    ]);
+    const liveRow = JSON.parse(liveStdout.trim())[0];
+    assert.deepEqual(liveRow, {
+      epochId: "epoch-2",
+      freshnessRunId: "freshness-2",
+      feedHead: 2,
+      acknowledgedThrough: 2,
+    });
+
+    const readBackupReadiness =
+      narrativeMaintenanceProductJourneys.readRestoreFixtureBackupReadiness;
+    assert.equal(typeof readBackupReadiness, "function");
+    const backupReadiness = await readBackupReadiness(
+      workspace,
+      backupName,
+      projectId,
+    );
+    assert.deepEqual(backupReadiness, {
+      epoch: { id: "epoch-1" },
+      freshness: {
+        status: "completed",
+        semanticEpochId: "epoch-1",
+      },
+      feedAndCursor: {
+        feedHead: 1,
+        cursor: {
+          acknowledgedThrough: 1,
+          reservedThrough: null,
+          activeRunId: null,
+          semanticEpochId: null,
+          lastError: null,
+        },
+      },
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("restore fixture requires a typed completed legacy Backfill boundary", async () => {
@@ -832,13 +1932,11 @@ test("restore fixture requires a typed completed legacy Backfill boundary", asyn
     /async function seedRestoreFixtureEvidence\([\s\S]*?\n}\n\n\/\*\*/,
   )?.[0];
   assert.ok(seedBody, "restore fixture seeding helper must remain inspectable");
-  const backfillRouteAt = seedBody.indexOf(
-    '"retry_narrative_legacy_backfill"',
+  const backfillRouteAt = seedBody.indexOf('"retry_narrative_legacy_backfill"');
+  const ownerRunAt = seedBody.indexOf('"narrative_extraction_create_run"');
+  const gapAt = seedBody.search(
+    /createRestoreFixtureDerivedStateGap\(\s*context/,
   );
-  const ownerRunAt = seedBody.indexOf(
-    '"narrative_extraction_create_run"',
-  );
-  const gapAt = seedBody.indexOf("createRestoreFixtureDerivedStateGap(context");
   const backupAt = seedBody.indexOf("createRestoreBackupFixture(workspace)");
   assert.ok(
     backfillRouteAt >= 0,
@@ -928,15 +2026,22 @@ test("restore journey must exercise the Settings backup UI and rebind after relo
   const journeyBody = source.match(
     /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
   )?.[0];
+  const scenarioBody = source.match(
+    /export async function runRestoreVerifyRebuildVerifyScenario\([\s\S]*?\n}\n\nasync function runRestoreVerifyRebuildVerify/,
+  )?.[0];
   assert.ok(helperBody, "restore UI helper must remain inspectable");
   assert.ok(journeyBody, "restore journey helper must remain inspectable");
+  assert.ok(
+    scenarioBody,
+    "shared restore scenario helper must remain inspectable",
+  );
   assert.match(
-    journeyBody,
-    /restoreBackupThroughSettingsUi\(context, fixtureEvidence\.backupName\)/,
+    scenarioBody,
+    /restoreThroughSettingsUi\(context, fixtureEvidence\.backupName\)/,
     "restore must call the production Settings UI helper",
   );
   assert.doesNotMatch(
-    journeyBody,
+    scenarioBody,
     /invokeOk\(context\.page,\s*"restore_backup"/,
     "restore journey must not bypass the production UI with raw restore_backup IPC",
   );
@@ -957,6 +2062,16 @@ test("restore journey must exercise the Settings backup UI and rebind after relo
   );
   assert.match(
     helperBody,
+    /getByTestId\(\s*`backup-restore-\$\{encodeURIComponent\(backupName\)\}`\s*,?\s*\)/,
+    "restore helper must select the backup by stable identity, not row order",
+  );
+  assert.doesNotMatch(
+    helperBody,
+    /\.nth\(/,
+    "restore helper must not select a backup by an unstable list index",
+  );
+  assert.match(
+    helperBody,
     /name: \/\^\(\?:Replace & restore\|全体を置換して復元\)\$\//,
     "restore helper must perform the explicit destructive confirmation",
   );
@@ -966,12 +2081,12 @@ test("restore journey must exercise the Settings backup UI and rebind after relo
     "restore helper must observe the main-frame reload",
   );
   assert.match(
-    journeyBody,
-    /contextForLaunch\([\s\S]*beforeRestoreRuns[\s\S]*restore\/reload project hydration/,
+    scenarioBody,
+    /contextForLaunch(?:ForScenario)?\([\s\S]*beforeRestoreRuns[\s\S]*restore\/reload project hydration/,
     "restore journey must rebind context and wait for post-reload hydration",
   );
   assert.match(
-    journeyBody,
+    scenarioBody,
     /candidate\.projectId !== context\.projectId/,
     "restore journey must prove project authority is unchanged after reload",
   );
@@ -1051,12 +2166,7 @@ test("restore sequence binds Verify/Rebuild/confirmation to the new restore Epoc
         [
           phase("verify-1", "dependency-verify", restoreEpoch.id, 1),
           {
-            ...phase(
-              "rebuild-1",
-              "semantic-index-rebuild",
-              restoreEpoch.id,
-              2,
-            ),
+            ...phase("rebuild-1", "semantic-index-rebuild", restoreEpoch.id, 2),
             createdAt: "2026-08-23T00:00:00.500Z",
           },
           phase("verify-2", "dependency-verify", restoreEpoch.id, 3),
@@ -1185,10 +2295,7 @@ test("interrupted snapshot selection is page-independent and rejects a pre-exist
   assert.throws(
     () =>
       selectInterruptedRunFromExitSnapshot(
-        [
-          ...baseline,
-          { ...interrupted, id: "old-running" },
-        ],
+        [...baseline, { ...interrupted, id: "old-running" }],
         [],
       ),
     /exactly one new running Backfill Run/,
@@ -1316,9 +2423,7 @@ test("stable no-automatic-repair assertion rejects a delayed Repair Run", () => 
     /human-only Repair Run kind/,
     "a Repair Run arriving after Verify/Rebuild must fail the settled ledger assertion",
   );
-  assert.doesNotThrow(() =>
-    assertNoAutomaticRepair(stableRows.slice(0, 2)),
-  );
+  assert.doesNotThrow(() => assertNoAutomaticRepair(stableRows.slice(0, 2)));
 });
 
 test("foreground target setup rejects an old marked authority and requires one fresh target marker", () => {
@@ -1392,7 +2497,12 @@ test("settled freshness cursor requires the canonical released reservation shape
     }),
     true,
   );
-  for (const field of ["reservedThrough", "activeRunId", "semanticEpochId", "lastError"]) {
+  for (const field of [
+    "reservedThrough",
+    "activeRunId",
+    "semanticEpochId",
+    "lastError",
+  ]) {
     assert.equal(
       isSettledFreshnessCursor({
         acknowledgedThrough: 2,
@@ -1447,7 +2557,10 @@ test("foreground marker selects one native Run by immutable barrier, not row ord
     [],
     expected,
   );
-  assert.deepEqual(selected.map((run) => run.id), ["marked-run"]);
+  assert.deepEqual(
+    selected.map((run) => run.id),
+    ["marked-run"],
+  );
   assert.equal(
     assertForegroundRunMarker(markedRun, expected).marker.authorityId,
     "authority-1",
@@ -1524,7 +2637,11 @@ test("foreground marker canonical keys follow native Backfill and epoch-bound ph
   assert.throws(
     () =>
       assertForegroundRunMarker(
-        makeRun("backfill", "legacy-dependency-backfill:v3", `${backfillKey}/epoch/epoch-1`),
+        makeRun(
+          "backfill",
+          "legacy-dependency-backfill:v3",
+          `${backfillKey}/epoch/epoch-1`,
+        ),
         expected,
       ),
     /canonicalWorkKey/,
@@ -1544,7 +2661,11 @@ test("foreground marker canonical keys follow native Backfill and epoch-bound ph
     "narrative-maintenance:v1/semantic-index-rebuild/project-1/dependency-rebuild-derived/epoch/epoch-1";
   assert.equal(
     assertForegroundRunMarker(
-      makeRun("semantic-index-rebuild", "dependency-rebuild-derived", rebuildKey),
+      makeRun(
+        "semantic-index-rebuild",
+        "dependency-rebuild-derived",
+        rebuildKey,
+      ),
       expected,
     ).canonicalWorkKey,
     rebuildKey,
@@ -1586,7 +2707,9 @@ test("transient and terminal validators reject fallback and same-millisecond fal
     lastAttemptStatus: "failed",
     lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
   };
-  assert.doesNotThrow(() => assertTransientAttemptEvidence(oneAttemptTransient));
+  assert.doesNotThrow(() =>
+    assertTransientAttemptEvidence(oneAttemptTransient),
+  );
   assert.throws(
     () =>
       assertTransientAttemptEvidence({
@@ -1635,6 +2758,39 @@ test("transient and terminal validators reject fallback and same-millisecond fal
 });
 
 test("every actual C2-5B Electron launch phase is registered for diagnostics", async () => {
+  const journeyId = "c2-5b-restore-verify-rebuild-verify";
+  const expectedPhase = `${journeyId}/restore-fixture`;
+  const launches = [];
+  const harness = {
+    async launch(phase) {
+      launches.push(phase);
+      return { app: {}, page: {}, phase };
+    },
+  };
+  const previousCi = process.env.CI;
+  process.env.CI = "true";
+  let launched;
+  try {
+    launched =
+      await narrativeMaintenanceProductJourneys.launchRestoreFixtureForJourney(
+        harness,
+        journeyId,
+      );
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+  }
+  assert.deepEqual(
+    launches,
+    [expectedPhase],
+    "the delegated launcher must retain the C2-5B restore-fixture suffix",
+  );
+  assert.equal(launched.phase, expectedPhase);
+  assert.ok(
+    NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES.includes(expectedPhase),
+    "the emitted phase must remain in the diagnostics registry",
+  );
+
   assert.equal(
     new Set(NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES).size,
     NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES.length,
@@ -1659,32 +2815,48 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
     "utf8",
   );
   const restoreJourneyBody = source.match(
-    /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
+    /export async function runRestoreVerifyRebuildVerifyScenario\([\s\S]*?\n}\n\nasync function runRestoreVerifyRebuildVerify/,
   )?.[0];
   const fixtureHelperBody = source.match(
     /async function seedRestoreFixtureEvidence\([\s\S]*?\n}\n\n\/\*\*/,
   )?.[0];
-  assert.ok(fixtureHelperBody, "restore fixture helper must remain inspectable");
+  assert.ok(
+    fixtureHelperBody,
+    "restore fixture helper must remain inspectable",
+  );
   assert.match(
     fixtureHelperBody,
-    /harness\.launch\(`\$\{id\}\/restore-fixture`\)/,
-    "restore fixture helper must launch its exact registered restore-fixture phase",
+    /\{\s*fixturePhase = "restore-fixture"\s*\}\s*=\s*\{\}/s,
+    "restore fixture helper must retain the exact C2-5B restore-fixture default",
   );
-  assert.ok(restoreJourneyBody, "restore journey caller must remain inspectable");
+  assert.match(
+    fixtureHelperBody,
+    /launchRestoreFixtureForJourney\(\s*harness,\s*id,\s*\{\s*fixturePhase,\s*\}\s*\)/s,
+    "restore fixture helper must delegate phase construction to the shared launcher",
+  );
+  assert.ok(
+    restoreJourneyBody,
+    "restore journey caller must remain inspectable",
+  );
   assert.match(
     restoreJourneyBody,
-    /const id = "c2-5b-restore-verify-rebuild-verify";/,
+    /id = "c2-5b-restore-verify-rebuild-verify",/,
     "restore journey must bind its fixture to its own journey id",
   );
   assert.match(
     restoreJourneyBody,
-    /seedRestoreFixtureEvidence\(\s*harness,\s*workspace,\s*id,\s*\)/,
+    /seedRestoreFixtureEvidence\(\s*harness,\s*workspace,\s*id,\s*\{\s*fixturePhase\s*,?\s*\}\s*,?\s*\)/,
     "restore journey must seed its own restore-fixture caller",
   );
   assert.match(
     restoreJourneyBody,
-    /harness\.launch\(`\$\{id\}\/open`\)/,
-    "restore journey must launch its own open phase after fixture setup",
+    /restorePhase = "open"/,
+    "shared restore journey must retain the C2-5B open default",
+  );
+  assert.match(
+    restoreJourneyBody,
+    /harness\.launch\(`\$\{id\}\/\$\{restorePhase\}`\)/,
+    "shared restore journey must launch its configured restore phase",
   );
 
   const noRepairJourneyBody = source.match(
@@ -1710,6 +2882,26 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
     foregroundJourneyBody,
     /harness\.launch\(`\$\{id\}\/settle-primary`\)/,
     "foreground workspace-wake must retain its settle-primary launch phase",
+  );
+  assert.match(
+    foregroundJourneyBody,
+    /sceneCreationBaseline = await readRunLedgerSnapshot\(workspaceB\);\s*await createSceneIfNeeded\(settledContext, "foreground-primary-settled"\)/s,
+    "foreground workspace-wake must snapshot B immediately before scene creation",
+  );
+  assert.match(
+    foregroundJourneyBody,
+    /harness\.launch\(`\$\{id\}\/settle-post-freshness`\)/,
+    "foreground workspace-wake must settle B after scene Freshness before the marker launch",
+  );
+  assert.match(
+    foregroundJourneyBody,
+    /waitForRunSequence\(\s*postFreshnessContext,\s*\["freshness-evaluation",\s*"dependency-verify"\][\s\S]*?foreground primary post-freshness Verify/s,
+    "foreground workspace-wake must observe the scene Freshness -> Verify sequence from the unmarked B reopen",
+  );
+  assert.match(
+    foregroundJourneyBody,
+    /waitForStableLedger\(\s*postFreshnessContext,\s*sceneCreationBaseline,[\s\S]*?foreground primary post-freshness ledger stable/s,
+    "foreground workspace-wake must stabilize B's post-Freshness ledger before the marker launch",
   );
   assert.match(
     foregroundJourneyBody,
@@ -1808,9 +3000,10 @@ test("c2-5b runner IDs are wired to the central catalog and impact selector", ()
 });
 
 test("maintenance source changes select the executable C2-5B journey subset", () => {
-  const expectedIds = NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
-    (journey) => journey.id,
-  );
+  const expectedIds = [
+    ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+    ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+  ].map((journey) => journey.id);
   for (const changedPath of [
     "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
     "electron/native/grimodex-node/src/lib.rs",
@@ -1840,9 +3033,10 @@ test("C2-5B runtime/semantic impact is direct for every launch owner path", asyn
     ),
   ]);
   const impactMap = parseImpactMap(impactSource);
-  const expectedIds = NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
-    (journey) => journey.id,
-  );
+  const expectedIds = [
+    ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+    ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+  ].map((journey) => journey.id);
   const ownerPaths = [
     ...NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
     "src-tauri/crates/grimodex-db/src/migrate.rs",
@@ -1921,10 +3115,10 @@ test("current C2-5B scheduler owner tests route directly to product and quality 
     ]),
   );
   const impactMap = parseImpactMap(impactSource);
-  const expectedProductJourneyIds =
-    NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
-      (journey) => journey.id,
-    );
+  const expectedProductJourneyIds = [
+    ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+    ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+  ].map((journey) => journey.id);
   const expectedQualityRuleIds = [
     "narrative-runtime-authority",
     "narrative-semantic-contract",
@@ -1980,13 +3174,17 @@ test("current C2-5B scheduler owner tests route directly to product and quality 
 
 test("future narrativeMaintenance files route directly without safe-all fallback", async () => {
   const impactMap = parseImpactMap(
-    await readFile(new URL("../evals/impact-map.yaml", import.meta.url), "utf8"),
+    await readFile(
+      new URL("../evals/impact-map.yaml", import.meta.url),
+      "utf8",
+    ),
   );
   const changedPath =
     "electron/main/narrativeMaintenance.futureRegression.test.ts";
-  const expectedIds = NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
-    (journey) => journey.id,
-  );
+  const expectedIds = [
+    ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+    ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+  ].map((journey) => journey.id);
   const productSelection = selectProductJourneys({
     catalog: PRODUCT_JOURNEY_CATALOG,
     domainRules: PRODUCT_DOMAIN_RULES,
@@ -2010,9 +3208,7 @@ test("future narrativeMaintenance files route directly without safe-all fallback
     qualitySelection.matchedRuleIds.includes("narrative-semantic-contract"),
   );
   assert.ok(qualitySelection.suiteIds.includes("narrative-runtime"));
-  assert.ok(
-    qualitySelection.suiteIds.includes("narrative-semantic-contract"),
-  );
+  assert.ok(qualitySelection.suiteIds.includes("narrative-semantic-contract"));
   assert.ok(
     PRODUCT_DOMAIN_RULES.find(
       (rule) => rule.id === "narrative-maintenance-product-journeys",

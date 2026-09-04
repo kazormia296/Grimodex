@@ -10,6 +10,7 @@ import {
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_COVERAGE_BACKLOG,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_ROLLOUT_MODE,
   PRODUCT_SCOPE_TRANSITIONS,
 } from "../electron/scripts/product-journey-catalog.mjs";
@@ -32,6 +33,7 @@ const EXPECTED_JOURNEY_IDS = [
   "map-native-roundtrip",
   "snapshot-native-roundtrip",
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map((entry) => entry.id),
+  ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((entry) => entry.id),
 ];
 
 const IMPLEMENTED_CONTRACT_IDS = [
@@ -46,6 +48,9 @@ const IMPLEMENTED_CONTRACT_IDS = [
   "native-command-roundtrip:project-snapshot",
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
     (entry) => entry.contracts[0],
+  ),
+  ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.flatMap(
+    (entry) => entry.contracts,
   ),
 ];
 

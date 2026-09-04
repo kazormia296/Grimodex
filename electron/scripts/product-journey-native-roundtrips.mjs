@@ -73,7 +73,7 @@ async function runNativeRoundTrip(
   const workspace = harness.workspacePath(id);
   await configureWorkspace(harness, workspace);
 
-  const writing = await harness.launch(`${id}/write`);
+  let writing = await harness.launch(`${id}/write`);
   let state;
   try {
     const projectId = await projectIdFor(harness, writing.page);
@@ -84,6 +84,19 @@ async function runNativeRoundTrip(
         page: writing.page,
         projectId,
         workspace,
+        relaunchAfterFixtureOperations: async (operations) => {
+          await harness.close(writing.app, writing.page, `${id}/write`);
+          writing = null;
+          await harness.executeFixtureOperations(workspace, operations);
+          writing = await harness.launch(`${id}/write`);
+          const reopenedProjectId = await projectIdFor(harness, writing.page);
+          if (reopenedProjectId !== projectId) {
+            throw new Error(
+              `${id}: project authority changed after fixture relaunch (${projectId} -> ${reopenedProjectId})`,
+            );
+          }
+          return writing.page;
+        },
       })),
     };
     await verify({
@@ -93,7 +106,7 @@ async function runNativeRoundTrip(
       phase: "write",
     });
   } finally {
-    await harness.close(writing.app, writing.page, `${id}/write`);
+    if (writing) await harness.close(writing.app, writing.page, `${id}/write`);
   }
 
   const restart = await harness.launch(`${id}/restart`);
@@ -172,47 +185,43 @@ function chronicleJourney(configureWorkspace, log) {
               `${id}: Chronicle create did not acknowledge version 1`,
             );
           }
-          const result = await current.invokeOk(
-            page,
-            "chronicle_bulk_mutate",
-            {
-              payload: {
-                requestId,
-                eventUid: `native-chronicle-bulk-event-${randomUUID()}`,
-                origin: "human",
-                authorityRoute: "human-direct",
-                caller: "manual-wrapper",
-                controls: [
-                  "runtime-policy",
-                  "actor-context",
-                  "typed-writer",
-                  "occ",
-                  "change-event",
-                  "change-feed",
-                ],
-                provenance: null,
-                writesAuthorityProtectedField: false,
-                originalTransactionId: null,
-                undoJournalId: null,
-                projectId,
-                sessionId: `native-session-${randomUUID()}`,
-                surface: "manual",
-                operations: [
-                  {
-                    kind: "eventSetDate",
-                    eventId,
-                    baseVersion: created.version,
-                    startTime: CHRONICLE_START_TIME,
-                    startMinute: null,
-                    startGranularity: "day",
-                    endTime: null,
-                    endMinute: null,
-                    endGranularity: "none",
-                  },
-                ],
-              },
+          const result = await current.invokeOk(page, "chronicle_bulk_mutate", {
+            payload: {
+              requestId,
+              eventUid: `native-chronicle-bulk-event-${randomUUID()}`,
+              origin: "human",
+              authorityRoute: "human-direct",
+              caller: "manual-wrapper",
+              controls: [
+                "runtime-policy",
+                "actor-context",
+                "typed-writer",
+                "occ",
+                "change-event",
+                "change-feed",
+              ],
+              provenance: null,
+              writesAuthorityProtectedField: false,
+              originalTransactionId: null,
+              undoJournalId: null,
+              projectId,
+              sessionId: `native-session-${randomUUID()}`,
+              surface: "manual",
+              operations: [
+                {
+                  kind: "eventSetDate",
+                  eventId,
+                  baseVersion: created.version,
+                  startTime: CHRONICLE_START_TIME,
+                  startMinute: null,
+                  startGranularity: "day",
+                  endTime: null,
+                  endMinute: null,
+                  endGranularity: "none",
+                },
+              ],
             },
-          );
+          });
           const eventResult = result?.eventResults?.find(
             (entry) => entry?.eventId === eventId,
           );
@@ -515,7 +524,12 @@ function snapshotJourney(configureWorkspace, log) {
         restoredMarker: "snapshot-native-roundtrip-restored",
         configureWorkspace,
         log,
-        write: async ({ harness: current, page, projectId }) => {
+        write: async ({
+          harness: current,
+          page,
+          projectId,
+          relaunchAfterFixtureOperations,
+        }) => {
           const sceneId = `native-snapshot-scene-${randomUUID()}`;
           const versionId = `native-snapshot-version-${randomUUID()}`;
           const snapshotId = `native-snapshot-${randomUUID()}`;
@@ -546,15 +560,16 @@ function snapshotJourney(configureWorkspace, log) {
           ) {
             throw new Error(`${id}: typed scene seed was not persisted`);
           }
-          await current.invokeOk(page, "db_execute", {
-            sql: `INSERT INTO content_versions
-              (id, entity_type, entity_id, content, version_number,
-               snapshot_type, created_at)
-              VALUES (?, 'scene', ?, ?, 1, 'manual', ?)`,
-            params: [versionId, sceneId, SNAPSHOT_CONTENT, now],
-            method: "run",
-          });
-          await current.invokeOk(page, "project_snapshot_create", {
+          const fixturePage = await relaunchAfterFixtureOperations([
+            {
+              kind: "content-version-insert",
+              id: versionId,
+              entityId: sceneId,
+              content: SNAPSHOT_CONTENT,
+              createdAt: now,
+            },
+          ]);
+          await current.invokeOk(fixturePage, "project_snapshot_create", {
             payload: {
               projectId,
               snapshotId,

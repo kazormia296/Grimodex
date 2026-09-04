@@ -19,7 +19,7 @@ import { EditorWorkspaceDialogs } from "@/features/editor/EditorWorkspaceDialogs
 import { EditorWorkspaceHeader } from "@/features/editor/EditorWorkspaceHeader";
 import { EditorWorkspaceProviders } from "@/features/editor/EditorWorkspaceProviders";
 import { isWorkLayerAvailable } from "@/features/editor/workLayerAvailability";
-import { WorkLayerSurface } from "@/features/work-layer/WorkLayer";
+import { WorkLayerSurfaceHost } from "@/features/work-layer/WorkLayerSurfaceHost";
 
 const ZenAmbientBackdrop = lazy(() =>
   import("@/features/editor/ZenAmbientBackdrop").then((module) => ({
@@ -230,7 +230,7 @@ export function EditorWorkspaceShell({
               zenMode={editorZenMode}
             />
           )}
-          <WorkLayerSurface />
+          <WorkLayerSurfaceHost />
         </main>
         <ZenModeController />
         <BackgroundStudioHost zenMode={editorZenMode} />

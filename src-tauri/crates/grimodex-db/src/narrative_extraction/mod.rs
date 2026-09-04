@@ -5,6 +5,8 @@ mod attention;
 mod c2z_preparation;
 pub(crate) mod c2zb_application_rekey;
 mod c2zc_canonical_cutover;
+#[cfg(feature = "c2zc-fixture-builder")]
+pub mod c2zc_restore_fixture;
 pub mod change_feed;
 mod chronicle_operations;
 mod codex_operations;
@@ -81,6 +83,7 @@ mod temporal_snapshots;
 mod temporal_undo;
 mod terminal_failure;
 mod undo;
+mod verify_coverage;
 
 pub(crate) const INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID: &str =
     "narrative-incremental-freshness/v1";
@@ -168,13 +171,17 @@ pub use c2zc_canonical_cutover::{
 };
 pub(crate) use c2zc_canonical_cutover::{
     mint_c2zc_import_project_birth_epoch_in_tx, mint_c2zc_project_birth_epoch_in_tx,
+    mint_c2zc_scan_publish_project_birth_epoch_in_tx,
 };
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
 pub use incremental_freshness::{
-    run_incremental_freshness_cycle, run_incremental_freshness_cycle_with_liveness_capability,
+    run_incremental_freshness_cycle, run_incremental_freshness_cycle_with_hold,
+    run_incremental_freshness_cycle_with_liveness_capability,
+    run_incremental_freshness_cycle_with_liveness_capability_and_hold,
     IncrementalFreshnessBatchSummary, IncrementalFreshnessCycleOutcome,
-    IncrementalFreshnessShadowConsumerSummary, IncrementalFreshnessShadowSummary,
-    SuccessfulIncrementalFreshnessCycle, NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
+    IncrementalFreshnessHeldSummary, IncrementalFreshnessShadowConsumerSummary,
+    IncrementalFreshnessShadowSummary, SuccessfulIncrementalFreshnessCycle,
+    NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
 };
 pub use maintenance_route_registry::{
     route_descriptor_by_id, route_descriptor_for_run_kind, route_descriptors,
@@ -184,7 +191,8 @@ pub use maintenance_route_registry::{
 pub use maintenance_runtime::{
     canonical_work_key, canonical_work_key_for_epoch, classify_failure, coalesce_desired_work,
     decide_execution, decide_run_recovery, decide_run_recovery_for_epoch,
-    discover_durable_maintenance_work, discover_durable_maintenance_work_with_config,
+    discover_before_cutover_maintenance_work_with_coordinates, discover_durable_maintenance_work,
+    discover_durable_maintenance_work_with_config,
     discover_durable_maintenance_work_with_coordinates, effective_maintenance_coordinates,
     plan_maintenance_trigger, preflight_maintenance_cycle_request, read_run_ledger,
     read_run_ledger_for_epoch, recovery_canonical_key, retry_backoff_ms,
@@ -215,6 +223,7 @@ pub(crate) use restore_rebuild::{
     rebuild_repair_dependency_edges_in_tx, rebuild_verify_dependency_edges,
     rotate_epoch_for_restore_in_tx, RebuildVerifyReport,
 };
+pub(crate) use task_leases::with_immediate_transaction;
 pub use terminal_failure::{
     project_terminal_failure_for_run, resolve_terminal_failure_for_run,
     TerminalFailureProjectionOutcome, TerminalFailureResolutionOutcome,
@@ -237,8 +246,9 @@ pub use repair::{
     RepairPlan,
 };
 pub use restore_rebuild::{
-    ack_maintenance_wakes, durable_graph_state_digest, ensure_restore_epochs_for_workspace,
-    list_pending_maintenance_wakes, rebuild_narrative_derived_state_for_project,
+    ack_maintenance_wakes, canonical_verify_outcome_digest, durable_graph_state_digest,
+    ensure_restore_epochs_for_workspace, list_pending_maintenance_wakes,
+    production_verify_check_coverage, rebuild_narrative_derived_state_for_project,
     record_maintenance_delivery_failure_wake, run_dependency_verify_for_project,
     run_dependency_verify_for_project_with_coordinates,
     verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
@@ -258,6 +268,7 @@ pub(crate) use semantic_index_diagnostics::{
     compute_dependency_set_digest, is_semantic_index_dirty,
     semantic_index_metadata_from_dependency_edges, SemanticIndexMetadata,
 };
+pub use verify_coverage::VerifyCoverageCheck;
 
 pub(crate) use foreshadow_operations::collect_aggregate_snapshot;
 pub(crate) use foreshadow_undo::{
@@ -558,8 +569,18 @@ pub fn narrative_extraction_set_human_field_lock(
 /// own phase discovery or dispatch.
 pub fn narrative_extraction_bootstrap_legacy_backfill(db: &Database) {
     let project_ids: Vec<String> = match db.with_conn(|conn| {
-        let mut statement =
-            conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, id ASC")?;
+        let mut statement = conn.prepare(
+            "SELECT projects.id
+               FROM projects
+              WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM project_settings
+                     WHERE project_settings.project_id = projects.id
+                       AND project_settings.key = 'scan.import.state'
+                       AND project_settings.value = 'staging'
+              )
+              ORDER BY projects.created_at ASC, projects.id ASC",
+        )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)

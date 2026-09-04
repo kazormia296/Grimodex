@@ -896,7 +896,7 @@ fn mutate_commit(
                         &payload.project_id,
                         &commit,
                         &journal_id,
-                        &entities,
+                        &after_entities,
                         &application_ids,
                         parsed_receipt.as_ref(),
                     )?;

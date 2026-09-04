@@ -59,6 +59,103 @@ function validateFixture(policy = bundledPolicy()) {
   }
 }
 
+const EXPECTED_IDLE_CHECKPOINT = {
+  kind: "current-epoch-idle-checkpoint",
+  version: 1,
+  specKind: "incremental-freshness-idle-checkpoint@1",
+  runKind: "freshness-evaluation",
+  taskKind: "incremental-freshness-batch",
+  zeroWidthRange: {
+    fromSequenceExclusive: "feedHead",
+    throughSequenceInclusive: "feedHead",
+    feedHead: "feedHead",
+  },
+  epochBinding: "current-semantic-epoch",
+  cursor: {
+    acknowledgedThroughSequence: "feedHead",
+    requiresClean: true,
+    missingAllowedOnlyAtFeedHead: 0,
+  },
+  projectSelection: {
+    projectsPerWake: 1,
+    order: "project-id-ascending",
+  },
+  suppression: {
+    existingCurrentEpochFreshnessRunAnyStatus: true,
+  },
+  descriptorBinding: {
+    digestAlgorithm: "sha256-canonical-json",
+    inputDigestBinding: "task-input-to-spec-and-work-key",
+    taskInput: {
+      exactKeys: [
+        "kind",
+        "version",
+        "projectId",
+        "semanticEpochId",
+        "fromSequenceExclusive",
+        "throughSequenceInclusive",
+        "feedHead",
+        "inputDigest",
+      ],
+      kind: "current-epoch-idle-checkpoint",
+      version: 1,
+      digestField: "inputDigest",
+      digestInput: "canonical-payload-without-inputDigest",
+    },
+    spec: {
+      exactKeys: ["kind", "inputDigest"],
+      kind: "incremental-freshness-idle-checkpoint@1",
+      inputDigest: "same-as-task-input",
+      digestField: "specDigest",
+      digestInput: "canonical-spec-object",
+    },
+    workKey: {
+      format:
+        "incremental-freshness:{semanticEpochId}:{fromSequenceExclusive}:{throughSequenceInclusive}:{inputDigestHex}",
+      digestInput: "task-input-inputDigest-without-sha256-prefix",
+    },
+  },
+  lifecycle: {
+    taskCount: 1,
+    completedTaskCount: 1,
+    taskStatus: "completed",
+    taskAttemptCountEqualsAttemptRows: true,
+    attemptNumbering: "1..N-contiguous",
+    attemptStatuses: ["failed", "completed"],
+    completedAttemptCount: 1,
+    runningAttemptCount: 0,
+    activeAttemptCount: 0,
+    noActiveAttempt: true,
+    failedRetryHistoryAllowed: true,
+    failedRetryHistoryOrder: "failed-before-completed-only",
+    completedAttemptMustBeLast: true,
+    retryCap: {
+      maxAttemptsPerTask: 3,
+      corruptedTaskKindCannotBypass: true,
+    },
+  },
+  nextWake: {
+    noChurn: true,
+  },
+  databaseEvidence: {
+    schedulerLiveness: "not-proven",
+    canonicalCutover: "not-proven",
+  },
+  writesAllowed: ["run-task-attempt-state", "freshness-evaluator-cursor"],
+  forbiddenWrites: [
+    "narrative-change-set",
+    "consumer-freshness",
+    "dependency-edge-state",
+    "finding-observation",
+    "attention",
+    "domain-state",
+    "d2-declarations",
+    "d2-shadow",
+    "semantic-index",
+  ],
+  forbiddenPublishers: ["generic-consumer-freshness"],
+};
+
 describe("validate-run-kind-policy", () => {
   it("accepts the bundled policy and keeps the public export", () => {
     assert.deepEqual(validateRunKindPolicy({ repoRoot: REPO_ROOT }).errors, []);
@@ -115,6 +212,61 @@ describe("validate-run-kind-policy", () => {
       ]);
     }
     assert.deepEqual(validateFixture(policy).errors, []);
+  });
+
+  it("keeps all 13 production Verify checks and forbids coverage reduction", () => {
+    const policy = bundledPolicy();
+    const verify = runKind(policy, "dependency-verify");
+    assert.deepEqual(verify.verifyCoverage, {
+      requiredCheckCount: 13,
+      productionCoverage: "13/13",
+      reductionForbidden: true,
+    });
+    assert.equal(
+      (verify.verifiesDurableGraph ?? []).length +
+        (verify.verifiesRebuildableState ?? []).length,
+      13,
+    );
+    assert.deepEqual(validateFixture(policy).errors, []);
+
+    const reduced = bundledPolicy();
+    runKind(reduced, "dependency-verify").verifiesRebuildableState.pop();
+    const reducedResult = validateFixture(reduced);
+    assert.ok(
+      reducedResult.errors.some((error) =>
+        error.includes("dependency-verify must retain all 13 production Verify checks"),
+      ),
+    );
+
+    const staleCoverage = bundledPolicy();
+    runKind(staleCoverage, "dependency-verify").verifyCoverage.productionCoverage =
+      [11, 13].join("/");
+    const staleCoverageResult = validateFixture(staleCoverage);
+    assert.ok(
+      staleCoverageResult.errors.some((error) =>
+        error.includes("productionCoverage must be '13/13'"),
+      ),
+    );
+  });
+
+  it("rejects reintroducing the reserved Semantic Index cache as Rebuild-Derived state", () => {
+    const policy = bundledPolicy();
+    const rebuild = runKind(policy, "dependency-rebuild-derived");
+    rebuild.rebuildableTargets = rebuild.rebuildableTargets.filter(
+      (target) => target !== "semantic-index-generation-cache",
+    );
+    rebuild.rebuildableTargets.push("semantic-index-generation-cache");
+
+    const result = validateFixture(policy);
+
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes(
+          "dependency-rebuild-derived.rebuildableTargets must not include 'semantic-index-generation-cache' while semantic-index is reserved",
+        ),
+      ),
+      `reserved Semantic Index cache must remain outside Rebuild-Derived: ${JSON.stringify(result.errors)}`,
+    );
   });
 
   it("rejects duplicate run kinds", () => {
@@ -206,30 +358,24 @@ describe("validate-run-kind-policy", () => {
     );
   });
 
-  it("keeps triggerEvents as discovery conditions and moves C2-ZC work to a future obligation", () => {
+  it("keeps triggerEvents as discovery conditions after C2-ZC activation", () => {
     const policy = bundledPolicy();
     for (const name of ["dependency-verify", "dependency-rebuild-derived"]) {
       const entry = runKind(policy, name);
       assert.ok(!entry.triggerEvents.includes("before-c2z-cutover"));
-      assert.deepEqual(entry.futureTriggerObligations, [
-        {
-          condition: "before-c2z-cutover",
-          gate: "C2-ZC",
-          satisfiesCurrentWiredStatus: false,
-        },
-      ]);
+      assert.equal(entry.futureTriggerObligations, undefined);
     }
     assert.deepEqual(validateFixture(policy).errors, []);
   });
 
-  it("rejects a future C2-ZC condition when it is still shipped as a trigger", () => {
+  it("rejects a retired C2-ZC condition when it is shipped as a trigger", () => {
     const policy = bundledPolicy();
     runKind(policy, "dependency-verify").triggerEvents.push(
       "before-c2z-cutover",
     );
     const result = validateFixture(policy);
     assert.ok(
-      result.errors.some((error) => error.includes("futureTriggerObligation")),
+      result.errors.some((error) => error.includes("before-c2z-cutover")),
     );
   });
 
@@ -255,45 +401,20 @@ describe("validate-run-kind-policy", () => {
     );
   });
 
-  it("requires the explicit C2-ZC obligation on Verify and Rebuild-Derived", () => {
+  it("rejects an obsolete C2-ZC future obligation under the scheduler contract", () => {
     const policy = bundledPolicy();
-    delete runKind(policy, "dependency-verify").futureTriggerObligations;
-    runKind(
-      policy,
-      "dependency-rebuild-derived",
-    ).futureTriggerObligations[0].gate = "C2-ZB";
+    runKind(policy, "dependency-verify").futureTriggerObligations = [
+      {
+        condition: "before-c2z-cutover",
+        gate: "C2-ZC",
+        satisfiesCurrentWiredStatus: false,
+      },
+    ];
     const result = validateFixture(policy);
     assert.ok(
       result.errors.some((error) =>
-        error.includes("must contain exactly one before-c2z-cutover"),
+        error.includes("futureTriggerObligations is obsolete"),
       ),
-    );
-  });
-
-  it("rejects a duplicate future C2-ZC obligation", () => {
-    const policy = bundledPolicy();
-    const obligations = runKind(
-      policy,
-      "dependency-verify",
-    ).futureTriggerObligations;
-    obligations.push(JSON.parse(JSON.stringify(obligations[0])));
-    const result = validateFixture(policy);
-    assert.ok(
-      result.errors.some((error) =>
-        error.includes("must contain exactly one before-c2z-cutover"),
-      ),
-    );
-  });
-
-  it("rejects a future obligation that claims current wired status", () => {
-    const policy = bundledPolicy();
-    runKind(
-      policy,
-      "dependency-verify",
-    ).futureTriggerObligations[0].satisfiesCurrentWiredStatus = true;
-    const result = validateFixture(policy);
-    assert.ok(
-      result.errors.some((error) => error.includes("schema rejects policy")),
     );
   });
 
@@ -434,6 +555,159 @@ describe("validate-run-kind-policy", () => {
         error.includes("maxCanonicalSequencesPerBatch"),
       ),
     );
+  });
+
+  it("pins the current-Epoch idle checkpoint to the existing Freshness Run Kind", () => {
+    const policy = bundledPolicy();
+    const runKinds = policy.runKinds.map((entry) => entry.runKind);
+    assert.deepEqual(runKinds, [
+      "dependency-backfill",
+      "dependency-verify",
+      "dependency-rebuild-derived",
+      "incremental-freshness",
+      "dependency-repair",
+    ]);
+    assert.deepEqual(
+      runKind(policy, "incremental-freshness").idleCheckpoint,
+      EXPECTED_IDLE_CHECKPOINT,
+    );
+    assert.deepEqual(validateFixture(policy).errors, []);
+  });
+
+  it("rejects every idle checkpoint contract mutation", () => {
+    const mutations = [
+      ["kind", "wrong-kind"],
+      ["version", 2],
+      ["specKind", "incremental-freshness-batch@1"],
+      ["runKind", "incremental-freshness"],
+      ["taskKind", "unexpected-task"],
+      ["zeroWidthRange.fromSequenceExclusive", "acknowledged"],
+      ["zeroWidthRange.throughSequenceInclusive", "acknowledged"],
+      ["zeroWidthRange.feedHead", "throughSequenceInclusive"],
+      ["epochBinding", "run-epoch"],
+      ["cursor.acknowledgedThroughSequence", "throughSequenceInclusive"],
+      ["cursor.requiresClean", false],
+      ["cursor.missingAllowedOnlyAtFeedHead", 1],
+      ["projectSelection.projectsPerWake", 2],
+      ["projectSelection.order", "created-at"],
+      ["suppression.existingCurrentEpochFreshnessRunAnyStatus", false],
+      ["descriptorBinding.digestAlgorithm", "sha256-json"],
+      ["descriptorBinding.inputDigestBinding", "task-input-only"],
+      ["descriptorBinding.taskInput.exactKeys", ["kind"]],
+      ["descriptorBinding.taskInput.kind", "incremental-freshness"],
+      ["descriptorBinding.taskInput.version", 2],
+      ["descriptorBinding.taskInput.digestField", "digest"],
+      ["descriptorBinding.taskInput.digestInput", "payload-with-inputDigest"],
+      ["descriptorBinding.spec.exactKeys", ["kind"]],
+      ["descriptorBinding.spec.kind", "incremental-freshness"],
+      ["descriptorBinding.spec.inputDigest", "different-from-task-input"],
+      ["descriptorBinding.spec.digestField", "inputDigest"],
+      ["descriptorBinding.spec.digestInput", "raw-spec"],
+      ["descriptorBinding.workKey.format", "run-id"],
+      ["descriptorBinding.workKey.digestInput", "task-id"],
+      ["lifecycle.taskCount", 2],
+      ["lifecycle.completedTaskCount", 0],
+      ["lifecycle.taskStatus", "failed"],
+      ["lifecycle.taskAttemptCountEqualsAttemptRows", false],
+      ["lifecycle.attemptNumbering", "attempts-may-have-gaps"],
+      ["lifecycle.attemptStatuses", ["running", "completed"]],
+      ["lifecycle.completedAttemptCount", 2],
+      ["lifecycle.runningAttemptCount", 1],
+      ["lifecycle.activeAttemptCount", 1],
+      ["lifecycle.noActiveAttempt", false],
+      ["lifecycle.failedRetryHistoryAllowed", false],
+      ["lifecycle.failedRetryHistoryOrder", "failed-after-completed"],
+      ["lifecycle.completedAttemptMustBeLast", false],
+      ["lifecycle.retryCap.maxAttemptsPerTask", 4],
+      ["lifecycle.retryCap.corruptedTaskKindCannotBypass", false],
+      ["nextWake.noChurn", false],
+      ["databaseEvidence.schedulerLiveness", "proven"],
+      ["databaseEvidence.canonicalCutover", "proven"],
+      ["writesAllowed", ["run-task-attempt-state", "consumer-freshness"]],
+      [
+        "forbiddenWrites",
+        [
+          "narrative-change-set",
+          "consumer-freshness",
+          "dependency-edge-state",
+          "finding-observation",
+          "attention",
+          "domain-state",
+          "d2-declarations",
+          "d2-shadow",
+        ],
+      ],
+      ["forbiddenPublishers", ["generic-consumer-freshness-publisher"]],
+    ];
+
+    for (const [pathExpression, value] of mutations) {
+      const policy = bundledPolicy();
+      const idleCheckpoint = runKind(
+        policy,
+        "incremental-freshness",
+      ).idleCheckpoint;
+      const pathParts = pathExpression.split(".");
+      const leaf = pathParts.pop();
+      assert.ok(leaf);
+      const target = pathParts.reduce(
+        (object, key) => object[key],
+        idleCheckpoint,
+      );
+      target[leaf] = value;
+
+      const result = validateFixture(policy);
+      assert.ok(
+        result.errors.some((error) =>
+          error.includes(
+            `incremental-freshness.idleCheckpoint.${pathExpression}`,
+          ),
+        ),
+        `expected idle checkpoint mutation ${pathExpression} to fail: ${JSON.stringify(result.errors)}`,
+      );
+    }
+  });
+
+  it("requires an exact idle checkpoint object on incremental freshness", () => {
+    const missing = bundledPolicy();
+    delete runKind(missing, "incremental-freshness").idleCheckpoint;
+    const missingResult = validateFixture(missing);
+    assert.ok(
+      missingResult.errors.some((error) =>
+        error.includes("incremental-freshness.idleCheckpoint"),
+      ),
+    );
+
+    const extra = bundledPolicy();
+    runKind(extra, "incremental-freshness").idleCheckpoint.unexpected = true;
+    const extraResult = validateFixture(extra);
+    assert.ok(
+      extraResult.errors.some((error) =>
+        error.includes("incremental-freshness.idleCheckpoint.unexpected"),
+      ),
+    );
+  });
+
+  it("rejects an idle checkpoint object on every non-incremental run kind", () => {
+    const nonIncrementalRunKinds = [
+      "dependency-backfill",
+      "dependency-verify",
+      "dependency-rebuild-derived",
+      "dependency-repair",
+    ];
+
+    for (const runKindName of nonIncrementalRunKinds) {
+      const policy = bundledPolicy();
+      runKind(policy, runKindName).idleCheckpoint = structuredClone(
+        EXPECTED_IDLE_CHECKPOINT,
+      );
+      const result = validateFixture(policy);
+      assert.ok(
+        result.errors.some((error) =>
+          error.includes(`${runKindName}.idleCheckpoint`),
+        ),
+        `expected ${runKindName} to reject an idle checkpoint: ${JSON.stringify(result.errors)}`,
+      );
+    }
   });
 
   it("contains no source interpreter or reachability machinery", () => {

@@ -1403,11 +1403,6 @@ fn measure_en_fts_recall_trigram_vs_porter() {
     }
     // Note: "run" is 3 codepoints and survives the sanitizer; 1-2 char queries
     // are dropped by to_fts_match for both tokenizers (documented limitation).
-    println!(
-        "[eval] _en (porter unicode61) recall: {}/{} inflected queries",
-        en_hits,
-        queries.len()
-    );
     // Sanity floor: stemming should retrieve clearly inflected matches.
     assert!(
         en_hits >= 4,

@@ -7,6 +7,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use serde_json::Value;
 
 use super::evaluator::{EvidenceFreshness, FindingReasonCode};
 use super::finding_identity::{
@@ -16,15 +17,16 @@ use super::finding_identity::{
 };
 use super::finding_observation::{
     ensure_epoch_project, latest_terminal_failure_lifecycle_for_identity,
-    latest_terminal_failure_observation_order, record_terminal_failure_lifecycle_in_tx,
+    latest_terminal_failure_observation_anchor, record_terminal_failure_lifecycle_in_tx,
     record_terminal_failure_observation_in_tx, resolve_terminal_failure_lifecycle_in_tx,
     validate_terminal_failure_replay_in_tx, FindingLifecycleState, TerminalFailureLifecycleWrite,
     TerminalFailureObservationWrite, TerminalFailureResolutionWrite, TerminalFailureRunBinding,
 };
 use super::maintenance_runtime::{
-    classify_failure, AutomaticRunKind, FailureClass, WorkKey, LEGACY_BACKFILL_WORK_KEY,
-    REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+    classify_failure, validate_phase_success_outcome, AutomaticRunKind, FailureClass, WorkKey,
+    LEGACY_BACKFILL_WORK_KEY, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
 };
+use super::restore_rebuild::{DependencyGraphVerifyReport, VERIFY_RUN_KIND};
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
 
@@ -33,6 +35,16 @@ use crate::Database;
 pub const TERMINAL_FAILURE_CONSUMER_KIND: &str = "narrative-maintenance-failure";
 
 const TERMINAL_FAILURE_EVIDENCE: EvidenceFreshness = EvidenceFreshness::Unknown;
+
+type SealedVerifyRunRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 /// Map a validated terminal NEX code to the diagnostic reason vocabulary that
 /// predates terminal failures. The NEX code remains the immutable primary
@@ -548,6 +560,123 @@ fn is_synthetic_manual_code(code: &str) -> bool {
     )
 }
 
+fn graph_repair_evidence_detail_digest(report_digest: &str, graph_state_digest: &str) -> String {
+    format!(
+        "sha256:{}",
+        super::digest_plan(&serde_json::json!({
+            "domain": "grimodex:narrative:graph-repair-evidence:v1",
+            "reportDigest": report_digest,
+            "graphStateDigest": graph_state_digest,
+        }))
+    )
+}
+
+/// Reconstruct the graph-repair detail from the exact completed Verify Run
+/// that the terminal Observation names. The Observation table predates this
+/// detail field, so the Run's canonical outcome is the sealed durable anchor;
+/// malformed, rewritten, or unrelated outcomes fail closed instead of
+/// guessing a digest.
+fn sealed_graph_repair_evidence_detail_digest(
+    conn: &Connection,
+    project_id: &str,
+    verify_run_id: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<String> {
+    let expected_work_key = format!("{VERIFY_RUN_KIND}:{semantic_epoch_id}");
+    let row: Option<SealedVerifyRunRow> = conn
+        .query_row(
+            "SELECT project_id, status, run_kind, work_key, semantic_epoch_id,
+                    terminal_reason_code, outcome_summary_json
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            params![verify_run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        run_project_id,
+        status,
+        run_kind,
+        work_key,
+        run_epoch_id,
+        terminal_reason_code,
+        outcome_json,
+    )) = row
+    else {
+        anyhow::bail!(
+            "NEX_FINDING_GRAPH_REPAIR_ANCHOR_MISSING: Verify Run '{}' is missing",
+            verify_run_id
+        );
+    };
+    anyhow::ensure!(
+        run_project_id == project_id
+            && status == "completed"
+            && run_kind == VERIFY_RUN_KIND
+            && work_key.as_deref() == Some(expected_work_key.as_str())
+            && run_epoch_id.as_deref() == Some(semantic_epoch_id)
+            && terminal_reason_code.is_none(),
+        "NEX_FINDING_GRAPH_REPAIR_ANCHOR_INVALID: Verify Run '{}' is not the sealed completed-report anchor",
+        verify_run_id
+    );
+    let outcome_json = outcome_json.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_FINDING_GRAPH_REPAIR_ANCHOR_INVALID: Verify Run '{}' has no outcome",
+            verify_run_id
+        )
+    })?;
+    let outcome: Value = serde_json::from_str(&outcome_json).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_FINDING_GRAPH_REPAIR_ANCHOR_INVALID: Verify Run '{}' outcome is invalid: {error}",
+            verify_run_id
+        )
+    })?;
+    validate_phase_success_outcome(
+        VERIFY_RUN_KIND,
+        project_id,
+        &expected_work_key,
+        Some(semantic_epoch_id),
+        &outcome,
+    )?;
+    anyhow::ensure!(
+        outcome.get("failure").is_none(),
+        "NEX_FINDING_GRAPH_REPAIR_ANCHOR_INVALID: Verify Run '{}' carries failure evidence",
+        verify_run_id
+    );
+    let report: DependencyGraphVerifyReport = serde_json::from_value(
+        outcome
+            .get("report")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Verify outcome report is missing"))?,
+    )?;
+    anyhow::ensure!(
+        !report.is_clean() && !report.requires_rebuild(),
+        "NEX_FINDING_GRAPH_REPAIR_ANCHOR_INVALID: Verify Run '{}' does not carry a non-rebuildable defect",
+        verify_run_id
+    );
+    let report_digest = outcome
+        .get("reportDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Verify outcome report digest is missing"))?;
+    let graph_state_digest = outcome
+        .get("graphStateDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Verify outcome graph state digest is missing"))?;
+    Ok(graph_repair_evidence_detail_digest(
+        report_digest,
+        graph_state_digest,
+    ))
+}
+
 /// Durably project a recovery-synthesized `ManualIntervention` decision as a
 /// terminal Finding bound to the stable work subject, the synthetic failure
 /// code, and the anchored epoch. Exact contract codes are skipped: their
@@ -697,14 +826,7 @@ pub(crate) fn project_graph_repair_required_in_tx(
     // clean-Verify skip evidence seals.
     let graph_state_digest =
         super::maintenance_skip_evidence::durable_graph_state_digest(conn, project_id)?;
-    let evidence_detail = format!(
-        "sha256:{}",
-        super::digest_plan(&serde_json::json!({
-            "domain": "grimodex:narrative:graph-repair-evidence:v1",
-            "reportDigest": report_digest,
-            "graphStateDigest": graph_state_digest,
-        }))
-    );
+    let evidence_detail = graph_repair_evidence_detail_digest(report_digest, &graph_state_digest);
     record_failure_projection_in_tx(
         conn,
         project_id,
@@ -738,16 +860,20 @@ pub(crate) fn resolve_terminal_failure_for_run_in_tx(
             finding_key,
         });
     }
-    let Some((failure_observed_at, current_material_basis_digest)) =
-        latest_terminal_failure_observation_order(
-            conn,
-            project_id,
-            &context.semantic_epoch_id,
-            &finding_identity,
-            &finding_key,
-            MAINTENANCE_FAILURE_FINDING_RULE_ID,
-            MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
-        )?
+    let Some((
+        failure_observed_at,
+        current_material_basis_digest,
+        prior_observation_run_id,
+        prior_observation_id,
+    )) = latest_terminal_failure_observation_anchor(
+        conn,
+        project_id,
+        &context.semantic_epoch_id,
+        &finding_identity,
+        &finding_key,
+        MAINTENANCE_FAILURE_FINDING_RULE_ID,
+        MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
+    )?
     else {
         return Ok(TerminalFailureResolutionOutcome {
             resolved: false,
@@ -790,6 +916,18 @@ pub(crate) fn resolve_terminal_failure_for_run_in_tx(
             finding_key,
         });
     }
+    let prior_failure_code =
+        super::finding_observation::decode_terminal_failure_observation_id(&prior_observation_id)?;
+    let evidence_detail_digest = if prior_failure_code == SEMANTIC_GRAPH_REQUIRES_REPAIR_CODE {
+        Some(sealed_graph_repair_evidence_detail_digest(
+            conn,
+            project_id,
+            &prior_observation_run_id,
+            &context.semantic_epoch_id,
+        )?)
+    } else {
+        None
+    };
     let lifecycle_id = resolve_terminal_failure_lifecycle_in_tx(
         conn,
         TerminalFailureResolutionWrite {
@@ -802,6 +940,9 @@ pub(crate) fn resolve_terminal_failure_for_run_in_tx(
             rule_id: MAINTENANCE_FAILURE_FINDING_RULE_ID,
             rule_version: MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
             material_basis_digest: &current_material_basis_digest,
+            prior_observation_id: &prior_observation_id,
+            prior_observation_run_id: &prior_observation_run_id,
+            evidence_detail_digest: evidence_detail_digest.as_deref(),
             observed_at,
         },
     )?;

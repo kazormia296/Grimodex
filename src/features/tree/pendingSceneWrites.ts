@@ -99,7 +99,7 @@ export async function awaitAllPendingSceneWrites(): Promise<void> {
 }
 
 registerQuiescenceProvider({
-  id: "scene-writes",
+  id: createQuiescenceProviderId("scene-writes"),
   stage: "scene-writes",
   flush: awaitAllPendingSceneWrites,
 });
@@ -173,4 +173,7 @@ export async function awaitPendingSceneWriteStrict(
     );
   }
 }
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";

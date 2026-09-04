@@ -8429,7 +8429,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 </details>
 
-### baseline-browser-mapping (2.10.31)
+### baseline-browser-mapping (2.11.20)
 
 - License: Apache-2.0
 - Repository: https://github.com/web-platform-dx/baseline-browser-mapping
@@ -8648,7 +8648,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 - License: MIT
 - Repository: https://github.com/Pomax/bezierjs
 
-### browserslist (4.28.2)
+### browserslist (4.28.8)
 
 - License: MIT
 - Repository: browserslist/browserslist
@@ -8716,7 +8716,7 @@ SOFTWARE.
 ```
 </details>
 
-### caniuse-lite (1.0.30001793)
+### caniuse-lite (1.0.30001810)
 
 - License: CC-BY-4.0
 - Repository: browserslist/caniuse-lite
@@ -10775,7 +10775,7 @@ SOFTWARE.
 - License: Apache-2.0
 - Repository: https://github.com/drizzle-team/drizzle-orm
 
-### electron-to-chromium (1.5.361)
+### electron-to-chromium (1.5.420)
 
 - License: ISC
 - Repository: https://github.com/Kilian/electron-to-chromium
@@ -11093,7 +11093,7 @@ SOFTWARE.
 ```
 </details>
 
-### fast-uri (3.1.5)
+### fast-uri (3.1.6)
 
 - License: BSD-3-Clause
 - Repository: https://github.com/fastify/fast-uri
@@ -15046,7 +15046,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 </details>
 
-### node-releases (2.0.46)
+### node-releases (2.0.54)
 
 - License: MIT
 - Repository: https://github.com/chicoxyzzy/node-releases
@@ -17752,7 +17752,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 </details>
 
-### update-browserslist-db (1.2.3)
+### update-browserslist-db (1.3.2)
 
 - License: MIT
 - Repository: browserslist/update-db
@@ -17763,7 +17763,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 The MIT License (MIT)
 
-Copyright 2022 Andrey Sitnik <andrey@sitnik.ru> and other contributors
+Copyright 2022 Andrey Sitnik <andrey@sitnik.es> and other contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
@@ -59765,45 +59765,7 @@ SOFTWARE.
 ```
 </details>
 
-### h2 (0.4.13)
-
-- License: MIT
-- Repository: https://github.com/hyperium/h2
-
-<details>
-<summary>License Text</summary>
-
-```
-Copyright (c) 2017 h2 authors
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-```
-</details>
-
-### h2 (0.4.15)
+### h2 (0.4.16)
 
 - License: MIT
 - Repository: https://github.com/hyperium/h2

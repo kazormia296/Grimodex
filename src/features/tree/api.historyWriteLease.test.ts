@@ -7,6 +7,10 @@ import {
   historyWriteContext,
   treeWriteReceipt,
 } from "./api";
+import {
+  _resetTimelapseGenesisBarriersForTests,
+  beginTimelapseGenesisBarrier,
+} from "@/features/timelapse/genesisBarrier";
 
 describe("Tree canonical history identity lease", () => {
   it("reuses identity after an unknown outcome and rotates only after success", async () => {
@@ -43,5 +47,31 @@ describe("Tree canonical history identity lease", () => {
       originalTransactionId: receipt!.maintenanceTransactionId,
       undoJournalId: receipt!.undoJournalId,
     });
+  });
+
+  it("holds a tree cascade deletion behind genesis", async () => {
+    _resetTimelapseGenesisBarriersForTests();
+    const id = `tree-genesis-delete-${crypto.randomUUID()}`;
+    await createNode({
+      id,
+      projectId: "default-project",
+      parentId: null,
+      nodeType: "scene",
+      title: "Genesis delete",
+      sortOrder: "z9",
+    });
+    const genesis = beginTimelapseGenesisBarrier("default-project");
+    const deleting = deleteNode(id, "default-project");
+    let settled = false;
+    void deleting.finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    genesis.complete();
+    await deleting;
+    expect(settled).toBe(true);
   });
 });

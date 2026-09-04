@@ -13,7 +13,12 @@ import {
   formatImpactSummary,
   parseImpactMap,
   selectImpact,
+  validateAcceptanceGateRegistration,
 } from "./impact-map.mjs";
+import {
+  C2ZC_RUST_ACCEPTANCE_GATES,
+  C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND,
+} from "../c2zc-rust-acceptance-receipt.mjs";
 
 test("the AI routing light suite executes browser transport contracts", () => {
   const commandText = JSON.stringify(
@@ -77,7 +82,7 @@ test("the Narrative runtime suite executes incremental Freshness integration", (
   );
   assert.ok(
     commandLines.includes(
-      "node --test scripts/product-journey-phase1.test.mjs scripts/c2-5b-product-journeys.test.mjs",
+      "node --test scripts/product-journey-phase1.test.mjs scripts/c2-5b-product-journeys.test.mjs scripts/c2zc-product-journeys.test.mjs",
     ),
   );
 });
@@ -674,4 +679,131 @@ test("an invalid comparison base is reported instead of silently trusting a part
 
   assert.equal(changed.complete, false);
   assert.match(changed.reason, /diff/i);
+});
+
+test("C2-ZC impact registration is structured and rejects gate command/test/receipt/order mutations", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const rule = map.rules.find(
+    (candidate) => candidate.id === "narrative-maintenance-product-journeys",
+  );
+  assert.ok(rule?.acceptanceGates);
+  assert.deepEqual(
+    rule.acceptanceGates.map((gate) => gate.id),
+    C2ZC_RUST_ACCEPTANCE_GATES.map((gate) => gate.id),
+  );
+  assert.deepEqual(rule.acceptanceGates[2], {
+    id: "c2-zc-readiness-corruption-fail-closed",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
+      test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+      fullTestName:
+        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+      proof: "direct persisted Rebuild evidence corruption blocks readiness",
+    },
+    source:
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
+    test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+    fullTestName:
+      "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+    requiresReceipt: true,
+  });
+  assert.deepEqual(rule.acceptanceGates[5], {
+    id: "c2-zc-production-verify-coverage",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+        "--",
+        "--exact",
+        "--nocapture",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+      test: "a_verify_run_records_its_report_under_a_completed_run",
+      fullTestName:
+        "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+      proof:
+        "production Verify persists and validates exact 13/13 check coverage",
+    },
+    source:
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+    test: "a_verify_run_records_its_report_under_a_completed_run",
+    fullTestName:
+      "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+    requiresReceipt: true,
+  });
+  assert.doesNotThrow(() => validateAcceptanceGateRegistration({ map }));
+
+  for (const mutate of [
+    (gates) => {
+      gates[0].argv.args[0] = "run";
+    },
+    (gates) => {
+      gates[0].contract.test = "other_test";
+    },
+    (gates) => {
+      gates[0].requiresReceipt = false;
+    },
+    (gates) => gates.reverse(),
+  ]) {
+    const mutatedMap = structuredClone(map);
+    const mutatedRule = mutatedMap.rules.find(
+      (candidate) => candidate.id === rule.id,
+    );
+    mutate(mutatedRule.acceptanceGates);
+    assert.throws(
+      () => validateAcceptanceGateRegistration({ map: mutatedMap }),
+      /acceptance|gate|command|test|receipt|order/i,
+    );
+  }
+
+  const mutatedRegistry = {
+    stages: {
+      "c2-zc-rust-acceptance-gate": {
+        commands: [
+          {
+            command: C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND.command,
+            args: ["scripts/changed-receipt-runner.mjs"],
+          },
+        ],
+      },
+    },
+  };
+  assert.throws(
+    () =>
+      validateAcceptanceGateRegistration({
+        map,
+        localCiRegistry: mutatedRegistry,
+      }),
+    /registry|runner|command|receipt/i,
+  );
 });

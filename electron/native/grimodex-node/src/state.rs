@@ -233,6 +233,7 @@ struct NarrativeMaintenanceFaultState {
 pub struct NarrativeMaintenanceCiSeamState {
     configured: AtomicBool,
     config: Mutex<Option<NarrativeMaintenanceCiConfig>>,
+    freshness_hold_binding: Mutex<Option<MaintenanceWorkspaceBinding>>,
     faults: Mutex<NarrativeMaintenanceFaultState>,
 }
 
@@ -241,6 +242,7 @@ impl Default for NarrativeMaintenanceCiSeamState {
         Self {
             configured: AtomicBool::new(false),
             config: Mutex::new(None),
+            freshness_hold_binding: Mutex::new(None),
             faults: Mutex::new(NarrativeMaintenanceFaultState::default()),
         }
     }
@@ -267,6 +269,40 @@ impl NarrativeMaintenanceCiSeamState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Bind the optional Freshness hold to the first live workspace authority
+    /// that consumes it. A one-shot CI seam must not silently follow a
+    /// workspace handoff or generation rollover with the same project ID.
+    pub(crate) fn validate_freshness_hold_binding(
+        &self,
+        binding: &MaintenanceWorkspaceBinding,
+    ) -> anyhow::Result<()> {
+        let Some(config) = self.config() else {
+            return Ok(());
+        };
+        if config.freshness_hold_project_id.is_none() {
+            return Ok(());
+        }
+        binding.validate()?;
+        let mut bound = self
+            .freshness_hold_binding
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match bound.as_ref() {
+            Some(expected) if expected != binding => anyhow::bail!(
+                "NEX_MAINTENANCE_CI_FRESHNESS_HOLD_BINDING_STALE: hold belongs to authority '{}' generation {}, not '{}' generation {}",
+                expected.authority_id,
+                expected.generation,
+                binding.authority_id,
+                binding.generation,
+            ),
+            Some(_) => Ok(()),
+            None => {
+                *bound = Some(binding.clone());
+                Ok(())
+            }
+        }
     }
 
     /// Reserve the configured fault for one exact live authority/work

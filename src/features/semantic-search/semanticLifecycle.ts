@@ -1,4 +1,7 @@
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import { IpcInvokeError } from "@/lib/tauri";
 import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
 import {
@@ -58,7 +61,7 @@ export function shouldOwnSemanticLifecycle(panelWindow: boolean): boolean {
 // another renderer merely because that panel is closing.
 if (shouldOwnSemanticLifecycle(isPanelWindow())) {
   registerQuiescenceProvider({
-    id: "semantic-background-index",
+    id: createQuiescenceProviderId("semantic-background-index"),
     stage: "scoped-mutations",
     flush: cancelSemanticBackgroundForLifecycle,
   });

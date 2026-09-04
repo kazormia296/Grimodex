@@ -154,6 +154,11 @@ pub struct SaveSceneBodyBundlePayload {
     /// Replayable ProseMirror steps for a headless scene-body mutation. When
     /// present this writer owns the canonical `doc.step` event atomically.
     pub timelapse_steps: Option<Vec<Value>>,
+    /// Renderer-recorder evidence that the complete body written by this save
+    /// is already represented by durable `doc.step` events. Missing or invalid
+    /// evidence falls back to an atomic full-body snapshot.
+    #[serde(default)]
+    pub timelapse_doc_step_coverage: Option<crate::timelapse::TimelapseDocStepCoverageProof>,
     pub include_sidecars: bool,
     pub base_version: Option<i64>,
     pub updated_at: String,
@@ -249,6 +254,10 @@ fn validate_payload(payload: &SaveSceneBodyBundlePayload) -> anyhow::Result<()> 
         anyhow::bail!("timelapseSteps must be a non-empty array of step objects");
     }
     anyhow::ensure!(
+        payload.timelapse_steps.is_none() || payload.timelapse_doc_step_coverage.is_none(),
+        "timelapseSteps and timelapseDocStepCoverage are mutually exclusive"
+    );
+    anyhow::ensure!(
         matches!(
             payload.origin,
             NarrativeChangeOrigin::Human | NarrativeChangeOrigin::AiApply
@@ -342,6 +351,7 @@ pub fn save_scene_body_bundle(
     let mut fingerprint_payload = payload.clone();
     fingerprint_payload.session_id.clear();
     fingerprint_payload.event_uid.clear();
+    fingerprint_payload.timelapse_doc_step_coverage = None;
     let request_hash = payload_fingerprint(IDEMPOTENCY_DOMAIN, &fingerprint_payload)?;
     let idempotency_request = IdempotencyRequest {
         domain: IDEMPOTENCY_DOMAIN,
@@ -410,6 +420,15 @@ pub fn save_scene_body_bundle(
                         payload.scene_id
                     )
                 })?;
+
+            // A renderer-supplied proof or replay-step list is not a sealed
+            // Native authority. Until the recorder can pass a capability that
+            // Native itself minted and validated, every body bundle takes the
+            // conservative full-snapshot path. This also covers arbitrary or
+            // mismatched `timelapseSteps`: they remain useful audit metadata,
+            // but can never suppress the snapshot that represents the body
+            // actually committed by this transaction.
+            let append_body_snapshot = true;
 
             if payload.include_sidecars {
                 conn.execute(
@@ -840,7 +859,7 @@ pub fn save_scene_body_bundle(
                     }),
                 ),
             };
-            append_canonical_and_narrative_change_in_tx(
+            let append = append_canonical_and_narrative_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
@@ -870,6 +889,17 @@ pub fn save_scene_body_bundle(
                     events: narrative_events,
                 },
             )?;
+            if append_body_snapshot {
+                crate::timelapse::append_timelapse_body_snapshots_in_tx(
+                    conn,
+                    &payload.project_id,
+                    append.canonical.tail_sequence,
+                    timestamp,
+                    &[crate::timelapse::TimelapseBodySnapshotTarget::scene(
+                        payload.scene_id.clone(),
+                    )],
+                )?;
+            }
 
             let response = SaveSceneBodyBundleResult {
                 placed_beat_preview: payload.placed_beat_preview.clone(),
@@ -990,6 +1020,7 @@ mod tests {
             session_id: "scene-test-session".into(),
             origin: NarrativeChangeOrigin::Human,
             timelapse_steps: None,
+            timelapse_doc_step_coverage: None,
             include_sidecars: true,
             base_version: None,
             updated_at: "2026-07-28T00:00:00.000Z".into(),
@@ -1283,6 +1314,37 @@ mod tests {
             Ok(())
         })
         .expect("inspect atomic headless event");
+    }
+
+    #[test]
+    fn renderer_replay_steps_cannot_suppress_the_authoritative_body_snapshot() {
+        let db = test_db();
+        let mut input = payload();
+        input.timelapse_steps = Some(vec![serde_json::json!({
+            "stepType": "replace",
+            "from": 999,
+            "to": 999,
+            "slice": { "content": [] }
+        })]);
+        input.content_json =
+            "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"native body\"}]}]}"
+                .to_string();
+
+        save_scene_body_bundle(&db, input).expect("save mismatched replay steps");
+
+        db.with_conn(|conn| {
+            let (count, payload): (i64, String) = conn.query_row(
+                "SELECT COUNT(*), payload
+                   FROM state_snapshots
+                  WHERE project_id = 'p1' AND entity_id = 's1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(count, 1, "mismatched steps must still retain a snapshot");
+            assert!(payload.contains("native body"));
+            Ok(())
+        })
+        .expect("inspect authoritative body snapshot");
     }
 
     #[test]

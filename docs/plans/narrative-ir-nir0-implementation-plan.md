@@ -884,7 +884,11 @@ D1 owns:
 
 ### 10.3 D2 — shadow runtime integration
 
-Starts after C2-ZC merges.
+D2 shadow integration is already implemented and verified by the focused
+evidence on the current tree. That evidence does not activate D2 authority or
+complete the full V2 cutover. Those authority changes start only after C2-ZC
+final acceptance is recorded; this final acceptance candidate is accepted if
+and only if its complete gate receipt exists.
 
 D2 owns V2 shadow evaluation in:
 
@@ -893,7 +897,11 @@ D2 owns V2 shadow evaluation in:
 - incremental Freshness runtime,
 - restore/rebuild verification.
 
-V1 remains canonical unless a later explicit cutover changes the ratified V1/V2 priority.
+The C2-ZC Generic Consumer Freshness path is represented by a final acceptance
+candidate and is accepted if and only if the complete C2-ZC gate receipt exists.
+Within this D2 shadow lane, V1 evaluation remains the compatibility baseline
+until that acceptance condition and a separate V1/V2 priority decision change
+the ratified D2 contract.
 
 ---
 
@@ -1217,5 +1225,12 @@ NIR0-CERT
 ```
 
 NIR0-CERT has now closed the NIR-0 milestone against PR #559's tested and
-integrated tree. C2-ZC retains ownership of the next canonical-authority
-boundary; future NIR-1 work must not reopen or silently widen this certificate.
+integrated tree. The post-certification C2-ZC closeout records a final
+acceptance candidate: the standalone real Electron journey and pre-closeout
+candidate-bound Quick/verify passed for implementation HEAD
+`3010e13e4a91da99eae16cb9f8bd773177c2ac58` against
+`78732ff5635da220396bd606010dd53f4d0350a9`. The exact documentation candidate
+is accepted if and only if its clean Quick/verify, Full from stage 1, Full
+receipt verification, and the Sol final are recorded. Until that receipt
+exists, future NIR-1 work must not reopen or silently widen this certificate
+and cannot start.

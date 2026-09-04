@@ -18,11 +18,44 @@ export interface NarrativeFreshnessBackendLike {
 
 export interface NarrativeFreshnessScheduler {
   start(): void;
+  /** Main-only synchronous state recheck for the CI quiescence writer. */
+  getQuiescenceState?(): {
+    mutationRevision: number;
+    inFlight: boolean;
+    hasMore: boolean;
+    heldProjectId: string | null;
+    cutoverNotReady: boolean;
+    wakePending: boolean;
+    timerScheduled: boolean;
+    nextCycleGuardStateDigest: string | null;
+    quiescenceState: unknown;
+  };
   dispose(): void;
 }
 
 interface SchedulerOptions {
   warn?: (...args: unknown[]) => void;
+  /** Notify the main-only maintenance owner of an expected C2-ZC gate miss. */
+  onCutoverNotReady?: () => void | Promise<void>;
+  /**
+   * Publish one completed cycle observation to the main-only CI quiescence
+   * owner. The callback is deliberately not part of preload or renderer IPC.
+   */
+  onCycleCompleted?: (observation: {
+    cycleGeneration: number;
+    cycleStartedAtMs: number;
+    observedAtMs: number;
+    inFlight: boolean;
+    hasMore: boolean;
+    noWrite: boolean;
+    heldProjectId: string | null;
+    cutoverNotReady: boolean;
+    /** No wake callback is queued while this completion observation is emitted. */
+    wakePending: boolean;
+    timerScheduled: boolean;
+    nextCycleGuardStateDigest: string | null;
+    quiescenceState: unknown;
+  }) => void | Promise<void>;
 }
 
 function batchHasMore(raw: string): boolean {
@@ -33,6 +66,20 @@ function batchHasMore(raw: string): boolean {
     "hasMore" in value &&
     value.hasMore === true
   );
+}
+
+function cutoverNotReady(raw: string): boolean {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "cutoverNotReady" in value &&
+      value.cutoverNotReady === true
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -57,6 +104,42 @@ function shadowDiagnostics(raw: string): string[] {
   }
 }
 
+function freshnessCycleObservation(raw: string): {
+  hasMore: boolean;
+  noWrite: boolean;
+  heldProjectId: string | null;
+  cutoverNotReady: boolean;
+  quiescenceState: unknown;
+} {
+  const value = JSON.parse(raw) as unknown;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("native freshness cycle returned invalid JSON object");
+  }
+  const record = value as Record<string, unknown>;
+  const heldProjectId = record.heldProjectId ?? null;
+  const cutoverNotReady = record.cutoverNotReady ?? false;
+  if (
+    heldProjectId !== null &&
+    (typeof heldProjectId !== "string" ||
+      heldProjectId.trim() !== heldProjectId)
+  ) {
+    throw new Error("native freshness cycle held project is invalid");
+  }
+  if (
+    typeof cutoverNotReady !== "boolean" ||
+    (heldProjectId !== null && cutoverNotReady !== true)
+  ) {
+    throw new Error("native freshness cycle hold/cutover result is invalid");
+  }
+  return {
+    hasMore: record.hasMore === true,
+    noWrite: record.noWrite === true,
+    heldProjectId: heldProjectId as string | null,
+    cutoverNotReady,
+    quiescenceState: record.quiescenceState,
+  };
+}
+
 export function createNarrativeFreshnessScheduler(
   backend: NarrativeFreshnessBackendLike | null,
   options: SchedulerOptions = {},
@@ -66,9 +149,20 @@ export function createNarrativeFreshnessScheduler(
   let started = false;
   let disposed = false;
   let inFlight = false;
+  let cycleGeneration = 0;
+  let mutationRevision = 0;
+  let lastCompletedObservation: ReturnType<
+    typeof freshnessCycleObservation
+  > | null = null;
+  let lastNextCycleGuardStateDigest: string | null = null;
+
+  const noteMutation = (): void => {
+    mutationRevision += 1;
+  };
 
   const clearTimer = (): void => {
     if (timer === null) return;
+    noteMutation();
     clearTimeout(timer);
     timer = null;
   };
@@ -77,7 +171,9 @@ export function createNarrativeFreshnessScheduler(
     if (disposed) return;
     // start()やcycle完了が同じtickに重なってもpending wakeupは1件に畳む。
     clearTimer();
+    noteMutation();
     timer = setTimeout(() => {
+      noteMutation();
       timer = null;
       void runCycle();
     }, delayMs);
@@ -89,14 +185,42 @@ export function createNarrativeFreshnessScheduler(
     if (typeof method !== "function") return;
 
     inFlight = true;
+    noteMutation();
+    // A previous idle result cannot certify the new cycle while this native
+    // call is running or may schedule a retry. The runtime recheck therefore
+    // observes no freshness state until this cycle publishes a new result.
+    lastCompletedObservation = null;
+    lastNextCycleGuardStateDigest = null;
     let nextDelayMs = IDLE_POLL_INTERVAL_MS;
+    let completedObservation: ReturnType<
+      typeof freshnessCycleObservation
+    > | null = null;
+    let cycleStartedAtMs = 0;
     try {
       // napi class methodはbindを失うとselfが壊れるためbackend経由で呼ぶ。
+      cycleStartedAtMs = Date.now();
       const result = await method.call(backend);
       if (disposed) return;
       if (result !== null) {
+        completedObservation = freshnessCycleObservation(result);
         for (const diagnostic of shadowDiagnostics(result)) {
           warn("[narrative-freshness] D2 shadow diagnostic:", diagnostic);
+        }
+        if (cutoverNotReady(result)) {
+          try {
+            const followup = options.onCutoverNotReady?.();
+            void Promise.resolve(followup).catch((callbackError: unknown) => {
+              warn(
+                "[narrative-freshness] C2-ZC activation follow-up failed:",
+                callbackError,
+              );
+            });
+          } catch (callbackError) {
+            warn(
+              "[narrative-freshness] C2-ZC activation follow-up failed:",
+              callbackError,
+            );
+          }
         }
         if (batchHasMore(result)) {
           nextDelayMs = BACKLOG_DELAY_MS;
@@ -109,8 +233,60 @@ export function createNarrativeFreshnessScheduler(
       }
     } finally {
       inFlight = false;
+      noteMutation();
       // setIntervalを使わず、必ず前cycle完了後に次の1件だけを予約する。
       if (!disposed) schedule(nextDelayMs);
+      if (!disposed && completedObservation !== null) {
+        cycleGeneration += 1;
+        noteMutation();
+        const timerScheduled = timer !== null;
+        let stateDigest: string | null = null;
+        if (
+          completedObservation.quiescenceState !== null &&
+          typeof completedObservation.quiescenceState === "object" &&
+          !Array.isArray(completedObservation.quiescenceState)
+        ) {
+          const candidate = (
+            completedObservation.quiescenceState as Record<string, unknown>
+          ).stateDigest;
+          if (typeof candidate === "string") stateDigest = candidate;
+        }
+        const nextCycleGuardStateDigest =
+          timerScheduled &&
+          completedObservation.noWrite &&
+          !completedObservation.hasMore
+            ? stateDigest
+            : null;
+        lastCompletedObservation = completedObservation;
+        lastNextCycleGuardStateDigest = nextCycleGuardStateDigest;
+        try {
+          const callback = options.onCycleCompleted?.({
+            cycleGeneration,
+            cycleStartedAtMs,
+            observedAtMs: Date.now(),
+            inFlight: false,
+            hasMore: completedObservation.hasMore,
+            noWrite: completedObservation.noWrite,
+            heldProjectId: completedObservation.heldProjectId,
+            cutoverNotReady: completedObservation.cutoverNotReady,
+            wakePending: false,
+            timerScheduled,
+            nextCycleGuardStateDigest,
+            quiescenceState: completedObservation.quiescenceState,
+          });
+          void Promise.resolve(callback).catch((callbackError: unknown) => {
+            warn(
+              "[narrative-freshness] quiescence observation callback failed:",
+              callbackError,
+            );
+          });
+        } catch (callbackError) {
+          warn(
+            "[narrative-freshness] quiescence observation callback failed:",
+            callbackError,
+          );
+        }
+      }
     }
   };
 
@@ -118,6 +294,7 @@ export function createNarrativeFreshnessScheduler(
     start(): void {
       if (started || disposed) return;
       started = true;
+      noteMutation();
       if (typeof backend?.runNarrativeFreshnessCycle !== "function") {
         warn(
           "[narrative-freshness] background runtime disabled: native method unavailable",
@@ -127,9 +304,25 @@ export function createNarrativeFreshnessScheduler(
       schedule(INITIAL_DELAY_MS);
     },
 
+    getQuiescenceState() {
+      return {
+        mutationRevision,
+        inFlight,
+        hasMore: lastCompletedObservation?.hasMore === true,
+        heldProjectId: lastCompletedObservation?.heldProjectId ?? null,
+        cutoverNotReady: lastCompletedObservation?.cutoverNotReady === true,
+        wakePending: false,
+        timerScheduled: timer !== null,
+        nextCycleGuardStateDigest:
+          timer !== null ? lastNextCycleGuardStateDigest : null,
+        quiescenceState: lastCompletedObservation?.quiescenceState ?? null,
+      };
+    },
+
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      noteMutation();
       clearTimer();
       // in-flight native callは強制取消しない。完了後の再scheduleだけを抑止する。
     },

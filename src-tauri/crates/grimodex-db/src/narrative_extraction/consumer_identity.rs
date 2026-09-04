@@ -62,6 +62,16 @@ pub(crate) const PROPOSAL_REVISION_CONSUMER_KIND: &str = ConsumerKind::ProposalR
 /// carried separately in `narrative_dependency_edges.owning_run_id`.
 pub(crate) const APPLICATION_CONSUMER_KIND: &str = ConsumerKind::Application.as_str();
 
+/// The Semantic Index owns its metadata/D1/V1 surface and is not a Generic
+/// Freshness Consumer. Keep the exact reserved literal here so every
+/// production writer applies the same narrow guard without changing the
+/// compatibility behavior for other unknown or forward-version kinds.
+pub(crate) const RESERVED_SEMANTIC_INDEX_CONSUMER_KIND: &str = "semantic-index";
+
+pub(crate) fn is_reserved_semantic_index_consumer_kind(consumer_kind: &str) -> bool {
+    consumer_kind == RESERVED_SEMANTIC_INDEX_CONSUMER_KIND
+}
+
 /// The Consumer kinds this crate declares and reads today.
 ///
 /// A variant here is a promise backed by code: something writes it, and

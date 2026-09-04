@@ -72,9 +72,9 @@
         "src/features/settings/api.ts:drizzle-insert:appSettings": 1,
         "src/features/settings/api.ts:drizzle-insert:projectSettings": 1,
         "src/features/snippets/api.ts:drizzle-update:snippets": 1,
-        "src/features/timelapse/snapshots.ts:drizzle-insert:stateSnapshots": 1,
-        "src/features/timelapse/toggle.ts:drizzle-delete:changeEvents": 1,
-        "src/features/timelapse/toggle.ts:drizzle-delete:stateSnapshots": 1,
+        "src/features/timelapse/snapshots.ts:drizzle-insert:stateSnapshots": 0,
+        "src/features/timelapse/toggle.ts:drizzle-delete:changeEvents": 0,
+        "src/features/timelapse/toggle.ts:drizzle-delete:stateSnapshots": 0,
         "src/features/tree/codexQuickPinApi.ts:drizzle-delete:codexQuickPins": 1,
         "src/features/tree/codexQuickPinApi.ts:drizzle-insert:codexQuickPins": 1
       }

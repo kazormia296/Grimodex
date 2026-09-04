@@ -20,6 +20,7 @@ import { assignNodePlacements } from "./placement";
 import type { AiTreePlan, ApplyContext, ApplyResult } from "./types";
 import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
 import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
+import { runTimelapseMutation } from "@/features/timelapse/bodyWriteMode";
 
 export class AiTreePlanError extends Error {
   constructor(public readonly errors: ValidationError[]) {
@@ -267,190 +268,195 @@ async function applyAiTreePlanWithAuthority(
     createPendingCreateRequestRegistry<Record<string, unknown>>();
 
   const runForwardBatch = async () => {
-    const redo = originalMaintenanceTransactionId !== null;
-    const updates = updateTemplates.map((update) => {
-      const baseVersion = currentVersions.get(update.id);
-      if (baseVersion === undefined) {
-        throw new Error(`AI tree plan OCC token is missing for ${update.id}`);
+    return runTimelapseMutation(ctx.projectId, async () => {
+      const redo = originalMaintenanceTransactionId !== null;
+      const updates = updateTemplates.map((update) => {
+        const baseVersion = currentVersions.get(update.id);
+        if (baseVersion === undefined) {
+          throw new Error(`AI tree plan OCC token is missing for ${update.id}`);
+        }
+        return { ...update, baseVersion };
+      });
+      const redoRequest = redo
+        ? redoRequests.acquire("redo", "redo", (requestId) => ({
+            requestId,
+            projectId: ctx.projectId,
+            sessionId: getRecorderSessionId(),
+            surface: "in-app-agent",
+            kind: plan.kind,
+            updatedAt: new Date().toISOString(),
+            model: ctx.model,
+            traceId: ctx.traceId,
+            creates,
+            updates,
+            redo: true,
+            originalTransactionId: originalMaintenanceTransactionId,
+            undoJournalId: originalUndoJournalId,
+          }))
+        : null;
+      const payload = redoRequest?.payload ?? {
+        requestId: initialRequest.payload.requestId,
+        projectId: ctx.projectId,
+        sessionId: getRecorderSessionId(),
+        surface: "in-app-agent",
+        kind: plan.kind,
+        updatedAt: initialRequest.payload.updatedAt,
+        model: ctx.model,
+        traceId: ctx.traceId,
+        creates,
+        updates,
+        ops: plan.ops,
+        redo: false,
+        originalTransactionId: null,
+        undoJournalId: null,
+      };
+      const requestId =
+        typeof payload.requestId === "string"
+          ? payload.requestId
+          : initialRequest.payload.requestId;
+      const authorityContext = redo
+        ? createCanonicalWriteContext(
+            "redo",
+            {
+              originalTransactionId: originalMaintenanceTransactionId!,
+              undoJournalId: originalUndoJournalId!,
+            },
+            requestId,
+          )
+        : createCanonicalWriteContext("ai-apply", undefined, requestId, {
+            authorityRoute: "interactive-agent-command",
+            provenance: {
+              requestId,
+              traceId: ctx.traceId ?? requestId,
+            },
+            ...(ctx.agentAuthorityCapability
+              ? { agentAuthorityCapability: ctx.agentAuthorityCapability }
+              : {}),
+            ...(ctx.chatMessageId ? { chatMessageId: ctx.chatMessageId } : {}),
+            ...(ctx.toolCallId ? { toolCallId: ctx.toolCallId } : {}),
+            ...(ctx.executionId ? { executionId: ctx.executionId } : {}),
+            ...(ctx.mainOwnedProvenanceId
+              ? { mainOwnedProvenanceId: ctx.mainOwnedProvenanceId }
+              : {}),
+          });
+      Object.assign(payload, {
+        eventUid: authorityContext.eventUid,
+        authorityRoute: authorityContext.authorityRoute,
+        caller: authorityContext.caller,
+        controls: authorityContext.controls,
+        provenance: authorityContext.provenance,
+        ...(authorityContext.agentAuthorityCapability
+          ? {
+              agentAuthorityCapability:
+                authorityContext.agentAuthorityCapability,
+            }
+          : {}),
+        ...(authorityContext.chatMessageId
+          ? { chatMessageId: authorityContext.chatMessageId }
+          : {}),
+        ...(authorityContext.toolCallId
+          ? { toolCallId: authorityContext.toolCallId }
+          : {}),
+        ...(authorityContext.executionId
+          ? { executionId: authorityContext.executionId }
+          : {}),
+        ...(authorityContext.mainOwnedProvenanceId
+          ? { mainOwnedProvenanceId: authorityContext.mainOwnedProvenanceId }
+          : {}),
+        writesAuthorityProtectedField:
+          authorityContext.writesAuthorityProtectedField,
+      });
+      let nativeResponseReceived = false;
+      try {
+        const rawReceipt = await invoke("ai_tree_plan_apply", { payload });
+        nativeResponseReceived = true;
+        const receipt = readNativeTreePlanReceipt(rawReceipt);
+        if (!redo) {
+          originalMaintenanceTransactionId = receipt.maintenanceTransactionId;
+          originalUndoJournalId = receipt.undoJournalId;
+          pendingInitialTreePlanAttempts.release(initialRequest);
+        } else if (redoRequest) {
+          redoRequests.release(redoRequest);
+        }
+        currentVersions = new Map(
+          receipt.versions.map((entry) => [entry.id, entry.version]),
+        );
+      } catch (error) {
+        if (!nativeResponseReceived && isDefiniteIpcFailure(error)) {
+          if (redoRequest) {
+            redoRequests.release(redoRequest);
+          } else {
+            pendingInitialTreePlanAttempts.release(initialRequest);
+          }
+        }
+        throw error;
       }
-      return { ...update, baseVersion };
+      await resyncTree();
     });
-    const redoRequest = redo
-      ? redoRequests.acquire("redo", "redo", (requestId) => ({
-          requestId,
-          projectId: ctx.projectId,
-          sessionId: getRecorderSessionId(),
-          surface: "in-app-agent",
-          kind: plan.kind,
-          updatedAt: new Date().toISOString(),
-          model: ctx.model,
-          traceId: ctx.traceId,
-          creates,
-          updates,
-          redo: true,
-          originalTransactionId: originalMaintenanceTransactionId,
-          undoJournalId: originalUndoJournalId,
-        }))
-      : null;
-    const payload = redoRequest?.payload ?? {
-      requestId: initialRequest.payload.requestId,
-      projectId: ctx.projectId,
-      sessionId: getRecorderSessionId(),
-      surface: "in-app-agent",
-      kind: plan.kind,
-      updatedAt: initialRequest.payload.updatedAt,
-      model: ctx.model,
-      traceId: ctx.traceId,
-      creates,
-      updates,
-      ops: plan.ops,
-      redo: false,
-      originalTransactionId: null,
-      undoJournalId: null,
-    };
-    const requestId =
-      typeof payload.requestId === "string"
-        ? payload.requestId
-        : initialRequest.payload.requestId;
-    const authorityContext = redo
-      ? createCanonicalWriteContext(
-          "redo",
+  };
+
+  const runUndoBatch = async () => {
+    return runTimelapseMutation(ctx.projectId, async () => {
+      if (!originalMaintenanceTransactionId || !originalUndoJournalId) {
+        throw new Error("AI tree plan Native lineage is unavailable");
+      }
+      const expectedVersions = [...createdIds, ...affected].map((id) => {
+        const version = currentVersions.get(id);
+        if (version === undefined) {
+          throw new Error(`AI tree plan OCC token is missing for ${id}`);
+        }
+        return { id, version };
+      });
+      const undoRequest = undoRequests.acquire("undo", "undo", (requestId) => {
+        const authorityContext = createCanonicalWriteContext(
+          "undo",
           {
             originalTransactionId: originalMaintenanceTransactionId!,
             undoJournalId: originalUndoJournalId!,
           },
           requestId,
-        )
-      : createCanonicalWriteContext("ai-apply", undefined, requestId, {
-          authorityRoute: "interactive-agent-command",
-          provenance: {
-            requestId,
-            traceId: ctx.traceId ?? requestId,
-          },
-          ...(ctx.agentAuthorityCapability
-            ? { agentAuthorityCapability: ctx.agentAuthorityCapability }
-            : {}),
-          ...(ctx.chatMessageId ? { chatMessageId: ctx.chatMessageId } : {}),
-          ...(ctx.toolCallId ? { toolCallId: ctx.toolCallId } : {}),
-          ...(ctx.executionId ? { executionId: ctx.executionId } : {}),
-          ...(ctx.mainOwnedProvenanceId
-            ? { mainOwnedProvenanceId: ctx.mainOwnedProvenanceId }
-            : {}),
-        });
-    Object.assign(payload, {
-      eventUid: authorityContext.eventUid,
-      authorityRoute: authorityContext.authorityRoute,
-      caller: authorityContext.caller,
-      controls: authorityContext.controls,
-      provenance: authorityContext.provenance,
-      ...(authorityContext.agentAuthorityCapability
-        ? {
-            agentAuthorityCapability: authorityContext.agentAuthorityCapability,
-          }
-        : {}),
-      ...(authorityContext.chatMessageId
-        ? { chatMessageId: authorityContext.chatMessageId }
-        : {}),
-      ...(authorityContext.toolCallId
-        ? { toolCallId: authorityContext.toolCallId }
-        : {}),
-      ...(authorityContext.executionId
-        ? { executionId: authorityContext.executionId }
-        : {}),
-      ...(authorityContext.mainOwnedProvenanceId
-        ? { mainOwnedProvenanceId: authorityContext.mainOwnedProvenanceId }
-        : {}),
-      writesAuthorityProtectedField:
-        authorityContext.writesAuthorityProtectedField,
-    });
-    let nativeResponseReceived = false;
-    try {
-      const rawReceipt = await invoke("ai_tree_plan_apply", { payload });
-      nativeResponseReceived = true;
-      const receipt = readNativeTreePlanReceipt(rawReceipt);
-      if (!redo) {
-        originalMaintenanceTransactionId = receipt.maintenanceTransactionId;
-        originalUndoJournalId = receipt.undoJournalId;
-        pendingInitialTreePlanAttempts.release(initialRequest);
-      } else if (redoRequest) {
-        redoRequests.release(redoRequest);
-      }
-      currentVersions = new Map(
-        receipt.versions.map((entry) => [entry.id, entry.version]),
-      );
-    } catch (error) {
-      if (!nativeResponseReceived && isDefiniteIpcFailure(error)) {
-        if (redoRequest) {
-          redoRequests.release(redoRequest);
-        } else {
-          pendingInitialTreePlanAttempts.release(initialRequest);
-        }
-      }
-      throw error;
-    }
-    await resyncTree();
-  };
-
-  const runUndoBatch = async () => {
-    if (!originalMaintenanceTransactionId || !originalUndoJournalId) {
-      throw new Error("AI tree plan Native lineage is unavailable");
-    }
-    const expectedVersions = [...createdIds, ...affected].map((id) => {
-      const version = currentVersions.get(id);
-      if (version === undefined) {
-        throw new Error(`AI tree plan OCC token is missing for ${id}`);
-      }
-      return { id, version };
-    });
-    const undoRequest = undoRequests.acquire("undo", "undo", (requestId) => {
-      const authorityContext = createCanonicalWriteContext(
-        "undo",
-        {
-          originalTransactionId: originalMaintenanceTransactionId!,
-          undoJournalId: originalUndoJournalId!,
-        },
-        requestId,
-      );
-      return {
-        requestId,
-        eventUid: authorityContext.eventUid,
-        projectId: ctx.projectId,
-        sessionId: getRecorderSessionId(),
-        updatedAt: new Date().toISOString(),
-        originalTransactionId: originalMaintenanceTransactionId,
-        undoJournalId: originalUndoJournalId,
-        authorityRoute: authorityContext.authorityRoute,
-        caller: authorityContext.caller,
-        controls: authorityContext.controls,
-        provenance: authorityContext.provenance,
-        writesAuthorityProtectedField:
-          authorityContext.writesAuthorityProtectedField,
-        expectedVersions,
-      };
-    });
-    let nativeResponseReceived = false;
-    try {
-      const rawReceipt = await invoke("ai_tree_plan_undo", {
-        payload: undoRequest.payload,
+        );
+        return {
+          requestId,
+          eventUid: authorityContext.eventUid,
+          projectId: ctx.projectId,
+          sessionId: getRecorderSessionId(),
+          updatedAt: new Date().toISOString(),
+          originalTransactionId: originalMaintenanceTransactionId,
+          undoJournalId: originalUndoJournalId,
+          authorityRoute: authorityContext.authorityRoute,
+          caller: authorityContext.caller,
+          controls: authorityContext.controls,
+          provenance: authorityContext.provenance,
+          writesAuthorityProtectedField:
+            authorityContext.writesAuthorityProtectedField,
+          expectedVersions,
+        };
       });
-      nativeResponseReceived = true;
-      const receipt = readNativeTreePlanReceipt(rawReceipt);
-      undoRequests.release(undoRequest);
-      currentVersions = new Map(
-        receipt.versions.map((entry) => [entry.id, entry.version]),
-      );
-    } catch (error) {
-      if (!nativeResponseReceived && isDefiniteIpcFailure(error)) {
+      let nativeResponseReceived = false;
+      try {
+        const rawReceipt = await invoke("ai_tree_plan_undo", {
+          payload: undoRequest.payload,
+        });
+        nativeResponseReceived = true;
+        const receipt = readNativeTreePlanReceipt(rawReceipt);
         undoRequests.release(undoRequest);
+        currentVersions = new Map(
+          receipt.versions.map((entry) => [entry.id, entry.version]),
+        );
+      } catch (error) {
+        if (!nativeResponseReceived && isDefiniteIpcFailure(error)) {
+          undoRequests.release(undoRequest);
+        }
+        throw error;
       }
-      throw error;
-    }
-    await resyncTree();
-    const tab = useTabStore.getState();
-    for (const id of createdIds) {
-      tab.closeTab(id);
-      tab.closeSecondaryTab(id);
-    }
+      await resyncTree();
+      const tab = useTabStore.getState();
+      for (const id of createdIds) {
+        tab.closeTab(id);
+        tab.closeSecondaryTab(id);
+      }
+    });
   };
 
   // ── forward 適用 ─────────────────────────────────────────────────

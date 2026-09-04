@@ -76,6 +76,23 @@ const WRITER_TO_MODULES = {
     // the Change Feed projection that moves target_state.
     "src-tauri/crates/grimodex-db/src/narrative_extraction/application_contributions.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/contribution_target_state.rs",
+    // C2-ZC's authority, finding, and repair rows are emitted by the Native
+    // maintenance pipeline. Keep every runtime writer explicit so this policy
+    // cannot be weakened by a generic SQL caller in a neighboring module.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zb_application_rekey.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/dependency_edges.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/finding_observation.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/publish_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repair.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/semantic_epoch.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+    // Timelapse's canonical append-only event log and snapshot anchors are
+    // shared Native-owned state. The low-level append helpers are called by
+    // typed domain writers, while the timelapse module owns snapshot writes.
+    "src-tauri/crates/grimodex-db/src/change_events.rs",
+    "src-tauri/crates/grimodex-db/src/timelapse.rs",
+    "src-tauri/crates/grimodex-core/src/change_events.rs",
   ],
   "narrative.revision-envelope": [
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
@@ -85,6 +102,7 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/field_authority.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
   ],
   "narrative.field-authority": [
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
@@ -94,6 +112,7 @@ const WRITER_TO_MODULES = {
   "narrative.maintenance-feed": [
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/change_feed.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
     // Gate C2 Lane I: SCHEMA_VERSION 23 reservation columns on the same
     // narrative_change_cursors table, split into its own module for
     // clarity — still the narrative.maintenance-feed writer authority.
@@ -288,7 +307,7 @@ const WRITER_TO_MODULES = {
 };
 
 const DML_RE =
-  /\b(INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM)\s+["`]?([a-z_][a-z0-9_]*)["`]?/gi;
+  /\b(INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE\s+|DELETE\s+FROM)\s+["`]?([a-z_][a-z0-9_]*)["`]?/gi;
 
 function shouldSkip(filePath) {
   const normalized = filePath.replaceAll("\\", "/");

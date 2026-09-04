@@ -12,9 +12,26 @@ import { changeEvents } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
 import { debugLog } from "@/lib/debugLog";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
+import { canCaptureTimelapseChangeEvent } from "@/application/lifecycle/quiescenceLease";
+import {
+  acquireExclusiveDocumentMutationLease,
+  type ExclusiveDocumentMutationLease,
+} from "@/features/editor/document/documentSaveCoordinator";
+import {
+  encodeDocumentKey,
+  type DocumentKey,
+} from "@/features/editor/document/documentKey";
 import type { VerifyResult } from "./hashChain";
+import {
+  abortTimelapseGenesisBarriers,
+  awaitTimelapseGenesisBarrier,
+  getTimelapseGenesisCaptureTargetProjectId,
+} from "./genesisBarrier";
 
 const FLUSH_DEBOUNCE_MS = 100;
 
@@ -96,17 +113,32 @@ export interface RecordEventInput {
   sceneId?: string | null;
   entityType?: string | null;
   entityId?: string | null;
+  /** Exact persistence kind for a scene body (database vs external file). */
+  documentStorage?: "database" | "file";
   /** Original domain mutation time when a durable retry records it later. */
   timestamp?: number;
 }
 
 type PendingEventStatus = "reserved" | "committed";
 
-interface PendingEvent extends Omit<Required<RecordEventInput>, "timestamp"> {
+interface PendingEvent {
   eventUid: string;
+  domain: string;
+  opType: string;
+  projectId: string;
+  payload: unknown;
+  sceneId: string | null;
+  entityType: string | null;
+  entityId: string | null;
   timestamp: number;
   status: PendingEventStatus;
   reservationId: string | null;
+  /** Non-null only for a renderer coverage sentinel in the global queue. */
+  coverageClaimId: string | null;
+  /** A materialized sentinel stays in memory until commit/cancel releases it. */
+  coverageDurable: boolean;
+  /** Scope key for reserved doc.step accounting. */
+  documentStateKey: string | null;
 }
 
 export interface ChangeEventReservation {
@@ -117,7 +149,7 @@ export interface ChangeEventReservation {
 interface TimelapseAppendEvent {
   eventUid: string;
   sceneId: string | null;
-  domain: Domain;
+  domain: string;
   opType: string;
   entityType: string | null;
   entityId: string | null;
@@ -128,6 +160,115 @@ interface TimelapseAppendEvent {
 interface TimelapseAppendResult {
   tailSequence: number;
 }
+
+declare const timelapseDocumentRefBrand: unique symbol;
+declare const timelapseAcceptedEnqueueBrand: unique symbol;
+
+/** Opaque canonical-document authority minted only by an accepted doc.step. */
+export interface TimelapseDocumentRef {
+  readonly [timelapseDocumentRefBrand]: never;
+}
+
+/**
+ * Structural identity of a canonical document. Unlike TimelapseDocumentRef,
+ * this is safe to construct for a body whose capture failed: replacement
+ * fences must still be able to target that body without minting a capability.
+ */
+export interface TimelapseDocumentIdentity {
+  readonly projectId: string;
+  readonly domain: Extract<Domain, "editor" | "codex" | "snippet">;
+  readonly entityType: "scene" | "codex_entry" | "snippet";
+  readonly entityId: string;
+  /** Scene storage is part of the identity; non-scene documents omit it. */
+  readonly storage?: "database" | "file";
+}
+
+/** Opaque receipt minted only after the event was actually pushed to queue. */
+export interface TimelapseAcceptedEnqueueReceipt {
+  readonly [timelapseAcceptedEnqueueBrand]: never;
+  readonly document?: TimelapseDocumentRef;
+}
+
+export interface TimelapseDocStepCaptureReceipt extends TimelapseAcceptedEnqueueReceipt {
+  readonly document: TimelapseDocumentRef;
+}
+
+export interface TimelapseCoverageProof {
+  readonly eventUid: string;
+  readonly sessionId: string;
+  readonly contentDigest: string;
+}
+
+export interface TimelapseDocStepCoverageClaim {
+  materialize: (content: string) => Promise<TimelapseCoverageProof>;
+  commit: () => void;
+  cancel: () => void;
+}
+
+export interface TimelapseReplacementFence {
+  commit: () => void;
+  release: () => void;
+}
+
+interface TimelapseDocumentScope {
+  readonly projectId: string;
+  readonly domain: Extract<Domain, "editor" | "codex" | "snippet">;
+  readonly entityType: "scene" | "codex_entry" | "snippet";
+  readonly entityId: string;
+  readonly storage: "database" | "file";
+}
+
+interface TimelapseDocumentCoverageState {
+  readonly key: string;
+  readonly scope: TimelapseDocumentScope;
+  ref: TimelapseDocumentRef;
+  sessionId: string;
+  acceptedPrefix: number;
+  committedPrefix: number;
+  durablePrefix: number;
+  broken: boolean;
+  activeClaim: ActiveCoverageClaim | null;
+}
+
+interface ActiveCoverageClaim {
+  readonly coverageState: TimelapseDocumentCoverageState;
+  readonly eventUid: string;
+  readonly reservationId: string;
+  readonly endPrefix: number;
+  readonly sessionId: string;
+  readonly queueEvent: PendingEvent;
+  readonly previousClaims: readonly ActiveCoverageClaim[];
+  readonly settledPromise: Promise<void>;
+  readonly resolveSettled: () => void;
+  materializePromise: Promise<TimelapseCoverageProof> | null;
+  materialized: boolean;
+  durable: boolean;
+  settled: boolean;
+}
+
+interface ActiveReplacementFence {
+  readonly projectId: string;
+  readonly documentKey: string | null;
+  readonly cutoffs: ReadonlyMap<TimelapseDocumentCoverageState, number>;
+  readonly coordinatorLease: ExclusiveDocumentMutationLease | null;
+  violated: boolean;
+  committed: boolean;
+  released: boolean;
+}
+
+const TIMELAPSE_INTERNAL_DOMAIN = "timelapse-internal";
+const TIMELAPSE_COVERAGE_OP = "doc.step.coverage";
+const documentCoverageStates = new Map<
+  string,
+  TimelapseDocumentCoverageState
+>();
+const documentRefScopes = new WeakMap<
+  TimelapseDocumentRef,
+  TimelapseDocumentCoverageState
+>();
+const activeReplacementFences = new Set<ActiveReplacementFence>();
+const activeCoverageClaims: ActiveCoverageClaim[] = [];
+const replacementFenceListeners = new Set<() => void>();
 
 /**
  * Workspace 切替まわりの recorder 状態機械 (M3 review r5)。
@@ -157,6 +298,12 @@ interface RecorderState {
   sessionId: string;
   /** Last allocated sequence for the current project (monotone). */
   lastSequence: number;
+  /**
+   * Generation of the in-memory queue authority. Lifecycle teardown advances
+   * it before clearing the queue so an older in-flight Native append cannot
+   * reinsert its failed batch into a new workspace/session.
+   */
+  queueGeneration: number;
   queue: PendingEvent[];
   flushTimer: ReturnType<typeof setTimeout> | null;
   flushPromise: Promise<void> | null;
@@ -207,6 +354,7 @@ const state: RecorderState = {
   projectId: null,
   sessionId: newSessionId(),
   lastSequence: 0,
+  queueGeneration: 0,
   queue: [],
   flushTimer: null,
   flushPromise: null,
@@ -222,6 +370,672 @@ const state: RecorderState = {
 
 function newSessionId(): string {
   return crypto.randomUUID();
+}
+
+function createTimelapseDocumentRef(): TimelapseDocumentRef {
+  // The runtime value deliberately carries no document id. Callers can only
+  // obtain one from a receipt minted after the recorder accepted a doc.step.
+  return Object.freeze({}) as TimelapseDocumentRef;
+}
+
+function documentScopeKey(scope: TimelapseDocumentScope): string {
+  return [
+    scope.projectId,
+    scope.domain,
+    scope.entityType,
+    scope.entityId,
+    scope.storage,
+  ].join("\u0000");
+}
+
+function documentScopeFromInput(
+  input: Pick<
+    RecordEventInput,
+    | "domain"
+    | "opType"
+    | "projectId"
+    | "entityType"
+    | "entityId"
+    | "documentStorage"
+  >,
+  projectId: string | null,
+): TimelapseDocumentScope | null {
+  if (input.opType !== "doc.step" || !projectId) return null;
+  const entityId = input.entityId?.trim();
+  if (!entityId) return null;
+  switch (input.domain) {
+    case "editor":
+      if (input.entityType !== "scene") return null;
+      if (
+        input.documentStorage !== undefined &&
+        input.documentStorage !== "database" &&
+        input.documentStorage !== "file"
+      ) {
+        return null;
+      }
+      return {
+        projectId,
+        domain: "editor",
+        entityType: "scene",
+        entityId,
+        storage: input.documentStorage ?? "database",
+      };
+    case "codex":
+      return input.entityType === "codex_entry"
+        ? {
+            projectId,
+            domain: "codex",
+            entityType: "codex_entry",
+            entityId,
+            storage: "database",
+          }
+        : null;
+    case "snippet":
+      return input.entityType === "snippet"
+        ? {
+            projectId,
+            domain: "snippet",
+            entityType: "snippet",
+            entityId,
+            storage: "database",
+          }
+        : null;
+    default:
+      return null;
+  }
+}
+
+function stateForDocumentScope(
+  scope: TimelapseDocumentScope,
+): TimelapseDocumentCoverageState {
+  const key = documentScopeKey(scope);
+  const existing = documentCoverageStates.get(key);
+  if (existing) return existing;
+  const stateForScope: TimelapseDocumentCoverageState = {
+    key,
+    scope,
+    ref: createTimelapseDocumentRef(),
+    sessionId: state.sessionId,
+    acceptedPrefix: 0,
+    committedPrefix: 0,
+    durablePrefix: 0,
+    broken: false,
+    activeClaim: null,
+  };
+  documentCoverageStates.set(key, stateForScope);
+  documentRefScopes.set(stateForScope.ref, stateForScope);
+  return stateForScope;
+}
+
+/**
+ * Target-owned steps may be captured while genesis activation still has the
+ * previous recorder session in memory. Once the target rebind mints its new
+ * session, transfer only that target's in-memory document authorities. Other
+ * Project states are stale and must not survive the rebind.
+ */
+function rebindDocumentCoverageSession(projectId: string): void {
+  for (const [key, coverageState] of documentCoverageStates) {
+    if (coverageState.scope.projectId === projectId) {
+      coverageState.sessionId = state.sessionId;
+      continue;
+    }
+    documentCoverageStates.delete(key);
+  }
+}
+
+function stateForDocumentRef(
+  ref: TimelapseDocumentRef,
+): TimelapseDocumentCoverageState | null {
+  return documentRefScopes.get(ref) ?? null;
+}
+
+function countQueuedDocumentSteps(key: string): number {
+  return state.queue.filter(
+    (event) =>
+      event.documentStateKey === key &&
+      event.opType === "doc.step" &&
+      event.coverageClaimId === null,
+  ).length;
+}
+
+function createAcceptedReceipt(
+  document: TimelapseDocumentRef | undefined,
+): TimelapseAcceptedEnqueueReceipt {
+  return Object.freeze(
+    document ? { document } : ({} as { document?: TimelapseDocumentRef }),
+  ) as TimelapseAcceptedEnqueueReceipt;
+}
+
+function createDocumentStepReceipt(
+  document: TimelapseDocumentRef,
+): TimelapseDocStepCaptureReceipt {
+  return Object.freeze({ document }) as TimelapseDocStepCaptureReceipt;
+}
+
+function markDocumentScopeBroken(scope: TimelapseDocumentScope): void {
+  stateForDocumentScope(scope).broken = true;
+}
+
+function markDocumentInputBroken(input: RecordEventInput): void {
+  if (input.opType !== "doc.step") return;
+  // OFF is a lifecycle reset, not an active capture epoch. Do not recreate a
+  // broken state merely because a stale editor emitted one transaction after
+  // the reset; its accumulator has already been invalidated independently.
+  if (!state.enabled) return;
+  const projectId =
+    input.projectId ??
+    getTimelapseGenesisCaptureTargetProjectId() ??
+    state.projectId;
+  const scope = documentScopeFromInput(input, projectId);
+  // A fence intentionally rejects transactions while preserving the previous
+  // epoch for a later replacement retry. This is admission denial, not a
+  // capture gap, so do not poison the document state here.
+  if (scope && !replacementFenceMatchesScope(scope.projectId, scope)) {
+    markDocumentScopeBroken(scope);
+  }
+}
+
+function documentKeyForScope(scope: TimelapseDocumentScope): DocumentKey {
+  switch (scope.domain) {
+    case "editor":
+      return {
+        kind: "tree",
+        id: scope.entityId,
+        storage: scope.storage,
+      };
+    case "codex":
+      return { kind: "codex", id: scope.entityId, phaseId: null };
+    case "snippet":
+      return { kind: "snippet", id: scope.entityId };
+  }
+}
+
+function scopeFromIdentity(
+  identity: TimelapseDocumentIdentity,
+): TimelapseDocumentScope | null {
+  if (
+    !identity ||
+    typeof identity !== "object" ||
+    typeof identity.projectId !== "string" ||
+    typeof identity.entityId !== "string"
+  ) {
+    return null;
+  }
+  const projectId = identity.projectId.trim();
+  const entityId = identity.entityId.trim();
+  if (!projectId || !entityId) return null;
+  switch (identity.domain) {
+    case "editor": {
+      if (identity.entityType !== "scene") return null;
+      const storage = identity.storage ?? "database";
+      if (storage !== "database" && storage !== "file") return null;
+      return {
+        projectId,
+        domain: "editor",
+        entityType: "scene",
+        entityId,
+        storage,
+      };
+    }
+    case "codex":
+      if (
+        identity.entityType !== "codex_entry" ||
+        (identity.storage !== undefined && identity.storage !== "database")
+      ) {
+        return null;
+      }
+      return {
+        projectId,
+        domain: "codex",
+        entityType: "codex_entry",
+        entityId,
+        storage: "database",
+      };
+    case "snippet":
+      if (
+        identity.entityType !== "snippet" ||
+        (identity.storage !== undefined && identity.storage !== "database")
+      ) {
+        return null;
+      }
+      return {
+        projectId,
+        domain: "snippet",
+        entityType: "snippet",
+        entityId,
+        storage: "database",
+      };
+    default:
+      return null;
+  }
+}
+
+function scopeMatchesDocumentKey(
+  scope: TimelapseDocumentScope,
+  documentKey: string,
+): boolean {
+  return encodeDocumentKey(documentKeyForScope(scope)) === documentKey;
+}
+
+function replacementFenceMatchesScope(
+  projectId: string,
+  scope: TimelapseDocumentScope | null,
+): boolean {
+  for (const fence of activeReplacementFences) {
+    if (fence.released || fence.projectId !== projectId) continue;
+    if (fence.documentKey === null) return true;
+    if (scope && scopeMatchesDocumentKey(scope, fence.documentKey)) return true;
+  }
+  return false;
+}
+
+function documentCaptureIsBroken(
+  scope: TimelapseDocumentScope | null,
+): boolean {
+  return scope
+    ? (documentCoverageStates.get(documentScopeKey(scope))?.broken ?? false)
+    : false;
+}
+
+function notifyReplacementFenceListeners(): void {
+  for (const listener of [...replacementFenceListeners]) {
+    try {
+      listener();
+    } catch {
+      // UI observers are advisory; a notification failure must not leave a
+      // replacement lease or coordinator count unreleased.
+    }
+  }
+}
+
+function settleCoverageClaim(claim: ActiveCoverageClaim): void {
+  if (claim.settled) return;
+  claim.settled = true;
+  if (claim.coverageState.activeClaim === claim) {
+    claim.coverageState.activeClaim = null;
+  }
+  const index = activeCoverageClaims.indexOf(claim);
+  if (index >= 0) activeCoverageClaims.splice(index, 1);
+  claim.resolveSettled();
+}
+
+function removeCoverageSentinel(claim: ActiveCoverageClaim): void {
+  state.queue = state.queue.filter((event) => event !== claim.queueEvent);
+}
+
+/**
+ * Invalidate every renderer-owned coverage/fence authority at a lifecycle
+ * boundary. Durable rows remain audit history, but an uncommitted coverage row
+ * is deliberately not allowed to authorize a new workspace/session.
+ */
+function invalidateCoverageAuthorities(): void {
+  state.queueGeneration += 1;
+  for (const claim of [...activeCoverageClaims]) {
+    claim.coverageState.broken = true;
+    removeCoverageSentinel(claim);
+    settleCoverageClaim(claim);
+  }
+  activeCoverageClaims.length = 0;
+
+  for (const coverageState of documentCoverageStates.values()) {
+    coverageState.broken = true;
+    coverageState.activeClaim = null;
+  }
+  documentCoverageStates.clear();
+
+  for (const fence of [...activeReplacementFences]) {
+    fence.released = true;
+    fence.coordinatorLease?.release();
+    activeReplacementFences.delete(fence);
+  }
+  notifyReplacementFenceListeners();
+}
+
+/** Mark one known document's capture epoch broken without manufacturing a ref. */
+export function breakTimelapseDocumentCapture(
+  target: TimelapseDocumentIdentity | TimelapseDocumentRef,
+): void {
+  const refState = stateForDocumentRef(target as TimelapseDocumentRef);
+  if (refState) {
+    refState.broken = true;
+    return;
+  }
+  const scope = scopeFromIdentity(target as TimelapseDocumentIdentity);
+  if (scope) markDocumentScopeBroken(scope);
+}
+
+function scopeFromDocumentKey(
+  projectId: string,
+  documentKey: DocumentKey,
+): TimelapseDocumentScope | null {
+  switch (documentKey.kind) {
+    case "tree":
+      return {
+        projectId,
+        domain: "editor",
+        entityType: "scene",
+        entityId: documentKey.id,
+        storage: documentKey.storage,
+      };
+    case "codex":
+      if (documentKey.phaseId !== null) return null;
+      return {
+        projectId,
+        domain: "codex",
+        entityType: "codex_entry",
+        entityId: documentKey.id,
+        storage: "database",
+      };
+    case "snippet":
+      return {
+        projectId,
+        domain: "snippet",
+        entityType: "snippet",
+        entityId: documentKey.id,
+        storage: "database",
+      };
+    case "chronicle-event":
+      return null;
+  }
+}
+
+export function isTimelapseReplacementFenceActive(options: {
+  projectId: string;
+  document?: TimelapseDocumentIdentity;
+}): boolean {
+  const scope = options.document ? scopeFromIdentity(options.document) : null;
+  return replacementFenceMatchesScope(options.projectId, scope);
+}
+
+/** Exact DocumentKey query used by editor admission/UI lease consumers. */
+export function isTimelapseReplacementFenceActiveForDocument(
+  projectId: string,
+  documentKey: DocumentKey | null,
+): boolean {
+  const scope = documentKey
+    ? scopeFromDocumentKey(projectId, documentKey)
+    : null;
+  return replacementFenceMatchesScope(projectId, scope);
+}
+
+export function subscribeTimelapseReplacementFence(
+  listener: () => void,
+): () => void {
+  replacementFenceListeners.add(listener);
+  return () => replacementFenceListeners.delete(listener);
+}
+
+/**
+ * @internal Dormant while public body writers run fail-closed full snapshots.
+ *
+ * Reserve the exact prefix represented by an accepted doc.step stream. The
+ * reservation is inserted into the one recorder queue synchronously; callers
+ * may therefore safely start a body write before any later editor transaction
+ * can overtake the coverage event. A future sealed Native-owned route may
+ * re-enable this optimization; renderer-facing paths must not use it as
+ * snapshot authority.
+ */
+export function claimTimelapseDocStepCoverage(
+  ref: TimelapseDocumentRef,
+): TimelapseDocStepCoverageClaim | null {
+  const coverageState = stateForDocumentRef(ref);
+  if (!coverageState) return null;
+  if (
+    coverageState.broken ||
+    coverageState.activeClaim ||
+    coverageState.acceptedPrefix <= coverageState.committedPrefix ||
+    state.switchInProgress ||
+    state.bindingInvalidated ||
+    !state.enabled ||
+    state.projectId !== coverageState.scope.projectId ||
+    replacementFenceMatchesScope(
+      coverageState.scope.projectId,
+      coverageState.scope,
+    )
+  ) {
+    return null;
+  }
+
+  // A flush removes its batch from the in-memory queue while Native is
+  // awaiting. Claiming in that interval would make the prefix accounting
+  // ambiguous, so let the central runner retry after the flush settles.
+  if (state.flushPromise) return null;
+  // A reserved event is an unsealed gap. This includes chat reservations and
+  // prevents a coverage sentinel from being placed behind an unresolved turn.
+  if (
+    state.queue.some(
+      (event) => event.status === "reserved" && event.coverageClaimId === null,
+    )
+  ) {
+    return null;
+  }
+  if (coverageState.durablePrefix < coverageState.committedPrefix) return null;
+  const unflushedSteps = Math.max(
+    0,
+    coverageState.acceptedPrefix - coverageState.durablePrefix,
+  );
+  if (countQueuedDocumentSteps(coverageState.key) < unflushedSteps) {
+    return null;
+  }
+
+  const eventUid = crypto.randomUUID();
+  const reservationId = crypto.randomUUID();
+  let resolveSettled!: () => void;
+  const settledPromise = new Promise<void>((resolve) => {
+    resolveSettled = resolve;
+  });
+  const queueEvent: PendingEvent = {
+    eventUid,
+    domain: TIMELAPSE_INTERNAL_DOMAIN,
+    opType: TIMELAPSE_COVERAGE_OP,
+    projectId: coverageState.scope.projectId,
+    payload: null,
+    sceneId:
+      coverageState.scope.domain === "editor"
+        ? coverageState.scope.entityId
+        : null,
+    entityType: coverageState.scope.entityType,
+    entityId: coverageState.scope.entityId,
+    timestamp: Date.now(),
+    status: "reserved",
+    reservationId,
+    coverageClaimId: eventUid,
+    coverageDurable: false,
+    documentStateKey: coverageState.key,
+  };
+  const claim: ActiveCoverageClaim = {
+    coverageState,
+    eventUid,
+    reservationId,
+    endPrefix: coverageState.acceptedPrefix,
+    sessionId: coverageState.sessionId,
+    queueEvent,
+    previousClaims: [...activeCoverageClaims],
+    settledPromise,
+    resolveSettled,
+    materializePromise: null,
+    materialized: false,
+    durable: false,
+    settled: false,
+  };
+  coverageState.activeClaim = claim;
+  activeCoverageClaims.push(claim);
+  state.queue.push(queueEvent);
+
+  const materialize = (content: string): Promise<TimelapseCoverageProof> => {
+    if (claim.materializePromise) return claim.materializePromise;
+    claim.materializePromise = (async () => {
+      if (
+        claim.settled ||
+        claim.coverageState.activeClaim !== claim ||
+        claim.coverageState.broken ||
+        state.sessionId !== claim.sessionId ||
+        state.projectId !== claim.coverageState.scope.projectId
+      ) {
+        throw new Error("Timelapse coverage claim is no longer active");
+      }
+      // The global chain waits for every earlier document claim, not just a
+      // claim for this document. This closes the A/B cross-document bypass.
+      await Promise.all(
+        claim.previousClaims.map((previous) => previous.settledPromise),
+      );
+      if (claim.coverageState.broken || claim.settled) {
+        throw new Error("Timelapse coverage claim was invalidated");
+      }
+      const digestBuffer = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(content),
+      );
+      const digest = `sha256:${Array.from(new Uint8Array(digestBuffer))
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("")}`;
+      queueEvent.payload = { resultContentDigest: digest };
+      queueEvent.status = "committed";
+      queueEvent.reservationId = null;
+      claim.materialized = true;
+      await flushNow();
+      if (!claim.durable || claim.coverageState.activeClaim !== claim) {
+        throw new Error("Timelapse coverage event was not durably flushed");
+      }
+      return Object.freeze({
+        eventUid: claim.eventUid,
+        sessionId: claim.sessionId,
+        contentDigest: digest,
+      });
+    })().catch((error: unknown) => {
+      // A failed append leaves the accepted prefix untouched. The caller's
+      // finally/cancel path removes the reservation; a later claim can retry
+      // with a fresh event UID and the exact same prefix.
+      claim.materializePromise = null;
+      throw error;
+    });
+    return claim.materializePromise;
+  };
+
+  const commit = (): void => {
+    if (claim.settled || !claim.materialized || !claim.durable) return;
+    claim.coverageState.committedPrefix = Math.max(
+      claim.coverageState.committedPrefix,
+      claim.endPrefix,
+    );
+    removeCoverageSentinel(claim);
+    settleCoverageClaim(claim);
+    if (state.queue.some((event) => event.status === "committed")) {
+      scheduleFlush();
+    }
+  };
+
+  const cancel = (): void => {
+    if (claim.settled) return;
+    removeCoverageSentinel(claim);
+    settleCoverageClaim(claim);
+    if (state.queue.some((event) => event.status === "committed")) {
+      scheduleFlush();
+    }
+  };
+
+  return { materialize, commit, cancel };
+}
+
+/**
+ * Publish a replacement admission fence before the first await. The optional
+ * document is structural on purpose; a failed capture still has a known
+ * document identity and must be fenceable without a capability.
+ */
+export function acquireTimelapseReplacementFence(options: {
+  projectId: string;
+  document?: TimelapseDocumentIdentity;
+}): TimelapseReplacementFence {
+  const projectId = options.projectId.trim();
+  if (!projectId)
+    throw new Error("Timelapse replacement fence needs a project");
+  const scope = options.document ? scopeFromIdentity(options.document) : null;
+  if (options.document && (!scope || scope.projectId !== projectId)) {
+    throw new Error(
+      "Timelapse replacement fence has mismatched document authority",
+    );
+  }
+  const documentKey = scope
+    ? encodeDocumentKey(documentKeyForScope(scope))
+    : null;
+  const cutoffs = new Map<TimelapseDocumentCoverageState, number>();
+  for (const coverageState of documentCoverageStates.values()) {
+    if (
+      coverageState.scope.projectId === projectId &&
+      (documentKey === null ||
+        encodeDocumentKey(documentKeyForScope(coverageState.scope)) ===
+          documentKey)
+    ) {
+      cutoffs.set(coverageState, coverageState.acceptedPrefix);
+    }
+  }
+  const coordinatorLease = scope
+    ? acquireExclusiveDocumentMutationLease(documentKeyForScope(scope))
+    : null;
+  const fence: ActiveReplacementFence = {
+    projectId,
+    documentKey,
+    cutoffs,
+    coordinatorLease,
+    violated: false,
+    committed: false,
+    released: false,
+  };
+  // This insertion and coordinator lease notification are intentionally
+  // synchronous: transaction admission can observe the fence immediately.
+  activeReplacementFences.add(fence);
+  notifyReplacementFenceListeners();
+
+  return {
+    commit() {
+      if (fence.released || fence.committed) return;
+      fence.committed = true;
+      fence.coordinatorLease?.commit();
+      for (const [coverageState, cutoff] of fence.cutoffs) {
+        coverageState.broken = false;
+        coverageState.durablePrefix = Math.max(
+          coverageState.durablePrefix,
+          cutoff,
+        );
+        coverageState.committedPrefix = Math.max(
+          coverageState.committedPrefix,
+          cutoff,
+        );
+      }
+    },
+    release() {
+      if (fence.released) return;
+      fence.released = true;
+      activeReplacementFences.delete(fence);
+      fence.coordinatorLease?.release();
+      notifyReplacementFenceListeners();
+      if (state.queue.some((event) => event.status === "committed")) {
+        scheduleFlush();
+      }
+    },
+  };
+}
+
+function claimForQueueEvent(event: PendingEvent): ActiveCoverageClaim | null {
+  if (!event.coverageClaimId) return null;
+  return (
+    activeCoverageClaims.find((claim) => claim.eventUid === event.eventUid) ??
+    null
+  );
+}
+
+function coveragePrefixBoundary(): number | null {
+  const firstCoverageIndex = state.queue.findIndex(
+    (event) => event.coverageClaimId !== null,
+  );
+  if (firstCoverageIndex < 0) return null;
+  const event = state.queue[firstCoverageIndex]!;
+  if (event.status === "reserved" || !event.coverageDurable) {
+    return firstCoverageIndex + (event.status === "committed" ? 1 : 0);
+  }
+  // A durable sentinel is deliberately retained as the queue head while its
+  // body write is in flight. It is not a reason to flush the suffix.
+  return 0;
 }
 
 /**
@@ -242,6 +1056,13 @@ async function readChainTail(
   return last[0] ?? null;
 }
 
+/** Read the durable Native/DB chain tail after renderer queues are flushed. */
+export async function readAuthoritativeChainTail(
+  projectId: string,
+): Promise<number> {
+  return (await readChainTail(projectId))?.sequence ?? 0;
+}
+
 /** Exponential flush-retry backoff: 100, 200, 400, ... capped at 5s. */
 function flushBackoffMs(attempt: number): number {
   return Math.min(FLUSH_DEBOUNCE_MS * 2 ** (attempt - 1), 5000);
@@ -252,6 +1073,18 @@ function flushBackoffMs(attempt: number): number {
  * write path; release builds leave it on.
  */
 export function setRecorderEnabled(enabled: boolean): void {
+  if (!enabled) {
+    invalidateCoverageAuthorities();
+    if (state.flushTimer) {
+      clearTimeout(state.flushTimer);
+      state.flushTimer = null;
+    }
+    // OFF is authoritative even when a caller toggles it without first
+    // awaiting the normal strict disable path. An old in-flight append is
+    // guarded by queueGeneration and cannot repopulate this queue on failure.
+    state.queue = [];
+    state.flushRetries = 0;
+  }
   state.enabled = enabled;
 }
 
@@ -287,6 +1120,8 @@ function reportDroppedWhileInvalidated(): void {
  * 有効に戻す。戻り値は新しい切替世代 (テスト/診断用)。
  */
 export function beginWorkspaceSwitch(): number {
+  abortTimelapseGenesisBarriers("Workspace switch started");
+  invalidateCoverageAuthorities();
   state.switchEpoch += 1;
   state.switchInProgress = true;
   state.bindingInvalidated = true;
@@ -350,6 +1185,15 @@ export async function initRecorderForProject(
   // (loadProject) が改めて init する。
   if (state.switchInProgress) return false;
 
+  const queueBelongsToTarget = state.queue.every(
+    (event) => event.projectId === projectId,
+  );
+  if (state.queue.length > 0 && !queueBelongsToTarget) {
+    throw new Error(
+      `Timelapse recorder refused to rebind to Project ${projectId} with queued events from another authority`,
+    );
+  }
+
   // When the recorder is disabled (typical in tests), don't touch the DB —
   // mocked db harnesses don't need to mock the chain-tail SELECT and we
   // avoid leaking timers / promises across test files.
@@ -365,8 +1209,8 @@ export async function initRecorderForProject(
     // ので必ず破棄し、次の enabled init に tail を引き直させる。
     state.initPromise = null;
     reportDroppedWhileInvalidated();
-    // Clear any pending queue and timer so events from the prior project cannot
-    // flush into this (OFF) project after a switch.
+    // OFF is authoritative: explicitly discard target events captured while
+    // the setting was still unknown during background activation.
     if (state.flushTimer) {
       clearTimeout(state.flushTimer);
       state.flushTimer = null;
@@ -382,13 +1226,21 @@ export async function initRecorderForProject(
     state.initEpoch === state.switchEpoch &&
     state.initPromise
   ) {
-    return state.initPromise;
+    const bound = await state.initPromise;
+    // A failed genesis leaves the target queue intact, but its debounce timer
+    // has already observed the failed barrier and stopped. Same-Project retry
+    // intentionally reuses this resolved binding, so wake the retained queue
+    // here instead of waiting for an unrelated future edit or strict close.
+    if (bound && state.queue.some((event) => event.status === "committed")) {
+      scheduleFlush();
+    }
+    return bound;
   }
   const entryEpoch = state.switchEpoch;
   state.projectId = projectId;
   state.initEpoch = state.switchEpoch;
   state.sessionId = newSessionId();
-  state.queue = [];
+  rebindDocumentCoverageSession(projectId);
 
   // 自己参照用ホルダー: IIFE の最初の await より後で読むため、下の代入は
   // 必ず完了している (TS の use-before-assign を避けるため let + null 初期化)。
@@ -406,8 +1258,14 @@ export async function initRecorderForProject(
     state.lastSequence = head ? head.sequence : 0;
     state.bindingInvalidated = false;
     reportDroppedWhileInvalidated();
+    if (state.queue.some((event) => event.status === "committed")) {
+      scheduleFlush();
+    }
     return true;
-  })();
+  })().catch((error: unknown) => {
+    if (state.initPromise === self) state.initPromise = null;
+    throw error;
+  });
   self = init;
   state.initPromise = init;
   return init;
@@ -424,6 +1282,7 @@ export async function initRecorderForProject(
  * `initRecorderForProject` will mint a fresh sessionId.
  */
 export function resetRecorderChain(): void {
+  invalidateCoverageAuthorities();
   state.lastSequence = 0;
   state.queue = [];
   state.flushRetries = 0;
@@ -448,6 +1307,8 @@ export function getRecorderChainHead(): number {
  * call this — `initRecorderForProject` is the normal entry point.
  */
 export function _resetRecorderForTests(): void {
+  abortTimelapseGenesisBarriers("recorder test reset");
+  invalidateCoverageAuthorities();
   state.enabled = false;
   state.projectId = null;
   state.sessionId = newSessionId();
@@ -472,6 +1333,25 @@ export function _resetRecorderForTests(): void {
  * yet, the call is silently dropped.
  */
 function canCaptureChangeEvent(input: RecordEventInput): boolean {
+  if (!canCaptureTimelapseChangeEvent()) return false;
+  const captureTarget = getTimelapseGenesisCaptureTargetProjectId();
+  if (captureTarget) {
+    if (
+      !state.enabled ||
+      state.switchInProgress ||
+      (input.projectId !== undefined && input.projectId !== captureTarget)
+    ) {
+      return false;
+    }
+    if (!state.queue.every((event) => event.projectId === captureTarget)) {
+      return false;
+    }
+    const scope = documentScopeFromInput(input, captureTarget);
+    return (
+      !documentCaptureIsBroken(scope) &&
+      !replacementFenceMatchesScope(captureTarget, scope)
+    );
+  }
   if (input.projectId && input.projectId !== state.projectId) return false;
   if (state.switchInProgress || state.bindingInvalidated) {
     // 束縛が無効 (切替中 or 正規 rebind 未完了): 誤った束縛で新 workspace の
@@ -486,7 +1366,12 @@ function canCaptureChangeEvent(input: RecordEventInput): boolean {
     state.droppedWhileInvalidated += 1;
     return false;
   }
-  return state.enabled && state.projectId !== null;
+  if (!state.enabled || state.projectId === null) return false;
+  const scope = documentScopeFromInput(input, state.projectId);
+  return (
+    !documentCaptureIsBroken(scope) &&
+    !replacementFenceMatchesScope(state.projectId, scope)
+  );
 }
 
 function createPendingEvent(
@@ -494,14 +1379,20 @@ function createPendingEvent(
   status: PendingEventStatus,
   reservationId: string | null,
 ): PendingEvent {
-  if (!state.projectId) {
+  const projectId =
+    input.projectId ??
+    getTimelapseGenesisCaptureTargetProjectId() ??
+    state.projectId;
+  if (!projectId) {
     throw new Error("Timelapse recorder is not bound to a Project");
   }
+  const scope = documentScopeFromInput(input, projectId);
+  const documentStateKey = scope ? stateForDocumentScope(scope).key : null;
   return {
     eventUid: crypto.randomUUID(),
     domain: input.domain,
     opType: input.opType,
-    projectId: state.projectId,
+    projectId,
     payload: input.payload,
     sceneId: input.sceneId ?? null,
     entityType: input.entityType ?? null,
@@ -509,7 +1400,17 @@ function createPendingEvent(
     timestamp: input.timestamp ?? Date.now(),
     status,
     reservationId,
+    coverageClaimId: null,
+    coverageDurable: false,
+    documentStateKey,
   };
+}
+
+function acceptPendingDocumentStep(event: PendingEvent): void {
+  if (!event.documentStateKey || event.opType !== "doc.step") return;
+  const coverageState = documentCoverageStates.get(event.documentStateKey);
+  if (!coverageState) return;
+  coverageState.acceptedPrefix += 1;
 }
 
 /**
@@ -548,6 +1449,7 @@ export function reserveChangeEvents(
         if (event.reservationId !== reservationId) continue;
         event.status = "committed";
         event.reservationId = null;
+        acceptPendingDocumentStep(event);
         committed = true;
       }
       if (committed) scheduleFlush();
@@ -567,12 +1469,23 @@ export function reserveChangeEvents(
   };
 }
 
-export function recordChangeEvent(input: RecordEventInput): void {
-  if (!canCaptureChangeEvent(input)) return;
-  state.queue.push({
-    ...createPendingEvent(input, "committed", null),
-  });
+export function recordChangeEvent(
+  input: RecordEventInput,
+): TimelapseAcceptedEnqueueReceipt | null {
+  if (!canCaptureChangeEvent(input)) {
+    markDocumentInputBroken(input);
+    return null;
+  }
+  const event = createPendingEvent(input, "committed", null);
+  state.queue.push(event);
+  acceptPendingDocumentStep(event);
   scheduleFlush();
+  const coverageState = event.documentStateKey
+    ? documentCoverageStates.get(event.documentStateKey)
+    : undefined;
+  return coverageState
+    ? createDocumentStepReceipt(coverageState.ref)
+    : createAcceptedReceipt(undefined);
 }
 
 function scheduleFlush(delayMs: number = FLUSH_DEBOUNCE_MS): void {
@@ -599,47 +1512,74 @@ function scheduleFlush(delayMs: number = FLUSH_DEBOUNCE_MS): void {
 export async function flushNow(): Promise<void> {
   if (state.flushPromise) return state.flushPromise;
   state.flushPromise = (async () => {
-    // 切替中・束縛無効中は何も流さない (キューは beginWorkspaceSwitch で
-    // 破棄済み)。ここで flush すると switching 拒否 → re-queue → open 完了後に
-    // 新 workspace の chain へ着地する (C1)。projectStore の rebind 前 drain
-    // もこの経路で no-op になる。
-    if (state.switchInProgress || state.bindingInvalidated) {
+    const queueGeneration = state.queueGeneration;
+    if (state.switchInProgress) {
       state.queue = [];
       return;
     }
-    // Bail out immediately when the recorder is disabled so an OFF project is
-    // never contaminated by events that were queued for the previous project.
-    if (!state.enabled) {
-      state.queue = [];
-      return;
+    const projectId = state.queue[0]?.projectId;
+    if (!projectId) return;
+    if (state.queue.some((event) => event.projectId !== projectId)) {
+      throw new Error(
+        "Timelapse recorder queue contains mixed Project authority",
+      );
     }
+
+    // The queue's captured Project is the authority. During activation it can
+    // intentionally differ from the old recorder binding; only genesis release
+    // may let it proceed to the new binding.
+    await awaitTimelapseGenesisBarrier(projectId);
     if (state.initPromise) await state.initPromise;
-    const projectId = state.projectId;
-    if (!projectId) {
-      state.queue = [];
-      return;
+    if (state.queueGeneration !== queueGeneration) return;
+    if (
+      state.bindingInvalidated ||
+      state.projectId !== projectId ||
+      !state.enabled
+    ) {
+      const captureTarget = getTimelapseGenesisCaptureTargetProjectId();
+      if (!state.enabled && captureTarget !== projectId) {
+        state.queue = [];
+        return;
+      }
+      throw new Error(
+        `Timelapse recorder binding is not authoritative for Project ${projectId}`,
+      );
     }
-    if (state.queue.length === 0) return;
 
     const firstReservedIndex = state.queue.findIndex(
       (event) => event.status === "reserved",
     );
-    const batchEnd =
+    const coverageBoundary = coveragePrefixBoundary();
+    const ordinaryBoundary =
       firstReservedIndex === -1 ? state.queue.length : firstReservedIndex;
+    const batchEnd =
+      coverageBoundary === null
+        ? ordinaryBoundary
+        : Math.min(ordinaryBoundary, coverageBoundary);
     if (batchEnd === 0) return;
     const batch = state.queue.slice(0, batchEnd);
     state.queue = state.queue.slice(batchEnd);
 
-    const events: TimelapseAppendEvent[] = batch.map((ev) => ({
-      eventUid: ev.eventUid,
-      sceneId: ev.sceneId,
-      domain: ev.domain,
-      opType: ev.opType,
-      entityType: ev.entityType,
-      entityId: ev.entityId,
-      payload: canonicalisePayload(ev.payload),
-      timestamp: ev.timestamp,
-    }));
+    let events: TimelapseAppendEvent[];
+    try {
+      events = batch.map((ev) => ({
+        eventUid: ev.eventUid,
+        sceneId: ev.sceneId,
+        domain: ev.domain,
+        opType: ev.opType,
+        entityType: ev.entityType,
+        entityId: ev.entityId,
+        payload: canonicalisePayload(ev.payload),
+        timestamp: ev.timestamp,
+      }));
+    } catch (error) {
+      state.queue = batch.concat(state.queue);
+      for (const event of batch) {
+        if (!event.documentStateKey) continue;
+        documentCoverageStates.get(event.documentStateKey)!.broken = true;
+      }
+      throw error;
+    }
 
     try {
       const result = await invoke<TimelapseAppendResult>(
@@ -651,12 +1591,31 @@ export async function flushNow(): Promise<void> {
         },
       );
       state.lastSequence = result.tailSequence;
+      if (state.queueGeneration !== queueGeneration) return;
       state.flushRetries = 0;
+      const durableCoverage = batch.find(
+        (event) => event.coverageClaimId !== null,
+      );
+      for (const event of batch) {
+        if (event.opType !== "doc.step" || !event.documentStateKey) continue;
+        const coverageState = documentCoverageStates.get(
+          event.documentStateKey,
+        );
+        if (coverageState) coverageState.durablePrefix += 1;
+      }
+      if (durableCoverage) {
+        durableCoverage.coverageDurable = true;
+        const claim = claimForQueueEvent(durableCoverage);
+        if (claim) {
+          claim.durable = true;
+          state.queue = [durableCoverage, ...state.queue];
+        }
+      }
     } catch (err) {
-      // workspace 切替拒否 (WORKSPACE_SWITCHING マーカー) は再送しない —
-      // beginWorkspaceSwitch の束縛無効化と二重の防御。再送すると open 完了後
-      // に旧イベントが新 workspace の chain へ混入する (C1)。バッチは破棄して
-      // 件数を warn。
+      // A lifecycle reset may have cleared this batch while Native was in
+      // flight. Never reinsert that old-authority batch into the new queue;
+      // the append itself, if it completed, remains durable audit history.
+      if (state.queueGeneration !== queueGeneration) return;
       if (isWorkspaceSwitchingError(err)) {
         if (state.strictFlushWaiters > 0) {
           state.queue = batch.concat(state.queue);
@@ -672,9 +1631,6 @@ export async function flushNow(): Promise<void> {
         );
         return;
       }
-      // Rust owns sequence/hash allocation, so client-side UNIQUE collision
-      // reconciliation is gone. Retry the same eventUid batch: if the command
-      // committed but the transport rejected, Rust treats the resend as a no-op.
       state.flushRetries += 1;
       if (state.flushRetries > MAX_FLUSH_RETRIES) {
         state.queue = batch.concat(state.queue);
@@ -712,6 +1668,11 @@ export async function flushStrict(): Promise<void> {
         completed = true;
         return;
       }
+      if (state.queue.some((event) => event.coverageClaimId !== null)) {
+        throw new Error(
+          "Timelapse recorder has an active document coverage barrier",
+        );
+      }
       if (state.queue[0]?.status === "reserved") {
         throw new Error(
           "Timelapse recorder has an unresolved event reservation",
@@ -732,6 +1693,7 @@ export async function flushStrict(): Promise<void> {
 }
 
 function discardPendingTimelapseEvents(): void {
+  invalidateCoverageAuthorities();
   if (state.flushTimer) clearTimeout(state.flushTimer);
   state.flushTimer = null;
   state.queue = [];
@@ -739,7 +1701,7 @@ function discardPendingTimelapseEvents(): void {
 }
 
 registerQuiescenceProvider({
-  id: "timelapse-recorder",
+  id: createQuiescenceProviderId("timelapse-recorder"),
   stage: "timelapse",
   flush: flushStrict,
   discard: discardPendingTimelapseEvents,

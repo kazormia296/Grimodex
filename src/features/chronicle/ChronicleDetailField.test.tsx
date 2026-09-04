@@ -24,7 +24,9 @@ vi.mock("@/features/editor/tabStore", () => ({
 }));
 
 const autoSaveHarness = vi.hoisted(() => ({
-  save: null as null | (() => Promise<void>),
+  save: null as
+    | null
+    | ((options?: { preexistingDraft?: boolean }) => Promise<void>),
   schedule: vi.fn(),
   cancel: vi.fn(),
   pause: vi.fn(),
@@ -33,7 +35,9 @@ const autoSaveHarness = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/useAutoSave", () => ({
-  useAutoSave: (save: () => Promise<void>) => {
+  useAutoSave: (
+    save: (options?: { preexistingDraft?: boolean }) => Promise<void>,
+  ) => {
     autoSaveHarness.save = save;
     return {
       schedule: autoSaveHarness.schedule,
@@ -133,6 +137,22 @@ describe("ChronicleDetailField (label association)", () => {
 
     expect(onPatchDetail).toHaveBeenNthCalledWith(1, "changed detail", 0);
     expect(onPatchDetail).toHaveBeenNthCalledWith(2, "changed detail", 4);
+  });
+
+  it("forwards an explicit preexisting-draft permit to the real-event save", async () => {
+    const onPatchDetail = vi.fn().mockResolvedValue({ version: 4 });
+    const { getByTestId } = render(
+      <ChronicleDetailField event={eventRow()} onPatchDetail={onPatchDetail} />,
+    );
+
+    fireEvent.click(getByTestId("mini-editor"));
+    await act(async () => {
+      await autoSaveHarness.save?.({ preexistingDraft: true });
+    });
+
+    expect(onPatchDetail).toHaveBeenCalledWith("changed detail", 0, {
+      preexistingDraft: true,
+    });
   });
 
   it("detail が clean の Keep は外部 detail を書き戻さず aggregate version だけ進める", async () => {

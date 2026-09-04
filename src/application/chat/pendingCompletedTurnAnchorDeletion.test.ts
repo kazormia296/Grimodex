@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompletedTurnPersistenceInput } from "./pendingCompletedTurnPersistence";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 const persistenceMocks = vi.hoisted(() => {
   const deleteWhere = vi.fn().mockResolvedValue(undefined);
@@ -112,6 +113,7 @@ describe.each(deletionTargets)(
   "$name low-level deletion",
   ({ name, persistenceKind, run }) => {
     beforeEach(() => {
+      publishCurrentProjectId("project-1");
       pendingCompletedTurnPersistence.discard();
       persistenceMocks.deleteFrom.mockClear();
       persistenceMocks.deleteWhere.mockClear();
@@ -122,6 +124,7 @@ describe.each(deletionTargets)(
     });
 
     afterEach(() => {
+      publishCurrentProjectId(null);
       pendingCompletedTurnPersistence.discard();
     });
 

@@ -1,5 +1,6 @@
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import type {
   ProjectBackgroundActivation,
   ProjectRuntimePort,
@@ -7,23 +8,23 @@ import type {
 
 async function initializeTimelapse({
   projectId,
+  expectedWorkspacePath: providedWorkspacePath,
   canStart,
   isMutationCurrent,
 }: ProjectBackgroundActivation): Promise<void> {
   if (!canStart()) return;
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  const expectedWorkspacePath =
+    providedWorkspacePath ?? workspaceIdentity?.path;
+  if (!expectedWorkspacePath || !isMutationCurrent()) return;
 
-  const [toggle, recorder] = await Promise.all([
-    import("@/features/timelapse/toggle"),
+  const [admin, recorder] = await Promise.all([
+    import("@/features/timelapse/timelapseAdmin"),
     import("@/features/timelapse/recorder"),
   ]);
   if (!canStart()) return;
 
-  // Drain the old Project queue before changing the recorder binding.
-  if (!isMutationCurrent()) return;
-  await recorder.flushNow();
-  if (!isMutationCurrent()) return;
-
-  const enabled = await toggle.isTimelapseEnabled(projectId);
+  const enabled = await admin.isTimelapseEnabled(projectId);
   if (!isMutationCurrent()) return;
 
   recorder.setRecorderEnabled(enabled);
@@ -32,7 +33,11 @@ async function initializeTimelapse({
   if (!isMutationCurrent()) return;
 
   if (!enabled || !bound) return;
-  await toggle.ensureGenesisBaselines(projectId, isMutationCurrent);
+  await admin.ensureGenesisBaselines(
+    projectId,
+    expectedWorkspacePath,
+    isMutationCurrent,
+  );
   if (!isMutationCurrent()) return;
 
   const { seedWorkspaceSnapshot } =

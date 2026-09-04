@@ -225,6 +225,7 @@ fn patch_payload(case: &str, node_id: &str, field: &str, value: Value) -> TreeNo
         bump_version: false,
         updated_at: UPDATED_AT.to_owned(),
         change_event: None,
+        timelapse_doc_step_coverage: None,
         origin: NarrativeChangeOrigin::Human,
         original_transaction_id: None,
         undo_journal_id: None,
