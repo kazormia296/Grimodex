@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 import type { WorkspaceViewportProfile } from "@/runtime/viewportProfile";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
-import { WorkLayerProvider } from "@/features/work-layer/WorkLayer";
+import { WorkLayerProvider } from "@/features/work-layer/WorkLayerContext";
 import { useWorkLayerPreviewPort } from "@/features/work-layer/useWorkLayerPreviewPort";
 
 interface EditorWorkspaceProvidersProps {
