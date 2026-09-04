@@ -296,6 +296,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   const warn = options.warn ?? console.warn;
   let disposed = false;
   let discoveryInFlight = false;
+  let discoveryReason: NarrativeMaintenanceWakeReason | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let scheduledReason: NarrativeMaintenanceWakeReason | null = null;
   let scheduledDelayMs: number | null = null;
@@ -416,6 +417,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       return;
     }
     discoveryInFlight = true;
+    discoveryReason = reason;
     noteMutation();
     const discoveryGeneration = generation;
     let completedResponse: NarrativeMaintenanceDiscoveryResult | null = null;
@@ -575,6 +577,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           };
         }
         discoveryInFlight = false;
+        discoveryReason = null;
         noteMutation();
         if (!disposed && pendingEvent !== null) {
           const nextEvent = pendingEvent;
@@ -659,6 +662,23 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       chainGeneration,
     );
   };
+
+  const isHigherValueWake = (
+    reason: NarrativeMaintenanceWakeReason | null,
+  ): boolean =>
+    reason === "restore-completed" || reason === "semantic-epoch-rotated";
+
+  const beforeCutoverChainActive = (): boolean =>
+    lastWakeReason === "before-cutover" ||
+    (timer !== null && scheduledReason === "before-cutover") ||
+    (discoveryInFlight && discoveryReason === "before-cutover") ||
+    pendingEvent?.reason === "before-cutover";
+
+  const higherValueWakeActive = (): boolean =>
+    isHigherValueWake(scheduledReason) ||
+    isHigherValueWake(discoveryReason) ||
+    isHigherValueWake(pendingEvent?.reason ?? null) ||
+    pendingWakeOutboxAck !== null;
 
   const emitDiscoveryObservation = (
     discoveryGeneration: number,
@@ -822,6 +842,12 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   return {
     requestBeforeCutoverPreparation(): void {
       if (disposed) return;
+      // Freshness can report the same NOT_READY result once per idle poll.
+      // Keep one before-cutover chain alive across those callbacks so a slow
+      // discovery is not made stale by its own retry signal. Restore and
+      // epoch wakes carry stronger authority and must remain pending while a
+      // before-cutover callback is being delivered.
+      if (beforeCutoverChainActive() || higherValueWakeActive()) return;
       const generation = ++chainGeneration;
       noteMutation();
       rediscoveryAttempts = 0;
