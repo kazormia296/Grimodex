@@ -447,7 +447,8 @@ certified base/head/tree and the byte-identical integrated `master` tree.
   explicit fallback.
 - Activation is enabled for these entry points and remains bounded to this
   pilot. Disclosure admission, D2 full cutover, revise/retract/merge/split,
-  and NIR-1 retrieval remain deferred.
+  and NIR-1 retrieval remain outside the NIR-0 scope; NIR-1 is planned/ready
+  but not implemented.
 - Durable cold-start discovery, same-Run resume, typed blocked-Run discard,
   Workspace-authority binding, and sealed existing-event-catalog CAS prevent
   restart or authority replacement from fabricating a second execution.

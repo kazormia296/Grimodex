@@ -17,6 +17,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 import yaml from "js-yaml";
 import {
   AI_PROVIDER_CREDENTIAL_ENV_NAMES,
+  NARRATIVE_EVAL_SELECTOR_ENV_NAMES,
   resolveHeavyCommand,
   runShellStringCommand,
   sanitizeCapturedBuffer,
@@ -53,7 +54,7 @@ const CHILD_ENV_REMOVALS = [
   "NARRATIVE_EVAL_ATTEMPT",
   "NARRATIVE_EVAL_CASE_ID",
   "NARRATIVE_EVAL_LIMIT",
-  "NARRATIVE_EVAL_SUITE_ID",
+  ...NARRATIVE_EVAL_SELECTOR_ENV_NAMES,
 ];
 
 export function parseLiveModelQualificationArgs(argv) {

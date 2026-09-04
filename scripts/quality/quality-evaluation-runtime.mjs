@@ -20,10 +20,17 @@ export const AI_PROVIDER_CREDENTIAL_ENV_NAMES = [
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_ACCESS_TOKEN",
 ];
+// Corpus selection is caller-controlled for maintainer-local diagnostics, but
+// must never leak into a certification child. Keep this list shared with the
+// local qualification runner so both execution paths scrub the same selector.
+export const NARRATIVE_EVAL_SELECTOR_ENV_NAMES = Object.freeze([
+  "NARRATIVE_EVAL_SUITE_ID",
+]);
 const CERTIFICATION_ENV_REMOVALS = [
   "NARRATIVE_EVAL_LIMIT",
   "NARRATIVE_EVAL_CASE_ID",
   "NARRATIVE_EVAL_ATTEMPT",
+  ...NARRATIVE_EVAL_SELECTOR_ENV_NAMES,
   // Bootstrap authority belongs only to the bound certification runner. A
   // Light/Heavy/Journey child must never inherit it and appear pre-authorized.
   "GATE_B2_BOUND_EXECUTION",
