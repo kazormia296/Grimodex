@@ -20,6 +20,33 @@ function frontmatter(markdown) {
   return yaml.load(match[1]);
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
+function sectionFromHeading(markdown, heading) {
+  const headingPattern = new RegExp(
+    "^" + escapeRegExp(heading) + "[ \t]*$",
+    "m",
+  );
+  const headingMatch = markdown.match(headingPattern);
+  assert.ok(
+    headingMatch,
+    heading + " must exist as a level-two heading",
+  );
+
+  const sectionStart = headingMatch.index + headingMatch[0].length;
+  const remaining = markdown.slice(sectionStart);
+  const nextHeadingOffset = remaining.search(/^##[ \t]+/m);
+  return nextHeadingOffset === -1
+    ? remaining
+    : remaining.slice(0, nextHeadingOffset);
+}
+
+function normalizeSection(section) {
+  return section.replace(/\s+/g, " ").trim();
+}
+
 test("package scripts expose one canonical quality workflow", async () => {
   const packageJson = JSON.parse(await read("package.json"));
 
@@ -82,6 +109,204 @@ test("repo routing points AI behavior authoring and diff evaluation to narrow sk
   assert.match(agents, /grimodex-impact-gate/);
   assert.match(agents, /AI指示|システムプロンプト|AI評価fixture/);
   assert.match(agents, /差分評価|impact gate|品質ゲート/);
+});
+
+test("high-risk work keeps threat models user-confirmed and candidate evidence reproducible", async () => {
+  const agents = await read("AGENTS.md");
+  const policy = await read("policies/quality/iron-laws.md");
+  const agentsSection = normalizeSection(
+    sectionFromHeading(agents, "## 高リスク作業の運用規律"),
+  );
+  const policySection = normalizeSection(
+    sectionFromHeading(policy, "## GDX-PRECHECK-001 — Stop on failed prechecks"),
+  );
+  const traceSection = normalizeSection(
+    sectionFromHeading(policy, "## GDX-TRACE-001 — Preserve traceability and failure state"),
+  );
+  const ship = await read(".agents/skills/ship-branch/SKILL.md");
+  const shipCiSection = normalizeSection(
+    sectionFromHeading(ship, "## 2. ローカルCI gateを固定する"),
+  );
+  const shipMergeSection = normalizeSection(
+    sectionFromHeading(ship, "## 7. Merge と反映確認を行う"),
+  );
+  const manifest = yaml.load(await read("evals/quality-manifest.yaml"));
+  const precheck = manifest.requirements.find(
+    (requirement) => requirement.id === "GDX-PRECHECK-001",
+  );
+
+  function assertBothSections(label, pattern) {
+    assert.match(agentsSection, pattern, label + " is missing from AGENTS.md");
+    assert.match(
+      policySection,
+      pattern,
+      label + " is missing from GDX-PRECHECK-001",
+    );
+  }
+
+  for (const phrase of [
+    /security-sensitive threat model/i,
+    /draft/i,
+    /trusted\/untrusted actors/i,
+    /in-scope and out-of-scope attacks/i,
+    /mandatory defenses/i,
+    /acceptance implications/i,
+    /explicit user confirmation/i,
+    /material changes/i,
+    /reconfirmation/i,
+    /blocking precheck/i,
+    /\[precheck\]/i,
+  ]) {
+    assertBothSections("threat-model precheck contract", phrase);
+  }
+
+  assert.match(agentsSection, /サブエージェントとレビュー担当.*提案/i);
+  assert.match(agentsSection, /脅威モデル.*無断.*固定.*変更/i);
+  assert.match(
+    policySection,
+    /subagents and reviewers may propose.*not silently freeze or change/i,
+  );
+
+  for (const phrase of [
+    /one integrator/i,
+    /implementer\(s\)/i,
+    /candidate-untouched independent acceptance reviewer\(s\)/i,
+    /single candidate ledger/i,
+    /base.*head.*tree.*clean state.*receipt directory/i,
+    /receipt directory.*threat-model version\/ref/i,
+    /reviewable lanes/i,
+    /critical candidate/i,
+    /focused gates/i,
+  ]) {
+    assertBothSections("candidate/reviewer contract", phrase);
+  }
+  assert.match(
+    agentsSection,
+    /実装担当.*独立.*受入れレビュー担当.*分離/i,
+  );
+  assert.match(agentsSection, /役割.*重複させない/i);
+  assert.match(agentsSection, /受入れレビュー担当.*候補.*編集しない/i);
+  assert.match(agentsSection, /focused gates.*freeze/i);
+  assert.match(agentsSection, /freeze.*編集せず/i);
+  assert.match(agentsSection, /候補.*再開.*receipt.*無効化/i);
+  assert.match(policySection, /roles do not overlap/i);
+  assert.match(policySection, /acceptance reviewer\(s\).*must not edit the candidate/i);
+  assert.match(policySection, /focused gates.*candidate freezes/i);
+  assert.match(
+    policySection,
+    /After freeze, no edits.*finding reopens the candidate.*invalidates its receipts/i,
+  );
+
+  for (const phrase of [
+    /focused preflight/i,
+    /risk-derived applicable late stages only/i,
+    /runtime performance.*fresh Xvfb/i,
+    /migration\/recovery/i,
+    /real product journeys/i,
+    /diagnostic only/i,
+    /clean Full-from-stage-1 \+ verify/i,
+  ]) {
+    assertBothSections("focused preflight contract", phrase);
+  }
+  assert.match(agentsSection, /例示.*examples/i);
+  assert.match(agentsSection, /一律要件.*blanket requirements/i);
+  assert.match(
+    agentsSection,
+    /該当しない host capability.*要求せず.*block条件にも使わない/i,
+  );
+  assert.match(policySection, /examples, not blanket requirements/i);
+  assert.match(policySection, /inapplicable host capability/i);
+
+  for (const phrase of [
+    /unattributed runtime blocker/i,
+    /causal evidence/i,
+    /rAF.*event-loop.*wake\/discovery.*memory-sampler.*process CPU\/I\/O.*device\/PSI/i,
+    /exact failed receipt/i,
+    /diagnostic\/P3 debt/i,
+    /critical candidate/i,
+  ]) {
+    assertBothSections("runtime/debt contract", phrase);
+  }
+  assert.match(agentsSection, /変更したパスだけから環境または製品の状態を推定しない/i);
+  assert.match(policySection, /Do not infer environment or product status from touched paths/i);
+
+  for (const phrase of [
+    /data categories.*permission/i,
+    /claude-fable-5-1/i,
+    /effort.*high/i,
+    /Fast/i,
+  ]) {
+    assertBothSections("external-review model contract", phrase);
+  }
+  assert.match(agentsSection, /Claude review/i);
+  assert.match(agentsSection, /外部 review.*作業.*開始時 precheck.*固定/i);
+  assert.match(agentsSection, /requested\/effective model/i);
+  assert.match(agentsSection, /silently substitute/i);
+  assert.match(agentsSection, /すべてのリポジトリやログを送る包括許可にはしない/i);
+  assert.match(policySection, /external Claude review.*start-of-work precheck/i);
+  assert.match(policySection, /requested and effective model/i);
+  assert.match(policySection, /never silently substitute/i);
+  assert.match(policySection, /not blanket.*all repositories or logs/i);
+
+  for (const phrase of [
+    /acceptance evidence.*directly candidate-bound.*verified parent receipt.*candidate-bound/i,
+    /metrics or artifacts.*independently.*parent receipt.*direct.*candidate identity.*commit\/tree\/run.*artifact digest/i,
+    /standalone evidence.*diagnostic-only/i,
+    /Missing direct binding.*tracked hardening debt.*retroactively invalidate.*complete parent receipt/i,
+    /acceptedTreeSha.*Full receipt.*candidate\.resolvedHeadTreeSha.*current accepted HEAD/i,
+    /separately.*merge commit.*included.*origin\/master.*accepted tree SHA.*remote merge tree/i,
+    /invalidate the receipts.*rerun.*Full-from-stage-1 \+ verify/i,
+  ]) {
+    assert.match(traceSection, phrase);
+  }
+  assert.match(
+    shipCiSection,
+    /candidate\.resolvedHeadSha.*current accepted HEAD.*acceptedHeadSha.*candidate\.resolvedHeadSha.*acceptedTreeSha.*candidate\.resolvedHeadTreeSha/i,
+  );
+  assert.doesNotMatch(
+    shipCiSection,
+    /git rev-parse <accepted-head>\^\{tree\}/i,
+    "acceptedTreeSha must come from the existing Full receipt field",
+  );
+  assert.match(
+    shipMergeSection,
+    /git fetch origin master.*merge commit.*origin\/master.*含まれる.*別条件/i,
+  );
+  assert.match(
+    shipMergeSection,
+    /Full receipt.*current accepted HEAD.*acceptedTreeSha.*merge.*remote merge tree.*acceptedTreeSha.*git rev-parse <merge-sha>\^\{tree\}/i,
+  );
+  assert.doesNotMatch(
+    shipMergeSection,
+    /git rev-parse origin\/master\^\{tree\}/i,
+    "origin/master inclusion must not replace accepted-tree comparison",
+  );
+  assert.match(
+    shipMergeSection,
+    /不一致.*receipt.*無効化.*Full-from-stage-1 \+ verify/i,
+  );
+
+  assert.ok(precheck, "GDX-PRECHECK-001 must exist");
+  const trace = manifest.requirements.find(
+    (requirement) => requirement.id === "GDX-TRACE-001",
+  );
+  assert.ok(trace, "GDX-TRACE-001 must exist");
+  assert.ok(
+    precheck.implementedBy.includes("AGENTS.md"),
+    "AGENTS.md must be traced under GDX-PRECHECK-001",
+  );
+  assert.ok(
+    precheck.lightTests.includes("scripts/quality/quality-workflow.test.mjs"),
+    "the contract test must remain in the precheck light suite",
+  );
+  assert.ok(
+    trace.implementedBy.includes("AGENTS.md"),
+    "AGENTS.md must be traced under GDX-TRACE-001",
+  );
+  assert.ok(
+    trace.implementedBy.includes(".agents/skills/ship-branch/SKILL.md"),
+    "ship-branch must be traced under GDX-TRACE-001",
+  );
 });
 
 test("new skills use current frontmatter and call the canonical commands", async () => {

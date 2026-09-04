@@ -1403,10 +1403,8 @@
       "emits": [],
       "isAsync": true,
       "summary": "全FTS5テーブル（codex/snippets/chat_messages/tree_nodes/post_effect_annotations の通常+_en 計10個）に 'optimize' を発行して索引を最適化する",
-      "napiNotes": "AppHandle は spawn_blocking 内 state 取得のためだけ — napi では不要。実体は grimodex-db の Database::fts_optimize。db_execute 済みの接続基盤に薄いラッパーを足すだけ",
-      "callSites": [
-        { "file": "src/features/workspace/store.ts", "trigger": "workspace-open", "notes": "L353 openWorkspace 末尾の fire-and-forget（.catch 完全黙殺、fail-soft）" }
-      ]
+      "napiNotes": "AppHandle は spawn_blocking 内 state 取得のためだけ — napi では不要。実体は grimodex-db の Database::fts_optimize。明示的なメンテナンス API として保持し、workspace open からは自動実行しない",
+      "callSites": []
     },
     "fts_rebuild": {
       "file": "integrity.rs",

@@ -32,60 +32,128 @@
       "type": "array",
       "minItems": 1,
       "items": {
-        "type": "object",
-        "required": [
-          "ruleId",
-          "version",
-          "identityScope",
-          "observationFields",
-          "materialBasisFields"
-        ],
-        "properties": {
-          "ruleId": { "type": "string", "pattern": "^[a-z][a-z0-9._-]*$" },
-          "version": { "type": "integer", "minimum": 1 },
-          "identityScope": { "const": "edge" },
-          "observationFields": {
-            "type": "array",
-            "minItems": 4,
-            "maxItems": 4,
-            "uniqueItems": true,
-            "items": {
-              "enum": [
-                "stableSubject",
-                "edgeId",
-                "reasonCode",
-                "evidenceFreshness"
-              ]
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "ruleId",
+              "version",
+              "identityScope",
+              "observationFields",
+              "materialBasisFields"
+            ],
+            "properties": {
+              "ruleId": { "type": "string", "pattern": "^[a-z][a-z0-9._-]*$" },
+              "version": { "type": "integer", "minimum": 1 },
+              "identityScope": { "const": "edge" },
+              "observationFields": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "stableSubject",
+                    "edgeId",
+                    "reasonCode",
+                    "evidenceFreshness"
+                  ]
+                },
+                "allOf": [
+                  { "contains": { "const": "stableSubject" } },
+                  { "contains": { "const": "edgeId" } },
+                  { "contains": { "const": "reasonCode" } },
+                  { "contains": { "const": "evidenceFreshness" } }
+                ]
+              },
+              "materialBasisFields": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "stableSubject",
+                    "edgeId",
+                    "reasonCode",
+                    "evidenceFreshness"
+                  ]
+                },
+                "allOf": [
+                  { "contains": { "const": "stableSubject" } },
+                  { "contains": { "const": "edgeId" } },
+                  { "contains": { "const": "reasonCode" } },
+                  { "contains": { "const": "evidenceFreshness" } }
+                ]
+              }
             },
-            "allOf": [
-              { "contains": { "const": "stableSubject" } },
-              { "contains": { "const": "edgeId" } },
-              { "contains": { "const": "reasonCode" } },
-              { "contains": { "const": "evidenceFreshness" } }
-            ]
+            "additionalProperties": false
           },
-          "materialBasisFields": {
-            "type": "array",
-            "minItems": 4,
-            "maxItems": 4,
-            "uniqueItems": true,
-            "items": {
-              "enum": [
-                "stableSubject",
-                "edgeId",
-                "reasonCode",
-                "evidenceFreshness"
-              ]
+          {
+            "type": "object",
+            "required": [
+              "ruleId",
+              "version",
+              "identityScope",
+              "observationStorageClass",
+              "writerAuthority",
+              "observationFields",
+              "materialBasisFields"
+            ],
+            "properties": {
+              "ruleId": { "type": "string", "pattern": "^[a-z][a-z0-9._-]*$" },
+              "version": { "type": "integer", "minimum": 1 },
+              "identityScope": { "const": "maintenance-work" },
+              "observationStorageClass": { "const": "durable-derived-history" },
+              "writerAuthority": { "const": "maintenance-run-finalization-transaction" },
+              "observationFields": {
+                "type": "array",
+                "minItems": 5,
+                "maxItems": 5,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "stableSubject",
+                    "failureCode",
+                    "reasonCode",
+                    "evidenceFreshness",
+                    "evidenceDetailDigest"
+                  ]
+                },
+                "allOf": [
+                  { "contains": { "const": "stableSubject" } },
+                  { "contains": { "const": "failureCode" } },
+                  { "contains": { "const": "reasonCode" } },
+                  { "contains": { "const": "evidenceFreshness" } },
+                  { "contains": { "const": "evidenceDetailDigest" } }
+                ]
+              },
+              "materialBasisFields": {
+                "type": "array",
+                "minItems": 5,
+                "maxItems": 5,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "stableSubject",
+                    "failureCode",
+                    "reasonCode",
+                    "evidenceFreshness",
+                    "evidenceDetailDigest"
+                  ]
+                },
+                "allOf": [
+                  { "contains": { "const": "stableSubject" } },
+                  { "contains": { "const": "failureCode" } },
+                  { "contains": { "const": "reasonCode" } },
+                  { "contains": { "const": "evidenceFreshness" } },
+                  { "contains": { "const": "evidenceDetailDigest" } }
+                ]
+              }
             },
-            "allOf": [
-              { "contains": { "const": "stableSubject" } },
-              { "contains": { "const": "edgeId" } },
-              { "contains": { "const": "reasonCode" } },
-              { "contains": { "const": "evidenceFreshness" } }
-            ]
+            "additionalProperties": false
           }
-        },
-        "additionalProperties": false
+        ]
       }
     },
     "negativeFixture": { "type": "string", "minLength": 1 }

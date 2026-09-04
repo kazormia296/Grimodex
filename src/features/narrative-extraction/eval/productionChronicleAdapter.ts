@@ -4,6 +4,7 @@ import { clusterEventObservations } from "@/features/chronicle/extraction/eventC
 import { matchExistingChronicleEvent } from "@/features/chronicle/extraction/existingEventMatcher";
 import { mergeObservationsByEvidence } from "@/features/chronicle/extraction/observationMerger";
 import { planChronicleEventProposals } from "@/features/chronicle/extraction/proposalPlanner";
+import { chronicleEvidenceTupleKey } from "@/features/chronicle/extraction/evidenceTupleKey";
 import { resolveEvidenceReference } from "@/features/narrative-extraction/evidence/resolveEvidence";
 import type { ResolvedEvidenceAnchor } from "@/features/narrative-extraction/evidence/types";
 import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
@@ -39,7 +40,7 @@ export async function prepareProductionChronicleEvalCase(
 }
 
 function evidenceFingerprint(sourceRef: string, quote: string): string {
-  return `${sourceRef}\0${quote}`;
+  return chronicleEvidenceTupleKey(sourceRef, quote);
 }
 
 function documentIdForAnchor(
@@ -120,12 +121,23 @@ export async function runProductionChroniclePipeline(
     hypotheses.push(...batch);
   }
 
-  const anchorsByEvidence = new Map(
-    anchors.map(
-      (anchor) =>
-        [evidenceFingerprint(anchor.sourceRef, anchor.quote), anchor] as const,
-    ),
-  );
+  const anchorsByEvidence = new Map<
+    string,
+    Map<string, ResolvedEvidenceAnchor | null>
+  >();
+  for (const anchor of anchors) {
+    const anchorsByQuote = anchorsByEvidence.get(anchor.sourceRef) ?? new Map();
+    const existing = anchorsByQuote.get(anchor.quote);
+    if (!anchorsByQuote.has(anchor.quote)) {
+      anchorsByQuote.set(anchor.quote, anchor);
+    } else if (
+      existing === null ||
+      existing?.documentRef !== anchor.documentRef
+    ) {
+      anchorsByQuote.set(anchor.quote, null);
+    }
+    anchorsByEvidence.set(anchor.sourceRef, anchorsByQuote);
+  }
   const matches = hypotheses.map((hypothesis) => {
     const evidenceDocumentSourceKeys: string[] = [];
     const provenanceKeys: string[] = [];
@@ -137,9 +149,11 @@ export async function runProductionChroniclePipeline(
           evidence.sourceRef,
           evidence.quote,
         );
-        provenanceKeys.push(fingerprint);
-        const anchor = anchorsByEvidence.get(fingerprint);
+        const anchor = anchorsByEvidence
+          .get(evidence.sourceRef)
+          ?.get(evidence.quote);
         if (!anchor) continue;
+        provenanceKeys.push(fingerprint);
         const documentId = documentIdForAnchor(prepared, anchor);
         if (documentId) evidenceDocumentSourceKeys.push(documentId);
       }

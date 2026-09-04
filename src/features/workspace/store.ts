@@ -8,6 +8,7 @@ import {
   beginWorkspaceSwitch,
   endWorkspaceSwitch,
 } from "@/features/timelapse/recorder";
+import { acquireQuiescenceLeaseAfterTimelapseGenesis } from "@/features/timelapse/genesisQuiescence";
 import {
   ensureProjectActive,
   hydrateWorkspaceProject,
@@ -20,10 +21,7 @@ import {
   setCurrentImeWorkspaceIdentity,
 } from "@/features/ime/workspaceScope";
 import { flushStrictQuiescence } from "@/application/lifecycle/quiescenceCoordinator";
-import {
-  acquireQuiescenceLease,
-  type QuiescenceLease,
-} from "@/application/lifecycle/quiescenceLease";
+import { type QuiescenceLease } from "@/application/lifecycle/quiescenceLease";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { clearRetainedEditorRecoveryDraftsForScopeChange } from "@/features/editor/editorSaveRegistry";
 import {
@@ -44,6 +42,7 @@ import {
 import { initializeWorkspaceStore } from "./workspaceInitialization";
 import {
   createWorkspaceOpenProjectLifecycleTiming,
+  createWorkspaceOpenTransition,
   runWorkspaceOpenTraceStep,
   setWorkspaceOpenTraceTarget,
   startRuntimeCompositionTrace,
@@ -118,21 +117,19 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     let projectLoadLease: WorkspaceProjectLoadLease | null = null;
     let quiescenceLease: QuiescenceLease | null = null;
     try {
-      quiescenceLease = acquireQuiescenceLease("workspace-open", {
-        transition: {
-          kind: "workspace",
-          from: {
-            workspacePath: get().activeWorkspacePath,
-            workspaceOpenRevision: get().workspaceOpenRevision,
-            projectId: previousProjectId,
-          },
-          to: {
-            workspacePath: path,
-            workspaceOpenRevision: null,
-            projectId: null,
-          },
+      quiescenceLease = await acquireQuiescenceLeaseAfterTimelapseGenesis(
+        "workspace-open",
+        {
+          transition: createWorkspaceOpenTransition(
+            {
+              workspacePath: get().activeWorkspacePath,
+              workspaceOpenRevision: get().workspaceOpenRevision,
+              projectId: previousProjectId,
+            },
+            path,
+          ),
         },
-      });
+      );
       // Debounced snapshot writes carry the old Project id. Stop them before
       // any await so they cannot wake up against the replacement database.
       cancelWorkspaceScopedSchedules();
@@ -252,6 +249,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       await hydrateWorkspaceProject(
         projectId,
         projectLoadLease.projectLoadContext,
+        path,
         nextOpenRevision,
         createWorkspaceOpenProjectLifecycleTiming(trace),
       );
@@ -293,8 +291,6 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       });
       quiescenceLease.transition?.advance("new-scope-hydrated");
       authorityPublishSpan.finish();
-      // Optimize FTS indexes in background (fire-and-forget)
-      invoke("fts_optimize").catch(() => {});
       return "opened";
     } catch (e) {
       trace.fail();

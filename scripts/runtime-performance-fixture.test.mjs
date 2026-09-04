@@ -1013,7 +1013,11 @@ test("smoke measures the seeded long scene before running the independent persis
     source.match(/globalThis\.snapshotPerfSession\?\.\(\)/g)?.length,
     3,
   );
-  assert.equal(source.match(/globalThis\.endPerfSession\?\.\(\)/g)?.length, 11);
+  assert.equal(
+    source.match(/globalThis\.endPerfSession\?\.\(\)/g)?.length,
+    12,
+    "the watchdog session finalizer adds one bounded endPerfSession path",
+  );
   assert.match(source, /performanceMetrics\.interactions\.treeFilter = \{/);
   assert.match(source, /performanceMetrics\.interactions\.linearScroll = \{/);
   assert.match(source, /\.react-flow__node/);

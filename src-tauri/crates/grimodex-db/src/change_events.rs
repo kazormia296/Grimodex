@@ -24,6 +24,24 @@ pub struct AppendChangeEvent {
     pub timestamp: i64,
 }
 
+/// Renderer-facing append batches are intentionally not an authority for the
+/// timelapse coverage proof. A coverage row is consumed as proof that a body
+/// prefix is durable; accepting it through the generic route would let a
+/// caller suppress the authoritative body snapshot with a forged payload.
+/// Keep this check at the shared Rust boundary so Electron/N-API and the
+/// legacy Tauri command cannot drift.
+pub fn reject_renderer_timelapse_coverage(events: &[AppendChangeEvent]) -> anyhow::Result<()> {
+    if events
+        .iter()
+        .any(|event| event.domain == "timelapse-internal" && event.op_type == "doc.step.coverage")
+    {
+        anyhow::bail!(
+            "TIMELAPSE_COVERAGE_RESERVED: renderer append batches cannot create Native-owned coverage"
+        );
+    }
+    Ok(())
+}
+
 thread_local! {
     static RENDERER_AUTHORITY_CONTEXT: std::cell::RefCell<Option<Value>> =
         const { std::cell::RefCell::new(None) };
@@ -315,6 +333,19 @@ pub fn append_change_events(
 }
 
 impl Database {
+    /// Append events received through a renderer-facing command. The generic
+    /// low-level append remains available to trusted Native/MCP writers, while
+    /// this boundary rejects the proof namespace before opening a transaction.
+    pub fn append_renderer_change_events(
+        &self,
+        project_id: &str,
+        session_id: &str,
+        events: &[AppendChangeEvent],
+    ) -> anyhow::Result<AppendResult> {
+        reject_renderer_timelapse_coverage(events)?;
+        self.append_change_events(project_id, session_id, events)
+    }
+
     pub fn append_change_events(
         &self,
         project_id: &str,
@@ -596,6 +627,18 @@ mod tests {
         assert_eq!(result.inserted_count, 2);
         assert_eq!(result.tail_sequence, 2);
         assert_chain_ok(&conn);
+    }
+
+    #[test]
+    fn renderer_append_rejects_native_owned_coverage_namespace() {
+        let mut forged = event("coverage-forged", None, 1);
+        forged.domain = "timelapse-internal".to_string();
+        forged.op_type = "doc.step.coverage".to_string();
+        let error = reject_renderer_timelapse_coverage(&[forged]).unwrap_err();
+        assert!(error.to_string().contains("TIMELAPSE_COVERAGE_RESERVED"));
+
+        let ordinary = event("ordinary", None, 1);
+        assert!(reject_renderer_timelapse_coverage(&[ordinary]).is_ok());
     }
 
     #[test]

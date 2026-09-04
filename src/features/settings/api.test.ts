@@ -11,11 +11,13 @@ import {
   deleteProjectSetting,
   getSetting,
   getProjectSetting,
+  NATIVE_OWNED_PROJECT_SETTING_ERROR,
   setSetting,
   setProjectSetting,
   getSettingsByPrefix,
   deleteSetting,
 } from "./api";
+import { SCAN_IMPORT_STATE_KEY } from "@/features/import/scan/scanImportState";
 
 // Uses the browser-mock DB (in-memory SQLite via sql.js)
 
@@ -74,6 +76,21 @@ describe("settings api", () => {
     expect(mockRecordChangeEvent).not.toHaveBeenCalled();
 
     await deleteProjectSetting("default-project", "editor.tabState");
+    expect(mockRecordChangeEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects direct mutation of the Native-owned Scan state key before DB or event writes", async () => {
+    await expect(
+      setProjectSetting("default-project", SCAN_IMPORT_STATE_KEY, "staging"),
+    ).rejects.toThrow(NATIVE_OWNED_PROJECT_SETTING_ERROR);
+    expect(
+      await getProjectSetting("default-project", SCAN_IMPORT_STATE_KEY),
+    ).toBeNull();
+    expect(mockRecordChangeEvent).not.toHaveBeenCalled();
+
+    await expect(
+      deleteProjectSetting("default-project", SCAN_IMPORT_STATE_KEY),
+    ).rejects.toThrow(NATIVE_OWNED_PROJECT_SETTING_ERROR);
     expect(mockRecordChangeEvent).not.toHaveBeenCalled();
   });
 });

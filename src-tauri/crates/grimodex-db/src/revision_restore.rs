@@ -354,6 +354,15 @@ pub fn restore_scene_revision(
                     }],
                 },
             )?;
+            crate::timelapse::append_timelapse_body_snapshots_in_tx(
+                conn,
+                &payload.project_id,
+                append.canonical.tail_sequence,
+                timestamp,
+                &[crate::timelapse::TimelapseBodySnapshotTarget::scene(
+                    payload.entity_id.clone(),
+                )],
+            )?;
 
             let response = RestoreSceneRevisionResult {
                 scene_id: payload.entity_id.clone(),
@@ -487,6 +496,14 @@ mod tests {
                     0
                 )
             );
+            let baseline: (i64, String) = conn.query_row(
+                "SELECT anchor_sequence, payload FROM state_snapshots
+                  WHERE project_id = ?1 AND domain = 'editor'
+                    AND entity_id = 'scene-1'",
+                [PROJECT],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(baseline, (result.canonical_sequence, TARGET.to_string()));
             Ok(())
         })
         .expect("inspect atomic restore");
@@ -510,6 +527,7 @@ mod tests {
                 ("narrative_change_events", 1),
                 ("idempotency_requests", 1),
                 ("content_versions", 2),
+                ("state_snapshots", 1),
             ] {
                 let count =
                     conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
@@ -617,5 +635,54 @@ mod tests {
             Ok(())
         })
         .expect("inspect Feed rollback");
+    }
+
+    #[test]
+    fn snapshot_failure_rolls_back_scene_safety_revision_ledgers_and_receipt() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER reject_revision_restore_snapshot
+                 BEFORE INSERT ON state_snapshots
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced revision restore snapshot failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .expect("install snapshot failure trigger");
+
+        let error = restore_scene_revision(&db, payload()).expect_err("snapshot failure aborts");
+        assert!(error
+            .to_string()
+            .contains("forced revision restore snapshot failure"));
+        db.with_conn(|conn| {
+            let scene: (String, i64, i64, Option<String>) = conn.query_row(
+                "SELECT content, char_count, version, placed_beat_preview
+                   FROM tree_nodes WHERE id = 'scene-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(
+                scene,
+                (OLD.to_string(), 3, 4, Some("[\"old beat\"]".to_string()))
+            );
+            for (table, expected) in [
+                ("content_versions", 1_i64),
+                ("change_events", 0),
+                ("narrative_change_transactions", 0),
+                ("narrative_change_events", 0),
+                ("state_snapshots", 0),
+                ("idempotency_requests", 0),
+            ] {
+                let count =
+                    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get::<_, i64>(0)
+                    })?;
+                assert_eq!(count, expected, "partial state in {table}");
+            }
+            Ok(())
+        })
+        .expect("inspect snapshot rollback");
     }
 }

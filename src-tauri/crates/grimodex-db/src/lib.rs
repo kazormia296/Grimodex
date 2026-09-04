@@ -594,6 +594,7 @@ pub mod sample_seed;
 pub mod scene_body;
 pub mod schema_contract;
 pub mod snippet_writes;
+pub mod timelapse;
 pub mod trash_bin;
 pub mod undo_journal;
 
@@ -601,6 +602,7 @@ pub mod error;
 pub mod events;
 pub mod migration_supervisor;
 pub mod open;
+pub(crate) mod open_wal;
 pub mod recovery;
 pub mod state;
 pub mod web_editor_handoff;

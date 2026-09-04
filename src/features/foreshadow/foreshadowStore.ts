@@ -25,7 +25,7 @@ import {
 } from "@/lib/createResultMetadata";
 import { loadSceneContents, saveSceneContent } from "@/features/tree/api";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
-import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
+import { rebaselineScenesAtTail } from "@/features/timelapse/rebaseline";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { prosemirrorToText } from "@/lib/prosemirror";

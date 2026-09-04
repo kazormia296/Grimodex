@@ -661,6 +661,191 @@ describe("createBrowserMock", () => {
       expect(result.rows.map((r) => r.sequence)).toEqual([1, 2]);
       expect((await verifyChain(result.rows)).ok).toBe(true);
     });
+
+    it("rejects renderer-owned coverage rows", async () => {
+      await expect(
+        mock.invoke("timelapse_append_batch", {
+          projectId: "default-project",
+          sessionId: "session-1",
+          events: [
+            {
+              eventUid: "forged-coverage",
+              sceneId: null,
+              domain: "timelapse-internal",
+              opType: "doc.step.coverage",
+              entityType: "scene",
+              entityId: "scene-1",
+              payload: JSON.stringify({
+                resultContentDigest: `sha256:${"0".repeat(64)}`,
+              }),
+              timestamp: 1700000000002,
+            },
+          ],
+        }),
+      ).rejects.toThrow("TIMELAPSE_COVERAGE_RESERVED");
+    });
+  });
+
+  describe("timelapse_history_purge", () => {
+    const expectedWorkspacePath = "/dev/workspace";
+
+    async function appendEvent(
+      projectId: string,
+      eventUid: string,
+      timestamp: number,
+    ): Promise<void> {
+      await mock.invoke("timelapse_append_batch", {
+        projectId,
+        sessionId: `${eventUid}-session`,
+        events: [
+          {
+            eventUid,
+            sceneId: null,
+            domain: "editor",
+            opType: "step",
+            entityType: null,
+            entityId: null,
+            payload: JSON.stringify({ eventUid }),
+            timestamp,
+          },
+        ],
+      });
+    }
+
+    async function readEvents(projectId: string): Promise<EventForVerify[]> {
+      const result = await mock.invoke<{ rows: EventForVerify[] }>(
+        "db_execute",
+        {
+          sql: `select project_id as projectId, scene_id as sceneId, domain,
+            op_type as opType, entity_type as entityType, entity_id as entityId,
+            payload, session_id as sessionId, sequence, timestamp,
+            prev_hash as prevHash, hash from change_events
+            where project_id = ? order by sequence`,
+          params: [projectId],
+          method: "all",
+        },
+      );
+      return result.rows;
+    }
+
+    async function readCount(
+      table: "change_events" | "state_snapshots",
+      projectId: string,
+    ): Promise<number> {
+      const result = await mock.invoke<{ rows: Array<{ count: number }> }>(
+        "db_execute",
+        {
+          sql: `select count(*) as count from ${table} where project_id = ?`,
+          params: [projectId],
+          method: "all",
+        },
+      );
+      return Number(result.rows[0]?.count ?? 0);
+    }
+
+    it("retains the chain, advances the reset epoch, and purges snapshots by project", async () => {
+      await appendEvent("default-project", "purge-default-1", 1700000100000);
+      await appendEvent("default-project", "purge-default-2", 1700000100001);
+      const before = await readEvents("default-project");
+      expect(before.map((event) => event.sequence)).toEqual([1, 2]);
+      expect((await verifyChain(before)).ok).toBe(true);
+
+      await mock.invoke("timelapse_layout_snapshot_record", {
+        expectedWorkspacePath,
+        projectId: "default-project",
+        payload: { layout: { activePanel: "editor" } },
+        expectedAnchorSequence: 2,
+      });
+
+      const now = new Date().toISOString();
+      await mock.invoke("db_execute", {
+        sql: "insert into projects (id, title, language, created_at, updated_at) values (?, ?, ?, ?, ?)",
+        params: ["purge-other-project", "Other", "ja", now, now],
+        method: "run",
+      });
+      await appendEvent("purge-other-project", "purge-other-1", 1700000100002);
+      await mock.invoke("timelapse_layout_snapshot_record", {
+        expectedWorkspacePath,
+        projectId: "purge-other-project",
+        payload: { layout: { activePanel: "other" } },
+        expectedAnchorSequence: 1,
+      });
+
+      await expect(
+        mock.invoke("timelapse_history_purge", {
+          expectedWorkspacePath,
+          projectId: "default-project",
+        }),
+      ).resolves.toEqual({ deletedEventCount: 2, deletedSnapshotCount: 1 });
+
+      const after = await readEvents("default-project");
+      expect(after).toEqual(before);
+      expect((await verifyChain(after)).ok).toBe(true);
+      expect(await readCount("change_events", "default-project")).toBe(2);
+      expect(await readCount("state_snapshots", "default-project")).toBe(0);
+      expect(await readCount("change_events", "purge-other-project")).toBe(1);
+      expect(await readCount("state_snapshots", "purge-other-project")).toBe(1);
+
+      const resetMarker = await mock.invoke<{
+        rows: Array<{ value: string }>;
+      }>("db_execute", {
+        sql: `select value from project_settings
+          where project_id = ? and key = 'timelapse.resetSequence'`,
+        params: ["default-project"],
+        method: "all",
+      });
+      expect(resetMarker.rows).toEqual([{ value: "2" }]);
+
+      await appendEvent("default-project", "purge-default-3", 1700000100003);
+      await expect(
+        mock.invoke("timelapse_history_purge", {
+          expectedWorkspacePath,
+          projectId: "default-project",
+        }),
+      ).resolves.toEqual({ deletedEventCount: 1, deletedSnapshotCount: 0 });
+      await expect(
+        mock.invoke("timelapse_history_purge", {
+          expectedWorkspacePath,
+          projectId: "default-project",
+        }),
+      ).resolves.toEqual({ deletedEventCount: 0, deletedSnapshotCount: 0 });
+
+      const completeChain = await readEvents("default-project");
+      expect(completeChain.map((event) => event.sequence)).toEqual([1, 2, 3]);
+      expect((await verifyChain(completeChain)).ok).toBe(true);
+    });
+
+    it("fails closed when the native reset epoch is malformed", async () => {
+      await appendEvent("default-project", "purge-malformed-1", 1700000100010);
+      await mock.invoke("db_execute", {
+        sql: "insert into project_settings (project_id, key, value) values (?, ?, ?)",
+        params: [
+          "default-project",
+          "timelapse.resetSequence",
+          "not-an-integer",
+        ],
+        method: "run",
+      });
+
+      await expect(
+        mock.invoke("timelapse_history_purge", {
+          expectedWorkspacePath,
+          projectId: "default-project",
+        }),
+      ).rejects.toThrow(
+        "TIMELAPSE_HISTORY_INVALID_RESET_SEQUENCE: stored reset sequence is not an integer",
+      );
+      expect(await readCount("change_events", "default-project")).toBe(1);
+      const marker = await mock.invoke<{
+        rows: Array<{ value: string }>;
+      }>("db_execute", {
+        sql: `select value from project_settings
+          where project_id = ? and key = 'timelapse.resetSequence'`,
+        params: ["default-project"],
+        method: "all",
+      });
+      expect(marker.rows).toEqual([{ value: "not-an-integer" }]);
+    });
   });
 
   describe("API key browser lifetime", () => {

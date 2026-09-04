@@ -62,7 +62,13 @@
         "reason": { "type": "string", "minLength": 1 },
         "operations": {
           "type": "array",
-          "minItems": 1,
+          "const": [
+            "verifyNarrativeDependencyGraph",
+            "rebuildNarrativeDerivedState",
+            "repairNarrativeDependencyDeclarations",
+            "getNarrativeBackfillStatus",
+            "retryNarrativeLegacyBackfill"
+          ],
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         }
@@ -116,6 +122,248 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "idleCheckpointPolicy": {
+      "type": "object",
+      "required": [
+        "kind",
+        "version",
+        "specKind",
+        "runKind",
+        "taskKind",
+        "zeroWidthRange",
+        "epochBinding",
+        "cursor",
+        "projectSelection",
+        "suppression",
+        "descriptorBinding",
+        "lifecycle",
+        "nextWake",
+        "databaseEvidence",
+        "writesAllowed",
+        "forbiddenWrites",
+        "forbiddenPublishers"
+      ],
+      "properties": {
+        "kind": { "const": "current-epoch-idle-checkpoint" },
+        "version": { "const": 1 },
+        "specKind": {
+          "const": "incremental-freshness-idle-checkpoint@1"
+        },
+        "runKind": { "const": "freshness-evaluation" },
+        "taskKind": { "const": "incremental-freshness-batch" },
+        "zeroWidthRange": {
+          "type": "object",
+          "required": [
+            "fromSequenceExclusive",
+            "throughSequenceInclusive",
+            "feedHead"
+          ],
+          "properties": {
+            "fromSequenceExclusive": { "const": "feedHead" },
+            "throughSequenceInclusive": { "const": "feedHead" },
+            "feedHead": { "const": "feedHead" }
+          },
+          "additionalProperties": false
+        },
+        "epochBinding": { "const": "current-semantic-epoch" },
+        "cursor": {
+          "type": "object",
+          "required": [
+            "acknowledgedThroughSequence",
+            "requiresClean",
+            "missingAllowedOnlyAtFeedHead"
+          ],
+          "properties": {
+            "acknowledgedThroughSequence": { "const": "feedHead" },
+            "requiresClean": { "const": true },
+            "missingAllowedOnlyAtFeedHead": { "const": 0 }
+          },
+          "additionalProperties": false
+        },
+        "projectSelection": {
+          "type": "object",
+          "required": ["projectsPerWake", "order"],
+          "properties": {
+            "projectsPerWake": { "const": 1 },
+            "order": { "const": "project-id-ascending" }
+          },
+          "additionalProperties": false
+        },
+        "suppression": {
+          "type": "object",
+          "required": ["existingCurrentEpochFreshnessRunAnyStatus"],
+          "properties": {
+            "existingCurrentEpochFreshnessRunAnyStatus": { "const": true }
+          },
+          "additionalProperties": false
+        },
+        "descriptorBinding": {
+          "type": "object",
+          "required": [
+            "digestAlgorithm",
+            "inputDigestBinding",
+            "taskInput",
+            "spec",
+            "workKey"
+          ],
+          "properties": {
+            "digestAlgorithm": { "const": "sha256-canonical-json" },
+            "inputDigestBinding": {
+              "const": "task-input-to-spec-and-work-key"
+            },
+            "taskInput": {
+              "type": "object",
+              "required": [
+                "exactKeys",
+                "kind",
+                "version",
+                "digestField",
+                "digestInput"
+              ],
+              "properties": {
+                "exactKeys": {
+                  "const": [
+                    "kind",
+                    "version",
+                    "projectId",
+                    "semanticEpochId",
+                    "fromSequenceExclusive",
+                    "throughSequenceInclusive",
+                    "feedHead",
+                    "inputDigest"
+                  ]
+                },
+                "kind": { "const": "current-epoch-idle-checkpoint" },
+                "version": { "const": 1 },
+                "digestField": { "const": "inputDigest" },
+                "digestInput": {
+                  "const": "canonical-payload-without-inputDigest"
+                }
+              },
+              "additionalProperties": false
+            },
+            "spec": {
+              "type": "object",
+              "required": [
+                "exactKeys",
+                "kind",
+                "inputDigest",
+                "digestField",
+                "digestInput"
+              ],
+              "properties": {
+                "exactKeys": { "const": ["kind", "inputDigest"] },
+                "kind": {
+                  "const": "incremental-freshness-idle-checkpoint@1"
+                },
+                "inputDigest": { "const": "same-as-task-input" },
+                "digestField": { "const": "specDigest" },
+                "digestInput": { "const": "canonical-spec-object" }
+              },
+              "additionalProperties": false
+            },
+            "workKey": {
+              "type": "object",
+              "required": ["format", "digestInput"],
+              "properties": {
+                "format": {
+                  "const": "incremental-freshness:{semanticEpochId}:{fromSequenceExclusive}:{throughSequenceInclusive}:{inputDigestHex}"
+                },
+                "digestInput": {
+                  "const": "task-input-inputDigest-without-sha256-prefix"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "lifecycle": {
+          "type": "object",
+          "required": [
+            "taskCount",
+            "completedTaskCount",
+            "taskStatus",
+            "taskAttemptCountEqualsAttemptRows",
+            "attemptNumbering",
+            "attemptStatuses",
+            "completedAttemptCount",
+            "runningAttemptCount",
+            "activeAttemptCount",
+            "noActiveAttempt",
+            "failedRetryHistoryAllowed",
+            "failedRetryHistoryOrder",
+            "completedAttemptMustBeLast",
+            "retryCap"
+          ],
+          "properties": {
+            "taskCount": { "const": 1 },
+            "completedTaskCount": { "const": 1 },
+            "taskStatus": { "const": "completed" },
+            "taskAttemptCountEqualsAttemptRows": { "const": true },
+            "attemptNumbering": { "const": "1..N-contiguous" },
+            "attemptStatuses": { "const": ["failed", "completed"] },
+            "completedAttemptCount": { "const": 1 },
+            "runningAttemptCount": { "const": 0 },
+            "activeAttemptCount": { "const": 0 },
+            "noActiveAttempt": { "const": true },
+            "failedRetryHistoryAllowed": { "const": true },
+            "failedRetryHistoryOrder": {
+              "const": "failed-before-completed-only"
+            },
+            "completedAttemptMustBeLast": { "const": true },
+            "retryCap": {
+              "type": "object",
+              "required": [
+                "maxAttemptsPerTask",
+                "corruptedTaskKindCannotBypass"
+              ],
+              "properties": {
+                "maxAttemptsPerTask": { "const": 3 },
+                "corruptedTaskKindCannotBypass": { "const": true }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "nextWake": {
+          "type": "object",
+          "required": ["noChurn"],
+          "properties": { "noChurn": { "const": true } },
+          "additionalProperties": false
+        },
+        "databaseEvidence": {
+          "type": "object",
+          "required": ["schedulerLiveness", "canonicalCutover"],
+          "properties": {
+            "schedulerLiveness": { "const": "not-proven" },
+            "canonicalCutover": { "const": "not-proven" }
+          },
+          "additionalProperties": false
+        },
+        "writesAllowed": {
+          "const": ["run-task-attempt-state", "freshness-evaluator-cursor"]
+        },
+        "forbiddenWrites": {
+          "const": [
+            "narrative-change-set",
+            "consumer-freshness",
+            "dependency-edge-state",
+            "finding-observation",
+            "attention",
+            "domain-state",
+            "d2-declarations",
+            "d2-shadow",
+            "semantic-index"
+          ]
+        },
+        "forbiddenPublishers": {
+          "const": ["generic-consumer-freshness"]
+        }
+      },
+      "additionalProperties": false
+    },
     "runKindPolicy": {
       "type": "object",
       "required": [
@@ -157,10 +405,15 @@
         },
         "triggerDetail": { "type": "string", "minLength": 1 },
         "triggerEvents": {
+          "description": "Semantic database/runtime discovery conditions. These are not literal Electron emitter names; the main process wakes and asks the durable planner to rediscover work.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "before-c2z-cutover" }
+          }
         },
         "manualTriggerAllowed": { "type": "boolean" },
         "sameWorkKeyReuse": {
@@ -188,6 +441,7 @@
         "missingSemanticEpochBehavior": {
           "enum": ["wait-for-canonical-epoch-authority"]
         },
+        "idleCheckpoint": { "$ref": "#/$defs/idleCheckpointPolicy" },
         "retryPolicy": {
           "type": "object",
           "required": [
@@ -322,6 +576,20 @@
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         },
+        "verifyCoverage": {
+          "type": "object",
+          "required": [
+            "requiredCheckCount",
+            "productionCoverage",
+            "reductionForbidden"
+          ],
+          "properties": {
+            "requiredCheckCount": { "const": 13 },
+            "productionCoverage": { "const": "13/13" },
+            "reductionForbidden": { "const": true }
+          },
+          "additionalProperties": false
+        },
         "rebuildableTargets": {
           "type": "array",
           "minItems": 1,
@@ -357,16 +625,35 @@
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         },
+        "runtimeRoute": {
+          "description": "Stable route registry metadata for automatic maintenance. Presence describes the contract; it does not prove source reachability.",
+          "type": "object",
+          "required": [
+            "registryVersion",
+            "routeId",
+            "productionEntryPoint"
+          ],
+          "properties": {
+            "registryVersion": {
+              "const": "narrative-maintenance-route/v1"
+            },
+            "routeId": { "type": "string", "minLength": 1 },
+            "productionEntryPoint": {
+              "const": "run_narrative_maintenance_cycle"
+            }
+          },
+          "additionalProperties": false
+        },
         "implementationStatus": {
           "type": "object",
-          "description": "Whether this Run Kind's declared trigger is actually wired in the shipping runtime. Declared per Run Kind so the contract cannot silently describe a future state as if it were live; validate-run-kind-policy.mjs cross-checks it against the real Rust call graph in both directions.",
+          "description": "Whether this Run Kind's declared route is wired in the shipping runtime. The policy validator checks only this JSON contract and does not infer wiring from source reachability.",
           "required": ["state", "productionEntryPoints"],
           "properties": {
             "state": { "enum": ["wired", "unwired-blocked"] },
             "triggerSymbol": {
               "type": "string",
               "minLength": 1,
-              "description": "Rust function an automatic trigger must call for this Run Kind to count as wired. Required when trigger is automatic-*."
+              "description": "Stable internal symbol retained only for the incremental freshness contract; the JSON validator does not resolve it against source."
             },
             "productionEntryPoints": {
               "type": "array",
@@ -383,10 +670,262 @@
               "items": { "type": "string", "minLength": 1 }
             }
           },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "state": { "const": "wired" } },
+                "required": ["state"]
+              },
+              "then": {
+                "not": {
+                  "anyOf": [
+                    { "required": ["blockedReason"] },
+                    { "required": ["blockedOn"] }
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": { "const": "unwired-blocked" }
+                },
+                "required": ["state"]
+              },
+              "then": {
+                "required": ["blockedReason", "blockedOn"]
+              }
+            }
+          ],
           "additionalProperties": false
         }
       },
       "allOf": [
+        {
+          "if": {
+            "properties": { "runKind": { "const": "dependency-repair" } },
+            "required": ["runKind"]
+          },
+          "then": {
+            "required": [
+              "sameRequestIdReuse",
+              "sameWorkKeyReuse",
+              "manualRetry",
+              "manualRetryNote",
+              "requiredPreconditions",
+              "allowedRepairs",
+              "forbiddenRepairs",
+              "unrecoverableDisposition"
+            ],
+            "properties": {
+              "trigger": { "const": "manual-only" },
+              "sameRequestIdReuse": { "const": "idempotent-replay" },
+              "sameWorkKeyReuse": { "const": "no-automatic-reuse-decision" },
+              "epochBound": { "const": true },
+              "cursorBound": { "const": false },
+              "periodic": { "const": false },
+              "manualRetry": {
+                "const": "crash-recovery-of-an-already-approved-sealed-plan-only"
+              },
+              "manualRetryNote": {
+                "const": "resuming an approved sealed repair plan after a crash is recovery of an already-approved operation, not a new repair decision."
+              },
+              "writes": { "const": "durable-graph" },
+              "requiredPreconditions": {
+                "const": [
+                  "successful-verify-run-id",
+                  "sealed-repair-plan-from-verify-result",
+                  "repair-plan-digest",
+                  "current-semantic-epoch-match",
+                  "exclusive-workspace-lease",
+                  "automatic-backup-or-snapshot",
+                  "explicit-confirmation",
+                  "stable-request-id",
+                  "change-count-preview"
+                ]
+              },
+              "allowedRepairs": {
+                "const": [
+                  "edge-fully-reconstructible-from-durable-ledger",
+                  "artifact-with-explicit-dependency-manifest",
+                  "proposal-revision-edge-uniquely-derivable-from-source-basis-or-read-set",
+                  "application-contribution-uniquely-derivable-from-commit-receipt",
+                  "deactivate-duplicate-edge",
+                  "supersede-a-clear-prior-generation"
+                ]
+              },
+              "forbiddenRepairs": {
+                "const": [
+                  "infer-dependency-from-payload-semantic-analysis",
+                  "ai-completion-of-a-missing-dependency",
+                  "select-an-ambiguous-target-path",
+                  "modify-a-domain-field",
+                  "rewrite-author-ownership",
+                  "guess-an-evidence-range",
+                  "re-adjudicate-semantic-truth"
+                ]
+              },
+              "unrecoverableDisposition": {
+                "const": ["detached", "unknown", "manual-review-required"]
+              },
+              "adminCommands": {
+                "const": ["repairNarrativeDependencyDeclarations"]
+              },
+              "implementationStatus": {
+                "properties": {
+                  "state": { "const": "wired" },
+                  "productionEntryPoints": {
+                    "const": ["repairNarrativeDependencyDeclarations"]
+                  }
+                },
+                "not": { "required": ["triggerSymbol"] }
+              }
+            },
+            "not": {
+              "anyOf": [
+                { "required": ["triggerEvents"] },
+                { "required": ["runtimeRoute"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runKind": {
+                "enum": [
+                  "dependency-backfill",
+                  "dependency-verify",
+                  "dependency-rebuild-derived"
+                ]
+              }
+            },
+            "required": ["runKind"]
+          },
+          "then": {
+            "required": ["runtimeRoute"],
+            "properties": {
+              "runtimeRoute": {
+                "required": [
+                  "registryVersion",
+                  "routeId",
+                  "productionEntryPoint"
+                ],
+                "properties": {
+                  "registryVersion": {
+                    "const": "narrative-maintenance-route/v1"
+                  },
+                  "productionEntryPoint": {
+                    "const": "run_narrative_maintenance_cycle"
+                  }
+                }
+              },
+              "implementationStatus": {
+                "properties": {
+                  "state": { "const": "wired" },
+                  "productionEntryPoints": {
+                    "const": ["run_narrative_maintenance_cycle"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runKind": { "const": "dependency-backfill" }
+            },
+            "required": ["runKind"]
+          },
+          "then": {
+            "properties": {
+              "trigger": {
+                "const": "automatic-once-after-schema-upgrade"
+              },
+              "adminCommands": {
+                "const": [
+                  "retryNarrativeLegacyBackfill",
+                  "getNarrativeBackfillStatus"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runKind": { "const": "dependency-verify" }
+            },
+            "required": ["runKind"]
+          },
+          "then": {
+            "required": [
+              "verifiesDurableGraph",
+              "verifiesRebuildableState",
+              "verifyCoverage"
+            ],
+            "properties": {
+              "trigger": { "const": "automatic-on-trigger-event" },
+              "adminCommands": {
+                "const": ["verifyNarrativeDependencyGraph"]
+              },
+              "verifiesDurableGraph": {
+                "const": [
+                  "producer-and-generation-consistency",
+                  "active-edge-duplicates",
+                  "cross-project-edge",
+                  "consumer-and-source-key-format",
+                  "application-revision-artifact-references",
+                  "dependency-set-digest",
+                  "contribution-to-application-commit-correspondence",
+                  "legacy-mirror-migration-parity"
+                ]
+              },
+              "verifiesRebuildableState": {
+                "const": [
+                  "edge-state-belongs-to-current-epoch",
+                  "consumer-freshness-dependency-set-digest",
+                  "finding-observation-belongs-to-current-epoch",
+                  "cursor-and-feed-head-consistency",
+                  "semantic-index-generation-correspondence"
+                ]
+              },
+              "verifyCoverage": {
+                "const": {
+                  "requiredCheckCount": 13,
+                  "productionCoverage": "13/13",
+                  "reductionForbidden": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runKind": { "const": "dependency-rebuild-derived" }
+            },
+            "required": ["runKind"]
+          },
+          "then": {
+            "properties": {
+              "trigger": {
+                "const": "automatic-when-derived-state-absent-or-invalid"
+              },
+              "adminCommands": {
+                "const": ["rebuildNarrativeDerivedState"]
+              },
+              "rebuildableTargets": {
+                "not": {
+                  "contains": {
+                    "const": "semantic-index-generation-cache"
+                  }
+                }
+              }
+            }
+          }
+        },
         {
           "if": {
             "properties": { "runKind": { "const": "incremental-freshness" } },
@@ -398,6 +937,7 @@
               "maxCanonicalSequencesPerBatch",
               "executionAuthority",
               "missingSemanticEpochBehavior",
+              "idleCheckpoint",
               "retryPolicy",
               "resumeSemantics",
               "completedWithUnackedRangeInvariant",
@@ -417,6 +957,9 @@
               },
               "missingSemanticEpochBehavior": {
                 "const": "wait-for-canonical-epoch-authority"
+              },
+              "idleCheckpoint": {
+                "$ref": "#/$defs/idleCheckpointPolicy"
               },
               "retryPolicy": {
                 "const": {
@@ -463,6 +1006,7 @@
               "implementationStatus": {
                 "required": ["triggerSymbol", "productionEntryPoints"],
                 "properties": {
+                  "state": { "const": "wired" },
                   "triggerSymbol": {
                     "const": "run_incremental_freshness_cycle"
                   },
@@ -474,6 +1018,7 @@
             }
           },
           "else": {
+            "not": { "required": ["idleCheckpoint"] },
             "properties": {
               "cursorBound": { "const": false },
               "adminCommands": { "minItems": 1 }

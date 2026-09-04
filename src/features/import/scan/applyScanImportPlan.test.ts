@@ -1,9 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
+import { IpcInvokeError } from "@/lib/tauri";
 import type { ScanImportPlan } from "./scanImportPlan";
 import {
   applyScanImportPlan,
   type ScanImportApplyOperations,
 } from "./applyScanImportPlan";
+
+const publishReceipt = {
+  projectId: "staging-project",
+  semanticEpochId: "epoch-1",
+  __writeReceipt: {
+    changeEventUid: "event-1",
+    maintenanceTransactionId: "tx-1",
+    undoJournalId: null,
+  },
+};
 
 function makePlan(): ScanImportPlan {
   return {
@@ -78,6 +89,10 @@ function makeOperations(
     }),
     publishStagingProject: vi.fn(async () => {
       calls.push("publish");
+      return publishReceipt;
+    }),
+    refreshPublishedProject: vi.fn(async () => {
+      calls.push("refresh");
     }),
     discardStagingProject: vi.fn(async () => {
       calls.push("discard");
@@ -103,6 +118,7 @@ describe("applyScanImportPlan", () => {
       "findings",
       "metadata",
       "publish",
+      "refresh",
     ]);
     expect(result).toEqual({
       projectId: "staging-project",
@@ -166,5 +182,71 @@ describe("applyScanImportPlan", () => {
       }),
     });
     expect(calls).toEqual(["create", "tree", "codex", "discard"]);
+  });
+
+  it("keeps a committed publish when the post-commit UI refresh fails", async () => {
+    const calls: string[] = [];
+    const operations = makeOperations(calls);
+    const refreshPublishedProject = vi.fn(async () => {
+      calls.push("refresh");
+      throw new Error("refresh failed");
+    });
+    Object.assign(operations, { refreshPublishedProject });
+
+    const result = await applyScanImportPlan(makePlan(), operations);
+
+    expect(result.projectId).toBe("staging-project");
+    expect(refreshPublishedProject).toHaveBeenCalledOnce();
+    expect(operations.discardStagingProject).not.toHaveBeenCalled();
+  });
+
+  it("does not discard after an ambiguous native publish outcome", async () => {
+    const calls: string[] = [];
+    const operations = makeOperations(calls, {
+      publishStagingProject: vi.fn(async () => {
+        calls.push("publish");
+        throw new IpcInvokeError("scan_staging_project_publish", {
+          code: "IPC_TIMEOUT",
+          message: "publish outcome is ambiguous",
+          retryable: true,
+          outcome: "unknown",
+        });
+      }),
+    });
+
+    await expect(
+      applyScanImportPlan(makePlan(), operations),
+    ).rejects.toMatchObject({
+      name: "ScanImportApplyError",
+      stage: "publish",
+      projectId: "staging-project",
+    });
+    expect(operations.discardStagingProject).not.toHaveBeenCalled();
+  });
+
+  it("discards only when native publish is known not to be committed", async () => {
+    const calls: string[] = [];
+    const operations = makeOperations(calls, {
+      publishStagingProject: vi.fn(async () => {
+        calls.push("publish");
+        throw new IpcInvokeError("scan_staging_project_publish", {
+          code: "UNKNOWN",
+          message: "native publish rolled back",
+          retryable: false,
+          outcome: "failed",
+        });
+      }),
+    });
+
+    await expect(
+      applyScanImportPlan(makePlan(), operations),
+    ).rejects.toMatchObject({
+      name: "ScanImportApplyError",
+      stage: "publish",
+      projectId: "staging-project",
+    });
+    expect(operations.discardStagingProject).toHaveBeenCalledWith(
+      "staging-project",
+    );
   });
 });

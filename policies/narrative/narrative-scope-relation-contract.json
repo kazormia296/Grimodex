@@ -4,6 +4,49 @@
   "adr": "docs/adr/009-narrative-scope-relation-contract.md",
   "scopeSchemaVersion": 2,
   "registryVersion": "narrative-scope/2",
+  "historicalAuthorityBasis": {
+    "contractId": "narrative-scope-authority-basis/2",
+    "schema": "policies/narrative/schemas/narrative-scope-authority-basis-v2.schema.json",
+    "futureCarrierArtifactKind": "source.snapshot@2",
+    "basisKind": "historical-run-snapshot",
+    "sourceKind": "snapshot-document",
+    "sourceKeyPattern": "snapshot:<runId>",
+    "currentOracle": false,
+    "runtimeStopCode": "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE",
+    "v1Compatibility": {
+      "implicitUpgrade": "forbidden",
+      "rebuildRequired": true
+    },
+    "implementationStatus": {
+      "state": "shadow",
+      "productionEntryPoints": [
+        "runChronicleExtractionCoordinator",
+        "persist_historical_scope_authority_basis_in_tx",
+        "load_historical_scope_authority_basis"
+      ],
+      "blockedOn": ["c2b-scope-override-wiring"]
+    }
+  },
+  "liveProjectAuthority": {
+    "contractId": "narrative-project-scope-authority-revision/1",
+    "basisKind": "computed-live-project-tree",
+    "sourceKind": "project-scope-authority",
+    "sourceKeyPattern": "project:scope-authority:<projectId>",
+    "persistence": "computed-no-table-or-head",
+    "scopeOverrideActive": true,
+    "runtimeStopCode": "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE",
+    "implementationStatus": {
+      "state": "wired",
+      "productionEntryPoints": [
+        "build_narrative_project_scope_authority_v1",
+        "load_live_project_scope_authority",
+        "create_human_derived_revision_with_c2b_projection_materialization_auto",
+        "run_incremental_freshness_cycle",
+        "rebuild_narrative_derived_state_for_project"
+      ],
+      "blockedOn": []
+    }
+  },
   "implementationStatus": {
     "state": "declared",
     "productionEntryPoints": [],

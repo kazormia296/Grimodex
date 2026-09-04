@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use crate::backup_restore::{
     create_persistent_live_safety_artifact, install_staged_workspace_db, list_backups_in,
-    materialize_candidate_to_plain, preflight_candidate, verify_sqlite_ok, BackupInfo,
-    InstallStagedOptions,
+    materialize_candidate_to_plain, preflight_candidate, verify_materialized_backup_digest,
+    verify_sqlite_ok, BackupInfo, InstallStagedOptions,
 };
 use crate::error::{AppError, AppResult};
 use crate::migration_supervisor::{
@@ -576,7 +576,7 @@ fn materialize_candidate_for_restore(
     relative_key: &str,
     kind: RecoveryCandidateKind,
     dest: &Path,
-) -> AppResult<()> {
+) -> AppResult<String> {
     let mut file = File::open(absolute_path).map_err(anyhow::Error::from)?;
     let meta = file.metadata().map_err(anyhow::Error::from)?;
     if kind == RecoveryCandidateKind::MigrationSnapshot {
@@ -594,7 +594,8 @@ fn materialize_candidate_for_restore(
         file.seek(SeekFrom::Start(0)).map_err(anyhow::Error::from)?;
         materialize_open_file_to_plain(&mut file, is_gz, dest)?;
     }
-    Ok(())
+    let digest = verify_materialized_backup_digest(relative_key, dest)?;
+    Ok(digest)
 }
 
 fn reverify_migration_snapshot_locked(
@@ -758,7 +759,7 @@ pub fn restore_safe_mode_candidate(ws_state: &WorkspaceState, candidate_id: &str
     // materialize so symlink/hardlink TOCTOU cannot race the copy.
     let exclusive = workspace_lease::acquire_exclusive_for_migration(&workspace_path)?;
     ensure_path_inside_workspace(&workspace_path, &absolute_path)?;
-    materialize_candidate_for_restore(
+    let materialized_candidate_digest = materialize_candidate_for_restore(
         &workspace_path,
         &absolute_path,
         &relative_key,
@@ -767,12 +768,9 @@ pub fn restore_safe_mode_candidate(ws_state: &WorkspaceState, candidate_id: &str
     )?;
     preflight_candidate(&staged)?;
 
-    let result = install_staged_workspace_db(
-        ws_state,
-        &workspace_path,
-        &staged,
-        InstallStagedOptions::safe_mode(exclusive),
-    );
+    let mut install_options = InstallStagedOptions::safe_mode(exclusive);
+    install_options.restore_source_digest = Some(materialized_candidate_digest);
+    let result = install_staged_workspace_db(ws_state, &workspace_path, &staged, install_options);
     if result.is_ok() {
         staged_cleanup.disarm();
     }
@@ -1010,6 +1008,39 @@ mod tests {
     }
 
     #[test]
+    fn content_addressed_recovery_candidate_rejects_materialized_digest_corruption_without_live_mutation(
+    ) {
+        let ws = temp_ws("content-addressed-mismatch");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        let source = ws.join("backups/source.db");
+        create_migrated_db(&source, "backup");
+        let digest = crate::migration_supervisor::digest_sha256_file(&source)
+            .expect("digest content-addressed recovery source");
+        let name = format!("grimodex-c2zc-restore-fixture--sha256-{digest}.backup.db");
+        let target = ws.join("backups").join(&name);
+        fs::rename(&source, &target).expect("publish digest-bound recovery candidate");
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, ".backup.db");
+
+        // The registry has already captured the valid candidate name. Corrupt
+        // bytes must fail at the held-file materialization digest boundary
+        // before preflight or install can touch the live DB.
+        fs::write(&target, b"corrupted-materialized-candidate")
+            .expect("corrupt recovery candidate bytes");
+        let error = restore_safe_mode_candidate(&state, &candidate_id)
+            .expect_err("content-addressed materialized digest mismatch must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("C2ZC_RESTORE_SOURCE_DIGEST_MISMATCH"),
+            "unexpected mismatch error: {error}"
+        );
+        assert_eq!(marker_at(&ws.join("grimodex.db")), "live");
+        assert!(state.safe_mode.is_active());
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
     fn verifies_gzip_backup_candidate_via_materialized_sqlite() {
         let ws = temp_ws("verify-gzip");
         let plain = ws.join("source.db");
@@ -1086,7 +1117,7 @@ mod tests {
         let marker = read_incomplete_restore_session(&ws)
             .expect("marker read")
             .expect("marker present");
-        assert_eq!(marker.phase, "live-sealed");
+        assert_eq!(marker.phase, "epoch-minted");
 
         let reopen = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("reopen");
         assert!(
@@ -1423,11 +1454,13 @@ mod tests {
         let error = restore_safe_mode_candidate(&state, &candidate_id)
             .expect_err("sidecar / safety failure must abort restore");
 
+        // C2-ZC authority compatibility is checked before candidate install.
+        // A WAL path that is not a file makes that authoritative marker read
+        // indeterminate, so restore must stop before sidecar removal/replace.
         assert!(
-            error.to_string().contains("sidecar")
-                || error.to_string().contains("RESTORE_LIVE_SAFETY")
-                || error.to_string().contains("FORENSIC")
-                || error.to_string().contains("安全コピー"),
+            error
+                .to_string()
+                .contains("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED"),
             "unexpected error: {error}"
         );
         fs::remove_dir(ws.join("grimodex.db-wal")).expect("remove sidecar dir");
@@ -1467,6 +1500,199 @@ mod tests {
         assert_eq!(marker_at(&ws.join("grimodex.db")), "backup");
         let shared = workspace_lease::try_acquire_shared(&ws).expect("shared lease available");
         drop(shared);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn safe_mode_restore_mints_restore_epoch_for_normal_reopen() {
+        use crate::migration_supervisor::{self, WorkspaceOpenDbOutcome};
+
+        let ws = temp_ws("restore-epoch-journey");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        create_migrated_db(&ws.join("backups/grimodex-auto.db"), "backup");
+        {
+            let db = Database::new(&ws.join("backups/grimodex-auto.db")).expect("backup db");
+            db.execute(
+                "INSERT INTO projects (id, title) VALUES ('restore-project', 'restore fixture')",
+                &[],
+                "seed project",
+            )
+            .expect("seed project");
+            db.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('restore-project-initial', 'restore-project', 0, 'initial',
+                         '2026-08-23T00:00:00.000Z')",
+                &[],
+                "seed epoch",
+            )
+            .expect("seed epoch");
+        }
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, ".db");
+
+        restore_safe_mode_candidate(&state, &candidate_id).expect("safe mode restore");
+
+        // Same shape as a process restart: no marker remains and the next
+        // normal open publishes authority. The restored image must already
+        // carry the deterministic Restore Epoch generation boundary — a Safe
+        // Mode recovery is the same "DB image restore" as a normal restore
+        // and must not re-publish the backup's stale Epoch as current.
+        let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("reopen");
+        let opened = match outcome {
+            WorkspaceOpenDbOutcome::Ready { opened, .. }
+            | WorkspaceOpenDbOutcome::Migrated { opened, .. } => opened,
+            other => panic!("expected published authority, got {other:?}"),
+        };
+        let rows = opened
+            .database
+            .execute(
+                "SELECT COUNT(*) AS restores,
+                        MAX(triggered_by_change_event_uid) AS identity
+                   FROM narrative_semantic_epochs
+                  WHERE project_id = 'restore-project' AND reason = 'restore'",
+                &[],
+                "read restore epochs",
+            )
+            .expect("read restore epochs");
+        assert_eq!(rows[0]["restores"].as_i64().unwrap_or_default(), 1);
+        assert!(rows[0]["identity"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("restore-image-sha256:"));
+        drop(opened);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn safe_mode_restore_reuses_materialized_digest_for_older_schema_candidate() {
+        let ws = temp_ws("restore-older-schema-identity");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        let candidate = ws.join("backups/grimodex-older-safe-mode.db");
+        create_migrated_db(&candidate, "older-schema");
+        {
+            let db = Database::new(&candidate).expect("open older-schema candidate");
+            let deleted = db
+                .with_conn(|conn| {
+                    Ok(conn.execute(
+                        "DELETE FROM schema_data_migrations
+                          WHERE migration_id = 'narrative-c2-consumer-grain-v30'",
+                        [],
+                    )?)
+                })
+                .expect("remove v30 marker");
+            assert_eq!(
+                deleted, 1,
+                "older-schema fixture must remove exactly one v30 marker"
+            );
+        }
+        let source_digest = crate::migration_supervisor::digest_sha256_file(&candidate)
+            .expect("digest older-schema candidate before preflight");
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, "grimodex-older-safe-mode.db");
+
+        let read_restore_epoch = || {
+            let db = Database::new(&ws.join("grimodex.db")).expect("open restored database");
+            let rows = db
+                .execute(
+                    "SELECT COUNT(*) AS restores,
+                            MAX(triggered_by_change_event_uid) AS identity,
+                            MAX(CASE WHEN reason = 'restore' THEN id END) AS epoch_id
+                       FROM narrative_semantic_epochs
+                      WHERE project_id = 'default-project' AND reason = 'restore'",
+                    &[],
+                    "read Safe Mode restore epoch",
+                )
+                .expect("read restore epoch");
+            (
+                rows[0]["restores"].as_i64().unwrap_or_default(),
+                rows[0]["identity"].as_str().unwrap_or_default().to_string(),
+                rows[0]["epoch_id"].as_str().unwrap_or_default().to_string(),
+            )
+        };
+
+        restore_safe_mode_candidate(&state, &candidate_id).expect("first Safe Mode restore");
+        let first = read_restore_epoch();
+        assert_eq!(first.0, 1);
+        assert_eq!(
+            first.1,
+            format!("restore-image-sha256:{source_digest}"),
+            "restore identity must use the pre-preflight materialized bytes"
+        );
+        assert!(!first.2.is_empty(), "restore epoch must be durable");
+
+        restore_safe_mode_candidate(&state, &candidate_id).expect("retry Safe Mode restore");
+        let second = read_restore_epoch();
+        assert_eq!(
+            second, first,
+            "same older-schema candidate must be exactly-once"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn committed_restore_marker_converges_on_normal_open() {
+        use crate::backup_restore::{
+            restore_session_marker_path, RestoreSessionMarker, RESTORE_SESSION_PHASE_COMMITTED,
+        };
+        use crate::migration_supervisor::{self, WorkspaceOpenDbOutcome};
+
+        let ws = temp_ws("marker-committed");
+        create_migrated_db(&ws.join("grimodex.db"), "healthy");
+        fs::create_dir_all(ws.join("backups")).expect("backups");
+        let marker = RestoreSessionMarker {
+            version: 1,
+            phase: RESTORE_SESSION_PHASE_COMMITTED.into(),
+            safety_artifact: "x".into(),
+            safety_kind: "logical".into(),
+            rollback_artifact: None,
+            installed_digest: "deadbeef".into(),
+            workspace_identity: migration_supervisor::workspace_identity(&ws),
+        };
+        fs::write(
+            restore_session_marker_path(&ws),
+            serde_json::to_vec_pretty(&marker).expect("json"),
+        )
+        .expect("write committed marker");
+
+        // A committed marker means the restore finished and only its unlink
+        // failed: the next open verifies the identity, converges to deletion,
+        // and publishes normally instead of a false RESTORE_SESSION_INCOMPLETE.
+        let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("open");
+        assert!(
+            matches!(
+                outcome,
+                WorkspaceOpenDbOutcome::Ready { .. } | WorkspaceOpenDbOutcome::Migrated { .. }
+            ),
+            "committed marker must not force Safe Mode"
+        );
+        drop(outcome);
+        assert!(
+            !restore_session_marker_path(&ws).exists(),
+            "committed marker must be consumed by the open"
+        );
+
+        // A committed marker for a different workspace identity is not ours
+        // to consume: fail closed into Safe Mode.
+        let foreign = RestoreSessionMarker {
+            workspace_identity: "some-other-workspace".into(),
+            ..marker
+        };
+        fs::write(
+            restore_session_marker_path(&ws),
+            serde_json::to_vec_pretty(&foreign).expect("json"),
+        )
+        .expect("write foreign committed marker");
+        let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("open");
+        match outcome {
+            WorkspaceOpenDbOutcome::SafeMode { reason, .. } => {
+                assert!(
+                    reason.contains("RESTORE_SESSION_INCOMPLETE"),
+                    "reason={reason}"
+                );
+            }
+            other => panic!("expected SafeMode for foreign committed marker, got {other:?}"),
+        }
         let _ = fs::remove_dir_all(&ws);
     }
 

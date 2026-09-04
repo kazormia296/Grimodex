@@ -1,4 +1,5 @@
 import { scoreNarrativeEvalCase } from "./scorer";
+import { chronicleEvidenceTupleKey } from "@/features/chronicle/extraction/evidenceTupleKey";
 import type {
   PreparedProductionChronicleEvalCase,
   ProductionChronicleArtifacts,
@@ -13,11 +14,11 @@ import type {
 } from "./types";
 
 function evidenceFingerprint(sourceRef: string, quote: string): string {
-  return `${sourceRef}\0${quote}`;
+  return chronicleEvidenceTupleKey(sourceRef, quote);
 }
 
 function goldEvidenceKey(documentId: string, quote: string): string {
-  return `${documentId}\0${quote}`;
+  return chronicleEvidenceTupleKey(documentId, quote);
 }
 
 function alignRequiredObservation(

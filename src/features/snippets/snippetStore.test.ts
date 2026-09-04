@@ -325,6 +325,32 @@ describe("snippetStore", () => {
       expect(useSnippetStore.getState().entries[0].title).toBe("更新後");
     });
 
+    it("forwards a preexisting-draft permit to the snippet API", async () => {
+      const original = fakeSnippet({ id: "snippet-1", version: 4 });
+      const updated = fakeWriteSnippet({
+        ...original,
+        title: "ライフサイクル中の更新",
+        version: 5,
+      });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockResolvedValue(updated);
+
+      await useSnippetStore
+        .getState()
+        .update(
+          "snippet-1",
+          { title: "ライフサイクル中の更新" },
+          { preexistingDraft: true },
+        );
+
+      expect(mockUpdateSnippet).toHaveBeenCalledWith(
+        "default-project",
+        "snippet-1",
+        { title: "ライフサイクル中の更新" },
+        { baseVersion: 4, preexistingDraft: true },
+      );
+    });
+
     it("読み込み時点の version を baseVersion として渡す (OCC)", async () => {
       const original = fakeSnippet({ id: "snippet-1", version: 5 });
       useSnippetStore.setState({ entries: [original] });

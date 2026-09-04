@@ -29,6 +29,7 @@ pub enum NativeWorkspaceOpenSpanName {
     Migrate,
     Optimize,
     FtsCheck,
+    WalPrepare,
     WorkspaceSwapLock,
     HookTotal,
     ImeLockWait,
@@ -397,13 +398,17 @@ pub(crate) fn workspace_maintenance_exclusive_waiters(path: &Path) -> usize {
 }
 
 /// `<ws>/backups/` のバックアップファイル名か（無圧縮 `.db` と gzip `.db.gz` の両方）。
-/// `.tmp` ステージングや無関係ファイルは除外。`newest_backup_age_secs` と
-/// `rotate_backups` が**同じ判定**を使うことで新旧形式が 1 つの世代集合として扱われる
-/// （片方が新形式を漏らすと間引き判定が壊れ毎回バックアップし、旧形式がローテ対象外で
-/// 永遠に残る。backup restore Phase 2）。ファイル名の時刻プレフィクスは固定幅なので
-/// 拡張子が混在しても名前ソート＝時系列は維持される。
+/// `.tmp` ステージングや無関係ファイルは除外。restore/list parser の受理確認に使う。
+#[cfg(test)]
 fn is_backup_file(name: &str) -> bool {
-    name.starts_with("grimodex-") && (name.ends_with(".db") || name.ends_with(".db.gz"))
+    crate::backup_restore::parse_backup_file_name(name).is_some()
+}
+
+/// Auto-backup maintenance candidate. Content-addressed restore aliases are
+/// durable restore artifacts and must not participate in age or rotation.
+fn is_auto_backup_file(name: &str) -> bool {
+    crate::backup_restore::parse_backup_file_name(name)
+        .is_some_and(|(_, expected_digest)| expected_digest.is_none())
 }
 
 /// Age (seconds) of the most recent backup in `dir`, if any.
@@ -412,7 +417,7 @@ fn newest_backup_age_secs(dir: &Path) -> Option<u64> {
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !is_backup_file(&name) {
+        if !is_auto_backup_file(&name) {
             continue;
         }
         if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
@@ -437,7 +442,7 @@ fn rotate_backups(dir: &Path, keep: usize) {
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .map(is_backup_file)
+                .map(is_auto_backup_file)
                 .unwrap_or(false)
         })
         .collect();
@@ -822,7 +827,15 @@ pub fn open_workspace_sync(
     let gs_path = deps.gs_path;
     let on_swapped = &mut *deps.on_swapped;
     let mut traced_hook = move |_: &mut NativeWorkspaceOpenTrace| on_swapped();
-    open_workspace_sync_impl(ws_state, gs_path, path, &mut trace, &mut traced_hook)
+    let mut prepare_wal = crate::open_wal::prepare_wal_for_open;
+    open_workspace_sync_impl(
+        ws_state,
+        gs_path,
+        path,
+        &mut trace,
+        &mut traced_hook,
+        &mut prepare_wal,
+    )
 }
 
 /// Traced N-API entrypoint. Its data contract remains internal to the native
@@ -835,7 +848,8 @@ pub fn open_workspace_sync_traced(
     trace: &mut NativeWorkspaceOpenTrace,
     on_swapped: &mut dyn FnMut(&mut NativeWorkspaceOpenTrace),
 ) -> Result<WorkspaceOpenOutcome, AppError> {
-    open_workspace_sync_impl(ws_state, gs_path, path, trace, on_swapped)
+    let mut prepare_wal = crate::open_wal::prepare_wal_for_open;
+    open_workspace_sync_impl(ws_state, gs_path, path, trace, on_swapped, &mut prepare_wal)
 }
 
 fn open_workspace_sync_impl(
@@ -844,6 +858,9 @@ fn open_workspace_sync_impl(
     path: &str,
     trace: &mut NativeWorkspaceOpenTrace,
     on_swapped: &mut dyn FnMut(&mut NativeWorkspaceOpenTrace),
+    prepare_wal: &mut dyn FnMut(
+        &Database,
+    ) -> anyhow::Result<crate::open_wal::OpenWalPreparationOutcome>,
 ) -> Result<WorkspaceOpenOutcome, AppError> {
     // open 自体を直列化 (併走 migrate の check-then-act / 二重
     // VACUUM INTO 防止)。ロック順序は open_lock → inner → write_lock
@@ -970,6 +987,13 @@ fn open_workspace_sync_impl(
     }) {
         tracing::warn!("rebuild_fts_if_stale on workspace open failed: {e}");
     }
+    let wal_preparation = trace.record_result(NativeWorkspaceOpenSpanName::WalPrepare, || {
+        prepare_wal(&database).map_err(AppError::from)
+    })?;
+    tracing::info!(
+        outcome = ?wal_preparation,
+        "workspace open WAL preparation completed"
+    );
     let authority = Arc::new(WorkspaceAuthority::new(
         database,
         ws_path.clone(),
@@ -1108,6 +1132,7 @@ mod tests {
             NativeWorkspaceOpenSpanName::Migrate,
             NativeWorkspaceOpenSpanName::Optimize,
             NativeWorkspaceOpenSpanName::FtsCheck,
+            NativeWorkspaceOpenSpanName::WalPrepare,
             NativeWorkspaceOpenSpanName::WorkspaceSwapLock,
             NativeWorkspaceOpenSpanName::HookTotal,
             NativeWorkspaceOpenSpanName::ImeLockWait,
@@ -1246,11 +1271,74 @@ mod tests {
     fn test_is_backup_file_accepts_db_and_gz_only() {
         assert!(is_backup_file("grimodex-20260101-000000.db"));
         assert!(is_backup_file("grimodex-20260101-000000.db.gz"));
+        assert!(is_backup_file(&format!(
+            "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
+            "a".repeat(64)
+        )));
+        assert!(!is_backup_file(
+            "grimodex-c2zc-restore-fixture--sha256-ABC.backup.db"
+        ));
+        assert!(!is_backup_file(&format!(
+            "grimodex-c2zc-restore-fixture--sha256-{}.backup.db.gz",
+            "a".repeat(64)
+        )));
         assert!(!is_backup_file("grimodex-20260101-000000.db.tmp"));
         assert!(!is_backup_file("grimodex-20260101-000000.db.gz.tmp"));
         // materialize 用 restore-tmp は "grimodex." 始まり (ハイフン無し) で除外。
         assert!(!is_backup_file("grimodex.db.restore-tmp"));
         assert!(!is_backup_file("other.db"));
+    }
+
+    #[test]
+    fn newest_backup_age_ignores_content_addressed_alias_when_mixed_with_timestamp_backup() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-auto-backup-age-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let alias = format!(
+            "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
+            "a".repeat(64)
+        );
+        std::fs::write(dir.join(&alias), b"content-addressed").expect("write alias");
+
+        assert_eq!(newest_backup_age_secs(&dir), None);
+
+        std::fs::write(dir.join("grimodex-20260101-000000.db"), b"timestamped")
+            .expect("write timestamped backup");
+        assert!(newest_backup_age_secs(&dir).is_some());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rotate_backups_keeps_content_addressed_alias_and_newest_timestamped_backups() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-auto-backup-rotate-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let alias = format!(
+            "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
+            "b".repeat(64)
+        );
+        for name in [
+            "grimodex-20260101-000000.db",
+            "grimodex-20260101-000100.db.gz",
+            "grimodex-20260101-000200.db",
+            &alias,
+        ] {
+            std::fs::write(dir.join(name), name.as_bytes()).expect("write backup");
+        }
+
+        rotate_backups(&dir, 2);
+
+        assert!(!dir.join("grimodex-20260101-000000.db").exists());
+        assert!(dir.join("grimodex-20260101-000100.db.gz").exists());
+        assert!(dir.join("grimodex-20260101-000200.db").exists());
+        assert!(dir.join(alias).exists());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1540,6 +1628,292 @@ mod tests {
         assert_eq!(second_json["workspace"]["isExisting"], true);
         assert_eq!(second_json["workspace"]["workspaceId"], first_workspace_id);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wal_timeout_restore_failure_does_not_publish_workspace_authority() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex_open_wal_restore_failure_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let ws_dir = dir.join("ws");
+        let gs_path = GlobalSettingsPath {
+            path: dir.join("global-settings.json"),
+            write_lock: Mutex::new(()),
+        };
+        let ws_state = WorkspaceState {
+            inner: Mutex::new(None),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: std::sync::atomic::AtomicBool::new(false),
+            open_lock: Mutex::new(()),
+        };
+        let mut trace = NativeWorkspaceOpenTrace::new(false);
+        let mut on_swapped = |_: &mut NativeWorkspaceOpenTrace| {};
+        let mut prepare_wal =
+            |_database: &Database| Err(anyhow::anyhow!("OPEN_WAL_TIMEOUT_RESTORE_FAILED"));
+
+        let result = open_workspace_sync_impl(
+            &ws_state,
+            &gs_path,
+            &ws_dir.to_string_lossy(),
+            &mut trace,
+            &mut on_swapped,
+            &mut prepare_wal,
+        );
+        let error = result.expect_err("restoration failure must fail open");
+        assert!(error
+            .to_string()
+            .contains("OPEN_WAL_TIMEOUT_RESTORE_FAILED"));
+        assert!(
+            ws_state.inner.lock().expect("workspace state").is_none(),
+            "a connection with unverified timeout restoration must not be published"
+        );
+        assert!(!ws_state.switching.load(std::sync::atomic::Ordering::SeqCst));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cold_open_prepares_large_residual_wal_before_first_writer() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex_open_residual_wal_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let ws_dir = dir.join("ws");
+        let gs_path = GlobalSettingsPath {
+            path: dir.join("global-settings.json"),
+            write_lock: Mutex::new(()),
+        };
+        let ws_state = WorkspaceState {
+            inner: Mutex::new(None),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: std::sync::atomic::AtomicBool::new(false),
+            open_lock: Mutex::new(()),
+        };
+        let mut initial_hook = || {};
+        let mut initial_deps = OpenDeps {
+            gs_path: &gs_path,
+            on_swapped: &mut initial_hook,
+        };
+        let ws_path = ws_dir.to_string_lossy().into_owned();
+        open_workspace_sync(&ws_state, &mut initial_deps, &ws_path)
+            .expect("create current-schema workspace");
+        let initial_maintenance = claim_workspace_maintenance_exclusive(&ws_dir)
+            .expect("join initial workspace maintenance before simulating process teardown");
+        drop(initial_maintenance);
+
+        with_db_state(&ws_state, |database| {
+            database.with_conn(|conn| {
+                conn.pragma_update(None, "wal_autocheckpoint", 0)?;
+                conn.execute_batch(
+                    "CREATE TABLE open_wal_fixture (
+                         id INTEGER PRIMARY KEY,
+                         body BLOB NOT NULL
+                     );
+                     WITH RECURSIVE seq(n) AS (
+                         SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 800
+                     )
+                     INSERT INTO open_wal_fixture (body)
+                     SELECT zeroblob(4096) FROM seq;",
+                )?;
+                let state = crate::open_wal::sqlite_wal_checkpoint(
+                    conn,
+                    crate::open_wal::OpenWalCheckpointMode::Noop,
+                )?;
+                assert!(
+                    (750..=1_000).contains(&state.log_frames),
+                    "fixture WAL must stay inside the bounded open-preparation window: {state:?}"
+                );
+                Ok(())
+            })
+        })
+        .expect("seed residual WAL");
+
+        // Keep one SQLite handle open while the first authority is dropped, as
+        // happens when process teardown leaves a WAL sidecar for the next open.
+        let keeper = rusqlite::Connection::open(ws_dir.join("grimodex.db"))
+            .expect("open WAL keeper connection");
+        let _: i64 = keeper
+            .query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get(0))
+            .expect("activate WAL keeper connection");
+        let previous = ws_state.inner.lock().expect("workspace state").take();
+        drop(previous);
+
+        let mut trace = NativeWorkspaceOpenTrace::new(true);
+        let mut reopen_hook = |_: &mut NativeWorkspaceOpenTrace| {};
+        open_workspace_sync_traced(&ws_state, &gs_path, &ws_path, &mut trace, &mut reopen_hook)
+            .expect("cold-open residual WAL workspace");
+        let trace_json = trace
+            .terminal_json(NativeWorkspaceOpenResult::Ready)
+            .expect("open trace terminal");
+        let trace_value: serde_json::Value =
+            serde_json::from_str(&trace_json).expect("open trace JSON");
+        let span_names: Vec<_> = trace_value["spans"]
+            .as_array()
+            .expect("open trace spans")
+            .iter()
+            .filter_map(|span| span["name"].as_str())
+            .collect();
+        let wal_prepare = span_names
+            .iter()
+            .position(|name| *name == "wal-prepare")
+            .expect("wal-prepare trace span");
+        let authority_publish = span_names
+            .iter()
+            .position(|name| *name == "workspace-swap-lock")
+            .expect("workspace-swap-lock trace span");
+        assert!(wal_prepare < authority_publish);
+
+        with_db_state(&ws_state, |database| {
+            database.with_conn(|conn| {
+                let auto_checkpoint: i64 =
+                    conn.pragma_query_value(None, "wal_autocheckpoint", |row| row.get(0))?;
+                assert_eq!(auto_checkpoint, 1_000);
+                conn.execute(
+                    "INSERT INTO open_wal_fixture (body) VALUES (zeroblob(128))",
+                    [],
+                )?;
+                let state = crate::open_wal::sqlite_wal_checkpoint(
+                    conn,
+                    crate::open_wal::OpenWalCheckpointMode::Noop,
+                )?;
+                assert!(
+                    state.log_frames < 750,
+                    "the first post-open writer must start from a restarted WAL: {state:?}"
+                );
+                Ok(())
+            })
+        })
+        .expect("verify first writer WAL state");
+
+        let reopened = ws_state.inner.lock().expect("workspace state").take();
+        drop(reopened);
+        let reopened_maintenance = claim_workspace_maintenance_exclusive(&ws_dir)
+            .expect("join reopened workspace maintenance before fixture cleanup");
+        drop(reopened_maintenance);
+        drop(keeper);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cold_open_defers_oversized_residual_wal_without_synchronous_checkpoint() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex_open_oversized_residual_wal_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let ws_dir = dir.join("ws");
+        let gs_path = GlobalSettingsPath {
+            path: dir.join("global-settings.json"),
+            write_lock: Mutex::new(()),
+        };
+        let ws_state = WorkspaceState {
+            inner: Mutex::new(None),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: std::sync::atomic::AtomicBool::new(false),
+            open_lock: Mutex::new(()),
+        };
+        let mut initial_hook = || {};
+        let mut initial_deps = OpenDeps {
+            gs_path: &gs_path,
+            on_swapped: &mut initial_hook,
+        };
+        let ws_path = ws_dir.to_string_lossy().into_owned();
+        open_workspace_sync(&ws_state, &mut initial_deps, &ws_path)
+            .expect("create current-schema workspace");
+        let initial_maintenance = claim_workspace_maintenance_exclusive(&ws_dir)
+            .expect("join initial workspace maintenance before simulating process teardown");
+        drop(initial_maintenance);
+
+        with_db_state(&ws_state, |database| {
+            database.with_conn(|conn| {
+                conn.pragma_update(None, "wal_autocheckpoint", 0)?;
+                conn.execute_batch(
+                    "CREATE TABLE oversized_open_wal_fixture (
+                         id INTEGER PRIMARY KEY,
+                         body BLOB NOT NULL
+                     );
+                     WITH RECURSIVE seq(n) AS (
+                         SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 1200
+                     )
+                     INSERT INTO oversized_open_wal_fixture (body)
+                     SELECT zeroblob(4096) FROM seq;",
+                )?;
+                Ok(())
+            })
+        })
+        .expect("seed oversized residual WAL");
+
+        let keeper = rusqlite::Connection::open(ws_dir.join("grimodex.db"))
+            .expect("open oversized WAL keeper connection");
+        let _: i64 = keeper
+            .query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get(0))
+            .expect("activate oversized WAL keeper connection");
+        let previous = ws_state.inner.lock().expect("workspace state").take();
+        drop(previous);
+        let before = crate::open_wal::sqlite_wal_checkpoint(
+            &keeper,
+            crate::open_wal::OpenWalCheckpointMode::Noop,
+        )
+        .expect("inspect oversized WAL before cold open");
+        assert!(
+            before.log_frames > 1_000,
+            "fixture must exceed one autocheckpoint cycle: {before:?}"
+        );
+
+        let mut trace = NativeWorkspaceOpenTrace::new(true);
+        let mut reopen_hook = |_: &mut NativeWorkspaceOpenTrace| {};
+        // This regression proves deterministic work limiting and publication
+        // safety. The canonical performance budget remains the authority for
+        // wall-clock acceptance.
+        open_workspace_sync_traced(&ws_state, &gs_path, &ws_path, &mut trace, &mut reopen_hook)
+            .expect("cold-open oversized residual WAL workspace");
+
+        let trace_json = trace
+            .terminal_json(NativeWorkspaceOpenResult::Ready)
+            .expect("open trace terminal");
+        let trace_value: serde_json::Value =
+            serde_json::from_str(&trace_json).expect("open trace JSON");
+        let span_names: Vec<_> = trace_value["spans"]
+            .as_array()
+            .expect("open trace spans")
+            .iter()
+            .filter_map(|span| span["name"].as_str())
+            .collect();
+        let wal_prepare = span_names
+            .iter()
+            .position(|name| *name == "wal-prepare")
+            .expect("wal-prepare trace span");
+        let authority_publish = span_names
+            .iter()
+            .position(|name| *name == "workspace-swap-lock")
+            .expect("workspace-swap-lock trace span");
+        assert!(wal_prepare < authority_publish);
+
+        with_db_state(&ws_state, |database| {
+            database.with_conn(|conn| {
+                let timeout_ms: i64 =
+                    conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
+                let auto_checkpoint: i64 =
+                    conn.pragma_query_value(None, "wal_autocheckpoint", |row| row.get(0))?;
+                let after = crate::open_wal::sqlite_wal_checkpoint(
+                    conn,
+                    crate::open_wal::OpenWalCheckpointMode::Noop,
+                )?;
+                assert_eq!(timeout_ms, 5_000);
+                assert_eq!(auto_checkpoint, 1_000);
+                assert_eq!(after, before, "oversized open must not run RESTART");
+                Ok(())
+            })
+        })
+        .expect("authority must publish without changing oversized WAL state");
+
+        let reopened = ws_state.inner.lock().expect("workspace state").take();
+        drop(reopened);
+        let reopened_maintenance = claim_workspace_maintenance_exclusive(&ws_dir)
+            .expect("join reopened workspace maintenance before fixture cleanup");
+        drop(reopened_maintenance);
+        drop(keeper);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

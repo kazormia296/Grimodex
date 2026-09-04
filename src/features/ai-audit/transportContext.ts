@@ -7,6 +7,7 @@ import type {
   AiAuditRequestSnapshot,
 } from "./types";
 import { readDocumentRuntimeTarget } from "@/runtime/runtimeDocumentTarget";
+import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 export { requireAuditProjectId } from "./projectScope";
 
 /**
@@ -29,6 +30,45 @@ export interface AiAuditTransportContext {
   /** Persisted assistant message identity for the main chat-agent turn. */
   readonly chatMessageId?: string;
   readonly metadata?: AiAuditJsonObject;
+  /**
+   * Non-persistent application seam used to add terminal provenance after a
+   * response is parsed. The response text is passed in memory only; transport
+   * code never serializes this callback into native audit context.
+   */
+  readonly onTerminalMetadata?: (
+    responseText: string,
+    /** Durable route metadata selected before dispatch, when available. */
+    metadata?: AiAuditJsonObject,
+    /** Trusted response digest computed by the transport before this hook. */
+    responseDigest?: Sha256Digest,
+  ) => AiAuditJsonObject | Promise<AiAuditJsonObject>;
+  /**
+   * Non-persistent Chronicle seam for a durable terminal that received no
+   * provider response (dispatch failure, unsupported/skip, or cancellation).
+   * The callback must return terminal metadata with a null responseDigest.
+   */
+  readonly onNoResponseTerminalMetadata?: (
+    terminalStatus: "failed" | "cancelled" | "skipped",
+    /** Durable route metadata selected before dispatch, when available. */
+    metadata?: AiAuditJsonObject,
+  ) => AiAuditJsonObject | Promise<AiAuditJsonObject>;
+  /**
+   * Runs only after the durable audit completion succeeds. Chronicle uses this
+   * seam to publish its receipt to a shadow/C1 collector without leaving an
+   * orphan receipt when terminal persistence fails.
+   */
+  readonly onAuditCompleted?: (
+    metadata?: AiAuditJsonObject,
+  ) => void | Promise<void>;
+  /**
+   * Non-persistent route-resolution seam. The callback runs after the route
+   * has been resolved and before the durable audit begin event; its returned
+   * metadata is merged into that begin event and is never sent to the model.
+   */
+  readonly onResolvedRouteMetadata?: (
+    route: AiAuditResolvedRouteSnapshot,
+    args: Readonly<Record<string, unknown>>,
+  ) => AiAuditJsonObject | Promise<AiAuditJsonObject>;
 }
 
 export interface AiAuditResolvedRouteSnapshot {

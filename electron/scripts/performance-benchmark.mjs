@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -19,6 +20,11 @@ import {
   buildRuntimePerformanceAttemptPaths,
   runRuntimePerformanceWithRetry,
 } from "./runtime-performance-retry.mjs";
+import {
+  buildRuntimePerformanceSmokeInvocation,
+  buildRuntimePerformanceTimeoutArtifactPath,
+  checkFreshXvfbCapability,
+} from "./performance-harness.mjs";
 import {
   buildRuntimeBudgets,
   evaluateRuntimePerformance,
@@ -86,6 +92,17 @@ export function runPerformanceBenchmark(argv = process.argv) {
     return 2;
   }
 
+  const xvfbCapability = checkFreshXvfbCapability({
+    platform: process.platform,
+    spawnSyncImpl: spawnSync,
+  });
+  if (!xvfbCapability.available) {
+    console.error(
+      `[electron:perf] Linux runtime performance requires ${xvfbCapability.command ?? "xvfb-run"}; capability check failed: ${xvfbCapability.reason}`,
+    );
+    return 1;
+  }
+
   const temporaryDirectory = options.outputPath
     ? null
     : mkdtempSync(path.join(os.tmpdir(), "grimodex-electron-perf-"));
@@ -94,6 +111,13 @@ export function runPerformanceBenchmark(argv = process.argv) {
   mkdirSync(path.dirname(metricsPath), { recursive: true });
   const attemptPaths = buildRuntimePerformanceAttemptPaths(metricsPath);
   for (const candidate of Object.values(attemptPaths)) {
+    rmSync(candidate, { force: true });
+  }
+  for (const candidate of [
+    buildRuntimePerformanceTimeoutArtifactPath(metricsPath),
+    buildRuntimePerformanceTimeoutArtifactPath(attemptPaths.firstEvidence),
+    buildRuntimePerformanceTimeoutArtifactPath(attemptPaths.secondEvidence),
+  ]) {
     rmSync(candidate, { force: true });
   }
   const smokePath = path.join(rootDir, "electron", "scripts", "smoke.mjs");
@@ -117,19 +141,25 @@ export function runPerformanceBenchmark(argv = process.argv) {
       delete smokeEnv.GRIMODEX_PERF_REVIEW_FIXTURE;
     }
 
-    const useFreshXvfb =
-      attempt === 2 &&
-      options.retryTransientOnce &&
-      process.platform === "linux";
-    const smokeCommand = useFreshXvfb ? "xvfb-run" : process.execPath;
-    const smokeArguments = useFreshXvfb
-      ? [
-          "--auto-servernum",
-          "--server-args=-screen 0 1920x1080x24",
-          process.execPath,
-          smokePath,
-        ]
-      : [smokePath];
+    const smokeInvocation = buildRuntimePerformanceSmokeInvocation({
+      attempt,
+      platform: process.platform,
+      nodePath: process.execPath,
+      smokePath,
+    });
+    const {
+      command: smokeCommand,
+      args: smokeArguments,
+      useFreshXvfb,
+    } = smokeInvocation;
+    if (useFreshXvfb) {
+      // xvfb-run owns DISPLAY for this child. Do not let Electron discover the
+      // caller's Wayland compositor while its X11 backend is selected.
+      delete smokeEnv.WAYLAND_DISPLAY;
+      delete smokeEnv.ELECTRON_OZONE_PLATFORM_HINT;
+      smokeEnv.GDK_BACKEND = "x11";
+      smokeEnv.QT_QPA_PLATFORM = "xcb";
+    }
     console.log(
       `[electron:perf] measurement attempt ${attempt}${useFreshXvfb ? " (fresh Electron + Xvfb)" : ""}`,
     );
@@ -139,14 +169,18 @@ export function runPerformanceBenchmark(argv = process.argv) {
       stdio: "inherit",
     });
     if (smoke.status !== 0) {
+      const timeoutArtifactPath =
+        buildRuntimePerformanceTimeoutArtifactPath(attemptMetricsPath);
+      const timedOut = existsSync(timeoutArtifactPath);
       console.error(
-        `[electron:perf] smoke/measurement failed on attempt ${attempt}; metrics target: ${attemptMetricsPath}`,
+        `[electron:perf] smoke/measurement${timedOut ? "/watchdog" : ""} failed on attempt ${attempt}; metrics target: ${attemptMetricsPath}${timedOut ? `; timeout evidence: ${timeoutArtifactPath}` : ""}`,
       );
       return {
         status: smoke.status ?? 1,
-        phase: "measurement",
+        phase: timedOut ? "measurement-timeout" : "measurement",
         metrics: null,
         evaluation: null,
+        timeoutArtifactPath: timedOut ? timeoutArtifactPath : null,
       };
     }
 

@@ -13,7 +13,10 @@ import {
   PRODUCT_DOMAIN_RULES,
   PRODUCT_INTERACTION_REQUIREMENTS,
   PRODUCT_JOURNEY_CATALOG,
+  PRODUCT_JOURNEY_CATALOG_DIGEST,
   PRODUCT_JOURNEY_COVERAGE_BACKLOG,
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_NATIVE_PERSISTENCE_DOMAINS,
   PRODUCT_SCOPE_TRANSITIONS,
 } from "../electron/scripts/product-journey-catalog.mjs";
@@ -64,6 +67,10 @@ test("the current catalog has complete journey, contract, and interaction covera
     "lint-native-roundtrip",
     "map-native-roundtrip",
     "snapshot-native-roundtrip",
+    ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
+      (journey) => journey.id,
+    ),
+    ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
   ]);
   assert.equal(result.uncoveredContracts.length, 0);
   assert.equal(result.uncoveredInteractions.length, 0);
@@ -584,6 +591,7 @@ test("shadow mode records affected recommendations but executes the full catalog
     "napi",
     "mcp",
   ]);
+  assert.equal(execution.catalogDigest, PRODUCT_JOURNEY_CATALOG_DIGEST);
   assert.equal(execution.shouldRun, true);
   assert.equal(execution.shadow, true);
 });
@@ -697,6 +705,8 @@ test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
 
   const report = JSON.parse(await readFile(reportPath, "utf8"));
   assert.equal(report.version, 1);
+  assert.equal(report.catalogDigest, PRODUCT_JOURNEY_CATALOG_DIGEST);
+  assert.equal(report.execution.catalogDigest, PRODUCT_JOURNEY_CATALOG_DIGEST);
   assert.deepEqual(report.execution.selectedJourneyIds, [
     "cross-feature-authoring",
   ]);
@@ -721,6 +731,10 @@ test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
 
   const githubOutput = await readFile(outputPath, "utf8");
   assert.match(githubOutput, /should_run=true/);
+  assert.match(
+    githubOutput,
+    new RegExp(`catalog_digest=${PRODUCT_JOURNEY_CATALOG_DIGEST}`),
+  );
   assert.match(
     githubOutput,
     /selected_journey_ids=\["cross-feature-authoring"\]/,

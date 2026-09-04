@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 31,
+  "schemaVersion": 34,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -1144,7 +1144,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["runtime", "external_thread_id"]
+          "columns": [
+            "runtime",
+            "external_thread_id"
+          ]
         }
       ],
       "createSql": "CREATE TABLE chat_runtime_threads ( session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, runtime TEXT NOT NULL, external_thread_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, history_revision TEXT, last_turn_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, runtime), UNIQUE (runtime, external_thread_id) )"
@@ -1712,7 +1715,11 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["project_id", "type_slug", "name"]
+          "columns": [
+            "project_id",
+            "type_slug",
+            "name"
+          ]
         }
       ],
       "createSql": "CREATE TABLE codex_detail_definitions ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, type_slug TEXT NOT NULL, name TEXT NOT NULL, field_type TEXT NOT NULL DEFAULT 'text' CHECK(field_type IN ('text', 'dropdown', 'codex_reference')), field_config TEXT, sort_order REAL NOT NULL DEFAULT 0.0, include_in_context INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, type_slug, name), -- Composite FK: (project_id, type_slug) must reference a row in codex_types. FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug) ON UPDATE CASCADE ON DELETE RESTRICT )"
@@ -1910,7 +1917,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["entry_id", "definition_id"]
+          "columns": [
+            "entry_id",
+            "definition_id"
+          ]
         }
       ],
       "createSql": "CREATE TABLE codex_detail_values ( id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE, value TEXT, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(entry_id, definition_id) )"
@@ -2658,7 +2668,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["project_id", "name"]
+          "columns": [
+            "project_id",
+            "name"
+          ]
         }
       ],
       "createSql": "CREATE TABLE codex_tags ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT, type_filter TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, name) )"
@@ -2751,7 +2764,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["project_id", "slug"]
+          "columns": [
+            "project_id",
+            "slug"
+          ]
         }
       ],
       "createSql": "CREATE TABLE codex_types ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, slug TEXT NOT NULL, label TEXT NOT NULL, color TEXT NOT NULL DEFAULT '#888888', palette_index INTEGER, icon TEXT, is_builtin INTEGER NOT NULL DEFAULT 0, sort_order REAL NOT NULL DEFAULT 0.0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, slug) )"
@@ -2812,7 +2828,11 @@
       "foreignKeys": [],
       "uniqueConstraints": [
         {
-          "columns": ["entity_type", "entity_id", "version_number"]
+          "columns": [
+            "entity_type",
+            "entity_id",
+            "version_number"
+          ]
         }
       ],
       "createSql": "CREATE TABLE content_versions ( id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), entity_type TEXT NOT NULL CHECK(entity_type IN ('scene', 'note', 'codex_entry', 'snippet')), entity_id TEXT NOT NULL, content TEXT NOT NULL, version_number INTEGER NOT NULL, snapshot_type TEXT NOT NULL DEFAULT 'auto' CHECK(snapshot_type IN ('auto', 'manual')), created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(entity_type, entity_id, version_number) )"
@@ -4095,7 +4115,9 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["trace_id"]
+          "columns": [
+            "trace_id"
+          ]
         }
       ],
       "createSql": "CREATE TABLE generation_logs ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('inline-ai','beat')), command_id TEXT, instruction TEXT, prompt_full TEXT, model TEXT, trace_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT (datetime('now')) )"
@@ -4156,7 +4178,10 @@
       "foreignKeys": [],
       "uniqueConstraints": [
         {
-          "columns": ["id", "revision"]
+          "columns": [
+            "id",
+            "revision"
+          ]
         }
       ],
       "createSql": "CREATE TABLE generic_extraction_schemas ( id TEXT NOT NULL, revision INTEGER NOT NULL, name TEXT NOT NULL, description TEXT, digest TEXT NOT NULL, schema_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(id, revision) )"
@@ -4552,7 +4577,9 @@
       "foreignKeys": [],
       "uniqueConstraints": [
         {
-          "columns": ["request_id"]
+          "columns": [
+            "request_id"
+          ]
         }
       ],
       "createSql": "CREATE TABLE import_commits ( id TEXT PRIMARY KEY, session_id TEXT NOT NULL, request_id TEXT NOT NULL, plan_digest TEXT NOT NULL, project_id TEXT, status TEXT NOT NULL, receipt_json TEXT, error_message TEXT, created_at TEXT NOT NULL, UNIQUE(request_id) )"
@@ -5132,7 +5159,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["project_id", "name"]
+          "columns": [
+            "project_id",
+            "name"
+          ]
         }
       ],
       "createSql": "CREATE TABLE labels ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT NOT NULL, sort_order REAL NOT NULL DEFAULT 0.0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, name) )"
@@ -6701,7 +6731,10 @@
           ]
         },
         {
-          "columns": ["project_id", "id"]
+          "columns": [
+            "project_id",
+            "id"
+          ]
         }
       ],
       "createSql": "CREATE TABLE narrative_change_events ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, transaction_id TEXT NOT NULL, canonical_change_event_uid TEXT NOT NULL, canonical_sequence INTEGER NOT NULL CHECK(canonical_sequence > 0), event_ordinal INTEGER NOT NULL CHECK(event_ordinal >= 0), object_key_json TEXT NOT NULL CHECK(json_valid(object_key_json)), change_kind TEXT NOT NULL CHECK(change_kind IN ('content','metadata','order','association','catalog','calendar','policy','schema','unknown')), mutation_kind TEXT NOT NULL CHECK(mutation_kind IN ('create','update','delete','restore')), before_version INTEGER, before_digest TEXT, after_version INTEGER, after_digest TEXT, changed_paths_json TEXT NOT NULL CHECK(json_valid(changed_paths_json) AND json_type(changed_paths_json) = 'array'), text_impact_json TEXT CHECK(text_impact_json IS NULL OR json_valid(text_impact_json)), structural_impact_json TEXT CHECK(structural_impact_json IS NULL OR json_valid(structural_impact_json)), occurred_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, id), UNIQUE(project_id, canonical_change_event_uid, event_ordinal), FOREIGN KEY(project_id, transaction_id) REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE, FOREIGN KEY(project_id, canonical_change_event_uid) REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT )"
@@ -7048,13 +7081,23 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["project_id", "source_change_event_uid"]
+          "columns": [
+            "project_id",
+            "source_change_event_uid"
+          ]
         },
         {
-          "columns": ["project_id", "source_domain", "request_id"]
+          "columns": [
+            "project_id",
+            "source_domain",
+            "request_id"
+          ]
         },
         {
-          "columns": ["project_id", "id"]
+          "columns": [
+            "project_id",
+            "id"
+          ]
         }
       ],
       "createSql": "CREATE TABLE \"narrative_change_transactions\" ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, request_id TEXT NOT NULL CHECK(length(request_id) > 0), source_domain TEXT NOT NULL CHECK(length(source_domain) > 0), source_change_event_uid TEXT NOT NULL CHECK(length(source_change_event_uid) > 0), source_change_event_sequence INTEGER NOT NULL CHECK(source_change_event_sequence > 0), cause_kind TEXT NOT NULL CHECK(cause_kind IN ('forward','undo','redo')), origin TEXT NOT NULL CHECK(origin IN ('human','ai-apply','import','undo','redo','restore','migration')), original_transaction_id TEXT, commit_id TEXT, journal_id TEXT, undo_journal_id TEXT, application_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(application_ids_json) AND json_type(application_ids_json) = 'array'), payload_digest TEXT NOT NULL CHECK(length(payload_digest) > 0), created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, id), UNIQUE(project_id, source_domain, request_id), UNIQUE(project_id, source_change_event_uid), FOREIGN KEY(project_id, source_change_event_uid) REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT, FOREIGN KEY(project_id, original_transaction_id) REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE )"
@@ -7211,6 +7254,272 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_consumer_freshness ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_kind TEXT NOT NULL CHECK(length(consumer_kind) > 0), consumer_key TEXT NOT NULL CHECK(length(consumer_key) > 0), evidence_freshness TEXT NOT NULL CHECK(evidence_freshness IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')), build_action TEXT NOT NULL CHECK(build_action IN ('none','revalidate-exact','reanchor-candidate','resolve-only','recompile-only','rebuild-required','refresh-available','manual')), semantic_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), last_evaluated_run_id TEXT, updated_at TEXT NOT NULL, dependency_set_digest TEXT, PRIMARY KEY(project_id, consumer_kind, consumer_key) )"
+    },
+    "narrative_dependency_declaration_entries": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "declaration_set_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "dependency_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "dependency_role": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "role_contract_version": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "selector_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "selector_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_object_identity": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "narrative_dependency_declaration_sets",
+          "from": "declaration_set_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "declaration_set_id",
+            "source_object_identity",
+            "dependency_key"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_dependency_declaration_entries ( id TEXT NOT NULL, declaration_set_id TEXT NOT NULL REFERENCES narrative_dependency_declaration_sets(id) ON DELETE CASCADE, source_object_identity TEXT NOT NULL CHECK(length(source_object_identity) > 0), dependency_key TEXT NOT NULL CHECK(length(dependency_key) = 71 AND dependency_key GLOB 'sha256:*' AND substr(dependency_key, 8) NOT GLOB '*[^0-9a-f]*'), dependency_role TEXT NOT NULL CHECK(length(dependency_role) > 0), role_contract_version TEXT NOT NULL CHECK(length(role_contract_version) > 0), selector_json TEXT NOT NULL CHECK(json_valid(selector_json) AND json_type(selector_json) = 'object'), selector_digest TEXT NOT NULL CHECK(length(selector_digest) = 71 AND selector_digest GLOB 'sha256:*' AND substr(selector_digest, 8) NOT GLOB '*[^0-9a-f]*'), created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(declaration_set_id, source_object_identity, dependency_key) )"
+    },
+    "narrative_dependency_declaration_heads": {
+      "kind": "table",
+      "columns": {
+        "active_declaration_set_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "consumer_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 3
+        },
+        "consumer_kind": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "producer_generation": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "producer_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "updated_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 6,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "narrative_dependency_declaration_sets",
+          "from": "active_declaration_set_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_dependency_declaration_heads ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_kind TEXT NOT NULL CHECK(length(consumer_kind) > 0), consumer_key TEXT NOT NULL CHECK(length(consumer_key) > 0), active_declaration_set_id TEXT NOT NULL REFERENCES narrative_dependency_declaration_sets(id), producer_id TEXT NOT NULL CHECK(length(producer_id) > 0), producer_generation INTEGER NOT NULL CHECK(producer_generation >= 0), version INTEGER NOT NULL CHECK(version >= 1), updated_at TEXT NOT NULL, PRIMARY KEY(project_id, consumer_kind, consumer_key) )"
+    },
+    "narrative_dependency_declaration_sets": {
+      "kind": "table",
+      "columns": {
+        "consumer_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "consumer_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "dependency_set_digest": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "producer_generation": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "producer_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "state": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "consumer_kind",
+            "consumer_key",
+            "producer_generation"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_dependency_declaration_sets ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_kind TEXT NOT NULL CHECK(length(consumer_kind) > 0), consumer_key TEXT NOT NULL CHECK(length(consumer_key) > 0), producer_id TEXT NOT NULL CHECK(length(producer_id) > 0), producer_generation INTEGER NOT NULL CHECK(producer_generation >= 0), dependency_set_digest TEXT NOT NULL CHECK(length(dependency_set_digest) = 71 AND dependency_set_digest GLOB 'sha256:*' AND substr(dependency_set_digest, 8) NOT GLOB '*[^0-9a-f]*'), state TEXT NOT NULL CHECK(state = 'sealed'), created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, consumer_kind, consumer_key, producer_generation) )"
     },
     "narrative_dependency_edge_states": {
       "kind": "table",
@@ -7795,6 +8104,198 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE \"narrative_extraction_runs\" ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, surface_path_id TEXT NOT NULL, scope_json TEXT NOT NULL, spec_json TEXT NOT NULL, spec_digest TEXT NOT NULL, snapshot_digest TEXT, catalog_digest TEXT, registry_digest TEXT, status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','cancelled','superseded')), coverage_json TEXT NOT NULL DEFAULT '{}', outcome_summary_json TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0, run_kind TEXT NOT NULL DEFAULT 'interpretation' CHECK(run_kind IN ( 'interpretation','freshness-evaluation','semantic-index-rebuild', 'manual-rebuild','backfill','dependency-verify','dependency-repair' )), consumer_id TEXT, semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id), work_key TEXT, terminal_reason_code TEXT CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*'), superseded_by_run_id TEXT REFERENCES narrative_extraction_runs(id) , request_id TEXT, idempotency_domain TEXT, request_payload_digest TEXT, actor_id TEXT)"
+    },
+    "narrative_extraction_stage_model_bindings": {
+      "kind": "table",
+      "columns": {
+        "attempt_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "binding_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "binding_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "run_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "stage_execution_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "task_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "stage_execution_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_extraction_stage_model_bindings ( id TEXT NOT NULL PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, run_id TEXT NOT NULL, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, stage_execution_id TEXT NOT NULL, binding_json TEXT NOT NULL CHECK(json_valid(binding_json) AND json_type(binding_json) = 'object'), binding_digest TEXT NOT NULL CHECK(length(binding_digest) = 71 AND binding_digest GLOB 'sha256:*' AND substr(binding_digest, 8) NOT GLOB '*[^0-9a-f]*'), created_at TEXT NOT NULL, UNIQUE(project_id, stage_execution_id) )"
+    },
+    "narrative_extraction_stage_receipts": {
+      "kind": "table",
+      "columns": {
+        "attempt_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "model_binding_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "receipt_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "receipt_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "run_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "stage_execution_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "task_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "terminal_status": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "stage_execution_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_extraction_stage_receipts ( id TEXT NOT NULL PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, run_id TEXT NOT NULL, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, stage_execution_id TEXT NOT NULL, receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json) AND json_type(receipt_json) = 'object'), receipt_digest TEXT NOT NULL CHECK(length(receipt_digest) = 71 AND receipt_digest GLOB 'sha256:*' AND substr(receipt_digest, 8) NOT GLOB '*[^0-9a-f]*'), model_binding_digest TEXT NOT NULL CHECK(length(model_binding_digest) = 71 AND model_binding_digest GLOB 'sha256:*' AND substr(model_binding_digest, 8) NOT GLOB '*[^0-9a-f]*'), terminal_status TEXT NOT NULL CHECK(terminal_status IN ('succeeded', 'failed', 'cancelled', 'skipped')), created_at TEXT NOT NULL, UNIQUE(project_id, stage_execution_id) )"
     },
     "narrative_extraction_task_edges": {
       "kind": "table",
@@ -8465,6 +8966,67 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_maintenance_repair_leases ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, lease_owner TEXT NOT NULL CHECK(length(lease_owner) > 0), verify_run_id TEXT NOT NULL CHECK(length(verify_run_id) > 0), repair_plan_digest TEXT NOT NULL CHECK(length(repair_plan_digest) > 0), semantic_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL, active_run_id TEXT, PRIMARY KEY(project_id) )"
     },
+    "narrative_maintenance_wake_outbox": {
+      "kind": "table",
+      "columns": {
+        "acked_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "operation": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reason": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_maintenance_wake_outbox ( id TEXT NOT NULL PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, operation TEXT NOT NULL CHECK(length(operation) > 0), reason TEXT NOT NULL CHECK(length(reason) > 0), created_at TEXT NOT NULL, acked_at TEXT )"
+    },
     "narrative_projection_dependencies": {
       "kind": "table",
       "columns": {
@@ -8994,7 +9556,10 @@
       "foreignKeys": [],
       "uniqueConstraints": [
         {
-          "columns": ["revision_id", "source_key"]
+          "columns": [
+            "revision_id",
+            "source_key"
+          ]
         }
       ],
       "createSql": "CREATE TABLE narrative_revision_source_basis ( revision_id TEXT NOT NULL, ordinal INTEGER NOT NULL, source_kind TEXT NOT NULL, source_key TEXT NOT NULL, revision_token TEXT NOT NULL, observed_at TEXT, PRIMARY KEY (revision_id, ordinal), UNIQUE (revision_id, source_key) )"
@@ -9109,7 +9674,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["project_id", "epoch_number"]
+          "columns": [
+            "project_id",
+            "epoch_number"
+          ]
         }
       ],
       "createSql": "CREATE TABLE narrative_semantic_epochs ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, epoch_number INTEGER NOT NULL CHECK(epoch_number >= 0), reason TEXT NOT NULL CHECK(reason IN ('initial','restore','migration','integrity-repair','manual-rebuild')), triggered_by_change_event_uid TEXT, created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, epoch_number) )"
@@ -11020,7 +11588,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["project_id", "name"]
+          "columns": [
+            "project_id",
+            "name"
+          ]
         }
       ],
       "createSql": "CREATE TABLE project_snapshots ( id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, name) )"
@@ -12908,6 +13479,34 @@
       ],
       "createSql": "CREATE INDEX idx_authorship_sticky ON authorship_spans(sticky_id) WHERE sticky_id IS NOT NULL"
     },
+    "idx_change_events_project_domain_op_entity_seq": {
+      "table": "change_events",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "domain"
+        },
+        {
+          "ordinal": 2,
+          "column": "op_type"
+        },
+        {
+          "ordinal": 3,
+          "column": "entity_id"
+        },
+        {
+          "ordinal": 4,
+          "column": "sequence"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_change_events_project_domain_op_entity_seq ON change_events(project_id, domain, op_type, entity_id, sequence)"
+    },
     "idx_change_events_project_ts": {
       "table": "change_events",
       "unique": false,
@@ -14496,6 +15095,62 @@
       ],
       "createSql": "CREATE INDEX idx_narrative_consumer_freshness_epoch ON narrative_consumer_freshness(project_id, semantic_epoch_id)"
     },
+    "idx_narrative_dependency_declaration_entries_set": {
+      "table": "narrative_dependency_declaration_entries",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "declaration_set_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_dependency_declaration_entries_set ON narrative_dependency_declaration_entries(declaration_set_id)"
+    },
+    "idx_narrative_dependency_declaration_entries_source": {
+      "table": "narrative_dependency_declaration_entries",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "source_object_identity"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_dependency_declaration_entries_source ON narrative_dependency_declaration_entries(source_object_identity)"
+    },
+    "idx_narrative_dependency_declaration_heads_set": {
+      "table": "narrative_dependency_declaration_heads",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "active_declaration_set_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_dependency_declaration_heads_set ON narrative_dependency_declaration_heads(active_declaration_set_id)"
+    },
+    "idx_narrative_dependency_declaration_sets_consumer": {
+      "table": "narrative_dependency_declaration_sets",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "consumer_kind"
+        },
+        {
+          "ordinal": 2,
+          "column": "consumer_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_dependency_declaration_sets_consumer ON narrative_dependency_declaration_sets(project_id, consumer_kind, consumer_key)"
+    },
     "idx_narrative_dependency_edge_states_project": {
       "table": "narrative_dependency_edge_states",
       "unique": false,
@@ -14660,6 +15315,54 @@
       ],
       "createSql": "CREATE INDEX idx_narrative_semantic_epochs_project ON narrative_semantic_epochs(project_id, epoch_number)"
     },
+    "idx_narrative_stage_model_bindings_owner": {
+      "table": "narrative_extraction_stage_model_bindings",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "run_id"
+        },
+        {
+          "ordinal": 2,
+          "column": "task_id"
+        },
+        {
+          "ordinal": 3,
+          "column": "attempt_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_stage_model_bindings_owner ON narrative_extraction_stage_model_bindings(project_id, run_id, task_id, attempt_id)"
+    },
+    "idx_narrative_stage_receipts_owner": {
+      "table": "narrative_extraction_stage_receipts",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "run_id"
+        },
+        {
+          "ordinal": 2,
+          "column": "task_id"
+        },
+        {
+          "ordinal": 3,
+          "column": "attempt_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_stage_receipts_owner ON narrative_extraction_stage_receipts(project_id, run_id, task_id, attempt_id)"
+    },
     "idx_narrative_temporal_constraints_project": {
       "table": "narrative_temporal_constraints",
       "unique": false,
@@ -14687,6 +15390,18 @@
         }
       ],
       "createSql": "CREATE INDEX idx_narrative_temporal_nodes_project ON narrative_temporal_nodes(project_id)"
+    },
+    "idx_narrative_wake_outbox_pending": {
+      "table": "narrative_maintenance_wake_outbox",
+      "unique": false,
+      "partial": true,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_wake_outbox_pending ON narrative_maintenance_wake_outbox(project_id) WHERE acked_at IS NULL"
     },
     "idx_pea_parent": {
       "table": "post_effect_annotations",
@@ -15272,6 +15987,34 @@
       ],
       "createSql": "CREATE INDEX idx_state_snap_domain_seq ON state_snapshots(project_id, domain, anchor_sequence)"
     },
+    "idx_state_snap_project_domain_type_entity_seq": {
+      "table": "state_snapshots",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "domain"
+        },
+        {
+          "ordinal": 2,
+          "column": "entity_id"
+        },
+        {
+          "ordinal": 3,
+          "column": "entity_type"
+        },
+        {
+          "ordinal": 4,
+          "column": "anchor_sequence"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_state_snap_project_domain_type_entity_seq ON state_snapshots(project_id, domain, entity_id, entity_type, anchor_sequence)"
+    },
     "idx_state_snap_project_seq": {
       "table": "state_snapshots",
       "unique": false,
@@ -15787,6 +16530,9 @@
     "narrative_application_kind_guard": "CREATE TRIGGER narrative_application_kind_guard BEFORE INSERT ON narrative_proposal_applications WHEN NEW.application_kind NOT IN ('normal','compensation') BEGIN SELECT RAISE(ABORT, 'NEX_APPLICATION_KIND_INVALID'); END",
     "narrative_decision_immutable_after_apply_delete": "CREATE TRIGGER narrative_decision_immutable_after_apply_delete BEFORE DELETE ON narrative_proposal_decisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END",
     "narrative_decision_immutable_after_apply_update": "CREATE TRIGGER narrative_decision_immutable_after_apply_update BEFORE UPDATE ON narrative_proposal_decisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END",
+    "narrative_proposal_revisions_v2_immutable_update_guard": "CREATE TRIGGER narrative_proposal_revisions_v2_immutable_update_guard BEFORE UPDATE ON narrative_proposal_revisions WHEN OLD.origin_kind = 'enveloped' AND json_extract(OLD.reconciliation_envelope_json, '$.schemaVersion') = 2 AND ( OLD.id IS NOT NEW.id OR OLD.proposal_id IS NOT NEW.proposal_id OR OLD.revision_number IS NOT NEW.revision_number OR OLD.payload_json IS NOT NEW.payload_json OR OLD.plan_fragment_json IS NOT NEW.plan_fragment_json OR OLD.plan_fragment_digest IS NOT NEW.plan_fragment_digest OR OLD.origin_kind IS NOT NEW.origin_kind OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest OR OLD.created_at IS NOT NEW.created_at OR OLD.created_by IS NOT NEW.created_by ) BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_V2_IMMUTABLE'); END",
+    "narrative_proposal_revisions_v2_monotonicity_guard": "CREATE TRIGGER narrative_proposal_revisions_v2_monotonicity_guard BEFORE INSERT ON narrative_proposal_revisions WHEN EXISTS ( SELECT 1 FROM narrative_proposals p JOIN narrative_proposal_revisions current_revision ON current_revision.id = p.current_revision_id WHERE p.id = NEW.proposal_id AND current_revision.origin_kind = 'enveloped' AND json_extract(current_revision.reconciliation_envelope_json, '$.schemaVersion') = 2 ) AND ( NEW.origin_kind <> 'enveloped' OR NEW.reconciliation_envelope_json IS NULL OR json_extract(NEW.reconciliation_envelope_json, '$.schemaVersion') IS NOT 2 ) BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN'); END",
+    "narrative_proposals_v2_pointer_monotonicity_guard": "CREATE TRIGGER narrative_proposals_v2_pointer_monotonicity_guard BEFORE UPDATE OF current_revision_id ON narrative_proposals WHEN EXISTS ( SELECT 1 FROM narrative_proposal_revisions old_revision WHERE old_revision.id = OLD.current_revision_id AND old_revision.origin_kind = 'enveloped' AND json_extract(old_revision.reconciliation_envelope_json, '$.schemaVersion') = 2 ) AND NOT EXISTS ( SELECT 1 FROM narrative_proposal_revisions new_revision WHERE new_revision.id = NEW.current_revision_id AND new_revision.origin_kind = 'enveloped' AND json_extract(new_revision.reconciliation_envelope_json, '$.schemaVersion') = 2 ) BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN'); END",
     "narrative_revision_envelope_immutable_update": "CREATE TRIGGER narrative_revision_envelope_immutable_update BEFORE UPDATE ON narrative_proposal_revisions WHEN OLD.origin_kind IS NOT NEW.origin_kind OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_IMMUTABLE'); END",
     "narrative_revision_immutable_after_apply_delete": "CREATE TRIGGER narrative_revision_immutable_after_apply_delete BEFORE DELETE ON narrative_proposal_revisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END",
     "narrative_revision_immutable_after_apply_update": "CREATE TRIGGER narrative_revision_immutable_after_apply_update BEFORE UPDATE ON narrative_proposal_revisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END",
@@ -15806,6 +16552,9 @@
     "snippets_fts_en_ad": "CREATE TRIGGER snippets_fts_en_ad AFTER DELETE ON snippets WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%' BEGIN DELETE FROM snippets_fts_en WHERE rowid = old.rowid; END",
     "snippets_fts_en_ai": "CREATE TRIGGER snippets_fts_en_ai AFTER INSERT ON snippets WHEN (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%' BEGIN INSERT INTO snippets_fts_en(rowid, title, content, tags_cache) VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache,'')); END",
     "snippets_fts_en_au": "CREATE TRIGGER snippets_fts_en_au AFTER UPDATE ON snippets WHEN (old.title IS NOT new.title OR old.content IS NOT new.content OR old.tags_cache IS NOT new.tags_cache) AND (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%' BEGIN DELETE FROM snippets_fts_en WHERE rowid = old.rowid; INSERT INTO snippets_fts_en(rowid, title, content, tags_cache) VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache,'')); END",
+    "timelapse_codex_creation_baseline": "CREATE TRIGGER timelapse_codex_creation_baseline AFTER INSERT ON narrative_change_events WHEN NEW.mutation_kind IN ('create', 'restore') AND json_extract(NEW.object_key_json, '$.kind') = 'codex-entry' AND NOT EXISTS ( SELECT 1 FROM project_settings WHERE project_id = NEW.project_id AND key = 'timelapse.enabled' AND value = 'false' ) BEGIN SELECT CASE WHEN NOT EXISTS ( SELECT 1 FROM change_events canonical WHERE canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence AND canonical.sequence BETWEEN 1 AND 9007199254740991 AND canonical.timestamp BETWEEN 0 AND 9007199254740991 AND ( canonical.sequence = ( SELECT MAX(sequence) FROM change_events WHERE project_id = NEW.project_id ) OR ( NEW.mutation_kind = 'create' AND EXISTS ( SELECT 1 FROM narrative_change_transactions tx JOIN narrative_apply_commits apply_commit ON apply_commit.project_id = tx.project_id AND apply_commit.id = tx.commit_id JOIN narrative_commit_journals commit_journal ON commit_journal.project_id = tx.project_id AND commit_journal.id = tx.journal_id AND commit_journal.commit_id = apply_commit.id JOIN change_events apply_event ON apply_event.project_id = tx.project_id AND apply_event.event_uid = tx.source_change_event_uid AND apply_event.sequence = tx.source_change_event_sequence JOIN codex_entries entry ON entry.project_id = tx.project_id AND entry.id = json_extract( NEW.object_key_json, '$.entryId' ) JOIN json_each( CASE WHEN json_valid(commit_journal.after_json) THEN commit_journal.after_json ELSE '{}' END, '$.entities' ) journal_entity WHERE tx.project_id = NEW.project_id AND tx.id = NEW.transaction_id AND tx.source_domain = 'narrative.commit.apply' AND tx.source_change_event_uid = NEW.canonical_change_event_uid AND tx.source_change_event_sequence = NEW.canonical_sequence AND tx.cause_kind = 'forward' AND tx.origin = 'ai-apply' AND tx.original_transaction_id IS NULL AND tx.undo_journal_id IS NULL AND tx.commit_id IS NOT NULL AND tx.journal_id IS NOT NULL AND tx.request_id = apply_commit.request_id AND apply_commit.status = 'undone' AND ( apply_commit.session_id IS NULL OR apply_event.session_id = apply_commit.session_id ) AND apply_event.domain = 'narrative' AND apply_event.op_type = 'narrative.commit.apply' AND apply_event.entity_type = 'narrative_apply_commit' AND apply_event.entity_id = apply_commit.id AND json_valid(apply_commit.receipt_json) AND json_type( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.commitId' ) = 'text' AND json_type( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.requestId' ) = 'text' AND json_type( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.planDigest' ) = 'text' AND json_type( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.status' ) = 'text' AND json_type( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.changeEventUid' ) = 'text' AND json_type( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.journalId' ) = 'text' AND json_extract( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.commitId' ) = apply_commit.id AND json_extract( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.requestId' ) = apply_commit.request_id AND json_extract( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.planDigest' ) = apply_commit.plan_digest AND json_extract( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.journalId' ) = commit_journal.id AND json_extract( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.journalId' ) = tx.journal_id AND json_extract( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.status' ) = 'undone' AND json_type( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.maintenanceTransactionId' ) IS NULL AND json_type( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.maintenanceOriginalTransactionId' ) IS NULL AND json_type( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.maintenanceEventIds' ) IS NULL AND EXISTS ( SELECT 1 FROM change_events undo_event WHERE undo_event.project_id = apply_commit.project_id AND undo_event.event_uid = json_extract( CASE WHEN json_valid(apply_commit.receipt_json) THEN apply_commit.receipt_json ELSE '{}' END, '$.changeEventUid' ) AND undo_event.domain = 'narrative' AND undo_event.op_type = 'narrative.commit.undo' AND undo_event.entity_type = 'narrative_apply_commit' AND undo_event.entity_id = apply_commit.id AND undo_event.sequence > apply_event.sequence AND json_valid(undo_event.payload) AND json_type( CASE WHEN json_valid(undo_event.payload) THEN undo_event.payload ELSE '{}' END, '$.commitId' ) = 'text' AND json_extract( CASE WHEN json_valid(undo_event.payload) THEN undo_event.payload ELSE '{}' END, '$.commitId' ) = apply_commit.id AND json_type( CASE WHEN json_valid(undo_event.payload) THEN undo_event.payload ELSE '{}' END, '$.applyRequestId' ) = 'text' AND json_extract( CASE WHEN json_valid(undo_event.payload) THEN undo_event.payload ELSE '{}' END, '$.applyRequestId' ) = apply_commit.request_id AND undo_event.sequence = ( SELECT MAX(latest_undo.sequence) FROM change_events latest_undo WHERE latest_undo.project_id = apply_commit.project_id AND latest_undo.domain = 'narrative' AND latest_undo.op_type = 'narrative.commit.undo' AND latest_undo.entity_type = 'narrative_apply_commit' AND latest_undo.entity_id = apply_commit.id ) ) AND json_valid(apply_event.payload) AND json_type( CASE WHEN json_valid(apply_event.payload) THEN apply_event.payload ELSE '{}' END, '$.commitId' ) = 'text' AND json_type( CASE WHEN json_valid(apply_event.payload) THEN apply_event.payload ELSE '{}' END, '$.requestId' ) = 'text' AND json_type( CASE WHEN json_valid(apply_event.payload) THEN apply_event.payload ELSE '{}' END, '$.planDigest' ) = 'text' AND json_extract( CASE WHEN json_valid(apply_event.payload) THEN apply_event.payload ELSE '{}' END, '$.commitId' ) = apply_commit.id AND json_extract( CASE WHEN json_valid(apply_event.payload) THEN apply_event.payload ELSE '{}' END, '$.requestId' ) = apply_commit.request_id AND json_extract( CASE WHEN json_valid(apply_event.payload) THEN apply_event.payload ELSE '{}' END, '$.planDigest' ) = apply_commit.plan_digest AND json_valid(tx.application_ids_json) AND json_type( CASE WHEN json_valid(tx.application_ids_json) THEN tx.application_ids_json ELSE '[]' END, '$' ) = 'array' AND json_array_length( CASE WHEN json_valid(tx.application_ids_json) THEN tx.application_ids_json ELSE '[]' END ) = ( SELECT COUNT(*) FROM narrative_proposal_applications application WHERE application.commit_id = apply_commit.id ) AND NOT EXISTS ( SELECT 1 FROM json_each( CASE WHEN json_valid(tx.application_ids_json) THEN tx.application_ids_json ELSE '[]' END ) transaction_application WHERE transaction_application.type IS NOT 'text' OR NOT EXISTS ( SELECT 1 FROM narrative_proposal_applications application WHERE application.id = transaction_application.value AND application.commit_id = apply_commit.id ) ) AND NOT EXISTS ( SELECT 1 FROM narrative_proposal_applications application WHERE application.commit_id = apply_commit.id AND NOT EXISTS ( SELECT 1 FROM json_each( CASE WHEN json_valid(tx.application_ids_json) THEN tx.application_ids_json ELSE '[]' END ) transaction_application WHERE transaction_application.value IS application.id ) ) AND EXISTS ( SELECT 1 FROM narrative_proposal_applications target_application WHERE target_application.commit_id = apply_commit.id AND target_application.applied_entity_kind = 'codex_entry' AND target_application.applied_entity_id = entry.id ) AND ( SELECT COUNT(*) FROM narrative_proposal_applications target_application WHERE target_application.commit_id = apply_commit.id AND target_application.applied_entity_kind = 'codex_entry' AND target_application.applied_entity_id = entry.id ) = 1 AND NOT EXISTS ( SELECT 1 FROM json_each( CASE WHEN json_valid(commit_journal.after_json) THEN commit_journal.after_json ELSE '{}' END, '$.entities' ) journal_candidate WHERE json_extract( CASE WHEN json_valid(journal_candidate.value) THEN journal_candidate.value ELSE '{}' END, '$.entityKind' ) = 'codex_entry' AND NOT EXISTS ( SELECT 1 FROM narrative_proposal_applications application WHERE application.commit_id = apply_commit.id AND application.applied_entity_kind = 'codex_entry' AND application.applied_entity_id = json_extract( CASE WHEN json_valid(journal_candidate.value) THEN journal_candidate.value ELSE '{}' END, '$.entityId' ) AND EXISTS ( SELECT 1 FROM json_each( CASE WHEN json_valid(tx.application_ids_json) THEN tx.application_ids_json ELSE '[]' END ) transaction_application WHERE transaction_application.value IS application.id ) ) ) AND EXISTS ( SELECT 1 FROM narrative_proposal_applications target_application WHERE target_application.commit_id = apply_commit.id AND target_application.applied_entity_kind = 'codex_entry' AND target_application.applied_entity_id = entry.id AND EXISTS ( SELECT 1 FROM json_each( CASE WHEN json_valid(tx.application_ids_json) THEN tx.application_ids_json ELSE '[]' END ) transaction_application WHERE transaction_application.value IS target_application.id ) ) AND json_valid(commit_journal.after_json) AND json_type( CASE WHEN json_valid(commit_journal.after_json) THEN commit_journal.after_json ELSE '{}' END, '$.entities' ) = 'array' AND json_array_length( CASE WHEN json_valid(commit_journal.after_json) THEN commit_journal.after_json ELSE '{}' END, '$.entities' ) > 0 AND NOT EXISTS ( SELECT 1 FROM json_each( CASE WHEN json_valid(commit_journal.after_json) THEN commit_journal.after_json ELSE '{}' END, '$.entities' ) candidate WHERE json_type( CASE WHEN json_valid(candidate.value) THEN candidate.value ELSE '{}' END, '$' ) IS NOT 'object' OR json_type( CASE WHEN json_valid(candidate.value) THEN candidate.value ELSE '{}' END, '$.entityKind' ) IS NOT 'text' OR json_extract( CASE WHEN json_valid(candidate.value) THEN candidate.value ELSE '{}' END, '$.entityKind' ) NOT IN ( 'event', 'codex_entry', 'codex_relation', 'codex_detail_value', 'codex_phase', 'codex_semantic_binding', 'temporal_node', 'temporal_constraint', 'temporal_scene_chronicle', 'temporal_event_chronicle', 'temporal_scene_story_order', 'temporal_projection', 'plot_thread', 'plot_thread_marker', 'plot_thread_branch', 'foreshadow' ) OR json_type( CASE WHEN json_valid(candidate.value) THEN candidate.value ELSE '{}' END, '$.entityId' ) IS NOT 'text' OR json_type( CASE WHEN json_valid(candidate.value) THEN candidate.value ELSE '{}' END, '$.version' ) IS NOT 'integer' OR json_type( CASE WHEN json_valid(candidate.value) THEN candidate.value ELSE '{}' END, '$.opKind' ) IS NOT 'text' ) AND NOT EXISTS ( SELECT 1 FROM json_each( CASE WHEN json_valid(commit_journal.after_json) THEN commit_journal.after_json ELSE '{}' END, '$.entities' ) entity_a JOIN json_each( CASE WHEN json_valid(commit_journal.after_json) THEN commit_journal.after_json ELSE '{}' END, '$.entities' ) entity_b ON entity_a.key < entity_b.key WHERE json_extract( CASE WHEN json_valid(entity_a.value) THEN entity_a.value ELSE '{}' END, '$.entityKind' ) IS json_extract( CASE WHEN json_valid(entity_b.value) THEN entity_b.value ELSE '{}' END, '$.entityKind' ) AND json_extract( CASE WHEN json_valid(entity_a.value) THEN entity_a.value ELSE '{}' END, '$.entityId' ) IS json_extract( CASE WHEN json_valid(entity_b.value) THEN entity_b.value ELSE '{}' END, '$.entityId' ) ) AND ( SELECT COUNT(*) FROM json_each( CASE WHEN json_valid(commit_journal.after_json) THEN commit_journal.after_json ELSE '{}' END, '$.entities' ) candidate WHERE json_extract( CASE WHEN json_valid(candidate.value) THEN candidate.value ELSE '{}' END, '$.entityKind' ) = 'codex_entry' AND json_extract( CASE WHEN json_valid(candidate.value) THEN candidate.value ELSE '{}' END, '$.entityId' ) = entry.id ) = 1 AND json_type( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.entityKind' ) = 'text' AND json_extract( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.entityKind' ) = 'codex_entry' AND json_type( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.entityId' ) = 'text' AND json_extract( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.entityId' ) = entry.id AND json_type( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.opKind' ) = 'text' AND json_extract( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.opKind' ) = 'create' AND json_type( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.version' ) = 'integer' AND json_extract( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.version' ) = entry.version AND json_type( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.snapshot' ) = 'object' AND json_type( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.snapshot.id' ) = 'text' AND json_extract( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.snapshot.id' ) = entry.id AND json_type( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.snapshot.projectId' ) = 'text' AND json_extract( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.snapshot.projectId' ) = entry.project_id AND json_type( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.snapshot.content' ) = 'text' AND json_extract( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.snapshot.content' ) = entry.content AND json_type( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.snapshot.version' ) = 'integer' AND json_extract( CASE WHEN json_valid(journal_entity.value) THEN journal_entity.value ELSE '{}' END, '$.snapshot.version' ) = entry.version AND NEW.change_kind = 'metadata' AND NEW.before_version IS NULL AND NEW.before_digest IS NULL AND NEW.after_version = entry.version AND NEW.changed_paths_json = '[\"/\"]' AND NEW.occurred_at = tx.created_at AND ( SELECT COUNT(*) FROM state_snapshots snapshot WHERE snapshot.project_id = entry.project_id AND snapshot.domain = 'codex' AND snapshot.entity_id = entry.id AND snapshot.anchor_sequence = canonical.sequence ) = 1 AND ( SELECT COUNT(*) FROM state_snapshots snapshot WHERE snapshot.project_id = entry.project_id AND snapshot.domain = 'codex' AND snapshot.entity_id = entry.id AND (snapshot.entity_type = 'codex_entry' OR snapshot.entity_type IS NULL) AND snapshot.anchor_sequence = canonical.sequence AND snapshot.anchor_timestamp = canonical.timestamp AND snapshot.payload = entry.content AND snapshot.encoding = 'json' ) = 1 ) ) ) ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR') END; SELECT CASE WHEN EXISTS ( SELECT 1 FROM state_snapshots snapshot JOIN codex_entries entry ON entry.project_id = NEW.project_id AND entry.id = json_extract(NEW.object_key_json, '$.entryId') JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'codex' AND snapshot.entity_id = entry.id AND snapshot.anchor_sequence = NEW.canonical_sequence AND ( (snapshot.entity_type IS NOT NULL AND snapshot.entity_type <> 'codex_entry') OR snapshot.anchor_timestamp IS NOT canonical.timestamp OR snapshot.payload IS NOT entry.content OR snapshot.encoding IS NOT 'json' ) ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_SNAPSHOT_MISMATCH') END; SELECT CASE WHEN EXISTS ( SELECT 1 FROM narrative_change_events sibling WHERE sibling.project_id = NEW.project_id AND sibling.canonical_sequence = NEW.canonical_sequence AND sibling.mutation_kind IN ('create', 'restore') AND sibling.id <> NEW.id AND json_extract(sibling.object_key_json, '$.kind') = 'codex-entry' AND json_extract(sibling.object_key_json, '$.entryId') = json_extract(NEW.object_key_json, '$.entryId') ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_DUPLICATE_LIFECYCLE') END; INSERT INTO state_snapshots (project_id, domain, entity_type, entity_id, anchor_sequence, anchor_timestamp, payload, encoding, created_at) SELECT NEW.project_id, 'codex', 'codex_entry', entry.id, NEW.canonical_sequence, canonical.timestamp, entry.content, 'json', canonical.timestamp FROM codex_entries entry JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE entry.project_id = NEW.project_id AND entry.id = json_extract(NEW.object_key_json, '$.entryId') AND NOT EXISTS ( SELECT 1 FROM state_snapshots snapshot WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'codex' AND snapshot.entity_id = entry.id AND snapshot.anchor_sequence = NEW.canonical_sequence ); SELECT CASE WHEN NOT EXISTS ( SELECT 1 FROM state_snapshots snapshot JOIN codex_entries entry ON entry.project_id = NEW.project_id AND entry.id = json_extract(NEW.object_key_json, '$.entryId') JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'codex' AND (snapshot.entity_type = 'codex_entry' OR snapshot.entity_type IS NULL) AND snapshot.entity_id = entry.id AND snapshot.anchor_sequence = NEW.canonical_sequence AND snapshot.anchor_timestamp = canonical.timestamp AND snapshot.payload = entry.content AND snapshot.encoding = 'json' ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_BODY_MISSING') END; END",
+    "timelapse_scene_creation_baseline": "CREATE TRIGGER timelapse_scene_creation_baseline AFTER INSERT ON narrative_change_events WHEN NEW.mutation_kind IN ('create', 'restore') AND json_extract(NEW.object_key_json, '$.kind') = 'scene' AND NOT EXISTS ( SELECT 1 FROM project_settings WHERE project_id = NEW.project_id AND key = 'timelapse.enabled' AND value = 'false' ) BEGIN SELECT CASE WHEN NOT EXISTS ( SELECT 1 FROM change_events canonical WHERE canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence AND canonical.sequence BETWEEN 1 AND 9007199254740991 AND canonical.sequence = ( SELECT MAX(sequence) FROM change_events WHERE project_id = NEW.project_id ) AND canonical.timestamp BETWEEN 0 AND 9007199254740991 ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR') END; SELECT CASE WHEN EXISTS ( SELECT 1 FROM state_snapshots snapshot JOIN tree_nodes node ON node.project_id = NEW.project_id AND node.id = json_extract(NEW.object_key_json, '$.sceneId') AND node.node_type = 'scene' JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'editor' AND snapshot.entity_id = node.id AND snapshot.anchor_sequence = NEW.canonical_sequence AND ( (snapshot.entity_type IS NOT NULL AND snapshot.entity_type <> 'scene') OR snapshot.anchor_timestamp IS NOT canonical.timestamp OR snapshot.payload IS NOT node.content OR snapshot.encoding IS NOT 'json' ) ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_SNAPSHOT_MISMATCH') END; SELECT CASE WHEN EXISTS ( SELECT 1 FROM narrative_change_events sibling WHERE sibling.project_id = NEW.project_id AND sibling.canonical_sequence = NEW.canonical_sequence AND sibling.mutation_kind IN ('create', 'restore') AND sibling.id <> NEW.id AND json_extract(sibling.object_key_json, '$.kind') = 'scene' AND json_extract(sibling.object_key_json, '$.sceneId') = json_extract(NEW.object_key_json, '$.sceneId') ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_DUPLICATE_LIFECYCLE') END; INSERT INTO state_snapshots (project_id, domain, entity_type, entity_id, anchor_sequence, anchor_timestamp, payload, encoding, created_at) SELECT NEW.project_id, 'editor', 'scene', node.id, NEW.canonical_sequence, canonical.timestamp, node.content, 'json', canonical.timestamp FROM tree_nodes node JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE node.project_id = NEW.project_id AND node.id = json_extract(NEW.object_key_json, '$.sceneId') AND node.node_type = 'scene' AND NOT EXISTS ( SELECT 1 FROM state_snapshots snapshot WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'editor' AND snapshot.entity_id = node.id AND snapshot.anchor_sequence = NEW.canonical_sequence ); SELECT CASE WHEN NOT EXISTS ( SELECT 1 FROM state_snapshots snapshot JOIN tree_nodes node ON node.project_id = NEW.project_id AND node.id = json_extract(NEW.object_key_json, '$.sceneId') AND node.node_type = 'scene' JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'editor' AND (snapshot.entity_type = 'scene' OR snapshot.entity_type IS NULL) AND snapshot.entity_id = node.id AND snapshot.anchor_sequence = NEW.canonical_sequence AND snapshot.anchor_timestamp = canonical.timestamp AND snapshot.payload = node.content AND snapshot.encoding = 'json' ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_BODY_MISSING') END; END",
+    "timelapse_snippet_creation_baseline": "CREATE TRIGGER timelapse_snippet_creation_baseline AFTER INSERT ON narrative_change_events WHEN NEW.mutation_kind IN ('create', 'restore') AND json_extract(NEW.object_key_json, '$.kind') = 'component' AND substr( json_extract(NEW.object_key_json, '$.componentId'), 1, length('snippet:') ) = 'snippet:' AND NOT EXISTS ( SELECT 1 FROM project_settings WHERE project_id = NEW.project_id AND key = 'timelapse.enabled' AND value = 'false' ) BEGIN SELECT CASE WHEN NOT EXISTS ( SELECT 1 FROM change_events canonical WHERE canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence AND canonical.sequence BETWEEN 1 AND 9007199254740991 AND canonical.sequence = ( SELECT MAX(sequence) FROM change_events WHERE project_id = NEW.project_id ) AND canonical.timestamp BETWEEN 0 AND 9007199254740991 ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR') END; SELECT CASE WHEN EXISTS ( SELECT 1 FROM state_snapshots snapshot JOIN snippets snippet ON snippet.project_id = NEW.project_id AND snippet.id = substr( json_extract(NEW.object_key_json, '$.componentId'), length('snippet:') + 1 ) JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'snippet' AND snapshot.entity_id = snippet.id AND snapshot.anchor_sequence = NEW.canonical_sequence AND ( (snapshot.entity_type IS NOT NULL AND snapshot.entity_type <> 'snippet') OR snapshot.anchor_timestamp IS NOT canonical.timestamp OR snapshot.payload IS NOT snippet.content OR snapshot.encoding IS NOT 'json' ) ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_SNAPSHOT_MISMATCH') END; SELECT CASE WHEN EXISTS ( SELECT 1 FROM narrative_change_events sibling WHERE sibling.project_id = NEW.project_id AND sibling.canonical_sequence = NEW.canonical_sequence AND sibling.mutation_kind IN ('create', 'restore') AND sibling.id <> NEW.id AND json_extract(sibling.object_key_json, '$.kind') = 'component' AND json_extract(sibling.object_key_json, '$.componentId') = json_extract(NEW.object_key_json, '$.componentId') ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_DUPLICATE_LIFECYCLE') END; INSERT INTO state_snapshots (project_id, domain, entity_type, entity_id, anchor_sequence, anchor_timestamp, payload, encoding, created_at) SELECT NEW.project_id, 'snippet', 'snippet', snippet.id, NEW.canonical_sequence, canonical.timestamp, snippet.content, 'json', canonical.timestamp FROM snippets snippet JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snippet.project_id = NEW.project_id AND snippet.id = substr( json_extract(NEW.object_key_json, '$.componentId'), length('snippet:') + 1 ) AND NOT EXISTS ( SELECT 1 FROM state_snapshots snapshot WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'snippet' AND snapshot.entity_id = snippet.id AND snapshot.anchor_sequence = NEW.canonical_sequence ); SELECT CASE WHEN NOT EXISTS ( SELECT 1 FROM state_snapshots snapshot JOIN snippets snippet ON snippet.project_id = NEW.project_id AND snippet.id = substr( json_extract(NEW.object_key_json, '$.componentId'), length('snippet:') + 1 ) JOIN change_events canonical ON canonical.project_id = NEW.project_id AND canonical.event_uid = NEW.canonical_change_event_uid AND canonical.sequence = NEW.canonical_sequence WHERE snapshot.project_id = NEW.project_id AND snapshot.domain = 'snippet' AND (snapshot.entity_type = 'snippet' OR snapshot.entity_type IS NULL) AND snapshot.entity_id = snippet.id AND snapshot.anchor_sequence = NEW.canonical_sequence AND snapshot.anchor_timestamp = canonical.timestamp AND snapshot.payload = snippet.content AND snapshot.encoding = 'json' ) THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_BODY_MISSING') END; END",
     "tree_nodes_fts_ad": "CREATE TRIGGER tree_nodes_fts_ad AFTER DELETE ON tree_nodes BEGIN INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, title, content) VALUES ('delete', old.rowid, COALESCE(old.title, ''), COALESCE(old.content, '')); END",
     "tree_nodes_fts_ai": "CREATE TRIGGER tree_nodes_fts_ai AFTER INSERT ON tree_nodes BEGIN INSERT INTO tree_nodes_fts(rowid, title, content) VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, '')); END",
     "tree_nodes_fts_au": "CREATE TRIGGER tree_nodes_fts_au AFTER UPDATE ON tree_nodes WHEN old.title IS NOT new.title OR old.content IS NOT new.content BEGIN INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, title, content) VALUES ('delete', old.rowid, COALESCE(old.title, ''), COALESCE(old.content, '')); INSERT INTO tree_nodes_fts(rowid, title, content) VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, '')); END",

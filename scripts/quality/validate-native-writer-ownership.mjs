@@ -64,6 +64,9 @@ const WRITER_TO_MODULES = {
   "narrative.authority": [
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs",
+    // C2A's dormant Native Human writer appends immutable proposal revisions
+    // and their source-basis rows under the same authority boundary.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/human_derivation.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
     // Gate C2 item 4: narrative_application_contributions carries
@@ -73,6 +76,23 @@ const WRITER_TO_MODULES = {
     // the Change Feed projection that moves target_state.
     "src-tauri/crates/grimodex-db/src/narrative_extraction/application_contributions.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/contribution_target_state.rs",
+    // C2-ZC's authority, finding, and repair rows are emitted by the Native
+    // maintenance pipeline. Keep every runtime writer explicit so this policy
+    // cannot be weakened by a generic SQL caller in a neighboring module.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zb_application_rekey.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/dependency_edges.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/finding_observation.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/publish_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repair.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/semantic_epoch.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+    // Timelapse's canonical append-only event log and snapshot anchors are
+    // shared Native-owned state. The low-level append helpers are called by
+    // typed domain writers, while the timelapse module owns snapshot writes.
+    "src-tauri/crates/grimodex-db/src/change_events.rs",
+    "src-tauri/crates/grimodex-db/src/timelapse.rs",
+    "src-tauri/crates/grimodex-core/src/change_events.rs",
   ],
   "narrative.revision-envelope": [
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
@@ -82,6 +102,7 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/field_authority.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
   ],
   "narrative.field-authority": [
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
@@ -91,6 +112,7 @@ const WRITER_TO_MODULES = {
   "narrative.maintenance-feed": [
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/change_feed.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
     // Gate C2 Lane I: SCHEMA_VERSION 23 reservation columns on the same
     // narrative_change_cursors table, split into its own module for
     // clarity — still the narrative.maintenance-feed writer authority.
@@ -102,6 +124,47 @@ const WRITER_TO_MODULES = {
   // to narrative_change_transactions/narrative_change_events.
   "narrative.maintenance-attention": [
     "src-tauri/crates/grimodex-db/src/narrative_extraction/attention.rs",
+  ],
+  // D1 sealed dependency declarations are persisted only by their typed
+  // storage boundary. Keep this mapping exact so future runtime modules do
+  // not inherit write authority over the declaration shadow tables.
+  "narrative.dependency-declaration": [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/declaration_storage.rs",
+  ],
+  // C2A execution-state task rows have a deliberately wider writer set: the
+  // scheduler, lease/runtime paths, freshness recovery, and maintenance
+  // lifecycle all transition task state. Keep this list exact so a generic
+  // Rust SQL caller cannot inherit task authority.
+  "narrative.extraction-task": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_lifecycle.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs",
+  ],
+  // Attempt transitions are not lease-owned task mutations, so task_leases.rs
+  // is intentionally absent from this writer's allowlist.
+  "narrative.extraction-attempt": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_lifecycle.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+  ],
+  // Artifacts are emitted by the task repository and removed with the domain
+  // cleanup writer; no scheduler/maintenance module owns their rows.
+  "narrative.extraction-artifact": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+  ],
+  // SCHEMA 34 stage model bindings and terminal receipts are durable
+  // non-authoritative C2A rows. The typed stage-provenance module is their
+  // sole production writer; the ephemeral closure is never a table.
+  "narrative.stage-provenance": [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
   ],
   // schema_data_migrations records which data migrations have completed, and
   // the schema checkpoint reads it to decide whether a migration re-runs.
@@ -244,7 +307,7 @@ const WRITER_TO_MODULES = {
 };
 
 const DML_RE =
-  /\b(INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM)\s+["`]?([a-z_][a-z0-9_]*)["`]?/gi;
+  /\b(INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE\s+|DELETE\s+FROM)\s+["`]?([a-z_][a-z0-9_]*)["`]?/gi;
 
 function shouldSkip(filePath) {
   const normalized = filePath.replaceAll("\\", "/");

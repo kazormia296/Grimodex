@@ -22,6 +22,14 @@ use crate::{
     PREVIOUS_COMPATIBLE_SCHEMA_VERSION, PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION, SCHEMA_VERSION,
 };
 
+// The generated contract is the canonical, migration-produced definition of
+// every SQLite trigger.  The current-schema checkpoint embeds the artifact so
+// a same-name trigger with merely plausible fragments cannot make the open
+// fast path skip an in-version repair.  `schema-contract` regeneration and its
+// parity test keep this read-only authority synchronized with `migrate.rs`.
+const GENERATED_SCHEMA_CONTRACT: &str =
+    include_str!("../../../../src/db/generated/schema-contract.json");
+
 const AI_AUDIT_COLUMNS: &[(&str, &str, bool, i32)] = &[
     ("id", "INTEGER", false, 1),
     ("scope_id", "TEXT", true, 0),
@@ -578,9 +586,17 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// Version 30 records on each Dependency Edge the Run that declared it, so
 /// resolving a `snapshot:<runId>` Source no longer depends on the Consumer
 /// key happening to be a Run id. Version 31 adds the bundled Finding Rule
-/// identity/digest columns and append-only lifecycle records.
+/// identity/digest columns and append-only lifecycle records. Version 32
+/// re-keys legacy Backfill Run Edges onto Application Consumers and records
+/// the completion marker only after every project passes preflight. Version
+/// 33 adds sealed Dependency declaration sets, immutable entries, and
+/// optimistic Consumer heads for the NIR-0 D1 storage boundary. Version 34
+/// adds C2A's durable stage audit metadata and the structural V2 lineage
+/// monotonicity guard. SCHEMA 34 also carries an in-version repair that
+/// atomically projects non-empty body creation baselines from the canonical
+/// Narrative Change Feed lifecycle event.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 31
+    Ok(SCHEMA_VERSION == 34
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -602,6 +618,7 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v27_repair_lease_run_binding(conn)?
         && has_v30_dependency_edge_owning_run_column(conn)?
         && has_v31_finding_identity_columns(conn)?
+        && has_c2_finding_identity_data_migration_marker(conn)?
         // SCHEMA 28 carries a data migration, so without this both of
         // `migrate_impl`'s fast paths skip it: see
         // `has_c2_identity_data_migration_marker`. This supersedes the
@@ -610,7 +627,430 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_c2_identity_data_migration_marker(conn)?
         // Gate C2-2's Consumer grain re-key is a data migration too, and the
         // same fast paths would skip it.
-        && has_c2_consumer_grain_data_migration_marker(conn)?)
+        && has_c2_consumer_grain_data_migration_marker(conn)?
+        // Gate C2-ZB's Application re-key is a data migration too. Its
+        // marker is written last inside the schema-owned savepoint.
+        && has_c2_application_rekey_data_migration_marker(conn)?
+        // D1 stores only complete, sealed Dependency declaration sets. The
+        // physical shape is checked here before the schema marker advances;
+        // V2 remains a non-authoritative shadow until a later cutover lane.
+        && has_v33_dependency_declaration_storage(conn)?
+        && has_v34_c2a_stage_storage(conn)?
+        && has_timelapse_query_indexes(conn)?
+        // The durable wake outbox and the V2 pointer monotonicity guard ship
+        // as an in-version repair of SCHEMA 34: their absence forces a full
+        // idempotent DDL replay rather than a version bump.
+        && table_exists(conn, "narrative_maintenance_wake_outbox")?
+        && has_timelapse_creation_baseline_triggers(conn)?)
+}
+
+/// Timelapse genesis and restore eligibility are project/entity lookups. Keep
+/// their composite indexes in the current-schema checkpoint so an older
+/// workspace is repaired through the full idempotent migrator instead of
+/// silently falling back to project-wide event/snapshot scans.
+fn has_timelapse_query_indexes(conn: &Connection) -> anyhow::Result<bool> {
+    for (table, name, expected_columns) in [
+        (
+            "change_events",
+            "idx_change_events_project_domain_op_entity_seq",
+            ["project_id", "domain", "op_type", "entity_id", "sequence"].as_slice(),
+        ),
+        (
+            "state_snapshots",
+            "idx_state_snap_project_domain_type_entity_seq",
+            [
+                "project_id",
+                "domain",
+                "entity_id",
+                "entity_type",
+                "anchor_sequence",
+            ]
+            .as_slice(),
+        ),
+    ] {
+        let properties = conn
+            .query_row(
+                &format!(
+                    "SELECT \"unique\", partial
+                       FROM pragma_index_list('{table}')
+                      WHERE name = ?1"
+                ),
+                [name],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+            )
+            .optional()?;
+        if properties != Some((false, false)) || index_columns(conn, name)? != expected_columns {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn has_timelapse_creation_baseline_triggers(conn: &Connection) -> anyhow::Result<bool> {
+    let generated_contract = serde_json::from_str::<serde_json::Value>(GENERATED_SCHEMA_CONTRACT)?;
+    let expected_triggers = generated_contract
+        .get("triggers")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("generated schema contract has no triggers object"))?;
+
+    for name in [
+        "timelapse_scene_creation_baseline",
+        "timelapse_codex_creation_baseline",
+        "timelapse_snippet_creation_baseline",
+    ] {
+        let expected = expected_triggers
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!("generated schema contract is missing trigger {name}")
+            })?;
+        let actual = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                [name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let actual = actual.as_deref().map(compact_sql);
+        let expected = compact_sql(expected);
+        if actual.as_deref() != Some(expected.as_str()) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// SCHEMA 34 / NIR-0 C2A: durable, non-authoritative Stage model bindings and
+/// terminal receipts. The C1 closure is validated transaction-locally and is
+/// intentionally ephemeral (ADR 011 §2.1/plan 34f).
+fn has_v34_c2a_stage_storage(conn: &Connection) -> anyhow::Result<bool> {
+    for table in [
+        "narrative_extraction_stage_model_bindings",
+        "narrative_extraction_stage_receipts",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+
+    let binding_table_columns = table_columns(conn, "narrative_extraction_stage_model_bindings")?;
+    let receipt_table_columns = table_columns(conn, "narrative_extraction_stage_receipts")?;
+    let binding_columns = [
+        ("id", "TEXT", true),
+        ("project_id", "TEXT", true),
+        ("run_id", "TEXT", true),
+        ("task_id", "TEXT", true),
+        ("attempt_id", "TEXT", true),
+        ("stage_execution_id", "TEXT", true),
+        ("binding_json", "TEXT", true),
+        ("binding_digest", "TEXT", true),
+        ("created_at", "TEXT", true),
+    ];
+    let receipt_columns = [
+        ("id", "TEXT", true),
+        ("project_id", "TEXT", true),
+        ("run_id", "TEXT", true),
+        ("task_id", "TEXT", true),
+        ("attempt_id", "TEXT", true),
+        ("stage_execution_id", "TEXT", true),
+        ("receipt_json", "TEXT", true),
+        ("receipt_digest", "TEXT", true),
+        ("model_binding_digest", "TEXT", true),
+        ("terminal_status", "TEXT", true),
+        ("created_at", "TEXT", true),
+    ];
+    let columns_ok = |table_columns: &[ColumnShape], columns: &[(&str, &str, bool)]| {
+        table_columns.len() == columns.len()
+            && columns
+                .iter()
+                .enumerate()
+                .all(|(index, (name, declared_type, not_null))| {
+                    let Some(column) = table_columns.get(index) else {
+                        return false;
+                    };
+                    column.name == *name
+                        && column.declared_type == *declared_type
+                        && column.not_null == *not_null
+                        && (index != 0 || column.primary_key == 1)
+                        && (index == 0 || column.primary_key == 0)
+                })
+    };
+    let index_matches = |index: &str, expected: &[&str]| -> anyhow::Result<bool> {
+        Ok(index_columns(conn, index)?
+            .iter()
+            .map(String::as_str)
+            .eq(expected.iter().copied()))
+    };
+    let fk_matches = |table: &str, from: &str, parent: &str, to: &str| {
+        foreign_key_matches(conn, table, from, parent, to)
+    };
+    let binding_sql = compact_sql(&table_sql(
+        conn,
+        "narrative_extraction_stage_model_bindings",
+    )?);
+    let receipt_sql = compact_sql(&table_sql(conn, "narrative_extraction_stage_receipts")?);
+    let digest_check = |sql: &str, field: &str| {
+        sql.contains(&format!(
+            "check(length({field})=71and{field}glob'sha256:*'andsubstr({field},8)notglob'*[^0-9a-f]*')"
+        ))
+    };
+    let trigger_sql = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master
+              WHERE type = 'trigger'
+                AND name = 'narrative_proposal_revisions_v2_monotonicity_guard'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|sql| compact_sql(&sql));
+    let pointer_trigger_sql = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master
+              WHERE type = 'trigger'
+                AND name = 'narrative_proposals_v2_pointer_monotonicity_guard'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|sql| compact_sql(&sql));
+    let v2_immutable_update_trigger_sql = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master
+              WHERE type = 'trigger'
+                AND name = 'narrative_proposal_revisions_v2_immutable_update_guard'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|sql| compact_sql(&sql));
+
+    Ok(columns_ok(&binding_table_columns, &binding_columns)
+        && columns_ok(&receipt_table_columns, &receipt_columns)
+        && index_matches(
+            "sqlite_autoindex_narrative_extraction_stage_model_bindings_1",
+            &["id"],
+        )?
+        && index_matches(
+            "sqlite_autoindex_narrative_extraction_stage_model_bindings_2",
+            &["project_id", "stage_execution_id"],
+        )?
+        && index_matches(
+            "idx_narrative_stage_model_bindings_owner",
+            &["project_id", "run_id", "task_id", "attempt_id"],
+        )?
+        && index_matches(
+            "sqlite_autoindex_narrative_extraction_stage_receipts_1",
+            &["id"],
+        )?
+        && index_matches(
+            "sqlite_autoindex_narrative_extraction_stage_receipts_2",
+            &["project_id", "stage_execution_id"],
+        )?
+        && index_matches(
+            "idx_narrative_stage_receipts_owner",
+            &["project_id", "run_id", "task_id", "attempt_id"],
+        )?
+        && fk_matches(
+            "narrative_extraction_stage_model_bindings",
+            "project_id",
+            "projects",
+            "id",
+        )?
+        && fk_matches(
+            "narrative_extraction_stage_receipts",
+            "project_id",
+            "projects",
+            "id",
+        )?
+        && binding_sql.contains(
+            "check(json_valid(binding_json)andjson_type(binding_json)='object')",
+        )
+        && digest_check(&binding_sql, "binding_digest")
+        && binding_sql.contains("unique(project_id,stage_execution_id)")
+        && receipt_sql.contains(
+            "check(json_valid(receipt_json)andjson_type(receipt_json)='object')",
+        )
+        && digest_check(&receipt_sql, "receipt_digest")
+        && digest_check(&receipt_sql, "model_binding_digest")
+        && receipt_sql.contains(
+            "check(terminal_statusin('succeeded','failed','cancelled','skipped'))",
+        )
+        && receipt_sql.contains("unique(project_id,stage_execution_id)")
+        && trigger_sql.is_some_and(|sql| {
+            sql.contains("beforeinsertonnarrative_proposal_revisions")
+                && sql.contains("whenexists(select1fromnarrative_proposalspjoinnarrative_proposal_revisionscurrent_revision")
+                && sql.contains("current_revision.origin_kind='enveloped'")
+                && sql.contains("json_extract(current_revision.reconciliation_envelope_json,'$.schemaversion')=2")
+                && sql.contains("new.origin_kind<>'enveloped'")
+                && sql.contains("new.reconciliation_envelope_jsonisnull")
+                && sql.contains("json_extract(new.reconciliation_envelope_json,'$.schemaversion')isnot2")
+                && sql.contains("nex_revision_envelope_downgrade_forbidden")
+        })
+        && pointer_trigger_sql.is_some_and(|sql| {
+            sql.contains("beforeupdateofcurrent_revision_idonnarrative_proposals")
+                && sql.contains("old_revision.id=old.current_revision_id")
+                && sql.contains("old_revision.origin_kind='enveloped'")
+                && sql.contains(
+                    "json_extract(old_revision.reconciliation_envelope_json,'$.schemaversion')=2",
+                )
+                && sql.contains("andnotexists(")
+                && sql.contains("new_revision.id=new.current_revision_id")
+                && sql.contains("new_revision.origin_kind='enveloped'")
+                && sql.contains(
+                    "json_extract(new_revision.reconciliation_envelope_json,'$.schemaversion')=2",
+                )
+                && sql.contains("nex_revision_envelope_downgrade_forbidden")
+        })
+        && v2_immutable_update_trigger_sql.is_some_and(|sql| {
+            sql.contains("beforeupdateonnarrative_proposal_revisions")
+                && sql.contains("old.origin_kind='enveloped'")
+                && sql.contains("json_extract(old.reconciliation_envelope_json,'$.schemaversion')=2")
+                && sql.contains("old.payload_jsonisnotnew.payload_json")
+                && sql.contains("old.reconciliation_envelope_digestisnotnew.reconciliation_envelope_digest")
+                && sql.contains("nex_revision_v2_immutable")
+        }))
+}
+
+/// SCHEMA 33 / NIR-0 D1: durable Dependency declaration storage is append
+/// only at the set/entry level and mutable only at the Consumer head. A set
+/// can cross the durable boundary only in the `sealed` state; the writer
+/// computes all digests and performs the head CAS inside one transaction.
+fn has_v33_dependency_declaration_storage(conn: &Connection) -> anyhow::Result<bool> {
+    for table in [
+        "narrative_dependency_declaration_sets",
+        "narrative_dependency_declaration_entries",
+        "narrative_dependency_declaration_heads",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+
+    let has_column = |columns: &[ColumnShape], name: &str, declared_type: &str, not_null: bool| {
+        columns.iter().any(|column| {
+            column.name == name
+                && column.declared_type == declared_type
+                && column.not_null == not_null
+        })
+    };
+    let sets = table_columns(conn, "narrative_dependency_declaration_sets")?;
+    let entries = table_columns(conn, "narrative_dependency_declaration_entries")?;
+    let heads = table_columns(conn, "narrative_dependency_declaration_heads")?;
+
+    let sets_ok = has_column(&sets, "id", "TEXT", true)
+        && has_column(&sets, "project_id", "TEXT", true)
+        && has_column(&sets, "consumer_kind", "TEXT", true)
+        && has_column(&sets, "consumer_key", "TEXT", true)
+        && has_column(&sets, "producer_id", "TEXT", true)
+        && has_column(&sets, "producer_generation", "INTEGER", true)
+        && has_column(&sets, "dependency_set_digest", "TEXT", true)
+        && has_column(&sets, "state", "TEXT", true)
+        && has_column(&sets, "created_at", "TEXT", true)
+        && index_columns(
+            conn,
+            "sqlite_autoindex_narrative_dependency_declaration_sets_1",
+        )?
+        .iter()
+        .map(String::as_str)
+        .eq(["id"])
+        && index_columns(
+            conn,
+            "sqlite_autoindex_narrative_dependency_declaration_sets_2",
+        )?
+        .iter()
+        .map(String::as_str)
+        .eq([
+            "project_id",
+            "consumer_kind",
+            "consumer_key",
+            "producer_generation",
+        ])
+        && index_columns(conn, "idx_narrative_dependency_declaration_sets_consumer")?
+            .iter()
+            .map(String::as_str)
+            .eq(["project_id", "consumer_kind", "consumer_key"]);
+
+    let entries_ok = has_column(&entries, "id", "TEXT", true)
+        && has_column(&entries, "declaration_set_id", "TEXT", true)
+        && has_column(&entries, "source_object_identity", "TEXT", true)
+        && has_column(&entries, "dependency_key", "TEXT", true)
+        && has_column(&entries, "dependency_role", "TEXT", true)
+        && has_column(&entries, "role_contract_version", "TEXT", true)
+        && has_column(&entries, "selector_json", "TEXT", true)
+        && has_column(&entries, "selector_digest", "TEXT", true)
+        && has_column(&entries, "created_at", "TEXT", true)
+        && index_columns(
+            conn,
+            "sqlite_autoindex_narrative_dependency_declaration_entries_1",
+        )?
+        .iter()
+        .map(String::as_str)
+        .eq(["id"])
+        && index_columns(
+            conn,
+            "sqlite_autoindex_narrative_dependency_declaration_entries_2",
+        )?
+        .iter()
+        .map(String::as_str)
+        .eq([
+            "declaration_set_id",
+            "source_object_identity",
+            "dependency_key",
+        ])
+        && index_columns(conn, "idx_narrative_dependency_declaration_entries_set")?
+            .iter()
+            .map(String::as_str)
+            .eq(["declaration_set_id"])
+        && index_columns(conn, "idx_narrative_dependency_declaration_entries_source")?
+            .iter()
+            .map(String::as_str)
+            .eq(["source_object_identity"]);
+
+    let heads_ok = has_column(&heads, "project_id", "TEXT", true)
+        && has_column(&heads, "consumer_kind", "TEXT", true)
+        && has_column(&heads, "consumer_key", "TEXT", true)
+        && has_column(&heads, "active_declaration_set_id", "TEXT", true)
+        && has_column(&heads, "producer_id", "TEXT", true)
+        && has_column(&heads, "producer_generation", "INTEGER", true)
+        && has_column(&heads, "version", "INTEGER", true)
+        && has_column(&heads, "updated_at", "TEXT", true)
+        && index_columns(
+            conn,
+            "sqlite_autoindex_narrative_dependency_declaration_heads_1",
+        )?
+        .iter()
+        .map(String::as_str)
+        .eq(["project_id", "consumer_kind", "consumer_key"])
+        && index_columns(conn, "idx_narrative_dependency_declaration_heads_set")?
+            .iter()
+            .map(String::as_str)
+            .eq(["active_declaration_set_id"]);
+
+    let sets_sql = compact_sql(&table_sql(conn, "narrative_dependency_declaration_sets")?);
+    let entries_sql = compact_sql(&table_sql(
+        conn,
+        "narrative_dependency_declaration_entries",
+    )?);
+    let heads_sql = compact_sql(&table_sql(conn, "narrative_dependency_declaration_heads")?);
+
+    Ok(sets_ok
+        && entries_ok
+        && heads_ok
+        && sets_sql.contains("check(state='sealed')")
+        && sets_sql.contains("check(producer_generation>=0)")
+        && sets_sql.contains("andsubstr(dependency_set_digest,8)notglob'*[^0-9a-f]*'")
+        && entries_sql
+            .contains("check(json_valid(selector_json)andjson_type(selector_json)='object')")
+        && entries_sql.contains("andsubstr(dependency_key,8)notglob'*[^0-9a-f]*'")
+        && entries_sql.contains("andsubstr(selector_digest,8)notglob'*[^0-9a-f]*'")
+        && heads_sql.contains("check(producer_generation>=0)")
+        && heads_sql.contains("check(version>=1)")
+        && sets_sql.contains("referencesprojects(id)ondeletecascade")
+        && entries_sql
+            .contains("referencesnarrative_dependency_declaration_sets(id)ondeletecascade")
+        && heads_sql.contains("referencesprojects(id)ondeletecascade")
+        && heads_sql.contains("referencesnarrative_dependency_declaration_sets(id)"))
 }
 
 fn has_v31_finding_identity_columns(conn: &Connection) -> anyhow::Result<bool> {
@@ -1480,6 +1920,26 @@ fn has_c2_finding_identity_data_migration_marker(conn: &Connection) -> anyhow::R
     Ok(applied.is_some_and(|version| version >= C2_FINDING_IDENTITY_CONTRACT_VERSION))
 }
 
+/// Mirrors `migrate.rs`'s SCHEMA 32 data migration marker.
+pub const C2_APPLICATION_REKEY_MIGRATION_ID: &str = "narrative-c2-application-rekey-v32";
+pub const C2_APPLICATION_REKEY_CONTRACT_VERSION: i64 = 1;
+
+fn has_c2_application_rekey_data_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "schema_data_migrations")? {
+        return Ok(false);
+    }
+    let applied: Option<i64> = conn
+        .query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [C2_APPLICATION_REKEY_MIGRATION_ID],
+            |row| row.get(0),
+        )
+        .optional()?;
+    // Exact-version contract, shared with the C2-ZB migration body: a future
+    // marker version is unsupported and must not checkpoint as complete.
+    Ok(applied.is_some_and(|version| version == C2_APPLICATION_REKEY_CONTRACT_VERSION))
+}
+
 /// Mirrors `migrate.rs`'s constants of the same name; a test pins them.
 pub const C2_IDENTITY_MIGRATION_ID: &str = "narrative-c2-identity-v28";
 /// See [`C2_IDENTITY_MIGRATION_ID`].
@@ -1541,6 +2001,37 @@ fn index_columns(conn: &Connection, index: &str) -> anyhow::Result<Vec<String>> 
         .collect::<Result<Vec<_>, _>>()
         .map_err(anyhow::Error::from)?;
     Ok(columns)
+}
+
+fn foreign_key_matches(
+    conn: &Connection,
+    table: &str,
+    from: &str,
+    parent: &str,
+    to: &str,
+) -> anyhow::Result<bool> {
+    let mut statement = conn.prepare(
+        "SELECT \"from\", \"table\", \"to\", on_delete
+           FROM pragma_foreign_key_list(?1)",
+    )?;
+    let foreign_keys = statement
+        .query_map([table], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(foreign_keys
+        .iter()
+        .any(|(actual_from, actual_parent, actual_to, on_delete)| {
+            actual_from == from
+                && actual_parent == parent
+                && actual_to == to
+                && on_delete.eq_ignore_ascii_case("CASCADE")
+        }))
 }
 
 fn compact_sql(sql: &str) -> String {

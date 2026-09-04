@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-dependency-producer-generation-registry",
+  "registryVersion": "narrative-producer-generation/v1",
+  "entries": [
+    {
+      "id": "proposal-revision-source-basis",
+      "writer": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+        "symbol": "record_revision_dependency_edges_in_tx"
+      },
+      "generation": "proposal-revision-dependency/v1",
+      "declarationSetGeneration": 1,
+      "consumerKind": "proposal-revision",
+      "declaration": "validated reconciliation-envelope sourceBasis rows"
+    },
+    {
+      "id": "legacy-application-projection-dependency",
+      "writer": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+        "symbol": "record_legacy_dependency_edges_in_tx"
+      },
+      "generation": "legacy-dependency-backfill:v3",
+      "consumerKind": "application",
+      "declaration": "legacy projection dependency rows"
+    },
+    {
+      "id": "post-cutover-application-dependency",
+      "writer": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs",
+        "symbol": "write_application_dependencies_in_tx"
+      },
+      "generation": "c2zc-application-dependency/v1",
+      "consumerKind": "application",
+      "declaration": "post-cutover Apply-path Application Generic Edge rows"
+    }
+  ]
+}

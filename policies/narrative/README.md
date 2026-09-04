@@ -64,7 +64,11 @@ Project INSERT/DELETE is also structurally protected. `project_create`
 publishes the Project scope and its four builtin Codex types in one trusted
 transaction; the builtin catalog is the ordered Feed payload. Bootstrap, sample
 seed, and scan staging creation retain their fixed non-user initialization
-contracts.
+contracts. The canonical project-birth inventory is exactly
+`project.create`, `import.session.apply`, and `scan.import.publish`.
+`scan.staging-project.create` is hidden and noncanonical staging allocation, not
+product project-create proof; completed scans promote only through the typed
+`scan_staging_project_publish` Electron IPC/N-API route owned by shared Rust.
 
 Map has an explicit boundary. `map_write_bundle` is the only Canonical Native
 Map aggregate writer and owns promotions that create Scene, Snippet, Codex Entry,
@@ -121,10 +125,10 @@ and does not create C2 tables. `ai-apply` must carry an explicit authority
 route because it is valid for both Interactive Agent Command and Interpreter
 Projection; no origin-only fallback is permitted.
 
-## NIR-0 Scope and Dependency contracts — DECLARED
+## NIR-0 Scope and Dependency contracts — C2B WIRED / Disclosure DECLARED
 
-ADR 009 and ADR 010 add two machine-readable contracts without changing the
-current Workspace Schema or C2 runtime:
+ADR 009 and ADR 010 define the machine-readable contracts used by the current
+C2B add-only slice:
 
 - `narrative-scope-relation-contract.json` — the V2 Scope axes, explicit
   `any` versus constrained-but-`unresolved`, strongest-established Relation
@@ -136,21 +140,19 @@ current Workspace Schema or C2 runtime:
   sealed Declaration Set, Head CAS, and V1／V2 priority rules;
 - matching `schemas/narrative-*-v1` JSON Schema draft 2020-12 contracts.
 
-Both contracts are `declared`: their `productionEntryPoints` are empty and
-the validator scans production roots for the reserved V2 markers. A marker
-appearing while the contract remains `declared`, or a future `shadow`／`wired`
-state without a real declared Entry Point, is a gate failure. The current
-`scope.ts`／Disclosure contract remains V1-compatible, the current Dependency
-Edge remains Source-grained, and
-`narrative_consumer_freshness.dependency_set_digest` still means the V1 Source
-identity set. No performance improvement, V2 cutover, or new Freshness
-authority is claimed by this contract-only step.
+The live project Scope authority and C2B ScopeOverride materialization are
+`wired` for the Chronicle add-only pilot. The typed route derives Scope V2,
+child D1/V1 dependencies, current-Epoch Freshness, and the final current
+pointer atomically; it has no mutable Scope head of its own. Historical
+`snapshot:<runId>` authority remains a separate sealed basis. The current
+`scope.ts`/Disclosure contract remains V1-compatible and its production
+admission is still `declared`; D2 full V2 authority cutover is not implied.
 
-## NIR-0 Shared Narrative IR contracts — DECLARED
+## NIR-0 Shared Narrative IR contracts — ACTIVATED (Chronicle add-only pilot)
 
 NIR-0 freezes the shared Narrative IR contract through [ADR
-011](../../docs/adr/011-narrative-ir-revision-semantics-contract.md) and keeps
-production on the existing V1 path:
+011](../../docs/adr/011-narrative-ir-revision-semantics-contract.md) and
+activates only the typed Chronicle `scene-event@1` / `add` route:
 
 - `narrative-ir-contract.json` — Envelope V2 and V2 monotonicity, project-scoped
   `narrative_proposal_revisions.id` identity, Native-verified Human-derived
@@ -167,20 +169,27 @@ production on the existing V1 path:
 - `validate-narrative-ir-contract.mjs` — semantic checks for identity,
   monotonicity, Human-derived boundaries, cumulative mixed-edit
   classification, golden-corpus integrity, Chronicle add-only wiring, and
-  disabled-activation production markers.
+  activation production markers.
 
 ADR 009 remains the owner of Scope capability status and the independent Scope
 Disclosure adoption track. ADR 010 remains the owner of Context Set and
-Dependency Role semantics. All NIR-0 production entry points are empty and V2
-emission/UI/current-Revision promotion remain blocked until C2B plus the
-declared D1/D2 and focused persistence/Freshness evidence.
+Dependency Role semantics. The active production entry points are the
+Chronicle extraction coordinator, atomic proposal-set save, and C2B
+Human-derived revision writer. Direct generic V2 append remains blocked; the
+existing V1 append path is an explicit compatibility fallback. V2
+emission/current-Revision promotion are limited to the `add` pilot.
 
-These are contract-only artifacts: they do not create C2 tables, perform a
-runtime/schema migration, connect Disclosure to Retrieval, or add a second
-Freshness or semantic authority. The existing `scope.ts`, Disclosure
-evaluator, Dependency Edge, and Consumer Freshness paths remain V1-compatible.
+These contracts do not create a second Freshness or semantic authority. The
+existing `scope.ts`, Disclosure evaluator, Dependency Edge, and Consumer
+Freshness paths remain V1-compatible. Disclosure admission, revise/retract/
+merge/split, D2 full cutover, and NIR1 retrieval remain deferred.
 
-## Gate C2 — IN PROGRESS
+The [NIR0-CERT completion ledger](../../docs/certification/nir0/NIR0-CERT.md)
+binds PR #559's clean candidate base/head/tree to the byte-identical tree merged
+as `651791655177538ee02bc7e773f7d98c534ea324`. Credentialed/live-model Heavy
+work remains deferred and is not counted as passing NIR-0 evidence.
+
+## Gate C2 — FOUNDATION COMPLETE; C2-ZC CANDIDATE
 
 Gate C2 begins from ADR 005's existing "Authority matrix and C2 start
 condition" checklist (Mutation Route / Source Event Contract / Object
@@ -189,20 +198,22 @@ Evidence-Scope, all fixed at C1.5) and implements only Dependency Edge, Edge
 State, Consumer Freshness, Application Contribution, Reverse Lookup,
 Incremental Evaluator, Cursor, and Backfill persistence/runtime, per that
 ADR. There is no separate `docs/certification/gate-c2/` directory or base-SHA
-file; the C2 branch base is simply `master` at branch creation, and this
-section is the running status record, alongside PR history and this ADR.
+file; this section is the running status record, alongside PR history and the
+accepted ADR/policy contracts.
 
 ```text
-Gate C2 — IN PROGRESS
+Gate C2 — FOUNDATION COMPLETE; C2-ZC focused-green code candidate recorded;
+final acceptance pending the complete gate receipt
   Contract / Registry / Ledger Spine (C2-00): complete
   Schema / Transport Extension Spine (C2-01): complete
   Wave 1 foundation lanes:                    complete
   Wave 1 Transport Assembly (C2-T1):          complete
   Wave 2 runtime / read-model lanes:          complete
   C2-1 incremental Freshness runtime:         complete (see below)
-  C2-3 Finding identity / Attention re-home:  planned
-  C2-5 shared triggers / lifecycle recovery:  planned
-  Canonical Authority Cutover (C2-Z):         blocked (see below)
+  C2-3 Finding identity / Attention re-home:  complete; merged through PR #556/#559
+  C2-5 shared triggers / lifecycle recovery:  complete; merged through PR #556/#559
+  C2-ZB Application re-key migration:         complete; SCHEMA 32 merged and hardened
+  C2-ZC Canonical Authority Cutover:          focused-green candidate; final acceptance pending
 ```
 
 ### C2-1 Change-Feed-driven incremental Freshness runtime
@@ -220,6 +231,31 @@ completed Run cannot acknowledge an unacknowledged range, and bounded
 Run/Task/Attempt recovery stops after three failed Attempts until a canonical
 Epoch rotation releases the held range for a new runtime-owned Run.
 
+The same `incremental-freshness` Run Kind also declares the machine-readable
+`idleCheckpoint` contract for a Feed that is already at its head. It is a
+zero-width, current-Epoch `freshness-evaluation` Run with one
+`incremental-freshness-batch` Task: `fromSequenceExclusive`,
+`throughSequenceInclusive`, and `feedHead` are the same value, and a missing
+cursor is valid only when that value is zero. The cursor must otherwise be
+clean and acknowledged at the head. A wake selects at most one project in
+ascending project-id order, and any current-Epoch Freshness Run, regardless of
+status, suppresses minting another checkpoint.
+
+The checkpoint binds the exact tagged Task input, Run spec, and Work Key using
+the same `sha256-canonical-json` input digest (with the Work Key carrying its
+hex form). Its successful lifecycle is exactly one completed Task and one
+completed Attempt with no active Attempt; `attempt_count` equals the total
+Attempt rows, Attempt numbers are contiguous `1..N`, only failed/completed
+Attempt states are allowed with the completed Attempt last, failed retry
+history is allowed only before completion, and a malformed Task kind cannot
+bypass the three-Attempt retry cap. The checkpoint may write only Run/Task/Attempt state
+and the Freshness cursor. It cannot write a Change Set, Generic Consumer
+Freshness, Edge State, Findings, Attention or Domain state, D2 declarations or
+shadow state, or Semantic Index data, and it is never a Generic Consumer
+Freshness publisher. A completed checkpoint causes no next-wake churn, but its
+database evidence alone proves neither scheduler liveness nor C2-ZC cutover;
+the normal Feed-backed allowlist and behavior remain unchanged.
+
 `electron/native/grimodex-node/src/lib.rs` exposes this as a main-only Native
 cycle. `electron/main/narrativeFreshness.ts` owns the single-flight scheduler
 and bounded backlog pacing; it deliberately adds no renderer IPC or preload
@@ -227,11 +263,17 @@ surface. Contract-level fixtures live in
 `src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs`
 and `electron/main/narrativeFreshness.test.ts`.
 
-This completion is intentionally narrower than the remaining Gate work. C2-3
-still owns three-layer Finding identity and orphaned Attention re-homing. C2-5
-still owns automatic Backfill / Verify / Rebuild-Derived scheduling and shared
-cross-Run-Kind lifecycle recovery. C2-Z remains blocked, and Generic Consumer
-Freshness remains shadow rather than the canonical read authority.
+The C2-1 runtime completion is intentionally narrower than later NIR-1
+retrieval work. C2-3's
+three-layer Finding identity and exact Attention re-homing, C2-5's automatic
+Backfill/Verify/Rebuild-Derived scheduling and shared cross-Run-Kind recovery,
+and C2-ZB's schema-owned Application re-key are merged through PR #556 and PR
+#559. C2-ZC is a focused-green code candidate. It becomes an accepted
+canonical-authority switch only after the complete C2-ZC gate receipt exists.
+The product journey, clean Full CI and receipt verification, and the Sol final
+remain pending. Until those gates are recorded, Generic Consumer Freshness is
+not the accepted canonical read authority and the Legacy projection remains
+compatibility behavior.
 
 The paragraphs below preserve the landing rationale for earlier C2 slices;
 their historical environment-specific validation caveats are not the current
@@ -357,9 +399,9 @@ declared under Consumer identity `(RUN_CONSUMER_KIND =
 "narrative-extraction-run", run_id)` — the _Run_, never the individual
 Proposal — because Lane N's Rebuild-verify diagnostic already queried Edges
 by that exact convention before any Producer declared them; and
-`source_object_identity` uses fixed prefixes (`project:scene:`,
-`snapshot:`, `project:codex-catalog:`, `projection:`, `artifact:`,
-`capture:`, `evidence:`) that `restore_rebuild.rs`'s `infer_source_kind`
+`source_object_identity` uses fixed prefixes (`project:scope-authority:`,
+`project:scene:`, `snapshot:`, `project:codex-catalog:`, `projection:`,
+`artifact:`, `capture:`, `evidence:`) that `restore_rebuild.rs`'s `infer_source_kind`
 already reads in reverse, so a new `dependency_edges::source_object_identity_for`
 builds the same strings forward from a `SourceBasisRow`'s `(sourceKind,
 sourceKey)`, cross-checked against `reconciliation_envelope.rs`'s own
@@ -375,7 +417,14 @@ a separate, still-open question left to Run/Task/Attempt lifecycle code
 "Producer-time commit path" its own doc comment referred to turned out to
 mean Proposal/Revision generation, not commit _apply_.
 
-Verified via `rustfmt --edition 2021 --check`, a brace/paren balance check,
+`project:scope-authority:<projectId>` is a computed Source added by the NIR-0
+C2B live-authority foundation. It has no durable head of its own: the resolver
+derives one typed revision from a single SQLite snapshot of live `tree_nodes`.
+The source is wired through Incremental Freshness, restore/rebuild, and the
+C2B ScopeOverride materialization transaction. Empty-folder structural events
+carry typed live-Scene subtree impact and do not false-stale the aggregate.
+
+Verified via the NIR0-CERT focused Rust and TypeScript suites,
 a Python `sqlite3` replay of the exact `narrative_dependency_edges` upsert
 SQL confirming two sibling Proposals' Edges survive independently and a
 re-declared Source upserts in place, and a new
@@ -491,18 +540,18 @@ open — automatic or human-triggered?" framing with one principle:
 > correcting a meaningful durable declaration is a human's responsibility.
 
 - **`dependency-backfill`** (Lane K; reuses the existing `run_kind =
-'backfill'` column value) — automatic, once, after a schema upgrade. Not
-  inside the SCHEMA migration transaction itself: migration only creates
-  tables/columns/indexes and leaves a backfill-required marker; Workspace
-  open succeeds first, then a post-open bootstrap step detects the marker
-  and creates the Run. Lane G/H's dual-write into the Generic Graph must
-  already be enabled before Backfill starts, so no Application created
-  during Backfill is lost to the Backfill's own snapshot. The Run seals
+'backfill'` column value) — automatic, once, after a schema upgrade. SCHEMA
+  32's C2-ZB owner re-keys durable legacy evidence atomically; a post-open
+  bootstrap Backfill still runs the v3 transform for evidence outside that
+  migration boundary and creates a fresh owning Run. Lane G/H's dual-write
+  into the Generic Graph must already be enabled before Backfill starts, so no
+  Application created during Backfill is lost to the Backfill's own snapshot.
+  The Run seals
   `{projectId, runKind, semanticEpochId, legacySourceSchemaVersion,
 legacyHighWaterMark, targetGraphContractDigest,
 backfillAlgorithmVersion}` at creation. Editing is never blocked while
-  Backfill runs or if it fails — Legacy Freshness stays the read authority
-  throughout; only the C2-Z cutover is gated on completion. Auto-retry is
+  Backfill runs or if it fails — the pre-marker Legacy Freshness path remains
+  the compatibility behavior until C2-Z readiness. Auto-retry is
   bounded to transient causes (SQLite busy, process interruption, app
   shutdown, lease timeout, transient I/O); a contract-shaped failure
   (`NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION` — cross-project
@@ -514,8 +563,9 @@ backfillAlgorithmVersion}` at creation. Editing is never blocked while
 - **`dependency-verify`** (Lane N's `rebuild_verify_dependency_edges`; no
   existing `run_kind` value, new) — automatic after Backfill completes, a
   Restore or Migration Semantic Epoch rotation, an Integrity Repair, or a
-  Dependency/Rule/Normalizer contract digest change, and once more right
-  before a C2-Z cutover attempt; manual re-run is also allowed. Skips
+  Dependency/Rule/Normalizer contract digest change. The scheduler-owned C2-ZC
+  activation consumes current Verify evidence; it is not a separate user or
+  renderer trigger. Manual re-run is also allowed. Skips
   re-running when the same Epoch, graph contract, and Producer generation
   set already passed. Read-only: may write only Run status, typed
   diagnostics, Finding Observations, and its own report digest — it must
@@ -524,12 +574,16 @@ backfillAlgorithmVersion}` at creation. Editing is never blocked while
 - **`dependency-rebuild-derived`** (Lane N; reuses the existing `run_kind
 = 'semantic-index-rebuild'` column value) — automatic whenever
   Rebuildable Derived State (`narrative_dependency_edge_states`,
-  `narrative_consumer_freshness`,
+  non-semantic-index rows in `narrative_consumer_freshness`,
   `narrative_maintenance_finding_observations`, reanchor candidates,
-  Semantic Index generation/cache, the Freshness evaluator's cursor
-  reservation) is absent, contract-mismatched, digest-mismatched, or
-  Verify reports it as required. Never touches Domain data or the Durable
-  Dependency declarations Lane G/H own.
+  the Freshness evaluator's cursor reservation) is absent,
+  contract-mismatched, digest-mismatched, or
+  Verify reports it as required. The reserved Semantic Index authority
+  footprint is not a Rebuild-Derived target; a non-zero footprint is
+  manual/terminal evidence. Scene/Codex/Event/Chat chunk rows may be
+  rebuilt as acceleration only and never imply Narrative dependency
+  authority. Never touches Domain data or the Durable Dependency
+  declarations Lane G/H own.
 - **`dependency-repair`** (Lane N's `rebuild_repair_dependency_edges_in_tx`,
   generalized; no existing `run_kind` value, new) — manual-only. Requires
   a successful Verify Run id, a sealed repair plan derived from that
@@ -558,26 +612,37 @@ API shape is replaced by five named operations
 `retryNarrativeLegacyBackfill`), so Background/scheduler code cannot
 accidentally reach Repair through a shared entrypoint.
 
-C2-Z cutover (Generic Consumer Freshness becoming canonical, ending
-Legacy Freshness's read authority) requires, per Workspace: Legacy
+C2-Z cutover (the candidate in which Generic Consumer Freshness would become
+canonical and Legacy Freshness's read authority would end) requires, per Workspace: Legacy
 Backfill completed, the current Epoch's Verify passed, no unresolved
 Durable Graph errors, Derived State rebuild completed, Legacy/Generic
-parity within contract, and no active Backfill/Repair Run. Until then,
-Legacy Freshness stays canonical and the Generic Graph stays shadow;
-ordinary editing is never blocked either way, only C2's own Structure
-Health/Freshness UI degrades to "semantic index is being prepared" or
-"semantic graph requires repair".
+parity within contract, no active Backfill/Repair Run, all 13 named Verify
+checks at production coverage 13/13, and an all-zero reserved Semantic Index
+authority footprint. Before final acceptance, Legacy Freshness remains the
+compatibility behavior and the Generic Graph is only a candidate path. A
+durable marker or focused-green code does not waive the product journey, clean
+Full/receipt verification, or Sol final. Ordinary editing is never blocked
+either way, only C2's own Structure Health/Freshness UI degrades to "semantic
+index is being prepared" or "semantic graph requires repair".
 
-This is a policy/schema-cross-check contract only — `validate-run-kind-policy.mjs`
-confirms internal consistency (all four Run Kinds present, repair-only
+This is a policy/schema contract — `validate-run-kind-policy.mjs`
+confirms internal consistency (all five Run Kinds present, repair-only
 fields confined to `dependency-repair`, `dependency-verify` is
 diagnostics-only and side-effect-free, every `adminCommands` entry is
-covered by the five named operations) and that every
-`existingRunKindColumnValue` it claims is actually accepted by the real
-`narrative_extraction_runs.run_kind` CHECK constraint in `migrate.rs`. It
-does not yet assert that Backfill/Verify/Rebuild/Repair Run creation, the
-post-open bootstrap trigger, the exclusive-lease/backup/sealed-plan Repair
-flow, or the five IPC operations exist. `dependency-backfill` and
+covered by the five named operations), requires the stable
+`narrative-maintenance-route/v1` metadata for the three automatic maintenance
+Run Kinds, and requires the C2-ZC cutover condition to be owned by the
+main-only scheduler wake rather than a renderer or the retired manual
+obligation. For the existing `incremental-freshness` Run Kind it also pins the
+exact current-Epoch idle-checkpoint payload/spec/Work-Key, lifecycle and
+write-forbidden boundaries; this nested contract does not create a sixth Run
+Kind or a second Freshness route.
+`triggerEvents` names
+semantic database/runtime discovery conditions, not literal emitter names.
+The validator is intentionally JSON-only: it does not parse TypeScript, Rust,
+SQL, call graphs, aliases, callbacks, or execution order. Electron integration
+tests own wake, durable rediscovery, and route reachability evidence.
+`dependency-backfill` and
 `dependency-rebuild-derived` reuse the existing `'backfill'`/
 `'semantic-index-rebuild'` column values with no schema change needed;
 `dependency-verify` and `dependency-repair` are genuinely new values the
@@ -627,13 +692,10 @@ project), and zero `pragma_foreign_key_check` errors, all confirmed. Rust
 (`migrate_run_kind_v24_widens_check_preserves_rows_and_is_idempotent`,
 `migrate_run_kind_v24_rejects_unrecognized_run_kind`) plus a
 byte-for-byte cross-check that the `workspace_schema.rs` invariant
-substrings match real `sqlite_master.sql` output — both still need a real
-`cargo test -p grimodex-db -p grimodex-core` run once a working toolchain
-is available (see the toolchain note below; unchanged from C2-01/Wave
-1/2). `src/db/generated/schema-contract.json` remains stale at
-`schemaVersion: 22` — it predates even the C2-01 SCHEMA 23 bump and was
-never regenerated in this environment; left as-is per the existing
-`pnpm generate:db-contract` note above rather than hand-edited.
+substrings match real `sqlite_master.sql` output. The committed
+`src/db/generated/schema-contract.json` is regenerated at the current
+SCHEMA 32 boundary by the canonical schema-contract command; it is not a
+hand-edited snapshot.
 
 **`create_system_run` landed** (`narrative_extraction/repository.rs`): a
 new `pub(crate)` Run-creation path for the four system Run Kinds
@@ -651,59 +713,42 @@ Dependency Graph maintenance is never blocked by it. `create_system_run`
 takes `run_kind`/`semantic_epoch_id`/`work_key`/`spec_json`/`spec_digest`
 directly and implements `SystemRunWorkKeyReuse`
 (`RunningAndCompleted`/`RunningOnly`/`None`) matching each Run Kind's
-`sameWorkKeyReuse` policy field, so an idempotent trigger (e.g. the
-post-open Backfill bootstrap, still not implemented) can fire repeatedly
-without racing itself. Verified: the exact INSERT/reuse-query SQL
+`sameWorkKeyReuse` policy field, so the workspace-open Backfill request can
+fire repeatedly without racing itself. Verified: the exact INSERT/reuse-query SQL
 replayed against real SQLite via Python, plus four Rust `#[cfg(test)]`
 unit tests against a real `db.migrate()`-shaped database covering kind/
 epoch/work_key persistence and all three reuse policies.
 
 **Backfill's Dependency Graph transform landed** (`legacy_backfill.rs`):
-`backfill_project_semantic_build_graph_in_tx` now also writes one
+the v3 writer now writes one `application`-grained
 `narrative_dependency_edges` row per pre-existing
 `narrative_projection_dependencies` row, alongside the epoch/Contribution
-seeding it already did. Consumer identity mirrors Producer-time C2-T1
-wiring exactly — `(RUN_CONSUMER_KIND, run_id)`, read from the owning
-`narrative_apply_commits.run_id` column, never the individual
-Application — so a later Verify/Rebuild walking `find_edges_by_consumer`
-sees the same shape whether a Run's Edges came from a live
-Reconciliation Envelope or from this backfill. A commit with a `NULL`
-`run_id` (predates the Run/Task/Attempt execution-state model entirely)
-has no Run-scoped Consumer identity to backfill an Edge under; its
-Contribution row is still seeded, and the skip is counted in the new
-`applications_without_run_id` summary field rather than silently
-dropped. `narrative_projection_dependencies.source_kind` values are
-drawn from the exact same vocabulary `source_object_identity_for`
-already accepts — confirmed by inspection, since `commit.rs` writes both
-tables from the same `SourceBasisRow`s for every post-C2-T1 commit.
+seeding it already did. Each Edge carries the fresh Backfill Run as
+`owning_run_id`; the older `narrative_apply_commits.run_id` remains the
+durable lineage C2-ZB uses to re-key v2 Run-shaped evidence. A commit with a
+`NULL` `run_id` still emits its v3 Application Edge and increments
+`applications_without_run_id` to record the missing migration lineage.
+`narrative_projection_dependencies.source_kind` values are drawn from the
+exact same vocabulary `source_object_identity_for` already accepts —
+confirmed by inspection, since `commit.rs` writes both tables from the same
+`SourceBasisRow`s for every post-C2-T1 commit.
 Verified: the exact application/dependency/edge-upsert SQL replayed
-end-to-end against real SQLite via Python, plus three new Rust
-`#[cfg(test)]` unit tests (Run-scoped backfill, no-run_id skip counting,
-re-run idempotency) alongside the four pre-existing Contribution-only
-tests, all against a real `db.migrate()`-shaped database.
+end-to-end against real SQLite via Python, plus Rust `#[cfg(test)]` unit
+tests covering the v3 Application owner, NULL-lineage emission, re-run
+idempotency, and the retained-v2 non-reuse boundary, alongside the
+pre-existing Contribution-only tests, all against a real
+`db.migrate()`-shaped database.
 
-**The Backfill bootstrap landed, but its post-open trigger was
-subsequently unwired** (`legacy_backfill.rs`'s
-`bootstrap_legacy_dependency_backfill_for_project`; the
-`narrative_extraction_bootstrap_legacy_backfill` facade remains, with no
-caller). It was wired from `open.rs`'s workspace-maintenance worker, on
-the same detached maintenance connection
-`prune_old_logs`/`maybe_auto_backup` already use, on the assumption that
-staying off the live `WorkspaceAuthority`'s connection meant it could
-never compete with the renderer. That assumption was wrong: most
-foreground domain writes use a _deferred_ transaction
-(`unchecked_transaction()` in `domain_writes.rs`), which takes a read
-snapshot and upgrades to a write on its first INSERT — and any commit
-from another connection in that window fails the upgrade with
-SQLITE*BUSY_SNAPSHOT, which `busy_timeout` cannot retry (the same hazard
-`execute.rs` documents for the standalone MCP process). Because `migrate`
-seeds `default-project`, the Backfill committed on \_every* workspace
-open, including brand-new ones, so foreground writes running just after
-open failed immediately with "database is locked". Re-wiring requires
-either running the Backfill on the live authority's own connection or
-making `domain_writes.rs`'s deferred transactions IMMEDIATE; bounded
-batching alone would worsen it by raising the commit count. The Backfill
-stays reachable via its Admin IPC (`retryNarrativeLegacyBackfill`).
+**The Backfill bootstrap and live-authority scheduler are wired**
+(`legacy_backfill.rs` and the C2-5B maintenance route registry). On
+workspace-open, a durable `dependency-backfill` request is discovered and
+dispatched through the serialized maintenance cycle on the pinned
+`WorkspaceAuthority` connection; the same route handles durable wake and
+bounded retry reasons. This keeps the Backfill's writes on the live
+authority and avoids the detached second-writer `SQLITE_BUSY_SNAPSHOT`
+failure mode. The Admin IPC
+(`retryNarrativeLegacyBackfill`) remains a failure-recovery command, not the
+normal scheduler path.
 
 The transform itself is unchanged and still uses three phases, each its
 own transaction, so a
@@ -714,25 +759,24 @@ policy's `sameWorkKeyReuse` exactly) + Run creation under a freshly
 ensured Semantic Epoch; (2) run
 `backfill_project_semantic_build_graph_in_tx`; (3) finalize the Run's
 status to `completed`/`failed`, always attempted even on phase 2 failure.
-A `failed` Run is not reused by phase 1, so a later invocation retries it;
-with the post-open trigger unwired that retry is operator-driven, and
-`autoRetryableFailureClasses`' bounded auto-retry only falls out of
-"retry on next open" once that trigger is restored.
+A `failed` Run is not reused by phase 1, so the maintenance phase owner
+rediscovers it on the next durable wake/restart and applies the policy's
+bounded retry classes; an operator can still invoke the Admin IPC for
+failure recovery.
 `create_system_run` (previous commit) was split into a
 `create_system_run_in_tx` core + a thin `Database`-level wrapper so this
 composes atomically in phase 1's transaction instead of nesting a second
 `BEGIN IMMEDIATE`.
 
-Known, documented gap: a crash strictly between phase 1 committing and
-phase 3 running leaves the Run stuck at `running`, which phase 1 then
-treats as "still in progress" and does not retry. Recovering a
-Run/Task/Attempt stuck `running` after a terminated process is a Lane B
-/ execution-state-model concern spanning every Run Kind (no existing
-mechanism for `narrative_extraction_runs` today, unlike
-`post_effect_runs`'s `recover_interrupted_post_effect_runs`), not
-something worth solving narrowly for Backfill alone here. Also not
-implemented: surfacing a persistent contract-violation failure to a human
-via the Maintenance Inbox rather than a per-open background log.
+Interrupted-run recovery is closed by the C2-5B lifecycle owner. On startup
+or authority handoff, the recovery ledger identifies the exact project,
+epoch, and canonical WorkKey; running rows are terminalized through their
+owned Task/Attempt pair, pending compatibility rows are cancelled, and the
+phase owner redispatches only the same durable identity. Stale-epoch rows
+carry their observed epoch as provenance and cannot be terminalized as a
+current cycle. Terminal contract-failure evidence is projected by C2-5B
+Lane C into the Maintenance Inbox; current Freshness and Attention remain
+separate authorities.
 
 Verified: the full 3-phase reuse/create/finalize sequence replayed
 end-to-end against real SQLite via Python, plus three new Rust
@@ -812,33 +856,40 @@ with different Freshness outcomes both get evaluated and published
 correctly in one Run, and the `RunningOnly` reuse policy — reused while
 genuinely `running`, not reused once `completed`).
 
-**6 of the 13 `dependency-verify` checks landed**
-(`restore_rebuild.rs`'s new `verify_narrative_dependency_graph_for_project`
-/ `DependencyGraphVerifyReport`): a project-wide diagnostic (every
-Consumer, not one Run's own Edges like the pre-existing
+**All 13 `dependency-verify` checks are production-owned (13/13)**
+(`restore_rebuild.rs`'s `verify_narrative_dependency_graph_for_project` /
+`DependencyGraphVerifyReport`): a project-wide diagnostic (every Consumer,
+not one Run's own Edges like the pre-existing
 `rebuild_verify_dependency_edges`, which predates the Run Kind Policy and
-stays as-is for its own narrower callers). Covers: the closest available
-match to `producer-and-generation-consistency` (this crate has no
-separate Producer "generation" concept yet, only "does the Source still
-resolve"), `active-edge-duplicates` (defense-in-depth: the `UNIQUE` index
-`record_dependency_edge_in_tx` relies on should make this structurally
-impossible through this crate's own writers), `cross-project-edge` (a
-`RUN_CONSUMER_KIND` Edge whose Run belongs to a different project — the
-one place the project boundary could silently slip, since
-`source_object_identity` carries no project scope of its own),
-`consumer-and-source-key-format`, `edge-state-belongs-to-current-epoch`,
-`finding-observation-belongs-to-current-epoch`. `DependencyGraphVerifyReport::is_clean()`
-reports whether all 6 covered checks passed — explicitly not a claim
-about the other 7.
+stays as-is for its own narrower callers). The durable checks cover the
+producer/source graph, typed Revision Source Basis artifact references,
+Contribution provenance, and Legacy/Generic parity. The derived checks cover
+current-epoch Edge/Freshness/Observation state and cursor/feed coherence.
+The complete Verify set is required and its production coverage may not be
+reduced. The two Semantic Index checks remain production read-only boundary
+checks: they do not claim a producer, writer, or activation path.
 
-Not yet implemented, and not silently treated as passing:
-`application-revision-artifact-references`, `dependency-set-digest`/
-`consumer-freshness-dependency-set-digest` (nothing writes
-`narrative_consumer_freshness.dependency_set_digest`/
-`narrative_semantic_index_metadata` yet),
-`contribution-to-application-commit-correspondence`,
-`legacy-mirror-migration-parity`, `cursor-and-feed-head-consistency`,
-`semantic-index-generation-correspondence`.
+`semantic-index` remains reserved and has no Narrative dependency authority
+claim. Its footprint is scanned directly over all project rows in
+`narrative_semantic_index_metadata`, plus rows with
+`consumer_kind = 'semantic-index'` in active sealed D1 declaration heads, V1
+`narrative_dependency_edges`, and `narrative_consumer_freshness`. Only an
+all-zero result passes. Any non-zero footprint is manual/terminal evidence and
+is not a Rebuild-Derived target. Scene/Codex/Event/Chat embedding chunks may
+exist as rebuildable acceleration but must never be inferred or migrated into
+the Narrative dependency authority.
+
+The dormant future binding, pending NIR-1 approval, is
+`metadata.index_key = D1 consumer_key = freshness.consumer_key`,
+`metadata.generation = active sealed D1 head consumer-scoped
+producer_generation`, and `metadata.dependency_set_digest = active sealed D1
+set digest`. Fixed keys, producer registry, Source identities, writers, D1
+declarations, metadata migration, restore invalidation, and
+`reserved` → `declared` activation remain unapproved. NIR-1's first candidate
+may be one shared producer, but producer granularity, metadata producer
+identity composition, dirty/pending semantics, and Codex Source granularity
+remain unapproved. Verify never fabricates a Semantic Index writer,
+generation, or payload-derived artifact identity.
 
 **Real bug found and fixed while building this**: the previous commit's
 `dependency-rebuild-derived` orchestrator passed the _Rebuild Run's own_
@@ -855,10 +906,13 @@ passing each Edge's own `consumer_key` instead; a regression test
 seeds a real sealed-snapshot Run and Edge and asserts it resolves
 `Fresh`, not `SourceMissing`.
 
-Verified: all new SQL (duplicate-key, cross-project, stale-epoch queries)
-replayed against real SQLite via Python, plus four new
-`project_verify_*` Rust `#[cfg(test)]` unit tests and the snapshot-source
-regression test above.
+Verified: all new SQL (duplicate-key, cross-project, stale-epoch, provenance,
+mirror, feed, and Semantic Index queries) replayed against real SQLite via
+the Rust test database, plus six new `project_verify_*` Rust `#[cfg(test)]`
+unit tests and the snapshot-source regression test above. The static coverage
+report now retains all 13 named checks at production coverage 13/13; the two
+Semantic Index checks are reserved read-only footprint checks and do not
+require or imply a production writer.
 
 **The `dependency-repair` Run Kind landed** (new module,
 `narrative_extraction/repair.rs`): the lease/backup/sealed-plan/execution
@@ -867,16 +921,18 @@ real, end-to-end repair category.
 
 Scope, stated up front rather than discovered later: the policy's
 `allowedRepairs` names six categories; only `deactivate-duplicate-edge`
-is implemented, because it is the _only_ one
-`verify_narrative_dependency_graph_for_project`'s current 6-of-13 check
-coverage can actually surface — the other five all need Verify checks
-this crate does not implement yet
-(`contribution-to-application-commit-correspondence`,
-`application-revision-artifact-references`,
-`legacy-mirror-migration-parity`). There is nothing yet to seal a repair
-plan _from_ for those five. The safety machinery below is generic and
-does not need to change as more categories are added; only
-`seal_repair_plan` needs to grow.
+is implemented. The other five require their own durable repair derivation
+and mutation contracts: `edge-fully-reconstructible-from-durable-ledger`,
+`artifact-with-explicit-dependency-manifest`,
+`proposal-revision-edge-uniquely-derivable-from-source-basis-or-read-set`,
+`application-contribution-uniquely-derivable-from-commit-receipt`, and
+`supersede-a-clear-prior-generation`. Verify now inspects all 13 check names
+with 13/13 production coverage. The two Semantic Index checks are reserved
+read-only footprint checks and carry no producer or activation claim.
+Separately, there is still nothing to seal a repair
+plan _from_ for the five unimplemented repair categories above. The safety
+machinery below is generic and does not need to change as more categories are
+added; only `seal_repair_plan` needs to grow.
 
 - `claim_repair_lease_in_tx`/`release_repair_lease_in_tx` — CAS over
   `narrative_maintenance_repair_leases` (`PRIMARY KEY(project_id)`, one
@@ -1006,13 +1062,14 @@ before them) — inspection plus the TypeScript-side contract tests above
 is the best available verification until a working toolchain runs
 `napi build`.
 
-This closes every task the ratified Run Kind Policy
-(`narrative-run-kind-policy.json`) originally scoped as
-not-yet-implemented. Remaining, explicitly out of scope for this pass
-and documented at each landing commit above: 7 of the 13
-`dependency-verify` checks, five of the six `dependency-repair`
-`allowedRepairs` categories (both blocked on Verify checks this crate
-does not implement yet), and the crash-recovery gap for a Run stuck
+The `dependency-verify` coverage task in the ratified Run Kind Policy
+(`narrative-run-kind-policy.json`) has production owners for all 13 named
+checks (13/13). The two Semantic Index checks are reserved read-only
+authority-footprint scans: no metadata writer, D1 binding, or Narrative
+dependency authority claim is introduced by this contract. Remaining,
+explicitly out of scope for this pass and documented at each landing commit
+above: five of the six `dependency-repair`
+`allowedRepairs` categories and the crash-recovery gap for a Run stuck
 `running` after a terminated process (a Lane B / execution-state-model
 concern spanning every Run Kind, not specific to any one of these).
 
@@ -1047,19 +1104,18 @@ Every Consumer kind carries a `status` that says what is true today, not
 what is planned:
 
 - **`declared`** — a production Producer writes Edges under it now. There
-  are two. `proposal-revision` (`consumer_key =
+  are three. `proposal-revision` (`consumer_key =
 narrative_proposal_revisions.id`) is what `repository.rs` declares every
   Edge under: the grain C2-2 exists to reach, where editing one Scene stales
   the Revisions that actually read it rather than every Proposal from the
   same Run. `narrative-extraction-run` stays declared and is not a legacy
-  value — `legacy_backfill.rs` declares Edges for Applications that have no
-  Revision to attribute a read to, and a Run remains a legitimate Consumer
-  of its own Run-wide Sources. Re-keying the Backfill to the reserved
-  `application` kind is C2-Z's legacy/Generic parity work.
+  value — a Run remains a legitimate Consumer of its own Run-wide Sources.
+  `application` (`narrative_proposal_applications.id`) is declared by the v3
+  Legacy Backfill writer; each such Edge carries the fresh Backfill Run in
+  `owning_run_id`.
 - **`reserved`** — the roadmap's Consumer class already has a durable row
   that could carry its identity, but nothing declares Edges under it yet:
   `extraction-artifact` (`narrative_extraction_artifacts.id`),
-  `application` (`narrative_proposal_applications.id`),
   `application-contribution` (`narrative_application_contributions.id`),
   `derived-projection` (`narrative_temporal_projections.id` — the one
   Projection this codebase recomputes rather than applies directly), and
@@ -1094,8 +1150,10 @@ whitespace, since either would let two different Consumers collide on one
 `(project_id, consumer_kind, consumer_key)` is the one canonical Consumer
 Freshness authority and `narrative_projection_freshness` — keyed by
 `application_id` alone, so structurally unable to express any other
-Consumer kind — is compatibility-only. Legacy still serves reads until the
-C2-Z cutover per `narrative-run-kind-policy.json`; that makes it the
+Consumer kind — is compatibility-only. Before final C2-ZC acceptance it
+remains the legacy compatibility read path; the focused candidate's marker
+would select Generic Consumer Freshness only after the product journey, clean
+Full/receipt verification, and Sol final are recorded. In both states it is a
 mirror, not a second authority. `dependencySetDigest` fixes
 `narrative_consumer_freshness.dependency_set_digest` as a digest over the
 set of `source_object_identity` values declared under the Consumer, and
@@ -1109,10 +1167,16 @@ evaluation stamps the digest, and
 `consumer-freshness-dependency-set-digest` — the "is this Consumer still
 reading the same things?" question no per-Edge Freshness value can answer,
 since a Consumer that stopped depending on a Source has no Edge left to go
-stale. Verify coverage is therefore **7 of the 13 named checks**, not 6.
-The Semantic Index half of
-`dependency-set-digest` is still unimplemented — nothing writes
-`narrative_semantic_index_metadata` yet.
+stale. The complete Verify contract has **13 named checks with 13/13
+production coverage**; this requirement may not be reduced. The two
+Semantic Index checks are production read-only boundary checks, not a
+producer claim or activation signal. `semantic-index` remains reserved: the
+direct authority-footprint scan covers metadata rows for the project and
+`consumer_kind = 'semantic-index'` rows in active sealed D1 heads, V1
+Dependency Edges, and Consumer Freshness. Only all zero passes; any footprint
+is manual/terminal and is not a Rebuild-Derived target. No Narrative
+dependency authority claim exists for Semantic Index, and no metadata/D1
+writer is invented when the producer is absent.
 
 Gate C2-2 originally moved `VERIFY_CONTRACT_VERSION` to `"3"` rather than
 `"2"` because the report gained three fields in one Gate, not one:
@@ -1121,15 +1185,17 @@ Gate C2-2 originally moved `VERIFY_CONTRACT_VERSION` to `"3"` rather than
 `orphaned_attention_finding_keys`. `"2"` existed only mid-branch and was
 never released.
 
-The current version is `"5"`. It adds the required
+The current version is `"9"`. It adds six typed Verify coverage reports (all
+13 named checks have production coverage 13/13; the two Semantic Index checks
+are reserved read-only footprint checks) while retaining the required
 `orphaned_attention_rehome_ambiguities` field, which reports every preserved
 Attention row for which the material-digest → Observation → Edge mapping was
 zero, ambiguous, or collided with an existing target. It also reports
 `legacy-identity-unresolved` Attention rows whose old history cannot prove a
 stable Edge identity; those rows remain durable but are never considered
-applicable by the Inbox. A stored version-`"4"` result lacks this field and
-must not be accepted as the new report shape: the workspace must re-run
-Verify under contract version 5 before Repair can be sealed.
+applicable by the Inbox. A stored result under an older version must not be
+accepted as the new report shape: the workspace must re-run Verify under
+contract version 9 before Repair can be sealed.
 
 Attention application additionally requires `finding-identity-resolved`.
 Matching the finding key and material-basis digest is insufficient when a
@@ -1190,26 +1256,26 @@ invented, which is what C2-2's exit criteria forbid.
 
 Three cases the re-key deliberately does **not** collapse:
 
-- **An Edge with no Source Basis stays under the Run.** A Legacy Backfill
-  Edge has no Revision to attribute a read to; moving it would require
-  guessing one.
-- **An Edge an Application also declares stays under the Run, _and_ the
-  Revision Edges are added.** Both Producers upsert on
-  `(project_id, consumer_kind, consumer_key, source_object_identity)`, so
-  a Revision and an Application of the same Run reading the same Source
-  had already collapsed into one row, with nothing on it saying it came
-  from both. Deleting that row because a Revision matched would silently
-  drop the Application's dependency. The cost of keeping it is a duplicate
-  Consumer; the cost of dropping it is a lost dependency, so it is kept
-  whenever the same `(Run, Source)` appears in
-  `narrative_projection_dependencies`.
-- **Durable Attention is neither deleted nor re-pointed.** A
-  `narrative_maintenance_attention` row keyed to the old Run's
-  `finding_key` records a human decision, so the migration does not
-  discard it; re-pointing it at each Revision would silently broaden that
-  decision to Consumers it was never made about. Verify reports them as
-  `orphaned_attention_finding_keys` instead, and re-homing them is C2-3's
-  Finding-identity work.
+- **An Edge with no Source Basis is re-keyed only from exact durable
+  Application lineage.** The SCHEMA 32 C2-ZB migration matches
+  `Application -> ApplyCommit.run_id -> projection dependency` to the old
+  `(Run, Source)` Edge. It refuses unattributed or ambiguous evidence and
+  preserves the Edge identity/history when an exact target exists; a fan-out
+  without Finding history creates every candidate Application Edge.
+- **Durable Attention is re-homed only with exact Finding identity.** The
+  historical C2-2 Revision re-key remained conservative when a Run-grained
+  Attention could not identify one Revision. SCHEMA 32 C2-ZB now handles the
+  separate Legacy Backfill boundary: an old Run Attention moves to the exact
+  Application finding key only when its stable identity (or a uniquely mapped
+  NULL identity) names one exact old Edge. The migration updates only
+  `finding_key`, preserving disposition, identity status, digests, version,
+  and all other human fields. Fan-out with history, NULL/ambiguous identity,
+  or a conflicting target fails closed; no Attention is broadened to multiple
+  Applications. The re-key is precondition evidence for the C2-ZC candidate;
+  it does not by itself establish final acceptance. Once the product journey,
+  clean Full/receipt verification, and Sol final are recorded, Generic
+  Consumer Freshness may become canonical and this historical re-key data will
+  remain compatibility evidence only.
 
 Freshness decided against the old Consumer identity _is_ discarded, since
 a verdict reached about `(run, sources)` is not a verdict about
@@ -1306,7 +1372,8 @@ list only:
   on all of the above so a partially-migrated database cannot look
   current.
 
-Verification note: this sandbox's Rust toolchain cannot build
+Historical verification note: the original C2-00 landing used a sandbox
+where the Rust toolchain could not build
 `libsqlite3-sys` (`cfg_select` unstable-feature error, pre-existing and
 reproducible on an unmodified checkout), so `cargo check`/`cargo test`
 could not run here. Every `CREATE TABLE`/rebuild statement was instead
@@ -1316,12 +1383,11 @@ legacy-attempt normalization behaves as specified, and every `CHECK`
 constraint accepts/rejects exactly the cases above — including a
 byte-for-byte cross-check of the `workspace_schema.rs` invariant
 substrings against real `sqlite_master.sql` output. `src/db/schema.ts`
-type-checks cleanly (`npx tsc --noEmit`, 0 errors). Rust unit tests were
-added mirroring this same verification; they still need a real `cargo
-test -p grimodex-db -p grimodex-core` run once a working toolchain is
-available. `src/db/generated/schema-contract.json` also needs
-regenerating (`pnpm generate:db-contract`) once `cargo run` works again —
-it was intentionally left stale rather than hand-edited.
+type-checks cleanly (`npx tsc --noEmit`, 0 errors). The current branch has
+since rerun the focused Rust migration/schema suites and the
+`workspace_schema.rs` checkpoint checks. The canonical generator has also
+regenerated `src/db/generated/schema-contract.json` at `schemaVersion: 33`;
+the artifact is not intentionally stale.
 
 C2-00 added, on top of the existing C1.5 contracts:
 
@@ -1331,7 +1397,22 @@ C2-00 added, on top of the existing C1.5 contracts:
 - `narrative-failure-policy.json` — every C2 failure code is `NEX_`-prefixed
   and carries a `retryDisposition`, `maxAttempts`, `backoffPolicy`,
   `nextAttemptPolicy`, and `policyVersion`; `nextAttemptPolicy` is `"none"`
-  if and only if `retryDisposition` is not `"retryable"`.
+  if and only if `retryDisposition` is not `"retryable"`. C2-5B additionally
+  freezes an exact `findingRoutingMatrix`: manual contract, unclassified, and
+  recovery-selector verdicts route to the Maintenance Inbox, while
+  `NEX_MAINTENANCE_TRANSIENT` and `NEX_MAINTENANCE_INTERRUPTED` must not
+  create Findings.
+
+The C2-5B registrations bind the maintenance lifecycle and Finding routes;
+they do not claim completion of deferred Heavy work or any broader runtime
+activation. A transient classification permits at most three bounded Attempts
+and requeues the same sealed system work; an interrupted classification is
+retryable with at most three bounded Attempts and uses
+`nextAttemptPolicy: "requeue-new-run-same-sealed-system-work"` after startup
+terminalizes the old Run/Task/Attempt; a contract violation is manual-only with
+`maxAttempts: 0` and no automatic retry. The `next_attempt_at` retryable-only
+invariant remains independent of JavaScript transport retry, and this policy
+does not claim runtime activation.
 - `narrative-finding-contract.json` — the Finding `reasonCode` registry
   (`fail-closed` on unknown codes) plus the Finding Observation durability
   contract: `rebuildable-derived-state`, epoch-bound, diagnostic-only

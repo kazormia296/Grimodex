@@ -75,6 +75,7 @@ import {
   importChapters,
   importChatSessionsBatch,
   importMemoNote,
+  fieldValueToProseMirror,
 } from "./importApi";
 import type {
   ParsedCodexEntry,
@@ -538,7 +539,7 @@ describe("importChapters", () => {
     };
   }
 
-  it("章とシーンの両方を作成し、本文がある場合は saveSceneContent を呼ぶ", async () => {
+  it("章とシーンを作成し、本文を createNode の同一 Native mutation に渡す", async () => {
     const result = await importChapters([makeChapter()]);
 
     expect(result.imported).toBe(2); // chapter + scene
@@ -551,21 +552,33 @@ describe("importChapters", () => {
         }),
       );
     }
-    expect(mockSaveSceneContent).toHaveBeenCalledTimes(1);
-    expect(mockSaveSceneContent).toHaveBeenCalledWith(
-      "scene-1",
+    const sceneCall = mockCreateNode.mock.calls.find(
+      ([data]) => data.nodeType === "scene",
+    );
+    expect(sceneCall?.[0]).toMatchObject({
+      id: "scene-1",
+      content: fieldValueToProseMirror("朝が来た。"),
+    });
+    expect(sceneCall?.[1]).toEqual(
       expect.objectContaining({
-        charCount: "朝が来た。".length,
         writeContext: expect.objectContaining({ origin: "import" }),
       }),
     );
+    expect(mockSaveSceneContent).not.toHaveBeenCalled();
   });
 
-  it("本文が空のシーンでは saveSceneContent を呼ばない", async () => {
+  it("本文が空のシーンも空 body を createNode に同梱する", async () => {
     const chapter = makeChapter({
       scenes: [{ id: "scene-1", title: "メモ", body: "" }],
     });
     await importChapters([chapter]);
+    const sceneCall = mockCreateNode.mock.calls.find(
+      ([data]) => data.nodeType === "scene",
+    );
+    expect(sceneCall?.[0]).toMatchObject({
+      id: "scene-1",
+      content: "{}",
+    });
     expect(mockSaveSceneContent).not.toHaveBeenCalled();
   });
 

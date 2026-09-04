@@ -43,6 +43,31 @@ function normalizeTitle(title: string): string {
   return title.trim().normalize("NFC").toLocaleLowerCase("und");
 }
 
+export function sameChronicleEventTitle(left: string, right: string): boolean {
+  return normalizeTitle(left) === normalizeTitle(right);
+}
+
+/**
+ * Re-evaluate a human-edited title against the immutable catalog sealed by
+ * the Run. The edit cannot change evidence/provenance, so every title hit is
+ * conservatively a probable duplicate and still requires an explicit choice.
+ */
+export function matchChronicleEventTitleAgainstCatalog(
+  title: string,
+  catalog: readonly ExistingChronicleEventCatalogRecord[],
+): ChronicleExistingMatch {
+  const candidates = catalog
+    .filter((record) => sameChronicleEventTitle(record.title, title))
+    .map((record) => record.ref);
+  return candidates.length === 0
+    ? { status: "none" }
+    : {
+        status: "probable-duplicate",
+        candidates,
+        reasons: ["title-only"],
+      };
+}
+
 function sameStringSet(
   left: readonly string[],
   right: readonly string[],

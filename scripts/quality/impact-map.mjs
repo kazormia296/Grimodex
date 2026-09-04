@@ -1,10 +1,17 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import yaml from "js-yaml";
+
+import {
+  C2ZC_RUST_ACCEPTANCE_GATES,
+  C2ZC_RUST_ACCEPTANCE_LOCAL_CI_STAGE_ID,
+  C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND,
+} from "../c2zc-rust-acceptance-receipt.mjs";
 
 import {
   classifyChangedPaths,
@@ -24,6 +31,10 @@ export {
 export { compilePathRules } from "../impact/core.mjs";
 
 const DEFAULT_REPO_ROOT = path.resolve(import.meta.dirname, "../..");
+const DEFAULT_LOCAL_CI_REGISTRY_PATH = path.join(
+  DEFAULT_REPO_ROOT,
+  "scripts/local-ci-registry.json",
+);
 
 export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
   "quality-workflow": {
@@ -151,6 +162,13 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/narrative-extraction/maintenance",
       ],
       [
+        "node",
+        "--test",
+        "scripts/product-journey-phase1.test.mjs",
+        "scripts/c2-5b-product-journeys.test.mjs",
+        "scripts/c2zc-product-journeys.test.mjs",
+      ],
+      [
         "cargo",
         "test",
         "--manifest-path",
@@ -180,7 +198,99 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
   },
   "narrative-semantic-contract": {
     failureClasses: ["policy", "quality", "artifact"],
-    commands: [["pnpm", "test:narrative:semantic-contract"]],
+    commands: [
+      ["pnpm", "test:narrative:semantic-contract"],
+      [
+        "pnpm",
+        "test",
+        "--run",
+        "src/features/narrative-extraction/source/scopeAuthorityBasisV2.contract.test.ts",
+        "src/features/tree/api.listProjection.test.ts",
+        "src/application/narrative-extraction/projectSnapshotAdapter.test.ts",
+        "src/application/narrative-extraction/extractionCoordinator.test.ts",
+      ],
+      ["pnpm", "test:electron", "--run", "electron/shared/ipcContract.test.ts"],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-core",
+        "--test",
+        "narrative_scope_authority_basis",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::execution_state::tests::run_transition_persists_millisecond_rfc3339_timestamps",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::repository::unit_tests::every_generic_public_task_api_rejects_runtime_owned_automatic_runs",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::repository::unit_tests::list_resumable_runs_orders_mixed_legacy_and_rfc3339_instants",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::legacy_backfill::tests::backfill_owner_finalizer_survives_generic_cancel_phase_gap",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::restore_rebuild::tests::rebuild_finalization_after_epoch_rotation_is_failed_and_returns_error",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_terminal_failure_projection",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_scope_authority_runtime",
+      ],
+    ],
   },
   "narrative-extraction": {
     failureClasses: ["quality", "artifact"],
@@ -197,6 +307,120 @@ function assertString(value, label) {
     throw new Error(`${label} must be a non-empty string`);
   }
   return value.trim();
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function normalizeAcceptanceGate(gate) {
+  return {
+    id: gate?.id,
+    argv: gate?.argv,
+    contract: gate?.contract,
+    source: gate?.source,
+    test: gate?.test,
+    fullTestName: gate?.fullTestName,
+    requiresReceipt: gate?.requiresReceipt,
+  };
+}
+
+function assertStructuredAcceptanceGates(rawGates, ruleId) {
+  if (!Array.isArray(rawGates)) {
+    throw new Error(`rule ${ruleId} acceptanceGates must be an array`);
+  }
+  if (rawGates.length !== C2ZC_RUST_ACCEPTANCE_GATES.length) {
+    throw new Error(
+      `rule ${ruleId} acceptanceGates must contain the ${C2ZC_RUST_ACCEPTANCE_GATES.length} ordered Rust gates`,
+    );
+  }
+  for (const [index, rawGate] of rawGates.entries()) {
+    const expectedKeys = Object.keys(
+      normalizeAcceptanceGate(C2ZC_RUST_ACCEPTANCE_GATES[index]),
+    ).sort();
+    const observedKeys = Object.keys(rawGate ?? {}).sort();
+    if (canonicalJson(observedKeys) !== canonicalJson(expectedKeys)) {
+      throw new Error(
+        `rule ${ruleId} acceptanceGates[${index}] has an invalid structured shape`,
+      );
+    }
+    if (
+      canonicalJson(normalizeAcceptanceGate(rawGate)) !==
+      canonicalJson(normalizeAcceptanceGate(C2ZC_RUST_ACCEPTANCE_GATES[index]))
+    ) {
+      throw new Error(
+        `rule ${ruleId} acceptanceGates[${index}] does not match the exported Rust gate definition`,
+      );
+    }
+  }
+  return rawGates.map((gate) => ({
+    id: gate.id,
+    argv: {
+      command: gate.argv.command,
+      args: [...gate.argv.args],
+      cwd: gate.argv.cwd,
+    },
+    contract: { ...gate.contract },
+    source: gate.source,
+    test: gate.test,
+    fullTestName: gate.fullTestName,
+    requiresReceipt: gate.requiresReceipt,
+  }));
+}
+
+function readDefaultLocalCiRegistry() {
+  return JSON.parse(readFileSync(DEFAULT_LOCAL_CI_REGISTRY_PATH, "utf8"));
+}
+
+export function validateAcceptanceGateRegistration({
+  map,
+  localCiRegistry = readDefaultLocalCiRegistry(),
+} = {}) {
+  if (!map || !Array.isArray(map.rules)) {
+    throw new Error("Impact map is required for acceptance gate validation");
+  }
+  const acceptanceRules = map.rules.filter((rule) =>
+    Object.hasOwn(rule, "acceptanceGates"),
+  );
+  if (acceptanceRules.length !== 1) {
+    throw new Error(
+      "Impact map must contain exactly one structured C2-ZC acceptance gate rule",
+    );
+  }
+  const [rule] = acceptanceRules;
+  assertStructuredAcceptanceGates(rule.acceptanceGates, rule.id);
+  if (Object.hasOwn(rule, "acceptanceGate")) {
+    throw new Error("Legacy free-text acceptanceGate is not allowed");
+  }
+  const stage =
+    localCiRegistry?.stages?.[C2ZC_RUST_ACCEPTANCE_LOCAL_CI_STAGE_ID];
+  if (!stage || !Array.isArray(stage.commands) || stage.commands.length !== 1) {
+    throw new Error(
+      "Local-CI Rust acceptance registry must expose one exact runner command",
+    );
+  }
+  const registeredCommand = stage.commands[0];
+  const normalizedRegisteredCommand = {
+    command: registeredCommand.command,
+    args: registeredCommand.args,
+    cwd: registeredCommand.cwd ?? ".",
+  };
+  if (
+    canonicalJson(normalizedRegisteredCommand) !==
+    canonicalJson(C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND)
+  ) {
+    throw new Error(
+      "Local-CI Rust acceptance registry runner command does not match the exported receipt runner",
+    );
+  }
+  return true;
 }
 
 export function parseImpactMap(source, options = {}) {
@@ -282,7 +506,23 @@ export function parseImpactMap(source, options = {}) {
         throw new Error(`Unknown suite: ${suite}`);
       }
     }
-    return { id, reason, paths, matchers, requirements, suites };
+    if (Object.hasOwn(rawRule, "acceptanceGate")) {
+      throw new Error(
+        `rule ${id} must use structured acceptanceGates, not acceptanceGate`,
+      );
+    }
+    const acceptanceGates = Object.hasOwn(rawRule, "acceptanceGates")
+      ? assertStructuredAcceptanceGates(rawRule.acceptanceGates, id)
+      : undefined;
+    return {
+      id,
+      reason,
+      paths,
+      matchers,
+      requirements,
+      suites,
+      ...(acceptanceGates ? { acceptanceGates } : {}),
+    };
   });
   if (allowedRequirements) {
     const mappedRequirements = new Set(
@@ -298,7 +538,14 @@ export function parseImpactMap(source, options = {}) {
     }
   }
   if (parsed.default !== "all") throw new Error('default must be "all"');
-  return { version: 1, allSuites, rules, default: "all" };
+  const map = { version: 1, allSuites, rules, default: "all" };
+  if (rules.some((rule) => Object.hasOwn(rule, "acceptanceGates"))) {
+    validateAcceptanceGateRegistration({
+      map,
+      localCiRegistry: options.localCiRegistry,
+    });
+  }
+  return map;
 }
 
 function isInvariantAllPath(candidate) {

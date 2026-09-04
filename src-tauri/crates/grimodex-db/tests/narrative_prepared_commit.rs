@@ -1171,6 +1171,7 @@ fn actual_scene_writer_invalidates_prepared_commit_on_scene_body_change() -> any
             event_uid: "prepared-scene-writer-event".to_string(),
             origin: NarrativeChangeOrigin::Human,
             timelapse_steps: None,
+            timelapse_doc_step_coverage: None,
             include_sidecars: false,
             base_version: Some(0),
             updated_at: "2026-08-12T00:00:01.000Z".to_string(),

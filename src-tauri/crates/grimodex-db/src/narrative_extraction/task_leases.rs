@@ -1,10 +1,12 @@
 //! Task lease acquisition under `BEGIN IMMEDIATE`.
 
 use chrono::{Duration, Utc};
+use grimodex_core::canonical_json_digest;
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-use super::models::ClaimTaskPayload;
+use super::execution_state::next_run_lifecycle_timestamp_in_tx;
+use super::models::{ArtifactInput, ClaimTaskPayload};
 use super::repository::{
     ensure_run_project, insert_artifacts_for_attempt, insert_attempt, row_to_task_value,
 };
@@ -108,6 +110,23 @@ pub(crate) fn claim_next_task(
     let attempt_number = attempt_count + 1;
     let attempt_id = Uuid::new_v4().to_string();
     let started_at = heartbeat_at.clone();
+    // The task heartbeat uses wall time, but a pending Run's first start is a
+    // project-scoped lifecycle authority. Allocate it before mutating the
+    // Task/Attempt so malformed or exhausted imported Run instants fail closed
+    // without leaving a partial claim behind.
+    let existing_run_started_at: Option<String> = conn.query_row(
+        "SELECT started_at FROM narrative_extraction_runs WHERE id = ?1",
+        params![payload.run_id],
+        |row| row.get(0),
+    )?;
+    let run_started_at = if existing_run_started_at.is_none() {
+        Some(next_run_lifecycle_timestamp_in_tx(
+            conn,
+            &payload.project_id,
+        )?)
+    } else {
+        None
+    };
 
     let updated = conn.execute(
         "UPDATE narrative_extraction_tasks
@@ -151,9 +170,9 @@ pub(crate) fn claim_next_task(
     conn.execute(
         "UPDATE narrative_extraction_runs
             SET status = CASE WHEN status = 'pending' THEN 'running' ELSE status END,
-                started_at = COALESCE(started_at, datetime('now'))
+                started_at = COALESCE(started_at, ?2)
           WHERE id = ?1",
-        params![payload.run_id],
+        params![payload.run_id, run_started_at],
     )?;
 
     Ok(Some(ClaimedTask {
@@ -194,14 +213,259 @@ pub(crate) fn verify_task_lease(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn persist_task_artifacts(
     conn: &Connection,
+    project_id: &str,
     run_id: &str,
     task_id: &str,
     attempt_id: &str,
+    output_json: &serde_json::Value,
+    chronicle_stage_bundle: Option<&super::models::ChronicleStageC1ExecutionBinding>,
+    chronicle_stage_receipts: &[super::models::ChronicleStageTerminalReceipt],
+    historical_scope_authority_basis: Option<
+        &grimodex_core::narrative_scope_authority_basis::NarrativeScopeAuthorityBasisV2,
+    >,
     artifacts: &[super::models::ArtifactInput],
 ) -> anyhow::Result<()> {
-    insert_artifacts_for_attempt(conn, run_id, task_id, attempt_id, artifacts)
+    // Inline JSON is a Native-owned value boundary.  Callers may omit its
+    // digest for ergonomics, but they may never choose a different digest:
+    // every durable inline payload gets the canonical Native recomputation.
+    // This is especially important for source.snapshot@1, whose payload
+    // digest is later used as a historical Scope Authority basis coordinate.
+    let normalized_artifacts = normalize_inline_json_artifact_digests(artifacts)?;
+    if let Some(basis) = historical_scope_authority_basis {
+        validate_snapshot_finish_output_cas(
+            conn,
+            project_id,
+            run_id,
+            task_id,
+            output_json,
+            &normalized_artifacts,
+            basis,
+        )?;
+    }
+    // source.snapshot@2 is never accepted through the generic artifact list,
+    // including when the typed sidecar is also present.
+    super::scope_authority_runtime::reject_reserved_historical_scope_authority_artifacts(
+        &normalized_artifacts,
+    )?;
+    // Persist each model-stage terminal receipt at the Task boundary where it
+    // was actually produced.  The aggregate C1 closure may be supplied by a
+    // later synthesis Task, but it is process-local transport proof and is
+    // therefore not an acceptable durability boundary for Observation.
+    super::stage_provenance::persist_chronicle_stage_receipts(
+        conn,
+        project_id,
+        run_id,
+        task_id,
+        attempt_id,
+        chronicle_stage_receipts,
+    )?;
+    if let Some(binding) = chronicle_stage_bundle {
+        super::stage_provenance::persist_chronicle_stage_bundle(
+            conn,
+            project_id,
+            run_id,
+            task_id,
+            attempt_id,
+            binding,
+            output_json,
+            &normalized_artifacts,
+        )?;
+    } else {
+        // Generic/V1 finishes deliberately retain their pre-C2A behavior, but
+        // reserved Chronicle C2A kinds may not bypass the explicit typed
+        // binding by smuggling stage JSON through the generic path.
+        super::stage_provenance::reject_reserved_chronicle_stage_bundle(
+            output_json,
+            &normalized_artifacts,
+        )?;
+    }
+    let typed_scope_artifact = historical_scope_authority_basis
+        .map(|basis| {
+            super::scope_authority_runtime::persist_historical_scope_authority_basis_in_tx(
+                conn,
+                project_id,
+                run_id,
+                task_id,
+                attempt_id,
+                basis,
+                &normalized_artifacts,
+            )
+        })
+        .transpose()?;
+    let mut durable_artifacts = Vec::with_capacity(
+        normalized_artifacts.len() + usize::from(typed_scope_artifact.is_some()),
+    );
+    durable_artifacts.extend(normalized_artifacts);
+    durable_artifacts.extend(typed_scope_artifact);
+    insert_artifacts_for_attempt(conn, run_id, task_id, attempt_id, &durable_artifacts)
+}
+
+/// Canonicalize every inline JSON artifact at the only durable writer.  A
+/// renderer-side digest is merely a checked assertion; Native supplies the
+/// persisted value so independently built windows/processes cannot produce a
+/// null or stale payloadDigest for the same inline artifact.
+fn normalize_inline_json_artifact_digests(
+    artifacts: &[ArtifactInput],
+) -> anyhow::Result<Vec<ArtifactInput>> {
+    artifacts
+        .iter()
+        .cloned()
+        .map(|mut artifact| {
+            let storage = artifact.payload_storage.as_deref().unwrap_or("inline-json");
+            if storage != "inline-json" {
+                return Ok(artifact);
+            }
+            let payload = artifact.payload_json.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_INLINE_ARTIFACT_PAYLOAD_REQUIRED: inline-json artifact '{}' requires payloadJson",
+                    artifact.artifact_kind
+                )
+            })?;
+            let canonical_digest = canonical_json_digest(payload)?;
+            if let Some(supplied) = artifact.payload_digest.as_deref() {
+                anyhow::ensure!(
+                    supplied == canonical_digest,
+                    "NEX_INLINE_ARTIFACT_DIGEST_MISMATCH: artifact '{}' payloadDigest differs from Native recomputation",
+                    artifact.artifact_kind
+                );
+            }
+            artifact.payload_digest = Some(canonical_digest);
+            Ok(artifact)
+        })
+        .collect()
+}
+
+/// Bind the snapshot Task's visible output to the exact sealed corpus and the
+/// historical Scope authority basis produced in this transaction.  This is a
+/// second, durable-output CAS in addition to the full payload/basis parser in
+/// `scope_authority_runtime`: it keeps a recovered Task row independently
+/// useful as evidence and prevents a renderer from reporting one corpus while
+/// submitting a different inline artifact.
+fn validate_snapshot_finish_output_cas(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    task_id: &str,
+    output_json: &serde_json::Value,
+    artifacts: &[ArtifactInput],
+    basis: &grimodex_core::narrative_scope_authority_basis::NarrativeScopeAuthorityBasisV2,
+) -> anyhow::Result<()> {
+    const SNAPSHOT_TASK_KIND: &str = "source.snapshot@1";
+    const SNAPSHOT_ARTIFACT_KIND: &str = "source.snapshot@1";
+
+    let task_kind: String = conn.query_row(
+        "SELECT task_kind
+           FROM narrative_extraction_tasks
+          WHERE id = ?1 AND run_id = ?2",
+        params![task_id, run_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        task_kind == SNAPSHOT_TASK_KIND,
+        "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: typed historical basis can only finish source.snapshot@1"
+    );
+    let run_snapshot_digest: Option<String> = conn.query_row(
+        "SELECT snapshot_digest
+           FROM narrative_extraction_runs
+          WHERE id = ?1 AND project_id = ?2",
+        params![run_id, project_id],
+        |row| row.get(0),
+    )?;
+    let run_snapshot_digest = run_snapshot_digest.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: Run snapshotDigest is required"
+        )
+    })?;
+    let output = output_json.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: snapshot task output must be an object"
+        )
+    })?;
+    let snapshot_digest = output
+        .get("snapshotDigest")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: snapshotDigest is required"
+            )
+        })?;
+    anyhow::ensure!(
+        snapshot_digest == run_snapshot_digest,
+        "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: output snapshotDigest differs from Run snapshotDigest"
+    );
+    let mut corpora = artifacts
+        .iter()
+        .filter(|artifact| artifact.artifact_kind == SNAPSHOT_ARTIFACT_KIND);
+    let corpus = corpora.next().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: snapshot finish requires exactly one source.snapshot@1 corpus artifact"
+        )
+    })?;
+    anyhow::ensure!(
+        corpora.next().is_none(),
+        "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: snapshot finish requires exactly one source.snapshot@1 corpus artifact"
+    );
+    let payload = corpus.payload_json.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: source.snapshot@1 corpus payloadJson is required"
+        )
+    })?;
+    let validation = super::scope_authority_runtime::validate_snapshot_authority_finish(
+        payload,
+        project_id,
+        run_id,
+        &run_snapshot_digest,
+        Some(basis),
+    )?;
+    let corpus_digest = corpus.payload_digest.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: source.snapshot@1 corpus payloadDigest is required"
+        )
+    })?;
+    anyhow::ensure!(
+        corpus_digest == validation.corpus_payload_digest,
+        "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: source.snapshot@1 payloadDigest differs from Native canonical corpus payload"
+    );
+    let document_count = output
+        .get("documentCount")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: documentCount is required"
+            )
+        })?;
+    anyhow::ensure!(
+        document_count == validation.document_count as u64,
+        "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: documentCount differs from Native sealed snapshot corpus"
+    );
+    let composite_digest = output
+        .get("scopeAuthorityCompositeDigest")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: scopeAuthorityCompositeDigest is required"
+            )
+        })?;
+    anyhow::ensure!(
+        validation.scope_authority_composite_digest.as_deref() == Some(composite_digest),
+        "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: scopeAuthorityCompositeDigest differs from Native sealed historical basis"
+    );
+    let output_corpus_digest = output
+        .get("corpusPayloadDigest")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: corpusPayloadDigest is required"
+            )
+        })?;
+    anyhow::ensure!(
+        output_corpus_digest == corpus_digest,
+        "NEX_SCOPE_AUTHORITY_SNAPSHOT_OUTPUT_INVALID: corpusPayloadDigest differs from Native canonical corpus payload"
+    );
+    Ok(())
 }
 
 pub(crate) fn claimed_task_to_value(claimed: &ClaimedTask) -> serde_json::Value {
@@ -240,7 +504,7 @@ pub(crate) fn with_immediate_transaction<T>(
     conn.execute_batch("BEGIN IMMEDIATE")?;
     match operation(conn) {
         Ok(value) => {
-            conn.execute_batch("COMMIT")?;
+            grimodex_core::commit_or_rollback(conn)?;
             Ok(value)
         }
         Err(error) => {

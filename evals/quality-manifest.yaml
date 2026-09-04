@@ -69,6 +69,13 @@ requirements:
       - src-tauri/crates/grimodex-semantic/src/reranker.rs
       - src-tauri/crates/grimodex-semantic/src/runtime.rs
       - src/features/chat/singleShotTransport.ts
+      - src/features/ai-audit/transportContext.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
+      - src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
       - src/features/chat/chatApi.ts
       - src/features/chat/chatStreamTransport.ts
       - src/features/editor/inlineAi/inlineAiStreaming.ts
@@ -88,6 +95,9 @@ requirements:
       - src/features/ai-audit/legacyEvidence.test.ts
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/chat/singleShotTransport.audit.test.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
       - src/features/chat/chatApi.audit.test.ts
       - src/features/editor/inlineAi/inlineAiStreaming.audit.test.ts
       - src/features/ab-test/abHarness.test.ts
@@ -115,6 +125,7 @@ requirements:
     title: Missing inputs, policies, confirmation, or tools stop before mutation.
     definedIn: policies/quality/iron-laws.md#GDX-PRECHECK-001
     implementedBy:
+      - AGENTS.md
       - .agents/skills/adversarial-review/SKILL.md
       - .agents/skills/rerun-sandbox-eperm/SKILL.md
       - src/features/chat/turn/resolveTurnRoute.ts
@@ -203,20 +214,52 @@ requirements:
       - agent-tool-manifest.json
       - policies/narrative/narrative-run-kind-policy.json
       - scripts/quality/validate-run-kind-policy.mjs
+      - policies/narrative/change-feed-writers.json
+      - scripts/quality/validate-change-feed-writers.mjs
+      - src/features/import/scan/scanImportOperations.ts
+      - src/features/import/scan/scanStagingProject.ts
       - policies/narrative/narrative-failure-policy.json
       - scripts/quality/validate-execution-state-authority.mjs
       - electron/main/narrativeFreshness.ts
       - electron/shared/ipcContract.ts
       - electron/native/grimodex-node/src/lib.rs
+      - electron/main/index.ts
+      - electron/main/narrativeMaintenance.ts
+      - electron/main/narrativeMaintenance.test.ts
+      - electron/main/narrativeMaintenance.phase1.test.ts
+      - electron/main/narrativeMaintenance.followup.test.ts
+      - electron/main/narrativeMaintenance.reacceptance.test.ts
+      - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
+      - electron/main/narrativeMaintenance.wiring.test.ts
+      - electron/main/narrativeMaintenance.electronRoute.test.ts
+      - scripts/quality/narrative-maintenance-boundary-rule.mjs
+      - electron/main/narrativeMaintenanceBootstrap.ts
+      - electron/main/narrativeMaintenanceBootstrap.test.ts
+      - electron/main/narrativeMaintenanceCiSeam.ts
+      - electron/main/narrativeMaintenanceCiSeam.test.ts
+      - electron/main/narrativeMaintenanceTriggers.ts
+      - electron/main/narrativeMaintenanceTriggers.test.ts
+      - electron/main/foregroundBarrierRelease.test.ts
       - src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs
+      - src-tauri/crates/grimodex-db/src/migrate.rs
+      - src-tauri/crates/grimodex-db/src/backup_restore.rs
+      - src-tauri/crates/grimodex-core/src/workspace_schema.rs
+      - electron/scripts/narrative-maintenance-product-journeys.mjs
+      - electron/scripts/c2zc-canonical-product-journey.mjs
+      - electron/scripts/product-journeys.mjs
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/validate-run-kind-policy.test.mjs
+      - scripts/quality/validate-change-feed-writers.test.mjs
       - scripts/quality/validate-execution-state-authority.test.mjs
+      - scripts/quality/narrative-maintenance-boundary.test.mjs
       - electron/main/narrativeFreshness.test.ts
       - src/features/ai-policy/policyGuard.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
       - src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs
+      - scripts/product-journey-phase1.test.mjs
+      - scripts/c2-5b-product-journeys.test.mjs
+      - scripts/c2zc-product-journeys.test.mjs
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:
@@ -283,6 +326,10 @@ requirements:
     title: Structured and generated outputs pass schema and provenance validation.
     definedIn: policies/quality/iron-laws.md#GDX-ARTIFACT-001
     implementedBy:
+      - policies/narrative/narrative-artifact-authority.json
+      - policies/narrative/schemas/narrative-artifact-authority.schema.json
+      - policies/narrative/fixtures/artifact-authority.json
+      - scripts/quality/validate-semantic-core-boundary.mjs
       - .agents/skills/adversarial-review/SKILL.md
       - src/features/chat/agent/toolExecutors.ts
       - src/features/chat/agent/chronicleWriteTools.ts
@@ -300,6 +347,7 @@ requirements:
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
       - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
+      - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - src/features/chat/agent/toolExecutors.test.ts
       - src/features/chat/agent/chronicleWriteTools.test.ts
@@ -381,29 +429,117 @@ requirements:
     evaluatedBy:
       - eval-narrative-semantic-frame
   - id: GDX-NARR-SEMANTIC-CONTRACT-001
-    title: Narrative authority, Scope relation, Dependency role, state axes, and disclosure contracts remain ratified.
+    title: Narrative authority, artifact lifecycle, Interpreter boundaries, Scope relation, Dependency role, state axes, disclosure contracts, and the reserved C2-ZC Semantic Index boundary remain ratified.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-SEMANTIC-CONTRACT-001
     implementedBy:
       - docs/adr/005-narrative-semantic-core-boundary.md
       - docs/adr/006-narrative-mutation-authority-routes.md
       - docs/adr/009-narrative-scope-relation-contract.md
       - docs/adr/010-narrative-dependency-role-granularity-contract.md
+      - docs/adr/011-narrative-ir-revision-semantics-contract.md
       - policies/narrative/mutation-authority-routes.json
       - policies/narrative/semantic-state-vocabulary.json
       - policies/narrative/semantic-core-authorities.json
+      - policies/narrative/narrative-consumer-contract.json
+      - policies/narrative/narrative-artifact-authority.json
+      - policies/narrative/change-feed-writers.json
+      - policies/narrative/README.md
+      - policies/narrative/fixtures/artifact-authority.json
+      - policies/narrative/narrative-ir-contract.json
       - policies/narrative/retrieval-disclosure.json
       - policies/narrative/narrative-scope-relation-contract.json
       - policies/narrative/narrative-dependency-role-registry.json
+      - policies/narrative/narrative-dependency-producer-registry.json
+      - policies/narrative/fixtures/dependency-role-contract.json
+      - policies/narrative/fixtures/canonical-json-number-parity.json
+      - policies/narrative/fixtures/narrative-ir/scope-authority-basis-v2.json
+      - policies/narrative/narrative-finding-contract.json
       - policies/narrative/schemas/mutation-authority-routes.schema.json
       - policies/narrative/schemas/semantic-state-vocabulary.schema.json
       - policies/narrative/schemas/semantic-core-authorities.schema.json
+      - policies/narrative/schemas/narrative-consumer-contract.schema.json
       - policies/narrative/schemas/retrieval-disclosure.schema.json
       - policies/narrative/schemas/narrative-scope-relation-contract.schema.json
+      - policies/narrative/schemas/narrative-scope-authority-basis-v2.schema.json
       - policies/narrative/schemas/narrative-dependency-role-registry.schema.json
+      - policies/narrative/schemas/narrative-dependency-producer-registry.schema.json
+      - policies/narrative/schemas/narrative-artifact-authority.schema.json
+      - policies/narrative/schemas/narrative-ir-contract.schema.json
+      - policies/narrative/schemas/narrative-finding-contract.schema.json
       - src/features/narrative-semantic-core/contracts/index.ts
+      - src/features/narrative-semantic-core/contracts/scopeV2.ts
+      - src/features/narrative-semantic-core/contracts/narrativeIr.ts
+      - src/features/narrative-semantic-core/contracts/scopeRelation.ts
+      - src/features/narrative-semantic-core/contracts/dependencyRole.ts
+      - src/features/narrative-extraction/source/digest.ts
+      - src/features/narrative-extraction/source/scopeAuthorityBasisV2.ts
+      - src/features/narrative-extraction/source/types.ts
+      - src/features/tree/api.ts
+      - src/application/narrative-extraction/nativeApi.ts
+      - src/application/narrative-extraction/projectSnapshotAdapter.ts
+      - electron/shared/ipcContract.ts
+      - src-tauri/crates/grimodex-core/src/canonical_json.rs
+      - src-tauri/crates/grimodex-core/src/narrative_ir.rs
+      - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
+      - src-tauri/crates/grimodex-core/src/narrative_scope_authority_basis.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
+      - scripts/quality/validate-semantic-core-boundary.test.mjs
+      - scripts/quality/validate-change-feed-writers.mjs
+      - scripts/quality/validate-change-feed-writers.test.mjs
+      - scripts/quality/validate-narrative-ir-contract.mjs
+      - docs/plans/narrative-ir-nir0-implementation-plan.md
+      - docs/plans/narrative-c2zc-canonical-cutover-impact-matrix.md
+      - docs/plans/narrative-semantic-core-roadmap.md
+      - docs/plans/nir0-d2-impact-matrix.md
+      - docs/certification/nir0/NIR0-CERT.md
+      - scripts/c2zc-product-journeys.test.mjs
+      - src/features/narrative-extraction/reconciler/stageExecution.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/features/narrative-extraction/reconciler/types.ts
+      - src/features/narrative-extraction/reconciler/v2Adapter.ts
+      - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
+      - src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts
+      - src/application/narrative-extraction/extractionCoordinator.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
+      - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/finding_identity.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/finding_observation.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/inbox_read_model.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/terminal_failure.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_contracts.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scope_authority_runtime.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
+      - src-tauri/crates/grimodex-db/src/migrate.rs
+      - src-tauri/crates/grimodex-db/src/backup_restore.rs
+      - src-tauri/crates/grimodex-core/src/workspace_schema.rs
+      - electron/main/index.ts
+      - electron/main/narrativeMaintenance.ts
+      - electron/main/narrativeMaintenance.test.ts
+      - electron/main/narrativeMaintenance.phase1.test.ts
+      - electron/main/narrativeMaintenance.followup.test.ts
+      - electron/main/narrativeMaintenance.reacceptance.test.ts
+      - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
+      - electron/main/narrativeMaintenance.wiring.test.ts
+      - electron/main/narrativeMaintenance.electronRoute.test.ts
+      - electron/main/narrativeMaintenanceBootstrap.ts
+      - electron/main/narrativeMaintenanceBootstrap.test.ts
+      - electron/main/narrativeMaintenanceCiSeam.ts
+      - electron/main/narrativeMaintenanceCiSeam.test.ts
+      - electron/main/narrativeMaintenanceTriggers.ts
+      - electron/main/narrativeMaintenanceTriggers.test.ts
+      - electron/main/foregroundBarrierRelease.test.ts
+      - scripts/quality/validate-execution-state-authority.mjs
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
+      - scripts/quality/validate-narrative-ir-contract.test.mjs
+      - scripts/quality/validate-scope-authority-basis-policy.test.mjs
       - src/features/narrative-semantic-core/contracts/mutationAuthority.test.ts
       - src/features/narrative-semantic-core/contracts/stateVocabulary.test.ts
       - src/features/narrative-semantic-core/contracts/assertionState.test.ts
@@ -411,6 +547,37 @@ requirements:
       - src/features/narrative-semantic-core/contracts/evidencePolicy.test.ts
       - src/features/narrative-semantic-core/contracts/scope.test.ts
       - src/features/narrative-semantic-core/contracts/disclosure.test.ts
+      - src/features/narrative-semantic-core/contracts/scopeV2.test.ts
+      - src/features/narrative-semantic-core/contracts/narrativeIr.test.ts
+      - src/features/narrative-semantic-core/contracts/scopeRelation.test.ts
+      - src/features/narrative-semantic-core/contracts/dependencyRole.test.ts
+      - src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts
+      - src/features/narrative-extraction/source/scopeAuthorityBasisV2.contract.test.ts
+      - src-tauri/crates/grimodex-core/tests/canonical_json.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_ir.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_scope_authority_basis.rs
+      - src/features/narrative-extraction/reconciler/stageExecution.test.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
+      - src/features/narrative-extraction/reconciler/v2Adapter.test.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
+      - src/features/tree/api.listProjection.test.ts
+      - src/application/narrative-extraction/projectSnapshotAdapter.test.ts
+      - src/application/narrative-extraction/extractionCoordinator.test.ts
+      - electron/shared/ipcContract.test.ts
+      - scripts/quality/validate-execution-state-authority.test.mjs
+      - src-tauri/crates/grimodex-db/tests/narrative_maintenance_contracts.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_scope_authority_runtime.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
+      - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts
+      - scripts/quality/impact-map.test.mjs
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
     heavyTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     evaluatedBy:
@@ -553,6 +720,13 @@ requirements:
     title: Requirements, changes, suites, results, failures, and deferred work remain linked.
     definedIn: policies/quality/iron-laws.md#GDX-TRACE-001
     implementedBy:
+      - policies/narrative/narrative-artifact-authority.json
+      - policies/narrative/fixtures/artifact-authority.json
+      - policies/narrative/narrative-dependency-role-registry.json
+      - policies/narrative/fixtures/dependency-role-contract.json
+      - src/features/narrative-semantic-core/contracts/dependencyRole.ts
+      - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
+      - scripts/quality/validate-semantic-core-boundary.mjs
       - AGENTS.md
       - .agents/skills/adversarial-review/SKILL.md
       - .agents/skills/grimodex-impact-gate/SKILL.md
@@ -569,6 +743,8 @@ requirements:
       - evals/qualifications/live-models.yaml
       - evals/qualifications/schemas/live-model-qualification-v1.schema.json
       - evals/impact-map.yaml
+      - electron/scripts/narrative-maintenance-product-journeys.mjs
+      - electron/scripts/product-journeys.mjs
       - src/features/ai-verification/aiPathRegistry.ts
       - docs/Grimodex_Semantic_Reranker_Shadow_Impact_Matrix.md
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE2_RESULTS.md
@@ -591,6 +767,8 @@ requirements:
       - scripts/quality/run-live-model-qualification.test.mjs
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
+      - scripts/product-journey-phase1.test.mjs
+      - scripts/c2-5b-product-journeys.test.mjs
       - scripts/semantic-reranker-release.test.mjs
       - scripts/quality/validate-narrative-writers.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
@@ -607,6 +785,10 @@ requirements:
       - eval-route-search-scenes
       - eval-narrative-runtime-authority-fail-closed
 heavyEvaluations:
+  - id: heavy-c2-5b-narrative-maintenance-product-journeys
+    suiteId: narrative-runtime
+    command: GRIMODEX_PRODUCT_JOURNEY_SET=c2-5b pnpm electron:product-journeys
+    reason: Runs the eleven durable C2-5B maintenance journeys in a built Electron/native environment; missing trigger owners or production adapters remain an intentional red acceptance result until the corresponding implementation lanes land.
   - id: heavy-agent-tool-loop
     suiteId: tool-policy
     command: pnpm test:node --run src/features/chat/agent/agentToolCall.live.test.ts

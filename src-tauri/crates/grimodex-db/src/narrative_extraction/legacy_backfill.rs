@@ -28,15 +28,10 @@
 //!      `narrative_projection_dependencies` row, so the Generic Graph
 //!      (`dependency_edges.rs`) carries the same Source knowledge Legacy
 //!      Freshness (`narrative_projection_freshness`) already has. Consumer
-//!      identity mirrors Producer-time C2-T1 wiring exactly
-//!      (`repository.rs`'s `record_run_dependency_edges_in_tx`):
-//!      `(RUN_CONSUMER_KIND, run_id)`, the owning `narrative_apply_commits`
-//!      row's own `run_id` column -- never the individual Application, so a
-//!      later Verify/Rebuild walking `find_edges_by_consumer` sees the same
-//!      shape whether a Run's Edges came from a live Reconciliation
-//!      Envelope or from this backfill. A commit with a `NULL` `run_id`
-//!      (predates the Run/Task/Attempt execution-state model entirely) has
-//!      no Run-scoped Consumer identity to backfill an Edge under; its
+//!      identity is `(APPLICATION_CONSUMER_KIND, application_id)`, with the
+//!      fresh Backfill Run stored in `owning_run_id`. A commit with a `NULL`
+//!      `run_id` (predates the Run/Task/Attempt execution-state model entirely)
+//!      has no durable projection lineage to backfill an Edge under; its
 //!      Contribution row is still seeded, just with no matching Edge, and
 //!      it is counted separately in the summary rather than silently
 //!      dropped.
@@ -71,8 +66,9 @@
 //! rows. `contributions_created`/`edges_created` in the returned summary
 //! both report 0 on that second run.
 
+use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::application_contributions::{
@@ -80,31 +76,42 @@ use super::application_contributions::{
     reproject_user_ownership_from_authority_in_tx, ContributionField, ContributionProvenance,
     ContributionTargetState, UNRESOLVED_TARGET_PREFIX,
 };
+use super::c2zb_application_rekey::require_current_c2zb_marker;
 use super::dependency_edges::{
-    canonical_source_object_identity, record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
+    canonical_source_object_identity, record_dependency_edge_in_tx, APPLICATION_CONSUMER_KIND,
 };
 use super::digest_plan;
-use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
-use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
+use super::maintenance_lifecycle::{
+    canonical_failure_message, complete_maintenance_run_in_tx, create_maintenance_run_in_tx,
+    fail_maintenance_run_in_tx, hold_maintenance_run_in_tx, load_maintenance_run_in_tx,
+    MaintenanceFailureKind,
+};
+use super::maintenance_runtime::{
+    discover_durable_maintenance_work_in_tx, validate_phase_success_outcome, AutomaticRunKind,
+    NarrativeMaintenanceCiFault, WorkKey,
+};
+use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::task_leases::with_immediate_transaction;
+use super::terminal_failure::{
+    project_terminal_failure_for_run_in_tx, resolve_terminal_failure_for_run_in_tx,
+};
 use crate::Database;
+
+/// Generation of the production legacy dependency writer. This is the
+/// writer-owned value consumed by the bundled producer registry; it changes
+/// with the declaration semantics, not merely with a policy fixture.
+pub(crate) const LEGACY_DEPENDENCY_PRODUCER_GENERATION: &str = "legacy-dependency-backfill:v3";
 
 /// Work key every project's Legacy Dependency Backfill Run is created
 /// under (Run Kind Policy `dependency-backfill`). One logical Backfill per
 /// project per algorithm version -- see
-/// [`bootstrap_legacy_dependency_backfill_for_project`].
-///
-/// The trailing `:v<n>` is load-bearing and must move with
-/// [`LEGACY_BACKFILL_ALGORITHM_VERSION`] (a test pins that). The Run Kind
-/// Policy seals `backfillAlgorithmVersion` as a `sealedParameters` entry, so
-/// the contract already says two Runs at different algorithm versions are
-/// not the same work -- but `find_reusable_system_run` matches on
-/// `(project_id, run_kind, work_key, status)` and never opens the sealed
-/// spec, so with a version-free key a Run left `completed` by an older
-/// algorithm is reused and the new transform never runs. Carrying the
-/// version in the key is what makes the implementation honour the seal.
-const LEGACY_BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill:v2";
+/// [`bootstrap_legacy_dependency_backfill_for_project`]. It is deliberately
+/// the same writer-owned generation value: the trailing `:v<n>` is load-
+/// bearing and moves with [`LEGACY_BACKFILL_ALGORITHM_VERSION`], so a
+/// completed Run from an older transform cannot be reused under a new
+/// producer coordinate.
+pub(crate) const LEGACY_BACKFILL_WORK_KEY: &str = LEGACY_DEPENDENCY_PRODUCER_GENERATION;
 
 /// Sealed into the Run's `spec_json` per the Run Kind Policy's
 /// `sealedParameters`. This backfill has no legacy schema-version/
@@ -113,14 +120,139 @@ const LEGACY_BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill:v2";
 /// row", not a bounded/versioned slice), so `backfillAlgorithmVersion` is
 /// the one parameter worth sealing: bump it if this transform's write
 /// shape ever changes in a way that would make an older completed Run
-/// unsafe to treat as equivalent to a fresh one.
-/// `"2"` since Contribution `target_object_identity` and Dependency Edge
-/// `source_object_identity` are both written in canonical form: a Run
-/// completed under `"1"` left `codex_entry:<id>` Contributions and
-/// double-prefixed Edges, so it is not equivalent to a fresh one.
-const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "2";
+/// unsafe to treat as equivalent to a fresh one. `"3"` since the writer now
+/// emits Application-grained Edges owned by the fresh Backfill Run.
+pub(crate) const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "3";
+
+/// Validate the durable completion marker owned by the Backfill phase.
+///
+/// A `completed` Run with the right key/spec is not sufficient evidence that
+/// the Backfill crossed its once-boundary: the terminal outcome must be the
+/// current transform, bound to a project-owned Semantic Epoch, and carry the
+/// complete summary shape. Discovery, recovery, and the direct Admin retry
+/// all call this helper so they cannot disagree about whether a Run is safe to
+/// reuse.
+pub(crate) struct CompletedBackfillMarker<'a> {
+    pub(crate) run_kind: &'a str,
+    pub(crate) status: &'a str,
+    pub(crate) spec_json: Option<&'a str>,
+    pub(crate) semantic_epoch_id: Option<&'a str>,
+    pub(crate) work_key: Option<&'a str>,
+    pub(crate) completed_at: Option<&'a str>,
+    pub(crate) outcome_summary_json: Option<&'a str>,
+}
+
+/// Parse the timestamp formats used by both current system Runs and legacy
+/// SQLite rows. Marker reuse must use this same supported-instant contract as
+/// discovery/recovery instead of trusting a non-empty arbitrary string.
+pub(crate) fn parse_maintenance_instant(value: &str) -> anyhow::Result<DateTime<Utc>> {
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Ok(parsed.with_timezone(&Utc));
+    }
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S"))
+        .map(|parsed| DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: lifecycle timestamp '{value}' is not a supported instant"
+            )
+        })
+}
+
+pub(crate) fn is_valid_completed_backfill_marker(
+    conn: &Connection,
+    project_id: &str,
+    marker: &CompletedBackfillMarker<'_>,
+) -> anyhow::Result<bool> {
+    if marker.run_kind != "backfill"
+        || marker.status != "completed"
+        || marker.work_key != Some(LEGACY_BACKFILL_WORK_KEY)
+    {
+        return Ok(false);
+    }
+    let Some(completed_at) = marker
+        .completed_at
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    if parse_maintenance_instant(completed_at).is_err() {
+        return Ok(false);
+    }
+    let Some(epoch_id) = marker.semantic_epoch_id.filter(|value| !value.is_empty()) else {
+        return Ok(false);
+    };
+    let epoch_belongs_to_project: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM narrative_semantic_epochs
+              WHERE id = ?1 AND project_id = ?2
+         )",
+        params![epoch_id, project_id],
+        |row| row.get::<_, i64>(0),
+    )? != 0;
+    if !epoch_belongs_to_project {
+        return Ok(false);
+    }
+
+    let Some(spec_json) = marker.spec_json else {
+        return Ok(false);
+    };
+    let Ok(spec) = serde_json::from_str::<serde_json::Value>(spec_json) else {
+        return Ok(false);
+    };
+    if spec
+        .get("backfillAlgorithmVersion")
+        .and_then(|value| value.as_str())
+        != Some(LEGACY_BACKFILL_ALGORITHM_VERSION)
+    {
+        return Ok(false);
+    }
+
+    let Some(outcome_json) = marker.outcome_summary_json else {
+        return Ok(false);
+    };
+    let Ok(outcome) = serde_json::from_str::<serde_json::Value>(outcome_json) else {
+        return Ok(false);
+    };
+    if outcome
+        .get("maintenancePhase")
+        .and_then(|value| value.as_str())
+        != Some("backfill-complete")
+        || outcome
+            .get("backfillAlgorithmVersion")
+            .and_then(|value| value.as_str())
+            != Some(LEGACY_BACKFILL_ALGORITHM_VERSION)
+        || outcome
+            .get("semanticEpochId")
+            .and_then(|value| value.as_str())
+            != Some(epoch_id)
+    {
+        return Ok(false);
+    }
+    let Some(summary) = outcome.get("summary").and_then(|value| value.as_object()) else {
+        return Ok(false);
+    };
+    Ok(summary
+        .get("epoch_created")
+        .and_then(|value| value.as_bool())
+        .is_some()
+        && summary
+            .get("contributions_created")
+            .and_then(|value| value.as_u64())
+            .is_some()
+        && summary
+            .get("edges_created")
+            .and_then(|value| value.as_u64())
+            .is_some()
+        && summary
+            .get("applications_without_run_id")
+            .and_then(|value| value.as_u64())
+            .is_some())
+}
 
 /// Outcome of [`bootstrap_legacy_dependency_backfill_for_project`].
+#[derive(Debug)]
 pub enum LegacyBackfillBootstrapOutcome {
     /// A Backfill Run for this project already existed
     /// (`pending`/`running`/`completed`); this call did nothing further.
@@ -132,6 +264,214 @@ pub enum LegacyBackfillBootstrapOutcome {
     },
 }
 
+/// Result of consuming the typed CI fault at the native phase boundary.
+///
+/// The lifecycle owner creates the real Backfill Run before returning any
+/// injected result.  `Failed` therefore represents a durable failed
+/// Run/Task/Attempt triplet, while `Running` is the durable boundary used by
+/// the N-API owner immediately before its deliberate process exit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegacyBackfillFaultOutcome {
+    /// A valid completed or already-running Backfill owns this work, so the
+    /// one-shot fault must not attach itself to another Run.
+    NotInjected,
+    /// A synthetic phase failure was finalized durably.
+    Failed {
+        run_id: String,
+        semantic_epoch_id: String,
+        failure_code: String,
+    },
+    /// Phase 1 committed a running lifecycle; the native owner may exit.
+    Running {
+        run_id: String,
+        semantic_epoch_id: String,
+    },
+}
+
+/// Consume a typed fault for one planner-validated Backfill identity.
+///
+/// The caller supplies the exact normalized WorkKey and all wake reasons that
+/// accompanied it. Planner rechecks, current-Epoch validation, lifecycle
+/// creation, and terminalization all run under one IMMEDIATE transaction on
+/// the pinned authority connection. A stale epoch therefore rolls back before
+/// a Run/Task/Attempt can be created under a different epoch.
+pub fn inject_legacy_backfill_fault_for_work(
+    db: &Database,
+    expected_work: &WorkKey,
+    reasons: &[String],
+    fault: NarrativeMaintenanceCiFault,
+) -> anyhow::Result<LegacyBackfillFaultOutcome> {
+    anyhow::ensure!(
+        expected_work.run_kind == AutomaticRunKind::Backfill,
+        "NEX_MAINTENANCE_FAULT_WORK_IDENTITY_MISMATCH: fault seam only supports Backfill"
+    );
+    anyhow::ensure!(
+        expected_work.work_key == LEGACY_BACKFILL_WORK_KEY,
+        "NEX_MAINTENANCE_FAULT_WORK_IDENTITY_MISMATCH: Backfill work key is not canonical"
+    );
+    anyhow::ensure!(
+        !reasons.is_empty(),
+        "NEX_MAINTENANCE_FAULT_WORK_IDENTITY_MISMATCH: at least one planner reason is required"
+    );
+
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            let current_epoch_id = get_current_epoch(conn, &expected_work.project_id)?
+                .map(|epoch| epoch.id);
+            match (
+                expected_work.semantic_epoch_id.as_deref(),
+                current_epoch_id.as_deref(),
+            ) {
+                (Some(expected), Some(current)) => anyhow::ensure!(
+                    expected == current,
+                    "NEX_MAINTENANCE_FAULT_EPOCH_MISMATCH: current Semantic Epoch changed before fault injection"
+                ),
+                (Some(_), None) => anyhow::bail!(
+                    "NEX_MAINTENANCE_FAULT_EPOCH_MISSING: expected Semantic Epoch is not current"
+                ),
+                (None, Some(_)) => anyhow::bail!(
+                    "NEX_MAINTENANCE_FAULT_EPOCH_MISMATCH: an epoch-less Backfill is no longer current"
+                ),
+                (None, None) => {}
+            }
+
+            let normalized_reasons = reasons
+                .iter()
+                .map(|reason| {
+                    let reason = reason.trim();
+                    anyhow::ensure!(
+                        !reason.is_empty() && !reason.contains(['/', '\\']),
+                        "NEX_MAINTENANCE_FAULT_REASON_INVALID: planner reason is not canonical"
+                    );
+                    Ok::<_, anyhow::Error>(reason.to_string())
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+
+            // A valid completed marker is durable evidence that this logical
+            // Backfill has already crossed its once-only boundary. It is a
+            // deterministic no-op for a real Backfill wake, even when a stale
+            // product wake asks again. Validate that reason vocabulary first
+            // so a private sentinel cannot turn the seam into a silent success.
+            if find_valid_completed_backfill_run_id(conn, &expected_work.project_id)?.is_some() {
+                anyhow::ensure!(
+                    normalized_reasons.iter().all(|reason| matches!(
+                        reason.as_str(),
+                        "workspace-opened" | "legacy-backfill-required" | "durable-wake"
+                    )),
+                    "NEX_MAINTENANCE_FAULT_PLANNER_MISMATCH: completed Backfill cannot consume a crafted wake reason"
+                );
+                return Ok(LegacyBackfillFaultOutcome::NotInjected);
+            }
+
+            // Every normalized reason must independently rediscover the exact
+            // requested identity. This rejects crafted reasons while allowing
+            // the legitimate coalesced set (workspace-opened, durable-wake,
+            // and legacy-backfill-required) to share one fault claim.
+            for reason in &normalized_reasons {
+                let planned = discover_durable_maintenance_work_in_tx(
+                    conn,
+                    &expected_work.project_id,
+                    reason,
+                    None,
+                )?;
+                anyhow::ensure!(
+                    planned.is_some_and(|candidate| {
+                        candidate.work_key_identity() == expected_work.clone()
+                    }),
+                    "NEX_MAINTENANCE_FAULT_PLANNER_MISMATCH: planner did not return the requested Backfill identity"
+                );
+            }
+
+            let semantic_epoch_id = match current_epoch_id {
+                Some(epoch_id) => epoch_id,
+                None => create_epoch_in_tx(conn, &expected_work.project_id, "initial", None)?,
+            };
+            let spec = json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
+            let spec_digest = format!("sha256:{}", digest_plan(&spec));
+            let handle = create_maintenance_run_in_tx(
+                conn,
+                &expected_work.project_id,
+                expected_work.run_kind.as_str(),
+                &semantic_epoch_id,
+                LEGACY_DEPENDENCY_PRODUCER_GENERATION,
+                &spec,
+                &spec_digest,
+                SystemRunWorkKeyReuse::RunningOnly,
+            )?;
+            if handle.reused {
+                return Ok(LegacyBackfillFaultOutcome::NotInjected);
+            }
+
+            match fault {
+                NarrativeMaintenanceCiFault::ProcessInterruption => {
+                    Ok(LegacyBackfillFaultOutcome::Running {
+                        run_id: handle.run_id,
+                        semantic_epoch_id,
+                    })
+                }
+                NarrativeMaintenanceCiFault::TransientIo
+                | NarrativeMaintenanceCiFault::ContractViolation => {
+                    let failure_code = match fault {
+                        NarrativeMaintenanceCiFault::TransientIo => "NEX_MAINTENANCE_TRANSIENT",
+                        NarrativeMaintenanceCiFault::ContractViolation => {
+                            "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"
+                        }
+                        NarrativeMaintenanceCiFault::ProcessInterruption => unreachable!(),
+                    };
+                    let failure_message = format!("{failure_code}: injected maintenance fault");
+                    let transform_result: anyhow::Result<BackfillSummary> =
+                        Err(anyhow::anyhow!(failure_message));
+                    finalize_legacy_backfill_run_in_tx(
+                        conn,
+                        &expected_work.project_id,
+                        &handle.run_id,
+                        Some(&semantic_epoch_id),
+                        &transform_result,
+                    )?;
+                    Ok(LegacyBackfillFaultOutcome::Failed {
+                        run_id: handle.run_id,
+                        semantic_epoch_id,
+                        failure_code: failure_code.to_string(),
+                    })
+                }
+            }
+        })
+    })
+}
+
+/// Consume one typed CI fault at the same Backfill lifecycle boundary used by
+/// the production phase owner.  This helper is intentionally native-only
+/// plumbing: it never exits the process and it never fabricates a Run outside
+/// `create_maintenance_run_in_tx`.
+pub fn inject_legacy_backfill_fault_for_project(
+    db: &Database,
+    project_id: &str,
+    fault: NarrativeMaintenanceCiFault,
+) -> anyhow::Result<LegacyBackfillFaultOutcome> {
+    let semantic_epoch_id = db.with_conn(|conn| {
+        get_current_epoch(conn, project_id).map(|epoch| epoch.map(|epoch| epoch.id))
+    })?;
+    let expected_work = match semantic_epoch_id {
+        Some(epoch_id) => WorkKey::new_for_epoch(
+            project_id,
+            AutomaticRunKind::Backfill,
+            LEGACY_BACKFILL_WORK_KEY,
+            epoch_id,
+        )?,
+        None => WorkKey::new(
+            project_id,
+            AutomaticRunKind::Backfill,
+            LEGACY_BACKFILL_WORK_KEY,
+        )?,
+    };
+    inject_legacy_backfill_fault_for_work(
+        db,
+        &expected_work,
+        &["workspace-opened".to_string()],
+        fault,
+    )
+}
+
 /// Field path recorded for every backfilled Contribution. Legacy
 /// Applications predate per-field Contribution tracking, so there is no
 /// specific JSON pointer to recover -- this sentinel stands for "the whole
@@ -139,7 +479,8 @@ pub enum LegacyBackfillBootstrapOutcome {
 pub(crate) const LEGACY_BACKFILL_FIELD_PATH: &str = "/legacy-application";
 
 /// Outcome of one `backfill_project_semantic_build_graph_in_tx` call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackfillSummary {
     /// Whether this call minted the project's `initial` Semantic Epoch.
     /// `false` means the project already had at least one epoch.
@@ -155,11 +496,10 @@ pub struct BackfillSummary {
     /// total number of legacy dependency rows seen).
     pub edges_created: usize,
     /// Legacy Applications seen whose owning `narrative_apply_commits` row
-    /// has a `NULL` `run_id` -- predates the Run/Task/Attempt
-    /// execution-state model, so there is no Run-scoped Consumer identity
-    /// to backfill a Dependency Edge under. Their Contribution row is still
-    /// seeded; only Edge backfill is skipped for these, and this count
-    /// makes that skip visible rather than silent.
+    /// has a `NULL` `run_id` -- predates the Run/Task/Attempt execution-state
+    /// model. Their v3 Application Edge is still owned by the fresh Backfill
+    /// Run; this count reports how many lacked the older durable lineage the
+    /// C2-ZB migration requires.
     pub applications_without_run_id: usize,
 }
 
@@ -184,25 +524,20 @@ struct LegacyProjectionDependency {
 /// [`backfill_project_semantic_build_graph_in_tx`], this owns its own
 /// transaction(s) -- callers must not already be inside one.
 ///
-/// Its only production caller today is the Admin IPC
-/// `retryNarrativeLegacyBackfill`. The policy's `automatic-once` post-open
-/// trigger is intentionally **not** wired: committing from a second
-/// connection while the foreground holds a deferred transaction fails that
-/// transaction with SQLITE_BUSY_SNAPSHOT, which `busy_timeout` cannot
-/// retry (see the long comment at the former call site in `open.rs`, and
-/// `execute.rs`'s `BEGIN IMMEDIATE` note). Re-wiring it requires either
-/// running on the live authority's connection or making
-/// `domain_writes.rs`'s deferred transactions IMMEDIATE.
+/// Production callers include the Admin IPC `retryNarrativeLegacyBackfill`
+/// and the C2-5B live phase owner. The latter supplies the same live
+/// `Database` authority as Verify/Rebuild, so the automatic-once path does
+/// not create a second connection that could fail a foreground deferred
+/// transaction with `SQLITE_BUSY_SNAPSHOT`.
 ///
 /// Three phases, each its own transaction, so a Phase 2 failure cannot
 /// erase the Phase 1 Run record it should be explaining:
 ///
-///   1. Reuse-check + Run creation (`create_system_run_in_tx`,
-///      `SystemRunWorkKeyReuse::RunningAndCompleted` -- matching the
-///      ratified policy's `sameWorkKeyReuse` exactly) under a freshly
-///      ensured/created Semantic Epoch. If a Run already exists
-///      `pending`/`running`/`completed`, this returns `AlreadyRun` and
-///      does nothing further.
+///   1. Strict completed-marker reuse check, then Run creation
+///      (`create_system_run_in_tx` with running-only generic reuse) under a
+///      freshly ensured/created Semantic Epoch. A completed Run is reused
+///      only when its terminal outcome proves the Backfill boundary; a
+///      `pending`/`running` Run is coalesced by the generic work-key check.
 ///   2. Run the transform itself
 ///      (`backfill_project_semantic_build_graph_in_tx`) in its own
 ///      transaction, so a failure rolls back only its own partial writes,
@@ -212,25 +547,22 @@ struct LegacyProjectionDependency {
 ///      on phase 2 failure, so a failed attempt is visible via a `failed`
 ///      Run row rather than stuck at `running` forever.
 ///
-/// A `failed` Run is not reused by phase 1's `RunningAndCompleted` check,
-/// so a later invocation retries it. With the post-open trigger unwired,
-/// that retry is operator-driven (the Admin IPC) rather than automatic:
-/// `autoRetryableFailureClasses`' bounded auto-retry (SQLite busy,
-/// process interruption, app shutdown, lease timeout, transient I/O) will
-/// only fall out of "retry on next open" once that trigger is restored.
+/// A `failed` Run is not reused by phase 1's running-only check, so a later
+/// invocation retries it. The C2-5B phase owner rediscovers this
+/// durable work on the next wake/restart and applies the policy's bounded
+/// retry classes (SQLite busy, process interruption, app shutdown, lease
+/// timeout, and transient I/O); an operator can still invoke this entry point
+/// explicitly through the Admin IPC.
 /// A structurally-broken project
 /// (`NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION`) fails the same way on
-/// every invocation; surfacing that persistently to a human via the
-/// Maintenance Inbox is a follow-on, not implemented here.
+/// every invocation; Lane C projects that terminal evidence into the
+/// Maintenance Inbox without changing current Freshness or Attention.
 ///
-/// Known gap, not addressed here: a crash strictly between phase 1
-/// committing and phase 3 running (the transform itself is a fast,
-/// bounded SQL scan+upsert, so this window is narrow but not zero) leaves
-/// the Run stuck at `running`, which phase 1's `RunningAndCompleted`
-/// check treats as "still in progress" and does not retry. Recovering a
-/// Run/Task/Attempt stuck `running` after a terminated process is a Lane
-/// B / execution-state-model concern spanning every Run Kind, not
-/// something specific to Backfill worth solving narrowly here.
+/// If a process terminates between phase 1 and phase 3, the shared
+/// maintenance recovery ledger terminalizes the interrupted Run before the
+/// phase owner rediscovers it. This keeps Backfill's once-boundary semantics
+/// while allowing a retryable failure to be scheduled without creating a
+/// second active Run.
 pub fn bootstrap_legacy_dependency_backfill_for_project(
     db: &Database,
     project_id: &str,
@@ -239,31 +571,36 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
 
     let (run_id, reused) = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            // C2-ZB must have finished re-keying the historical Run Edges
+            // before this v3 writer creates phase-1 Run state or phase-2
+            // Application Edges.  This is intentionally the first operation
+            // in the transaction: a direct/pre-open caller must not be able
+            // to leave a running v3 owner on a pre-marker workspace.
+            require_current_c2zb_marker(conn)?;
             let epoch_id = match get_current_epoch(conn, project_id)? {
                 Some(epoch) => epoch.id,
                 None => create_epoch_in_tx(conn, project_id, "initial", None)?,
             };
             let spec = json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
             let spec_digest = format!("sha256:{}", digest_plan(&spec));
-            let created = create_system_run_in_tx(
+            if let Some(run_id) = find_valid_completed_backfill_run_id(conn, project_id)? {
+                return Ok((run_id, true));
+            }
+            let handle = create_maintenance_run_in_tx(
                 conn,
                 project_id,
                 "backfill",
                 &epoch_id,
-                LEGACY_BACKFILL_WORK_KEY,
+                LEGACY_DEPENDENCY_PRODUCER_GENERATION,
                 &spec,
                 &spec_digest,
-                SystemRunWorkKeyReuse::RunningAndCompleted,
-                // No request identity: this Run is started by the system
-                // itself, not by an addressable caller request.
-                None,
+                // Completed rows are reused only through the strict marker
+                // check above. A malformed completed row must not be returned
+                // by generic work-key deduplication, or recovery would keep
+                // rediscovering it without ever dispatching a fresh Backfill.
+                SystemRunWorkKeyReuse::RunningOnly,
             )?;
-            let run_id = created["runId"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("create_system_run_in_tx returned no runId"))?
-                .to_string();
-            let reused = created["reused"].as_bool().unwrap_or(false);
-            Ok((run_id, reused))
+            Ok((handle.run_id, handle.reused))
         })
     })?;
 
@@ -273,29 +610,191 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
 
     let transform_result = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            backfill_project_semantic_build_graph_in_tx(conn, project_id, &now)
+            backfill_project_semantic_build_graph_in_tx_for_run(conn, project_id, &now, &run_id)
         })
     });
 
-    let finalize_status = if transform_result.is_ok() {
-        NarrativeRunStatus::Completed
-    } else {
-        NarrativeRunStatus::Failed
-    };
-    let finalize_result = db.with_conn(|conn| {
-        with_immediate_transaction(conn, |conn| {
-            transition_run_status_in_tx(conn, &run_id, finalize_status)
-        })
-    });
+    let finalize_result = finalize_legacy_backfill_run(db, project_id, &run_id, &transform_result);
     if let Err(finalize_error) = finalize_result {
-        tracing::error!(
-            "legacy dependency backfill: failed to finalize run '{run_id}' status: {finalize_error}"
-        );
+        return Err(anyhow::anyhow!(
+            "legacy dependency backfill: failed to finalize run '{run_id}' with durable terminal evidence: {finalize_error}"
+        ));
     }
 
     match transform_result {
         Ok(summary) => Ok(LegacyBackfillBootstrapOutcome::Ran { run_id, summary }),
         Err(error) => Err(error),
+    }
+}
+
+fn find_valid_completed_backfill_run_id(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id, run_kind, status, spec_json, semantic_epoch_id, work_key,
+                completed_at, outcome_summary_json
+           FROM narrative_extraction_runs
+          WHERE project_id = ?1 AND run_kind = 'backfill'
+            AND work_key = ?2 AND status = 'completed'
+          ORDER BY created_at DESC",
+    )?;
+    let rows = statement.query_map(params![project_id, LEGACY_BACKFILL_WORK_KEY], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+        ))
+    })?;
+    for row in rows {
+        let (run_id, run_kind, status, spec_json, epoch_id, work_key, completed_at, outcome_json) =
+            row?;
+        if is_valid_completed_backfill_marker(
+            conn,
+            project_id,
+            &CompletedBackfillMarker {
+                run_kind: &run_kind,
+                status: &status,
+                spec_json: spec_json.as_deref(),
+                semantic_epoch_id: epoch_id.as_deref(),
+                work_key: work_key.as_deref(),
+                completed_at: completed_at.as_deref(),
+                outcome_summary_json: outcome_json.as_deref(),
+            },
+        )? {
+            return Ok(Some(run_id));
+        }
+    }
+    Ok(None)
+}
+
+/// Finalize one Backfill Run after its independent transform transaction.
+/// Keeping this owner-only step in a named helper makes the phase boundary
+/// explicit: the generic task APIs must not be able to cancel the Run between
+/// the transform commit and this durable status/evidence transaction.
+fn finalize_legacy_backfill_run(
+    db: &Database,
+    project_id: &str,
+    run_id: &str,
+    transform_result: &anyhow::Result<BackfillSummary>,
+) -> anyhow::Result<()> {
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            finalize_legacy_backfill_run_in_tx(conn, project_id, run_id, None, transform_result)
+        })
+    })
+}
+
+/// Finalize a Backfill inside an already-open authority transaction. The
+/// optional expected epoch is used by the CI fault seam to make the planner
+/// identity and the lifecycle terminalization one atomic check/write.
+fn finalize_legacy_backfill_run_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    expected_semantic_epoch_id: Option<&str>,
+    transform_result: &anyhow::Result<BackfillSummary>,
+) -> anyhow::Result<()> {
+    let (actual_project_id, run_kind, work_key, semantic_epoch_id): (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = conn.query_row(
+        "SELECT project_id, run_kind, work_key, semantic_epoch_id
+           FROM narrative_extraction_runs
+          WHERE id = ?1",
+        [run_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    anyhow::ensure!(
+        actual_project_id == project_id,
+        "NEX_BACKFILL_RUN_PROJECT_MISMATCH: Run '{run_id}' belongs to another project"
+    );
+    anyhow::ensure!(
+        run_kind == "backfill" && work_key.as_deref() == Some(LEGACY_BACKFILL_WORK_KEY),
+        "NEX_BACKFILL_RUN_WORK_IDENTITY_MISMATCH: Run '{run_id}' is not the canonical Backfill"
+    );
+    let semantic_epoch_id = semantic_epoch_id.ok_or_else(|| {
+        anyhow::anyhow!("NEX_BACKFILL_RUN_EPOCH_MISSING: Run '{run_id}' has no Semantic Epoch")
+    })?;
+    if let Some(expected_semantic_epoch_id) = expected_semantic_epoch_id {
+        anyhow::ensure!(
+            semantic_epoch_id == expected_semantic_epoch_id,
+            "NEX_BACKFILL_RUN_EPOCH_MISMATCH: Run '{run_id}' Semantic Epoch changed before finalization"
+        );
+    }
+    let outcome = match transform_result {
+        Ok(summary) => json!({
+            "maintenancePhase": "backfill-complete",
+            "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+            "semanticEpochId": semantic_epoch_id,
+            "summary": summary,
+        }),
+        Err(error) => json!({
+            "maintenancePhase": "backfill-failed",
+            "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+            "semanticEpochId": semantic_epoch_id,
+            "failure": error.to_string(),
+        }),
+    };
+    if transform_result.is_ok() {
+        validate_phase_success_outcome(
+            "backfill",
+            project_id,
+            LEGACY_BACKFILL_WORK_KEY,
+            Some(&semantic_epoch_id),
+            &outcome,
+        )?;
+    }
+    record_run_outcome_in_tx(conn, run_id, &outcome)?;
+    if transform_result.is_ok()
+        && super::maintenance_runtime::foreground_system_work_barrier_requested()
+    {
+        // The product-journey owner releases this exact Run after a
+        // successful ordinary tree_node_patch. Validate that the native
+        // lifecycle pair remains held with the Run.
+        let handle = load_maintenance_run_in_tx(conn, run_id)?;
+        hold_maintenance_run_in_tx(conn, &handle)?;
+        return Ok(());
+    }
+    match transform_result {
+        Ok(_) => {
+            let handle = load_maintenance_run_in_tx(conn, run_id)?;
+            let finalized_at = complete_maintenance_run_in_tx(conn, &handle)?;
+            resolve_terminal_failure_for_run_in_tx(conn, project_id, run_id, &finalized_at)?;
+        }
+        Err(error) => {
+            let message = error.to_string();
+            let failure_kind = maintenance_failure_kind_for_message(&message);
+            let handle = load_maintenance_run_in_tx(conn, run_id)?;
+            let finalized_at = fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
+            project_terminal_failure_for_run_in_tx(
+                conn,
+                project_id,
+                run_id,
+                &canonical_failure_message(failure_kind, &message),
+                &finalized_at,
+                true,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn maintenance_failure_kind_for_message(message: &str) -> MaintenanceFailureKind {
+    let classification = super::maintenance_runtime::classify_failure(message);
+    if classification.code == "NEX_MAINTENANCE_INTERRUPTED" {
+        MaintenanceFailureKind::Interrupted
+    } else if classification.retryable {
+        MaintenanceFailureKind::Transient
+    } else {
+        MaintenanceFailureKind::Manual
     }
 }
 
@@ -339,17 +838,19 @@ pub fn get_backfill_status_for_project(
     .map_err(Into::into)
 }
 
-/// Backfill one project's Semantic Build Graph foundation from its
-/// pre-Gate-C2 Application history. See module docs for the epoch and
-/// Contribution seeding this performs. Ambient-transaction helper: the
-/// caller is expected to run this inside its own `BEGIN IMMEDIATE` /
-/// commit block (a one-off migration/maintenance job), matching every
-/// other `_in_tx` helper in this crate.
-pub(crate) fn backfill_project_semantic_build_graph_in_tx(
+/// Production Backfill transform. The freshly-created Backfill Run owns every
+/// Application Edge it emits; the explicit owner prevents the legacy
+/// ApplyCommit.run_id from being mistaken for the writer Run after C2-ZB.
+pub(crate) fn backfill_project_semantic_build_graph_in_tx_for_run(
     conn: &Connection,
     project_id: &str,
     now: &str,
+    backfill_run_id: &str,
 ) -> anyhow::Result<BackfillSummary> {
+    anyhow::ensure!(
+        !backfill_run_id.trim().is_empty(),
+        "NEX_BACKFILL_RUN_INVALID: backfill Run id is required"
+    );
     anyhow::ensure!(
         !project_id.is_empty(),
         "NEX_BACKFILL_PROJECT_INVALID: projectId is required"
@@ -453,18 +954,20 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
             now,
         )?;
 
-        match &application.run_id {
-            Some(run_id) => {
-                record_legacy_dependency_edges_in_tx(
-                    conn,
-                    project_id,
-                    run_id,
-                    &application.id,
-                    now,
-                )?;
-            }
-            None => applications_without_run_id += 1,
+        if application.run_id.is_none() {
+            applications_without_run_id += 1;
         }
+        // The v3 writer has its own fresh Backfill Run owner.  The
+        // ApplyCommit.run_id is lineage for the C2-ZB migration only, so a
+        // legacy Application with NULL lineage can still emit its durable
+        // projection dependency Edge under the fresh owner.
+        record_legacy_dependency_edges_in_tx(
+            conn,
+            project_id,
+            &application.id,
+            backfill_run_id,
+            now,
+        )?;
     }
     // The rows minted above all took `authority: None` -- a whole-entity
     // sentinel is not a Field Authority coordinate, so there is nothing to
@@ -486,12 +989,11 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
     })
 }
 
-/// Producer-time-shaped Dependency Edge backfill for one legacy Application:
+/// Application-grained Dependency Edge backfill for one legacy Application:
 /// every `narrative_projection_dependencies` row it left behind becomes one
-/// Edge declared by its owning Run, mirroring `repository.rs`'s
-/// `record_run_dependency_edges_in_tx` exactly (same Consumer identity, same
-/// one-element `read_set_json`) so this Run's Edge set looks identical
-/// whether it was declared live or backfilled.
+/// Edge keyed by the Application and owned by the freshly-created Backfill
+/// Run. The ApplyCommit's `run_id` is only the durable lineage used by the
+/// C2-ZB re-key planner; it is never substituted for the writer owner here.
 ///
 /// `dependency.source_key` is used directly as the Edge's
 /// `source_object_identity`, for exactly the reason `repository.rs`'s
@@ -508,11 +1010,12 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
 /// prefix a second time -- `project:scene:project:scene:s1` -- and every
 /// backfilled Edge then evaluated as `source-missing` because no resolver
 /// could match it back to its Source.
+// NARRATIVE_DEPENDENCY_PRODUCER: legacy-application-projection-dependency
 fn record_legacy_dependency_edges_in_tx(
     conn: &Connection,
     project_id: &str,
-    run_id: &str,
     application_id: &str,
+    backfill_run_id: &str,
     now: &str,
 ) -> anyhow::Result<()> {
     for dependency in load_legacy_projection_dependencies(conn, application_id)? {
@@ -522,16 +1025,15 @@ fn record_legacy_dependency_edges_in_tx(
         record_dependency_edge_in_tx(
             conn,
             project_id,
-            RUN_CONSUMER_KIND,
-            run_id,
+            APPLICATION_CONSUMER_KIND,
+            application_id,
             &source_object_identity,
             &read_set_json,
             None,
-            // SCHEMA 30. The Backfill's Consumer identity is the owning
-            // `narrative_apply_commits.run_id`, which is also the Run whose
-            // read this Edge restates -- so the same id is the honest answer
-            // on both axes here.
-            Some(run_id),
+            // C2-ZB: Application Edges carry the fresh Backfill Run as their
+            // declaring owner. `run_id` is the legacy ApplyCommit lineage and
+            // is intentionally not used as the Edge owner.
+            Some(backfill_run_id),
             now,
         )?;
     }
@@ -554,6 +1056,33 @@ fn count_edges(conn: &Connection, project_id: &str) -> anyhow::Result<usize> {
         |row| row.get(0),
     )?;
     Ok(usize::try_from(count).unwrap_or(0))
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn backfill_project_semantic_build_graph_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    now: &str,
+) -> anyhow::Result<BackfillSummary> {
+    let backfill_run_id = format!("test-backfill-run-{project_id}");
+    if project_id.is_empty() || now.is_empty() {
+        return backfill_project_semantic_build_graph_in_tx_for_run(
+            conn,
+            project_id,
+            now,
+            &backfill_run_id,
+        );
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO narrative_extraction_runs
+            (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+             status, coverage_json, created_at, run_kind, work_key)
+         VALUES (?1, ?2, 'test', '{}', '{\"backfillAlgorithmVersion\":\"3\"}',
+                 'sha256:test', 'completed', '{}', ?3, 'backfill', ?4)",
+        params![backfill_run_id, project_id, now, LEGACY_BACKFILL_WORK_KEY],
+    )?;
+    backfill_project_semantic_build_graph_in_tx_for_run(conn, project_id, now, &backfill_run_id)
 }
 
 /// Every `narrative_projection_dependencies` row a legacy Application left
@@ -629,6 +1158,7 @@ mod tests {
     use crate::narrative_extraction::application_contributions::{
         list_contributions_for_application, list_contributions_for_target,
     };
+    use crate::narrative_extraction::repository::cancel_run;
     use crate::narrative_extraction::semantic_epoch::list_epochs;
     use crate::Database;
     use std::path::Path;
@@ -677,8 +1207,8 @@ mod tests {
     }
 
     /// As [`seed_legacy_application`], but also lets the owning commit's
-    /// `run_id` be set -- needed to exercise Dependency Edge backfill, which
-    /// is Run-scoped.
+    /// `run_id` be set so tests can exercise the durable lineage used by the
+    /// C2-ZB migration.
     #[allow(clippy::too_many_arguments)]
     fn seed_legacy_application_with_run(
         conn: &Connection,
@@ -1052,7 +1582,8 @@ mod tests {
             assert_eq!(summary.edges_created, 1);
             assert_eq!(summary.applications_without_run_id, 0);
 
-            let edges = find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1")?;
+            let edges =
+                find_edges_by_consumer(conn, "project-1", APPLICATION_CONSUMER_KIND, "app-1")?;
             assert_eq!(edges.len(), 1);
             assert_eq!(edges[0].source_object_identity, "project:scene:scene-1");
             assert_eq!(edges[0].read_set_json, "[\"v1@2026-08-14T00:00:00.000Z\"]");
@@ -1073,10 +1604,20 @@ mod tests {
     #[test]
     fn backfilled_edges_never_double_prefix_the_source_identity() {
         use crate::narrative_extraction::dependency_edges::find_edges_by_consumer;
+        use crate::narrative_extraction::restore_rebuild::verify_narrative_dependency_graph_for_project;
 
         let db = test_db();
         db.with_conn(|conn| {
             seed_project(conn, "project-1");
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, snapshot_digest, created_at, version)
+                 VALUES ('run-1', 'project-1', 'test', '{}', '{}', 'digest',
+                         'completed', '{}', 'sha256:snapshot',
+                         '2026-08-15T00:00:00.000Z', 0)",
+                [],
+            )?;
             seed_legacy_application_with_run(
                 conn,
                 "project-1",
@@ -1108,7 +1649,12 @@ mod tests {
                 "2026-08-15T02:00:00.000Z",
             )?;
 
-            let edges = find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1")?;
+            let edges = find_edges_by_consumer(
+                conn,
+                "project-1",
+                APPLICATION_CONSUMER_KIND,
+                "app-1",
+            )?;
             let mut identities = edges
                 .iter()
                 .map(|edge| edge.source_object_identity.as_str())
@@ -1122,6 +1668,31 @@ mod tests {
                     "project:scene:scene-1",
                     "snapshot:run-1",
                 ]
+            );
+            assert!(edges.iter().all(|edge| {
+                edge.consumer_kind == APPLICATION_CONSUMER_KIND
+                    && edge.owning_run_id.as_deref() == Some("test-backfill-run-project-1")
+                    && edge.owning_run_id.as_deref() != Some("run-1")
+            }));
+            let snapshot_edge_id: String = conn.query_row(
+                "SELECT id FROM narrative_dependency_edges
+                  WHERE project_id = 'project-1'
+                    AND consumer_kind = 'application'
+                    AND consumer_key = 'app-1'
+                    AND source_object_identity = 'snapshot:run-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            let report = verify_narrative_dependency_graph_for_project(conn, "project-1")?;
+            assert!(
+                report.edge_ids_with_unresolvable_consumer_scope.is_empty(),
+                "snapshot:run-1 must resolve through the original Apply Run while the Edge keeps the fresh Backfill owner"
+            );
+            assert!(
+                !report
+                    .edge_ids_with_missing_source
+                    .contains(&snapshot_edge_id),
+                "snapshot:run-1 must resolve as a source through the embedded Apply Run"
             );
             Ok(())
         })
@@ -1175,7 +1746,8 @@ mod tests {
                 "2026-08-15T02:00:00.000Z",
             )?;
 
-            let edges = find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1")?;
+            let edges =
+                find_edges_by_consumer(conn, "project-1", APPLICATION_CONSUMER_KIND, "app-1")?;
             assert_eq!(edges.len(), 1);
             assert_eq!(edges[0].source_object_identity, "projection:projection-1");
             Ok(())
@@ -1275,7 +1847,7 @@ mod tests {
     }
 
     #[test]
-    fn applications_without_run_id_are_counted_and_skipped() {
+    fn applications_without_run_id_are_counted_but_still_emit_v3_edges() {
         let db = test_db();
         db.with_conn(|conn| {
             seed_project(conn, "project-1");
@@ -1307,10 +1879,7 @@ mod tests {
                 summary.contributions_created, 1,
                 "Contribution seeding must still happen with no run_id"
             );
-            assert_eq!(
-                summary.edges_created, 0,
-                "no Run-scoped Consumer identity exists to backfill an Edge under"
-            );
+            assert_eq!(summary.edges_created, 1);
             assert_eq!(summary.applications_without_run_id, 1);
             Ok(())
         })
@@ -1359,7 +1928,8 @@ mod tests {
                 "re-run must not create a duplicate Edge row"
             );
 
-            let edges = find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1")?;
+            let edges =
+                find_edges_by_consumer(conn, "project-1", APPLICATION_CONSUMER_KIND, "app-1")?;
             assert_eq!(edges.len(), 1, "no duplicate edge row");
             Ok(())
         })
@@ -1424,6 +1994,127 @@ mod tests {
     }
 
     #[test]
+    fn backfill_owner_finalizer_survives_generic_cancel_phase_gap() {
+        let db = test_db();
+        let run_id = db
+            .with_conn(|conn| {
+                seed_project(conn, "project-1");
+                with_immediate_transaction(conn, |conn| {
+                    let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+                    let spec = json!({
+                        "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION
+                    });
+                    let spec_digest = format!("sha256:{}", digest_plan(&spec));
+                    let created = create_maintenance_run_in_tx(
+                        conn,
+                        "project-1",
+                        "backfill",
+                        &epoch_id,
+                        LEGACY_BACKFILL_WORK_KEY,
+                        &spec,
+                        &spec_digest,
+                        SystemRunWorkKeyReuse::RunningAndCompleted,
+                    )?;
+                    Ok(created.run_id)
+                })
+            })
+            .expect("create phase-gap Backfill Run");
+
+        let generic_error = cancel_run(&db, run_id.clone(), "project-1".to_string())
+            .expect_err("generic cancellation must not win the Backfill phase gap");
+        assert!(generic_error
+            .to_string()
+            .contains("NEX_SYSTEM_RUN_API_FORBIDDEN"));
+
+        let transform_result: anyhow::Result<BackfillSummary> = Err(anyhow::anyhow!(
+            "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: committed transform cannot be finalized"
+        ));
+        finalize_legacy_backfill_run(&db, "project-1", &run_id, &transform_result)
+            .expect("Backfill owner finalizer must retain failure evidence");
+
+        db.with_conn(|conn| {
+            let (status, terminal_code, observations): (String, Option<String>, i64) = conn
+                .query_row(
+                    "SELECT r.status, r.terminal_reason_code,
+                            (SELECT COUNT(*) FROM narrative_maintenance_finding_observations
+                              WHERE run_id = ?1)
+                       FROM narrative_extraction_runs r WHERE r.id = ?1",
+                    params![run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+            assert_eq!(status, "failed");
+            assert!(terminal_code.is_some());
+            assert!(
+                observations > 0,
+                "failed Backfill must retain terminal evidence"
+            );
+            Ok(())
+        })
+        .expect("read owner-finalized Backfill Run");
+    }
+
+    #[test]
+    fn backfill_projection_failure_rolls_back_status_and_terminal_evidence() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            // This entity kind deliberately has no canonical Contribution
+            // mapping, so the transform reaches the failed finalizer.
+            seed_legacy_application(
+                conn,
+                "project-1",
+                "commit-invalid",
+                "application-invalid",
+                "unsupported-entity-kind",
+                "entity-invalid",
+                "2026-08-22T00:00:00.000Z",
+            );
+            conn.execute_batch(
+                "CREATE TRIGGER reject_backfill_terminal_lifecycle
+                   BEFORE INSERT ON narrative_maintenance_finding_lifecycle
+                   BEGIN
+                     SELECT RAISE(ABORT, 'forced backfill lifecycle failure');
+                   END;",
+            )?;
+            Ok(())
+        })
+        .expect("seed failed-backfill fixture");
+
+        let error = match bootstrap_legacy_dependency_backfill_for_project(&db, "project-1") {
+            Ok(_) => panic!("a projection failure must not look like a completed backfill"),
+            Err(error) => error,
+        };
+        assert!(error
+            .to_string()
+            .contains("forced backfill lifecycle failure"));
+
+        db.with_conn(|conn| {
+            let (status, outcome, terminal_code, observations): (
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+            ) = conn.query_row(
+                "SELECT r.status, r.outcome_summary_json, r.terminal_reason_code,
+                        (SELECT COUNT(*) FROM narrative_maintenance_finding_observations)
+                   FROM narrative_extraction_runs r
+                  WHERE r.project_id = 'project-1' AND r.run_kind = 'backfill'
+                  ORDER BY julianday(COALESCE(r.completed_at, r.started_at, r.created_at)) DESC,
+                           COALESCE(r.completed_at, r.started_at, r.created_at) DESC,
+                           r.id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(status, "running");
+            assert_eq!(outcome, None);
+            assert_eq!(terminal_code, None);
+            assert_eq!(observations, 0);
+            Ok(())
+        })
+        .expect("failed backfill finalization must roll back atomically");
+    }
+
+    #[test]
     fn bootstrap_is_automatic_once_per_project() {
         let db = test_db();
         db.with_conn(|conn| {
@@ -1464,6 +2155,60 @@ mod tests {
             })
             .expect("count backfill runs");
         assert_eq!(run_count, 1, "exactly one backfill run must ever exist");
+    }
+
+    #[test]
+    fn bootstrap_requires_a_supported_completed_at_for_marker_reuse() {
+        // A marker whose completed_at is NULL is not reusable evidence, so
+        // bootstrap runs again. A marker carrying an unparseable instant is
+        // corrupted ordering evidence: the lifecycle allocator fails closed
+        // (NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID) instead of silently
+        // ordering new work past it.
+        let seeded_first_run = |completed_at: Option<&str>| {
+            let db = test_db();
+            db.with_conn(|conn| {
+                seed_project(conn, "project-1");
+                Ok(())
+            })
+            .expect("seed project");
+            let first_run_id =
+                match bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+                    .expect("initial bootstrap")
+                {
+                    LegacyBackfillBootstrapOutcome::Ran { run_id, .. } => run_id,
+                    LegacyBackfillBootstrapOutcome::AlreadyRun { .. } => {
+                        panic!("initial bootstrap must create a Run")
+                    }
+                };
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET completed_at = ?1 WHERE id = ?2",
+                    params![completed_at, first_run_id],
+                )?;
+                Ok(())
+            })
+            .expect("corrupt completed timestamp");
+            (db, first_run_id)
+        };
+
+        let (db, first_run_id) = seeded_first_run(None);
+        let second = bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+            .expect("marker without completed_at must be rerunnable");
+        let second_run_id = match second {
+            LegacyBackfillBootstrapOutcome::Ran { run_id, .. } => run_id,
+            LegacyBackfillBootstrapOutcome::AlreadyRun { .. } => {
+                panic!("marker without completed_at must not be reused")
+            }
+        };
+        assert_ne!(second_run_id, first_run_id);
+
+        let (db, _) = seeded_first_run(Some("not-a-supported-instant"));
+        let error = bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+            .expect_err("an unparseable marker instant must fail the allocator closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));
     }
 
     #[test]

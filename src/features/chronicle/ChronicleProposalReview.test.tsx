@@ -70,6 +70,8 @@ function proposal(
     applicability: "applicable",
     displayTitle: base.title,
     payload: base,
+    plannedTitle: base.title,
+    plannedMatch: { status: "none" },
     match: { status: "none" },
     evidence: [
       {
@@ -88,6 +90,7 @@ function proposal(
     }),
     probableDuplicateChoice: null,
     ...overrides,
+    application: overrides.application ?? null,
   };
 }
 
@@ -178,9 +181,30 @@ describe("ChronicleProposalReview", () => {
         proposalId: string;
         patch: { title?: string; note?: string | null };
       }) => {
+        const current = useChronicleExtractionStore
+          .getState()
+          .projection?.proposals.find(
+            (item) => item.proposalId === args.proposalId,
+          );
+        const match =
+          args.patch.title === undefined
+            ? (current?.match ?? ({ status: "none" } as const))
+            : args.patch.title.trim() === current?.plannedTitle
+              ? current.plannedMatch
+              : ({
+                  status: "probable-duplicate",
+                  candidates: ["撤退命令"],
+                  reasons: ["title"],
+                } as const);
         useChronicleExtractionStore
           .getState()
-          .reviseProposalFields(args.proposalId, "rev-native-2", args.patch);
+          .reviseProposalFields(
+            args.proposalId,
+            "rev-native-2",
+            "sha256:review-revision-envelope",
+            match,
+            args.patch,
+          );
       },
     );
     bulkMock.mockImplementation(async () => {
@@ -237,6 +261,33 @@ describe("ChronicleProposalReview", () => {
       ).toBe("approved");
     });
     expect(bulkMock).toHaveBeenCalled();
+  });
+
+  it("publishes decision persistence as a shared Apply interlock", async () => {
+    let resolveDecision!: () => void;
+    decideMock.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveDecision = resolve;
+      }),
+    );
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal()]));
+    render(<ChronicleProposalReview />);
+
+    fireEvent.click(screen.getByRole("button", { name: "承認" }));
+    await waitFor(() =>
+      expect(useChronicleExtractionStore.getState().reviewMutationCount).toBe(
+        1,
+      ),
+    );
+    expect(screen.getByRole("button", { name: "拒否" })).toBeDisabled();
+
+    await act(async () => {
+      resolveDecision();
+      await Promise.resolve();
+    });
+    expect(useChronicleExtractionStore.getState().reviewMutationCount).toBe(0);
   });
 
   it("shows already-satisfied as completed / not applicable", () => {
@@ -355,7 +406,7 @@ describe("ChronicleProposalReview", () => {
     });
   });
 
-  it("editing title requires re-approval via Native revision", async () => {
+  it("restores ordinary review controls after an exact sealed-title revert", async () => {
     useChronicleExtractionStore
       .getState()
       .setProjection(projection([proposal({ status: "approved" })]));
@@ -373,6 +424,49 @@ describe("ChronicleProposalReview", () => {
       useChronicleExtractionStore.getState().projection?.proposals[0];
     expect(updated?.status).toBe("unreviewed");
     expect(updated?.revisionId).toBe("rev-native-2");
-    expect(reviseMock).toHaveBeenCalled();
+    expect(updated?.match).toEqual({
+      status: "probable-duplicate",
+      candidates: ["撤退命令"],
+      reasons: ["title"],
+    });
+    expect(
+      screen.queryByRole("button", { name: "承認" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "同じものとしてスキップ" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "別Eventとして作成" }),
+    ).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "別Eventとして作成" }));
+    await waitFor(() => {
+      expect(
+        useChronicleExtractionStore.getState().projection?.proposals[0]
+          ?.probableDuplicateChoice,
+      ).toBe("create-as-new");
+    });
+
+    const revertedInput = screen.getByTestId("chronicle-proposal-title-input");
+    fireEvent.change(revertedInput, {
+      target: { value: "教会への砲撃" },
+    });
+    fireEvent.blur(revertedInput);
+    await waitFor(() => {
+      expect(
+        useChronicleExtractionStore.getState().projection?.proposals[0]
+          ?.displayTitle,
+      ).toBe("教会への砲撃");
+    });
+    const reverted =
+      useChronicleExtractionStore.getState().projection?.proposals[0];
+    expect(reverted?.status).toBe("unreviewed");
+    expect(reverted?.match).toEqual({ status: "none" });
+    expect(reverted?.probableDuplicateChoice).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "別Eventとして作成" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "承認" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "拒否" })).toBeEnabled();
+    expect(reviseMock).toHaveBeenCalledTimes(2);
   });
 });

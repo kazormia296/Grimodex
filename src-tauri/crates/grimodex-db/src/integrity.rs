@@ -9,6 +9,7 @@ use crate::agent_writes::{
     canonical_payload_with_authority_context, validate_renderer_authority_context,
     RendererCanonicalWriteContext, RendererMutationProvenance,
 };
+use crate::canonical_feed_snapshots::{canonical_codex_entry_snapshot, canonical_snippet_snapshot};
 use crate::change_events::AppendChangeEvent;
 use crate::idempotency::{
     canonical_write_payload_fingerprint, insert_idempotent_response, load_idempotent_response,
@@ -57,17 +58,14 @@ pub struct RepairIntegrityReport {
 struct CodexRepairTarget {
     id: String,
     version: i64,
-    source_chat_message_id: String,
-    updated_at: String,
+    before_snapshot: Value,
 }
 
 #[derive(Clone, Debug)]
 struct SnippetRepairTarget {
     id: String,
     version: i64,
-    source_chat_message_id: Option<String>,
-    scene_id: Option<String>,
-    updated_at: String,
+    before_snapshot: Value,
     repair_source: bool,
     repair_scene: bool,
 }
@@ -116,7 +114,7 @@ fn codex_targets(
     project_id: &str,
 ) -> anyhow::Result<Vec<CodexRepairTarget>> {
     let mut statement = conn.prepare(
-        "SELECT entry.id, entry.version, entry.source_chat_message_id, entry.updated_at
+        "SELECT entry.id, entry.version
            FROM codex_entries entry
           WHERE entry.project_id = ?1
             AND entry.source_chat_message_id IS NOT NULL
@@ -129,16 +127,20 @@ fn codex_targets(
             )
           ORDER BY entry.id",
     )?;
-    let rows = statement.query_map([project_id], |row| {
-        Ok(CodexRepairTarget {
-            id: row.get(0)?,
-            version: row.get(1)?,
-            source_chat_message_id: row.get(2)?,
-            updated_at: row.get(3)?,
+    let rows = statement
+        .query_map([project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|(id, version)| {
+            Ok(CodexRepairTarget {
+                before_snapshot: canonical_codex_entry_snapshot(conn, project_id, &id)?,
+                id,
+                version,
+            })
         })
-    })?;
-    let targets = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(targets)
+        .collect()
 }
 
 fn snippet_targets(
@@ -148,9 +150,6 @@ fn snippet_targets(
     let mut statement = conn.prepare(
         "SELECT snippet.id,
                 snippet.version,
-                snippet.source_chat_message_id,
-                snippet.scene_id,
-                snippet.updated_at,
                 CASE WHEN snippet.source_chat_message_id IS NOT NULL
                        AND NOT EXISTS (
                            SELECT 1
@@ -188,19 +187,27 @@ fn snippet_targets(
             )
           ORDER BY snippet.id",
     )?;
-    let rows = statement.query_map([project_id], |row| {
-        Ok(SnippetRepairTarget {
-            id: row.get(0)?,
-            version: row.get(1)?,
-            source_chat_message_id: row.get(2)?,
-            scene_id: row.get(3)?,
-            updated_at: row.get(4)?,
-            repair_source: row.get::<_, i64>(5)? != 0,
-            repair_scene: row.get::<_, i64>(6)? != 0,
+    let rows = statement
+        .query_map([project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)? != 0,
+                row.get::<_, i64>(3)? != 0,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|(id, version, repair_source, repair_scene)| {
+            Ok(SnippetRepairTarget {
+                before_snapshot: canonical_snippet_snapshot(conn, project_id, &id)?,
+                id,
+                version,
+                repair_source,
+                repair_scene,
+            })
         })
-    })?;
-    let targets = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(targets)
+        .collect()
 }
 
 impl Database {
@@ -410,18 +417,11 @@ impl Database {
                         })),
                     });
                     for target in &codex {
-                        let before = json!({
-                            "id": target.id.clone(),
-                            "sourceChatMessageId": target.source_chat_message_id.clone(),
-                            "updatedAt": target.updated_at.clone(),
-                            "version": target.version,
-                        });
-                        let after = json!({
-                            "id": target.id.clone(),
-                            "sourceChatMessageId": Value::Null,
-                            "updatedAt": payload.occurred_at.clone(),
-                            "version": target.version + 1,
-                        });
+                        let after = canonical_codex_entry_snapshot(
+                            conn,
+                            &payload.project_id,
+                            &target.id,
+                        )?;
                         events.push(NarrativeChangeEventInput {
                             object_key: json!({
                                 "kind": "codex-entry",
@@ -430,7 +430,7 @@ impl Database {
                             change_kind: "association".to_string(),
                             mutation_kind: "update".to_string(),
                             before_version: Some(target.version),
-                            before_digest: Some(narrative_snapshot_digest(&before)?),
+                            before_digest: Some(narrative_snapshot_digest(&target.before_snapshot)?),
                             after_version: Some(target.version + 1),
                             after_digest: Some(narrative_snapshot_digest(&after)?),
                             changed_paths: vec!["/sourceChatMessageId".to_string()],
@@ -448,32 +448,11 @@ impl Database {
                         if target.repair_source {
                             changed_paths.push("/sourceChatMessageId".to_string());
                         }
-                        let before = json!({
-                            "id": target.id.clone(),
-                            "sceneId": target.scene_id.clone(),
-                            "sourceChatMessageId": target.source_chat_message_id.clone(),
-                            "updatedAt": target.updated_at.clone(),
-                            "version": target.version,
-                        });
-                        let after = json!({
-                            "id": target.id.clone(),
-                            "sceneId": if target.repair_scene {
-                                Value::Null
-                            } else {
-                                target.scene_id.clone().map(Value::String).unwrap_or(Value::Null)
-                            },
-                            "sourceChatMessageId": if target.repair_source {
-                                Value::Null
-                            } else {
-                                target
-                                    .source_chat_message_id
-                                    .clone()
-                                    .map(Value::String)
-                                    .unwrap_or(Value::Null)
-                            },
-                            "updatedAt": payload.occurred_at.clone(),
-                            "version": target.version + 1,
-                        });
+                        let after = canonical_snippet_snapshot(
+                            conn,
+                            &payload.project_id,
+                            &target.id,
+                        )?;
                         events.push(NarrativeChangeEventInput {
                             object_key: json!({
                                 "kind": "component",
@@ -482,7 +461,7 @@ impl Database {
                             change_kind: "association".to_string(),
                             mutation_kind: "update".to_string(),
                             before_version: Some(target.version),
-                            before_digest: Some(narrative_snapshot_digest(&before)?),
+                            before_digest: Some(narrative_snapshot_digest(&target.before_snapshot)?),
                             after_version: Some(target.version + 1),
                             after_digest: Some(narrative_snapshot_digest(&after)?),
                             changed_paths: changed_paths.clone(),

@@ -435,6 +435,7 @@ export interface NapiBackendLike {
   codexRenameUndo?(payload: unknown): Promise<string>;
   codexRenameApply?(payload: unknown): Promise<string>;
   scanStagingProjectCreate?(payload: unknown): Promise<void>;
+  scanStagingProjectPublish?(payload: unknown): Promise<string>;
   projectCreate?(payload: unknown): Promise<string>;
   projectPatch?(payload: unknown): Promise<string>;
   projectDelete?(payload: unknown): Promise<void>;
@@ -507,6 +508,44 @@ export interface NapiBackendLike {
     projectId: string,
     sessionId: string,
     events: unknown,
+  ): Promise<string>;
+  /** Optional so a stale native binding reports an explicit version-skew error. */
+  timelapseGenesisBaselinesAppend?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    kind: string,
+    entityIds: string[],
+    anchorTimestamp: number,
+  ): Promise<string>;
+  /** Renderer body rebaseline: identities only; Native reads trusted bodies. */
+  timelapseBodyBaselinesAppend?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    targets: unknown,
+    expectedAnchorSequence: number | null,
+  ): Promise<string>;
+  /**
+   * Logically reset one project: canonical change_events/hash chain remain,
+   * project state_snapshots are deleted, and Native advances the trusted
+   * resetSequence cutoff. The result contains the logical hidden-event count
+   * and deleted-snapshot count.
+   */
+  timelapseHistoryPurge?(
+    expectedWorkspacePath: string,
+    projectId: string,
+  ): Promise<string>;
+  /** Set timelapse.enabled under the exact workspace binding. */
+  timelapseEnabledSet?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    enabled: boolean,
+  ): Promise<string>;
+  /** Fixed layout/workspace/workspace snapshot scope. */
+  timelapseLayoutSnapshotRecord?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    payload: unknown,
+    expectedAnchorSequence: number | null,
   ): Promise<string>;
   aiAuditAppendBatch(
     expectedWorkspacePath: string,
@@ -756,14 +795,44 @@ export interface NapiBackendLike {
   treeNodeDelete(payload: unknown): Promise<string>;
   treeNodePatch(payload: unknown): Promise<string>;
   temporalScenePatch(payload: unknown): Promise<string>;
-  narrativeExtractionCreateRun(payload: unknown): Promise<string>;
+  narrativeExtractionCaptureWorkspaceBinding?(
+    expectedWorkspacePath: string,
+  ): Promise<string>;
+  narrativeExtractionCreateRun(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
   narrativeExtractionGetRun(payload: unknown): Promise<string>;
   narrativeExtractionListResumableRuns(payload: unknown): Promise<string>;
-  narrativeExtractionCancelRun(payload: unknown): Promise<string>;
-  narrativeExtractionClaimTask(payload: unknown): Promise<string>;
-  narrativeExtractionFinishTask(payload: unknown): Promise<string>;
-  narrativeExtractionFailTask(payload: unknown): Promise<string>;
-  narrativeExtractionSaveProposalSet(payload: unknown): Promise<string>;
+  narrativeExtractionIsRunResumableForReview?(
+    payload: unknown,
+  ): Promise<string>;
+  narrativeExtractionListChronicleTaskResumeCandidates?(
+    payload: unknown,
+  ): Promise<string>;
+  narrativeExtractionCancelRun(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  narrativeExtractionClaimTask(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  narrativeExtractionFinishTask(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  narrativeExtractionFailTask(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  narrativeExtractionSaveProposalSet(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  narrativeExtractionCreateHumanDerivedRevision(
+    payload: unknown,
+  ): Promise<string>;
   narrativeExtractionGetRunReviewBundle(payload: unknown): Promise<string>;
   narrativeExtractionAppendRevision(payload: unknown): Promise<string>;
   narrativeExtractionAppendDecision(payload: unknown): Promise<string>;
@@ -825,6 +894,12 @@ export interface NapiBackendLike {
   // renderer command ではなく、Change Feed を駆動する Electron main
   // scheduler 専用。1回につきNative側の有界batchを最大1件処理する。
   runNarrativeFreshnessCycle?(): Promise<string | null>;
+  // main-only enqueue snapshot for the serialized system-work seam. This is
+  // synchronous so a request can be bound before it enters the pending queue.
+  getNarrativeMaintenanceWorkspaceBinding?(): string | null;
+  // renderer/preload には公開しない serialized system-work seam。入力は
+  // Electron main scheduler が coalesce 済みの project-scoped work DTO。
+  runNarrativeMaintenanceCycle?(payload: unknown): Promise<string>;
   // post_effect run 系（Phase 3d）。settings は dispatch が1回だけ読んだ
   // AiSettings snapshot。API key は未登録時 null、safeStorage lookup 自体が
   // 失敗した場合は apiKeyError に生メッセージを載せる。native は cache hit なら
@@ -991,6 +1066,145 @@ function requireRecord(
     );
   }
   return value as CommandArgs;
+}
+
+function requireChronicleTaskResumeCandidatesPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_extraction_list_chronicle_task_resume_candidates";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId", "limit"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const projectId = requireNonEmptyString(payload, "projectId", command);
+  if (projectId.trim().length === 0 || projectId.trim() !== projectId) {
+    throw new Error(
+      `invalid args \`projectId\` for command \`${command}\`: expected a non-empty exact string`,
+    );
+  }
+  if (!Object.hasOwn(payload, "limit") || payload.limit === undefined) {
+    return { projectId };
+  }
+  const limit = requireSafeInteger(payload, "limit", command);
+  if (limit < 1 || limit > 100) {
+    throw new Error(
+      `invalid args \`limit\` for command \`${command}\`: expected an integer from 1 through 100`,
+    );
+  }
+  return { projectId, limit };
+}
+
+function requireReviewResumabilityPayload(args: CommandArgs): CommandArgs {
+  const command = "narrative_extraction_is_run_resumable_for_review";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["runId", "projectId", "surfacePathId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const exactString = (key: "runId" | "projectId" | "surfacePathId") => {
+    const value = requireNonEmptyString(payload, key, command);
+    if (value.trim().length === 0 || value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a non-empty exact string`,
+      );
+    }
+    return value;
+  };
+  return {
+    runId: exactString("runId"),
+    projectId: exactString("projectId"),
+    surfacePathId: exactString("surfacePathId"),
+  };
+}
+
+function requireNarrativeExtractionWorkspaceBinding(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const binding = requireRecord(args, "workspaceBinding", command);
+  const keys = Object.keys(binding);
+  if (
+    keys.length !== 3 ||
+    !Object.hasOwn(binding, "authorityId") ||
+    !Object.hasOwn(binding, "generation") ||
+    !Object.hasOwn(binding, "authorityInstanceId")
+  ) {
+    throw new Error(
+      `invalid args \`workspaceBinding\` for command \`${command}\`: expected exact authorityId/generation/authorityInstanceId binding`,
+    );
+  }
+  const authorityId = requireNonEmptyString(binding, "authorityId", command);
+  if (authorityId.trim() !== authorityId) {
+    throw new Error(
+      `invalid args \`authorityId\` for command \`${command}\`: expected a non-empty exact string`,
+    );
+  }
+  const generation = requireSafeInteger(binding, "generation", command);
+  if (generation < 1) {
+    throw new Error(
+      `invalid args \`generation\` for command \`${command}\`: expected a positive safe integer`,
+    );
+  }
+  const authorityInstanceId = requireNonEmptyString(
+    binding,
+    "authorityInstanceId",
+    command,
+  );
+  if (!/^[1-9][0-9]*$/u.test(authorityInstanceId)) {
+    throw new Error(
+      `invalid args \`authorityInstanceId\` for command \`${command}\`: expected a canonical positive decimal integer`,
+    );
+  }
+  return { authorityId, generation, authorityInstanceId };
+}
+
+function requireNarrativeExtractionBoundMutation(
+  args: CommandArgs,
+  command: string,
+): readonly [unknown, CommandArgs] {
+  if (
+    Object.keys(args).some(
+      (key) => key !== "payload" && key !== "workspaceBinding",
+    )
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: unknown top-level field`,
+    );
+  }
+  return [
+    requirePresent(args, "payload", command),
+    requireNarrativeExtractionWorkspaceBinding(args, command),
+  ];
+}
+
+function requireNarrativeExtractionCaptureWorkspacePath(
+  args: CommandArgs,
+): string {
+  const command = "narrative_extraction_capture_workspace_binding";
+  if (
+    Object.keys(args).length !== 1 ||
+    !Object.hasOwn(args, "expectedWorkspacePath")
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected only expectedWorkspacePath`,
+    );
+  }
+  const path = requireNonEmptyString(args, "expectedWorkspacePath", command);
+  if (path.trim() !== path) {
+    throw new Error(
+      `invalid args \`expectedWorkspacePath\` for command \`${command}\`: expected a non-empty exact string`,
+    );
+  }
+  return path;
 }
 
 function requireTrashBinRestorePayload(args: CommandArgs): CommandArgs {
@@ -1697,6 +1911,344 @@ function requireSafeInteger(
     );
   }
   return value;
+}
+
+function requireTimelapseGenesisBaselinesAppendArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+  kind: "scene" | "codex" | "snippet";
+  entityIds: string[];
+  anchorTimestamp: number;
+} {
+  const command = "timelapse_genesis_baselines_append";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "kind",
+    "entityIds",
+    "anchorTimestamp",
+  ]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId, kind, entityIds, anchorTimestamp`,
+    );
+  }
+
+  const exactBoundedString = (key: string, maxLength: number): string => {
+    const value = requireNonEmptyString(args, key, command);
+    if (value !== value.trim() || value.length > maxLength) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact non-empty string of at most ${maxLength} characters`,
+      );
+    }
+    return value;
+  };
+  const expectedWorkspacePath = exactBoundedString(
+    "expectedWorkspacePath",
+    16_384,
+  );
+  const projectId = exactBoundedString("projectId", 512);
+  const kindValue = requireString(args, "kind", command);
+  if (
+    kindValue !== "scene" &&
+    kindValue !== "codex" &&
+    kindValue !== "snippet"
+  ) {
+    throw new Error(
+      `invalid args \`kind\` for command \`${command}\`: expected scene, codex, or snippet`,
+    );
+  }
+  const rawEntityIds = requireArray(args, "entityIds", command);
+  if (rawEntityIds.length < 1 || rawEntityIds.length > 64) {
+    throw new Error(
+      `invalid args \`entityIds\` for command \`${command}\`: expected 1..64 items`,
+    );
+  }
+  const entityIds = rawEntityIds.map((value, index) => {
+    if (
+      typeof value !== "string" ||
+      value.length === 0 ||
+      value !== value.trim() ||
+      value.length > 512
+    ) {
+      throw new Error(
+        `invalid args \`entityIds[${index}]\` for command \`${command}\`: expected an exact non-empty string of at most 512 characters`,
+      );
+    }
+    return value;
+  });
+  if (new Set(entityIds).size !== entityIds.length) {
+    throw new Error(
+      `invalid args \`entityIds\` for command \`${command}\`: duplicate ids are not allowed`,
+    );
+  }
+  const anchorTimestamp = requireSafeInteger(args, "anchorTimestamp", command);
+  if (anchorTimestamp < 0) {
+    throw new Error(
+      `invalid args \`anchorTimestamp\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    kind: kindValue,
+    entityIds,
+    anchorTimestamp,
+  };
+}
+
+function requireTimelapseBodyBaselinesAppendArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+  targets: Array<{ kind: "scene" | "codex" | "snippet"; id: string }>;
+  expectedAnchorSequence: number | null;
+} {
+  const command = "timelapse_body_baselines_append";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "targets",
+    "expectedAnchorSequence",
+  ]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId, targets, expectedAnchorSequence`,
+    );
+  }
+  const exactBoundedString = (key: string, maxLength: number): string => {
+    const value = requireNonEmptyString(args, key, command);
+    if (value !== value.trim() || value.length > maxLength) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact non-empty string of at most ${maxLength} characters`,
+      );
+    }
+    return value;
+  };
+  const expectedWorkspacePath = exactBoundedString(
+    "expectedWorkspacePath",
+    16_384,
+  );
+  const projectId = exactBoundedString("projectId", 512);
+  const rawTargets = requireArray(args, "targets", command);
+  if (rawTargets.length < 1 || rawTargets.length > 64) {
+    throw new Error(
+      `invalid args \`targets\` for command \`${command}\`: expected 1..64 items`,
+    );
+  }
+  const seen = new Set<string>();
+  const targets = rawTargets.map((value, index) => {
+    const key = `targets[${index}]`;
+    const target = requireRecord({ value }, "value", command);
+    const targetKeys = Object.keys(target);
+    if (
+      targetKeys.length !== 2 ||
+      !Object.hasOwn(target, "kind") ||
+      !Object.hasOwn(target, "id")
+    ) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected exactly kind and id`,
+      );
+    }
+    const kind = requireString(target, "kind", command);
+    if (kind !== "scene" && kind !== "codex" && kind !== "snippet") {
+      throw new Error(
+        `invalid args \`${key}.kind\` for command \`${command}\`: expected scene, codex, or snippet`,
+      );
+    }
+    const id = requireNonEmptyString(target, "id", command);
+    if (id !== id.trim() || id.length > 512) {
+      throw new Error(
+        `invalid args \`${key}.id\` for command \`${command}\`: expected an exact non-empty string of at most 512 characters`,
+      );
+    }
+    const identity = `${kind}\u0000${id}`;
+    if (seen.has(identity)) {
+      throw new Error(
+        `invalid args \`targets\` for command \`${command}\`: duplicate identities are not allowed`,
+      );
+    }
+    seen.add(identity);
+    return {
+      kind: kind as "scene" | "codex" | "snippet",
+      id,
+    };
+  });
+  const rawAnchor = requirePresent(args, "expectedAnchorSequence", command);
+  if (
+    rawAnchor !== null &&
+    (typeof rawAnchor !== "number" ||
+      !Number.isSafeInteger(rawAnchor) ||
+      rawAnchor < 0)
+  ) {
+    throw new Error(
+      `invalid args \`expectedAnchorSequence\` for command \`${command}\`: expected a non-negative safe integer or null`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    targets,
+    expectedAnchorSequence: rawAnchor as number | null,
+  };
+}
+
+function requireTimelapseHistoryPurgeArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+} {
+  const command = "timelapse_history_purge";
+  const allowedKeys = new Set(["expectedWorkspacePath", "projectId"]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId`,
+    );
+  }
+  const expectedWorkspacePath = requireNonEmptyString(
+    args,
+    "expectedWorkspacePath",
+    command,
+  );
+  const projectId = requireNonEmptyString(args, "projectId", command);
+  if (
+    expectedWorkspacePath.trim() !== expectedWorkspacePath ||
+    expectedWorkspacePath.length > 16_384 ||
+    projectId.trim() !== projectId ||
+    projectId.length > 512
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: workspacePath and projectId must be exact bounded strings`,
+    );
+  }
+  return { expectedWorkspacePath, projectId };
+}
+
+function requireTimelapseEnabledSetArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+  enabled: boolean;
+} {
+  const command = "timelapse_enabled_set";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "enabled",
+  ]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId, enabled`,
+    );
+  }
+  const expectedWorkspacePath = requireNonEmptyString(
+    args,
+    "expectedWorkspacePath",
+    command,
+  );
+  const projectId = requireNonEmptyString(args, "projectId", command);
+  if (
+    expectedWorkspacePath.trim() !== expectedWorkspacePath ||
+    expectedWorkspacePath.length > 16_384 ||
+    projectId.trim() !== projectId ||
+    projectId.length > 512
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: workspacePath and projectId must be exact bounded strings`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    enabled: requireBoolean(args, "enabled", command),
+  };
+}
+
+function requireTimelapseLayoutSnapshotRecordArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+  payload: CommandArgs;
+  expectedAnchorSequence: number | null;
+} {
+  const command = "timelapse_layout_snapshot_record";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "payload",
+    "expectedAnchorSequence",
+  ]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId, payload, expectedAnchorSequence`,
+    );
+  }
+  const expectedWorkspacePath = requireNonEmptyString(
+    args,
+    "expectedWorkspacePath",
+    command,
+  );
+  const projectId = requireNonEmptyString(args, "projectId", command);
+  if (
+    expectedWorkspacePath.trim() !== expectedWorkspacePath ||
+    expectedWorkspacePath.length > 16_384 ||
+    projectId.trim() !== projectId ||
+    projectId.length > 512
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: workspacePath and projectId must be exact bounded strings`,
+    );
+  }
+  const payload = requireRecord(args, "payload", command);
+  const payloadKeys = new Set(["layout", "activePresetId", "hiddenStripePanels"]);
+  if (
+    !Object.hasOwn(payload, "layout") ||
+    Object.keys(payload).some((key) => !payloadKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args \`payload\` for command \`${command}\`: expected layout plus optional activePresetId/hiddenStripePanels`,
+    );
+  }
+  requireRecord(payload, "layout", command);
+  if (Object.hasOwn(payload, "activePresetId")) {
+    nullableString(payload, "activePresetId", command);
+  }
+  if (Object.hasOwn(payload, "hiddenStripePanels")) {
+    const panels = requireArray(payload, "hiddenStripePanels", command);
+    if (panels.length > 128 || panels.some((panel) => typeof panel !== "string")) {
+      throw new Error(
+        `invalid args \`payload.hiddenStripePanels\` for command \`${command}\`: expected at most 128 strings`,
+      );
+    }
+  }
+  const rawAnchor = requirePresent(args, "expectedAnchorSequence", command);
+  if (
+    rawAnchor !== null &&
+    (typeof rawAnchor !== "number" ||
+      !Number.isSafeInteger(rawAnchor) ||
+      rawAnchor < 0)
+  ) {
+    throw new Error(
+      `invalid args \`expectedAnchorSequence\` for command \`${command}\`: expected a non-negative safe integer or null`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    payload,
+    expectedAnchorSequence: rawAnchor as number | null,
+  };
 }
 
 /** OCC トークンや件数など「0 以上の整数」必須フィールド用。 */
@@ -2770,8 +3322,64 @@ function requireSnippetWriterPayload(
     for (const key of fields) {
       if (Object.hasOwn(payload, key)) requireString(payload, key, command);
     }
+    requireTimelapseDocStepCoverage(payload, command);
   }
   return payload;
+}
+
+function requireTimelapseDocStepCoverage(
+  payload: CommandArgs,
+  command:
+    | "codex_update"
+    | "snippet_update"
+    | "save_scene_body_bundle"
+    | "tree_node_patch",
+): void {
+  if (!Object.hasOwn(payload, "timelapseDocStepCoverage")) return;
+  const contentPayload =
+    command === "tree_node_patch"
+      ? requireRecord(payload, "patch", command)
+      : payload;
+  const contentKey =
+    command === "save_scene_body_bundle" ? "contentJson" : "content";
+  if (!Object.hasOwn(contentPayload, contentKey)) {
+    throw new Error(
+      `invalid args \`timelapseDocStepCoverage\` for command \`${command}\`: coverage requires content`,
+    );
+  }
+  requireString(contentPayload, contentKey, command);
+  if (
+    command === "save_scene_body_bundle" &&
+    Object.hasOwn(payload, "timelapseSteps")
+  ) {
+    throw new Error(
+      `invalid args \`timelapseDocStepCoverage\` for command \`${command}\`: coverage cannot be combined with timelapseSteps`,
+    );
+  }
+  const proof = requireRecord(payload, "timelapseDocStepCoverage", command);
+  const expectedKeys = new Set(["eventUid", "sessionId", "contentDigest"]);
+  const proofKeys = Object.keys(proof);
+  if (
+    proofKeys.length !== expectedKeys.size ||
+    proofKeys.some((key) => !expectedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args \`timelapseDocStepCoverage\` for command \`${command}\`: expected exactly eventUid, sessionId, and contentDigest`,
+    );
+  }
+  for (const key of ["eventUid", "sessionId"] as const) {
+    if (requireNonEmptyString(proof, key, command).trim().length === 0) {
+      throw new Error(
+        `invalid args \`timelapseDocStepCoverage.${key}\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  }
+  const contentDigest = requireString(proof, "contentDigest", command);
+  if (!/^sha256:[0-9a-f]{64}$/.test(contentDigest)) {
+    throw new Error(
+      `invalid args \`timelapseDocStepCoverage.contentDigest\` for command \`${command}\`: expected a lowercase sha256 digest`,
+    );
+  }
 }
 
 function requireAuthorshipReplaceLanePayload(args: CommandArgs): CommandArgs {
@@ -3000,6 +3608,21 @@ function requireScanStagingProjectCreatePayload(
   if (language !== "ja" && language !== "en") {
     throw new Error(
       `invalid args \`language\` for command \`${command}\`: expected ja or en`,
+    );
+  }
+  return payload;
+}
+
+function requireScanStagingProjectPublishPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "scan_staging_project_publish";
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "import-apply",
+  ]);
+  if (payload.origin !== "import") {
+    throw new Error(
+      `invalid args \`origin\` for command \`${command}\`: Scan publication is import-only`,
     );
   }
   return payload;
@@ -3299,7 +3922,8 @@ function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "nodeId", command);
   requireNonEmptyString(payload, "updatedAt", command);
-  requireRecord(payload, "patch", command);
+  const patch = requireRecord(payload, "patch", command);
+  requireTimelapseDocStepCoverage(payload, command);
   requireBoolean(payload, "bumpVersion", command);
   if (Object.hasOwn(payload, "baseVersion")) {
     const baseVersion = requireSafeInteger(payload, "baseVersion", command);
@@ -3335,7 +3959,6 @@ function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
         `invalid args \`changeEvent\` for command \`${command}\`: expected versioned OCC`,
       );
     }
-    const patch = requireRecord(payload, "patch", command);
     if (
       !Object.hasOwn(patch, "content") ||
       Object.keys(patch).some((key) => key !== "content" && key !== "charCount")
@@ -4281,6 +4904,35 @@ function requireArray(args: CommandArgs, key: string, cmd: string): unknown[] {
   return value;
 }
 
+/**
+ * `timelapse-internal/doc.step.coverage` is a Native-owned proof row. The
+ * renderer-facing batch command must never be an authority for that row: a
+ * forged proof can otherwise make the body writer skip its full snapshot.
+ * Keep the ordinary batch shape deliberately compatible and only reject the
+ * reserved pair here; the Native/Tauri implementations repeat this guard.
+ */
+function requirePublicTimelapseAppendEvents(
+  args: CommandArgs,
+  command: string,
+): unknown[] {
+  const events = requireArray(args, "events", command);
+  for (const [index, event] of events.entries()) {
+    if (typeof event !== "object" || event === null || Array.isArray(event)) {
+      continue;
+    }
+    const row = event as CommandArgs;
+    if (
+      row.domain === "timelapse-internal" &&
+      row.opType === "doc.step.coverage"
+    ) {
+      throw new Error(
+        `TIMELAPSE_COVERAGE_RESERVED: invalid args \`events[${index}]\` for command \`${command}\`: Native-owned timelapse coverage is not accepted by the public append batch`,
+      );
+    }
+  }
+  return events;
+}
+
 function requireSemanticRerankerShadowRequest(args: CommandArgs): CommandArgs {
   const command = "semantic_reranker_shadow_score";
   const allowedRequestKeys = new Set([
@@ -4489,6 +5141,7 @@ function requireSceneBodyBundlePayload(args: CommandArgs): CommandArgs {
     );
   }
   requireString(payload, "contentJson", command);
+  requireTimelapseDocStepCoverage(payload, command);
   requireString(payload, "unplacedBeatsDoc", command);
   for (const key of ["charCount", "docContentSize"] as const) {
     const value = requireNumber(payload, key, command);
@@ -5951,6 +6604,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
+  scan_staging_project_publish: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.scanStagingProjectPublish,
+          "scanStagingProjectPublish",
+        )(requireScanStagingProjectPublishPayload(a)),
+      ),
+  },
   project_create: {
     run: async (b, a) =>
       parseWire(
@@ -6254,9 +6917,85 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         await b.timelapseAppendBatch(
           requireString(a, "projectId", "timelapse_append_batch"),
           requireString(a, "sessionId", "timelapse_append_batch"),
-          requirePresent(a, "events", "timelapse_append_batch"),
+          requirePublicTimelapseAppendEvents(a, "timelapse_append_batch"),
         ),
       ),
+  },
+  timelapse_genesis_baselines_append: {
+    run: async (b, a) => {
+      const input = requireTimelapseGenesisBaselinesAppendArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseGenesisBaselinesAppend,
+          "timelapseGenesisBaselinesAppend",
+        )(
+          input.expectedWorkspacePath,
+          input.projectId,
+          input.kind,
+          input.entityIds,
+          input.anchorTimestamp,
+        ),
+      );
+    },
+  },
+  timelapse_body_baselines_append: {
+    run: async (b, a) => {
+      const input = requireTimelapseBodyBaselinesAppendArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseBodyBaselinesAppend,
+          "timelapseBodyBaselinesAppend",
+        )(
+          input.expectedWorkspacePath,
+          input.projectId,
+          input.targets,
+          input.expectedAnchorSequence,
+        ),
+      );
+    },
+  },
+  timelapse_history_purge: {
+    run: async (b, a) => {
+      const input = requireTimelapseHistoryPurgeArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseHistoryPurge,
+          "timelapseHistoryPurge",
+        )(input.expectedWorkspacePath, input.projectId),
+      );
+    },
+  },
+  timelapse_enabled_set: {
+    run: async (b, a) => {
+      const input = requireTimelapseEnabledSetArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseEnabledSet,
+          "timelapseEnabledSet",
+        )(input.expectedWorkspacePath, input.projectId, input.enabled),
+      );
+    },
+  },
+  timelapse_layout_snapshot_record: {
+    run: async (b, a) => {
+      const input = requireTimelapseLayoutSnapshotRecordArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseLayoutSnapshotRecord,
+          "timelapseLayoutSnapshotRecord",
+        )(
+          input.expectedWorkspacePath,
+          input.projectId,
+          input.payload,
+          input.expectedAnchorSequence,
+        ),
+      );
+    },
   },
   ai_audit_append_batch: {
     run: async (b, a) =>
@@ -7209,21 +7948,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   codex_update: {
-    run: async (b, a) =>
-      parseWire(
-        await requireNapiMethod(
-          b,
-          b.codexUpdate,
-          "codexUpdate",
-        )(
-          requireCanonicalWriterIdentity(a, "codex_update", [
-            "human-direct",
-            "import-apply",
-            "history-replay",
-            "restore-or-migration",
-          ]),
-        ),
-      ),
+    run: async (b, a) => {
+      const payload = requireCanonicalWriterIdentity(a, "codex_update", [
+        "human-direct",
+        "import-apply",
+        "history-replay",
+        "restore-or-migration",
+      ]);
+      requireTimelapseDocStepCoverage(payload, "codex_update");
+      return parseWire(
+        await requireNapiMethod(b, b.codexUpdate, "codexUpdate")(payload),
+      );
+    },
   },
   codex_delete: {
     run: async (b, a) =>
@@ -7586,13 +8322,27 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
-  narrative_extraction_create_run: {
+  narrative_extraction_capture_workspace_binding: {
     run: async (b, a) =>
       parseWire(
-        await b.narrativeExtractionCreateRun(
-          requirePresent(a, "payload", "narrative_extraction_create_run"),
-        ),
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionCaptureWorkspaceBinding,
+          "narrativeExtractionCaptureWorkspaceBinding",
+        )(requireNarrativeExtractionCaptureWorkspacePath(a)),
       ),
+  },
+  narrative_extraction_create_run: {
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNarrativeExtractionBoundMutation(
+          a,
+          "narrative_extraction_create_run",
+        );
+      return parseWire(
+        await b.narrativeExtractionCreateRun(payload, workspaceBinding),
+      );
+    },
   },
   narrative_extraction_get_run: {
     run: async (b, a) =>
@@ -7614,46 +8364,98 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
-  narrative_extraction_cancel_run: {
+  narrative_extraction_is_run_resumable_for_review: {
     run: async (b, a) =>
       parseWire(
-        await b.narrativeExtractionCancelRun(
-          requirePresent(a, "payload", "narrative_extraction_cancel_run"),
-        ),
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionIsRunResumableForReview,
+          "narrativeExtractionIsRunResumableForReview",
+        )(requireReviewResumabilityPayload(a)),
       ),
+  },
+  narrative_extraction_list_chronicle_task_resume_candidates: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionListChronicleTaskResumeCandidates,
+          "narrativeExtractionListChronicleTaskResumeCandidates",
+        )(requireChronicleTaskResumeCandidatesPayload(a)),
+      ),
+  },
+  narrative_extraction_cancel_run: {
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNarrativeExtractionBoundMutation(
+          a,
+          "narrative_extraction_cancel_run",
+        );
+      return parseWire(
+        await b.narrativeExtractionCancelRun(payload, workspaceBinding),
+      );
+    },
   },
   narrative_extraction_claim_task: {
-    run: async (b, a) =>
-      parseWire(
-        await b.narrativeExtractionClaimTask(
-          requirePresent(a, "payload", "narrative_extraction_claim_task"),
-        ),
-      ),
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNarrativeExtractionBoundMutation(
+          a,
+          "narrative_extraction_claim_task",
+        );
+      return parseWire(
+        await b.narrativeExtractionClaimTask(payload, workspaceBinding),
+      );
+    },
   },
   narrative_extraction_finish_task: {
-    run: async (b, a) =>
-      parseWire(
-        await b.narrativeExtractionFinishTask(
-          requirePresent(a, "payload", "narrative_extraction_finish_task"),
-        ),
-      ),
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNarrativeExtractionBoundMutation(
+          a,
+          "narrative_extraction_finish_task",
+        );
+      return parseWire(
+        await b.narrativeExtractionFinishTask(payload, workspaceBinding),
+      );
+    },
   },
   narrative_extraction_fail_task: {
-    run: async (b, a) =>
-      parseWire(
-        await b.narrativeExtractionFailTask(
-          requirePresent(a, "payload", "narrative_extraction_fail_task"),
-        ),
-      ),
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNarrativeExtractionBoundMutation(
+          a,
+          "narrative_extraction_fail_task",
+        );
+      return parseWire(
+        await b.narrativeExtractionFailTask(payload, workspaceBinding),
+      );
+    },
   },
   narrative_extraction_save_proposal_set: {
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNarrativeExtractionBoundMutation(
+          a,
+          "narrative_extraction_save_proposal_set",
+        );
+      return parseWire(
+        await b.narrativeExtractionSaveProposalSet(payload, workspaceBinding),
+      );
+    },
+  },
+  narrative_extraction_create_human_derived_revision: {
     run: async (b, a) =>
       parseWire(
-        await b.narrativeExtractionSaveProposalSet(
-          requirePresent(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionCreateHumanDerivedRevision,
+          "narrativeExtractionCreateHumanDerivedRevision",
+        )(
+          requireRecord(
             a,
             "payload",
-            "narrative_extraction_save_proposal_set",
+            "narrative_extraction_create_human_derived_revision",
           ),
         ),
       ),
@@ -8086,6 +8888,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         a,
         d,
         "send_chat_message",
+        true,
       );
       return parseWire(await b.sendChatMessage(a, settings, apiKey));
     },
@@ -8106,6 +8909,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         a,
         d,
         "send_chat_message_stream",
+        true,
       );
       await b.sendChatMessageStream(a, settings, apiKey);
       return null;
@@ -8313,17 +9117,84 @@ async function resolveRequiredAiKeyAndSettings(
   args: CommandArgs,
   deps: DispatchDeps,
   cmd: string,
+  validateEndpointOverride = false,
 ): Promise<{ settings: unknown; apiKey: string }> {
   if (!deps.secrets) {
     throw new Error(`IPC_SECRETS_UNAVAILABLE: ${cmd}`);
   }
   const settings = parseWire(await backend.getAiSettings());
+  if (validateEndpointOverride) {
+    assertExplicitOpenaiCompatibleEndpointConfigured(settings, args, cmd);
+  }
   const apiKey = deps.secrets.resolveApiKeyForRequest(
     settings,
     args.provider,
     args.endpointId,
   );
   return { settings, apiKey };
+}
+
+/**
+ * The renderer seals an explicit OpenAI-compatible endpoint before begin and
+ * dispatch. Re-check that identity against the same main-process settings
+ * snapshot before resolving credentials or entering native code; otherwise a
+ * deleted override would be silently retargeted to the active endpoint.
+ * Non-compatible providers intentionally retain the legacy ignored-endpoint
+ * behavior for older callers; the renderer rejects that contradiction.
+ */
+function assertExplicitOpenaiCompatibleEndpointConfigured(
+  settings: unknown,
+  args: CommandArgs,
+  cmd: string,
+): void {
+  const requestedEndpointId = args.endpointId;
+  if (
+    typeof requestedEndpointId !== "string" ||
+    requestedEndpointId.trim().length === 0
+  ) {
+    return;
+  }
+  const settingsRecord =
+    typeof settings === "object" &&
+    settings !== null &&
+    !Array.isArray(settings)
+      ? (settings as Record<string, unknown>)
+      : {};
+  const requestedProvider =
+    typeof args.provider === "string" && args.provider.trim().length > 0
+      ? args.provider
+      : settingsRecord.provider;
+  if (requestedProvider !== "openai-compatible") return;
+
+  const configuredEndpoints = settingsRecord.openaiCompatibleEndpoints;
+  const endpointIsConfigured =
+    Array.isArray(configuredEndpoints) && configuredEndpoints.length > 0
+      ? configuredEndpoints.some(
+          (candidate) =>
+            typeof candidate === "object" &&
+            candidate !== null &&
+            !Array.isArray(candidate) &&
+            (candidate as Record<string, unknown>).id === requestedEndpointId,
+        )
+      : (() => {
+          const legacy = settingsRecord.openaiCompatible;
+          const legacyBaseUrl =
+            typeof legacy === "object" &&
+            legacy !== null &&
+            !Array.isArray(legacy)
+              ? (legacy as Record<string, unknown>).baseUrl
+              : undefined;
+          return (
+            typeof legacyBaseUrl === "string" &&
+            legacyBaseUrl.trim().length > 0 &&
+            requestedEndpointId === "default"
+          );
+        })();
+  if (!endpointIsConfigured) {
+    throw new Error(
+      `invalid args \`endpointId\` for command \`${cmd}\`: OpenAI-compatible endpoint is not configured`,
+    );
+  }
 }
 
 /** 旧 native binding を誤って組み合わせた場合も TypeError ではなく明示的に失敗させる。 */

@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// @ts-expect-error The product-journey harness is JavaScript without a declaration surface.
+import { isMainProcessErrorMessage } from "../scripts/product-journey-harness.mjs";
+
 import {
   canonicalNarrativeMaintenanceWorkKey,
   coalesceNarrativeMaintenanceWork,
   createNarrativeMaintenanceScheduler,
   NARRATIVE_MAINTENANCE_MAX_RETRIES,
+  scheduleNarrativeMaintenanceProcessInterruption,
   type NarrativeMaintenanceCycleResult,
   type NarrativeMaintenanceRequest,
+  type NarrativeMaintenanceSchedulerOptions,
 } from "./narrativeMaintenance.js";
 
 const INITIAL_DELAY_MS = 250;
@@ -35,6 +40,23 @@ function acceptedCycle(hasMore = false): NarrativeMaintenanceCycleResult {
   return { status: "accepted", hasMore };
 }
 
+function acceptedFailureReceiptBackend() {
+  return {
+    recordNarrativeMaintenanceDeliveryFailure: vi.fn().mockResolvedValue({
+      status: "accepted",
+      receiptId: "delivery-failure-test",
+    }),
+  };
+}
+
+function renderedWarnings(warn: ReturnType<typeof vi.fn>): string[] {
+  return warn.mock.calls.map((args) => args.map(String).join(" "));
+}
+
+function hasErrorClassWarning(warn: ReturnType<typeof vi.fn>): boolean {
+  return renderedWarnings(warn).some(isMainProcessErrorMessage);
+}
+
 describe("narrative maintenance scheduler", () => {
   const schedulers: Array<{ dispose(): void }> = [];
 
@@ -49,14 +71,154 @@ describe("narrative maintenance scheduler", () => {
     vi.restoreAllMocks();
   });
 
-  function createScheduler(backend: unknown, warn = vi.fn()) {
+  function createScheduler(
+    backend: unknown,
+    warn = vi.fn(),
+    options: Omit<NarrativeMaintenanceSchedulerOptions, "warn"> = {},
+  ) {
     const scheduler = createNarrativeMaintenanceScheduler(
       backend as Parameters<typeof createNarrativeMaintenanceScheduler>[0],
-      { warn },
+      { warn, ...options },
     );
     schedulers.push(scheduler);
     return { scheduler, warn };
   }
+
+  it("schedules interruption exit only for an authorized exact live binding", () => {
+    const expectedBinding = { authorityId: "authority-1", generation: 7 };
+    let currentBinding = expectedBinding;
+    const ack: Parameters<
+      typeof scheduleNarrativeMaintenanceProcessInterruption
+    >[1] = {
+      status: "ci-process-interruption-pending",
+      fault: "process-interruption",
+      runId: "run-1",
+      authorityId: expectedBinding.authorityId,
+      generation: expectedBinding.generation,
+    };
+    const scheduled: Array<() => void> = [];
+    const exit = vi.fn();
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+    };
+
+    expect(
+      scheduleNarrativeMaintenanceProcessInterruption(
+        backend,
+        ack,
+        expectedBinding,
+        () => false,
+        (callback) => {
+          scheduled.push(callback);
+        },
+        exit,
+      ),
+    ).toBe(false);
+    expect(scheduled).toHaveLength(0);
+
+    expect(
+      scheduleNarrativeMaintenanceProcessInterruption(
+        backend,
+        ack,
+        expectedBinding,
+        () => true,
+        (callback) => {
+          scheduled.push(callback);
+        },
+        exit,
+      ),
+    ).toBe(true);
+    expect(scheduled).toHaveLength(1);
+    currentBinding = { authorityId: "rotated", generation: 8 };
+    scheduled[0]?.();
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["false", () => false],
+    [
+      "throw",
+      () => {
+        throw new Error("scheduler rejected");
+      },
+    ],
+  ])(
+    "retains a process-interruption batch for retry when the main owner returns %s",
+    async (_label, onCiProcessInterruption) => {
+      const binding = { authorityId: "authority-1", generation: 7 };
+      const runNarrativeMaintenanceCycle = vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: "ci-process-interruption-pending",
+          fault: "process-interruption",
+          runId: "run-1",
+          authorityId: binding.authorityId,
+          generation: binding.generation,
+        })
+        .mockResolvedValue(acceptedCycle());
+      const { scheduler } = createScheduler(
+        {
+          getNarrativeMaintenanceWorkspaceBinding: () => binding,
+          runNarrativeMaintenanceCycle,
+        },
+        vi.fn(),
+        { onCiProcessInterruption },
+      );
+
+      scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("does not handle a terminal ACK when its binding cannot prove the durable Run", async () => {
+    const binding = { authorityId: "authority-1", generation: 7 };
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "ci-terminal-fault-handled",
+        fault: "contract-violation",
+        runId: "run-1",
+        authorityId: "forged-authority",
+        generation: binding.generation,
+      })
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a terminal ACK whose exact binding is proven", async () => {
+    const binding = { authorityId: "authority-1", generation: 7 };
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue({
+      status: "ci-terminal-fault-handled",
+      fault: "contract-violation",
+      runId: "run-1",
+      authorityId: binding.authorityId,
+      generation: binding.generation,
+    });
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS * 2);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+  });
 
   it("canonical key includes project, run kind, and work key", () => {
     const backfill = work("project-1", "backfill", "same", "open");
@@ -274,10 +436,47 @@ describe("narrative maintenance scheduler", () => {
     ).toBe(false);
   });
 
+  it("drains a null-binding enqueue fully once the workspace becomes available", async () => {
+    // Regression: work enqueued while the binding getter returns null is
+    // keyed under the "unavailable" scope. Delete/retry must recompute that
+    // exact key from the queue item, or the original entry survives forever
+    // and the retry re-sends a duplicate batch.
+    let binding: { authorityId: string; generation: number } | null = null;
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "workspace-unavailable" })
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(
+      work("project-1", "backfill", "backfill:v2", "workspace-open"),
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(1);
+
+    binding = { authorityId: "authority-1", generation: 1 };
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    // The retried batch carries the single original work item, not a
+    // duplicate produced by a second differently-scoped queue entry.
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0].work).toHaveLength(
+      1,
+    );
+
+    // Acceptance drains the queue completely, including the original
+    // unavailable-scoped entry: no further cycle fires.
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS * 3);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+  });
+
   it("retains a project-scoped durable wake when its workspace is unavailable", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()
-      .mockResolvedValueOnce('{"hasMore":true}')
+      .mockResolvedValueOnce(acceptedCycle(true))
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(acceptedCycle());
     const { scheduler } = createScheduler({
@@ -305,7 +504,32 @@ describe("narrative maintenance scheduler", () => {
   it("hasMore keeps a durable backlog wake and invokes the next cycle with an empty batch", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()
-      .mockResolvedValueOnce('{"hasMore":true}')
+      .mockResolvedValueOnce(acceptedCycle(true))
+      .mockResolvedValueOnce(acceptedCycle());
+    const { scheduler } = createScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0]).toEqual({
+      work: [],
+      wakeProjectIds: ["project-1"],
+    });
+  });
+
+  it("coalesced with hasMore keeps a durable backlog wake so the work chain continues", async () => {
+    // Coalesced is a no-double-dispatch ACK, not a work-chain-complete ACK:
+    // when another Run owns the batch and native still reports backlog, a
+    // follow-up wake must poll until the chain's next phase is discoverable.
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "coalesced", hasMore: true })
       .mockResolvedValueOnce(acceptedCycle());
     const { scheduler } = createScheduler({
       runNarrativeMaintenanceCycle,
@@ -328,7 +552,7 @@ describe("narrative maintenance scheduler", () => {
     const p1Wake = deferred<NarrativeMaintenanceCycleResult>();
     const runNarrativeMaintenanceCycle = vi
       .fn()
-      .mockResolvedValueOnce('{"hasMore":true}')
+      .mockResolvedValueOnce(acceptedCycle(true))
       .mockReturnValueOnce(p1Wake.promise)
       .mockResolvedValue(acceptedCycle());
     const backend = { runNarrativeMaintenanceCycle };
@@ -411,6 +635,103 @@ describe("narrative maintenance scheduler", () => {
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
   });
 
+  it("renders only a canonical requeued transient failure as a bounded warning", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          "NEX_MAINTENANCE_TRANSIENT: injected maintenance fault\nTypeError: unsafe detail",
+        ),
+      )
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler, warn } = createScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    const rendered = renderedWarnings(warn).join("\n");
+    expect(rendered).toContain("NEX_MAINTENANCE_TRANSIENT");
+    expect(rendered).toContain("1/3");
+    expect(rendered).not.toContain("unsafe detail");
+    expect(rendered.length).toBeLessThanOrEqual(256);
+    expect(hasErrorClassWarning(warn)).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps malformed native responses error-class even when requeued", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "accepted", hasMore: "invalid" })
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler, warn } = createScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(hasErrorClassWarning(warn)).toBe(true);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a terminal ACK binding mismatch error-class even when requeued", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "ci-terminal-fault-handled",
+        fault: "contract-violation",
+        runId: "run-1",
+        authorityId: "forged-authority",
+        generation: 7,
+      })
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler, warn } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => ({
+        authorityId: "authority-1",
+        generation: 7,
+      }),
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(hasErrorClassWarning(warn)).toBe(true);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps error-class diagnostics when a transient failure exhausts retries", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValue(
+        new Error("NEX_MAINTENANCE_TRANSIENT: injected maintenance fault"),
+      );
+    const { scheduler, warn } = createScheduler({
+      runNarrativeMaintenanceCycle,
+      ...acceptedFailureReceiptBackend(),
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    for (let retry = 0; retry < NARRATIVE_MAINTENANCE_MAX_RETRIES; retry += 1) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
+
+    const rendered = renderedWarnings(warn).join("\n");
+    expect(rendered).toMatch(/retry exhausted/i);
+    expect(rendered).toMatch(/\b(?:error|errors|failed|failure)\b/i);
+  });
+
   it("malformed native cycle JSON is retried instead of being treated as a successful drain", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()
@@ -484,10 +805,36 @@ describe("narrative maintenance scheduler", () => {
     },
   );
 
+  it.each([
+    ["object", { hasMore: false }],
+    ["JSON string", '{"hasMore":false}'],
+  ])(
+    "retries status-less hasMore response (%s) instead of ACKing it",
+    async (_label, malformedResponse) => {
+      const runNarrativeMaintenanceCycle = vi
+        .fn()
+        .mockResolvedValueOnce(malformedResponse)
+        .mockResolvedValueOnce(acceptedCycle());
+      const { scheduler, warn } = createScheduler({
+        runNarrativeMaintenanceCycle,
+      });
+
+      scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("bounds retries for valid JSON with an invalid cycle shape", async () => {
     const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue("{}");
     const { scheduler, warn } = createScheduler({
       runNarrativeMaintenanceCycle,
+      ...acceptedFailureReceiptBackend(),
     });
 
     scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
@@ -511,6 +858,7 @@ describe("narrative maintenance scheduler", () => {
     const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue("{not-json");
     const { scheduler, warn } = createScheduler({
       runNarrativeMaintenanceCycle,
+      ...acceptedFailureReceiptBackend(),
     });
 
     scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
@@ -540,6 +888,7 @@ describe("narrative maintenance scheduler", () => {
       .mockRejectedValue(new Error("database is locked"));
     const { scheduler, warn } = createScheduler({
       runNarrativeMaintenanceCycle,
+      ...acceptedFailureReceiptBackend(),
     });
 
     scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
@@ -560,6 +909,77 @@ describe("narrative maintenance scheduler", () => {
     await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS * 2);
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
       NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
+    );
+  });
+
+  it("retains the trigger when Native has not accepted the failure receipt", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValue(new Error("database is locked"));
+    const { scheduler, warn } = createScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    for (
+      let retry = 0;
+      retry <= NARRATIVE_MAINTENANCE_MAX_RETRIES;
+      retry += 1
+    ) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 2,
+    );
+    expect(
+      warn.mock.calls.some((args) =>
+        String(args[0]).includes("Native failure receipt API is unavailable"),
+      ),
+    ).toBe(true);
+    expect(
+      warn.mock.calls.some((args) =>
+        String(args[0]).toLowerCase().includes("retry exhausted"),
+      ),
+    ).toBe(false);
+  });
+
+  it("retains the exact trigger when Native rejects its stale failure-receipt binding", async () => {
+    const binding = { authorityId: "authority-live", generation: 9 };
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValue(new Error("database is locked"));
+    const recordNarrativeMaintenanceDeliveryFailure = vi
+      .fn()
+      .mockResolvedValue({ status: "workspace-binding-mismatch" });
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      recordNarrativeMaintenanceDeliveryFailure,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    for (let retry = 0; retry < NARRATIVE_MAINTENANCE_MAX_RETRIES; retry += 1) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
+
+    expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "project-1",
+        workspaceBinding: binding,
+      }),
+    );
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
+    );
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 2,
     );
   });
 

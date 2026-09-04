@@ -36,6 +36,27 @@
         "reasonCode",
         "evidenceFreshness"
       ]
+    },
+    {
+      "ruleId": "narrative.maintenance-contract-failure",
+      "version": 2,
+      "identityScope": "maintenance-work",
+      "observationStorageClass": "durable-derived-history",
+      "writerAuthority": "maintenance-run-finalization-transaction",
+      "observationFields": [
+        "stableSubject",
+        "failureCode",
+        "reasonCode",
+        "evidenceFreshness",
+        "evidenceDetailDigest"
+      ],
+      "materialBasisFields": [
+        "stableSubject",
+        "failureCode",
+        "reasonCode",
+        "evidenceFreshness",
+        "evidenceDetailDigest"
+      ]
     }
   ],
   "negativeFixture": "editing a Finding Observation row alone must not change the current Freshness shown in the Maintenance Inbox; only narrative_consumer_freshness governs the current value"

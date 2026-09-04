@@ -2,12 +2,14 @@
 
 ## Status
 
-- **Lifecycle:** Active implementation plan
-- **Milestone:** NIR-0 — Shared contract adoption
-- **Last updated:** 2026-08-21
+- **Lifecycle:** Complete — certified Chronicle add-only pilot
+- **Milestone:** NIR-0 — C2B activation and Chronicle add-only certification
+- **Last updated:** 2026-08-27
 - **Stacked base at creation:** PR #551, `codex/c2-parallel-foundations` at `eb428bd75a3ff08936526eaeb82ae58ff7e76146`
 - **Contract PR:** `NIR0-00: Narrative Revision Semantics, Native-Verified Human Derivation, Material-Basis Inheritance, Monotonicity, and Project-Scoped Identity Contract`
 - **Pilot:** Chronicle `scene-event@1`
+- **Certification subject:** base `f78c008088937134d3c0c080ef694891cca225b0`, head `daa20f7d605da9d4c2882bb19b8469c481379353`, tree `1430eeab4c036ab8201dbcf0a8e1192e43152f40`
+- **Remote integration:** PR #559 merged as `651791655177538ee02bc7e773f7d98c534ea324` with the same tree
 - **Concurrency limit:** At most three active implementation lanes
 
 This document fixes the implementation order and cross-PR ownership for NIR-0. It is subordinate to accepted ADRs and validated machine-readable policy. In particular:
@@ -20,6 +22,15 @@ This document fixes the implementation order and cross-PR ownership for NIR-0. I
 6. This plan owns the detailed NIR-0 work breakdown, activation gates, hot-file ownership, and acceptance criteria.
 
 Pull request descriptions and chat history are implementation evidence, not architectural authority.
+
+NIR0-00 was the contract-only foundation. E2.1 is the explicitly ratified
+additive exception for the Chronicle AI-audit stage seam: it may carry durable
+audit metadata and an ephemeral request-scoped pure sidecar. The certified
+NIR0-CERT slice adds the C2B V2 persistence, Native Human writer, activation
+markers, and bounded Chronicle add-only production route described below.
+PR #559 supplied the clean candidate-bound Quick/Full receipts and merged the
+same tested tree into `master`; the completion ledger records that evidence
+without widening the certified scope or treating deferred Heavy work as PASS.
 
 ---
 
@@ -194,12 +205,7 @@ interface NarrativeRevisionEnvelopeV2<TPayload> {
   };
 
   readonly changeIntent: {
-    readonly changeKind:
-      | "add"
-      | "revise"
-      | "retract"
-      | "merge"
-      | "split";
+    readonly changeKind: "add" | "revise" | "retract" | "merge" | "split";
     readonly targetProjectionRef?: string;
   };
 
@@ -379,14 +385,20 @@ interface HumanDerivedRevisionBasisV2 {
 
 `parentAssertionDigest` binds the derivation source. It does not claim that parent and child Assertions are identical. Identity is implied only by the `projection-only` invariants.
 
-A Human-derived Revision may use only these Context entry exposures:
+A Human-derived Revision's own derivation Context entries may use only these
+exposures:
 
 ```text
 deterministic-stage
 author-supplied
 ```
 
-`model-visible` is forbidden because no model execution occurred.
+`model-visible` is forbidden for own entries because no model execution
+occurred. Contexts copied from the immediate parent Revision are carried
+verbatim under the explicit lineage marker `inheritedFromRevisionId`
+(which must equal `parentRevisionId`); an inherited entry keeps its original
+exposure — `model-visible` included — as audit provenance of the parent
+execution, and rewriting it would falsify that provenance (ADR 011 §4.1).
 
 ### 4.4 Producer and Revision Actor are separate
 
@@ -762,6 +774,64 @@ parsed structured result
 
 Full raw-response retention requires a separate privacy, capacity, and audit contract.
 
+### 9.1 E2.1 per-Stage model binding and C1 provenance sidecar
+
+E2.1 ratifies the pure, externally carried provenance contract without thawing
+`InterpretationRevisionBasisV2` and without adding a field to the Narrative IR
+Envelope. The frozen `revisionBasis.runId + taskId` remains the closure-owner
+coordinate. A `ChronicleStageProvenanceBindingV1` sidecar binds that coordinate
+to `stageProvenanceClosureDigest` for C1; C2A owns later atomic persistence of
+the task output and extraction artifact.
+
+The model-binding digest domain is:
+
+```text
+chronicle-stage-model-binding/1
+```
+
+Terminal Stage receipts and the v2 Chronicle audit metadata use:
+
+```text
+chronicle-stage-terminal-receipt/1
+CHRONICLE_STAGE_AUDIT_VERSION = 2
+```
+
+The canonical closure domain is:
+
+```text
+chronicle-stage-provenance-closure/1
+```
+
+`finalRequestDigest` remains request-only and excludes model identity. Model
+provider, requested/effective model, endpoint binding ID, API/reasoning mode,
+generation mode, and resolution status live in the separately digested model
+binding. Endpoint bindings accept only a stable ID or digest; credentials,
+origins, and raw URLs are forbidden. Selecting or overriding a provider/model
+does not by itself change generation mode: it remains `provider-default` until
+a generation-control argument such as thinking, effort, reasoning, or
+output-token budget is explicit. Current transport normally records
+`requested-only`; it never infers `effectiveModel` as provider-reported.
+
+Each Observation, Event Synthesis, and Structured Repair Stage has its own
+binding and terminal receipt. Repair lineage is represented only by the child
+Stage's immutable `parentStageExecutionId`; a mutable parent-child pointer is
+not closure authority. The C1 closure includes observation and synthesis
+receipts from the same Project/Run even when their upstream Task/Attempt differs
+from the owner, while a repair parent and child must share Task/Attempt and the
+parent must be a failed invalid Observation or Synthesis receipt.
+
+C1 verifies the closure and sidecar against the execution coordinate and the
+Envelope's existing `revisionBasis.runId + taskId`. The Envelope remains
+unchanged. Model bindings and terminal receipts are durable, non-authoritative
+AI-audit metadata; `stage-provenance-closure` is an ephemeral, request-scoped,
+non-authoritative application-memory pure sidecar with caller-supplied
+membership and no retention. It is not labelled rebuildable until a
+deterministic membership selector exists. C2A later owns durable
+closure/task-output and extraction-artifact persistence, which is explicitly
+deferred here.
+Profile/work-profile semantics and Evaluation Contract v2/scorer work remain
+out of scope.
+
 ---
 
 ## 10. C2 sub-gate dependencies
@@ -814,7 +884,11 @@ D1 owns:
 
 ### 10.3 D2 — shadow runtime integration
 
-Starts after C2-ZC merges.
+D2 shadow integration is already implemented and verified by the focused
+evidence on the current tree. That evidence does not activate D2 authority or
+complete the full V2 cutover. Those authority changes start only after C2-ZC
+final acceptance is recorded; this final acceptance candidate is accepted if
+and only if its complete gate receipt exists.
 
 D2 owns V2 shadow evaluation in:
 
@@ -823,7 +897,11 @@ D2 owns V2 shadow evaluation in:
 - incremental Freshness runtime,
 - restore/rebuild verification.
 
-V1 remains canonical unless a later explicit cutover changes the ratified V1/V2 priority.
+The C2-ZC Generic Consumer Freshness path is represented by a final acceptance
+candidate and is accepted if and only if the complete C2-ZC gate receipt exists.
+Within this D2 shadow lane, V1 evaluation remains the compatibility baseline
+until that acceptance condition and a separate V1/V2 priority decision change
+the ratified D2 contract.
 
 ---
 
@@ -869,6 +947,7 @@ K2 Rust validator and cross-runtime golden parity
 E0 Chronicle Stage execution identity
 E1 Envelope V2 pure types and V1 adapter
 E2 Context-only Prompt Builder and AI Audit binding
+E2.1 Per-Stage Model Execution Binding, terminal receipts, and pure C1 closure sidecar
 ```
 
 #### Lane C — boundaries and pure pilot
@@ -881,90 +960,61 @@ C1 Chronicle pure scene-event@1 Adapter
 
 C1 may start after S1 + K1 + E1. It does not wait for C2-ZB because it is pure TypeScript and performs no persistence.
 
-### Wave 2 — C2 joins and storage
+### Wave 2/3 — completed C2B add-only convergence
 
-External C2 lane:
-
-```text
-C2-5B
-  → C2-ZB
-  → C2-ZC
-```
-
-NIR lanes:
+The merged implementation contains the required C2B convergence slice:
 
 ```text
-after C2-ZB:
-  D1 sealed Dependency declaration storage
-  C2A Envelope V2 persistence + Human Derivation writer + monotonicity trigger
-
-after C2-ZC:
-  D2 Dependency shadow runtime
-```
-
-### Wave 3 — atomic child semantics and product journey
-
-```text
-C2A + D2
-  → C2B Effective Material Basis
-       child declarations
-       atomic current-Epoch Freshness initialization
-  → activation gate
-  → C3 Chronicle Human-derived review flow
+C2A + D1 + D2 shadow foundations
+  → live Scope authority and ScopeOverride adapter
+  → atomic child Material Basis / D1 / V1 Edge / Freshness / pointer CAS
+  → Chronicle V2 coordinator and atomic proposal-set save
+  → C2B Human Native / IPC / review writer
+  → bounded activation: scene-event@1 + add only
   → NIR0-CERT
 ```
 
 ### 11.1 Activation gate
 
-No Chronicle producer emits V2 into production persistence when only C2A is merged.
+Activation is enabled only for the bounded Chronicle `scene-event@1` add pilot.
+The active production entry points are the extraction coordinator, atomic
+proposal-set save, and the C2B Human-derived revision writer. Direct generic V2
+append remains blocked; the existing V1 path is an explicit compatibility
+fallback.
 
-The following remain disabled until C2B lands:
-
-- Chronicle V2 emission,
-- Human-derived V2 edit UI,
-- V2 current-Revision promotion,
-- any product claim that NIR-0 is active.
-
-C1 may generate and test V2 objects in pure fixtures before this point, but production save continues using the existing V1 path.
-
-Activation requires:
-
-```text
-C2A merged
-D1 merged
-D2 merged
-C2B merged
-focused migration / persistence / Freshness journeys green
-implementationStatus updated atomically
-```
+The activation update is atomic across policy, schema, validator, and
+production markers. It is accepted only with focused migration, persistence,
+Freshness, Human title/secret, IPC, and negative-matrix evidence. Disclosure
+admission, D2 full V2 authority cutover, and non-add change kinds remain
+deferred.
 
 ---
 
 ## 12. Hot-file ownership
 
-| File or area | Exclusive owner while active |
-|---|---|
-| `docs/plans/narrative-semantic-core-roadmap.md` authority/adoption sections | NIR0-00 |
-| Roadmap C2 status table | C2-5B / C2-ZB / C2-ZC |
-| Roadmap NIR completion evidence | NIR0-CERT |
-| ADR 009 and Scope policy/schema | NIR0-00, then Scope lane |
-| `reconciler/types.ts` / Envelope V2 pure contract | E1 |
-| shared Rust canonical JSON | K0 |
-| Narrative IR TS registry/schema | K1 |
-| Narrative IR Rust validator | K2 |
-| Chronicle pure Adapter | C1 |
-| Chronicle AI task identity plumbing | E0/E2 |
-| Chronicle review API | C3 |
-| `migrate.rs` / `workspace_schema.rs` | C2 through ZB, then D1/C2A |
-| `src/db/schema.ts` / generated schema contract | D1/C2A |
-| `repository.rs` | C2A/C2B |
-| `reconciliation_envelope.rs` | C2A |
-| `evaluator.rs` | D2 |
-| `publish_runtime.rs` | D2 |
-| `incremental_freshness.rs` | D2 |
-| `restore_rebuild.rs` | D2 |
-| semantic boundary validator runtime scans | G2 |
-| central quality/impact manifests | NIR0-CERT |
+| File or area                                                                | Exclusive owner while active |
+| --------------------------------------------------------------------------- | ---------------------------- |
+| `docs/plans/narrative-semantic-core-roadmap.md` authority/adoption sections | NIR0-00                      |
+| Roadmap C2 status table                                                     | C2-5B / C2-ZB / C2-ZC        |
+| Roadmap NIR completion evidence                                             | NIR0-CERT                    |
+| ADR 009 and Scope policy/schema                                             | NIR0-00, then Scope lane     |
+| `reconciler/types.ts` / Envelope V2 pure contract                           | E1                           |
+| shared Rust canonical JSON                                                  | K0                           |
+| Narrative IR TS registry/schema                                             | K1                           |
+| Narrative IR Rust validator                                                 | K2                           |
+| Chronicle pure Adapter                                                      | C1                           |
+| Chronicle AI task identity plumbing                                         | E0/E2                        |
+| Chronicle review API                                                        | C3                           |
+| `migrate.rs` / `workspace_schema.rs`                                        | C2 through ZB, then D1/C2A   |
+| `src/db/schema.ts` / generated schema contract                              | D1/C2A                       |
+| `repository.rs`                                                             | C2A/C2B                      |
+| `reconciliation_envelope.rs`                                                | C2A                          |
+| `evaluator.rs`                                                              | D2                           |
+| `publish_runtime.rs`                                                        | D2                           |
+| `incremental_freshness.rs`                                                  | D2                           |
+| `restore_rebuild.rs`                                                        | D2                           |
+| semantic boundary validator runtime scans                                   | G2                           |
+| central quality/impact manifests                                            | NIR0-CERT                    |
 
 Branches must not edit another active lane's hot files without explicitly re-serializing the dependency graph.
 
@@ -1034,19 +1084,30 @@ NIR-0 is complete only when all of the following are true.
 
 23. V2 cannot downgrade to V1, no-envelope, or legacy-unbound through the typed writer.
 24. The structural downgrade trigger rejects non-V2 child insertion after a V2 current Revision.
-25. Chronicle production V2 emission remains disabled until C2B.
-26. Human-derived V2 UI remains disabled until C2B.
-27. Activation changes implementation status and production entry points atomically.
+25. Chronicle production V2 emission is enabled only for the typed
+    `scene-event@1` `add` pilot after C2B; other change kinds remain blocked.
+26. The Human-derived V2 UI uses the typed C2B writer route; direct generic V2
+    append remains blocked and the V1 path is an explicit fallback.
+27. Activation changes implementation status, policy/schema state, and
+    production entry points atomically.
 
 ### Stage provenance and boundaries
 
 28. Every Chronicle pilot AI Stage carries Run / Task / Attempt / Stage identity.
 29. Structured repair is a child Stage execution in the same Attempt.
 30. Context Set is the only dynamic model-input authority for the pilot.
-31. Human-derived Context Set contains no `model-visible` entry.
+31. Human-derived Context Set contains no own (non-inherited) `model-visible`
+    entry; inherited parent entries keep their exposure under
+    `inheritedFromRevisionId` lineage (ADR 011 §4.1).
 32. Raw response retention is not falsely claimed.
 33. Interpreter modules cannot import or call SQL, DB mutation, Prepared Commit, Typed Writer, Agent Writer, or generic MCP SQL paths.
 34. Static validation detects a new unauthorized Freshness authority in code, not only a policy declaration.
+    34a. Stage Model Execution Binding V1 fails closed for unresolved, requested-only, provider-reported, and fingerprinted states; endpoint URLs and credentials never enter the binding.
+    34b. The v2 Chronicle audit begin and terminal metadata carry the same sealed model binding, model-binding digest, and terminal receipt digest; a Chronicle terminal-hook failure rejects the Stage output.
+    34c. Observation, Synthesis, and Repair each emit an independent terminal receipt exactly once; repair lineage is only the child `parentStageExecutionId` and uses the same Task/Attempt as its failed parent.
+    34d. A C1 closure is canonical, self-digested, tamper-evident, and reaches the existing Envelope `revisionBasis.runId + taskId` through an external sidecar without changing Envelope V2.
+    34e. C1 accepts same-Project/Run upstream Observation and Synthesis receipts with distinct Task/Attempt coordinates, requires both stages, and includes any repair children.
+    34f. Model bindings and terminal receipts are durable, non-authoritative AI-audit metadata; `stage-provenance-closure` remains ephemeral, request-scoped, non-authoritative application-memory pure-sidecar material with no retention. It is not rebuildable without a deterministic membership selector. Atomic closure/task-output/artifact persistence is owned by C2A and deferred.
 
 ### Scope adoption
 
@@ -1107,6 +1168,15 @@ pnpm ci:local:verify -- full --base <resolved-base> --head HEAD
 
 Local CI receipts are candidate-bound. A stacked PR based on PR #551 must rerun Quick and Full after rebase / retarget to merged `master`.
 
+The completion ledger is [NIR0-CERT](../certification/nir0/NIR0-CERT.md). It
+records the certified candidate base/head/tree, focused suite counts, semantic
+contract result, candidate-bound Quick/Full receipts, explicit deferred work,
+and remote integration. PR #559 supplied the clean implementation evidence;
+its tested tree is byte-identical to merge commit
+`651791655177538ee02bc7e773f7d98c534ea324`. The closeout documentation PR
+must pass its own ordinary candidate-bound merge checks, but it does not replace
+or relabel the certified implementation candidate.
+
 ---
 
 ## 16. Non-goals
@@ -1139,7 +1209,7 @@ This plan is updated when:
 
 Status updates must name merged implementation evidence. A PR under review is `Active`, not `Complete`.
 
-NIR0-00 and NIR0-CERT are the only planned NIR PRs that edit the roadmap:
+NIR0-00 and NIR0-CERT own the two planned NIR roadmap updates:
 
 ```text
 NIR0-00
@@ -1154,4 +1224,13 @@ NIR0-CERT
   deferred work
 ```
 
-C2-5B / C2-ZB / C2-ZC retain ownership of the C2 status table. This separates edit regions and reduces stacked-branch conflicts.
+NIR0-CERT has now closed the NIR-0 milestone against PR #559's tested and
+integrated tree. The post-certification C2-ZC closeout records a final
+acceptance candidate: the standalone real Electron journey and pre-closeout
+candidate-bound Quick/verify passed for implementation HEAD
+`3010e13e4a91da99eae16cb9f8bd773177c2ac58` against
+`78732ff5635da220396bd606010dd53f4d0350a9`. The exact documentation candidate
+is accepted if and only if its clean Quick/verify, Full from stage 1, Full
+receipt verification, and the Sol final are recorded. Until that receipt
+exists, future NIR-1 work must not reopen or silently widen this certificate
+and cannot start.

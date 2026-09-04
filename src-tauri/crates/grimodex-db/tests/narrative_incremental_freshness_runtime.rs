@@ -650,6 +650,9 @@ fn replay_is_idle_without_duplicate_findings_or_freshness_regression() {
         IncrementalFreshnessCycleOutcome::Processed(_) => {
             panic!("an acknowledged range must not be processed twice")
         }
+        IncrementalFreshnessCycleOutcome::Held(_) => {
+            panic!("a replay cycle must not be interpreted as a held success")
+        }
     }
 
     let after = db
@@ -2298,6 +2301,7 @@ fn generic_task_apis_cannot_take_over_the_system_owned_freshness_lifecycle() {
         RunRefPayload {
             run_id: "system-run".to_string(),
             project_id: PROJECT_ID.to_string(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect_err("generic cancel must be denied");
@@ -2326,6 +2330,10 @@ fn generic_task_apis_cannot_take_over_the_system_owned_freshness_lifecycle() {
             lease_owner: "dead-worker".to_string(),
             output_json: Some(serde_json::json!({ "forged": true })),
             artifacts: Vec::new(),
+            chronicle_stage_bundle: None,
+            chronicle_stage_receipts: Vec::new(),
+            historical_scope_authority_basis: None,
+            chronicle_plan_proposal_set: None,
         },
     )
     .expect_err("generic finish must be denied");

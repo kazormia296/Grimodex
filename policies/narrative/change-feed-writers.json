@@ -2,6 +2,17 @@
   "schemaVersion": 1,
   "gateId": "gate-c1",
   "operationFragments": ["policies/narrative/change-feed-operations/*.json"],
+  "canonicalBirths": [
+    { "operationId": "project.create.renderer", "opType": "project.create" },
+    {
+      "operationId": "import.session.apply.internal",
+      "opType": "import.session.apply"
+    },
+    {
+      "operationId": "scan.import.publish",
+      "opType": "scan.import.publish"
+    }
+  ],
   "semanticBoundary": {
     "schemaVersion": 1,
     "scanRoots": [
@@ -55,6 +66,7 @@
         "entity_tags_set",
         "authorship_replace_lane",
         "scan_staging_project_create",
+        "scan_staging_project_publish",
         "narrative_runtime_policy_set",
         "narrative_extraction_",
         "import_web_editor_workspace",
@@ -78,8 +90,11 @@
         "foreshadow_list_linked_codex",
         "foreshadow_load_anchors_for_scene",
         "trash_bin_list",
+        "narrative_extraction_capture_workspace_binding",
         "narrative_extraction_get_run",
+        "narrative_extraction_is_run_resumable_for_review",
         "narrative_extraction_list_resumable_runs",
+        "narrative_extraction_list_chronicle_task_resume_candidates",
         "narrative_extraction_get_run_review_bundle",
         "narrative_extraction_get_commit_status"
       ]
@@ -878,7 +893,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": ["narrative.extraction-task"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -907,7 +922,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": ["narrative.extraction-task"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -936,7 +951,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": ["narrative.extraction-task", "narrative.extraction-attempt"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -965,7 +980,12 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": [
+        "narrative.extraction-task",
+        "narrative.extraction-attempt",
+        "narrative.extraction-artifact",
+        "narrative.stage-provenance"
+      ],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -994,7 +1014,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["narrative.authority"],
+      "writerIds": ["narrative.extraction-task", "narrative.extraction-attempt"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null
@@ -1049,6 +1069,35 @@
         {
           "surface": "napi",
           "name": "narrative_extraction_append_revision",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority", "narrative.revision-envelope"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.proposal.create-human-derived-revision",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "C2B Human-derived revision materialization is review authority metadata; the later apply operation owns the domain Change Feed transaction.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_create_human_derived_revision",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_create_human_derived_revision",
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
@@ -1262,11 +1311,13 @@
     },
     {
       "id": "scan.staging-project.create",
+      "visibility": "hidden",
+      "canonicality": "noncanonical",
       "authorityRoute": "import-apply",
       "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
-      "reason": "The scan staging project is an isolated import workspace and is not visible as a canonical narrative aggregate until import apply.",
+      "reason": "The scan staging project is a hidden, noncanonical import workspace and is not visible as a canonical narrative aggregate until the typed scan.import.publish operation.",
       "exclusionReason": "staging-only",
       "implementation": {
         "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
@@ -1288,6 +1339,41 @@
       "scope": "workspace",
       "requiredIdentities": [],
       "canonical": null
+    },
+    {
+      "id": "scan.import.publish",
+      "visibility": "visible",
+      "canonicality": "canonical",
+      "authorityRoute": "import-apply",
+      "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Publishing a completed scan import promotes the hidden staging project through one typed canonical Feed transaction.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "publish_scan_staging_project"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "scan_staging_project_publish",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "scan_staging_project_publish",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "scan.import.publish" }
     },
     {
       "id": "trash.envelope.create",
@@ -4483,6 +4569,33 @@
         "transactionId"
       ],
       "canonical": { "origin": "mcp", "opType": "event.relation" }
+    },
+    {
+      "id": "narrative.dependency-declaration.store",
+      "authorityRoute": "interpreter-projection",
+      "controls": [
+        "proposal-revision",
+        "decision",
+        "prepared-commit",
+        "application-id",
+        "source-basis-occ",
+        "field-authority",
+        "typed-writer"
+      ],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "runtimeEvidence": { "status": "excluded", "reason": "shadow-storage" },
+      "reason": "D1 persists sealed Dependency declarations as a non-authoritative shadow; V1 narrative_dependency_edges remains the canonical Freshness input until a later cutover lane.",
+      "exclusionReason": "derived-state",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/declaration_storage.rs",
+        "symbol": "write_dependency_declaration_set"
+      },
+      "routes": [],
+      "writerIds": ["narrative.dependency-declaration"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
     },
     {
       "id": "narrative.maintenance-attention.set",

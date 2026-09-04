@@ -4,7 +4,10 @@ import {
 } from "@/lib/editorAnalysisScheduler";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { markEnd, markStart, recordCounter } from "@/lib/perfLog";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import {
   getCurrentWorkspaceIdentity,
   isCurrentWorkspaceIdentity,
@@ -161,7 +164,7 @@ export function _resetAutoRevisionSchedulerForTests(): void {
 }
 
 registerQuiescenceProvider({
-  id: "scene-auto-revisions",
+  id: createQuiescenceProviderId("scene-auto-revisions"),
   stage: "scoped-mutations",
   flush: flushAutoRevisions,
   discard: _resetAutoRevisionSchedulerForTests,

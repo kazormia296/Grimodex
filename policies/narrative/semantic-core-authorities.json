@@ -22,9 +22,9 @@
     },
     {
       "concern": "search-generation",
-      "canonicalAuthority": "semantic index metadata",
+      "canonicalAuthority": "none (semantic-index reserved; NIR-1 pending)",
       "compatibilityMirror": null,
-      "writePolicy": "index-metadata-only"
+      "writePolicy": "reserved-no-writer"
     },
     {
       "concern": "review",
@@ -37,6 +37,12 @@
       "canonicalAuthority": "freshness-run-publish-transaction",
       "compatibilityMirror": null,
       "writePolicy": "evaluator-publish-only"
+    },
+    {
+      "concern": "maintenance-terminal-finding-observation",
+      "canonicalAuthority": "maintenance-run-finalization-transaction",
+      "compatibilityMirror": null,
+      "writePolicy": "maintenance-finalization-only"
     },
     {
       "concern": "maintenance-attention",
@@ -52,6 +58,69 @@
     "dependencySetDigest",
     "dirtyCacheFlag"
   ],
+  "semanticIndexReservation": {
+    "status": "reserved",
+    "authorityFootprint": {
+      "surfaces": [
+        {
+          "id": "metadataRows",
+          "relation": "narrative_semantic_index_metadata",
+          "rowSet": "all-project-rows",
+          "predicate": "project_id = ?1"
+        },
+        {
+          "id": "activeD1HeadRows",
+          "relation": "narrative_dependency_declaration_heads",
+          "rowSet": "active-sealed-D1-heads",
+          "predicate": "project_id = ?1 AND consumer_kind = 'semantic-index'"
+        },
+        {
+          "id": "v1EdgeRows",
+          "relation": "narrative_dependency_edges",
+          "rowSet": "V1-edges",
+          "predicate": "project_id = ?1 AND consumer_kind = 'semantic-index'"
+        },
+        {
+          "id": "consumerFreshnessRows",
+          "relation": "narrative_consumer_freshness",
+          "rowSet": "consumer-freshness",
+          "predicate": "project_id = ?1 AND consumer_kind = 'semantic-index'"
+        }
+      ],
+      "passCondition": "all-zero",
+      "nonZeroDisposition": "manual-terminal",
+      "rebuildTarget": "forbidden"
+    },
+    "chunkRows": {
+      "allowed": true,
+      "classification": "rebuildable-acceleration",
+      "narrativeDependencyAuthorityClaim": "forbidden"
+    },
+    "futureBinding": {
+      "status": "dormant",
+      "approvalGate": "NIR-1",
+      "firstCandidate": "one-shared-producer",
+      "mapping": {
+        "metadata.index_key": "D1.consumer_key=freshness.consumer_key",
+        "metadata.generation": "active-sealed-D1-head.consumer-scoped-producer_generation",
+        "metadata.dependency_set_digest": "active-sealed-D1-set.digest"
+      },
+      "unapprovedDecisions": [
+        "fixed-keys",
+        "producer-registry",
+        "source-identities",
+        "writers",
+        "D1-declarations",
+        "metadata-migration",
+        "restore-invalidation",
+        "reserved-to-declared-activation",
+        "producer-granularity",
+        "metadata-producer-identity-composition",
+        "dirty-pending-semantics",
+        "Codex-source-granularity"
+      ]
+    }
+  },
   "forbiddenFreshnessClaims": [
     "assertion-is-authoritative-fresh",
     "assertionFresh",

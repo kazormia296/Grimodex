@@ -5,7 +5,10 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { validateChangeFeedWriters } from "./validate-change-feed-writers.mjs";
+import {
+  KNOWN_CHANGE_FEED_ROUTES,
+  validateChangeFeedWriters,
+} from "./validate-change-feed-writers.mjs";
 
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -181,6 +184,33 @@ describe("validate-change-feed-writers", () => {
     const byId = new Map(
       manifest.operations.map((operation) => [operation.id, operation]),
     );
+    const workflowWriters = Object.fromEntries(
+      [
+        "narrative.workflow.create-run",
+        "narrative.workflow.cancel-run",
+        "narrative.workflow.claim-task",
+        "narrative.workflow.finish-task",
+        "narrative.workflow.fail-task",
+      ].map((operationId) => [operationId, byId.get(operationId)?.writerIds]),
+    );
+    assert.deepEqual(workflowWriters, {
+      "narrative.workflow.create-run": ["narrative.extraction-task"],
+      "narrative.workflow.cancel-run": ["narrative.extraction-task"],
+      "narrative.workflow.claim-task": [
+        "narrative.extraction-task",
+        "narrative.extraction-attempt",
+      ],
+      "narrative.workflow.finish-task": [
+        "narrative.extraction-task",
+        "narrative.extraction-attempt",
+        "narrative.extraction-artifact",
+        "narrative.stage-provenance",
+      ],
+      "narrative.workflow.fail-task": [
+        "narrative.extraction-task",
+        "narrative.extraction-attempt",
+      ],
+    });
     assert.equal(byId.get("agent.sql-bundle.mutate")?.feedPolicy, "excluded");
     assert.equal(
       byId.get("agent.sql-bundle.mutate")?.exclusionReason,
@@ -220,6 +250,162 @@ describe("validate-change-feed-writers", () => {
       "database-image-replacement",
     );
     assert.equal(excluded.get("project.delete"), "project-deletion");
+  });
+
+  it("declares the canonical birth inventory and hides scan staging allocation", () => {
+    const manifest = JSON.parse(
+      readFileSync(
+        path.join(REPO_ROOT, "policies/narrative/change-feed-writers.json"),
+        "utf8",
+      ),
+    );
+    assert.deepEqual(manifest.canonicalBirths, [
+      { operationId: "project.create.renderer", opType: "project.create" },
+      {
+        operationId: "import.session.apply.internal",
+        opType: "import.session.apply",
+      },
+      {
+        operationId: "scan.import.publish",
+        opType: "scan.import.publish",
+      },
+    ]);
+
+    const staging = manifest.operations.find(
+      (operation) => operation.id === "scan.staging-project.create",
+    );
+    assert.ok(staging, "missing scan staging allocation policy");
+    assert.equal(staging.visibility, "hidden");
+    assert.equal(staging.canonicality, "noncanonical");
+    assert.equal(staging.feedPolicy, "excluded");
+    assert.equal(staging.canonical, null);
+    assert.equal(staging.exclusionReason, "staging-only");
+  });
+
+  it("requires the typed scan publish route and shared Rust owner", () => {
+    const manifest = JSON.parse(
+      readFileSync(
+        path.join(REPO_ROOT, "policies/narrative/change-feed-writers.json"),
+        "utf8",
+      ),
+    );
+    const publish = manifest.operations.find(
+      (operation) => operation.id === "scan.import.publish",
+    );
+    assert.ok(publish, "missing canonical scan import publish operation");
+    assert.equal(publish.canonical?.opType, "scan.import.publish");
+    assert.equal(publish.feedPolicy, "required");
+    assert.equal(
+      publish.implementation?.module,
+      "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    );
+    assert.ok(
+      publish.implementation?.symbol,
+      "scan publish must name its shared Rust writer",
+    );
+    for (const surface of ["electron-ipc", "napi"]) {
+      assert.ok(
+        publish.routes?.some(
+          (route) =>
+            route.surface === surface &&
+            route.name === "scan_staging_project_publish",
+        ),
+        `missing typed scan publish ${surface} route`,
+      );
+      assert.ok(
+        KNOWN_CHANGE_FEED_ROUTES.some(
+          (route) =>
+            route.surface === surface &&
+            route.name === "scan_staging_project_publish",
+        ),
+        `missing registered scan publish ${surface} route`,
+      );
+    }
+  });
+
+  it("rejects a scan staging allocation that is mislabeled canonical", () => {
+    const root = writeFixture([
+      fixtureOperation({
+        id: "scan.staging-project.create",
+        feedPolicy: "required",
+        canonicality: "canonical",
+        visibility: "visible",
+        canonical: {
+          origin: "renderer",
+          opType: "scan.staging-project.create",
+        },
+      }),
+    ]);
+    const result = validateFixture(root);
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("scan.staging-project.create must be hidden"),
+      ),
+    );
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("scan.staging-project.create must be noncanonical"),
+      ),
+    );
+  });
+
+  it("requires renderer publish to avoid generic scan state deletion and use the typed route", () => {
+    const operationsSource = readFileSync(
+      path.join(REPO_ROOT, "src/features/import/scan/scanImportOperations.ts"),
+      "utf8",
+    );
+    const stagingSource = readFileSync(
+      path.join(REPO_ROOT, "src/features/import/scan/scanStagingProject.ts"),
+      "utf8",
+    );
+    const start = operationsSource.indexOf("async publishStagingProject");
+    const end = operationsSource.indexOf("async discardStagingProject", start);
+    assert.ok(start >= 0, "missing renderer scan publish operation");
+    assert.ok(end > start, "renderer scan publish operation has no boundary");
+    const publishBody = operationsSource.slice(start, end);
+    assert.doesNotMatch(
+      publishBody,
+      /deleteProjectSetting\(projectId,\s*SCAN_IMPORT_STATE_KEY\)/,
+    );
+    if (/\bpublishScanStagingProject\s*\(/.test(publishBody)) {
+      assert.match(stagingSource, /scan_staging_project_publish/);
+    } else {
+      assert.match(publishBody, /scan_staging_project_publish/);
+    }
+  });
+
+  it("requires known production birth and publish routes to be registered", () => {
+    const result = validateChangeFeedWriters({
+      repoRoot: REPO_ROOT,
+      knownRoutes: [
+        { surface: "electron-ipc", name: "project_create" },
+        { surface: "napi", name: "project_create" },
+        { surface: "internal", name: "apply_commit" },
+        { surface: "electron-ipc", name: "scan_staging_project_publish" },
+        { surface: "napi", name: "scan_staging_project_publish" },
+      ],
+    });
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("fails when a known production birth or publish route is absent", () => {
+    const root = writeFixture([fixtureOperation()]);
+    const result = validateFixture(root, {
+      knownRoutes: [
+        { surface: "electron-ipc", name: "project_create" },
+        { surface: "napi", name: "scan_staging_project_publish" },
+      ],
+    });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("known route electron-ipc:project_create"),
+      ),
+    );
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("known route napi:scan_staging_project_publish"),
+      ),
+    );
   });
 
   it("allows declared required routes by default and can tighten to verified runtime coverage", () => {

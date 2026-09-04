@@ -224,6 +224,8 @@ export interface ProjectNarrativeSourceRow {
   readonly title: string;
   readonly content: string;
   readonly sortOrder: string;
+  /** Exact persisted key; null means the Story axis was not provided. */
+  readonly storyTimeOrder: string | null;
   readonly orderIndex: number;
   readonly version: number;
   readonly updatedAt: string;

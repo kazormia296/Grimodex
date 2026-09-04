@@ -512,15 +512,8 @@ fn ensure_event_history_continuity(
         // explicit trigger for C2's full rebuild and intentionally does not
         // need to chain from the immediately preceding project marker: a
         // normal domain write may have occurred between two restores.
-        let is_epoch_reset = event.object_key.get("kind").and_then(Value::as_str)
-            == Some("project")
-            && event
-                .structural_impact
-                .as_ref()
-                .and_then(Value::as_object)
-                .and_then(|impact| impact.get("event"))
-                .and_then(Value::as_str)
-                .is_some_and(|event| matches!(event, "project-restored" | "semantic-epoch-reset"));
+        let is_epoch_reset =
+            is_epoch_reset_marker_event(&event.object_key, event.structural_impact.as_ref());
         if !is_epoch_reset {
             if let Some(prior_after) = prior_after {
                 let current_before = (event.before_version, event.before_digest.clone());
@@ -563,12 +556,34 @@ fn ensure_event_history_continuity(
                 event.mutation_kind
             );
         }
-        heads.insert(
-            identity,
-            Some((event.after_version, event.after_digest.clone())),
-        );
+        // An Epoch marker's `after` state is synthetic (a reset sentinel,
+        // not the Project row), so it must not become the head the next real
+        // Project mutation has to chain from: advancing the head here would
+        // force that mutation to either report a discontinuity or borrow the
+        // synthetic state as its before-evidence.
+        if !is_epoch_reset {
+            heads.insert(
+                identity,
+                Some((event.after_version, event.after_digest.clone())),
+            );
+        }
     }
     Ok(())
+}
+
+/// True for the synthetic Project-scoped Epoch markers
+/// (`project-restored` / `semantic-epoch-reset`) that are exempt from head
+/// continuity and must not advance the durable Project object head.
+pub(crate) fn is_epoch_reset_marker_event(
+    object_key: &Value,
+    structural_impact: Option<&Value>,
+) -> bool {
+    object_key.get("kind").and_then(Value::as_str) == Some("project")
+        && structural_impact
+            .and_then(Value::as_object)
+            .and_then(|impact| impact.get("event"))
+            .and_then(Value::as_str)
+            .is_some_and(|event| matches!(event, "project-restored" | "semantic-epoch-reset"))
 }
 
 fn validate_digest(value: Option<&str>, name: &str) -> anyhow::Result<()> {
@@ -1870,19 +1885,24 @@ pub fn append_narrative_change_transaction_in_tx(
                 input.occurred_at,
             ],
         )?;
-        upsert_object_head(
-            conn,
-            NarrativeChangeObjectHead {
-                project_id: &input.project_id,
-                identity: &identity,
-                after_version: event.after_version,
-                after_digest: event.after_digest.as_deref(),
-                event_id: &event_id,
-                canonical_sequence,
-                event_ordinal: i64::try_from(ordinal)?,
-                occurred_at: &input.occurred_at,
-            },
-        )?;
+        // Epoch markers keep their own identity in the Feed but never
+        // advance the durable Project object head: their after state is a
+        // synthetic reset sentinel, not the canonical Project row.
+        if !is_epoch_reset_marker_event(&event.object_key, event.structural_impact.as_ref()) {
+            upsert_object_head(
+                conn,
+                NarrativeChangeObjectHead {
+                    project_id: &input.project_id,
+                    identity: &identity,
+                    after_version: event.after_version,
+                    after_digest: event.after_digest.as_deref(),
+                    event_id: &event_id,
+                    canonical_sequence,
+                    event_ordinal: i64::try_from(ordinal)?,
+                    occurred_at: &input.occurred_at,
+                },
+            )?;
+        }
         event_ids.push(event_id);
     }
 

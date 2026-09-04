@@ -8,7 +8,7 @@
       "existingRunKindColumnValue": "backfill",
       "purpose": "Deterministic versioned transform from the existing limited Application Dependency data to the Generic Dependency Graph, once per project after a schema upgrade.",
       "trigger": "automatic-once-after-schema-upgrade",
-      "triggerDetail": "A post-open bootstrap step, not the SCHEMA migration transaction itself: the migration only creates tables/columns/indexes and leaves a backfill-required marker; Workspace open succeeds first, then bootstrap detects the marker and creates the Run.",
+      "triggerDetail": "The SCHEMA 32 owner performs the C2-ZB Application re-key atomically for durable legacy evidence. A post-open bootstrap Backfill still runs the v3 transform for evidence created outside that migration boundary and creates the fresh owning Run after workspace open. Its completion is one prerequisite for the scheduler-owned C2-ZC canonical-authority activation.",
       "sameWorkKeyReuse": "reuse-running-and-completed",
       "epochBound": true,
       "cursorBound": false,
@@ -57,15 +57,14 @@
         "retryNarrativeLegacyBackfill",
         "getNarrativeBackfillStatus"
       ],
+      "runtimeRoute": {
+        "registryVersion": "narrative-maintenance-route/v1",
+        "routeId": "dependency-backfill",
+        "productionEntryPoint": "run_narrative_maintenance_cycle"
+      },
       "implementationStatus": {
-        "state": "unwired-blocked",
-        "triggerSymbol": "narrative_extraction_bootstrap_legacy_backfill",
-        "productionEntryPoints": ["retryNarrativeLegacyBackfill"],
-        "blockedReason": "The post-open bootstrap was wired and then removed: running it on the detached workspace-maintenance connection made every Workspace open a second writer, and a commit from a second connection fails the foreground's in-flight deferred transaction with SQLITE_BUSY_SNAPSHOT, which busy_timeout cannot retry. Because migrate seeds default-project, this fired on every open, including brand-new workspaces.",
-        "blockedOn": [
-          "run-the-backfill-on-the-live-workspace-authority-connection",
-          "or-make-domain-writes-deferred-transactions-immediate"
-        ]
+        "state": "wired",
+        "productionEntryPoints": ["run_narrative_maintenance_cycle"]
       }
     },
     {
@@ -78,8 +77,7 @@
         "restore-semantic-epoch-rotation",
         "migration-semantic-epoch-rotation",
         "integrity-repair-completed",
-        "dependency-rule-or-normalizer-contract-digest-changed",
-        "before-c2z-cutover"
+        "dependency-rule-or-normalizer-contract-digest-changed"
       ],
       "manualTriggerAllowed": true,
       "sameWorkKeyReuse": "reuse-running-only",
@@ -113,14 +111,21 @@
         "cursor-and-feed-head-consistency",
         "semantic-index-generation-correspondence"
       ],
+      "verifyCoverage": {
+        "requiredCheckCount": 13,
+        "productionCoverage": "13/13",
+        "reductionForbidden": true
+      },
       "forbidSideEffectRepair": true,
       "adminCommands": ["verifyNarrativeDependencyGraph"],
+      "runtimeRoute": {
+        "registryVersion": "narrative-maintenance-route/v1",
+        "routeId": "dependency-verify",
+        "productionEntryPoint": "run_narrative_maintenance_cycle"
+      },
       "implementationStatus": {
-        "state": "unwired-blocked",
-        "triggerSymbol": "run_dependency_verify_for_project",
-        "productionEntryPoints": ["verifyNarrativeDependencyGraph"],
-        "blockedReason": "The Verify checks themselves are implemented and tested, but nothing subscribes them to the declared triggerEvents: no production caller fires Verify on backfill completion, Semantic Epoch rotation, integrity repair, or contract-digest change. Only the manual Admin IPC starts a Verify Run today.",
-        "blockedOn": ["c2-t2-trigger-event-subscription"]
+        "state": "wired",
+        "productionEntryPoints": ["run_narrative_maintenance_cycle"]
       }
     },
     {
@@ -132,7 +137,6 @@
         "narrative_consumer_freshness",
         "narrative_maintenance_finding_observations",
         "reanchor-candidates",
-        "semantic-index-generation-cache",
         "freshness-evaluator-cursor-reservation"
       ],
       "trigger": "automatic-when-derived-state-absent-or-invalid",
@@ -142,8 +146,7 @@
         "contract-version-mismatch",
         "dependency-set-digest-mismatch",
         "verify-reports-derived-rebuild-required",
-        "restore-completed",
-        "before-c2z-cutover"
+        "restore-completed"
       ],
       "manualTriggerAllowed": true,
       "sameWorkKeyReuse": "reuse-running-only",
@@ -164,12 +167,14 @@
         "domain-undo-journal"
       ],
       "adminCommands": ["rebuildNarrativeDerivedState"],
+      "runtimeRoute": {
+        "registryVersion": "narrative-maintenance-route/v1",
+        "routeId": "dependency-rebuild-derived",
+        "productionEntryPoint": "run_narrative_maintenance_cycle"
+      },
       "implementationStatus": {
-        "state": "unwired-blocked",
-        "triggerSymbol": "rebuild_narrative_derived_state_for_project",
-        "productionEntryPoints": ["rebuildNarrativeDerivedState"],
-        "blockedReason": "The orchestrator is implemented and tested, but nothing detects the declared conditions and starts it: no production caller fires Rebuild-Derived on Semantic Epoch rotation, a missing derived row, a contract-version or dependency-set-digest mismatch, or a Verify report asking for it. Only the manual Admin IPC starts a Rebuild-Derived Run today.",
-        "blockedOn": ["c2-t2-derived-state-invalidation-detection"]
+        "state": "wired",
+        "productionEntryPoints": ["run_narrative_maintenance_cycle"]
       }
     },
     {
@@ -191,6 +196,104 @@
       "maxCanonicalSequencesPerBatch": 32,
       "executionAuthority": "serialized-live-workspace-authority",
       "missingSemanticEpochBehavior": "wait-for-canonical-epoch-authority",
+      "idleCheckpoint": {
+        "kind": "current-epoch-idle-checkpoint",
+        "version": 1,
+        "specKind": "incremental-freshness-idle-checkpoint@1",
+        "runKind": "freshness-evaluation",
+        "taskKind": "incremental-freshness-batch",
+        "zeroWidthRange": {
+          "fromSequenceExclusive": "feedHead",
+          "throughSequenceInclusive": "feedHead",
+          "feedHead": "feedHead"
+        },
+        "epochBinding": "current-semantic-epoch",
+        "cursor": {
+          "acknowledgedThroughSequence": "feedHead",
+          "requiresClean": true,
+          "missingAllowedOnlyAtFeedHead": 0
+        },
+        "projectSelection": {
+          "projectsPerWake": 1,
+          "order": "project-id-ascending"
+        },
+        "suppression": {
+          "existingCurrentEpochFreshnessRunAnyStatus": true
+        },
+        "descriptorBinding": {
+          "digestAlgorithm": "sha256-canonical-json",
+          "inputDigestBinding": "task-input-to-spec-and-work-key",
+          "taskInput": {
+            "exactKeys": [
+              "kind",
+              "version",
+              "projectId",
+              "semanticEpochId",
+              "fromSequenceExclusive",
+              "throughSequenceInclusive",
+              "feedHead",
+              "inputDigest"
+            ],
+            "kind": "current-epoch-idle-checkpoint",
+            "version": 1,
+            "digestField": "inputDigest",
+            "digestInput": "canonical-payload-without-inputDigest"
+          },
+          "spec": {
+            "exactKeys": ["kind", "inputDigest"],
+            "kind": "incremental-freshness-idle-checkpoint@1",
+            "inputDigest": "same-as-task-input",
+            "digestField": "specDigest",
+            "digestInput": "canonical-spec-object"
+          },
+          "workKey": {
+            "format": "incremental-freshness:{semanticEpochId}:{fromSequenceExclusive}:{throughSequenceInclusive}:{inputDigestHex}",
+            "digestInput": "task-input-inputDigest-without-sha256-prefix"
+          }
+        },
+        "lifecycle": {
+          "taskCount": 1,
+          "completedTaskCount": 1,
+          "taskStatus": "completed",
+          "taskAttemptCountEqualsAttemptRows": true,
+          "attemptNumbering": "1..N-contiguous",
+          "attemptStatuses": ["failed", "completed"],
+          "completedAttemptCount": 1,
+          "runningAttemptCount": 0,
+          "activeAttemptCount": 0,
+          "noActiveAttempt": true,
+          "failedRetryHistoryAllowed": true,
+          "failedRetryHistoryOrder": "failed-before-completed-only",
+          "completedAttemptMustBeLast": true,
+          "retryCap": {
+            "maxAttemptsPerTask": 3,
+            "corruptedTaskKindCannotBypass": true
+          }
+        },
+        "nextWake": {
+          "noChurn": true
+        },
+        "databaseEvidence": {
+          "schedulerLiveness": "not-proven",
+          "canonicalCutover": "not-proven"
+        },
+        "writesAllowed": [
+          "run-task-attempt-state",
+          "freshness-evaluator-cursor"
+        ],
+        "forbiddenWrites": [
+          "narrative-change-set",
+          "consumer-freshness",
+          "dependency-edge-state",
+          "finding-observation",
+          "attention",
+          "domain-state",
+          "d2-declarations",
+          "d2-shadow",
+          "semantic-index"
+        ],
+        "forbiddenPublishers": ["generic-consumer-freshness"]
+      },
       "retryPolicy": {
         "maxAttemptsPerTask": 3,
         "exhaustedFailureCode": "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",

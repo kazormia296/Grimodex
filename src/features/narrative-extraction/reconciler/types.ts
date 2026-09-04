@@ -1,4 +1,43 @@
 import type { Sha256Digest } from "../source/types";
+import type {
+  DependencyRole as CanonicalDependencyRole,
+  DependencySelector as CanonicalDependencySelector,
+} from "@/features/narrative-semantic-core/contracts/dependencyRole";
+import type {
+  AssertionModality as CanonicalAssertionModality,
+  AssertionPolarity as CanonicalAssertionPolarity,
+  AssertionSupportClass as CanonicalAssertionSupportClass,
+  ContextSetEntry as CanonicalContextSetEntry,
+  DependencySetEntry as CanonicalDependencySetEntry,
+  HumanDerivedRevisionBasisV2 as CanonicalHumanDerivedRevisionBasisV2,
+  InterpretationRevisionBasisV2 as CanonicalInterpretationRevisionBasisV2,
+  NarrativeAssertionDigests as CanonicalNarrativeAssertionDigests,
+  NarrativeAssertionProducer as CanonicalNarrativeAssertionProducer,
+  NarrativeChangeKind as CanonicalNarrativeChangeKind,
+  NarrativeChangeIntent as CanonicalNarrativeChangeIntent,
+  NarrativeEffectiveMaterialBasis as CanonicalNarrativeEffectiveMaterialBasis,
+  NarrativePayloadSchemaRef as CanonicalNarrativePayloadSchemaRef,
+  NarrativeProjectionBinding as CanonicalNarrativeProjectionBinding,
+  NarrativeRevisionEnvelopeV2 as CanonicalNarrativeRevisionEnvelopeV2,
+} from "@/features/narrative-semantic-core/contracts/narrativeIr";
+import type {
+  NarrativeScopeV2 as CanonicalNarrativeScopeV2,
+  ReferenceScopeConstraint as CanonicalReferenceScopeConstraint,
+  TemporalBoundary as CanonicalTemporalBoundary,
+  TemporalScopeConstraint as CanonicalTemporalScopeConstraint,
+} from "@/features/narrative-semantic-core/contracts/scopeV2";
+
+/** ADR 009 Scope V2 reference-axis constraint. */
+export type NarrativeScopeReferenceConstraint =
+  CanonicalReferenceScopeConstraint;
+
+export type NarrativeScopeTemporalBoundary = CanonicalTemporalBoundary;
+
+/** ADR 009 Scope V2 temporal-axis constraint. */
+export type NarrativeScopeTemporalConstraint = CanonicalTemporalScopeConstraint;
+
+/** The complete, explicit Scope shape required by Narrative IR V2. */
+export type NarrativeScopeV2 = CanonicalNarrativeScopeV2;
 
 /**
  * Deterministic Core assessment of whether a projection's source basis still
@@ -25,12 +64,7 @@ export type SemanticAssessment =
 /** Sole propagation signal permitted across provenance / dependency edges. */
 export type ReconciliationPropagationSignal = "needs-reconciliation";
 
-export type ProposalChangeKind =
-  | "add"
-  | "revise"
-  | "retract"
-  | "merge"
-  | "split";
+export type ProposalChangeKind = CanonicalNarrativeChangeKind;
 
 export interface ReconcilerIdentity {
   readonly reconcilerId: string;
@@ -123,6 +157,52 @@ export interface ReconciliationEnvelopeV1
   readonly changeKind: ProposalChangeKind;
   readonly targetProjectionRef?: string;
 }
+
+/** ADR 010 selector and role contracts are owned by the semantic core. */
+export type DependencySelector = CanonicalDependencySelector;
+export type DependencyRole = CanonicalDependencyRole;
+export type ContextSetEntry = CanonicalContextSetEntry;
+export type DependencySetEntry = CanonicalDependencySetEntry;
+export type ContextExposure = ContextSetEntry["exposure"];
+
+export type SourceBasisEntry = SourceBasisRevision;
+
+export type NarrativeAssertionModality = CanonicalAssertionModality;
+export type AssertionModality = NarrativeAssertionModality;
+
+export type NarrativeAssertionPolarity = CanonicalAssertionPolarity;
+export type AssertionPolarity = NarrativeAssertionPolarity;
+
+export type NarrativeAssertionSupportClass = CanonicalAssertionSupportClass;
+export type AssertionSupportClass = NarrativeAssertionSupportClass;
+
+export type NarrativeProducerKind = CanonicalNarrativeAssertionProducer["kind"];
+export type ProducerKind = NarrativeProducerKind;
+
+export type NarrativeAssertionProducer = CanonicalNarrativeAssertionProducer;
+
+export type NarrativePayloadSchemaRef = CanonicalNarrativePayloadSchemaRef;
+
+export type NarrativeAssertionDigests = CanonicalNarrativeAssertionDigests;
+
+export type NarrativeRevisionChangeIntent = CanonicalNarrativeChangeIntent;
+
+export type NarrativeEffectiveMaterialBasis =
+  CanonicalNarrativeEffectiveMaterialBasis;
+
+export type InterpretationRevisionBasisV2 =
+  CanonicalInterpretationRevisionBasisV2;
+
+export type HumanDerivedRevisionBasisV2 = CanonicalHumanDerivedRevisionBasisV2;
+
+export type NarrativeProjectionBindingV2 = CanonicalNarrativeProjectionBinding;
+
+export type NarrativeRevisionEnvelopeV2<
+  TPayload = Readonly<Record<string, unknown>>,
+> = CanonicalNarrativeRevisionEnvelopeV2<TPayload>;
+export type ReconciliationEnvelopeV2<
+  TPayload = Readonly<Record<string, unknown>>,
+> = NarrativeRevisionEnvelopeV2<TPayload>;
 
 export interface NarrativeProposalDraftEnvelope extends ReconciliationEnvelopeV1 {
   readonly draftId: string;

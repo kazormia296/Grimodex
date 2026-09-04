@@ -8,13 +8,13 @@ const DIST_DIR = path.resolve("dist/assets");
 /**
  * The startup graph budget is a bounded ratchet, not a byte-by-byte race.
  *
- * Baseline was measured from origin/master with the locked toolchain. Small
- * shared-chunk churn is covered by the allowance; intentional growth must
- * update the baseline in a reviewed change and can never cross the absolute
- * product ceiling.
+ * Baseline is the post C2-ZC low-risk split canonical Electron build baseline,
+ * measured with the locked toolchain. Small shared-chunk churn is covered by
+ * the allowance; intentional growth must update the baseline in a reviewed
+ * change and can never cross the absolute product ceiling.
  */
 export const INITIAL_JS_GRAPH_BUDGET = {
-  baseline: { rawBytes: 4_127_563, gzipBytes: 1_299_856 },
+  baseline: { rawBytes: 4_180_849, gzipBytes: 1_314_165 },
   allowance: { rawBytes: 32_768, gzipBytes: 16_384 },
   absoluteMax: { rawBytes: 4_250_000, gzipBytes: 1_350_000 },
 };

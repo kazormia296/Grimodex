@@ -3,7 +3,10 @@ import {
   _resetQuiescenceLeasesForTests,
   acquireQuiescenceLease,
 } from "@/application/lifecycle/quiescenceLease";
-import { flushQuiescenceProviderStage } from "@/lib/quiescenceProviders";
+import {
+  flushQuiescenceProviderStage,
+  QuiescenceProviderStageError,
+} from "@/lib/quiescenceProviders";
 import {
   _resetMapPersistenceWritesForTests,
   flushMapPersistenceWritesStrict,
@@ -51,6 +54,23 @@ function deferred<T>(): {
     resolve = res;
   });
   return { promise, resolve };
+}
+
+function expectProviderFailure(
+  rejection: unknown,
+  providerId: string,
+  message: string,
+): void {
+  expect(rejection).toBeInstanceOf(QuiescenceProviderStageError);
+  const stageError = rejection as QuiescenceProviderStageError;
+  const providerFailure = stageError.providerFailures.find(
+    (failure) => failure.providerId === providerId,
+  );
+  expect(providerFailure).toBeDefined();
+  expect(providerFailure?.originalError).toMatchObject({ message });
+  expect((providerFailure?.originalError as AggregateError).errors).toEqual([
+    expect.objectContaining({ message }),
+  ]);
 }
 
 beforeEach(() => {
@@ -176,9 +196,14 @@ describe("Map Project-DB persistence quiescence", () => {
       settings: boardSettings({ mode: "theme" }),
     });
 
-    await expect(
-      flushQuiescenceProviderStage("scoped-mutations"),
-    ).rejects.toThrow("map database full");
+    const rejection = await flushQuiescenceProviderStage(
+      "scoped-mutations",
+    ).catch((error: unknown) => error);
+    expectProviderFailure(
+      rejection,
+      "map-project-db-writes",
+      "map database full",
+    );
     await expect(
       flushQuiescenceProviderStage("scoped-mutations"),
     ).resolves.toBeUndefined();

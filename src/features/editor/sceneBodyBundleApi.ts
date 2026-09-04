@@ -2,6 +2,7 @@ import { invoke } from "@/lib/tauri";
 import type { SceneBodyDerivedSnapshot } from "./sceneBodySnapshot";
 import { normalizeForeshadowRow } from "@/features/foreshadow/normalizeForeshadowRow";
 import type { ForeshadowRow } from "@/features/foreshadow/types";
+import type { TimelapseCoverageProof } from "@/features/timelapse/documentCoverage";
 
 export interface SaveSceneBodyBundlePayload extends SceneBodyDerivedSnapshot {
   sceneId: string;
@@ -16,6 +17,8 @@ export interface SaveSceneBodyBundlePayload extends SceneBodyDerivedSnapshot {
    * the replay row cannot commit separately from the body and Change Feed.
    */
   timelapseSteps?: readonly unknown[];
+  /** Durable proof that every live-editor step through `contentJson` is queued. */
+  timelapseDocStepCoverage?: TimelapseCoverageProof;
   includeSidecars: boolean;
   /** Loaded scene version for editor OCC; omitted by headless writers. */
   baseVersion?: number;

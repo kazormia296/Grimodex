@@ -17,10 +17,10 @@
       "maxLines": 674
     },
     "src/features/project/projectStore.ts": {
-      "maxLines": 940
+      "maxLines": 922
     },
     "src/features/workspace/store.ts": {
-      "maxLines": 532
+      "maxLines": 528
     }
   }
 }

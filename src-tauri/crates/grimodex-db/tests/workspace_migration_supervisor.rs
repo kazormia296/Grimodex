@@ -121,10 +121,10 @@ fn same_schema_opens_without_migration_snapshot() {
 #[test]
 fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
     assert_eq!(
-        SCHEMA_VERSION, 31,
-        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-31 \
-         (Gate C2) migrate further on top but do not touch this step's own \
-         fixtures or assertions"
+        SCHEMA_VERSION, 34,
+        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-34 \
+         (Gate C2/D1/C2A) migrate further on top but do not touch this step's \
+         own fixtures or assertions"
     );
     let ws = temp_workspace("schema-20-through-22");
     let db_path = ws.join("grimodex.db");
@@ -199,10 +199,10 @@ fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
 #[test]
 fn schema_21_shadow_migrates_to_22_and_backfills_transaction_origins() {
     assert_eq!(
-        SCHEMA_VERSION, 31,
-        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-31 \
-         (Gate C2) migrate further on top but do not touch this step's own \
-         fixtures or assertions"
+        SCHEMA_VERSION, 34,
+        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-34 \
+         (Gate C2/D1/C2A) migrate further on top but do not touch this step's \
+         own fixtures or assertions"
     );
     let ws = temp_workspace("schema-21-to-22");
     let db_path = ws.join("grimodex.db");
@@ -250,6 +250,12 @@ fn schema_21_shadow_migrates_to_22_and_backfills_transaction_origins() {
                      'event-forward', 1, 0, '{\"kind\":\"project\"}',
                      'metadata', 'update', '[]', '2026-08-13T00:00:00Z');
 
+                 -- SCHEMA 21 predates all timelapse baseline triggers; remove
+                 -- every future trigger for historical fidelity. The Codex
+                 -- trigger also depends on the transaction table replaced below.
+                 DROP TRIGGER IF EXISTS timelapse_scene_creation_baseline;
+                 DROP TRIGGER IF EXISTS timelapse_codex_creation_baseline;
+                 DROP TRIGGER IF EXISTS timelapse_snippet_creation_baseline;
                  PRAGMA foreign_keys = OFF;
                  CREATE TABLE narrative_change_transactions_v21 (
                     id                           TEXT NOT NULL,
@@ -517,7 +523,10 @@ fn current_marker_missing_change_feed_nullable_column_is_shadow_repaired() {
                 [],
             )?;
             conn.execute_batch(
-                "ALTER TABLE narrative_change_transactions DROP COLUMN journal_id;",
+                "-- Remove the dependency trigger to synthesize a current checkpoint
+                 -- with a missing column; the supervisor must recreate it.
+                 DROP TRIGGER IF EXISTS timelapse_codex_creation_baseline;
+                 ALTER TABLE narrative_change_transactions DROP COLUMN journal_id;",
             )?;
             assert!(
                 !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,

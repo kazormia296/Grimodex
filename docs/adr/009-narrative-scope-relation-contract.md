@@ -36,6 +36,53 @@ does not add a Scope V2 runtime, a schema/table migration, or a Disclosure
 runtime connection; it only prevents a future Narrative IR activation from
 silently claiming Scope adoption.
 
+### Historical run-relative scope basis (NIR-0 / C2B)
+
+`narrative-scope-authority-basis/2` is a sealed, historical basis for one
+`snapshot:<runId>`. It records the document-to-scene mapping and the
+independent Reading Order and Story Time projections used by that run. It is
+not a live Scope Registry, a current-project Order Oracle, or a producer or
+resolver of scope authority. Duplicate Story keys remain explicitly
+unresolved; a unique key must resolve to its UTF-16 lexical rank. Neither case
+falls back to Reading Order.
+
+The carrier token `source.snapshot@2` is reserved to the typed snapshot-task
+writer/reader. The Electron coordinator supplies a closed basis companion;
+Native independently re-derives it from the durable Run scope and tree rows
+before it stores one shadow artifact. Generic artifact input cannot mint this
+carrier. The existing `source.snapshot@1` source identity authority remains
+unchanged, and the shadow artifact is not promoted into live Scope authority.
+V1 data has no implicit upgrade path; a rebuild is required.
+
+The historical producer/reader is a `shadow` foundation only. It is never
+reinterpreted as current authority. Runtime ScopeOverride handling continues to
+stop with the exact `NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE` code until the C2B
+adapter is wired. This slice adds no new IPC command, persistence migration, or
+current-Revision promotion.
+
+### Computed live project authority (NIR-0 / C2B foundation)
+
+The distinct `project-scope-authority` Source is the current, computed view of
+the persisted project tree. Its identity is
+`project:scope-authority:<projectId>` and its revision domain is
+`narrative-project-scope-authority-revision/1`. It owns no table or mutable
+head: Native reads one SQLite snapshot of the project, traverses live
+non-archived Scenes in persisted Reading DFS order, and delegates the closed
+Registry, Reading, and Story projections to the shared typed Core contract.
+
+Tree membership, `parentId`, `sortOrder`, `storyTimeOrder`, and archive-state
+changes can advance this Source. Title, body content, and `storyTimeLabel`
+cannot. Scene create/delete remain content changes of the aggregate Source;
+they do not replace or delete the aggregate incarnation. Incremental Freshness
+and restore/rebuild both resolve the same current token through the shared
+Source registry.
+
+This is a `shadow` runtime foundation, not Scope V2 activation. No C2B Human
+edit emits a Dependency Edge to this Source yet, no relation-comparison adapter
+consumes its axes, and the existing ScopeOverride STOP remains mandatory. The
+historical `snapshot:<runId>` basis remains immutable and is not upgraded or
+substituted with this current view.
+
 ## Context
 
 ADR 005の旧`NarrativeScope`は、Timeline、Worldline、Scene、Viewpoint、

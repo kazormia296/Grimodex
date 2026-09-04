@@ -137,6 +137,7 @@ fn scene_feed_digest_is_continuous_across_temporal_and_body_writers() {
             event_uid: "scene-body-event-after-temporal".to_string(),
             origin: NarrativeChangeOrigin::Human,
             timelapse_steps: None,
+            timelapse_doc_step_coverage: None,
             include_sidecars: false,
             base_version: Some(1),
             updated_at: "2026-08-13T00:00:01.000Z".to_string(),

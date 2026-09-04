@@ -1,5 +1,8 @@
 import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 
 export interface MutationAuthority {
@@ -88,7 +91,7 @@ export async function awaitPendingAuthoritativeMutations(): Promise<void> {
 }
 
 registerQuiescenceProvider({
-  id: "authoritative-mutations",
+  id: createQuiescenceProviderId("authoritative-mutations"),
   stage: "scoped-mutations",
   flush: awaitPendingAuthoritativeMutations,
 });

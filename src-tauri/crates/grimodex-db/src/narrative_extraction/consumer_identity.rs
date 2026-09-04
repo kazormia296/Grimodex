@@ -14,23 +14,24 @@
 //! - `restore_rebuild.rs`'s two unnamed `consumer_key`-is-a-`run_id` casts.
 //!
 //! The last of those is the reason this module exists rather than a pair of
-//! free functions. Today every Edge is declared under
+//! free functions. Historically every Edge was declared under
 //! `(RUN_CONSUMER_KIND, run_id)`, so passing `consumer_key` where a
-//! `run_id` is wanted is accidentally correct. Under Gate C2-2's finer
-//! Consumer grain it stops being correct, and the way it stops is the
-//! dangerous part: `source_revision::resolve_snapshot_document` requires a
-//! `snapshot:<runId>` Source's key to equal the `run_id` it is handed, and
-//! `restore_rebuild::build_edge_comparison_input` turns *every* resolver
-//! error into `current_source_exists = false`. A Consumer key that is no
-//! longer a Run id would therefore not raise anything -- it would quietly
-//! report `source-missing` for Sources that are present and healthy, and
-//! the Maintenance Inbox would show a plausible, entirely fabricated
-//! problem.
+//! `run_id` is wanted was accidentally correct. Proposal Revision and
+//! Application Consumers now use their own durable keys; their Edge-level
+//! `owning_run_id` is the explicit provenance for Source evaluation. The
+//! dangerous failure mode remains the same: `source_revision::resolve_snapshot_document`
+//! requires a `snapshot:<runId>` Source's key to equal the `run_id` it is
+//! handed, and `restore_rebuild::build_edge_comparison_input` turns *every*
+//! resolver error into `current_source_exists = false`. A Consumer key that
+//! is no longer a Run id must therefore never be guessed as one, or the
+//! Maintenance Inbox would show a plausible, entirely fabricated problem.
 //!
 //! So [`owning_run_id_for_consumer`] is the single seam, and it returns
 //! `Option`: callers must decide what to do when a Consumer has no owning
 //! Run instead of inheriting a wrong answer by construction. Both current
-//! callers fail closed and say so.
+//! callers fail closed and say so. At C2-ZB, Application Consumers are
+//! declared/evaluable, but their Edge-level `owning_run_id` remains the
+//! required provenance for Source evaluation.
 //!
 //! The vocabulary itself is ratified in
 //! `policies/narrative/narrative-consumer-contract.json`. That contract also
@@ -56,25 +57,39 @@ pub(crate) const RUN_CONSUMER_KIND: &str = ConsumerKind::Run.as_str();
 /// under: `consumer_key = narrative_proposal_revisions.id`.
 pub(crate) const PROPOSAL_REVISION_CONSUMER_KIND: &str = ConsumerKind::ProposalRevision.as_str();
 
+/// The Consumer identity of one applied Projection. Its durable key is the
+/// `narrative_proposal_applications.id`; the Run that declared an Edge is
+/// carried separately in `narrative_dependency_edges.owning_run_id`.
+pub(crate) const APPLICATION_CONSUMER_KIND: &str = ConsumerKind::Application.as_str();
+
+/// The Semantic Index owns its metadata/D1/V1 surface and is not a Generic
+/// Freshness Consumer. Keep the exact reserved literal here so every
+/// production writer applies the same narrow guard without changing the
+/// compatibility behavior for other unknown or forward-version kinds.
+pub(crate) const RESERVED_SEMANTIC_INDEX_CONSUMER_KIND: &str = "semantic-index";
+
+pub(crate) fn is_reserved_semantic_index_consumer_kind(consumer_kind: &str) -> bool {
+    consumer_kind == RESERVED_SEMANTIC_INDEX_CONSUMER_KIND
+}
+
 /// The Consumer kinds this crate declares and reads today.
 ///
 /// A variant here is a promise backed by code: something writes it, and
-/// something can evaluate, publish and resolve a Source for it.
-/// `policies/narrative/narrative-consumer-contract.json` additionally
-/// *reserves* the kinds Gate C2-2's later slices will introduce
-/// (`application`, `application-contribution`, `semantic-index`, ...), and
-/// those stay absent until they have both. `ConsumerKind::try_from`
-/// accepting a kind nothing can act on is exactly the silent-wrong-answer
-/// failure this module exists to prevent.
+/// something can evaluate, publish and resolve a Source for it. Application
+/// is declared/evaluable at C2-ZB; its owning Run is Edge provenance rather
+/// than part of the Consumer identity. The remaining reserved kinds stay
+/// absent until they have a complete evaluator path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ConsumerKind {
     /// One Narrative Extraction Run. `consumer_key` is
     /// `narrative_extraction_runs.id`.
     ///
     /// Still declared after the Proposal Revision re-key, and not a legacy
-    /// value: `legacy_backfill.rs` declares Edges for Applications that have
-    /// no Revision to attribute a read to, and a Run remains a legitimate
-    /// Consumer of its own Run-wide Sources.
+    /// value: a Run remains a legitimate Consumer of its own Run-wide
+    /// Sources. C2-ZB's Legacy Backfill writer uses Application Consumers
+    /// instead, because its durable projection dependency belongs to the
+    /// applied Application while the fresh Backfill Run supplies Edge owner
+    /// provenance.
     Run,
     /// One immutable Revision of one Proposal. `consumer_key` is
     /// `narrative_proposal_revisions.id`.
@@ -83,6 +98,10 @@ pub(crate) enum ConsumerKind {
     /// Revisions that actually read it, instead of every Proposal the same
     /// Run produced.
     ProposalRevision,
+    /// One applied Projection. `consumer_key` is
+    /// `narrative_proposal_applications.id`; unlike a Run Consumer, the key
+    /// does not itself name the Run that declared its Edges.
+    Application,
 }
 
 impl ConsumerKind {
@@ -94,6 +113,7 @@ impl ConsumerKind {
         match self {
             Self::Run => "narrative-extraction-run",
             Self::ProposalRevision => "proposal-revision",
+            Self::Application => "application",
         }
     }
 }
@@ -110,6 +130,7 @@ impl TryFrom<&str> for ConsumerKind {
         match value {
             RUN_CONSUMER_KIND => Ok(Self::Run),
             PROPOSAL_REVISION_CONSUMER_KIND => Ok(Self::ProposalRevision),
+            APPLICATION_CONSUMER_KIND => Ok(Self::Application),
             other => Err(anyhow::anyhow!(
                 "NEX_CONSUMER_KIND_INVALID: unknown consumer kind '{other}'"
             )),
@@ -237,7 +258,7 @@ pub(crate) fn owning_run_id_for_consumer<'a>(
 ) -> Option<&'a str> {
     match ConsumerKind::try_from(consumer_kind) {
         Ok(ConsumerKind::Run) => Some(consumer_key),
-        Ok(ConsumerKind::ProposalRevision) => None,
+        Ok(ConsumerKind::ProposalRevision | ConsumerKind::Application) => None,
         // An unrecognised kind has no owning Run either. Reported as
         // "unknown", never guessed at.
         Err(_) => None,
@@ -269,6 +290,10 @@ mod tests {
             ConsumerKind::try_from(PROPOSAL_REVISION_CONSUMER_KIND).unwrap(),
             ConsumerKind::ProposalRevision
         );
+        assert_eq!(
+            ConsumerKind::try_from(APPLICATION_CONSUMER_KIND).unwrap(),
+            ConsumerKind::Application
+        );
         // Reserved in the policy contract, deliberately not implemented here.
         let error = ConsumerKind::try_from("application-contribution").unwrap_err();
         assert!(
@@ -290,6 +315,12 @@ mod tests {
             "a Revision id is not a Run id; the Edge's own owning_run_id is the answer"
         );
         assert!(is_declared_consumer_kind(RUN_CONSUMER_KIND));
+        assert!(is_declared_consumer_kind(APPLICATION_CONSUMER_KIND));
+        assert_eq!(
+            owning_run_id_for_consumer(APPLICATION_CONSUMER_KIND, "application-1"),
+            None,
+            "an Application id is not a Run id; the Edge's own owning_run_id is the answer"
+        );
         assert!(!is_declared_consumer_kind("application-contribution"));
     }
 
@@ -380,8 +411,11 @@ mod tests {
     /// Every variant of `ConsumerKind`, so the cross-check below compares two
     /// full sets rather than a set against a hand-written list that silently
     /// stops being complete.
-    const ALL_CONSUMER_KINDS: &[ConsumerKind] =
-        &[ConsumerKind::Run, ConsumerKind::ProposalRevision];
+    const ALL_CONSUMER_KINDS: &[ConsumerKind] = &[
+        ConsumerKind::Run,
+        ConsumerKind::ProposalRevision,
+        ConsumerKind::Application,
+    ];
 
     /// `ALL_CONSUMER_KINDS` is hand-maintained, so it needs its own guard: a
     /// variant added without extending it would silently drop out of the
@@ -391,12 +425,12 @@ mod tests {
         // Exhaustive match -- a new variant fails to compile here first.
         for kind in ALL_CONSUMER_KINDS {
             match kind {
-                ConsumerKind::Run | ConsumerKind::ProposalRevision => {}
+                ConsumerKind::Run | ConsumerKind::ProposalRevision | ConsumerKind::Application => {}
             }
         }
         assert_eq!(
             ALL_CONSUMER_KINDS.len(),
-            2,
+            3,
             "extend ALL_CONSUMER_KINDS when a variant is added"
         );
     }
@@ -481,6 +515,10 @@ mod tests {
         );
         assert_eq!(
             owning_run_id_for_consumer("proposal-revision", "rev-1"),
+            None
+        );
+        assert_eq!(
+            owning_run_id_for_consumer(APPLICATION_CONSUMER_KIND, "application-1"),
             None
         );
         assert_eq!(owning_run_id_for_consumer("not-a-kind", "whatever"), None);

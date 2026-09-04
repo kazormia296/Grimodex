@@ -7,8 +7,37 @@ import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { normalizeWindowObservations } from "@/features/chronicle/extraction/windowExtractor";
 import { parseRawChronicleEventObservationList } from "@/features/chronicle/extraction/schemas";
+import type { AiAuditJsonObject } from "@/features/ai-audit/types";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
-import { runStructuredRepairTask } from "./runStructuredRepairTask";
+import {
+  runStructuredRepairTask,
+  type StructuredRepairSend,
+} from "./runStructuredRepairTask";
+import {
+  assertStageExecutionContext,
+  createChildStageExecutionContext,
+  NARRATIVE_STAGE_IDS,
+  type NarrativeStageExecutionContext,
+} from "@/features/narrative-extraction/reconciler/stageExecution";
+import {
+  buildChroniclePromptArtifact,
+  buildChroniclePromptDigests,
+  type ChroniclePromptArtifact,
+} from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
+import {
+  bindChronicleStageAuditContext,
+  buildChronicleStageAuditTerminal,
+  buildChronicleStageAuditNoResponseTerminal,
+  emitChronicleStageAuditSkippedReceipt,
+  createChronicleStageReceiptEmitter,
+  stageModelBindingFromAuditMetadata,
+  type ChronicleStageAuditMetadata,
+} from "./chronicleStageAudit";
+import type {
+  ChronicleStageTerminalReceiptV1,
+  StageModelExecutionBindingV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
+import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 
 export const NARRATIVE_OBSERVATION_EXTRACT_PATH =
   "narrative_observation_extract" as const;
@@ -20,7 +49,9 @@ export interface ObservationExtractionWindowInput {
 
 export type ObservationExtractionSend = (
   messages: Parameters<typeof sendChatMessageWithThinking>[0],
-  options: Parameters<typeof sendChatMessageWithThinking>[1],
+  options: Parameters<typeof sendChatMessageWithThinking>[1] & {
+    readonly stageExecution?: NarrativeStageExecutionContext;
+  },
 ) => Promise<
   Pick<
     Awaited<ReturnType<typeof sendChatMessageWithThinking>>,
@@ -36,23 +67,102 @@ export interface RunObservationExtractionTaskInput {
   readonly onParseStatus?: (status: "parsed" | "invalid") => void;
   /** Live eval / tests may inject OpenRouter (or other) transport. */
   readonly send?: ObservationExtractionSend;
+  /** Pure Chronicle stage identity; repair is derived as its child. */
+  readonly stageExecution?: NarrativeStageExecutionContext;
+  /** Injectable ID source for deterministic child-stage tests. */
+  readonly createStageExecutionId?: () => string;
+  /** Optional transport injection for the inline structured-repair child. */
+  readonly repairSend?: StructuredRepairSend;
+  /** Non-authoritative receipt observation seam for shadow/C1 harnesses. */
+  readonly onStageReceipt?: (
+    receipt: ChronicleStageTerminalReceiptV1,
+  ) => void | Promise<void>;
+}
+
+const OBSERVATION_COMPONENT_CONTRACT = {
+  contractId: "chronicle.observation-extraction.prompt",
+  contractVersion: "1",
+  instruction: `あなたは小説本文の観測アシスタントです。与えられた Source View 断片から、作中で提示されている出来事の Observation を JSON で列挙してください。
+Project ID / Scene ID / Event ID / DB version は出力にも入力にも使いません。evidence.sourceRef には与えた sourceRef（例: S0001）だけを使います。`,
+  outputShape:
+    '{"observations":[{"localId":"obs-1","evidence":[{"sourceRef":"S0001","quote":"原文の完全一致引用"}],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"出来事の述語","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}',
+} as const;
+
+function buildObservationPromptArtifact(
+  windows: readonly ObservationExtractionWindowInput[],
+): ChroniclePromptArtifact {
+  return buildChroniclePromptArtifact({
+    stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+    componentContract: OBSERVATION_COMPONENT_CONTRACT,
+    contextSet: windows.map((window) => ({
+      contextId: `observation-source:${window.sourceRef}`,
+      inputRef: window.sourceRef,
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      exposure: "model-visible" as const,
+      selector: { kind: "whole-source" as const },
+    })),
+    modelInputs: windows.map((window) => ({
+      contextId: `observation-source:${window.sourceRef}`,
+      value: window.text,
+    })),
+  });
 }
 
 /** Production observation prompt (shared with live eval certification). */
 export function buildObservationExtractionPrompt(
   windows: readonly ObservationExtractionWindowInput[],
 ): string {
-  const bodies = windows
-    .map((window) => `--- sourceRef=${window.sourceRef} ---\n${window.text}`)
-    .join("\n\n");
-  return `あなたは小説本文の観測アシスタントです。与えられた Source View 断片から、作中で提示されている出来事の Observation を JSON で列挙してください。
-Project ID / Scene ID / Event ID / DB version は出力にも入力にも使いません。evidence.sourceRef には与えた sourceRef（例: S0001）だけを使います。
+  return buildObservationPromptArtifact(windows).messages[0].content;
+}
 
-# Source Views
-${bodies}
-
-# 出力（JSON のみ）
-{"observations":[{"localId":"obs-1","evidence":[{"sourceRef":"S0001","quote":"原文の完全一致引用"}],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"出来事の述語","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}`;
+async function recordObservationStageAudit(
+  input: RunObservationExtractionTaskInput,
+  promptArtifact: ChroniclePromptArtifact,
+  responseText: string,
+  parseStatus: "parsed" | "invalid",
+  terminalStatus: "succeeded" | "failed",
+  usage: {
+    readonly model: string | null | undefined;
+    readonly provider: string | null | undefined;
+    readonly tokensIn?: number;
+    readonly tokensOut?: number;
+  },
+  modelExecutionBinding?: StageModelExecutionBindingV1,
+  onStageReceipt?: RunObservationExtractionTaskInput["onStageReceipt"],
+  capturedTerminalMetadata?: ChronicleStageAuditMetadata,
+  capturedStageReceipt?: ChronicleStageTerminalReceiptV1,
+): Promise<void> {
+  if (!input.stageExecution) return;
+  const digests = await buildChroniclePromptDigests(promptArtifact);
+  const terminal =
+    capturedTerminalMetadata ??
+    (await buildChronicleStageAuditTerminal({
+      stageExecution: input.stageExecution,
+      ...digests,
+      responseText,
+      parseStatus,
+      terminalStatus,
+      modelExecutionBinding,
+      onReceipt: onStageReceipt,
+    }));
+  if (
+    capturedTerminalMetadata !== undefined &&
+    capturedStageReceipt !== undefined
+  ) {
+    await onStageReceipt?.(capturedStageReceipt);
+  }
+  void recordAiUsage({
+    surface: "narrative_observation_extract",
+    model: usage.model,
+    provider: usage.provider,
+    tokensIn: usage.tokensIn,
+    tokensOut: usage.tokensOut,
+    projectId: input.stageExecution.projectId,
+    metadata: {
+      pathId: NARRATIVE_OBSERVATION_EXTRACT_PATH,
+      chronicleStageAudit: terminal,
+    },
+  });
 }
 
 async function parseObservationsFromText(
@@ -82,6 +192,18 @@ async function parseObservationsFromText(
   };
 }
 
+function observationParseStatus(responseText: string): "parsed" | "invalid" {
+  const jsonText = extractJsonObject(responseText);
+  if (!jsonText) return "invalid";
+  try {
+    return parseRawChronicleEventObservationList(JSON.parse(jsonText)).ok
+      ? "parsed"
+      : "invalid";
+  } catch {
+    return "invalid";
+  }
+}
+
 /**
  * Stage AI: narrative_observation_extract.
  * Passes only Source View refs (S0001…) — never project/scene/event DB ids.
@@ -89,26 +211,142 @@ async function parseObservationsFromText(
 export async function runObservationExtractionTask(
   input: RunObservationExtractionTaskInput,
 ): Promise<readonly RawChronicleEventObservation[]> {
-  if (blockNarrativeAiTask()) return [];
-  if (input.windows.length === 0) return [];
+  if (input.stageExecution) {
+    assertStageExecutionContext(input.stageExecution);
+    if (
+      input.projectId !== undefined &&
+      input.projectId !== null &&
+      input.projectId !== input.stageExecution.projectId
+    ) {
+      throw new TypeError(
+        "Observation extraction projectId must match stage execution projectId",
+      );
+    }
+    if (
+      input.stageExecution.stageId !== NARRATIVE_STAGE_IDS.observationExtraction
+    ) {
+      throw new TypeError(
+        `Observation extraction requires stageId '${NARRATIVE_STAGE_IDS.observationExtraction}'`,
+      );
+    }
+  }
+
+  const blocked = blockNarrativeAiTask();
+  const emptyInput = input.windows.length === 0;
+  if (blocked || emptyInput) {
+    if (input.stageExecution) {
+      const promptArtifact = buildObservationPromptArtifact(input.windows);
+      const promptDigests = await buildChroniclePromptDigests(promptArtifact);
+      await emitChronicleStageAuditSkippedReceipt({
+        stageExecution: input.stageExecution,
+        ...promptDigests,
+        projectId: input.stageExecution.projectId,
+        pathId: NARRATIVE_OBSERVATION_EXTRACT_PATH,
+        request: { messages: promptArtifact.messages },
+        reason: blocked
+          ? "narrative-observation-preflight-blocked"
+          : "narrative-observation-preflight-empty",
+        onReceipt: input.onStageReceipt,
+      });
+    }
+    return [];
+  }
 
   const allowedSourceRefs = new Set(
     input.windows.map((window) => window.sourceRef),
   );
-  const prompt = buildObservationExtractionPrompt(input.windows);
+  const promptArtifact = buildObservationPromptArtifact(input.windows);
+  const prompt = promptArtifact.messages[0].content;
+  const promptDigests = await buildChroniclePromptDigests(promptArtifact);
   const projectId = requireAuditProjectId(
-    input.projectId ?? useTreeStore.getState().projectId,
+    input.projectId ??
+      input.stageExecution?.projectId ??
+      useTreeStore.getState().projectId,
   );
   const ov = resolveRoleSendOverride("narrative_observation_extract");
+  const baseAuditContext = {
+    projectId,
+    pathId: NARRATIVE_OBSERVATION_EXTRACT_PATH,
+  } as const;
+  let sealedModelBinding: StageModelExecutionBindingV1 | undefined;
+  let capturedTerminalMetadata: ChronicleStageAuditMetadata | undefined;
+  let capturedStageReceipt: ChronicleStageTerminalReceiptV1 | undefined;
+  const emitStageReceipt = createChronicleStageReceiptEmitter(
+    input.onStageReceipt,
+  );
+  const auditContext = input.stageExecution
+    ? {
+        ...bindChronicleStageAuditContext(
+          baseAuditContext,
+          input.stageExecution,
+          promptDigests,
+          (binding) => {
+            sealedModelBinding = binding;
+          },
+        ),
+        onTerminalMetadata: async (
+          responseText: string,
+          metadata?: AiAuditJsonObject,
+          responseDigest?: Sha256Digest,
+        ) => {
+          const parseStatus = observationParseStatus(responseText);
+          const terminal = await buildChronicleStageAuditTerminal({
+            stageExecution: input.stageExecution!,
+            ...promptDigests,
+            responseText,
+            responseDigest,
+            parseStatus,
+            terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
+            modelExecutionBinding:
+              stageModelBindingFromAuditMetadata(metadata) ??
+              sealedModelBinding,
+            onReceipt: (receipt) => {
+              capturedStageReceipt = receipt;
+            },
+          });
+          capturedTerminalMetadata = terminal;
+          return {
+            chronicleStage: terminal as unknown as AiAuditJsonObject,
+          };
+        },
+        onNoResponseTerminalMetadata: async (
+          terminalStatus: "failed" | "cancelled" | "skipped",
+          metadata?: AiAuditJsonObject,
+        ) => {
+          const terminal = await buildChronicleStageAuditNoResponseTerminal({
+            stageExecution: input.stageExecution!,
+            ...promptDigests,
+            terminalStatus,
+            modelExecutionBinding:
+              stageModelBindingFromAuditMetadata(metadata) ??
+              sealedModelBinding,
+            onReceipt: (receipt) => {
+              capturedStageReceipt = receipt;
+            },
+          });
+          capturedTerminalMetadata = terminal;
+          return {
+            chronicleStage: terminal as unknown as AiAuditJsonObject,
+          };
+        },
+        onAuditCompleted: async () => {
+          if (capturedStageReceipt !== undefined) {
+            await emitStageReceipt(capturedStageReceipt);
+          }
+        },
+      }
+    : baseAuditContext;
   const response = input.send
     ? await input.send([{ role: "user", content: prompt }], {
-        projectId,
-        pathId: "narrative_observation_extract",
+        ...auditContext,
+        ...(input.stageExecution
+          ? { stageExecution: input.stageExecution }
+          : {}),
       })
     : await sendChatMessageWithThinking(
         [{ role: "user", content: prompt }],
         {
-          projectId,
+          ...auditContext,
           pathId: "narrative_observation_extract",
         },
         undefined,
@@ -119,16 +357,17 @@ export async function runObservationExtractionTask(
         ov.provider,
         ov.endpointId,
       );
-  void recordAiUsage({
-    surface: "narrative_observation_extract",
-    model: ov.model,
-    provider: ov.provider,
-    tokensIn: response.inputTokens,
-    tokensOut: response.outputTokens,
-    projectId,
-    metadata: { pathId: NARRATIVE_OBSERVATION_EXTRACT_PATH },
-  });
-
+  if (!input.stageExecution) {
+    void recordAiUsage({
+      surface: "narrative_observation_extract",
+      model: ov.model,
+      provider: ov.provider,
+      tokensIn: response.inputTokens,
+      tokensOut: response.outputTokens,
+      projectId,
+      metadata: { pathId: NARRATIVE_OBSERVATION_EXTRACT_PATH },
+    });
+  }
   const first = await parseObservationsFromText(
     response.text,
     allowedSourceRefs,
@@ -136,21 +375,92 @@ export async function runObservationExtractionTask(
   );
   if (first !== null) {
     input.onParseStatus?.(first.status);
+    if (input.stageExecution) {
+      await recordObservationStageAudit(
+        input,
+        promptArtifact,
+        response.text,
+        first.status,
+        first.status === "parsed" ? "succeeded" : "failed",
+        {
+          model: ov.model,
+          provider: ov.provider,
+          tokensIn: response.inputTokens,
+          tokensOut: response.outputTokens,
+        },
+        sealedModelBinding,
+        emitStageReceipt,
+        capturedTerminalMetadata,
+        capturedStageReceipt,
+      );
+    }
     return first.observations;
   }
   if (input.repairOnFailure === false) {
     input.onParseStatus?.("invalid");
+    if (input.stageExecution) {
+      await recordObservationStageAudit(
+        input,
+        promptArtifact,
+        response.text,
+        "invalid",
+        "failed",
+        {
+          model: ov.model,
+          provider: ov.provider,
+          tokensIn: response.inputTokens,
+          tokensOut: response.outputTokens,
+        },
+        sealedModelBinding,
+        emitStageReceipt,
+        capturedTerminalMetadata,
+        capturedStageReceipt,
+      );
+    }
     return [];
   }
+
+  const repairStageExecution = input.stageExecution
+    ? createChildStageExecutionContext(
+        input.stageExecution,
+        NARRATIVE_STAGE_IDS.structuredRepair,
+        (input.createStageExecutionId ?? (() => crypto.randomUUID()))(),
+      )
+    : undefined;
 
   const repaired = await runStructuredRepairTask({
     brokenText: response.text,
     expectedShape:
       '{"observations":[{"localId":"string","evidence":[{"sourceRef":"S0001","quote":"string"}],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"string","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}',
     projectId,
+    ...(repairStageExecution ? { stageExecution: repairStageExecution } : {}),
+    ...(repairStageExecution
+      ? { responseValidator: observationParseStatus }
+      : {}),
+    send: input.repairSend,
+    onStageReceipt: input.onStageReceipt,
   });
   if (!repaired) {
     input.onParseStatus?.("invalid");
+    if (input.stageExecution) {
+      await recordObservationStageAudit(
+        input,
+        promptArtifact,
+        response.text,
+        "invalid",
+        "failed",
+        {
+          model: ov.model,
+          provider: ov.provider,
+          tokensIn: response.inputTokens,
+          tokensOut: response.outputTokens,
+        },
+        sealedModelBinding,
+        emitStageReceipt,
+        capturedTerminalMetadata,
+        capturedStageReceipt,
+      );
+    }
     return [];
   }
   const parsed = await parseObservationsFromText(
@@ -159,5 +469,24 @@ export async function runObservationExtractionTask(
     input.createId,
   );
   input.onParseStatus?.(parsed?.status ?? "invalid");
+  if (input.stageExecution) {
+    await recordObservationStageAudit(
+      input,
+      promptArtifact,
+      response.text,
+      "invalid",
+      "failed",
+      {
+        model: ov.model,
+        provider: ov.provider,
+        tokensIn: response.inputTokens,
+        tokensOut: response.outputTokens,
+      },
+      sealedModelBinding,
+      emitStageReceipt,
+      capturedTerminalMetadata,
+      capturedStageReceipt,
+    );
+  }
   return parsed?.observations ?? [];
 }

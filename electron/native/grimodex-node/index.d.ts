@@ -43,9 +43,84 @@ export declare class Backend {
   /**
    * Electron main scheduler 専用の Change Feed freshness cycle。
    * renderer IPC には登録せず、1 call で共有runtimeの有界batchを最大1件だけ
-   * 処理する。workspace未open・切替中・Safe Mode・feed空はJS nullを返す。
+   * 処理する。workspace未open・切替中・Safe Mode・通常のfeed空はJS nullを返し、
+   * C2-ZCのexpected NOT_READYだけはmain activation owner向けの小さなJSONを返す。
    */
   runNarrativeFreshnessCycle(): Promise<string | null>
+  /**
+   * Main-process-only enqueue snapshot for the serialized maintenance
+   * seam. This is synchronous by design: it reads the currently pinned
+   * authority and recovery gate under one short state boundary, so the
+   * scheduler can bind a request before it enters its pending queue.
+   */
+  getNarrativeMaintenanceWorkspaceBinding(): string | null
+  /**
+   * Configure the one-shot, main-only product-journey seam. The payload is
+   * parsed into the shared Rust schema and validated again there; this
+   * method is intentionally not present in the renderer IPC router.
+   */
+  configureNarrativeMaintenanceCiSeam(payload: any): string
+  /**
+   * Main-process-only workspace-wide maintenance discovery.
+   *
+   * The active `WorkspaceAuthority` is pinned once for the complete
+   * enumeration and planner pass. The returned binding is the recovery
+   * generation paired with that exact authority; callers must pass it back
+   * unchanged to `run_narrative_maintenance_cycle`. Renderer/preload never
+   * receives this method or supplies project/path/phase data.
+   */
+  discoverNarrativeMaintenanceWork(reason: string): Promise<string>
+  /**
+   * Electron main-only durable wake outbox reader. An Epoch rotation
+   * commits its wake identity in the same transaction as the rotation;
+   * this lists the wakes main has not yet acknowledged so a lost
+   * observer event can never strand a rotated Epoch without maintenance
+   * discovery. Returns a JSON array; an unavailable workspace is `[]`.
+   */
+  listNarrativeMaintenanceWakeOutbox(): Promise<string>
+  /**
+   * Acknowledge durable wakes only after main has registered the exact
+   * discovery binding that listed them. A stale authority gets a typed
+   * non-ACK, never an acknowledgement against a replacement workspace.
+   */
+  ackNarrativeMaintenanceWakeOutbox(ids: Array<string>, workspaceBinding: any): Promise<string>
+  /**
+   * Electron main-only serialized system-work cycle.
+   *
+   * The request is validated in shared Rust, then executed against one
+   * pinned `WorkspaceAuthority` connection.  In particular, this method
+   * never reconstructs a `Database` from the workspace path: doing so
+   * would create the detached second writer that caused
+   * `SQLITE_BUSY_SNAPSHOT` in the old post-open worker.  A missing or
+   * switching workspace is a structured unavailable result so the main
+   * scheduler retains the durable trigger rather than treating it as a
+   * successful drain.
+   */
+  runNarrativeMaintenanceCycle(payload: any): Promise<string>
+  /**
+   * Persist a scheduler delivery failure before Electron drops its
+   * process-local identity. The receipt is append-only and workspace-scoped
+   * so a later process can surface the exact failed trigger during startup.
+   */
+  recordNarrativeMaintenanceDeliveryFailure(payload: any): Promise<string>
+  /**
+   * Main-owned pre-response claim for one exact foreground product-journey
+   * Run. This only proves that the current authority owns a matching
+   * running marker and remembers it for the delayed release; it never
+   * changes the durable Run status. A false/malformed/error result at the
+   * Electron boundary must therefore arm no timer.
+   */
+  claimNarrativeMaintenanceForegroundBarrier(projectId: string): Promise<string>
+  /**
+   * Main-owned post-response release for one exact foreground product
+   * journey Run. The ordinary tree_node_patch has already committed before
+   * main schedules this call. The expected Run id is mandatory: a delayed
+   * callback from phase A must never complete a same-marker phase B Run.
+   * A failed transaction leaves the process-local barrier pending; a later
+   * patch retries it, while a restart can rediscover the durable marker from
+   * SQLite.
+   */
+  releaseNarrativeMaintenanceForegroundBarrier(projectId: string, expectedRunId: string): Promise<string>
   /**
    * drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
    * CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
@@ -113,6 +188,7 @@ export declare class Backend {
   codexRenameUndo(payload: any): Promise<string>
   codexRenameApply(payload: any): Promise<string>
   scanStagingProjectCreate(payload: any): Promise<void>
+  scanStagingProjectPublish(payload: any): Promise<string>
   projectCreate(payload: any): Promise<string>
   projectPatch(payload: any): Promise<string>
   projectDelete(payload: any): Promise<void>
@@ -248,6 +324,39 @@ export declare class Backend {
    */
   timelapseAppendBatch(projectId: string, sessionId: string, events: any): Promise<string>
   /**
+   * Append missing genesis editor-body baselines in one native transaction.
+   * Any existing same-entity snapshot (including a later rebaseline) makes
+   * that entity ineligible. The renderer supplies identity only; trusted
+   * workspace tables own payload, domain, entityType, and project membership.
+   */
+  timelapseGenesisBaselinesAppend(expectedWorkspacePath: string, projectId: string, kind: string, entityIds: Array<string>, anchorTimestamp: number): Promise<string>
+  /**
+   * Append body baselines at the current canonical tail. Renderer callers
+   * provide identities only; Native resolves ownership and body payload
+   * from the trusted workspace tables inside one immediate transaction.
+   */
+  timelapseBodyBaselinesAppend(expectedWorkspacePath: string, projectId: string, targets: any, expectedAnchorSequence?: number | undefined | null): Promise<string>
+  /**
+   * Logically reset timelapse history for the authorized project in one
+   * transaction. Canonical `change_events` and their hash chain remain
+   * intact; project `state_snapshots` are deleted and Native advances the
+   * trusted `resetSequence` cutoff. The summary reports the logical event
+   * count hidden by the new cutoff and the snapshots deleted.
+   */
+  timelapseHistoryPurge(expectedWorkspacePath: string, projectId: string): Promise<string>
+  /**
+   * Set `timelapse.enabled` under the same exact workspace binding used by
+   * the protected timelapse writers. This prevents a switch from redirecting
+   * an enable/rollback to a project with the same id in another database.
+   */
+  timelapseEnabledSet(expectedWorkspacePath: string, projectId: string, enabled: boolean): Promise<string>
+  /**
+   * Record a renderer UI snapshot under the fixed
+   * `layout/workspace/workspace` scope. Native derives the anchor timestamp
+   * and checks the optional observed canonical tail.
+   */
+  timelapseLayoutSnapshotRecord(expectedWorkspacePath: string, projectId: string, payload: any, expectedAnchorSequence?: number | undefined | null): Promise<string>
+  /**
    * Append a durable batch to the complete AI-use audit ledger. The
    * renderer snapshots `expected_workspace_path` before dispatch; every
    * subsequent event must still target that exact workspace. A workspace
@@ -324,8 +433,8 @@ export declare class Backend {
   trashBinPrune(projectId: string, retentionDays: number, maxCount: number): Promise<string>
   /**
    * FTS optimize (commands/integrity.rs の写像 — 実装は grimodex-db の
-   * `Database::fts_optimize` を Tauri と共用)。workspace open 後のアイドル
-   * タイミングで呼ばれる fail-soft コマンド。
+   * `Database::fts_optimize` を Tauri と共用)。明示的なメンテナンス用であり、
+   * workspace open からは自動実行しない。
    */
   ftsOptimize(): Promise<void>
   /** FTS 全再構築 (設定画面のデータカテゴリから明示実行)。 */
@@ -644,14 +753,24 @@ export declare class Backend {
   sceneEventUnlink(payload: any): Promise<string>
   eventRelationAdd(payload: any): Promise<string>
   eventRelationRemove(payload: any): Promise<string>
-  narrativeExtractionCreateRun(payload: any): Promise<string>
+  /**
+   * Capture the exact active Native workspace authority for a long-running
+   * extraction. The expected path is renderer-captured scope, not a path
+   * selector: Native rejects a mismatch and always owns the returned
+   * authority id/generation.
+   */
+  narrativeExtractionCaptureWorkspaceBinding(expectedWorkspacePath: string): Promise<string>
+  narrativeExtractionCreateRun(payload: any, workspaceBinding: any): Promise<string>
   narrativeExtractionGetRun(payload: any): Promise<string>
   narrativeExtractionListResumableRuns(payload: any): Promise<string>
-  narrativeExtractionCancelRun(payload: any): Promise<string>
-  narrativeExtractionClaimTask(payload: any): Promise<string>
-  narrativeExtractionFinishTask(payload: any): Promise<string>
-  narrativeExtractionFailTask(payload: any): Promise<string>
-  narrativeExtractionSaveProposalSet(payload: any): Promise<string>
+  narrativeExtractionIsRunResumableForReview(payload: any): Promise<string>
+  narrativeExtractionListChronicleTaskResumeCandidates(payload: any): Promise<string>
+  narrativeExtractionCancelRun(payload: any, workspaceBinding: any): Promise<string>
+  narrativeExtractionClaimTask(payload: any, workspaceBinding: any): Promise<string>
+  narrativeExtractionFinishTask(payload: any, workspaceBinding: any): Promise<string>
+  narrativeExtractionFailTask(payload: any, workspaceBinding: any): Promise<string>
+  narrativeExtractionSaveProposalSet(payload: any, workspaceBinding: any): Promise<string>
+  narrativeExtractionCreateHumanDerivedRevision(payload: any): Promise<string>
   narrativeExtractionGetRunReviewBundle(payload: any): Promise<string>
   narrativeExtractionAppendRevision(payload: any): Promise<string>
   narrativeExtractionAppendDecision(payload: any): Promise<string>

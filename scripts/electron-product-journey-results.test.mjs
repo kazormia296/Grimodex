@@ -1,15 +1,35 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
   PRODUCT_JOURNEYS,
+  assertBuildArtifacts,
   assertLifecycleTransitionOrder,
+  resolveMcpArtifact,
+  resolveMcpArtifactPath,
+  resolveProductJourneyArtifact,
   resolveSelectedProductJourneys,
+  refreshProductJourneyOutcome,
   runProductJourneys,
 } from "../electron/scripts/product-journeys.mjs";
+import { NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG } from "../electron/scripts/product-journey-catalog.mjs";
+import {
+  createC2ZcFixtureManifest,
+  createC2ZcFixtureSemantic,
+} from "../scripts/c2zc-fixture-test-support.mjs";
 
 function deterministicClock(values) {
   let index = 0;
@@ -23,6 +43,146 @@ async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
 }
 
+test("required C2-ZC Verify outcome binding fails closed without throwing", () => {
+  for (const c2zcRustAcceptance of [
+    {
+      required: true,
+      verified: true,
+      receipt: {},
+    },
+    {
+      required: true,
+      verified: true,
+      verifyOutcome: { verifyContractVersion: "9" },
+      receipt: { verifyOutcome: { verifyContractVersion: "8" } },
+    },
+  ]) {
+    const report = {
+      acceptanceRequired: true,
+      status: "passed",
+      journeyIds: ["journey"],
+      requiredJourneyIds: ["journey"],
+      journeys: [{ id: "journey", status: "passed", cleanPass: true }],
+      c2zcRustAcceptance,
+    };
+    assert.doesNotThrow(() => refreshProductJourneyOutcome(report));
+    assert.equal(report.rustAcceptanceComplete, false);
+  }
+});
+
+test("runner MCP artifact resolution honors override, CARGO_TARGET_DIR, and default with identity evidence", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-product-mcp-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const targetDir = path.join(root, "cargo-target");
+  const targetBinary = path.join(targetDir, "debug", "grimodex-mcp");
+  const defaultBinary = path.join(
+    root,
+    "src-tauri",
+    "target",
+    "debug",
+    "grimodex-mcp",
+  );
+  const canonicalBinary = path.join(root, "canonical-mcp");
+  const override = path.join(root, "override-mcp");
+  await writeFile(canonicalBinary, "runner mcp artifact");
+  await chmod(canonicalBinary, 0o755);
+  await symlink(canonicalBinary, override);
+  await mkdir(path.dirname(targetBinary), { recursive: true });
+  await mkdir(path.dirname(defaultBinary), { recursive: true });
+  await writeFile(targetBinary, "cargo mcp artifact");
+  await writeFile(defaultBinary, "default mcp artifact");
+  await chmod(targetBinary, 0o755);
+  await chmod(defaultBinary, 0o755);
+
+  assert.equal(
+    resolveMcpArtifactPath({
+      root,
+      overridePath: override,
+      cargoTargetDir: targetDir,
+      platform: "linux",
+    }),
+    override,
+  );
+  assert.equal(
+    resolveMcpArtifactPath({
+      root,
+      overridePath: "",
+      cargoTargetDir: "cargo-target",
+      platform: "linux",
+    }),
+    targetBinary,
+  );
+  assert.equal(
+    resolveMcpArtifactPath({
+      root,
+      overridePath: "",
+      cargoTargetDir: "",
+      platform: "linux",
+    }),
+    path.join(root, "src-tauri", "target", "debug", "grimodex-mcp"),
+  );
+  assert.equal(
+    resolveMcpArtifactPath({
+      root: "C:\\grimodex",
+      overridePath: "",
+      cargoTargetDir: "target",
+      platform: "win32",
+    }),
+    "C:\\grimodex\\target\\debug\\grimodex-mcp.exe",
+  );
+  assert.throws(
+    () =>
+      resolveMcpArtifactPath({
+        root,
+        overridePath: "relative-mcp",
+        cargoTargetDir: "",
+        platform: "linux",
+      }),
+    /absolute path/,
+  );
+
+  const cargoIdentity = await resolveMcpArtifact({
+    root,
+    overridePath: "",
+    cargoTargetDir: targetDir,
+    platform: "linux",
+  });
+  assert.equal(cargoIdentity.path, targetBinary);
+  assert.equal(cargoIdentity.requestedPath, targetBinary);
+  assert.equal(cargoIdentity.realPath, await realpath(targetBinary));
+  assert.equal(
+    cargoIdentity.sha256,
+    `sha256:${createHash("sha256").update("cargo mcp artifact").digest("hex")}`,
+  );
+
+  const defaultIdentity = await resolveMcpArtifact({
+    root,
+    overridePath: "",
+    cargoTargetDir: "",
+    platform: "linux",
+  });
+  assert.equal(defaultIdentity.path, defaultBinary);
+  assert.equal(defaultIdentity.requestedPath, defaultBinary);
+  assert.equal(defaultIdentity.realPath, await realpath(defaultBinary));
+  assert.equal(
+    defaultIdentity.sha256,
+    `sha256:${createHash("sha256")
+      .update("default mcp artifact")
+      .digest("hex")}`,
+  );
+
+  const identity = await resolveProductJourneyArtifact(override, {
+    executable: true,
+  });
+  assert.equal(identity.path, override);
+  assert.equal(identity.requestedPath, override);
+  assert.equal(identity.realPath, await realpath(canonicalBinary));
+  assert.equal(
+    identity.sha256,
+    `sha256:${createHash("sha256").update("runner mcp artifact").digest("hex")}`,
+  );
+});
+
 test("product runner records deterministic results while preserving serial fresh harnesses", async (t) => {
   const outputRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-product-results-"),
@@ -33,6 +193,7 @@ test("product runner records deterministic results while preserving serial fresh
   t.after(() => rm(outputRoot, { recursive: true, force: true }));
 
   await runProductJourneys({
+    catalog: [{ id: "first" }, { id: "second" }],
     journeys: [
       {
         id: "first",
@@ -80,8 +241,11 @@ test("product runner records deterministic results while preserving serial fresh
     "dispose:2:true:second",
   ]);
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 3);
+  assert.equal(report.version, 5);
   assert.equal(report.status, "passed");
+  assert.deepEqual(report.journeyIds, ["first", "second"]);
+  assert.equal(report.allPassed, true);
+  assert.equal(report.allClean, true);
   assert.deepEqual(report.journeys, [
     {
       id: "first",
@@ -106,9 +270,871 @@ test("product runner records deterministic results while preserving serial fresh
       cleanPass: true,
     },
   ]);
+  const manifest = await readJson(path.join(outputRoot, "manifest.json"));
+  assert.equal(manifest.version, 1);
+  assert.equal(manifest.status, "passed");
+  assert.deepEqual(manifest.journeyIds, ["first", "second"]);
+  assert.equal(manifest.allPassed, true);
+  assert.equal(manifest.allClean, true);
+  assert.equal(manifest.results.path, "results.json");
+  assert.match(manifest.results.sha256, /^sha256:[0-9a-f]{64}$/);
 });
 
-test("product runner writes the failed and fail-fast results before rethrowing", async (t) => {
+test("focused C2-ZC executes the auxiliary lane after canonical success and fails acceptance when it fails", async (t) => {
+  const outputRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-c2zc-lanes-"),
+  );
+  const resultsPath = path.join(outputRoot, "results.json");
+  const events = [];
+  const watchdogs = [];
+  const laneIds = NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map(
+    (journey) => journey.id,
+  );
+  t.after(() => rm(outputRoot, { recursive: true, force: true }));
+  const mainPath = path.join(outputRoot, "dist-electron", "main.cjs");
+  const rendererPath = path.join(outputRoot, "dist", "index.html");
+  const nativePath = path.join(outputRoot, "custom", "grimodex-node.node");
+  await mkdir(path.dirname(mainPath), { recursive: true });
+  await mkdir(path.dirname(rendererPath), { recursive: true });
+  await mkdir(path.dirname(nativePath), { recursive: true });
+  await writeFile(mainPath, "main");
+  await writeFile(rendererPath, "renderer");
+  await writeFile(nativePath, "native");
+  const environment = { GRIMODEX_NODE_PATH: nativePath };
+  const artifacts = (
+    await assertBuildArtifacts(
+      laneIds.map((id) => ({ id })),
+      {
+        catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+        root: outputRoot,
+        env: environment,
+      },
+    )
+  ).artifacts;
+  const candidate = {
+    requestedBase: "origin/master",
+    requestedHead: "HEAD",
+    resolvedBaseSha: "a".repeat(40),
+    resolvedHeadSha: "b".repeat(40),
+    resolvedHeadTreeSha: "c".repeat(40),
+    currentHeadSha: "b".repeat(40),
+    worktreeClean: true,
+    worktreeFingerprint: "d".repeat(64),
+    worktreeStatusHash: "e".repeat(64),
+  };
+
+  await assert.rejects(
+    runProductJourneys({
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      journeys: laneIds.map((id, index) => ({
+        id,
+        run: async () => {
+          events.push(`run:${id}`);
+          if (index === laneIds.length - 1)
+            throw new Error("deliberate DML failure");
+        },
+      })),
+      selectionName: "c2-zc",
+      assertArtifacts: () => ({ artifacts }),
+      root: outputRoot,
+      environment,
+      buildReceipt: {
+        version: 1,
+        verified: true,
+        source: "local-ci-candidate",
+        candidate,
+        artifacts,
+      },
+      rustAcceptanceEvidence: {
+        required: true,
+        verified: true,
+        candidate,
+        receipt: { candidate },
+      },
+      createHarness: () => ({
+        withLaneWatchdog: async (run, options) => {
+          watchdogs.push(options);
+          return run();
+        },
+        dispose: async ({ success, name }) => {
+          events.push(`dispose:${name}:${success}`);
+        },
+      }),
+      clock: (() => {
+        let value = 0;
+        return () => (value += 10);
+      })(),
+      resultsPath,
+    }),
+  );
+
+  assert.deepEqual(events, [
+    `run:${laneIds[0]}`,
+    `dispose:${laneIds[0]}:true`,
+    `run:${laneIds[1]}`,
+    `dispose:${laneIds[1]}:false`,
+  ]);
+  assert.deepEqual(
+    watchdogs.map(({ phase, timeoutMs }) => [phase, timeoutMs]),
+    laneIds.map((id) => [id, 10 * 60 * 1000]),
+  );
+  const report = await readJson(resultsPath);
+  assert.deepEqual(
+    report.journeys.map((journey) => [journey.id, journey.status]),
+    [
+      [laneIds[0], "passed"],
+      [laneIds[1], "failed"],
+    ],
+  );
+  assert.equal(
+    report.journeys.some((journey) => journey.status === "not-run"),
+    false,
+  );
+  assert.equal(report.allPassed, false);
+  assert.equal(report.allClean, false);
+  assert.equal(report.acceptanceComplete, false);
+  const manifest = await readJson(path.join(outputRoot, "manifest.json"));
+  assert.deepEqual(report.buildReceipt.artifacts, artifacts);
+  assert.deepEqual(manifest.artifacts, artifacts);
+  assert.deepEqual(manifest.artifacts, report.buildReceipt.artifacts);
+});
+
+test("a hung canonical C2-ZC lane is watchdog-bounded and still allows auxiliary DML to finish", async (t) => {
+  const outputRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-c2zc-watchdog-"),
+  );
+  const resultsPath = path.join(outputRoot, "results.json");
+  const events = [];
+  const watchdogs = [];
+  const laneIds = NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map(
+    (journey) => journey.id,
+  );
+  t.after(() => rm(outputRoot, { recursive: true, force: true }));
+  const mainPath = path.join(outputRoot, "dist-electron", "main.cjs");
+  const rendererPath = path.join(outputRoot, "dist", "index.html");
+  const nativePath = path.join(outputRoot, "custom", "grimodex-node.node");
+  await mkdir(path.dirname(mainPath), { recursive: true });
+  await mkdir(path.dirname(rendererPath), { recursive: true });
+  await mkdir(path.dirname(nativePath), { recursive: true });
+  await writeFile(mainPath, "main");
+  await writeFile(rendererPath, "renderer");
+  await writeFile(nativePath, "native");
+  const environment = { GRIMODEX_NODE_PATH: nativePath };
+  const artifacts = (
+    await assertBuildArtifacts(
+      laneIds.map((id) => ({ id })),
+      {
+        catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+        root: outputRoot,
+        env: environment,
+      },
+    )
+  ).artifacts;
+  const candidate = {
+    requestedBase: "origin/master",
+    requestedHead: "HEAD",
+    resolvedBaseSha: "a".repeat(40),
+    resolvedHeadSha: "b".repeat(40),
+    resolvedHeadTreeSha: "c".repeat(40),
+    currentHeadSha: "b".repeat(40),
+    worktreeClean: true,
+    worktreeFingerprint: "d".repeat(64),
+    worktreeStatusHash: "e".repeat(64),
+  };
+
+  await assert.rejects(
+    runProductJourneys({
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      journeys: [
+        {
+          id: laneIds[0],
+          required: true,
+          acceptanceRole: "required",
+          run: async () => new Promise(() => {}),
+        },
+        {
+          id: laneIds[1],
+          required: true,
+          acceptanceRole: "auxiliary",
+          run: async () => {
+            events.push("run:auxiliary-dml");
+          },
+        },
+      ],
+      selectionName: "c2-zc",
+      assertArtifacts: () => ({ artifacts }),
+      root: outputRoot,
+      environment,
+      buildReceipt: {
+        version: 1,
+        verified: true,
+        source: "local-ci-candidate",
+        candidate,
+        artifacts,
+      },
+      rustAcceptanceEvidence: {
+        required: true,
+        verified: true,
+        candidate,
+        receipt: { candidate },
+      },
+      createHarness: () => ({
+        withLaneWatchdog: async (run, options) => {
+          watchdogs.push(options);
+          if (options.phase === laneIds[0]) {
+            return Promise.race([
+              run(),
+              Promise.reject(new Error("lane watchdog timeout")),
+            ]);
+          }
+          return run();
+        },
+        dispose: async ({ success, name }) => {
+          events.push(`dispose:${name}:${success}`);
+        },
+      }),
+      clock: (() => {
+        let value = 0;
+        return () => (value += 10);
+      })(),
+      resultsPath,
+    }),
+    /lane watchdog timeout/,
+  );
+
+  assert.deepEqual(events, [
+    `dispose:${laneIds[0]}:false`,
+    "run:auxiliary-dml",
+    `dispose:${laneIds[1]}:true`,
+  ]);
+  assert.deepEqual(
+    watchdogs.map(({ phase, timeoutMs }) => [phase, timeoutMs]),
+    [
+      [laneIds[0], 10 * 60 * 1000],
+      [laneIds[1], 10 * 60 * 1000],
+    ],
+  );
+  const report = await readJson(resultsPath);
+  assert.deepEqual(
+    report.journeys.map((journey) => [journey.id, journey.status]),
+    [
+      [laneIds[0], "failed"],
+      [laneIds[1], "passed"],
+    ],
+  );
+  assert.equal(report.allPassed, false);
+  assert.equal(report.allClean, false);
+  assert.equal(report.acceptanceComplete, false);
+});
+
+test("C2-ZC build preflight binds the three selected capability artifacts and omits MCP", async (t) => {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-c2zc-artifacts-"),
+  );
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const mainPath = path.join(root, "dist-electron", "main.cjs");
+  const rendererPath = path.join(root, "dist", "index.html");
+  const nativePath = path.join(root, "custom", "grimodex-node.node");
+  await mkdir(path.dirname(mainPath), { recursive: true });
+  await mkdir(path.dirname(rendererPath), { recursive: true });
+  await mkdir(path.dirname(nativePath), { recursive: true });
+  await writeFile(mainPath, "main");
+  await writeFile(rendererPath, "renderer");
+  await writeFile(nativePath, "native");
+
+  const result = await assertBuildArtifacts(
+    NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+    {
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      root,
+      env: { GRIMODEX_NODE_PATH: nativePath },
+    },
+  );
+  assert.deepEqual(
+    result.artifacts.map((artifact) => artifact.name),
+    ["Electron main", "renderer", "N-API native module"],
+  );
+  assert.ok(
+    result.artifacts.every((artifact) => Number.isSafeInteger(artifact.size)),
+  );
+  assert.equal(
+    result.artifacts.find((artifact) => artifact.name === "N-API native module")
+      .realPath,
+    await realpath(nativePath),
+  );
+});
+
+test("C2-ZC product results and audit manifest bind the verified fixture manifest and candidate", async (t) => {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-c2zc-fixture-evidence-"),
+  );
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const mainPath = path.join(root, "dist-electron", "main.cjs");
+  const rendererPath = path.join(root, "dist", "index.html");
+  const nativePath = path.join(root, "custom", "grimodex-node.node");
+  const fixtureRoot = path.join(
+    root,
+    ".artifacts",
+    "local-ci",
+    "c2-zc-restore-fixture",
+  );
+  const fixturePath = path.join(fixtureRoot, "c2zc-restore-fixture.backup.db");
+  const databasePath = path.join(fixtureRoot, "c2zc-restore-fixture.db");
+  const manifestPath = path.join(
+    fixtureRoot,
+    "c2zc-restore-fixture.manifest.json",
+  );
+  await Promise.all([
+    mkdir(path.dirname(mainPath), { recursive: true }),
+    mkdir(path.dirname(rendererPath), { recursive: true }),
+    mkdir(path.dirname(nativePath), { recursive: true }),
+    mkdir(fixtureRoot, { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(mainPath, "main"),
+    writeFile(rendererPath, "renderer"),
+    writeFile(nativePath, "native"),
+  ]);
+  const candidate = {
+    requestedBase: "origin/master",
+    requestedHead: "HEAD",
+    resolvedBaseSha: "a".repeat(40),
+    resolvedHeadSha: "b".repeat(40),
+    resolvedHeadTreeSha: "c".repeat(40),
+    currentHeadSha: "b".repeat(40),
+    worktreeClean: true,
+    worktreeFingerprint: "d".repeat(64),
+    worktreeStatusHash: "e".repeat(64),
+  };
+  const fixtureBytes = Buffer.from("offline-fixture", "utf8");
+  const fixtureManifest = createC2ZcFixtureManifest({
+    candidate: {
+      requested: candidate.requestedHead,
+      resolvedHeadSha: candidate.resolvedHeadSha,
+      resolvedTreeSha: candidate.resolvedHeadTreeSha,
+      headSha: candidate.currentHeadSha,
+      treeSha: candidate.resolvedHeadTreeSha,
+      clean: candidate.worktreeClean,
+      statusSha256: `sha256:${candidate.worktreeStatusHash}`,
+    },
+    semantic: createC2ZcFixtureSemantic(),
+    fixtureSha256: `sha256:${createHash("sha256")
+      .update(fixtureBytes)
+      .digest("hex")}`,
+    fixtureSizeBytes: fixtureBytes.length,
+    schemaVersion: 34,
+    fixturePath: "c2zc-restore-fixture.backup.db",
+    databasePath: "c2zc-restore-fixture.db",
+  });
+  await Promise.all([
+    writeFile(fixturePath, fixtureBytes),
+    writeFile(databasePath, fixtureBytes),
+    writeFile(manifestPath, `${JSON.stringify(fixtureManifest, null, 2)}\n`),
+  ]);
+  const environment = {
+    GRIMODEX_NODE_PATH: nativePath,
+    GRIMODEX_C2ZC_RESTORE_FIXTURE: JSON.stringify({
+      path: fixturePath,
+      manifest: manifestPath,
+    }),
+  };
+  const journeys = NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map(({ id }) => ({
+    id,
+    run: async () => undefined,
+  }));
+  const artifacts = (
+    await assertBuildArtifacts(journeys, {
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      root,
+      env: environment,
+    })
+  ).artifacts;
+  const report = await runProductJourneys({
+    root,
+    environment,
+    catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+    journeys,
+    selectionName: "c2-zc",
+    assertArtifacts: () => ({ artifacts }),
+    buildReceipt: {
+      version: 1,
+      verified: true,
+      source: "local-ci-candidate",
+      candidate,
+      artifacts,
+    },
+    rustAcceptanceEvidence: {
+      required: true,
+      verified: true,
+      candidate,
+      receipt: { candidate },
+    },
+    createHarness: () => ({
+      withLaneWatchdog: async (run) => run(),
+      dispose: async () => {},
+    }),
+    resultsPath: path.join(root, "results.json"),
+  });
+
+  assert.match(
+    report.c2zcRestoreFixture.manifestSha256,
+    /^sha256:[0-9a-f]{64}$/u,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.fixtureSha256,
+    fixtureManifest.fixtureSha256,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.fixtureSizeBytes,
+    fixtureManifest.fixtureSizeBytes,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.semanticContentsDigest,
+    fixtureManifest.semantic.contentsDigest,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.contractVersion,
+    fixtureManifest.contractVersion,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.builderVersion,
+    fixtureManifest.builderVersion,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.candidateHeadSha,
+    fixtureManifest.candidate.resolvedHeadSha,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.candidateTreeSha,
+    fixtureManifest.candidate.resolvedTreeSha,
+  );
+  assert.equal(
+    report.c2zcRestoreFixture.candidateStatusSha256,
+    fixtureManifest.candidate.statusSha256,
+  );
+  const manifest = await readJson(path.join(root, "manifest.json"));
+  assert.deepEqual(manifest.c2zcRestoreFixture, report.c2zcRestoreFixture);
+
+  await writeFile(databasePath, "mutated-database", "utf8");
+  await assert.rejects(
+    runProductJourneys({
+      root,
+      environment,
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      journeys,
+      selectionName: "c2-zc",
+      assertArtifacts: () => ({ artifacts }),
+      buildReceipt: {
+        version: 1,
+        verified: true,
+        source: "local-ci-candidate",
+        candidate,
+        artifacts,
+      },
+      rustAcceptanceEvidence: {
+        required: true,
+        verified: true,
+        candidate,
+        receipt: { candidate },
+      },
+      createHarness: () => ({
+        withLaneWatchdog: async (run) => run(),
+        dispose: async () => {},
+      }),
+      resultsPath: path.join(root, "mutated-results.json"),
+    }),
+    /bytes|digest|manifest artifacts/i,
+    "the product lane must re-read the current fixture database",
+  );
+});
+
+test("C2-ZC rejects candidate-correct receipts with stale or mutated artifact identities", async (t) => {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-c2zc-artifact-mutations-"),
+  );
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const mainPath = path.join(root, "dist-electron", "main.cjs");
+  const rendererPath = path.join(root, "dist", "index.html");
+  const nativePath = path.join(root, "custom", "grimodex-node.node");
+  await Promise.all([
+    mkdir(path.dirname(mainPath), { recursive: true }),
+    mkdir(path.dirname(rendererPath), { recursive: true }),
+    mkdir(path.dirname(nativePath), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(mainPath, "main"),
+    writeFile(rendererPath, "renderer"),
+    writeFile(nativePath, "native"),
+  ]);
+  const environment = { GRIMODEX_NODE_PATH: nativePath };
+  const journeys = NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map(({ id }) => ({
+    id,
+    run: async () => undefined,
+  }));
+  const artifacts = (
+    await assertBuildArtifacts(journeys, {
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      root,
+      env: environment,
+    })
+  ).artifacts;
+  const candidate = {
+    requestedBase: "origin/master",
+    requestedHead: "HEAD",
+    resolvedBaseSha: "a".repeat(40),
+    resolvedHeadSha: "b".repeat(40),
+    resolvedHeadTreeSha: "c".repeat(40),
+    currentHeadSha: "b".repeat(40),
+    worktreeClean: true,
+    worktreeFingerprint: "d".repeat(64),
+    worktreeStatusHash: "e".repeat(64),
+  };
+  const receipt = {
+    version: 1,
+    verified: true,
+    source: "local-ci-candidate",
+    candidate,
+    artifacts,
+  };
+  const rustAcceptanceEvidence = {
+    required: true,
+    verified: true,
+    candidate,
+    receipt: { candidate },
+  };
+  const mutations = [
+    [
+      "stale main hash",
+      (entries) => (entries[0].sha256 = `sha256:${"f".repeat(64)}`),
+    ],
+    [
+      "stale renderer hash",
+      (entries) => (entries[1].sha256 = `sha256:${"f".repeat(64)}`),
+    ],
+    [
+      "stale native hash",
+      (entries) => (entries[2].sha256 = `sha256:${"f".repeat(64)}`),
+    ],
+    ["extra artifact", (entries) => entries.push(structuredClone(entries[0]))],
+    ["missing artifact", (entries) => entries.pop()],
+    ["name mutation", (entries) => (entries[0].name = "foreign")],
+    ["order mutation", (entries) => entries.reverse()],
+    ["path mutation", (entries) => (entries[0].path = rendererPath)],
+    ["realPath mutation", (entries) => (entries[0].realPath = rendererPath)],
+    ["size mutation", (entries) => (entries[0].size += 1)],
+    [
+      "hash mutation",
+      (entries) => (entries[0].sha256 = `sha256:${"0".repeat(64)}`),
+    ],
+  ];
+
+  for (const [label, mutate] of mutations) {
+    const mutatedReceipt = structuredClone(receipt);
+    mutate(mutatedReceipt.artifacts);
+    await assert.rejects(
+      runProductJourneys({
+        catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+        journeys,
+        selectionName: "c2-zc",
+        assertArtifacts: () => ({ artifacts }),
+        root,
+        environment,
+        buildReceipt: mutatedReceipt,
+        rustAcceptanceEvidence,
+        createHarness: () => {
+          throw new Error(`${label} must fail before launch`);
+        },
+        resultsPath: path.join(
+          root,
+          label.replaceAll(" ", "-"),
+          "results.json",
+        ),
+      }),
+      label,
+    );
+  }
+});
+
+test("C2-ZC rehashes configured artifacts after every lane before acceptance", async (t) => {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-c2zc-post-run-artifacts-"),
+  );
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const mainPath = path.join(root, "dist-electron", "main.cjs");
+  const rendererPath = path.join(root, "dist", "index.html");
+  const nativePath = path.join(root, "custom", "grimodex-node.node");
+  await Promise.all([
+    mkdir(path.dirname(mainPath), { recursive: true }),
+    mkdir(path.dirname(rendererPath), { recursive: true }),
+    mkdir(path.dirname(nativePath), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(mainPath, "main"),
+    writeFile(rendererPath, "renderer"),
+    writeFile(nativePath, "native"),
+  ]);
+  const journeys = NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map(
+    ({ id }, index) => ({
+      id,
+      run: async () => {
+        if (index === 0)
+          await writeFile(mainPath, "main replaced during lanes");
+      },
+    }),
+  );
+  const environment = { GRIMODEX_NODE_PATH: nativePath };
+  const artifacts = (
+    await assertBuildArtifacts(journeys, {
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      root,
+      env: environment,
+    })
+  ).artifacts;
+  const candidate = {
+    requestedBase: "origin/master",
+    requestedHead: "HEAD",
+    resolvedBaseSha: "a".repeat(40),
+    resolvedHeadSha: "b".repeat(40),
+    resolvedHeadTreeSha: "c".repeat(40),
+    currentHeadSha: "b".repeat(40),
+    worktreeClean: true,
+    worktreeFingerprint: "d".repeat(64),
+    worktreeStatusHash: "e".repeat(64),
+  };
+  const receipt = {
+    version: 1,
+    verified: true,
+    source: "local-ci-candidate",
+    candidate,
+    artifacts,
+  };
+
+  await assert.rejects(
+    runProductJourneys({
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      journeys,
+      selectionName: "c2-zc",
+      assertArtifacts: () => ({ artifacts }),
+      root,
+      environment,
+      buildReceipt: receipt,
+      rustAcceptanceEvidence: {
+        required: true,
+        verified: true,
+        candidate,
+        receipt: { candidate },
+      },
+      createHarness: () => ({
+        withLaneWatchdog: async (run) => run(),
+        dispose: async () => {},
+      }),
+      resultsPath: path.join(root, "results.json"),
+    }),
+    /artifact|mismatch/i,
+  );
+  const report = await readJson(path.join(root, "results.json"));
+  assert.equal(report.status, "failed");
+  assert.equal(report.acceptanceComplete, false);
+  assert.equal(report.allPassed, false);
+});
+
+test("artifact requirements follow selected capabilities and resolve MCP only when selected", async (t) => {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-capability-artifacts-"),
+  );
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const mainPath = path.join(root, "dist-electron", "main.cjs");
+  const rendererPath = path.join(root, "dist", "index.html");
+  const nativePath = path.join(root, "custom", "grimodex-node.node");
+  const mcpTarget = path.join(root, "custom", "grimodex-mcp-target");
+  const mcpPath = path.join(root, "custom", "grimodex-mcp");
+  await Promise.all([
+    mkdir(path.dirname(mainPath), { recursive: true }),
+    mkdir(path.dirname(rendererPath), { recursive: true }),
+    mkdir(path.dirname(nativePath), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(mainPath, "main"),
+    writeFile(rendererPath, "renderer"),
+    writeFile(nativePath, "native"),
+  ]);
+  const c2zcArtifacts = (
+    await assertBuildArtifacts(NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG, {
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      root,
+      env: { GRIMODEX_NODE_PATH: nativePath },
+    })
+  ).artifacts;
+  assert.deepEqual(
+    c2zcArtifacts.map((artifact) => artifact.name),
+    ["Electron main", "renderer", "N-API native module"],
+  );
+
+  const mcpJourney = {
+    id: "mcp-capability",
+    capabilities: ["electron", "napi", "mcp"],
+  };
+  const mcpEnvironment = {
+    GRIMODEX_NODE_PATH: nativePath,
+    GRIMODEX_MCP_PATH: mcpPath,
+  };
+  await assert.rejects(
+    assertBuildArtifacts([mcpJourney], {
+      catalog: [mcpJourney],
+      root,
+      env: mcpEnvironment,
+    }),
+    /missing Electron product journey artifact|MCP/i,
+  );
+  await writeFile(mcpTarget, "mcp");
+  await chmod(mcpTarget, 0o755);
+  await symlink(path.basename(mcpTarget), mcpPath);
+  const mcpArtifacts = (
+    await assertBuildArtifacts([mcpJourney], {
+      catalog: [mcpJourney],
+      root,
+      env: mcpEnvironment,
+    })
+  ).artifacts;
+  assert.deepEqual(
+    mcpArtifacts.map((artifact) => artifact.name),
+    ["Electron main", "renderer", "N-API native module", "MCP sidecar"],
+  );
+  assert.equal(mcpArtifacts.at(-1).requestedPath, mcpPath);
+  assert.equal(mcpArtifacts.at(-1).realPath, await realpath(mcpTarget));
+});
+
+test("C2-ZC artifact preflight keeps all lanes truthfully not-run", async (t) => {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-c2zc-preflight-"),
+  );
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const journeys = NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map(({ id }) => ({
+    id,
+    run: async () => {
+      throw new Error("lane must not launch");
+    },
+  }));
+  const candidate = {
+    requestedBase: "origin/master",
+    requestedHead: "HEAD",
+    resolvedBaseSha: "a".repeat(40),
+    resolvedHeadSha: "b".repeat(40),
+    resolvedHeadTreeSha: "c".repeat(40),
+    currentHeadSha: "b".repeat(40),
+    worktreeClean: true,
+    worktreeFingerprint: "d".repeat(64),
+    worktreeStatusHash: "e".repeat(64),
+  };
+
+  await assert.rejects(
+    runProductJourneys({
+      catalog: NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+      journeys,
+      selectionName: "c2-zc",
+      assertArtifacts: () => {
+        throw new Error("missing C2-ZC build artifact");
+      },
+      root,
+      buildReceipt: null,
+      rustAcceptanceEvidence: {
+        required: true,
+        verified: true,
+        candidate,
+        receipt: { candidate },
+      },
+      createHarness: () => {
+        throw new Error("harness must not be created");
+      },
+      resultsPath: path.join(root, "results.json"),
+    }),
+    /missing C2-ZC build artifact/,
+  );
+  const report = await readJson(path.join(root, "results.json"));
+  assert.deepEqual(
+    report.journeys.map(({ id, status }) => [id, status]),
+    journeys.map(({ id }) => [id, "not-run"]),
+  );
+  assert.equal(report.allPassed, false);
+  assert.equal(report.acceptanceComplete, false);
+});
+
+test("product runner persists a journey evidence result and binds results path/hash in manifest", async (t) => {
+  const outputRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-evidence-results-"),
+  );
+  const resultsPath = path.join(outputRoot, "results.json");
+  t.after(() => rm(outputRoot, { recursive: true, force: true }));
+
+  const evidence = {
+    receiptVersion: 2,
+    probeCount: 36,
+    probes: Array.from({ length: 36 }, (_, index) => ({ index: index + 1 })),
+    terminalLedger: { ready: true, obligations: [] },
+  };
+  const quiescenceArtifacts = {
+    before: {
+      receipt: {
+        type: "grimodex:narrative-maintenance-ci-quiescence",
+        sequence: 1,
+      },
+      path: "/tmp/receipt/quiescence-0000000001.json",
+      realPath: "/tmp/receipt/quiescence-0000000001.json",
+      sha256: `sha256:${"a".repeat(64)}`,
+      byteLength: 321,
+    },
+    after: {
+      receipt: {
+        type: "grimodex:narrative-maintenance-ci-quiescence",
+        sequence: 2,
+      },
+      path: "/tmp/receipt/quiescence-0000000002.json",
+      realPath: "/tmp/receipt/quiescence-0000000002.json",
+      sha256: `sha256:${"b".repeat(64)}`,
+      byteLength: 654,
+    },
+  };
+  await runProductJourneys({
+    catalog: [{ id: "dml-evidence" }],
+    journeys: [
+      {
+        id: "dml-evidence",
+        run: async () => ({
+          settledEvidence: evidence,
+          quiescenceArtifacts,
+        }),
+      },
+    ],
+    assertArtifacts: () => undefined,
+    createHarness: () => ({
+      finalizeDiagnostics: async () => ({ cleanPass: true }),
+      dispose: async () => undefined,
+    }),
+    clock: deterministicClock([100, 125]),
+    resultsPath,
+  });
+
+  const report = await readJson(resultsPath);
+  assert.deepEqual(report.journeys[0].result, {
+    settledEvidence: evidence,
+    quiescenceArtifacts,
+  });
+  assert.deepEqual(
+    report.journeys[0].result.quiescenceArtifacts,
+    quiescenceArtifacts,
+    "the result must persist core quiescence receipt identity before artifact disposal",
+  );
+  const manifest = await readJson(path.join(outputRoot, "manifest.json"));
+  assert.equal(manifest.results.realPath, await realpath(resultsPath));
+  assert.equal(
+    manifest.results.sha256,
+    `sha256:${createHash("sha256")
+      .update(await readFile(resultsPath))
+      .digest("hex")}`,
+  );
+});
+
+test("non-C2-ZC selection writes failed and fail-fast results before rethrowing", async (t) => {
   const outputRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-product-results-"),
   );
@@ -123,6 +1149,7 @@ test("product runner writes the failed and fail-fast results before rethrowing",
 
   await assert.rejects(
     runProductJourneys({
+      catalog: [{ id: "broken" }, { id: "never" }],
       journeys: [
         {
           id: "broken",
@@ -138,6 +1165,7 @@ test("product runner writes the failed and fail-fast results before rethrowing",
           },
         },
       ],
+      selectionName: "non-c2-zc",
       assertArtifacts: () => undefined,
       createHarness: () => {
         events.push("create");
@@ -166,7 +1194,7 @@ test("product runner writes the failed and fail-fast results before rethrowing",
 
   assert.deepEqual(events, ["create", "run:broken", "dispose:false:broken"]);
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 3);
+  assert.equal(report.version, 5);
   assert.equal(report.status, "failed");
   assert.ok(
     report.journeys.every(
@@ -210,6 +1238,7 @@ test("product runner still writes a versioned report when artifact preflight fai
 
   await assert.rejects(
     runProductJourneys({
+      catalog: [{ id: "never" }],
       journeys: [{ id: "never", run: async () => undefined }],
       assertArtifacts: () => {
         throw new Error("missing build");
@@ -224,7 +1253,7 @@ test("product runner still writes a versioned report when artifact preflight fai
   );
 
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 3);
+  assert.equal(report.version, 5);
   assert.equal(report.status, "failed");
   assert.deepEqual(report.error, {
     name: "Error",
@@ -263,6 +1292,7 @@ test("product runner fails closed when renderer diagnostics are not clean", asyn
 
   await assert.rejects(
     runProductJourneys({
+      catalog: [{ id: "renderer-broken" }],
       journeys: [{ id: "renderer-broken", run: async () => undefined }],
       assertArtifacts: () => undefined,
       createHarness: () => ({
@@ -285,7 +1315,7 @@ test("product runner fails closed when renderer diagnostics are not clean", asyn
 
   assert.deepEqual(events, ["finalize", "dispose:false:renderer-broken"]);
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 3);
+  assert.equal(report.version, 5);
   assert.equal(report.status, "failed");
   assert.deepEqual(report.journeys, [
     {
@@ -422,5 +1452,29 @@ test("runner selection rejects malformed, duplicate, empty, and unknown IDs", ()
   assert.equal(
     resolveSelectedProductJourneys(PRODUCT_JOURNEYS, undefined),
     PRODUCT_JOURNEYS,
+  );
+});
+
+test("Full product journey execution rejects a subset even when IDs are supplied", async (t) => {
+  const outputRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-results-full-"),
+  );
+  t.after(() => rm(outputRoot, { recursive: true, force: true }));
+
+  await assert.rejects(
+    runProductJourneys({
+      catalog: [
+        { id: "first", capabilities: [] },
+        { id: "second", capabilities: [] },
+      ],
+      journeys: [{ id: "first", run: async () => undefined }],
+      requireAll: true,
+      assertArtifacts: () => undefined,
+      createHarness: () => ({
+        dispose: async () => undefined,
+      }),
+      resultsPath: path.join(outputRoot, "results.json"),
+    }),
+    /all canonical product journey IDs/i,
   );
 });

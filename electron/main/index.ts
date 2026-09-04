@@ -31,6 +31,8 @@ import { registerIpcRouter } from "./ipc.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
+import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
+import type { NarrativeMaintenanceTriggerCoordinator } from "./narrativeMaintenanceTriggers.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
 import {
@@ -60,6 +62,15 @@ import {
   shouldUseProductJourneyAi,
   wrapBackendForProductJourneyAi,
 } from "./productJourneyAi.js";
+import {
+  configureNarrativeMaintenanceCiSeam,
+  createNarrativeMaintenanceCiHeldFreshnessWriter,
+  shouldFailFastNarrativeMaintenanceCiLaunch,
+  shouldDisableNarrativeFreshnessForLaunch,
+  writeNarrativeMaintenanceCiReceipt,
+  type NarrativeMaintenanceCiBackend,
+  type NarrativeMaintenanceCiHeldFreshnessWriter,
+} from "./narrativeMaintenanceCiSeam.js";
 
 const WEB_EDITOR_HANDOFF_EVENT = "web-editor-handoff:requested";
 const WEB_EDITOR_HANDOFF_PAYLOAD = {
@@ -73,6 +84,66 @@ const WEB_EDITOR_HANDOFF_PAYLOAD = {
 let pendingWebEditorHandoff =
   parseWebEditorHandoffProtocolRequest(process.argv) !== null;
 let mainRendererReady = false;
+
+async function initializeNarrativeMaintenanceStartup(
+  userDataDir: string,
+): Promise<{
+  initializedBackend: ReturnType<typeof initBackend>;
+  narrativeMaintenanceCiSeam: Awaited<
+    ReturnType<typeof configureNarrativeMaintenanceCiSeam>
+  >;
+  narrativeMaintenanceCiHeldFreshnessWriter: NarrativeMaintenanceCiHeldFreshnessWriter | null;
+} | null> {
+  const failFast = shouldFailFastNarrativeMaintenanceCiLaunch({
+    isPackaged: app.isPackaged,
+    env: process.env,
+  });
+  try {
+    // Ordinary/packaged launches retain the backend's explicit fail-soft
+    // envelope. The owner-gated CI acceptance launch must fail before a
+    // renderer can appear when native startup is unavailable.
+    const initializedBackend = initBackend({ failFast });
+    // The product-journey seam is deliberately configured at this one startup
+    // point: after native initialization, before any scheduler can observe a
+    // workspace event. Unauthorized launches return inactive without reading
+    // or forwarding the test-only environment values.
+    const narrativeMaintenanceCiSeam =
+      await configureNarrativeMaintenanceCiSeam(
+        initializedBackend as unknown as NarrativeMaintenanceCiBackend | null,
+        {
+          isPackaged: app.isPackaged,
+          env: process.env,
+        },
+      );
+    // The harness may accept a seam-controlled renderer only after native
+    // configuration has acknowledged the exact launch. Production launches
+    // are inactive and therefore intentionally write no receipt.
+    await writeNarrativeMaintenanceCiReceipt(narrativeMaintenanceCiSeam, {
+      isPackaged: app.isPackaged,
+      userDataDir,
+    });
+    const narrativeMaintenanceCiHeldFreshnessWriter =
+      createNarrativeMaintenanceCiHeldFreshnessWriter(
+        narrativeMaintenanceCiSeam,
+        {
+          userDataDir,
+        },
+      );
+    return {
+      initializedBackend,
+      narrativeMaintenanceCiSeam,
+      narrativeMaintenanceCiHeldFreshnessWriter,
+    };
+  } catch (error) {
+    if (!failFast) throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[grimodex-electron] CI product-journey startup failed: ${detail}`,
+    );
+    app.exit(1);
+    return null;
+  }
+}
 
 function flushPendingWebEditorHandoff(): void {
   if (!pendingWebEditorHandoff || !mainRendererReady) return;
@@ -151,9 +222,17 @@ if (!gotSingleInstanceLock) {
     if (!process.env.ELECTRON_RENDERER_URL) {
       registerAppProtocolHandler(path.join(__dirname, "..", "dist"));
     }
-    // .node ロード失敗は fail-soft（backend=null → 明示エラー envelope）
+    const startup = await initializeNarrativeMaintenanceStartup(
+      configuredUserDataDir,
+    );
+    if (!startup) return;
+    const {
+      initializedBackend,
+      narrativeMaintenanceCiSeam,
+      narrativeMaintenanceCiHeldFreshnessWriter,
+    } = startup;
     const backend = wrapBackendForProductJourneyAi(
-      initBackend(),
+      initializedBackend,
       shouldUseProductJourneyAi({ isPackaged: app.isPackaged }),
     );
     // Phase 4: final Tauri releaseのOS keyringかsafeStorageへ、1回だけ
@@ -392,9 +471,37 @@ if (!gotSingleInstanceLock) {
       backend,
       broadcastBackendEvent,
     );
-    const narrativeFreshness = createNarrativeFreshnessScheduler(backend);
+    let narrativeMaintenanceTriggers: NarrativeMaintenanceTriggerCoordinator | null =
+      null;
+    const narrativeFreshness = createNarrativeFreshnessScheduler(backend, {
+      onCutoverNotReady: () => {
+        narrativeMaintenanceTriggers?.requestBeforeCutoverPreparation();
+      },
+      onCycleCompleted: (observation) => {
+        void Promise.resolve(
+          narrativeMaintenanceCiHeldFreshnessWriter?.recordFreshness(
+            observation,
+          ),
+        ).catch((error: unknown) => {
+          // Held Freshness is a CI-only acceptance artifact. A failed observer
+          // must remain diagnostic and never become an unhandled rejection in
+          // an otherwise healthy production scheduler.
+          console.warn(
+            "[narrative-freshness] held-freshness receipt failed:",
+            error,
+          );
+        });
+      },
+    });
+    // Main-only system-work seam. Trigger discovery is owned by this process;
+    // renderer/preload never supplies project scope, paths, or phase data.
+    const { scheduler: narrativeMaintenance, coordinator } =
+      bootstrapNarrativeMaintenance(backend, narrativeMaintenanceCiSeam);
+    narrativeMaintenanceTriggers = coordinator;
     licenseValidation.start();
-    narrativeFreshness.start();
+    if (!shouldDisableNarrativeFreshnessForLaunch(narrativeMaintenanceCiSeam)) {
+      narrativeFreshness.start();
+    }
     app.on("will-quit", () => {
       // close veto を通過して終了が確定してから同期 KILL する。before-quit で
       // dispose すると、未保存確認で終了を取り消した後も全 handler が死ぬ。
@@ -402,6 +509,9 @@ if (!gotSingleInstanceLock) {
       updater.dispose();
       licenseValidation.dispose();
       narrativeFreshness.dispose();
+      narrativeMaintenanceTriggers?.dispose();
+      narrativeMaintenance?.dispose();
+      narrativeMaintenanceCiHeldFreshnessWriter?.dispose();
       cliAi.disposeAll();
       void codexApp.dispose();
       void externalMount.disposeAll();
@@ -438,12 +548,14 @@ if (!gotSingleInstanceLock) {
       },
       keyStore,
       broadcastBackendEvent,
+      narrativeMaintenanceCiSeam,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には
     // 届かない（FE 購読者なしのデバッグチャネル — TSFn 実証は
     // workspace:opened が担う）。
-    registerEventBus(backend, (channel) => {
+    registerEventBus(backend, (channel, payload) => {
+      narrativeMaintenanceTriggers?.handleBackendEvent(channel, payload);
       if (channel === "workspace:opened") {
         void codexApp.handleWorkspaceChanged();
       }

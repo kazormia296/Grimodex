@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import yaml from "js-yaml";
 
 import {
   LIGHT_SUITE_DEFINITIONS,
@@ -12,7 +13,12 @@ import {
   formatImpactSummary,
   parseImpactMap,
   selectImpact,
+  validateAcceptanceGateRegistration,
 } from "./impact-map.mjs";
+import {
+  C2ZC_RUST_ACCEPTANCE_GATES,
+  C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND,
+} from "../c2zc-rust-acceptance-receipt.mjs";
 
 test("the AI routing light suite executes browser transport contracts", () => {
   const commandText = JSON.stringify(
@@ -74,6 +80,44 @@ test("the Narrative runtime suite executes incremental Freshness integration", (
       "cargo check --manifest-path electron/native/grimodex-node/Cargo.toml",
     ),
   );
+  assert.ok(
+    commandLines.includes(
+      "node --test scripts/product-journey-phase1.test.mjs scripts/c2-5b-product-journeys.test.mjs scripts/c2zc-product-journeys.test.mjs",
+    ),
+  );
+});
+
+test("the Narrative semantic suite executes terminal timestamp and projection gates", () => {
+  const commandText = JSON.stringify(
+    LIGHT_SUITE_DEFINITIONS["narrative-semantic-contract"].commands,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::execution_state::tests::run_transition_persists_millisecond_rfc3339_timestamps/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::repository::unit_tests::every_generic_public_task_api_rejects_runtime_owned_automatic_runs/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::repository::unit_tests::list_resumable_runs_orders_mixed_legacy_and_rfc3339_instants/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::legacy_backfill::tests::backfill_owner_finalizer_survives_generic_cancel_phase_gap/,
+  );
+  assert.match(commandText, /narrative_scope_authority_runtime/);
+  assert.match(commandText, /narrative_scope_authority_basis/);
+  assert.match(commandText, /scopeAuthorityBasisV2\.contract\.test\.ts/);
+  assert.match(commandText, /projectSnapshotAdapter\.test\.ts/);
+  assert.match(commandText, /extractionCoordinator\.test\.ts/);
+  assert.match(commandText, /electron\/shared\/ipcContract\.test\.ts/);
+  assert.match(
+    commandText,
+    /narrative_extraction::restore_rebuild::tests::rebuild_finalization_after_epoch_rotation_is_failed_and_returns_error/,
+  );
+  assert.match(commandText, /narrative_terminal_failure_projection/);
 });
 
 test("incremental Freshness runtime changes select the Narrative runtime gate", async () => {
@@ -164,6 +208,186 @@ test("Narrative Extraction changes select every Narrative semantic requirement",
     assert.ok(selection.requirementIds.includes(requirementId));
   }
   assert.equal(selection.fallback, false);
+});
+
+test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(
+      new URL("../../evals/quality-manifest.yaml", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const requirement = manifest.requirements.find(
+    (candidate) => candidate.id === "GDX-NARR-SEMANTIC-CONTRACT-001",
+  );
+  assert.ok(requirement, "semantic contract requirement must exist");
+  const artifactRequirement = manifest.requirements.find(
+    (candidate) => candidate.id === "GDX-ARTIFACT-001",
+  );
+  assert.ok(artifactRequirement, "artifact requirement must exist");
+  for (const relativePath of [
+    "policies/narrative/narrative-artifact-authority.json",
+    "policies/narrative/schemas/narrative-artifact-authority.schema.json",
+  ]) {
+    assert.ok(
+      artifactRequirement.implementedBy.includes(relativePath),
+      `${relativePath} must be listed in artifact requirement implementedBy`,
+    );
+  }
+
+  const implementations = [
+    "policies/narrative/fixtures/canonical-json-number-parity.json",
+    "src/features/narrative-semantic-core/contracts/scopeV2.ts",
+    "src/features/narrative-semantic-core/contracts/narrativeIr.ts",
+    "src/features/narrative-semantic-core/contracts/scopeRelation.ts",
+    "src/features/narrative-extraction/source/digest.ts",
+    "src/features/narrative-extraction/source/scopeAuthorityBasisV2.ts",
+    "src/features/narrative-extraction/source/types.ts",
+    "src/features/tree/api.ts",
+    "src/application/narrative-extraction/nativeApi.ts",
+    "src/application/narrative-extraction/projectSnapshotAdapter.ts",
+    "electron/shared/ipcContract.ts",
+    "src-tauri/crates/grimodex-core/src/canonical_json.rs",
+    "src-tauri/crates/grimodex-core/src/narrative_ir.rs",
+    "src-tauri/crates/grimodex-core/src/narrative_scope_authority_basis.rs",
+    "src/features/narrative-extraction/reconciler/stageExecution.ts",
+    "src/features/narrative-extraction/reconciler/types.ts",
+    "src/features/narrative-extraction/reconciler/v2Adapter.ts",
+    "src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts",
+    "src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts",
+    "src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts",
+    "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+    "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
+    "src/application/narrative-extraction/extractionCoordinator.ts",
+    "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/scope_authority_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+  ];
+  const tests = [
+    "src/features/narrative-semantic-core/contracts/scopeV2.test.ts",
+    "src/features/narrative-semantic-core/contracts/narrativeIr.test.ts",
+    "src/features/narrative-semantic-core/contracts/scopeRelation.test.ts",
+    "src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts",
+    "src/features/narrative-extraction/source/scopeAuthorityBasisV2.contract.test.ts",
+    "src/features/tree/api.listProjection.test.ts",
+    "src/application/narrative-extraction/projectSnapshotAdapter.test.ts",
+    "src/application/narrative-extraction/extractionCoordinator.test.ts",
+    "electron/shared/ipcContract.test.ts",
+    "src-tauri/crates/grimodex-core/tests/canonical_json.rs",
+    "src-tauri/crates/grimodex-core/tests/narrative_ir.rs",
+    "src-tauri/crates/grimodex-core/tests/narrative_scope_authority_basis.rs",
+    "src/features/narrative-extraction/reconciler/stageExecution.test.ts",
+    "src/features/narrative-extraction/reconciler/v2Adapter.test.ts",
+    "src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts",
+    "src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts",
+    "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts",
+    "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+    "src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs",
+    "src-tauri/crates/grimodex-db/tests/narrative_scope_authority_runtime.rs",
+    "scripts/quality/impact-map.test.mjs",
+  ];
+
+  for (const relativePath of implementations) {
+    assert.ok(
+      requirement.implementedBy.includes(relativePath),
+      `${relativePath} must be listed in semantic contract implementedBy`,
+    );
+  }
+  for (const relativePath of tests) {
+    assert.ok(
+      requirement.lightTests.includes(relativePath),
+      `${relativePath} must be listed in semantic contract lightTests`,
+    );
+  }
+
+  for (const relativePath of [
+    ...implementations,
+    ...tests.filter(
+      (relativePath) => relativePath !== "scripts/quality/impact-map.test.mjs",
+    ),
+  ]) {
+    const selection = selectImpact(map, [relativePath]);
+    assert.ok(
+      selection.matchedRuleIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic contract rule`,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+      `${relativePath} must select the semantic contract requirement`,
+    );
+    assert.ok(
+      selection.suiteIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic Light suite`,
+    );
+    assert.equal(selection.fallback, false, relativePath);
+  }
+
+  for (const relativePath of [
+    "policies/narrative/narrative-artifact-authority.json",
+    "policies/narrative/schemas/narrative-artifact-authority.schema.json",
+  ]) {
+    const selection = selectImpact(map, [relativePath]);
+    assert.ok(
+      selection.matchedRuleIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic contract rule`,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+      `${relativePath} must retain the semantic contract requirement`,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-ARTIFACT-001"),
+      `${relativePath} must select the artifact requirement`,
+    );
+    assert.ok(
+      selection.suiteIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic Light suite`,
+    );
+    assert.equal(selection.fallback, false, relativePath);
+  }
+});
+
+test("isolated Chronicle stage provenance changes select semantic and AI audit/routing gates", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  for (const changedPath of [
+    "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+    "src/features/narrative-extraction/reconciler/stageProvenance.test.ts",
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("narrative-semantic-contract"));
+    assert.ok(selection.matchedRuleIds.includes("ai-audit-runtime"));
+    assert.ok(selection.matchedRuleIds.includes("ai-routing"));
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+    );
+    assert.ok(selection.requirementIds.includes("GDX-AI-AUDIT-001"));
+    assert.ok(selection.requirementIds.includes("GDX-ROUTE-001"));
+    assert.ok(selection.suiteIds.includes("narrative-semantic-contract"));
+    assert.ok(selection.suiteIds.includes("ai-routing"));
+    assert.equal(selection.fallback, false);
+  }
+  const transportSelection = selectImpact(map, [
+    "src/features/ai-audit/transportContext.ts",
+  ]);
+  assert.ok(transportSelection.matchedRuleIds.includes("ai-routing"));
+  assert.ok(transportSelection.matchedRuleIds.includes("ai-audit-runtime"));
+  assert.ok(transportSelection.requirementIds.includes("GDX-AI-AUDIT-001"));
 });
 
 test("Temporal IR, adapter, and Calendar changes select the Temporal requirement", async () => {
@@ -455,4 +679,131 @@ test("an invalid comparison base is reported instead of silently trusting a part
 
   assert.equal(changed.complete, false);
   assert.match(changed.reason, /diff/i);
+});
+
+test("C2-ZC impact registration is structured and rejects gate command/test/receipt/order mutations", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const rule = map.rules.find(
+    (candidate) => candidate.id === "narrative-maintenance-product-journeys",
+  );
+  assert.ok(rule?.acceptanceGates);
+  assert.deepEqual(
+    rule.acceptanceGates.map((gate) => gate.id),
+    C2ZC_RUST_ACCEPTANCE_GATES.map((gate) => gate.id),
+  );
+  assert.deepEqual(rule.acceptanceGates[2], {
+    id: "c2-zc-readiness-corruption-fail-closed",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
+      test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+      fullTestName:
+        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+      proof: "direct persisted Rebuild evidence corruption blocks readiness",
+    },
+    source:
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
+    test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+    fullTestName:
+      "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+    requiresReceipt: true,
+  });
+  assert.deepEqual(rule.acceptanceGates[5], {
+    id: "c2-zc-production-verify-coverage",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+        "--",
+        "--exact",
+        "--nocapture",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+      test: "a_verify_run_records_its_report_under_a_completed_run",
+      fullTestName:
+        "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+      proof:
+        "production Verify persists and validates exact 13/13 check coverage",
+    },
+    source:
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+    test: "a_verify_run_records_its_report_under_a_completed_run",
+    fullTestName:
+      "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+    requiresReceipt: true,
+  });
+  assert.doesNotThrow(() => validateAcceptanceGateRegistration({ map }));
+
+  for (const mutate of [
+    (gates) => {
+      gates[0].argv.args[0] = "run";
+    },
+    (gates) => {
+      gates[0].contract.test = "other_test";
+    },
+    (gates) => {
+      gates[0].requiresReceipt = false;
+    },
+    (gates) => gates.reverse(),
+  ]) {
+    const mutatedMap = structuredClone(map);
+    const mutatedRule = mutatedMap.rules.find(
+      (candidate) => candidate.id === rule.id,
+    );
+    mutate(mutatedRule.acceptanceGates);
+    assert.throws(
+      () => validateAcceptanceGateRegistration({ map: mutatedMap }),
+      /acceptance|gate|command|test|receipt|order/i,
+    );
+  }
+
+  const mutatedRegistry = {
+    stages: {
+      "c2-zc-rust-acceptance-gate": {
+        commands: [
+          {
+            command: C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND.command,
+            args: ["scripts/changed-receipt-runner.mjs"],
+          },
+        ],
+      },
+    },
+  };
+  assert.throws(
+    () =>
+      validateAcceptanceGateRegistration({
+        map,
+        localCiRegistry: mutatedRegistry,
+      }),
+    /registry|runner|command|receipt/i,
+  );
 });

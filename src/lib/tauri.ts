@@ -180,6 +180,7 @@ function normalizeIpcFailure(command: string, error: unknown): unknown {
  */
 const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["get_global_settings", IPC_TIMEOUT_MS],
+  ["narrative_extraction_capture_workspace_binding", IPC_TIMEOUT_MS],
   ["validate_workspace_path", IPC_TIMEOUT_MS],
   ["list_backups", IPC_TIMEOUT_MS],
   ["list_system_fonts", IPC_TIMEOUT_MS],

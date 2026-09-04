@@ -476,6 +476,45 @@ describe("phaseStore", () => {
       );
     });
 
+    it("forwards a preexisting-draft permit to the Phase API", async () => {
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [{ ...mockPhase, version: 3 }] },
+      });
+      mockUpdatePhase.mockResolvedValue({ ...mockPhase, version: 4 });
+
+      const options = { baseVersion: 3, preexistingDraft: true };
+      await usePhaseStore
+        .getState()
+        .updatePhase("phase-1", { contentOverride: "draft" }, options);
+
+      expect(mockUpdatePhase).toHaveBeenCalledWith(
+        "phase-1",
+        { contentOverride: "draft" },
+        { baseVersion: 3, preexistingDraft: true },
+      );
+    });
+
+    it("does not add a preexisting-draft permit to ordinary Phase saves", async () => {
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [{ ...mockPhase, version: 3 }] },
+      });
+      mockUpdatePhase.mockResolvedValue({ ...mockPhase, version: 4 });
+
+      await usePhaseStore.getState().updatePhase(
+        "phase-1",
+        { contentOverride: "ordinary" },
+        {
+          baseVersion: 3,
+        },
+      );
+
+      expect(mockUpdatePhase).toHaveBeenCalledWith(
+        "phase-1",
+        { contentOverride: "ordinary" },
+        { baseVersion: 3 },
+      );
+    });
+
     it("履歴 undo の OCC 衝突時はコマンドを保持する", async () => {
       const { PhaseVersionConflictError } = await import("./phaseOcc");
       usePhaseStore.setState({

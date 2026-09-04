@@ -20,8 +20,15 @@ import i18next from "@/lib/i18n";
 import { debugLog } from "@/lib/debugLog";
 import {
   _resetQuiescenceLeasesForTests,
+  canScheduleQuiescenceMutation,
   acquireQuiescenceLease,
 } from "@/application/lifecycle/quiescenceLease";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import {
+  TimelapseGenesisBarrierError,
+  runAfterTimelapseGenesis,
+} from "@/features/timelapse/genesisBarrier";
 import { _resetEditorAnalysisSchedulerForTests } from "@/lib/editorAnalysisScheduler";
 
 describe("createAutoSave", () => {
@@ -33,6 +40,8 @@ describe("createAutoSave", () => {
 
   afterEach(() => {
     _resetQuiescenceLeasesForTests();
+    publishCurrentProjectId(null);
+    setCurrentWorkspaceIdentity(null);
     _resetEditorAnalysisSchedulerForTests();
     vi.useRealTimers();
   });
@@ -96,6 +105,41 @@ describe("createAutoSave", () => {
     expect(autoSave.schedule()).toBe(true);
     await vi.advanceTimersByTimeAsync(500);
     expect(saveFn).toHaveBeenCalledOnce();
+  });
+
+  it("flushes a preexisting draft through async mutation admission only", async () => {
+    publishCurrentProjectId("project-autosave");
+    setCurrentWorkspaceIdentity({ path: "/workspace.gdx", openRevision: 1 });
+    let persisted = false;
+    const saveFn = vi.fn(
+      async (options?: { preexistingDraft?: boolean }): Promise<void> => {
+        await Promise.resolve();
+        await runAfterTimelapseGenesis(
+          "project-autosave",
+          async () => {
+            await Promise.resolve();
+            persisted = true;
+          },
+          options,
+        );
+      },
+    );
+    const autoSave = createAutoSave(saveFn, 2_000);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+    expect(autoSave.schedule()).toBe(true);
+    const lease = acquireQuiescenceLease("workspace-open");
+
+    // The draft was queued before the lease, so strict flush may carry its
+    // permit through the coordinator's await/microtask boundary.
+    await flushAllAutoSaves({ preexistingDraft: true });
+
+    expect(saveFn).toHaveBeenCalledWith({ preexistingDraft: true });
+    expect(persisted).toBe(true);
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+    expect(autoSave.schedule()).toBe(false);
+
+    lease.release();
+    unregister();
   });
 
   it("pause keeps the queued edit, blocks quiesce, and resume persists it", async () => {
@@ -301,6 +345,105 @@ describe("createAutoSave", () => {
     expect(flushed).toBe(true);
     // pending は無かったので追加の save は走らない
     expect(saveFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("in-flight の通常保存が lease 中に拒否されたら permit 付きで一度だけ再試行する", async () => {
+    publishCurrentProjectId("project-autosave-race");
+    setCurrentWorkspaceIdentity({ path: "/workspace.gdx", openRevision: 1 });
+
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const calls: Array<{ preexistingDraft?: boolean } | undefined> = [];
+    let firstError: unknown;
+    const saveFn = vi.fn(
+      async (options?: { preexistingDraft?: boolean }): Promise<void> => {
+        calls.push(options);
+        if (calls.length === 1) await firstGate;
+        try {
+          await runAfterTimelapseGenesis(
+            "project-autosave-race",
+            async () => {},
+            options,
+          );
+        } catch (error) {
+          if (calls.length === 1) firstError = error;
+          throw error;
+        }
+      },
+    );
+    const autoSave = createAutoSave(saveFn, 500);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(saveFn).toHaveBeenCalledOnce();
+
+    const lease = acquireQuiescenceLease("workspace-open");
+    const flushing = flushAllAutoSaves({ preexistingDraft: true });
+    releaseFirst();
+
+    await flushing;
+    expect(firstError).toBeInstanceOf(TimelapseGenesisBarrierError);
+    expect(calls).toEqual([undefined, { preexistingDraft: true }]);
+
+    lease.release();
+    expect(autoSave.schedule()).toBe(true);
+    await autoSave.flush();
+    expect(calls).toHaveLength(3);
+    expect(calls[2]).toBeUndefined();
+    unregister();
+  });
+
+  it("permit 付き再試行の失敗を伝播し、以後の通常保存へ permit を持ち越さない", async () => {
+    publishCurrentProjectId("project-autosave-race-failure");
+    setCurrentWorkspaceIdentity({ path: "/workspace.gdx", openRevision: 1 });
+
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const calls: Array<{ preexistingDraft?: boolean } | undefined> = [];
+    const saveFn = vi.fn(
+      async (options?: { preexistingDraft?: boolean }): Promise<void> => {
+        calls.push(options);
+        if (calls.length === 1) {
+          await firstGate;
+          await runAfterTimelapseGenesis(
+            "project-autosave-race-failure",
+            async () => {},
+          );
+          return;
+        }
+        if (calls.length === 2) throw new Error("retry failed");
+        await runAfterTimelapseGenesis(
+          "project-autosave-race-failure",
+          async () => {},
+          options,
+        );
+      },
+    );
+    const autoSave = createAutoSave(saveFn, 500);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(saveFn).toHaveBeenCalledOnce();
+
+    const lease = acquireQuiescenceLease("workspace-open");
+    const flushing = flushAllAutoSaves({ preexistingDraft: true });
+    releaseFirst();
+
+    await expect(flushing).rejects.toThrow("retry failed");
+    expect(calls).toEqual([undefined, { preexistingDraft: true }]);
+
+    lease.release();
+    expect(autoSave.schedule()).toBe(true);
+    await autoSave.flush();
+    expect(calls).toHaveLength(3);
+    expect(calls[2]).toBeUndefined();
+    unregister();
   });
 
   it("保存中の再 schedule は並行実行せず、完了後に最新状態を1回保存する", async () => {

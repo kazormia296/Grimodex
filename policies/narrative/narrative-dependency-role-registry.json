@@ -3,9 +3,17 @@
   "contract": "narrative-dependency-role-registry",
   "adr": "docs/adr/010-narrative-dependency-role-granularity-contract.md",
   "roleContractVersion": "narrative-dependency-role/1",
+  "requirementIds": [
+    "GDX-NARR-SEMANTIC-CONTRACT-001",
+    "GDX-TRACE-001"
+  ],
+  "fixtureFile": "policies/narrative/fixtures/dependency-role-contract.json",
   "implementationStatus": {
-    "state": "declared",
-    "productionEntryPoints": [],
+    "state": "shadow",
+    "productionEntryPoints": [
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs"
+    ],
     "scanRoots": [
       "src/features/narrative-semantic-core",
       "src/features/narrative-extraction",
@@ -13,15 +21,13 @@
       "src-tauri/crates/grimodex-db/src/narrative_extraction"
     ],
     "productionMarkers": [
-      "NARRATIVE_DEPENDENCY_ROLE_CONTRACT_VERSION",
-      "declarationSetId",
-      "declaration_set_id"
+      "NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME"
     ],
     "blockedOn": [
       "reconciliation-envelope-v2",
       "dependency-selector-v2",
-      "sealed-declaration-set-storage",
-      "independent-build-action-summary"
+      "v2-authority-cutover",
+      "v2-persistence-boundary"
     ]
   },
   "sets": {
