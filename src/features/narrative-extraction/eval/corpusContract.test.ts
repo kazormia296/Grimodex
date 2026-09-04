@@ -6,6 +6,7 @@ import yaml from "js-yaml";
 import { describe, expect, it } from "vitest";
 import { validateNarrativeEvalCase } from "./caseSchema";
 import { buildNarrativeEvalFixture } from "./fixtureSnapshot";
+import { NARRATIVE_EVAL_CASE_SCHEMA_VERSION } from "./types";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -92,7 +93,11 @@ describe("Chronicle Human Gold corpus", () => {
       });
       const validateSchema = ajv.compile(schema);
 
-      expect(corpus.schemaVersion, suite.id).toBe(suite.version);
+      // The corpus schema contract is shared across suites; suite.version is
+      // an independent evaluation-suite revision and must not redefine it.
+      expect(corpus.schemaVersion, suite.id).toBe(
+        NARRATIVE_EVAL_CASE_SCHEMA_VERSION,
+      );
       expect(corpus.suiteId).toBe(suite.id);
       expect(corpus.cases, suite.id).toHaveLength(suite.caseCount);
 
@@ -145,6 +150,13 @@ describe("Chronicle Human Gold corpus", () => {
       "chronicle.micro.disputed-attribution-012",
       "chronicle.micro.partial-coverage-013",
       "chronicle.micro.significance-gate-014",
+    ]);
+    expect(caseIdsBySuite.get("chronicle-motif-boundary-v1")).toEqual([
+      "chronicle.micro.sword-recovered-015",
+      "chronicle.micro.sword-unrecovered-016",
+      "chronicle.micro.sword-red-herring-017",
+      "chronicle.micro.sword-character-theory-018",
+      "chronicle.micro.sword-atmosphere-019",
     ]);
   });
 });

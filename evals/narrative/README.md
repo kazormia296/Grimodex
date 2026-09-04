@@ -24,7 +24,7 @@
 - `manifest.yaml`: suite、要件、件数、release gate の正本
 - `schemas/case-v1.schema.json`: 個々の case の JSON Schema
 - `cases/chronicle-micro-v1.yaml`: 14件の Chronicle 認証用 micro case
-- `cases/chronicle-motif-boundary-v1.yaml`: 5件の motif 過剰解釈を測る診断用 minimal pair
+- `cases/chronicle-motif-boundary-v1.yaml`: 015/016 の matched minimal pair と 017-019 の adversarial variants からなる、motif 過剰解釈を測る5件の診断用ケース
 
 ケースは `schemaVersion: 1` を持ち、`scope`、固定 locale/timezone/time、corpus coverage、documents、Human Gold、critical violation class を自己完結して保持します。同じ case の実行は、他 case の状態や artifact を共有してはいけません。
 
@@ -44,13 +44,13 @@ Evidence は `{ documentId, quote }` だけを Gold とし、モデル由来の�
 
 ## Motif Boundary 診断 suite
 
-`chronicle-motif-boundary-v1` は、同じ「壁に掛かった儀礼剣」という目立つモチーフを使った5件の minimal pair です。
+`chronicle-motif-boundary-v1` は、同じ「壁に掛かった儀礼剣」という目立つモチーフを使った5件の診断ケースです。`015` と `016` は matched minimal pair、`017`〜`019` は adversarial variants です。
 
-1. 後の Scene で実際に使用される
-2. 最後まで使用されず、未使用が明示される
-3. 凶器らしく見えるが、別の手段が確定する
-4. 登場人物だけが凶器だと推測し、本文が反証する
-5. 反復する幻想的描写があるが、剣の状態変化は明示的に否定される
+1. `015`（matched minimal pair）: 後の Scene で実際に使用される
+2. `016`（matched minimal pair）: 最後まで使用されず、未使用が明示される
+3. `017`（adversarial variant）: 凶器らしく見えるが、別の手段が確定する
+4. `018`（adversarial variant）: 登場人物だけが凶器だと推測し、本文が反証する
+5. `019`（adversarial variant）: 反復する幻想的描写があるが、剣の状態変化は明示的に否定される
 
 この suite が測るのは「伏線を発見できるか」ではありません。目立つ物体、反復描写、人物の推測、誤誘導から、Evidence に無い出来事や因果関係を Chronicle event として確定しないことを測ります。Foreshadow は NIR-0 `scene-event@1` の採点軸へ追加しません。
 
