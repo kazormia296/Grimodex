@@ -9,7 +9,8 @@ cases:
     frozenTime: "2026-08-22T00:00:00.000Z"
     coverage:
       mode: complete
-      includedDocumentIds: [scene-sword-setup-recovered, scene-sword-use-recovered]
+      includedDocumentIds:
+        [scene-sword-setup-recovered, scene-sword-use-recovered]
       omittedDocumentIds: []
     documents:
       - id: scene-sword-setup-recovered
@@ -58,7 +59,8 @@ cases:
     frozenTime: "2026-08-22T00:00:00.000Z"
     coverage:
       mode: complete
-      includedDocumentIds: [scene-sword-setup-unrecovered, scene-sword-remains-unused]
+      includedDocumentIds:
+        [scene-sword-setup-unrecovered, scene-sword-remains-unused]
       omittedDocumentIds: []
     documents:
       - id: scene-sword-setup-unrecovered

@@ -210,6 +210,22 @@ test("Narrative Extraction changes select every Narrative semantic requirement",
   assert.equal(selection.fallback, false);
 });
 
+test("Narrative diagnostic fixtures route through the conservative quality gate", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const selection = selectImpact(map, [
+    "evals/narrative/cases/chronicle-motif-boundary-v1.yaml",
+  ]);
+
+  assert.ok(selection.matchedRuleIds.includes("quality-foundation"));
+  assert.ok(selection.matchedRuleIds.includes("narrative-extraction"));
+  assert.deepEqual(selection.suiteIds, map.allSuites);
+  assert.equal(selection.fallback, false);
+});
+
 test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async () => {
   const [impactSource, manifestSource] = await Promise.all([
     readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),

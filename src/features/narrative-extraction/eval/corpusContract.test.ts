@@ -18,6 +18,9 @@ interface NarrativeEvalManifestSuite {
   readonly caseCount: number;
   readonly caseFile: string;
   readonly caseSchema: string;
+  readonly certification?: {
+    readonly diagnosticOnly?: boolean;
+  };
 }
 
 interface NarrativeEvalCorpus {
@@ -41,7 +44,21 @@ describe("Chronicle Human Gold corpus", () => {
       manifest.suites.length,
     );
 
+    const certificationSuite = manifest.suites.find(
+      (suite) => suite.id === "chronicle-micro-v1",
+    );
+    expect(certificationSuite?.caseCount).toBe(14);
+    expect(certificationSuite?.certification?.diagnosticOnly ?? false).toBe(
+      false,
+    );
+    const diagnosticSuite = manifest.suites.find(
+      (suite) => suite.id === "chronicle-motif-boundary-v1",
+    );
+    expect(diagnosticSuite?.caseCount).toBe(5);
+    expect(diagnosticSuite?.certification?.diagnosticOnly).toBe(true);
+
     const allCaseIds = new Set<string>();
+    const caseIdsBySuite = new Map<string, string[]>();
 
     for (const suite of manifest.suites) {
       const [caseSource, schemaSource] = await Promise.all([
@@ -68,6 +85,7 @@ describe("Chronicle Human Gold corpus", () => {
       expect(corpus.cases, suite.id).toHaveLength(suite.caseCount);
 
       let requiredObservationCount = 0;
+      const suiteCaseIds: string[] = [];
 
       for (const candidate of corpus.cases) {
         expect(
@@ -82,6 +100,7 @@ describe("Chronicle Human Gold corpus", () => {
           false,
         );
         allCaseIds.add(validated.value.id);
+        suiteCaseIds.push(validated.value.id);
         requiredObservationCount +=
           validated.value.expected.observations.required.length;
 
@@ -96,6 +115,24 @@ describe("Chronicle Human Gold corpus", () => {
       // Keep positive recall coverage as a suite-level contract so individual
       // static-description cases may still correctly require no observations.
       expect(requiredObservationCount, suite.id).toBeGreaterThan(0);
+      caseIdsBySuite.set(suite.id, suiteCaseIds);
     }
+
+    expect(caseIdsBySuite.get("chronicle-micro-v1")).toEqual([
+      "chronicle.micro.actual-gate-collapse-001",
+      "chronicle.micro.plan-only-002",
+      "chronicle.micro.rumor-only-003",
+      "chronicle.micro.blocked-attempt-004",
+      "chronicle.micro.dream-only-005",
+      "chronicle.micro.hypothetical-only-006",
+      "chronicle.micro.flashback-actual-007",
+      "chronicle.micro.duplicate-mention-008",
+      "chronicle.micro.non-event-description-009",
+      "chronicle.micro.exact-quote-selection-010",
+      "chronicle.micro.negated-event-011",
+      "chronicle.micro.disputed-attribution-012",
+      "chronicle.micro.partial-coverage-013",
+      "chronicle.micro.significance-gate-014",
+    ]);
   });
 });
