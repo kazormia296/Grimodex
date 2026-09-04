@@ -235,6 +235,24 @@ function awaitPromiseBarrierBeforeOperationSettles(barrier, operation, label) {
   });
 }
 
+async function awaitPromiseBarrier(barrier, label, timeoutMs) {
+  let timerId;
+  try {
+    await Promise.race([
+      barrier.promise,
+      new Promise((_, reject) => {
+        timerId = setTimeout(
+          () =>
+            reject(new Error(`${label} did not settle within ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timerId) clearTimeout(timerId);
+  }
+}
+
 function heldFreshnessReceipt(
   sequence = 1,
   nonce = RECEIPT_NONCE,
@@ -295,6 +313,12 @@ const HUNG_SCREENSHOT_STUB_TIMEOUT_MS = 1_000;
 const HUNG_SCREENSHOT_ATTEMPT_TIMEOUT_MS =
   HUNG_SCREENSHOT_CAPTURE_TIMEOUT_MS - HUNG_SCREENSHOT_STUB_TIMEOUT_MS;
 const HUNG_SCREENSHOT_CAPTURE_COMPLETION_TIMEOUT_MS = 2_000;
+// The Electron contract worker runs alongside many independent test workers
+// in the full acceptance command. Keep these test-only budgets above the
+// journal/receipt setup cost without changing the product watchdogs.
+const LOADED_ELECTRON_LANE_TIMEOUT_MS = 1_000;
+const LOADED_ELECTRON_OPERATION_TIMEOUT_MS = 3_000;
+const LOADED_ELECTRON_BARRIER_TIMEOUT_MS = 5_000;
 
 async function awaitHeldFreshnessBeforeRequestBarrier(
   harness,
@@ -2565,12 +2589,12 @@ test("lane watchdog waits for late Electron cleanup before publishing evidence",
     },
   };
   const phase = "probe/lane-late-finalizer";
-  const laneTimeoutMs = 100;
+  const laneTimeoutMs = LOADED_ELECTRON_LANE_TIMEOUT_MS;
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
     artifactRoot,
-    launchTimeoutMs: 1_000,
+    launchTimeoutMs: LOADED_ELECTRON_LANE_TIMEOUT_MS + 500,
     operationTimeoutMs: 1_000,
     electronLauncher: {
       launch: () => {
@@ -5625,9 +5649,11 @@ test("late electron launch resolution is registered and cleaned after timeout", 
   child.exitCode = null;
   child.signalCode = null;
   child.killSignals = [];
+  const childKillStarted = createPromiseBarrier();
   child.kill = (signal) => {
     child.killSignals.push(signal);
     child.killed = true;
+    childKillStarted.resolve();
     child.exitCode = 0;
     return true;
   };
@@ -5679,7 +5705,11 @@ test("late electron launch resolution is registered and cleaned after timeout", 
     ),
   ]);
   assert.equal(lateApp.closed, true);
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await awaitPromiseBarrier(
+    childKillStarted,
+    "late Electron child cleanup",
+    LOADED_ELECTRON_BARRIER_TIMEOUT_MS,
+  );
   assert.equal(child.killed, true);
   assert.deepEqual(child.killSignals, ["SIGTERM"]);
   await harness.dispose({ success: false, name: "late-launch" });
@@ -5707,7 +5737,7 @@ test("lane timeout owns late Electron cleanup before publishing one artifact", a
   const lateApp = { process: () => child };
   const phase = "observability/lane-late-owned";
   const artifactName = "observability-lane-late-owned";
-  const laneTimeoutMs = 1_000;
+  const laneTimeoutMs = LOADED_ELECTRON_LANE_TIMEOUT_MS;
   let closeCalls = 0;
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -5783,7 +5813,7 @@ test("lane timeout records pending Electron launch cleanup without duplicate art
   );
   const phase = "observability/lane-pending-forever";
   const artifactName = "observability-lane-pending-forever";
-  const laneTimeoutMs = 100;
+  const laneTimeoutMs = LOADED_ELECTRON_LANE_TIMEOUT_MS;
   let launchCalls = 0;
   const electronLaunchStarted = createPromiseBarrier();
   const harness = createProductJourneyHarness({
@@ -5870,7 +5900,7 @@ test("late Electron close rejection is retained as a fatal diagnostic", async (t
   // The harness performs journal fsync and receipt preflight before invoking
   // Electron; allow that deterministic setup to complete under the loaded
   // Electron contract worker while keeping the late-launch offset intact.
-  const laneTimeoutMs = 1_000;
+  const laneTimeoutMs = LOADED_ELECTRON_LANE_TIMEOUT_MS;
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
@@ -5959,7 +5989,7 @@ test("late Electron close hang is bounded and retained as a fatal diagnostic", a
   const lateApp = { process: () => child };
   const phase = "observability/late-close-hang";
   const artifactName = "observability-late-close-hang";
-  const laneTimeoutMs = 100;
+  const laneTimeoutMs = LOADED_ELECTRON_LANE_TIMEOUT_MS;
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
@@ -6057,7 +6087,7 @@ test("late Electron child kill false or throw is fatal and preserves tracking", 
     const lateApp = { process: () => child };
     const phase = `observability/late-kill-${label}`;
     const artifactName = `observability-late-kill-${label}`;
-    const laneTimeoutMs = 100;
+    const laneTimeoutMs = LOADED_ELECTRON_LANE_TIMEOUT_MS;
     const harness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
@@ -6202,7 +6232,7 @@ test("failure evidence is published before a bounded optional screenshot", async
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
     artifactRoot,
-    operationTimeoutMs: 100,
+    operationTimeoutMs: LOADED_ELECTRON_OPERATION_TIMEOUT_MS,
     electronLauncher: { launch: async () => app },
     closeApp: async () => undefined,
   });
@@ -6443,6 +6473,12 @@ test("late old launch cleanup does not touch an active replacement app", async (
   };
   const replacementChild = makeChild(424249);
   const oldChild = makeChild(424250);
+  const oldChildKillStarted = createPromiseBarrier();
+  const oldChildKill = oldChild.kill;
+  oldChild.kill = (signal) => {
+    oldChildKillStarted.resolve();
+    return oldChildKill(signal);
+  };
   const replacementApp = {
     context: () => null,
     firstWindow: async () => page,
@@ -6499,7 +6535,11 @@ test("late old launch cleanup does not touch an active replacement app", async (
       setTimeout(() => reject(new Error("old app was not closed")), 500),
     ),
   ]);
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await awaitPromiseBarrier(
+    oldChildKillStarted,
+    "late old Electron child cleanup",
+    LOADED_ELECTRON_BARRIER_TIMEOUT_MS,
+  );
   assert.equal(oldApp.closed, true);
   assert.deepEqual(oldChild.killSignals, ["SIGTERM"]);
   assert.deepEqual(replacementChild.killSignals, []);
