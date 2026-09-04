@@ -53,6 +53,7 @@ const CHILD_ENV_REMOVALS = [
   "NARRATIVE_EVAL_ATTEMPT",
   "NARRATIVE_EVAL_CASE_ID",
   "NARRATIVE_EVAL_LIMIT",
+  "NARRATIVE_EVAL_SUITE_ID",
 ];
 
 export function parseLiveModelQualificationArgs(argv) {

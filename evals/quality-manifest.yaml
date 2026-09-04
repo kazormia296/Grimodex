@@ -375,6 +375,7 @@ requirements:
       - src/features/narrative-extraction/eval/caseSchema.ts
       - src/features/narrative-extraction/eval/replay.ts
       - src/features/narrative-extraction/eval/liveRunner.ts
+      - src/features/narrative-extraction/eval/narrativeEvalSuite.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.ts
       - src/features/narrative-extraction/eval/productionChronicleScoring.ts
       - src/features/narrative-extraction/eval/productionChronicleTypes.ts
@@ -383,6 +384,7 @@ requirements:
       - src/features/narrative-extraction/eval/caseSchema.test.ts
       - src/features/narrative-extraction/eval/replay.test.ts
       - src/features/narrative-extraction/eval/liveRunner.test.ts
+      - src/features/narrative-extraction/eval/narrativeEvalSuite.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
     heavyTests:
@@ -821,6 +823,10 @@ heavyEvaluations:
     suiteId: narrative-extraction
     command: OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:chronicle:production:live
     reason: Maintainer-local Production Chronicle full seam (observation→evidence→cluster→synthesis→match→proposal). Missing credentials are INCOMPLETE and semantic threshold misses are HOLD.
+  - id: heavy-narrative-chronicle-motif-boundary-diagnostic
+    suiteId: narrative-extraction
+    command: pnpm eval:narrative:chronicle:motif:diagnostic:live
+    reason: Maintainer-local diagnostic-only Production Chronicle run for the five chronicle-motif-boundary-v1 cases. It is not part of Live Model Qualification defaultProfile or formal certification and can never produce certification eligibility.
   - id: heavy-narrative-chronicle-legacy-baseline
     suiteId: narrative-extraction
     command: OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:live

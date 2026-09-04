@@ -56,6 +56,19 @@ Evidence は `{ documentId, quote }` だけを Gold とし、モデル由来の�
 
 manifest では `diagnosticOnly: true` とし、既存14件の認証結果を変更しません。Gold は現在の blocking-key や scorer の能力に合わせて弱めず、未達の意味品質を診断として保持します。
 
+### Motif Boundary の maintainer-local live 実行
+
+5件の production prompt/parser 経路を billed OpenRouter で診断実行する場合は、次の専用コマンドを使います。
+
+```bash
+export OPENROUTER_API_KEY
+pnpm eval:narrative:chronicle:motif:diagnostic:live
+```
+
+このコマンドは `NARRATIVE_EVAL_SUITE_ID=chronicle-motif-boundary-v1` を設定し、manifest の `caseFile` と `caseCount` を検証してから実行します。結果には suite ID、version、件数、manifest／corpus digest を記録します。全件実行でも一部実行でも `certificationEligible` は `false` です。`QUALITY_EVALUATION_SUITE_ID` は Live Model Qualification の Heavy suite binding であり、Narrative corpus suite の選択には使いません。
+
+この diagnostic Heavy は `qualify:ai-live` の既定 profile、Formal Gate B2、既存14件の qualification semantics には追加されません。scorer-v1 の forbidden observation blind spot を解消した証拠や、認証 PASS として扱ってはいけません。
+
 ### 現行 scorer v1 での強制範囲
 
 現行 scorer v1 は `expected.observations.forbidden` を直接採点しません。そのため、この suite は forbidden entry だけを合否根拠にせず、次の既存経路でも失敗が観測されるよう設計しています。

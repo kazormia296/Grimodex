@@ -4,10 +4,9 @@
  * Gate B2 bindings remain supported for archived evidence, while current live
  * provider/model qualification uses the separate QUALITY_EVALUATION_* binding.
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import yaml from "js-yaml";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runEventSynthesisTask } from "@/application/narrative-extraction/aiTasks/runEventSynthesisTask";
 import { runObservationExtractionTask } from "@/application/narrative-extraction/aiTasks/runObservationExtractionTask";
@@ -17,13 +16,17 @@ import {
   type OpenRouterResponse,
 } from "@/features/chat/agent/aiLiveHarness";
 import { sha256Digest } from "@/features/narrative-extraction/source/digest";
-import { validateNarrativeEvalCase } from "./caseSchema";
 import {
   evaluateProductionChronicleArtifacts,
   isCertificationEligible,
   prepareProductionChronicleEvalCase,
   runProductionChroniclePipeline,
 } from "./productionChronicleAdapter";
+import {
+  loadNarrativeEvalSuite,
+  narrativeEvalSuiteIdFromEnv,
+  type LoadedNarrativeEvalSuite,
+} from "./narrativeEvalSuite";
 import type { NarrativeEvalCaseV1 } from "./types";
 
 vi.mock("@/features/ai-policy/policyGuard", () => ({
@@ -104,23 +107,29 @@ async function writeBoundReport(report: Record<string, unknown>) {
   return reportJson;
 }
 
-async function loadCases(): Promise<NarrativeEvalCaseV1[]> {
-  const source = await readFile(
-    path.join(repoRoot, "evals/narrative/cases/chronicle-micro-v1.yaml"),
-    "utf8",
-  );
-  const corpus = yaml.load(source) as { cases?: unknown[] };
-  const cases = (corpus.cases ?? []).map((candidate) => {
-    const result = validateNarrativeEvalCase(candidate);
-    if (!result.ok) {
-      throw new Error(
-        `Invalid live case: ${result.diagnostics
-          .map((diagnostic) => diagnostic.code)
-          .join(", ")}`,
-      );
-    }
-    return result.value;
+async function loadCases(): Promise<LoadedNarrativeEvalSuite> {
+  return loadNarrativeEvalSuite({
+    repoRoot,
+    suiteId: narrativeEvalSuiteIdFromEnv(),
   });
+}
+
+function corpusSuiteReport(suite: LoadedNarrativeEvalSuite) {
+  return {
+    suiteId: suite.suiteId,
+    version: suite.version,
+    caseFile: suite.caseFile,
+    caseSchema: suite.caseSchema,
+    caseCount: suite.caseCount,
+    diagnosticOnly: suite.diagnosticOnly,
+    manifestDigest: suite.manifestDigest,
+    caseFileDigest: suite.caseFileDigest,
+    caseSchemaDigest: suite.caseSchemaDigest,
+  };
+}
+
+function selectCases(suite: LoadedNarrativeEvalSuite): NarrativeEvalCaseV1[] {
+  const cases = [...suite.cases];
   const requestedCaseId = process.env.NARRATIVE_EVAL_CASE_ID;
   const selected = requestedCaseId
     ? cases.filter((entry) => entry.id === requestedCaseId)
@@ -145,13 +154,15 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
   it(
     "runs observation through proposal planning and writes a credential-free report",
     async () => {
-      const cases = await loadCases();
+      const suite = await loadCases();
+      const cases = selectCases(suite);
       const attempt = attemptNumber();
       const binding = evaluationBindingFromEnv();
       const fullCertificationRun =
         !process.env.NARRATIVE_EVAL_CASE_ID &&
         !process.env.NARRATIVE_EVAL_LIMIT;
-      const diagnosticOnly = attempt === 2 || !fullCertificationRun;
+      const diagnosticOnly =
+        suite.diagnosticOnly || attempt === 2 || !fullCertificationRun;
       const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-luna";
       const effort = reasoningEffort();
       const startedAt = new Date().toISOString();
@@ -275,7 +286,12 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
         ...(binding.candidateTreeSha
           ? { candidateTreeSha: binding.candidateTreeSha }
           : {}),
-        ...(binding.suiteId ? { suiteId: binding.suiteId } : {}),
+        ...(binding.suiteId
+          ? {
+              suiteId: binding.suiteId,
+              qualityEvaluationSuiteId: binding.suiteId,
+            }
+          : {}),
         ...(binding.commandDigest
           ? { commandDigest: binding.commandDigest }
           : {}),
@@ -284,6 +300,7 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
           ? { certificationRunId: binding.certificationRunId }
           : {}),
         model: { provider: "openrouter", requestedModel: model, effort },
+        corpusSuite: corpusSuiteReport(suite),
         caseCount: caseReports.length,
         certificationEligible,
         summary: {

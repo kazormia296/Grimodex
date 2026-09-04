@@ -182,14 +182,15 @@ emission/current-Revision promotion are limited to the `add` pilot.
 These contracts do not create a second Freshness or semantic authority. The
 existing `scope.ts`, Disclosure evaluator, Dependency Edge, and Consumer
 Freshness paths remain V1-compatible. Disclosure admission, revise/retract/
-merge/split, D2 full cutover, and NIR1 retrieval remain deferred.
+merge/split, and D2 full cutover remain deferred. NIR-1 retrieval is
+planned/ready but is not implemented by this closeout.
 
 The [NIR0-CERT completion ledger](../../docs/certification/nir0/NIR0-CERT.md)
 binds PR #559's clean candidate base/head/tree to the byte-identical tree merged
 as `651791655177538ee02bc7e773f7d98c534ea324`. Credentialed/live-model Heavy
 work remains deferred and is not counted as passing NIR-0 evidence.
 
-## Gate C2 — FOUNDATION COMPLETE; C2-ZC CANDIDATE
+## Gate C2 — FOUNDATION COMPLETE; C2-ZC COMPLETE
 
 Gate C2 begins from ADR 005's existing "Authority matrix and C2 start
 condition" checklist (Mutation Route / Source Event Contract / Object
@@ -202,8 +203,9 @@ file; this section is the running status record, alongside PR history and the
 accepted ADR/policy contracts.
 
 ```text
-Gate C2 — FOUNDATION COMPLETE; C2-ZC focused-green code candidate recorded;
-final acceptance pending the complete gate receipt
+Gate C2 — FOUNDATION COMPLETE; C2-ZC accepted by PR #564
+(`0e62b40b622652f203690968d308b837e1481a33`); NIR-1 remains planned/ready
+and unimplemented
   Contract / Registry / Ledger Spine (C2-00): complete
   Schema / Transport Extension Spine (C2-01): complete
   Wave 1 foundation lanes:                    complete
@@ -213,7 +215,7 @@ final acceptance pending the complete gate receipt
   C2-3 Finding identity / Attention re-home:  complete; merged through PR #556/#559
   C2-5 shared triggers / lifecycle recovery:  complete; merged through PR #556/#559
   C2-ZB Application re-key migration:         complete; SCHEMA 32 merged and hardened
-  C2-ZC Canonical Authority Cutover:          focused-green candidate; final acceptance pending
+  C2-ZC Canonical Authority Cutover:          complete; accepted through PR #564
 ```
 
 ### C2-1 Change-Feed-driven incremental Freshness runtime
@@ -268,12 +270,13 @@ retrieval work. C2-3's
 three-layer Finding identity and exact Attention re-homing, C2-5's automatic
 Backfill/Verify/Rebuild-Derived scheduling and shared cross-Run-Kind recovery,
 and C2-ZB's schema-owned Application re-key are merged through PR #556 and PR
-#559. C2-ZC is a focused-green code candidate. It becomes an accepted
-canonical-authority switch only after the complete C2-ZC gate receipt exists.
-The product journey, clean Full CI and receipt verification, and the Sol final
-remain pending. Until those gates are recorded, Generic Consumer Freshness is
-not the accepted canonical read authority and the Legacy projection remains
-compatibility behavior.
+#559. C2-ZC is complete and is the accepted canonical-authority switch through
+PR #564 (`0e62b40b622652f203690968d308b837e1481a33`). Its acceptance records
+the clean Full/receipt verification, 26/26 product journeys, runtime
+performance, and Sol final evidence. Generic Consumer Freshness is therefore
+the accepted canonical read authority; the Legacy projection remains only
+compatibility behavior. This does not activate D2 V2 authority or implement
+NIR-1 retrieval, which remains planned/ready.
 
 The paragraphs below preserve the landing rationale for earlier C2 slices;
 their historical environment-specific validation caveats are not the current
@@ -612,18 +615,18 @@ API shape is replaced by five named operations
 `retryNarrativeLegacyBackfill`), so Background/scheduler code cannot
 accidentally reach Repair through a shared entrypoint.
 
-C2-Z cutover (the candidate in which Generic Consumer Freshness would become
-canonical and Legacy Freshness's read authority would end) requires, per Workspace: Legacy
-Backfill completed, the current Epoch's Verify passed, no unresolved
-Durable Graph errors, Derived State rebuild completed, Legacy/Generic
-parity within contract, no active Backfill/Repair Run, all 13 named Verify
-checks at production coverage 13/13, and an all-zero reserved Semantic Index
-authority footprint. Before final acceptance, Legacy Freshness remains the
-compatibility behavior and the Generic Graph is only a candidate path. A
-durable marker or focused-green code does not waive the product journey, clean
-Full/receipt verification, or Sol final. Ordinary editing is never blocked
-either way, only C2's own Structure Health/Freshness UI degrades to "semantic
-index is being prepared" or "semantic graph requires repair".
+C2-Z cutover required, per Workspace, Legacy Backfill completion, the current
+Epoch's Verify pass, no unresolved Durable Graph errors, Derived State rebuild,
+Legacy/Generic parity within contract, no active Backfill/Repair Run, all 13
+named Verify checks at production coverage 13/13, and an all-zero reserved
+Semantic Index authority footprint. Those conditions and the product journey,
+clean Full/receipt verification, runtime performance, and Sol final are
+recorded as accepted by C2-ZC PR #564. Generic Consumer Freshness is now the
+canonical read authority and the Legacy projection is compatibility-only. A
+future D2 authority activation remains subject to NIR-1 approval; ordinary
+editing is never blocked either way, only C2's own Structure Health/Freshness
+UI degrades to "semantic index is being prepared" or "semantic graph requires
+repair" when its derived state is incomplete.
 
 This is a policy/schema contract — `validate-run-kind-policy.mjs`
 confirms internal consistency (all five Run Kinds present, repair-only
@@ -1150,11 +1153,10 @@ whitespace, since either would let two different Consumers collide on one
 `(project_id, consumer_kind, consumer_key)` is the one canonical Consumer
 Freshness authority and `narrative_projection_freshness` — keyed by
 `application_id` alone, so structurally unable to express any other
-Consumer kind — is compatibility-only. Before final C2-ZC acceptance it
-remains the legacy compatibility read path; the focused candidate's marker
-would select Generic Consumer Freshness only after the product journey, clean
-Full/receipt verification, and Sol final are recorded. In both states it is a
-mirror, not a second authority. `dependencySetDigest` fixes
+Consumer kind — is compatibility-only. The C2-ZC marker now selects Generic
+Consumer Freshness following the accepted product journey, clean
+Full/receipt verification, and Sol final. It is the canonical authority, not
+a second mirror; the projection remains compatibility-only. `dependencySetDigest` fixes
 `narrative_consumer_freshness.dependency_set_digest` as a digest over the
 set of `source_object_identity` values declared under the Consumer, and
 records that `NULL` means "not evaluated since SCHEMA 24 added the
@@ -1271,11 +1273,10 @@ Three cases the re-key deliberately does **not** collapse:
   `finding_key`, preserving disposition, identity status, digests, version,
   and all other human fields. Fan-out with history, NULL/ambiguous identity,
   or a conflicting target fails closed; no Attention is broadened to multiple
-  Applications. The re-key is precondition evidence for the C2-ZC candidate;
-  it does not by itself establish final acceptance. Once the product journey,
-  clean Full/receipt verification, and Sol final are recorded, Generic
-  Consumer Freshness may become canonical and this historical re-key data will
-  remain compatibility evidence only.
+  Applications. The re-key was precondition evidence for the C2-ZC candidate;
+  PR #564 records the subsequent final acceptance. Generic Consumer Freshness
+  is canonical now, and this historical re-key data remains compatibility
+  evidence only.
 
 Freshness decided against the old Consumer identity _is_ discarded, since
 a verdict reached about `(run, sources)` is not a verdict about

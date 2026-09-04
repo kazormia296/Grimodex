@@ -63,6 +63,7 @@
     "eval:narrative:live": "pnpm test:node --run src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts",
     "eval:narrative:observation:live": "pnpm test:node --run src/features/narrative-extraction/eval/chronicleObservation.live.test.ts",
     "eval:narrative:chronicle:production:live": "pnpm test:node --run src/features/narrative-extraction/eval/chronicleProduction.live.test.ts",
+    "eval:narrative:chronicle:motif:diagnostic:live": "NARRATIVE_EVAL_SUITE_ID=chronicle-motif-boundary-v1 pnpm test:node --run src/features/narrative-extraction/eval/chronicleProduction.live.test.ts",
     "product-journey:coverage": "node electron/scripts/product-journey-coverage.mjs",
     "product-journey:impact": "node electron/scripts/product-journey-impact.mjs",
     "verify:quality": "pnpm test:quality && pnpm eval:fixtures && pnpm eval:narrative && node --check scripts/quality/run-related-scenes-heavy.mjs && node scripts/quality/validate-retrieval-fixtures.mjs && pnpm test:narrative:writers",
