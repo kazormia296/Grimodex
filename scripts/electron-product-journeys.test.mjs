@@ -54,7 +54,10 @@ import {
   configureWorkspace,
   PRODUCT_JOURNEYS,
 } from "../electron/scripts/product-journeys.mjs";
-import { waitForProcessExit } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
+import {
+  NARRATIVE_MAINTENANCE_FAULT_ENV,
+  waitForProcessExit,
+} from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -1479,6 +1482,89 @@ test("interrupted process-exit cleanup consumes the exact receipt after close fa
   );
 
   assert.equal(closeCalls, 1);
+  assert.deepEqual(await readdir(harness.receiptRoot), []);
+});
+
+test("process-interruption launch returns without touching a disappearing renderer", async (t) => {
+  const previousCi = process.env.CI;
+  const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+  const previousFault = process.env[NARRATIVE_MAINTENANCE_FAULT_ENV];
+  process.env.CI = "true";
+  process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] =
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN;
+  process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = INTERRUPTED_RECEIPT_NONCE;
+  process.env[NARRATIVE_MAINTENANCE_FAULT_ENV] = "process-interruption";
+
+  const childProcess = childProcessStub();
+  let contextCalls = 0;
+  let firstWindowCalls = 0;
+  const app = {
+    context: () => {
+      contextCalls += 1;
+      throw new Error("context must not run for process interruption");
+    },
+    firstWindow: async () => {
+      firstWindowCalls += 1;
+      throw new Error("firstWindow must not run for process interruption");
+    },
+    process: () => childProcess,
+    close: async () => undefined,
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async ({ env }) => {
+        await seedActiveLaneReceipt(env);
+        return app;
+      },
+    },
+  });
+  t.after(async () => {
+    if (childProcess.exitCode === null) {
+      childProcess.exitCode = 86;
+      childProcess.signalCode = null;
+      childProcess.emit("exit", 86, null);
+    }
+    await harness
+      .dispose({
+        success: false,
+        name: "process-interruption-launch-no-renderer",
+      })
+      .catch(() => undefined);
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousOwner === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV] = previousOwner;
+    if (previousNonce === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
+    if (previousFault === undefined)
+      delete process.env[NARRATIVE_MAINTENANCE_FAULT_ENV];
+    else process.env[NARRATIVE_MAINTENANCE_FAULT_ENV] = previousFault;
+  });
+
+  const launched = await harness.launchForProcessInterruption(
+    "interrupted/launch-no-renderer",
+  );
+  assert.equal(launched.page, null);
+  assert.equal(launched.appProcess, childProcess);
+  assert.equal(contextCalls, 0);
+  assert.equal(firstWindowCalls, 0);
+
+  childProcess.exitCode = 86;
+  childProcess.signalCode = null;
+  await harness.close(
+    launched.app,
+    launched.page,
+    "interrupted/launch-no-renderer",
+    {
+      expectedExitEvidence: boundProcessExitEvidence(childProcess, 86, null),
+    },
+  );
   assert.deepEqual(await readdir(harness.receiptRoot), []);
 });
 

@@ -4533,13 +4533,40 @@ export function createProductJourneyHarness({
     }
     launchInFlight = true;
     try {
-      return await launchRenderer(phase);
+      return await launchRenderer(phase, { allowProcessInterruption: false });
     } finally {
       launchInFlight = false;
     }
   }
 
-  async function launchRenderer(phase) {
+  /**
+   * Launch the main process for the CI-only interruption seam. The main owner
+   * intentionally exits shortly after publishing its typed receipt, so even
+   * firstWindow can race the renderer disappearing. Keep this opt-in path
+   * separate from ordinary launches and let the journey arm its process-exit
+   * observer as soon as the receipt and child are captured.
+   */
+  async function launchForProcessInterruption(phase) {
+    if (fixtureOperationsInFlight) {
+      throw new Error(
+        `${PRODUCT_JOURNEY_FIXTURE_DML_OWNER} blocks renderer launch while fixture DML is running`,
+      );
+    }
+    if (launchInFlight) {
+      throw new Error("product journey renderer launch is already in progress");
+    }
+    launchInFlight = true;
+    try {
+      return await launchRenderer(phase, { allowProcessInterruption: true });
+    } finally {
+      launchInFlight = false;
+    }
+  }
+
+  async function launchRenderer(
+    phase,
+    { allowProcessInterruption = false } = {},
+  ) {
     installSignalHandlers();
     await rm(retainedRendererPath, { force: true });
     retainedRendererScreenshotPromise = null;
@@ -4669,22 +4696,24 @@ export function createProductJourneyHarness({
     launchContext.appProcess = appProcess;
     trackChild(appProcess);
     appChildProcesses.set(app, appProcess);
-    const browserContext =
-      typeof app.context === "function" ? app.context() : null;
-    if (typeof browserContext?.addInitScript === "function") {
-      await runHarnessOperation(
-        "page.addInitScript:lifecycle-trace",
-        () =>
-          browserContext.addInitScript(
-            installLifecycleTraceCapture,
-            lifecycleTraceCaptureConfig,
-          ),
-        {
-          phase,
-          command: "page.addInitScript:lifecycle-trace",
-          args: lifecycleTraceCaptureConfig,
-        },
-      );
+    if (!allowProcessInterruption) {
+      const browserContext =
+        typeof app.context === "function" ? app.context() : null;
+      if (typeof browserContext?.addInitScript === "function") {
+        await runHarnessOperation(
+          "page.addInitScript:lifecycle-trace",
+          () =>
+            browserContext.addInitScript(
+              installLifecycleTraceCapture,
+              lifecycleTraceCaptureConfig,
+            ),
+          {
+            phase,
+            command: "page.addInitScript:lifecycle-trace",
+            args: lifecycleTraceCaptureConfig,
+          },
+        );
+      }
     }
     receiptStates.set(app, receiptState);
     // stdout remains diagnostics-only.  The acceptance receipt is read from
@@ -4719,6 +4748,52 @@ export function createProductJourneyHarness({
             byteLength: receiptState.heldFreshnessArtifact.byteLength,
           });
         }
+      }
+      const processInterruptionExpected =
+        allowProcessInterruption &&
+        receiptState.artifact?.receipt.fault === "process-interruption";
+      if (allowProcessInterruption && !processInterruptionExpected) {
+        throw new Error(
+          `process interruption launch requires an exact process-interruption receipt for ${phase}`,
+        );
+      }
+      if (processInterruptionExpected) {
+        // The interruption seam has no renderer contract: its only accepted
+        // launch result is the exact typed receipt plus the captured child.
+        // Avoid touching Playwright after the receipt because the native owner
+        // may exit before a window or renderer bridge can be observed.
+        await reverifyNarrativeMaintenanceReceipt(
+          receiptState,
+          `${phase}/process-interruption`,
+          runHarnessOperation,
+        );
+        lastResources.heldFreshnessArtifact =
+          receiptState.heldFreshnessArtifact;
+        recordTimeline("renderer-bridge-skipped", {
+          launchId,
+          reason: "process-interruption",
+        });
+        const result = {
+          app,
+          appProcess,
+          page: null,
+          launchId,
+          receiptArtifact: receiptState.artifact,
+          heldFreshnessArtifact: receiptState.heldFreshnessArtifact,
+          quiescenceArtifact: receiptState.quiescenceArtifact,
+          launchReceipt: {
+            launchId,
+            active: receiptState.artifact !== null,
+            receipt: receiptState.artifact?.receipt ?? null,
+            path: receiptState.artifact?.path ?? null,
+            realPath: receiptState.artifact?.realPath ?? null,
+            sha256: receiptState.artifact?.sha256 ?? null,
+            byteLength: receiptState.artifact?.byteLength ?? null,
+          },
+        };
+        settleLaunchContext(launchContext);
+        launchContexts.delete(launchId);
+        return result;
       }
       const page = await runHarnessOperation(
         "page.firstWindow",
@@ -5431,6 +5506,7 @@ export function createProductJourneyHarness({
     workspacePath,
     executeFixtureOperations,
     launch,
+    launchForProcessInterruption,
     close,
     consumeNarrativeMaintenanceReceiptAfterProcessExit,
     awaitHeldFreshness,

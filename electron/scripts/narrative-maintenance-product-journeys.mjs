@@ -3964,7 +3964,7 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
       fault: "process-interruption",
       ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
     },
-    () => harness.launch(`${id}/interrupted`),
+    () => harness.launchForProcessInterruption(`${id}/interrupted`),
   );
   let interruptedRun;
   let postExitRuns;
