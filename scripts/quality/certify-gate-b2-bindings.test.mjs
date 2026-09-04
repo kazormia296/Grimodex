@@ -111,6 +111,7 @@ test("certification environments bind candidate and GitHub run metadata", () => 
   const baseEnv = sanitizeCertificationEnv({
     KEEP_ME: "yes",
     NARRATIVE_EVAL_LIMIT: "1",
+    NARRATIVE_EVAL_SUITE_ID: "chronicle-motif-boundary-v1",
     GATE_B2_BOUND_EXECUTION: "1",
     GATE_B2_FREEZE_PATH: "/tmp/trusted-freeze.json",
     OPENROUTER_API_KEY: "must-not-reach-gate",
@@ -119,6 +120,7 @@ test("certification environments bind candidate and GitHub run metadata", () => 
   });
   assert.equal(baseEnv.KEEP_ME, "yes");
   assert.equal(baseEnv.NARRATIVE_EVAL_LIMIT, undefined);
+  assert.equal(baseEnv.NARRATIVE_EVAL_SUITE_ID, undefined);
   assert.equal(baseEnv.GATE_B2_BOUND_EXECUTION, undefined);
   assert.equal(baseEnv.GATE_B2_FREEZE_PATH, undefined);
   assert.equal(baseEnv.OPENROUTER_API_KEY, undefined);
@@ -147,6 +149,7 @@ test("certification environments bind candidate and GitHub run metadata", () => 
   assert.equal(heavy.GATE_B2_GITHUB_RUN_ID, "9001");
   assert.equal(heavy.GATE_B2_GITHUB_RUN_ATTEMPT, "1");
   assert.equal(heavy.GATE_B2_ATTEMPT, "1");
+  assert.equal(heavy.NARRATIVE_EVAL_SUITE_ID, undefined);
 
   const journey = buildJourneyCertificationEnv({
     candidate,
