@@ -9,6 +9,7 @@ import { resolveEvidenceReference } from "@/features/narrative-extraction/eviden
 import type { ResolvedEvidenceAnchor } from "@/features/narrative-extraction/evidence/types";
 import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
+import { CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_VERSION } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
 import {
   assertUniqueObservationLocalIds,
   rekeyObservationsForWindow,
@@ -28,7 +29,7 @@ import type {
 import type { NarrativeEvalCaseV1 } from "./types";
 
 export const PRODUCTION_CHRONICLE_EVAL_VERSIONS: NarrativeEvalVersions = {
-  prompt: `${OBSERVATION_CHRONICLE_EVAL_VERSIONS.prompt}+narrative-event-synthesize/1`,
+  prompt: `${OBSERVATION_CHRONICLE_EVAL_VERSIONS.prompt}+narrative-event-synthesize/${CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_VERSION}`,
   responseSchema: `${OBSERVATION_CHRONICLE_EVAL_VERSIONS.responseSchema}+event-hypothesis/1`,
   extractor: "chronicle-production-full-pipeline/1",
   parser: `${OBSERVATION_CHRONICLE_EVAL_VERSIONS.parser}+event-synthesis-normalizer/1`,
@@ -36,7 +37,7 @@ export const PRODUCTION_CHRONICLE_EVAL_VERSIONS: NarrativeEvalVersions = {
 
 export const CITATION_ID_PRODUCTION_CHRONICLE_EVAL_VERSIONS: NarrativeEvalVersions =
   {
-    prompt: `${CITATION_ID_OBSERVATION_CHRONICLE_EVAL_VERSIONS.prompt}+narrative-event-synthesize/1`,
+    prompt: `${CITATION_ID_OBSERVATION_CHRONICLE_EVAL_VERSIONS.prompt}+narrative-event-synthesize/${CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_VERSION}`,
     responseSchema: `${CITATION_ID_OBSERVATION_CHRONICLE_EVAL_VERSIONS.responseSchema}+event-hypothesis/1`,
     extractor: "chronicle-production-full-pipeline/citation-id-v2",
     parser: `${CITATION_ID_OBSERVATION_CHRONICLE_EVAL_VERSIONS.parser}+event-synthesis-normalizer/1`,
