@@ -30,6 +30,22 @@
 
 `corpusContract.test.ts` は manifest に登録された全 suite を列挙し、case count、JSON Schema、semantic validator、Evidence resolver、case ID の一意性を検証します。また、suite 全体に少なくとも1件の required observation が存在することを要求し、何も抽出しない null extractor が負例だけで有利になることを防ぎます。個々の静的描写 case は、required observation が空でも構いません。
 
+## Production capability sidecar（診断専用）
+
+`productionChronicleCapabilities.ts` は、manifest から読み込んだ任意の case 配列を本番 Chronicle の observation schema、synthesis schema、proposal planner、evaluation adapter の制約に照合する、純粋な additive report です。モデル呼び出しや課金は発生せず、Gold、scorer-v1 の計算、certification 判定、threshold は変更しません。
+
+構造上の投影可能性は `contractCompatibility`、意味品質まで評価できるかは `semanticAssessment` として分離します。現行の全19件では、required に明示された `eventDetection: false`、`actuality: rumored`、`significance: none`、および canonical evaluation adapter の `major`／`scene-level` + `proposalGate: suppress` + resolved Evidence + empty catalog の組合せを gaps として報告します。`suppress` 単独や ineligible／already-satisfied の候補を一律に blocker とは扱いません。Gold に無い negative／rumored／none を推測して追加することもありません。別の実行 context を診断する場合は catalog の件数ではなく、planner が返した `already-satisfied`／`not-already-satisfied`／`unknown` の match 状態を明示します。
+
+無課金の all-19 manifest regression は次で実行できます。
+
+```bash
+pnpm exec vitest --run src/features/narrative-extraction/eval/productionChronicleCapabilities.test.ts
+```
+
+このテストは `chronicle-micro-v1`（14件）と `chronicle-motif-boundary-v1`（5件）を実際に読み、case ID を hardcode せずに件数と gap 集計を検証します。`semanticAssessment.status` は、構造互換な軸が残っていても、明示された gaps または `forbidden` の direct scoring 未実装、predicate/content-aware alignment 未実装の limitation がある限り `BLOCKED` です。したがって `contractCompatibility` の一部が compatible であることを全体の意味評価 PASS と読んではいけません。
+
+課金を伴う selected-case live 実行では、response diagnostics とこの capability report を、既存の `report.json` とは分離した `artifactRoot/diagnostics.json` に sidecar として保存できます。既存 report の shape、score、`certificationEligible` は変更しません。sidecar には `nonAuthoritative: true`、`diagnosticOnly: true`、`certificationEligible: false` を付け、JSON／schema／reference／normalizer の失敗や salvage と、本番能力の制約を説明するだけにします。対象は production task まで到達した非空応答の parse 診断です。empty response や transport exception は `runLiveSingleShot` が先に throw する既存挙動のままとし、partial sidecar や raw replay の永続化は今回の対象外です。純粋な helper は empty input を判別できますが、live で sidecar 保存されることは保証しません。live case の PASS、sidecar の `contractCompatibility`、または一部軸の supported は、forbidden 違反の直接検出、命題内容を考慮した alignment、認証 PASS、scorer／certification の代替にはなりません。
+
 ## Evidence と Coverage
 
 Evidence は `{ documentId, quote }` だけを Gold とし、モデル由来の位置情報は使用しません。`quote` は参照先 document の `text` に完全一致する必要があります。位置解決は製品側の canonical resolver が行います。

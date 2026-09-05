@@ -380,6 +380,8 @@ requirements:
       - src/features/narrative-extraction/eval/productionChronicleAdapter.ts
       - src/features/narrative-extraction/eval/productionChronicleScoring.ts
       - src/features/narrative-extraction/eval/productionChronicleTypes.ts
+      - src/features/narrative-extraction/eval/productionChronicleCapabilities.ts
+      - src/features/narrative-extraction/eval/responseDiagnostics.ts
       - evals/narrative/manifest.yaml
     lightTests:
       - src/features/narrative-extraction/eval/caseSchema.test.ts
@@ -389,6 +391,9 @@ requirements:
       - src/features/narrative-extraction/eval/chronicleProductionReportPaths.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
+      - src/features/narrative-extraction/eval/productionChronicleCapabilities.test.ts
+      - src/features/narrative-extraction/eval/responseDiagnostics.test.ts
+      - src/features/narrative-extraction/eval/responseDiagnostics.taskContract.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
       - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
@@ -422,11 +427,13 @@ requirements:
       - src/features/narrative-extraction/eval/legacyChronicleAdapter.ts
       - src/features/narrative-extraction/eval/productionChronicleScoring.ts
       - src/features/narrative-extraction/eval/productionChronicleTypes.ts
+      - src/features/narrative-extraction/eval/productionChronicleCapabilities.ts
     lightTests:
       - src/features/narrative-extraction/eval/scorer.test.ts
       - src/features/narrative-extraction/eval/legacyChronicleAdapter.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
+      - src/features/narrative-extraction/eval/productionChronicleCapabilities.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
       - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts

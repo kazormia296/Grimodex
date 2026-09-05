@@ -28,6 +28,14 @@ import {
   type LoadedNarrativeEvalSuite,
 } from "./narrativeEvalSuite";
 import { chronicleProductionStableReportRoot } from "./chronicleProductionReportPaths";
+import { buildProductionChronicleCapabilityReport } from "./productionChronicleCapabilities";
+import {
+  canonicalObservationParseStatus,
+  canonicalSynthesisParseStatus,
+  diagnoseObservationResponse,
+  diagnoseSynthesisResponse,
+  type ChronicleResponseDiagnostic,
+} from "./responseDiagnostics";
 import type { NarrativeEvalCaseV1 } from "./types";
 
 vi.mock("@/features/ai-policy/policyGuard", () => ({
@@ -147,6 +155,39 @@ function selectCases(suite: LoadedNarrativeEvalSuite): NarrativeEvalCaseV1[] {
   return selected.slice(0, limit);
 }
 
+type ChronicleLiveStageId =
+  | "narrative_observation_extract"
+  | "narrative_event_synthesize";
+type ChronicleLiveStopReason = "end_turn" | "tool_use" | "max_tokens";
+type ChronicleLiveFinishReason =
+  | "completed"
+  | "stop"
+  | "length"
+  | "tool_calls"
+  | "content_filter"
+  | "cancelled";
+
+const ALLOWED_FINISH_REASONS = new Set<ChronicleLiveFinishReason>([
+  "completed",
+  "stop",
+  "length",
+  "tool_calls",
+  "content_filter",
+  "cancelled",
+]);
+
+function boundedFinishReason(value: unknown): ChronicleLiveFinishReason | null {
+  return typeof value === "string" &&
+    ALLOWED_FINISH_REASONS.has(value as ChronicleLiveFinishReason)
+    ? (value as ChronicleLiveFinishReason)
+    : null;
+}
+
+type ChronicleLiveStageDiagnostic = ChronicleResponseDiagnostic & {
+  readonly expectedParseStatus: "parsed" | "invalid";
+  readonly parseStatus: "parsed" | "invalid";
+};
+
 describeLive("Chronicle production OpenRouter live qualification", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -179,6 +220,23 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
       await mkdir(artifactRoot, { recursive: true });
 
       const caseReports = [];
+      const diagnosticCaseReports: Array<{
+        readonly caseId: string;
+        readonly corpusDigest: string;
+        readonly fixturePromptDigest: string;
+        readonly dispatches: readonly {
+          readonly promptDigest: string;
+          readonly responseDigest: string;
+          readonly stageId: ChronicleLiveStageId;
+          readonly invocationIndex: number;
+          readonly finishReason: ChronicleLiveFinishReason | null;
+          readonly stopReason: ChronicleLiveStopReason;
+        }[];
+        readonly stageDiagnostics: readonly ChronicleLiveStageDiagnostic[];
+        readonly capability: ReturnType<
+          typeof buildProductionChronicleCapabilityReport
+        >;
+      }> = [];
       for (const evalCase of cases) {
         const prepared = await prepareProductionChronicleEvalCase(evalCase);
         const dispatches: Array<{
@@ -190,12 +248,25 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
           runtimeMs: number;
           costUsd: number;
         }> = [];
-        const send = async (
+        const diagnosticDispatches: Array<{
+          promptDigest: string;
+          responseDigest: string;
+          stageId: ChronicleLiveStageId;
+          invocationIndex: number;
+          finishReason: ChronicleLiveFinishReason | null;
+          stopReason: ChronicleLiveStopReason;
+        }> = [];
+        const stageDiagnostics: ChronicleLiveStageDiagnostic[] = [];
+        let observationInvocationIndex = 0;
+        let synthesisInvocationIndex = 0;
+        const sendLive = async (
           messages: Parameters<
             NonNullable<
               Parameters<typeof runObservationExtractionTask>[0]["send"]
             >
           >[0],
+          stageId: ChronicleLiveStageId,
+          invocationIndex: number,
         ) => {
           const prompt =
             typeof messages[0]?.content === "string" ? messages[0].content : "";
@@ -218,32 +289,160 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
           if (!raw?.response.model) {
             throw new Error("OpenRouter response omitted resolved model");
           }
+          const promptDigest = await sha256Digest(prompt);
+          const responseDigest = await sha256Digest(response.text);
           dispatches.push({
-            promptDigest: await sha256Digest(prompt),
-            responseDigest: await sha256Digest(response.text),
+            promptDigest,
+            responseDigest,
             resolvedModel: raw.response.model,
             inputTokens: response.tokensIn ?? 0,
             outputTokens: response.tokensOut ?? 0,
             runtimeMs: raw.elapsedMs,
             costUsd: raw.response.usage?.cost ?? 0,
           });
-          return {
-            text: response.text,
-            inputTokens: response.tokensIn ?? 0,
-            outputTokens: response.tokensOut ?? 0,
-          };
+          diagnosticDispatches.push({
+            promptDigest,
+            responseDigest,
+            stageId,
+            invocationIndex,
+            finishReason: boundedFinishReason(
+              raw.response.choices?.[0]?.finish_reason,
+            ),
+            stopReason: response.stopReason,
+          });
+          return response;
+        };
+        const toTaskResponse = (
+          response: Awaited<ReturnType<typeof runLiveSingleShot>>,
+        ) => ({
+          text: response.text,
+          inputTokens: response.tokensIn ?? 0,
+          outputTokens: response.tokensOut ?? 0,
+        });
+        const observeWithDiagnostics = async (
+          input: Parameters<typeof runObservationExtractionTask>[0],
+        ) => {
+          const invocationIndex = observationInvocationIndex++;
+          let responseText: string | undefined;
+          let parseStatus: "parsed" | "invalid" | undefined;
+          const observations = await runObservationExtractionTask({
+            ...input,
+            onParseStatus: (status) => {
+              parseStatus = status;
+              input.onParseStatus?.(status);
+            },
+            send: async (messages) => {
+              const response = await sendLive(
+                messages,
+                "narrative_observation_extract",
+                invocationIndex,
+              );
+              responseText = response.text;
+              return toTaskResponse(response);
+            },
+          });
+          if (responseText !== undefined) {
+            const diagnostic = diagnoseObservationResponse(responseText, {
+              invocationIndex,
+              allowedSourceRefs: new Set(
+                input.windows.map((window) => window.sourceRef),
+              ),
+            });
+            const expectedParseStatus =
+              canonicalObservationParseStatus(diagnostic);
+            const actualParseStatus = parseStatus ?? "invalid";
+            if (actualParseStatus !== expectedParseStatus) {
+              throw new Error(
+                "Observation diagnostic parseStatus disagreed with the canonical task callback",
+              );
+            }
+            if (diagnostic.output.acceptedCount !== observations.length) {
+              throw new Error(
+                "Observation diagnostic output count disagreed with the canonical task result",
+              );
+            }
+            stageDiagnostics.push({
+              ...diagnostic,
+              expectedParseStatus,
+              parseStatus: actualParseStatus,
+            });
+          }
+          return observations;
+        };
+        const synthesizeWithDiagnostics = async (
+          input: Parameters<typeof runEventSynthesisTask>[0],
+        ) => {
+          const invocationIndex = synthesisInvocationIndex++;
+          let responseText: string | undefined;
+          let parseStatus: "parsed" | "invalid" | undefined;
+          const hypotheses = await runEventSynthesisTask({
+            ...input,
+            onParseStatus: (status) => {
+              parseStatus = status;
+              input.onParseStatus?.(status);
+            },
+            send: async (messages) => {
+              const response = await sendLive(
+                messages,
+                "narrative_event_synthesize",
+                invocationIndex,
+              );
+              responseText = response.text;
+              return toTaskResponse(response);
+            },
+          });
+          if (responseText !== undefined) {
+            const diagnostic = diagnoseSynthesisResponse(responseText, {
+              invocationIndex,
+              clusterRef: input.clusterRef,
+              allowedObservationRefs: new Set(
+                input.observations.map((observation) => observation.localId),
+              ),
+            });
+            const expectedParseStatus =
+              canonicalSynthesisParseStatus(diagnostic);
+            const actualParseStatus = parseStatus ?? "invalid";
+            if (actualParseStatus !== expectedParseStatus) {
+              throw new Error(
+                "Synthesis diagnostic parseStatus disagreed with the canonical task callback",
+              );
+            }
+            if (diagnostic.output.acceptedCount !== hypotheses.length) {
+              throw new Error(
+                "Synthesis diagnostic output count disagreed with the canonical task result",
+              );
+            }
+            stageDiagnostics.push({
+              ...diagnostic,
+              expectedParseStatus,
+              parseStatus: actualParseStatus,
+            });
+          }
+          return hypotheses;
         };
 
         const artifacts = await runProductionChroniclePipeline(prepared, {
-          observeWithAi: (input) =>
-            runObservationExtractionTask({ ...input, send }),
-          synthesizeWithAi: (input) =>
-            runEventSynthesisTask({ ...input, send }),
+          observeWithAi: observeWithDiagnostics,
+          synthesizeWithAi: synthesizeWithDiagnostics,
         });
         const evaluation = evaluateProductionChronicleArtifacts(
           prepared,
           artifacts,
         );
+        const dispatchKeys = diagnosticDispatches.map(
+          (dispatch) => `${dispatch.stageId}:${dispatch.invocationIndex}`,
+        );
+        const diagnosticKeys = stageDiagnostics.map(
+          (diagnostic) => `${diagnostic.stageId}:${diagnostic.invocationIndex}`,
+        );
+        if (
+          dispatchKeys.length !== diagnosticKeys.length ||
+          dispatchKeys.some((key, index) => key !== diagnosticKeys[index])
+        ) {
+          throw new Error(
+            "Live dispatch and stage diagnostic records were not one-to-one",
+          );
+        }
         caseReports.push({
           caseId: evalCase.id,
           corpusDigest: prepared.fixture.snapshot.digest,
@@ -254,7 +453,17 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
           proposalCount: artifacts.plannedProposals.length,
           evaluation,
         });
+        diagnosticCaseReports.push({
+          caseId: evalCase.id,
+          corpusDigest: prepared.fixture.snapshot.digest,
+          fixturePromptDigest: await sha256Digest(prepared.prompt),
+          dispatches: diagnosticDispatches,
+          stageDiagnostics,
+          capability: buildProductionChronicleCapabilityReport([evalCase]),
+        });
       }
+
+      const capabilityReport = buildProductionChronicleCapabilityReport(cases);
 
       const eligibilityInput = {
         diagnosticOnly,
@@ -318,6 +527,43 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
         reportJson,
         "utf8",
       );
+      const diagnosticsReport = {
+        schemaVersion: 1,
+        mode: "chronicle-production-live-diagnostics" as const,
+        runId,
+        attempt,
+        nonAuthoritative: true,
+        diagnosticOnly: true,
+        certificationEligible: false,
+        startedAt,
+        completedAt,
+        ...(binding.candidateCommitSha
+          ? { candidateCommitSha: binding.candidateCommitSha }
+          : {}),
+        ...(binding.candidateTreeSha
+          ? { candidateTreeSha: binding.candidateTreeSha }
+          : {}),
+        ...(binding.suiteId
+          ? { qualityEvaluationSuiteId: binding.suiteId }
+          : {}),
+        ...(binding.commandDigest
+          ? { commandDigest: binding.commandDigest }
+          : {}),
+        ...(binding.freezeId ? { freezeId: binding.freezeId } : {}),
+        ...(binding.certificationRunId
+          ? { certificationRunId: binding.certificationRunId }
+          : {}),
+        model: { provider: "openrouter", requestedModel: model, effort },
+        corpusSuite: corpusSuiteReport(suite),
+        caseCount: diagnosticCaseReports.length,
+        selectedCaseCapabilityReport: capabilityReport,
+        cases: diagnosticCaseReports,
+      };
+      await writeFile(
+        path.join(artifactRoot, "diagnostics.json"),
+        `${JSON.stringify(diagnosticsReport, null, 2)}\n`,
+        "utf8",
+      );
       // Archived Gate B2 evidence still uses the legacy stable path. Local
       // qualification and diagnostic suites keep their detailed source report
       // in an ephemeral, run-specific root.
@@ -338,6 +584,7 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
       console.info(
         JSON.stringify({
           artifactRoot,
+          diagnosticsReport: path.join(artifactRoot, "diagnostics.json"),
           ...(stableRoot
             ? { stableReport: path.join(stableRoot, "report.json") }
             : {}),
@@ -359,6 +606,57 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
             ),
         ),
       ).toBe(true);
+      expect(
+        diagnosticCaseReports.every(
+          (entry) =>
+            entry.dispatches.length === entry.stageDiagnostics.length &&
+            entry.dispatches.every(
+              (dispatch) =>
+                dispatch.promptDigest.startsWith("sha256:") &&
+                dispatch.responseDigest.startsWith("sha256:") &&
+                dispatch.stageId.length > 0 &&
+                Number.isSafeInteger(dispatch.invocationIndex) &&
+                dispatch.invocationIndex >= 0 &&
+                ["end_turn", "tool_use", "max_tokens"].includes(
+                  dispatch.stopReason,
+                ) &&
+                (dispatch.finishReason === null ||
+                  ALLOWED_FINISH_REASONS.has(dispatch.finishReason)),
+            ) &&
+            entry.stageDiagnostics.every(
+              (diagnostic) =>
+                diagnostic.expectedParseStatus === diagnostic.parseStatus,
+            ),
+        ),
+      ).toBe(true);
+      expect(diagnosticsReport).toMatchObject({
+        schemaVersion: 1,
+        runId,
+        nonAuthoritative: true,
+        diagnosticOnly: true,
+        certificationEligible: false,
+        caseCount: cases.length,
+      });
+      expect(diagnosticCaseReports).toHaveLength(caseReports.length);
+      const diagnosticParseFailureCount = diagnosticCaseReports.reduce(
+        (sum, diagnosticCase) => {
+          const matchingCaseReports = caseReports.filter(
+            (caseReport) => caseReport.caseId === diagnosticCase.caseId,
+          );
+          expect(matchingCaseReports).toHaveLength(1);
+          const caseReport = matchingCaseReports[0];
+          if (!caseReport) return sum;
+          const invalidDiagnosticCount = diagnosticCase.stageDiagnostics.filter(
+            (diagnostic) => diagnostic.parseStatus === "invalid",
+          ).length;
+          expect(invalidDiagnosticCount).toBe(
+            caseReport.evaluation.parseFailureCount,
+          );
+          return sum + invalidDiagnosticCount;
+        },
+        0,
+      );
+      expect(diagnosticParseFailureCount).toBe(parseFailureCount);
       expect(parseFailureCount).toBe(0);
       if (fullCertificationRun && attempt === 1 && !diagnosticOnly) {
         expect(report.caseCount).toBe(14);
