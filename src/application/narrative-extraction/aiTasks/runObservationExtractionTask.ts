@@ -9,6 +9,23 @@ import { normalizeWindowObservations } from "@/features/chronicle/extraction/win
 import { parseRawChronicleEventObservationList } from "@/features/chronicle/extraction/schemas";
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
+import type { EvidenceSpanCatalogBinding } from "@/features/narrative-extraction/evidence/spanCatalog";
+import {
+  type EvidenceSpanCatalogSelectionResolver,
+  createEvidenceSpanCatalogSelectionResolver,
+} from "@/features/narrative-extraction/evidence/spanCatalog";
+import {
+  citationBindingAuditMetadata,
+  citationIdObservationParseStatus,
+  citationSelectionAuditMetadata,
+  CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+  LEGACY_OBSERVATION_EVIDENCE_MODE,
+  materializeCitationIdObservations,
+  type CitationIdObservationSelection,
+  type ObservationEvidenceMode,
+  buildCitationIdObservationPromptArtifactFromCaptured,
+  validateCitationIdBinding,
+} from "./citationIdObservation";
 import {
   runStructuredRepairTask,
   type StructuredRepairSend,
@@ -39,10 +56,13 @@ import type {
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
 import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 
+export type { ObservationEvidenceMode } from "./citationIdObservation";
+
 export const NARRATIVE_OBSERVATION_EXTRACT_PATH =
   "narrative_observation_extract" as const;
 
 export interface ObservationExtractionWindowInput {
+  readonly windowId?: string;
   readonly sourceRef: string;
   readonly text: string;
 }
@@ -61,6 +81,13 @@ export type ObservationExtractionSend = (
 
 export interface RunObservationExtractionTaskInput {
   readonly windows: readonly ObservationExtractionWindowInput[];
+  /**
+   * The quote protocol remains the compatibility default for direct callers.
+   * Production AI runs opt into citation-id-v2 explicitly with a sealed
+   * EvidenceSpanCatalogBinding.
+   */
+  readonly evidenceMode?: ObservationEvidenceMode;
+  readonly evidenceSpanCatalogBinding?: EvidenceSpanCatalogBinding;
   readonly projectId?: string | null;
   readonly createId?: () => string;
   readonly repairOnFailure?: boolean;
@@ -115,6 +142,47 @@ export function buildObservationExtractionPrompt(
   return buildObservationPromptArtifact(windows).messages[0].content;
 }
 
+function observationEvidenceMode(
+  input: RunObservationExtractionTaskInput,
+): ObservationEvidenceMode {
+  return input.evidenceMode ?? LEGACY_OBSERVATION_EVIDENCE_MODE;
+}
+
+function citationIdBinding(
+  input: RunObservationExtractionTaskInput,
+): EvidenceSpanCatalogBinding {
+  if (
+    observationEvidenceMode(input) === CITATION_ID_OBSERVATION_EVIDENCE_MODE &&
+    input.evidenceSpanCatalogBinding === undefined
+  ) {
+    throw new TypeError(
+      "Citation-ID observation mode requires an EvidenceSpanCatalogBinding",
+    );
+  }
+  return input.evidenceSpanCatalogBinding as EvidenceSpanCatalogBinding;
+}
+
+async function buildObservationPromptArtifactForInput(
+  input: RunObservationExtractionTaskInput,
+  capturedBinding?: EvidenceSpanCatalogBinding,
+): Promise<ChroniclePromptArtifact> {
+  if (
+    observationEvidenceMode(input) === CITATION_ID_OBSERVATION_EVIDENCE_MODE &&
+    input.windows.length > 0
+  ) {
+    if (!capturedBinding) {
+      throw new TypeError(
+        "Citation-ID observation prompt requires a captured EvidenceSpanCatalogBinding",
+      );
+    }
+    return buildCitationIdObservationPromptArtifactFromCaptured(
+      input.windows,
+      capturedBinding,
+    );
+  }
+  return buildObservationPromptArtifact(input.windows);
+}
+
 async function recordObservationStageAudit(
   input: RunObservationExtractionTaskInput,
   promptArtifact: ChroniclePromptArtifact,
@@ -131,6 +199,8 @@ async function recordObservationStageAudit(
   onStageReceipt?: RunObservationExtractionTaskInput["onStageReceipt"],
   capturedTerminalMetadata?: ChronicleStageAuditMetadata,
   capturedStageReceipt?: ChronicleStageTerminalReceiptV1,
+  citationAudit?: AiAuditJsonObject,
+  repairResolution?: AiAuditJsonObject,
 ): Promise<void> {
   if (!input.stageExecution) return;
   const digests = await buildChroniclePromptDigests(promptArtifact);
@@ -161,8 +231,40 @@ async function recordObservationStageAudit(
     metadata: {
       pathId: NARRATIVE_OBSERVATION_EXTRACT_PATH,
       chronicleStageAudit: terminal,
+      ...(citationAudit ? { citationEvidence: citationAudit } : {}),
+      ...(repairResolution ? { repairResolution } : {}),
     },
   });
+}
+
+function buildCitationRepairResolutionAudit(
+  childResponseDigest: Sha256Digest,
+  childStageExecution: NarrativeStageExecutionContext | undefined,
+  childCitationAudit: AiAuditJsonObject,
+): AiAuditJsonObject {
+  const childStage = childStageExecution
+    ? {
+        projectId: childStageExecution.projectId,
+        runId: childStageExecution.runId,
+        taskId: childStageExecution.taskId,
+        attemptId: childStageExecution.attemptId,
+        stageId: childStageExecution.stageId,
+        stageExecutionId: childStageExecution.stageExecutionId,
+        ...(childStageExecution.parentStageExecutionId === undefined
+          ? {}
+          : {
+              parentStageExecutionId:
+                childStageExecution.parentStageExecutionId,
+            }),
+      }
+    : null;
+  return {
+    kind: "chronicle.observation-repair-resolution@1",
+    version: 1,
+    childResponseDigest,
+    childStageExecution: childStage,
+    childCitationEvidence: childCitationAudit,
+  };
 }
 
 async function parseObservationsFromText(
@@ -204,13 +306,78 @@ function observationParseStatus(responseText: string): "parsed" | "invalid" {
   }
 }
 
+async function observationParseStatusForInput(
+  input: RunObservationExtractionTaskInput,
+  responseText: string,
+  binding?: EvidenceSpanCatalogBinding,
+): Promise<"parsed" | "invalid"> {
+  if (
+    observationEvidenceMode(input) === CITATION_ID_OBSERVATION_EVIDENCE_MODE
+  ) {
+    return citationIdObservationParseStatus(
+      responseText,
+      binding ?? citationIdBinding(input),
+    );
+  }
+  return observationParseStatus(responseText);
+}
+
+function captureObservationExtractionInput(
+  input: RunObservationExtractionTaskInput,
+): RunObservationExtractionTaskInput {
+  const windows = input.windows.map((window) => ({
+    ...(window.windowId === undefined ? {} : { windowId: window.windowId }),
+    sourceRef: window.sourceRef,
+    text: window.text,
+  }));
+  const evidenceMode = observationEvidenceMode(input);
+  return {
+    ...input,
+    windows,
+    evidenceMode,
+    ...(input.evidenceSpanCatalogBinding
+      ? { evidenceSpanCatalogBinding: input.evidenceSpanCatalogBinding }
+      : {}),
+  };
+}
+
+async function citationAuditForResponse(
+  input: RunObservationExtractionTaskInput,
+  responseText: string,
+  binding?: EvidenceSpanCatalogBinding,
+  selectionResolver?: EvidenceSpanCatalogSelectionResolver,
+  selections?: readonly CitationIdObservationSelection[],
+): Promise<AiAuditJsonObject | undefined> {
+  if (
+    observationEvidenceMode(input) !== CITATION_ID_OBSERVATION_EVIDENCE_MODE
+  ) {
+    return undefined;
+  }
+  const resolvedBinding = binding ?? citationIdBinding(input);
+  const selectionStatus = await citationIdObservationParseStatus(
+    responseText,
+    resolvedBinding,
+    selectionResolver,
+  );
+  return {
+    ...citationBindingAuditMetadata(resolvedBinding),
+    ...(selectionStatus === "parsed" && selections
+      ? citationSelectionAuditMetadata(selections)
+      : {}),
+    selectionStatus: selectionStatus === "parsed" ? "resolved" : "rejected",
+  };
+}
+
 /**
  * Stage AI: narrative_observation_extract.
  * Passes only Source View refs (S0001…) — never project/scene/event DB ids.
  */
 export async function runObservationExtractionTask(
-  input: RunObservationExtractionTaskInput,
+  callerInput: RunObservationExtractionTaskInput,
 ): Promise<readonly RawChronicleEventObservation[]> {
+  // Capture the caller-owned roster, mode, and binding synchronously. Nothing
+  // below may reread a mutable input object after an asynchronous boundary.
+  const input = captureObservationExtractionInput(callerInput);
   if (input.stageExecution) {
     assertStageExecutionContext(input.stageExecution);
     if (
@@ -231,11 +398,27 @@ export async function runObservationExtractionTask(
     }
   }
 
-  const blocked = blockNarrativeAiTask();
+  const isCitationId =
+    observationEvidenceMode(input) === CITATION_ID_OBSERVATION_EVIDENCE_MODE;
   const emptyInput = input.windows.length === 0;
+  let capturedCitationBinding: EvidenceSpanCatalogBinding | undefined;
+  let citationSelectionResolver:
+    | EvidenceSpanCatalogSelectionResolver
+    | undefined;
+  if (isCitationId && !emptyInput) {
+    capturedCitationBinding = await validateCitationIdBinding(
+      citationIdBinding(input),
+    );
+    citationSelectionResolver =
+      await createEvidenceSpanCatalogSelectionResolver(capturedCitationBinding);
+  }
+  const blocked = blockNarrativeAiTask();
   if (blocked || emptyInput) {
     if (input.stageExecution) {
-      const promptArtifact = buildObservationPromptArtifact(input.windows);
+      const promptArtifact = await buildObservationPromptArtifactForInput(
+        input,
+        capturedCitationBinding,
+      );
       const promptDigests = await buildChroniclePromptDigests(promptArtifact);
       await emitChronicleStageAuditSkippedReceipt({
         stageExecution: input.stageExecution,
@@ -255,7 +438,10 @@ export async function runObservationExtractionTask(
   const allowedSourceRefs = new Set(
     input.windows.map((window) => window.sourceRef),
   );
-  const promptArtifact = buildObservationPromptArtifact(input.windows);
+  const promptArtifact = await buildObservationPromptArtifactForInput(
+    input,
+    capturedCitationBinding,
+  );
   const prompt = promptArtifact.messages[0].content;
   const promptDigests = await buildChroniclePromptDigests(promptArtifact);
   const projectId = requireAuditProjectId(
@@ -267,6 +453,15 @@ export async function runObservationExtractionTask(
   const baseAuditContext = {
     projectId,
     pathId: NARRATIVE_OBSERVATION_EXTRACT_PATH,
+    ...(observationEvidenceMode(input) === CITATION_ID_OBSERVATION_EVIDENCE_MODE
+      ? {
+          metadata: {
+            citationEvidence: citationBindingAuditMetadata(
+              capturedCitationBinding!,
+            ),
+          },
+        }
+      : {}),
   } as const;
   let sealedModelBinding: StageModelExecutionBindingV1 | undefined;
   let capturedTerminalMetadata: ChronicleStageAuditMetadata | undefined;
@@ -289,7 +484,17 @@ export async function runObservationExtractionTask(
           metadata?: AiAuditJsonObject,
           responseDigest?: Sha256Digest,
         ) => {
-          const parseStatus = observationParseStatus(responseText);
+          const parseStatus = await observationParseStatusForInput(
+            input,
+            responseText,
+            capturedCitationBinding,
+          );
+          const citationAudit = await citationAuditForResponse(
+            input,
+            responseText,
+            capturedCitationBinding,
+            citationSelectionResolver,
+          );
           const terminal = await buildChronicleStageAuditTerminal({
             stageExecution: input.stageExecution!,
             ...promptDigests,
@@ -307,6 +512,7 @@ export async function runObservationExtractionTask(
           capturedTerminalMetadata = terminal;
           return {
             chronicleStage: terminal as unknown as AiAuditJsonObject,
+            ...(citationAudit ? { citationEvidence: citationAudit } : {}),
           };
         },
         onNoResponseTerminalMetadata: async (
@@ -357,6 +563,42 @@ export async function runObservationExtractionTask(
         ov.provider,
         ov.endpointId,
       );
+  let first: {
+    readonly observations: readonly RawChronicleEventObservation[];
+    readonly status: "parsed" | "invalid";
+    readonly selections?: readonly CitationIdObservationSelection[];
+  } | null = null;
+  let firstCitationError: unknown;
+  if (isCitationId) {
+    try {
+      const materialized = await materializeCitationIdObservations(
+        response.text,
+        capturedCitationBinding!,
+        input.createId,
+        citationSelectionResolver,
+      );
+      first = {
+        observations: materialized.observations,
+        selections: materialized.selections,
+        status: "parsed",
+      };
+    } catch (error) {
+      firstCitationError = error;
+    }
+  } else {
+    first = await parseObservationsFromText(
+      response.text,
+      allowedSourceRefs,
+      input.createId,
+    );
+  }
+  const firstCitationAudit = await citationAuditForResponse(
+    input,
+    response.text,
+    capturedCitationBinding,
+    citationSelectionResolver,
+    first?.selections,
+  );
   if (!input.stageExecution) {
     void recordAiUsage({
       surface: "narrative_observation_extract",
@@ -365,14 +607,12 @@ export async function runObservationExtractionTask(
       tokensIn: response.inputTokens,
       tokensOut: response.outputTokens,
       projectId,
-      metadata: { pathId: NARRATIVE_OBSERVATION_EXTRACT_PATH },
+      metadata: {
+        pathId: NARRATIVE_OBSERVATION_EXTRACT_PATH,
+        ...(firstCitationAudit ? { citationEvidence: firstCitationAudit } : {}),
+      },
     });
   }
-  const first = await parseObservationsFromText(
-    response.text,
-    allowedSourceRefs,
-    input.createId,
-  );
   if (first !== null) {
     input.onParseStatus?.(first.status);
     if (input.stageExecution) {
@@ -392,6 +632,7 @@ export async function runObservationExtractionTask(
         emitStageReceipt,
         capturedTerminalMetadata,
         capturedStageReceipt,
+        firstCitationAudit,
       );
     }
     return first.observations;
@@ -415,6 +656,13 @@ export async function runObservationExtractionTask(
         emitStageReceipt,
         capturedTerminalMetadata,
         capturedStageReceipt,
+        firstCitationAudit,
+      );
+    }
+    if (isCitationId) {
+      throw (
+        firstCitationError ??
+        new Error("NEX_CHRONICLE_CITATION_ID_RESPONSE_INVALID")
       );
     }
     return [];
@@ -427,18 +675,54 @@ export async function runObservationExtractionTask(
         (input.createStageExecutionId ?? (() => crypto.randomUUID()))(),
       )
     : undefined;
+  let childResponseDigest: Sha256Digest | undefined;
+  const observeRepairStageReceipt = async (
+    receipt: ChronicleStageTerminalReceiptV1,
+  ): Promise<void> => {
+    if (
+      repairStageExecution &&
+      receipt.stageExecution.stageExecutionId ===
+        repairStageExecution.stageExecutionId &&
+      receipt.responseDigest !== null
+    ) {
+      // Prefer the digest from the actual child terminal receipt. The child
+      // response callback below remains the fallback for a transport that
+      // does not expose a stage receipt.
+      childResponseDigest = receipt.responseDigest;
+    }
+    await input.onStageReceipt?.(receipt);
+  };
 
   const repaired = await runStructuredRepairTask({
     brokenText: response.text,
-    expectedShape:
-      '{"observations":[{"localId":"string","evidence":[{"sourceRef":"S0001","quote":"string"}],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"string","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}',
+    expectedShape: isCitationId
+      ? '{"observations":[{"localId":"string","evidenceRefs":["E<request-binding>-001"],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"string","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}'
+      : '{"observations":[{"localId":"string","evidence":[{"sourceRef":"S0001","quote":"string"}],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"string","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}',
     projectId,
+    ...(isCitationId
+      ? {
+          evidenceMode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+          evidenceSpanCatalogBinding: capturedCitationBinding!,
+        }
+      : {}),
     ...(repairStageExecution ? { stageExecution: repairStageExecution } : {}),
     ...(repairStageExecution
-      ? { responseValidator: observationParseStatus }
+      ? {
+          responseValidator: isCitationId
+            ? (candidate: string) =>
+                citationIdObservationParseStatus(
+                  candidate,
+                  capturedCitationBinding!,
+                  citationSelectionResolver,
+                )
+            : observationParseStatus,
+        }
       : {}),
     send: input.repairSend,
-    onStageReceipt: input.onStageReceipt,
+    onStageReceipt: observeRepairStageReceipt,
+    onResponseDigest: (responseDigest) => {
+      childResponseDigest = responseDigest;
+    },
   });
   if (!repaired) {
     input.onParseStatus?.("invalid");
@@ -459,15 +743,66 @@ export async function runObservationExtractionTask(
         emitStageReceipt,
         capturedTerminalMetadata,
         capturedStageReceipt,
+        firstCitationAudit,
+      );
+    }
+    if (isCitationId) {
+      throw new Error(
+        "NEX_CHRONICLE_CITATION_ID_REPAIR_FAILED: repaired response was not accepted",
       );
     }
     return [];
   }
-  const parsed = await parseObservationsFromText(
+
+  let parsed: {
+    readonly observations: readonly RawChronicleEventObservation[];
+    readonly status: "parsed" | "invalid";
+    readonly selections?: readonly CitationIdObservationSelection[];
+  } | null = null;
+  let repairedCitationError: unknown;
+  if (isCitationId) {
+    try {
+      const materialized = await materializeCitationIdObservations(
+        repaired,
+        capturedCitationBinding!,
+        input.createId,
+        citationSelectionResolver,
+      );
+      parsed = {
+        observations: materialized.observations,
+        selections: materialized.selections,
+        status: "parsed",
+      };
+    } catch (error) {
+      repairedCitationError = error;
+    }
+  } else {
+    parsed = await parseObservationsFromText(
+      repaired,
+      allowedSourceRefs,
+      input.createId,
+    );
+  }
+  const repairedCitationAudit = await citationAuditForResponse(
+    input,
     repaired,
-    allowedSourceRefs,
-    input.createId,
+    capturedCitationBinding,
+    citationSelectionResolver,
+    parsed?.selections,
   );
+  if (isCitationId && childResponseDigest === undefined) {
+    throw new Error(
+      "NEX_CHRONICLE_CITATION_ID_REPAIR_DIGEST_MISSING: child response digest was not captured",
+    );
+  }
+  const repairResolution = isCitationId
+    ? buildCitationRepairResolutionAudit(
+        childResponseDigest!,
+        repairStageExecution,
+        repairedCitationAudit ??
+          citationBindingAuditMetadata(capturedCitationBinding!),
+      )
+    : undefined;
   input.onParseStatus?.(parsed?.status ?? "invalid");
   if (input.stageExecution) {
     await recordObservationStageAudit(
@@ -486,6 +821,16 @@ export async function runObservationExtractionTask(
       emitStageReceipt,
       capturedTerminalMetadata,
       capturedStageReceipt,
+      firstCitationAudit,
+      repairResolution,
+    );
+  }
+  if (isCitationId && !parsed) {
+    throw (
+      repairedCitationError ??
+      new Error(
+        "NEX_CHRONICLE_CITATION_ID_REPAIR_FAILED: repaired response was not accepted",
+      )
     );
   }
   return parsed?.observations ?? [];

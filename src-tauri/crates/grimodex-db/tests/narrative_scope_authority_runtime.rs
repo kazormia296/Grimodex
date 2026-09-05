@@ -336,6 +336,95 @@ fn finish_with_basis(
     )
 }
 
+fn rebind_source_view(
+    payload: &mut serde_json::Value,
+    source_view_ref: &str,
+    recompute_digest: bool,
+) {
+    let document_artifact_digest = payload["snapshot"]["documents"][0]["artifactDigest"].clone();
+    let document_ref = payload["sourceViews"][0]["documentRef"].clone();
+    let document_range = payload["sourceViews"][0]["documentRange"].clone();
+    let text = payload["sourceViews"][0]["text"].clone();
+    let source_view = payload["sourceViews"][0]
+        .as_object_mut()
+        .expect("source view object");
+    source_view.insert("ref".to_owned(), json!(source_view_ref));
+    if recompute_digest {
+        let digest = grimodex_core::canonical_json_digest(&json!({
+            "schemaVersion": 1,
+            "ref": source_view_ref,
+            "documentRef": document_ref,
+            "documentArtifactDigest": document_artifact_digest,
+            "documentRange": document_range,
+            "text": text,
+        }))
+        .expect("recompute source view digest");
+        source_view.insert("digest".to_owned(), json!(digest));
+    }
+}
+
+/// Build the additive evidence protocol shape that the TypeScript catalog
+/// owns. Native intentionally treats this as opaque generic payload data: the
+/// test proves only that a versioned companion can cross the existing seal and
+/// typed-finish boundary alongside a ref-bound Source View.
+fn citation_evidence_companion(payload: &serde_json::Value) -> serde_json::Value {
+    let snapshot = payload["snapshot"].as_object().expect("snapshot object");
+    let catalog_without_digest = json!({
+        "kind": "narrative-evidence-span-catalog",
+        "version": 1,
+        "segmentationVersion": "sentence-like-v1",
+        "snapshotId": snapshot["snapshotId"].clone(),
+        "snapshotDigest": snapshot["digest"].clone(),
+        "snapshotArtifactDigest": snapshot["artifactDigest"].clone(),
+        "entries": [],
+    });
+    let catalog_digest = grimodex_core::canonical_json_digest(&catalog_without_digest)
+        .expect("seal citation catalog companion");
+    let mut catalog = catalog_without_digest;
+    catalog["digest"] = json!(catalog_digest);
+    json!({
+        "kind": "chronicle.snapshot-evidence-companion@1",
+        "version": 1,
+        "mode": "citation-id-v2",
+        "catalogVersion": 1,
+        "catalogDigest": catalog_digest,
+        "snapshotDigest": snapshot["digest"].clone(),
+        "snapshotArtifactDigest": snapshot["artifactDigest"].clone(),
+        "catalog": catalog,
+    })
+}
+
+fn finish_with_artifacts_and_corpus_digest(
+    db: &Database,
+    attempt_id: String,
+    historical_scope_authority_basis: NarrativeScopeAuthorityBasisV2,
+    artifacts: serde_json::Value,
+    corpus_payload_digest: String,
+) -> anyhow::Result<serde_json::Value> {
+    let snapshot_digest = snapshot_digest();
+    let payload: FinishTaskPayload = serde_json::from_value(json!({
+        "runId": RUN_ID,
+        "projectId": PROJECT_ID,
+        "taskId": TASK_ID,
+        "attemptId": attempt_id,
+        "leaseOwner": LEASE_OWNER,
+        "outputJson": {
+            "snapshotDigest": snapshot_digest,
+            "documentCount": 2,
+            "corpusPayloadDigest": corpus_payload_digest,
+            "scopeAuthorityCompositeDigest": historical_scope_authority_basis.digests.composite_digest,
+        },
+        "artifacts": artifacts,
+        "historicalScopeAuthorityBasis": historical_scope_authority_basis,
+    }))
+    .expect("decode typed finish payload bound to supplied corpus digest");
+    assert!(
+        payload.historical_scope_authority_basis.is_some(),
+        "wire payload must retain the typed historical companion"
+    );
+    narrative_extraction::narrative_extraction_finish_task(db, payload)
+}
+
 fn assert_finish_rolled_back(db: &Database) {
     db.with_conn(|conn| {
         let artifact_count: i64 = conn.query_row(
@@ -844,4 +933,120 @@ fn historical_reader_rejects_a_second_completed_snapshot_attempt() {
             .contains("NEX_SCOPE_AUTHORITY_ATTEMPT_INVALID"),
         "unexpected error: {error}"
     );
+}
+
+#[test]
+fn typed_finish_accepts_an_additive_citation_companion_and_arbitrary_source_view_ref() {
+    let db = fixture();
+    let expected = basis("0010");
+    let mut corpus = corpus_artifact_json();
+    let mut payload = corpus["payloadJson"].clone();
+    rebind_source_view(&mut payload, "E000001", true);
+    let evidence = citation_evidence_companion(&payload);
+    payload["evidence"] = evidence;
+    corpus["payloadJson"] = payload;
+    refresh_corpus_payload_digest(&mut corpus);
+    let corpus_payload_digest = corpus["payloadDigest"]
+        .as_str()
+        .expect("resealed corpus payload digest")
+        .to_owned();
+
+    finish_with_artifacts_and_corpus_digest(
+        &db,
+        claim_attempt(&db),
+        expected.clone(),
+        json!([corpus]),
+        corpus_payload_digest.clone(),
+    )
+    .expect("typed finish accepts generic additive citation companion");
+
+    db.with_conn(|conn| {
+        let (stored_payload, stored_digest, stored_output): (String, String, String) = conn
+            .query_row(
+                "SELECT artifact.payload_json, artifact.payload_digest, task.output_json
+                   FROM narrative_extraction_artifacts artifact
+                   JOIN narrative_extraction_tasks task ON task.id = artifact.task_id
+                  WHERE artifact.run_id = ?1 AND artifact.artifact_kind = 'source.snapshot@1'",
+                [RUN_ID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        let stored_payload: serde_json::Value = serde_json::from_str(&stored_payload)?;
+        assert_eq!(stored_digest, corpus_payload_digest);
+        assert_eq!(stored_payload["sourceViews"][0]["ref"], json!("E000001"));
+        assert!(stored_payload.get("evidence").is_some());
+        let stored_output: serde_json::Value = serde_json::from_str(&stored_output)?;
+        assert_eq!(
+            stored_output["corpusPayloadDigest"],
+            json!(corpus_payload_digest)
+        );
+        Ok(())
+    })
+    .expect("inspect additive companion persistence");
+
+    let loaded =
+        narrative_extraction::load_historical_scope_authority_basis(&db, PROJECT_ID, RUN_ID)
+            .expect("load historical basis with additive companion")
+            .expect("stored basis with additive companion");
+    assert_eq!(loaded, expected);
+}
+
+#[test]
+fn typed_finish_rejects_a_source_view_ref_digest_mismatch_and_rolls_back() {
+    let db = fixture();
+    let mut corpus = corpus_artifact_json();
+    let mut payload = corpus["payloadJson"].clone();
+    rebind_source_view(&mut payload, "E000001", false);
+    corpus["payloadJson"] = payload;
+    refresh_corpus_payload_digest(&mut corpus);
+    let corpus_payload_digest = corpus["payloadDigest"]
+        .as_str()
+        .expect("resealed mismatched corpus payload digest")
+        .to_owned();
+
+    let error = finish_with_artifacts_and_corpus_digest(
+        &db,
+        claim_attempt(&db),
+        basis("0010"),
+        json!([corpus]),
+        corpus_payload_digest,
+    )
+    .expect_err("source view ref/digest mismatch must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID"),
+        "unexpected error: {error}"
+    );
+    assert_finish_rolled_back(&db);
+}
+
+#[test]
+fn typed_finish_rejects_a_changed_citation_companion_without_an_outer_reseal() {
+    let db = fixture();
+    let mut corpus = corpus_artifact_json();
+    let mut payload = corpus["payloadJson"].clone();
+    let evidence = citation_evidence_companion(&payload);
+    payload["evidence"] = evidence;
+    corpus["payloadJson"] = payload;
+    // Deliberately keep the artifact's old outer payloadDigest. Native's
+    // generic inline-artifact seal must reject this before the typed authority
+    // parser can treat the additive companion as anything meaningful.
+    let output_digest = grimodex_core::canonical_json_digest(&corpus["payloadJson"])
+        .expect("digest changed companion payload");
+
+    let error = finish_with_artifacts_and_corpus_digest(
+        &db,
+        claim_attempt(&db),
+        basis("0010"),
+        json!([corpus]),
+        output_digest,
+    )
+    .expect_err("an unsealed additive companion must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_INLINE_ARTIFACT_DIGEST_MISMATCH"),
+        "unexpected error: {error}"
+    );
+    assert_finish_rolled_back(&db);
 }

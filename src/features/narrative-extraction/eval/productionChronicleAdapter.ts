@@ -15,7 +15,9 @@ import {
 } from "@/features/chronicle/extraction/windowExtractor";
 import type { NarrativeEvalVersions } from "./replay";
 import {
+  CITATION_ID_OBSERVATION_CHRONICLE_EVAL_VERSIONS,
   OBSERVATION_CHRONICLE_EVAL_VERSIONS,
+  type PrepareObservationEvalCaseOptions,
   prepareObservationEvalCase,
 } from "./observationAdapter";
 import type {
@@ -32,11 +34,27 @@ export const PRODUCTION_CHRONICLE_EVAL_VERSIONS: NarrativeEvalVersions = {
   parser: `${OBSERVATION_CHRONICLE_EVAL_VERSIONS.parser}+event-synthesis-normalizer/1`,
 };
 
+export const CITATION_ID_PRODUCTION_CHRONICLE_EVAL_VERSIONS: NarrativeEvalVersions =
+  {
+    prompt: `${CITATION_ID_OBSERVATION_CHRONICLE_EVAL_VERSIONS.prompt}+narrative-event-synthesize/1`,
+    responseSchema: `${CITATION_ID_OBSERVATION_CHRONICLE_EVAL_VERSIONS.responseSchema}+event-hypothesis/1`,
+    extractor: "chronicle-production-full-pipeline/citation-id-v2",
+    parser: `${CITATION_ID_OBSERVATION_CHRONICLE_EVAL_VERSIONS.parser}+event-synthesis-normalizer/1`,
+  };
+
+export const CITATION_ID_PRODUCTION_EVAL_VERSIONS =
+  CITATION_ID_PRODUCTION_CHRONICLE_EVAL_VERSIONS;
+
 export async function prepareProductionChronicleEvalCase(
   evalCase: NarrativeEvalCaseV1,
+  options: PrepareObservationEvalCaseOptions = {},
 ): Promise<PreparedProductionChronicleEvalCase> {
-  const prepared = await prepareObservationEvalCase(evalCase);
-  return { ...prepared, versions: PRODUCTION_CHRONICLE_EVAL_VERSIONS };
+  const prepared = await prepareObservationEvalCase(evalCase, options);
+  const versions =
+    prepared.evidenceMode === "citation-id-v2"
+      ? CITATION_ID_PRODUCTION_CHRONICLE_EVAL_VERSIONS
+      : PRODUCTION_CHRONICLE_EVAL_VERSIONS;
+  return { ...prepared, versions };
 }
 
 function evidenceFingerprint(sourceRef: string, quote: string): string {
@@ -65,11 +83,21 @@ export async function runProductionChroniclePipeline(
 
   const collectedObservations: RawChronicleEventObservation[] = [];
   for (const [index, window] of prepared.windows.entries()) {
+    const binding = prepared.evidenceSpanCatalogBindingsByWindowId?.get(
+      window.windowId ?? "",
+    );
+    if (prepared.evidenceMode === "citation-id-v2" && !binding) {
+      throw new Error(
+        `Citation-ID production window has no exact binding: ${window.windowId ?? "<missing>"}`,
+      );
+    }
     const batch = await observe({
       windows: [window],
       projectId: `narrative-eval:${prepared.evalCase.id}`,
       createId,
       repairOnFailure: false,
+      evidenceMode: prepared.evidenceMode,
+      ...(binding ? { evidenceSpanCatalogBinding: binding } : {}),
       onParseStatus: (status) => {
         if (status === "invalid") parseFailureCount += 1;
       },
@@ -85,11 +113,15 @@ export async function runProductionChroniclePipeline(
 
   const anchors: ResolvedEvidenceAnchor[] = [];
   let unresolvedEvidenceCount = 0;
+  const resolutionSourceViews =
+    prepared.evidenceMode === "citation-id-v2" && prepared.evidenceSpanCatalog
+      ? prepared.evidenceSpanCatalog.entries.map((entry) => entry.sourceView)
+      : prepared.sourceViews;
   for (const observation of collectedObservations) {
     for (const evidence of observation.evidence) {
       const resolution = await resolveEvidenceReference(evidence, {
         snapshot: prepared.fixture.snapshot,
-        sourceViews: prepared.sourceViews,
+        sourceViews: resolutionSourceViews,
         createAnchorId: createId,
       });
       if (resolution.status === "resolved") anchors.push(resolution.anchor);

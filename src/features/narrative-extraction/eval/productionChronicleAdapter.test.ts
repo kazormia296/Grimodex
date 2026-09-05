@@ -322,7 +322,7 @@ describe("productionChronicleAdapter", () => {
     expect(different.passed).toBe(false);
   });
 
-  it("merges observations with identical evidence before clustering", async () => {
+  it("merges observations with identical claims before clustering", async () => {
     const prepared = await prepareProductionChronicleEvalCase(miniCase());
     const synthesizeWithAi = vi.fn(
       async ({
@@ -377,7 +377,7 @@ describe("productionChronicleAdapter", () => {
               narrativeFrame: "story-world",
             },
             payload: {
-              predicate: "門扉が街路へ倒れた",
+              predicate: "北門が倒れた",
               actuality: "actual",
               participants: [],
               temporalExpressions: [],
@@ -393,6 +393,83 @@ describe("productionChronicleAdapter", () => {
     expect(artifacts.clusters).toHaveLength(1);
     expect(synthesizeWithAi).toHaveBeenCalledTimes(1);
     expect(synthesizeWithAi.mock.calls[0]?.[0].observations).toHaveLength(1);
+  });
+
+  it("preserves different predicates with identical evidence", async () => {
+    const prepared = await prepareProductionChronicleEvalCase(miniCase());
+    const synthesizeWithAi = vi.fn(
+      async ({
+        clusterRef,
+        observations,
+      }: Parameters<
+        NonNullable<ProductionChroniclePipelineDeps["synthesizeWithAi"]>
+      >[0]) =>
+        [
+          {
+            hypothesisId: `hypothesis-${clusterRef}`,
+            clusterRef,
+            observationRefs: observations.map((entry) => entry.localId),
+            titleSuggestion: "北門の二つの観測",
+            summary: "同じ証拠に基づく別の述語を保持",
+            actuality: "actual",
+            significance: "major",
+          },
+        ] satisfies readonly EventHypothesis[],
+    );
+    const artifacts = await runProductionChroniclePipeline(prepared, {
+      observeWithAi: async ({ windows }) => {
+        const window = windows[0];
+        if (!window) throw new Error("missing extraction window");
+        const evidence = [
+          {
+            sourceRef: window.sourceRef,
+            quote: "北門の鎖が切れ、重い門扉が街路へ倒れた。",
+          },
+        ];
+        return [
+          {
+            localId: "obs-1",
+            evidence,
+            assertion: {
+              attribution: "narrator",
+              narrativeFrame: "story-world",
+            },
+            payload: {
+              predicate: "北門が倒れた",
+              actuality: "actual",
+              participants: [],
+              temporalExpressions: [],
+              durationKind: "instant",
+            },
+          },
+          {
+            localId: "obs-2",
+            evidence,
+            assertion: {
+              attribution: "narrator",
+              narrativeFrame: "story-world",
+            },
+            payload: {
+              predicate: "門扉が街路へ倒れた",
+              actuality: "actual",
+              participants: [],
+              temporalExpressions: [],
+              durationKind: "instant",
+            },
+          },
+        ];
+      },
+      synthesizeWithAi,
+    });
+
+    expect(artifacts.observations).toHaveLength(2);
+    expect(
+      artifacts.observations.map(
+        (observation) => observation.payload.predicate,
+      ),
+    ).toEqual(["北門が倒れた", "門扉が街路へ倒れた"]);
+    expect(artifacts.clusters).toHaveLength(2);
+    expect(synthesizeWithAi).toHaveBeenCalledTimes(2);
   });
 
   it("does not make complete or absence claims for partial coverage", async () => {

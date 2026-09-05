@@ -60,6 +60,7 @@ import {
   CHRONICLE_EXTRACT_RUN_SPEC_KIND,
   runChronicleExtractionCoordinator,
 } from "./extractionCoordinator";
+import { LEGACY_OBSERVATION_EVIDENCE_MODE } from "./aiTasks/citationIdObservation";
 import { loadInlineJsonArtifact } from "./artifactRepository";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
@@ -515,6 +516,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
       },
       {
         useAi: true,
+        evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
         createId: (() => {
           let n = 0;
           return () => `id-${++n}`;
@@ -728,6 +730,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         },
         {
           useAi: true,
+          evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
           createId: (() => {
             let n = 0;
             return () => `first-${++n}`;
@@ -1003,6 +1006,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
       },
       {
         useAi: true,
+        evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
         buildSnapshot: async () => {
           throw new Error("resume must not rebuild a live snapshot");
         },
@@ -2159,6 +2163,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         },
         {
           useAi: true,
+          evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
           buildSnapshot: async () => ({
             ok: true as const,
             snapshot: built.snapshot,
@@ -2227,6 +2232,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         },
         {
           useAi: true,
+          evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
           buildSnapshot: async () => ({
             ok: true as const,
             snapshot: built.snapshot,
@@ -2315,6 +2321,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         },
         {
           useAi: true,
+          evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
           buildSnapshot: async () => ({
             ok: true as const,
             snapshot: built.snapshot,

@@ -21,6 +21,15 @@ import type {
   NarrativeSourceView,
   Sha256Digest,
 } from "@/features/narrative-extraction/source/types";
+import {
+  assertEvidenceSpanCatalogCoverage,
+  bindEvidenceSpanCatalog,
+  buildEvidenceSpanCatalog,
+  validateEvidenceSpanCatalog,
+  type EvidenceSpanCatalog,
+  type EvidenceSpanCatalogBinding,
+  type EvidenceSpanCatalogWindowInput,
+} from "@/features/narrative-extraction/evidence/spanCatalog";
 import type { NarrativeScopeAuthorityBasisV2 } from "@/features/narrative-extraction/source/scopeAuthorityBasisV2";
 import { clusterEventObservations } from "@/features/chronicle/extraction/eventClustering";
 import { chronicleEvidenceTupleKey } from "@/features/chronicle/extraction/evidenceTupleKey";
@@ -79,7 +88,14 @@ import type {
   NarrativeExtractionRunProjection,
   NarrativeExtractionTask,
 } from "@/features/narrative-extraction/runtime/types";
-import { runObservationExtractionTask } from "./aiTasks/runObservationExtractionTask";
+import {
+  runObservationExtractionTask,
+  type ObservationEvidenceMode,
+} from "./aiTasks/runObservationExtractionTask";
+import {
+  CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+  LEGACY_OBSERVATION_EVIDENCE_MODE,
+} from "./aiTasks/citationIdObservation";
 import {
   runEventSynthesisTask,
   type ChronicleSynthesisTerminalOutput,
@@ -161,6 +177,8 @@ export interface ChronicleExtractionRequest {
   readonly resume?: boolean;
   readonly specDigest?: string;
   readonly existingEvents?: readonly ExistingChronicleEventCatalogRecord[];
+  /** Optional evidence protocol override; omitted AI runs use citation-id-v2. */
+  readonly evidenceMode?: ObservationEvidenceMode;
 }
 
 export interface ChronicleExtractionResult {
@@ -193,6 +211,8 @@ export interface ExtractionCoordinatorDeps {
   readonly createId?: () => string;
   /** When true, observation/synthesis stages call Stage AI paths. Default: fake regex. */
   readonly useAi?: boolean;
+  /** Explicit production evidence protocol; request.evidenceMode wins. */
+  readonly evidenceMode?: ObservationEvidenceMode;
   readonly observeWithAi?: typeof runObservationExtractionTask;
   readonly synthesizeWithAi?: typeof runEventSynthesisTask;
   /** Test seam for the post-Snapshot WebCrypto yield before Run creation. */
@@ -221,6 +241,19 @@ interface SnapshotArtifactPayload {
     readonly sourceKey: `project:scene:${string}`;
     readonly rawStoryKey: string | null;
   }[];
+  /** Additive, explicit evidence protocol/catalog companion for cold resume. */
+  readonly evidence?: SnapshotEvidenceCompanion;
+}
+
+interface SnapshotEvidenceCompanion {
+  readonly kind: "chronicle.snapshot-evidence-companion@1";
+  readonly version: 1;
+  readonly mode: ObservationEvidenceMode;
+  readonly catalogVersion: number | null;
+  readonly catalogDigest: Sha256Digest | null;
+  readonly snapshotDigest: Sha256Digest;
+  readonly snapshotArtifactDigest: Sha256Digest;
+  readonly catalog: EvidenceSpanCatalog | null;
 }
 
 interface WindowPlanArtifactPayload {
@@ -330,7 +363,34 @@ function captureChronicleExtractionRequest(
       ? {}
       : { specDigest: request.specDigest }),
     existingEvents: cloneExistingEventCatalog(request.existingEvents ?? []),
+    ...(request.evidenceMode === undefined
+      ? {}
+      : { evidenceMode: request.evidenceMode }),
   };
+}
+
+function resolveCoordinatorEvidenceMode(
+  request: ChronicleExtractionRequest,
+  deps: ExtractionCoordinatorDeps,
+): ObservationEvidenceMode {
+  if (request.evidenceMode !== undefined) return request.evidenceMode;
+  if (deps.evidenceMode !== undefined) return deps.evidenceMode;
+  // The coordinator's new AI lane is citation-first regardless of which
+  // transport implementation is injected. Historical callers must opt into
+  // legacy-v1 explicitly rather than changing protocol by swapping a seam.
+  return deps.useAi
+    ? CITATION_ID_OBSERVATION_EVIDENCE_MODE
+    : LEGACY_OBSERVATION_EVIDENCE_MODE;
+}
+
+function evidenceModeFromCoverage(
+  coverage: Readonly<Record<string, unknown>> | null | undefined,
+): ObservationEvidenceMode | undefined {
+  const mode = coverage?.evidenceMode;
+  return mode === LEGACY_OBSERVATION_EVIDENCE_MODE ||
+    mode === CITATION_ID_OBSERVATION_EVIDENCE_MODE
+    ? mode
+    : undefined;
 }
 
 async function buildSealedChronicleRunSpec(
@@ -921,6 +981,148 @@ async function buildSourceViewsForPlan(
   return views;
 }
 
+function buildEvidenceSpanCatalogWindowInputs(
+  snapshot: NarrativeCorpusSnapshot,
+  plan: WindowPlan,
+  sourceViews: readonly NarrativeSourceView[],
+): readonly EvidenceSpanCatalogWindowInput[] {
+  const sourceViewByRef = new Map(
+    sourceViews.map((sourceView) => [sourceView.ref, sourceView] as const),
+  );
+  const documentByRef = new Map(
+    snapshot.documents.map((document) => [document.ref, document] as const),
+  );
+  return plan.windows.map((window) => {
+    const sourceView = sourceViewByRef.get(window.sourceRef);
+    const document = documentByRef.get(window.documentRef);
+    if (!sourceView || !document) {
+      throw new Error(
+        `NEX_CHRONICLE_EVIDENCE_CATALOG_WINDOW_MISSING: ${window.windowId}`,
+      );
+    }
+    return {
+      windowId: window.windowId,
+      documentRef: document.ref,
+      sourceView,
+      ownedRanges: window.ownedRanges,
+      contextRanges: window.contextRanges,
+    };
+  });
+}
+
+function buildSnapshotEvidenceCompanion(
+  snapshot: NarrativeCorpusSnapshot,
+  mode: ObservationEvidenceMode,
+  catalog: EvidenceSpanCatalog | null,
+): SnapshotEvidenceCompanion {
+  if (mode === CITATION_ID_OBSERVATION_EVIDENCE_MODE && !catalog) {
+    throw new Error(
+      "NEX_CHRONICLE_EVIDENCE_CATALOG_MISSING: citation-id-v2 requires a sealed catalog",
+    );
+  }
+  return {
+    kind: "chronicle.snapshot-evidence-companion@1",
+    version: 1,
+    mode,
+    catalogVersion: catalog?.version ?? null,
+    catalogDigest: catalog?.digest ?? null,
+    snapshotDigest: snapshot.digest,
+    snapshotArtifactDigest: snapshot.artifactDigest,
+    catalog,
+  };
+}
+
+function assertSnapshotEvidenceCompanionShape(
+  companion: unknown,
+  snapshot: NarrativeCorpusSnapshot,
+  expectedMode?: ObservationEvidenceMode,
+): asserts companion is SnapshotEvidenceCompanion {
+  if (!isRecord(companion)) {
+    resumeFailure(
+      "NEX_CHRONICLE_RESUME_EVIDENCE_COMPANION_MISSING",
+      "source.snapshot@1 has no explicit evidence protocol companion",
+    );
+  }
+  const mode = companion.mode;
+  if (
+    companion.kind !== "chronicle.snapshot-evidence-companion@1" ||
+    companion.version !== 1 ||
+    (mode !== LEGACY_OBSERVATION_EVIDENCE_MODE &&
+      mode !== CITATION_ID_OBSERVATION_EVIDENCE_MODE) ||
+    companion.snapshotDigest !== snapshot.digest ||
+    companion.snapshotArtifactDigest !== snapshot.artifactDigest ||
+    !(companion.catalog === null || isRecord(companion.catalog))
+  ) {
+    resumeFailure(
+      "NEX_CHRONICLE_RESUME_EVIDENCE_COMPANION_MISMATCH",
+      "source.snapshot@1 evidence companion identity or mode is inconsistent with the sealed snapshot",
+    );
+  }
+  if (expectedMode !== undefined && mode !== expectedMode) {
+    resumeFailure(
+      "NEX_CHRONICLE_RESUME_EVIDENCE_MODE_MISMATCH",
+      "requested evidence mode differs from the mode sealed in source.snapshot@1",
+    );
+  }
+  if (mode === CITATION_ID_OBSERVATION_EVIDENCE_MODE) {
+    if (
+      companion.catalog === null ||
+      companion.catalogDigest !== companion.catalog.digest ||
+      companion.catalogVersion !== companion.catalog.version
+    ) {
+      resumeFailure(
+        "NEX_CHRONICLE_RESUME_EVIDENCE_CATALOG_MISSING",
+        "citation-id-v2 source.snapshot@1 companion has no complete catalog digest",
+      );
+    }
+  } else if (
+    companion.catalog !== null ||
+    companion.catalogDigest !== null ||
+    companion.catalogVersion !== null
+  ) {
+    resumeFailure(
+      "NEX_CHRONICLE_RESUME_EVIDENCE_COMPANION_MISMATCH",
+      "legacy-v1 source.snapshot@1 companion unexpectedly carries a citation catalog",
+    );
+  }
+}
+
+async function validateResumedEvidenceCompanion(
+  payload: SnapshotArtifactPayload,
+  requestedMode: ObservationEvidenceMode | undefined,
+): Promise<ObservationEvidenceMode> {
+  const companion = payload.evidence;
+  if (companion === undefined) {
+    if (requestedMode === CITATION_ID_OBSERVATION_EVIDENCE_MODE) {
+      resumeFailure(
+        "NEX_CHRONICLE_RESUME_EVIDENCE_COMPANION_MISSING",
+        "citation-id-v2 resume requires the persisted snapshot evidence companion",
+      );
+    }
+    // Historical @2 artifacts predate this additive companion and remain on
+    // their quote-based compatibility lane.
+    return requestedMode ?? LEGACY_OBSERVATION_EVIDENCE_MODE;
+  }
+  assertSnapshotEvidenceCompanionShape(
+    companion,
+    payload.snapshot,
+    requestedMode,
+  );
+  if (companion.mode === CITATION_ID_OBSERVATION_EVIDENCE_MODE) {
+    const validation = await validateEvidenceSpanCatalog(
+      payload.snapshot,
+      companion.catalog!,
+    );
+    if (!validation.ok) {
+      resumeFailure(
+        "NEX_CHRONICLE_RESUME_EVIDENCE_CATALOG_INVALID",
+        validation.diagnostics.join("; "),
+      );
+    }
+  }
+  return companion.mode;
+}
+
 function observationActuality(
   sentence: string,
 ): RawChronicleEventObservation["payload"]["actuality"] {
@@ -1116,17 +1318,92 @@ async function executeTask(
       }
 
       let observations: readonly RawChronicleEventObservation[];
+      const evidenceMode =
+        request.evidenceMode ?? LEGACY_OBSERVATION_EVIDENCE_MODE;
       if (deps.useAi) {
         const observe = deps.observeWithAi ?? runObservationExtractionTask;
         const sourceByRef = new Map(
           snapshotPayload.sourceViews.map((view) => [view.ref, view] as const),
         );
         const collected: RawChronicleEventObservation[] = [];
+        let citationCatalog: EvidenceSpanCatalog | undefined;
+        let catalogWindowInputs: readonly EvidenceSpanCatalogWindowInput[] = [];
+        if (evidenceMode === CITATION_ID_OBSERVATION_EVIDENCE_MODE) {
+          const companion = snapshotPayload.evidence;
+          if (
+            !companion ||
+            companion.mode !== CITATION_ID_OBSERVATION_EVIDENCE_MODE ||
+            !companion.catalog
+          ) {
+            throw new Error(
+              "NEX_CHRONICLE_EVIDENCE_CATALOG_MISSING: citation-id-v2 observation requires the sealed snapshot catalog",
+            );
+          }
+          const validation = await validateEvidenceSpanCatalog(
+            snapshotPayload.snapshot,
+            companion.catalog,
+          );
+          if (!validation.ok) {
+            throw new Error(
+              `NEX_CHRONICLE_EVIDENCE_CATALOG_INVALID: ${validation.diagnostics.join("; ")}`,
+            );
+          }
+          citationCatalog = companion.catalog;
+          catalogWindowInputs = buildEvidenceSpanCatalogWindowInputs(
+            snapshotPayload.snapshot,
+            { windows: windowPayload.windows },
+            snapshotPayload.sourceViews,
+          );
+          // This check intentionally happens before the first provider call.
+          // A hole must fail the whole observe task, never dispatch a partial
+          // planner roster and silently lose catalog occurrences.
+          assertEvidenceSpanCatalogCoverage(
+            citationCatalog,
+            catalogWindowInputs,
+          );
+        }
         for (const window of windowPayload.windows) {
           const view = sourceByRef.get(window.sourceRef);
-          if (!view) continue;
+          if (!view) {
+            throw new Error(
+              `NEX_CHRONICLE_SOURCE_VIEW_MISSING: ${window.sourceRef}`,
+            );
+          }
+          let evidenceSpanCatalogBinding:
+            | EvidenceSpanCatalogBinding
+            | undefined;
+          if (citationCatalog) {
+            const windowInput = catalogWindowInputs.find(
+              (candidate) => candidate.windowId === window.windowId,
+            );
+            if (!windowInput) {
+              throw new Error(
+                `NEX_CHRONICLE_EVIDENCE_CATALOG_WINDOW_MISSING: ${window.windowId}`,
+              );
+            }
+            evidenceSpanCatalogBinding = await bindEvidenceSpanCatalog(
+              snapshotPayload.snapshot,
+              citationCatalog,
+              {
+                requestIdentity: `run:${runId}:task:${taskExecution.taskId}:attempt:${taskExecution.attemptId}:window:${window.windowId}`,
+                windows: [windowInput],
+              },
+            );
+          }
           const batch = await observe({
-            windows: [{ sourceRef: window.sourceRef, text: view.text }],
+            windows: [
+              {
+                windowId: window.windowId,
+                sourceRef: window.sourceRef,
+                text: view.text,
+              },
+            ],
+            ...(evidenceSpanCatalogBinding
+              ? {
+                  evidenceMode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+                  evidenceSpanCatalogBinding,
+                }
+              : {}),
             projectId: request.projectId,
             createId,
             stageExecution: createStageExecutionContext({
@@ -1183,7 +1460,14 @@ async function executeTask(
       }
       const anchors = await resolveObservationEvidence(
         snapshotPayload.snapshot,
-        snapshotPayload.sourceViews,
+        snapshotPayload.evidence?.catalog
+          ? [
+              ...snapshotPayload.sourceViews,
+              ...snapshotPayload.evidence.catalog.entries.map(
+                (entry) => entry.sourceView,
+              ),
+            ]
+          : snapshotPayload.sourceViews,
         observationPayload.observations,
       );
       const draft = buildInlineJsonArtifact(
@@ -1623,9 +1907,16 @@ export async function runChronicleExtractionCoordinator(
     capturedRequest,
     capturedDeps,
   );
+  const explicitlyRequestedEvidenceMode =
+    capturedRequest.evidenceMode ?? capturedDeps.evidenceMode;
+  let effectiveEvidenceMode = resolveCoordinatorEvidenceMode(
+    capturedRequest,
+    capturedDeps,
+  );
   let sealedRequest: ChronicleExtractionRequest = {
     ...capturedRequest,
     existingEvents: sealedRunSpec.existingEvents,
+    evidenceMode: effectiveEvidenceMode,
   };
   const sealedDeps: ExtractionCoordinatorDeps = {
     ...capturedDeps,
@@ -1682,8 +1973,41 @@ export async function runChronicleExtractionCoordinator(
       ),
       projection.run.snapshotDigest!,
     );
+    const durableEvidenceMode = evidenceModeFromCoverage(
+      projection.run.coverageJson,
+    );
+    effectiveEvidenceMode = await validateResumedEvidenceCompanion(
+      snapshotPayload,
+      explicitlyRequestedEvidenceMode ?? durableEvidenceMode,
+    );
+    if (
+      durableEvidenceMode !== undefined &&
+      effectiveEvidenceMode !== durableEvidenceMode
+    ) {
+      resumeFailure(
+        "NEX_CHRONICLE_RESUME_EVIDENCE_MODE_MISMATCH",
+        "source.snapshot@1 evidence companion differs from the mode sealed in the durable Run coverage",
+      );
+    }
+    if (effectiveEvidenceMode === CITATION_ID_OBSERVATION_EVIDENCE_MODE) {
+      const snapshotTask = resumedTasks.get(
+        CHRONICLE_EXTRACT_TASK_KINDS.snapshot,
+      );
+      const expectedPayloadDigest = await (
+        capturedDeps.digestSnapshotPayload ?? digestStableJson
+      )(snapshotPayload);
+      if (
+        snapshotTask?.outputJson?.corpusPayloadDigest !== expectedPayloadDigest
+      ) {
+        resumeFailure(
+          "NEX_CHRONICLE_RESUME_SNAPSHOT_DIGEST_MISMATCH",
+          "citation-id-v2 resume snapshot artifact payload and completed Task output do not share the same corpus payload digest",
+        );
+      }
+    }
     sealedRequest = {
       ...sealedRequest,
+      evidenceMode: effectiveEvidenceMode,
       existingEvents: await resolveResumedExistingEventsCatalog(
         snapshotPayload,
         sealedRunSpec,
@@ -1777,11 +2101,29 @@ export async function runChronicleExtractionCoordinator(
       );
     }
 
+    // The catalog is derived only after the immutable snapshot is sealed and
+    // before the planner can dispatch any model work. Its bytes are retained
+    // in the source.snapshot@1 companion for cold resume.
+    const evidenceCatalog =
+      sealedDeps.useAi &&
+      effectiveEvidenceMode === CITATION_ID_OBSERVATION_EVIDENCE_MODE
+        ? await buildEvidenceSpanCatalog(snapshotResult.snapshot)
+        : null;
     const windowPlan = planExtractionWindows(snapshotResult.snapshot);
     const sourceViews = await buildSourceViewsForPlan(
       snapshotResult.snapshot,
       windowPlan,
     );
+    if (evidenceCatalog) {
+      const catalogWindowInputs = buildEvidenceSpanCatalogWindowInputs(
+        snapshotResult.snapshot,
+        windowPlan,
+        sourceViews,
+      );
+      // Coverage is a pre-dispatch assertion over the complete planner
+      // roster, separate from each request's one-window alias binding.
+      assertEvidenceSpanCatalogCoverage(evidenceCatalog, catalogWindowInputs);
+    }
     const suppliedAuthorityDocuments = new Map(
       snapshotResult.scopeAuthorityDocuments.map((document) => [
         document.documentRef,
@@ -1833,6 +2175,11 @@ export async function runChronicleExtractionCoordinator(
           kind: "chronicle.existing-events-catalog@1",
           events: sealedRunSpec.existingEvents,
         },
+        evidence: buildSnapshotEvidenceCompanion(
+          snapshotResult.snapshot,
+          effectiveEvidenceMode,
+          evidenceCatalog,
+        ),
         scopeAuthorityDocuments: sealedScopeAuthorityDocuments,
       },
     );
@@ -1862,6 +2209,8 @@ export async function runChronicleExtractionCoordinator(
           mode: "complete",
           documentCount: snapshotResult.snapshot.documents.length,
           windowCount: windowPlan.windows.length,
+          evidenceMode: effectiveEvidenceMode,
+          evidenceCatalogDigest: evidenceCatalog?.digest ?? null,
         },
         tasks: CHRONICLE_EXTRACT_DAG.map((taskKind, index) => ({
           taskKind,

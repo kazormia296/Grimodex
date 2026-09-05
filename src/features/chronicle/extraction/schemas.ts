@@ -1,6 +1,18 @@
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import type { RawEventSynthesisResult } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
 
+/**
+ * Model-visible v2 observation output. Evidence coordinates are opaque,
+ * request-bound IDs; code resolves them before constructing the existing raw
+ * observation shape.
+ */
+export interface RawChronicleEventObservationEvidenceRefs {
+  readonly localId: string;
+  readonly evidenceRefs: readonly string[];
+  readonly assertion: RawChronicleEventObservation["assertion"];
+  readonly payload: RawChronicleEventObservation["payload"];
+}
+
 const OBSERVATION_ACTUALITIES = [
   "actual",
   "planned",
@@ -129,6 +141,100 @@ function parseAssertion(
       attribution as RawChronicleEventObservation["assertion"]["attribution"],
     narrativeFrame: value.narrativeFrame,
   };
+}
+
+const ID_OBSERVATION_KEYS = new Set([
+  "localId",
+  "evidenceRefs",
+  "assertion",
+  "payload",
+]);
+
+/** Validate one evidenceRefs-only model observation. */
+export function parseRawChronicleEventObservationEvidenceRefs(
+  value: unknown,
+): SchemaValidationResult<RawChronicleEventObservationEvidenceRefs> {
+  const errors: string[] = [];
+  if (!isRecord(value)) {
+    return { ok: false, errors: ["root: expected object"] };
+  }
+  for (const key of Object.keys(value)) {
+    if (!ID_OBSERVATION_KEYS.has(key)) {
+      errors.push(`root.${key}: field is not allowed in citation-ID mode`);
+    }
+  }
+  if (typeof value.localId !== "string" || value.localId.length === 0) {
+    errors.push("localId: non-empty string required");
+  }
+  if (!Array.isArray(value.evidenceRefs) || value.evidenceRefs.length === 0) {
+    errors.push("evidenceRefs: non-empty array required");
+  }
+  const evidenceRefs: string[] = [];
+  const seenRefs = new Set<string>();
+  if (Array.isArray(value.evidenceRefs)) {
+    for (const [index, ref] of value.evidenceRefs.entries()) {
+      if (typeof ref !== "string" || ref.trim().length === 0) {
+        errors.push(`evidenceRefs[${index}]: non-empty string required`);
+        continue;
+      }
+      if (seenRefs.has(ref)) {
+        errors.push(`evidenceRefs[${index}]: duplicate reference`);
+        continue;
+      }
+      seenRefs.add(ref);
+      evidenceRefs.push(ref);
+    }
+  }
+
+  // Reuse the canonical claim parser so v1 and v2 agree on all non-evidence
+  // fields. The placeholder never escapes this function.
+  const parsed = parseRawChronicleEventObservation({
+    ...value,
+    evidence: [{ sourceRef: "citation-id-placeholder", quote: "placeholder" }],
+  });
+  if (!parsed.ok) errors.push(...parsed.errors);
+  if (errors.length > 0 || !parsed.ok) return { ok: false, errors };
+  return {
+    ok: true,
+    value: {
+      localId: parsed.value.localId,
+      evidenceRefs,
+      assertion: parsed.value.assertion,
+      payload: parsed.value.payload,
+    },
+  };
+}
+
+/** Validate a complete evidenceRefs-only model response. */
+export function parseRawChronicleEventObservationIdList(
+  value: unknown,
+): SchemaValidationResult<readonly RawChronicleEventObservationEvidenceRefs[]> {
+  if (!isRecord(value) || !Array.isArray(value.observations)) {
+    return { ok: false, errors: ["observations: array required"] };
+  }
+  const rootKeys = Object.keys(value);
+  if (rootKeys.some((key) => key !== "observations")) {
+    return {
+      ok: false,
+      errors: rootKeys
+        .filter((key) => key !== "observations")
+        .map((key) => `root.${key}: field is not allowed in citation-ID mode`),
+    };
+  }
+  const observations: RawChronicleEventObservationEvidenceRefs[] = [];
+  const errors: string[] = [];
+  for (const [index, item] of value.observations.entries()) {
+    const parsed = parseRawChronicleEventObservationEvidenceRefs(item);
+    if (!parsed.ok) {
+      errors.push(
+        ...parsed.errors.map((error) => `observations[${index}].${error}`),
+      );
+      continue;
+    }
+    observations.push(parsed.value);
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value: observations };
 }
 
 /** Validate one raw observation object from AI JSON. */

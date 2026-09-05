@@ -377,6 +377,7 @@ requirements:
       - src/features/narrative-extraction/eval/liveRunner.ts
       - src/features/narrative-extraction/eval/narrativeEvalSuite.ts
       - src/features/narrative-extraction/eval/chronicleProductionReportPaths.ts
+      - src/features/narrative-extraction/eval/chronicleProductionDiagnostics.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.ts
       - src/features/narrative-extraction/eval/productionChronicleScoring.ts
       - src/features/narrative-extraction/eval/productionChronicleTypes.ts
@@ -391,6 +392,7 @@ requirements:
       - src/features/narrative-extraction/eval/liveRunner.test.ts
       - src/features/narrative-extraction/eval/narrativeEvalSuite.test.ts
       - src/features/narrative-extraction/eval/chronicleProductionReportPaths.test.ts
+      - src/features/narrative-extraction/eval/chronicleProductionDiagnostics.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
       - src/features/narrative-extraction/eval/productionChronicleCapabilities.test.ts
@@ -406,6 +408,11 @@ requirements:
     title: Narrative Evidence resolves exact immutable quotes without model offsets.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-EVIDENCE-001
     implementedBy:
+      - docs/plans/narrative-evidence-id-v1.md
+      - src/features/narrative-extraction/evidence/spanCatalog.ts
+      - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
+      - src/application/narrative-extraction/extractionCoordinator.ts
+      - src/features/chronicle/extraction/schemas.ts
       - src/features/narrative-extraction/evidence/resolveEvidence.ts
       - src/features/narrative-extraction/eval/fixtureSnapshot.ts
       - src/features/narrative-extraction/eval/caseSchema.ts
@@ -414,6 +421,14 @@ requirements:
       - src/features/narrative-extraction/eval/chronicle015Reference.ts
       - evals/narrative/reference-predictions/chronicle-015-v1/README.md
     lightTests:
+      - src/features/narrative-extraction/evidence/spanCatalog.test.ts
+      - src/features/chronicle/extraction/schemas.citation.test.ts
+      - src/application/narrative-extraction/aiTasks/citationIdObservation.test.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
+      - src/application/narrative-extraction/extractionCoordinator.test.ts
+      - src/application/narrative-extraction/extractionCoordinator.citation.test.ts
+      - src/features/narrative-extraction/eval/observationAdapter.citation.test.ts
+      - src/features/narrative-extraction/eval/productionChronicleAdapter.citation.test.ts
       - src/features/narrative-extraction/evidence/resolveEvidence.test.ts
       - src/features/narrative-extraction/eval/fixtureSnapshot.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
@@ -428,6 +443,7 @@ requirements:
     title: Narrative assertion dimensions remain independent and missing dimensions never pass.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-SEMANTIC-001
     implementedBy:
+      - src/features/chronicle/extraction/observationMerger.ts
       - src/features/narrative-extraction/eval/types.ts
       - src/features/narrative-extraction/eval/scorer.ts
       - src/features/narrative-extraction/eval/legacyChronicleAdapter.ts
@@ -437,6 +453,7 @@ requirements:
       - src/features/narrative-extraction/eval/chronicle015Reference.ts
       - evals/narrative/reference-predictions/chronicle-015-v1/README.md
     lightTests:
+      - src/features/chronicle/extraction/observationMerger.test.ts
       - src/features/narrative-extraction/eval/scorer.test.ts
       - src/features/narrative-extraction/eval/legacyChronicleAdapter.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts

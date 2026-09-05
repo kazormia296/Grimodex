@@ -6,6 +6,16 @@ import {
 } from "@/features/chronicle/extraction/schemas";
 import { normalizeEventSynthesis } from "@/features/chronicle/extraction/eventSynthesis";
 import { normalizeWindowObservations } from "@/features/chronicle/extraction/windowExtractor";
+import {
+  CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+  materializeCitationIdObservations,
+  parseCitationIdObservationJson,
+  type ObservationEvidenceMode,
+} from "@/application/narrative-extraction/aiTasks/citationIdObservation";
+import type {
+  EvidenceSpanCatalogBinding,
+  EvidenceSpanCatalogSelectionResolver,
+} from "@/features/narrative-extraction/evidence/spanCatalog";
 
 export type ChronicleResponseJsonStatus =
   | "empty"
@@ -34,6 +44,7 @@ export type ChronicleSchemaErrorCode =
 
 export type ChronicleRefErrorCode =
   | "UNKNOWN_SOURCE_REF"
+  | "UNKNOWN_EVIDENCE_REF"
   | "UNKNOWN_OBSERVATION_REF"
   | "CLUSTER_REF_MISMATCH";
 
@@ -78,6 +89,13 @@ interface ChronicleOutputDiagnostic {
   readonly salvagedCount: number;
 }
 
+export interface ChronicleCitationDiagnostic {
+  readonly status: "resolved" | "rejected" | "not-evaluated";
+  readonly checkedCount: number;
+  readonly rejectedCount: number;
+  readonly resolvedCount: number;
+}
+
 export interface ChronicleObservationResponseDiagnostic {
   readonly stageId: "narrative_observation_extract";
   readonly invocationIndex: number;
@@ -85,6 +103,9 @@ export interface ChronicleObservationResponseDiagnostic {
   readonly schema: ChronicleSchemaDiagnostic;
   readonly refs: ChronicleRefDiagnostic;
   readonly output: ChronicleOutputDiagnostic;
+  /** Present only for the explicit request-bound citation-ID protocol. */
+  readonly evidenceMode?: ObservationEvidenceMode;
+  readonly citation?: ChronicleCitationDiagnostic;
 }
 
 export interface ChronicleSynthesisResponseDiagnostic {
@@ -107,6 +128,12 @@ export interface DiagnoseObservationResponseOptions {
   readonly allowedSourceRefs: ReadonlySet<string>;
 }
 
+export interface DiagnoseCitationIdObservationResponseOptions {
+  readonly invocationIndex: number;
+  readonly binding: EvidenceSpanCatalogBinding;
+  readonly selectionResolver?: EvidenceSpanCatalogSelectionResolver;
+}
+
 export interface DiagnoseSynthesisResponseOptions {
   readonly invocationIndex: number;
   readonly clusterRef: string;
@@ -121,6 +148,12 @@ export interface DiagnoseSynthesisResponseOptions {
 export function canonicalObservationParseStatus(
   diagnostic: ChronicleObservationResponseDiagnostic,
 ): ChronicleTaskParseStatus {
+  if (diagnostic.evidenceMode === CITATION_ID_OBSERVATION_EVIDENCE_MODE) {
+    return diagnostic.schema.status === "valid" &&
+      diagnostic.citation?.status === "resolved"
+      ? "parsed"
+      : "invalid";
+  }
   return diagnostic.schema.status === "valid" ? "parsed" : "invalid";
 }
 
@@ -213,6 +246,19 @@ function inspectResponse(responseText: string): ParsedResponse {
 
 function isAllowedSchemaPath(candidate: string): boolean {
   if (candidate === "root") return true;
+  if (/^(?:localId|evidenceRefs|assertion|payload)$/.test(candidate))
+    return true;
+  if (/^evidenceRefs\[\d+\]$/.test(candidate)) return true;
+  if (
+    /^observations\[\d+\]\.(?:localId|evidenceRefs|assertion|payload)$/.test(
+      candidate,
+    )
+  ) {
+    return true;
+  }
+  if (/^observations\[\d+\]\.evidenceRefs\[\d+\]$/.test(candidate)) {
+    return true;
+  }
   if (/^(?:localId|evidence|assertion|payload)$/.test(candidate)) return true;
   if (
     /^(?:evidence|payload\.participants)\[\d+\](?:\.(?:sourceRef|quote|surface|role))?$/.test(
@@ -384,6 +430,55 @@ function observationRefsDiagnostic(
   };
 }
 
+function citationRefsDiagnostic(
+  rows: readonly unknown[],
+  binding: EvidenceSpanCatalogBinding,
+): ChronicleRefDiagnostic {
+  const allowed = new Set(binding.aliases.map((alias) => alias.alias));
+  const errors: ChronicleRefDiagnosticError[] = [];
+  let checkedCount = 0;
+  let inspected = rows.length === 0;
+  for (const [rowIndex, row] of rows.entries()) {
+    if (!isRecord(row) || !Array.isArray(row.evidenceRefs)) continue;
+    inspected = true;
+    for (const [refIndex, ref] of row.evidenceRefs.entries()) {
+      if (typeof ref !== "string" || ref.length === 0) continue;
+      checkedCount += 1;
+      if (!allowed.has(ref)) {
+        errors.push({
+          code: "UNKNOWN_EVIDENCE_REF",
+          path: `observations[${rowIndex}].evidenceRefs[${refIndex}]`,
+        });
+      }
+    }
+  }
+  if (!inspected) return notEvaluatedRefs();
+  return {
+    status: errors.length > 0 ? "invalid" : "valid",
+    checkedCount,
+    rejectedCount: errors.length,
+    errors,
+  };
+}
+
+function citationSchemaAcceptedCount(rows: readonly unknown[]): number {
+  return rows.reduce<number>(
+    (count, row) =>
+      count +
+      (parseCitationIdObservationJson({ observations: [row] }).ok ? 1 : 0),
+    0,
+  );
+}
+
+function citationNotEvaluated(): ChronicleCitationDiagnostic {
+  return {
+    status: "not-evaluated",
+    checkedCount: 0,
+    rejectedCount: 0,
+    resolvedCount: 0,
+  };
+}
+
 function synthesisEvents(value: unknown): readonly unknown[] | null {
   return isRecord(value) && Array.isArray(value.events) ? value.events : null;
 }
@@ -483,6 +578,109 @@ export function diagnoseObservationResponse(
       result.ok ? 0 : normalized.length,
     ),
   };
+}
+
+/**
+ * Diagnose an explicit citation-ID response through the same parser and
+ * deterministic resolver used by the production observation task. The
+ * resolver is asynchronous because it revalidates the sealed catalog and
+ * Source Views; an invalid selection is rejected as a failed response, not a
+ * successful empty batch.
+ */
+export async function diagnoseCitationIdObservationResponse(
+  responseText: string,
+  options: DiagnoseCitationIdObservationResponseOptions,
+): Promise<ChronicleObservationResponseDiagnostic> {
+  const inspected = inspectResponse(responseText);
+  const base = {
+    stageId: "narrative_observation_extract" as const,
+    invocationIndex: options.invocationIndex,
+    evidenceMode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+  };
+  if (inspected.value === null) {
+    return {
+      ...base,
+      json: inspected.json,
+      schema: notEvaluatedSchema(),
+      refs: notEvaluatedRefs(),
+      citation: citationNotEvaluated(),
+      output: outputDiagnostic(0, 0, 0, 0, 0),
+    };
+  }
+
+  const rows = observationRows(inspected.value);
+  const result = parseCitationIdObservationJson(inspected.value);
+  if (rows === null) {
+    return {
+      ...base,
+      json: inspected.json,
+      schema: result.ok
+        ? { status: "valid", errors: [] }
+        : { status: "invalid", errors: schemaErrors(result.errors) },
+      refs: notEvaluatedRefs(),
+      citation: citationNotEvaluated(),
+      output: outputDiagnostic(0, 0, 0, 0, 0),
+    };
+  }
+
+  const schemaAcceptedCount = citationSchemaAcceptedCount(rows);
+  const refs = citationRefsDiagnostic(rows, options.binding);
+  if (!result.ok) {
+    return {
+      ...base,
+      json: inspected.json,
+      schema: { status: "invalid", errors: schemaErrors(result.errors) },
+      refs,
+      citation: citationNotEvaluated(),
+      output: outputDiagnostic(rows.length, schemaAcceptedCount, 0, 0, 0),
+    };
+  }
+
+  try {
+    const materialized = await materializeCitationIdObservations(
+      responseText,
+      options.binding,
+      () => "diagnostic-citation-observation-id",
+      options.selectionResolver,
+    );
+    const resolvedCount = materialized.selections.reduce(
+      (count, selection) => count + selection.evidenceRefs.length,
+      0,
+    );
+    return {
+      ...base,
+      json: inspected.json,
+      schema: { status: "valid", errors: [] },
+      refs,
+      citation: {
+        status: "resolved",
+        checkedCount: resolvedCount,
+        rejectedCount: 0,
+        resolvedCount,
+      },
+      output: outputDiagnostic(
+        rows.length,
+        schemaAcceptedCount,
+        0,
+        materialized.observations.length,
+        0,
+      ),
+    };
+  } catch {
+    return {
+      ...base,
+      json: inspected.json,
+      schema: { status: "valid", errors: [] },
+      refs,
+      citation: {
+        status: "rejected",
+        checkedCount: refs.checkedCount,
+        rejectedCount: Math.max(1, refs.rejectedCount),
+        resolvedCount: 0,
+      },
+      output: outputDiagnostic(rows.length, schemaAcceptedCount, 0, 0, 0),
+    };
+  }
 }
 
 export function diagnoseSynthesisResponse(

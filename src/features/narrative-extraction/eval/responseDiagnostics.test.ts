@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+  parseCitationIdObservationJson,
+} from "@/application/narrative-extraction/aiTasks/citationIdObservation";
+import { parseRawChronicleEventObservationEvidenceRefs } from "@/features/chronicle/extraction/schemas";
+import { prepareObservationEvalCase } from "./observationAdapter";
+import {
   canonicalObservationParseStatus,
   canonicalSynthesisParseStatus,
+  diagnoseCitationIdObservationResponse,
   diagnoseObservationResponse,
   diagnoseSynthesisResponse,
 } from "./responseDiagnostics";
+import type { NarrativeEvalCaseV1 } from "./types";
 
 const OBSERVATION = {
   localId: "obs-1",
@@ -30,7 +38,179 @@ const SYNTHESIS_EVENT = {
   significance: "major",
 } as const;
 
+function citationDiagnosticCase(): NarrativeEvalCaseV1 {
+  return {
+    schemaVersion: 1,
+    id: "chronicle.micro.citation-id-diagnostics",
+    scope: { slice: "chronicle", tier: "micro" },
+    locale: "ja-JP",
+    timezone: "Asia/Tokyo",
+    frozenTime: "2026-09-05T00:00:00.000Z",
+    coverage: {
+      mode: "complete",
+      includedDocumentIds: ["diagnostic-scene"],
+      omittedDocumentIds: [],
+    },
+    documents: [
+      {
+        id: "diagnostic-scene",
+        title: "診断用場面",
+        text: "門が開いた。",
+      },
+    ],
+    expected: { observations: { required: [], forbidden: [] } },
+    criticalViolationClasses: [],
+  };
+}
+
+function citationResponse(
+  alias: string,
+  localId: unknown = "citation-diagnostic-observation",
+): string {
+  return JSON.stringify({
+    observations: [
+      {
+        localId,
+        evidenceRefs: [alias],
+        assertion: {
+          attribution: "narrator",
+          narrativeFrame: "story-world",
+        },
+        payload: {
+          predicate: "門が開いた",
+          actuality: "actual",
+          participants: [],
+          temporalExpressions: [],
+          durationKind: "instant",
+        },
+      },
+    ],
+  });
+}
+
 describe("Chronicle response diagnostics", () => {
+  it("diagnoses citation-ID responses with mode-aware schema and resolver status", async () => {
+    const prepared = await prepareObservationEvalCase(
+      citationDiagnosticCase(),
+      {
+        evidenceMode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+      },
+    );
+    const binding = prepared.evidenceSpanCatalogBinding;
+    const alias = binding?.aliases[0]?.alias;
+    if (!binding || !alias)
+      throw new Error("citation diagnostic binding missing");
+
+    const valid = await diagnoseCitationIdObservationResponse(
+      citationResponse(alias),
+      { invocationIndex: 13, binding },
+    );
+    expect(valid).toMatchObject({
+      stageId: "narrative_observation_extract",
+      invocationIndex: 13,
+      evidenceMode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+      schema: { status: "valid", errors: [] },
+      refs: { status: "valid", checkedCount: 1, rejectedCount: 0 },
+      citation: {
+        status: "resolved",
+        checkedCount: 1,
+        rejectedCount: 0,
+        resolvedCount: 1,
+      },
+      output: { candidateCount: 1, acceptedCount: 1, rejectedCount: 0 },
+    });
+    expect(canonicalObservationParseStatus(valid)).toBe("parsed");
+    expect(JSON.stringify(valid)).not.toContain(alias);
+
+    const foreign = await diagnoseCitationIdObservationResponse(
+      citationResponse(`${alias}-foreign`),
+      { invocationIndex: 14, binding },
+    );
+    expect(foreign).toMatchObject({
+      evidenceMode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+      schema: { status: "valid", errors: [] },
+      refs: { status: "invalid", checkedCount: 1, rejectedCount: 1 },
+      citation: { status: "rejected", rejectedCount: 1, resolvedCount: 0 },
+      output: { candidateCount: 1, acceptedCount: 0, rejectedCount: 1 },
+    });
+    expect(canonicalObservationParseStatus(foreign)).toBe("invalid");
+    expect(JSON.stringify(foreign)).not.toContain(`${alias}-foreign`);
+
+    for (const [invocationIndex, localId] of [
+      [15, ""],
+      [16, "  "],
+    ] as const) {
+      const rawValue = JSON.parse(citationResponse(alias, localId)) as {
+        readonly observations: readonly unknown[];
+      };
+      const rawSchema = parseRawChronicleEventObservationEvidenceRefs(
+        rawValue.observations[0],
+      );
+      expect(rawSchema.ok).toBe(localId.length > 0);
+      expect(parseCitationIdObservationJson(rawValue).ok).toBe(true);
+
+      const blankLocalId = await diagnoseCitationIdObservationResponse(
+        citationResponse(alias, localId),
+        { invocationIndex, binding },
+      );
+      expect(blankLocalId).toMatchObject({
+        schema: { status: "valid", errors: [] },
+        citation: {
+          status: "resolved",
+          checkedCount: 1,
+          rejectedCount: 0,
+          resolvedCount: 1,
+        },
+        output: {
+          candidateCount: 1,
+          schemaAcceptedCount: 1,
+          acceptedCount: 1,
+        },
+      });
+      expect(canonicalObservationParseStatus(blankLocalId)).toBe("parsed");
+    }
+
+    const wrongLocalIdType = await diagnoseCitationIdObservationResponse(
+      citationResponse(alias, 7),
+      { invocationIndex: 17, binding },
+    );
+    expect(wrongLocalIdType).toMatchObject({
+      schema: { status: "invalid" },
+      citation: { status: "not-evaluated" },
+      output: { candidateCount: 1, schemaAcceptedCount: 0, acceptedCount: 0 },
+    });
+    expect(canonicalObservationParseStatus(wrongLocalIdType)).toBe("invalid");
+
+    const missingEvidenceRefs = JSON.stringify({
+      observations: [
+        {
+          localId: "missing-evidence-refs",
+          assertion: {
+            attribution: "narrator",
+            narrativeFrame: "story-world",
+          },
+          payload: {
+            predicate: "門が開いた",
+            actuality: "actual",
+            participants: [],
+            temporalExpressions: [],
+            durationKind: "instant",
+          },
+        },
+      ],
+    });
+    const missingRequired = await diagnoseCitationIdObservationResponse(
+      missingEvidenceRefs,
+      { invocationIndex: 18, binding },
+    );
+    expect(missingRequired).toMatchObject({
+      schema: { status: "invalid" },
+      citation: { status: "not-evaluated" },
+      output: { candidateCount: 1, schemaAcceptedCount: 0, acceptedCount: 0 },
+    });
+    expect(canonicalObservationParseStatus(missingRequired)).toBe("invalid");
+  });
+
   it("classifies missing, unbalanced, and malformed JSON without retaining response text", () => {
     const missing = diagnoseObservationResponse("説明だけ", {
       invocationIndex: 1,
