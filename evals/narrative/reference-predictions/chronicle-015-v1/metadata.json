@@ -5,17 +5,35 @@
     "caseId": "chronicle.micro.sword-recovered-015",
     "path": "../../cases/chronicle-motif-boundary-v1.yaml",
     "documentId": "scene-sword-use-recovered",
-    "quoteBinding": "exact canonical source quote; human review required"
+    "quoteBinding": "exact canonical source quote; approved by human review"
   },
   "scope": "User-approved minimal rope-cut event only; pickup, fire, evacuation, and event completeness are out of scope.",
   "diagnosticOnly": true,
   "certificationEligible": false,
-  "modelEvidence": "not-run",
-  "scorerResult": "NOT YET RUN",
+  "modelEvidence": "NOT RUN (credential-free fixed-response injection only)",
+  "scorerResult": "FIXTURE-ONLY VERIFIED (correct=PASS; wrong-meaning=PASS; invalid-duration=FAIL)",
   "intendedVerdict": {
-    "correct": "semantic-pass / format-pass (draft expectation)",
-    "wrong-meaning": "semantic-fail / format-pass (draft expectation)",
-    "invalid-duration": "format-fail / synthesis-not-called (draft expectation)"
+    "correct": "semantic-pass / format-pass",
+    "wrong-meaning": "semantic-fail / format-pass",
+    "invalid-duration": "format-fail / synthesis-not-called"
+  },
+  "intendedVerdictBasis": "human-reviewed expectation; not model evidence",
+  "semanticRequirement": {
+    "correct": "PASS",
+    "wrong-meaning": "HOLD (legacy scorer does not compare predicate or participant roles)",
+    "invalid-duration": "HOLD (semantic verdict not evaluated)"
+  },
+  "semanticRequirementBasis": "human-reviewed requirement status; not a legacy scorer result",
+  "fixtureOnlyVerification": {
+    "status": "PASS",
+    "test": "src/features/narrative-extraction/eval/chronicle015Reference.test.ts",
+    "transport": "canonical runObservationExtractionTask/runEventSynthesisTask with fixed send responses",
+    "persistenceEvidence": "not-instrumented; proposal-planning-only runner",
+    "cases": {
+      "correct": { "observationCalls": 2, "observationSends": 2, "synthesisCalls": 1, "synthesisSends": 1, "observations": 1, "hypotheses": 1, "proposals": 1, "parseFailures": 0, "unresolvedEvidence": 0 },
+      "wrong-meaning": { "observationCalls": 2, "observationSends": 2, "synthesisCalls": 1, "synthesisSends": 1, "observations": 1, "hypotheses": 1, "proposals": 1, "parseFailures": 0, "unresolvedEvidence": 0 },
+      "invalid-duration": { "observationCalls": 2, "observationSends": 2, "synthesisCalls": 0, "synthesisSends": 0, "observations": 0, "hypotheses": 0, "proposals": 0, "parseFailures": 1, "unresolvedEvidence": 0 }
+    }
   },
   "requirements": [
     "GDX-NARR-EVAL-001",
@@ -23,8 +41,8 @@
     "GDX-NARR-SEMANTIC-001"
   ],
   "futureConstraints": [
-    "Resolve sourceRef, clusterRef, and observationRefs against canonical runtime artifacts before dispatch or scoring.",
-    "Require exact evidence containment and fail closed on any unresolved reference.",
-    "Do not infer claims about events omitted from this minimal slice."
+    "Future variants must retain the human-approved minimal rope-cut scope; pickup, fire, evacuation, and completeness remain out of scope.",
+    "Future runners must retain the exact sourceRef, clusterRef, and observationRefs binding already enforced against canonical runtime artifacts here.",
+    "Future runners and reports must preserve the exact-evidence fail-closed binding already enforced here and must not infer claims about events omitted from this minimal slice."
   ]
 }

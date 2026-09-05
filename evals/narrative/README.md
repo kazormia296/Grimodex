@@ -95,6 +95,12 @@ pnpm eval:narrative:chronicle:motif:diagnostic:live
 
 `forbidden` は Human Gold として残しますが、Evaluation Contract v2 が content matcher と独立した forbidden scoring を導入するまでは、それだけで違反を検出できたとは扱いません。特に「正しい Evidence 引用を使って別の命題を捏造する」blind spot は、この fixture 追加だけでは閉じません。
 
+### Chronicle 015 fixed-response reference seam
+
+`reference-predictions/chronicle-015-v1/` の固定 JSON は、`src/features/narrative-extraction/eval/chronicle015Reference.ts` と専用 Vitest からのみ fixture-only の raw `send` 応答として canonical observation／synthesis task に注入できます。テストは case 015 の Human Gold を変更せず、準備済みの2 Source View（`S0001`／`S0002`）と、canonical rekey 後の runtime observation／cluster refs を厳格に bind し、欠落・余分・未知・重複参照と placeholder leakage を fail-closed で拒否します。Apply／DB 書き込みはこの proposal-only seam の対象外で、persistenceEvidence は `not-instrumented; proposal-planning-only runner` です。
+
+この credential-free characterization では correct が `observations=1, hypotheses=1, proposals=1, parseFailures=0`、invalid-duration が `observations=0, parseFailures=1, synthesis=0` になります。correct の意図 semantic verdict／要件状態は人手承認済みの期待値であり、legacy scorer の PASS 単独では predicate／participant roles の意味を証明しません。wrong-meaning は実際の predicate／participant roles を保持したまま legacy scorer が evidence alignment だけで `PASS` になる既知の blind spot を再現するため、意図 semantic verdict は `FAIL`、要件状態は `HOLD` と別記します。wrong-meaning が将来 scorer FAIL になって characterization test が失敗するのは、この段階では意図的な既知挙動ロックです。scorer 修正時に明示更新し、この fixture lane では採点やテストの throw を変更しません。いずれもモデル品質・certification の証拠ではありません。
+
 ## 今後の corpus
 
 作品単位の一般化や release 判定には、chapter/full-work/mutation case と独立 holdout を追加します。章規模の推理 fixture、motif-rich fantasy、予言・伝承、意味感度 A/B は、評価契約と実行能力を明示した上で段階的に追加します。
