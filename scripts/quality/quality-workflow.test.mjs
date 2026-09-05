@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -46,6 +47,41 @@ function sectionFromHeading(markdown, heading) {
 function normalizeSection(section) {
   return section.replace(/\s+/g, " ").trim();
 }
+
+function checkIgnore(filePath) {
+  const result = spawnSync(
+    "git",
+    ["check-ignore", "--no-index", "--", filePath],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  assert.ifError(result.error);
+  assert.ok(
+    result.status === 0 || result.status === 1,
+    result.stderr || `Unexpected git exit status: ${result.status}`,
+  );
+  return result.status === 0;
+}
+
+test("root build outputs and temporary checkout stay outside Git", () => {
+  for (const filePath of [
+    "target/debug/deps/example.rlib",
+    "target/release/deps/example.rlib",
+    "target/nir0-tmp/grimodex-impact-example/.git/HEAD",
+    ".tmp-c2-5b-edit/src/example.ts",
+  ]) {
+    assert.equal(checkIgnore(filePath), true, filePath);
+  }
+});
+
+test("generated-directory rules do not hide similarly named source directories", () => {
+  for (const filePath of [
+    "src/target/example.ts",
+    "src/.tmp-c2-5b-edit/example.ts",
+    "scripts/quality/quality-workflow.test.mjs",
+  ]) {
+    assert.equal(checkIgnore(filePath), false, filePath);
+  }
+});
 
 test("package scripts expose one canonical quality workflow", async () => {
   const packageJson = JSON.parse(await read("package.json"));
