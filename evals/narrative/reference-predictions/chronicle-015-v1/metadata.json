@@ -1,0 +1,30 @@
+{
+  "fixtureId": "chronicle-015-v1",
+  "version": 1,
+  "source": {
+    "caseId": "chronicle.micro.sword-recovered-015",
+    "path": "../../cases/chronicle-motif-boundary-v1.yaml",
+    "documentId": "scene-sword-use-recovered",
+    "quoteBinding": "exact canonical source quote; human review required"
+  },
+  "scope": "User-approved minimal rope-cut event only; pickup, fire, evacuation, and event completeness are out of scope.",
+  "diagnosticOnly": true,
+  "certificationEligible": false,
+  "modelEvidence": "not-run",
+  "scorerResult": "NOT YET RUN",
+  "intendedVerdict": {
+    "correct": "semantic-pass / format-pass (draft expectation)",
+    "wrong-meaning": "semantic-fail / format-pass (draft expectation)",
+    "invalid-duration": "format-fail / synthesis-not-called (draft expectation)"
+  },
+  "requirements": [
+    "GDX-NARR-EVAL-001",
+    "GDX-NARR-EVIDENCE-001",
+    "GDX-NARR-SEMANTIC-001"
+  ],
+  "futureConstraints": [
+    "Resolve sourceRef, clusterRef, and observationRefs against canonical runtime artifacts before dispatch or scoring.",
+    "Require exact evidence containment and fail closed on any unresolved reference.",
+    "Do not infer claims about events omitted from this minimal slice."
+  ]
+}
