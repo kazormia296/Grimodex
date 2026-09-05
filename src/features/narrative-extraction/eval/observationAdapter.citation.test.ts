@@ -131,7 +131,9 @@ describe("observationAdapter citation-ID mode", () => {
     expect(idPrepared.versions).not.toEqual(
       (await prepareObservationEvalCase(syntheticCase())).versions,
     );
-    expect(idPrepared.versions.prompt).toContain("citation-id-v2");
+    expect(idPrepared.versions.prompt).toBe(
+      "narrative-observation-extract/citation-id-v3",
+    );
 
     const legacyPrepared = await prepareObservationEvalCase(syntheticCase(), {
       evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,

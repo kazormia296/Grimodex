@@ -20,6 +20,9 @@ describe("current Narrative evaluation protocol", () => {
     expect(currentProtocol.versions).toEqual(
       CITATION_ID_PRODUCTION_CHRONICLE_EVAL_VERSIONS,
     );
+    expect(currentProtocol.versions.prompt).toBe(
+      "narrative-observation-extract/citation-id-v3+narrative-event-synthesize/1",
+    );
     expect(currentProtocol.versions).not.toEqual(
       PRODUCTION_CHRONICLE_EVAL_VERSIONS,
     );

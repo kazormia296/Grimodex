@@ -12,6 +12,9 @@ import {
   buildEvidenceSpanCatalog,
 } from "@/features/narrative-extraction/evidence/spanCatalog";
 import {
+  buildCitationIdObservationPromptArtifact,
+  buildCitationIdRepairPromptArtifact,
+  CITATION_ID_OBSERVATION_EXPECTED_SHAPE,
   CITATION_ID_OBSERVATION_EVIDENCE_MODE,
   validateCitationIdBinding,
 } from "./citationIdObservation";
@@ -140,7 +143,56 @@ function response(
   return responseWithEvidenceRefs([alias], predicate, localId);
 }
 
+function expectCitationIdSemanticGuidance(prompt: string): void {
+  expect(prompt).toContain(
+    '{"surface":"本文中の表記","role":"出来事での役割"}',
+  );
+  expect(prompt).toContain("文字列だけの要素は許可しません");
+  expect(prompt).toContain("surface と role はどちらも空でない文字列");
+  for (const durationKind of [
+    "instant",
+    "bounded-interval",
+    "ongoing-process",
+    "unknown",
+  ]) {
+    expect(prompt).toContain(`"${durationKind}"`);
+  }
+  expect(prompt).toContain('既定値へ決め打ちせず "unknown"');
+}
+
 describe("citation-ID observation runtime", () => {
+  it("renders the participant object and complete duration contracts", async () => {
+    const { binding, window } = await fixture();
+    const artifact = await buildCitationIdObservationPromptArtifact(
+      [window],
+      binding,
+    );
+    const prompt = artifact.messages[0].content;
+
+    expect(artifact.componentContract.contractVersion).toBe("3");
+    expect(artifact.componentContract.outputShape).toBe(
+      CITATION_ID_OBSERVATION_EXPECTED_SHAPE,
+    );
+    expect(prompt).toContain(
+      '"participants":[{"surface":"登場人物の表記","role":"出来事での役割"}]',
+    );
+    expectCitationIdSemanticGuidance(prompt);
+  });
+
+  it("renders the same semantic contract for citation-ID repair", async () => {
+    const { binding } = await fixture();
+    const artifact = await buildCitationIdRepairPromptArtifact({
+      expectedShape: CITATION_ID_OBSERVATION_EXPECTED_SHAPE,
+      brokenText: '{"observations":[]}',
+      binding,
+    });
+    const prompt = artifact.messages[0].content;
+
+    expect(artifact.componentContract.contractVersion).toBe("3");
+    expect(prompt).toContain(CITATION_ID_OBSERVATION_EXPECTED_SHAPE);
+    expectCitationIdSemanticGuidance(prompt);
+  });
+
   it("materializes code-owned occurrence text and rejects an unknown alias", async () => {
     const { binding, window } = await fixture();
     const occurrence = binding.aliases[1];
@@ -284,6 +336,7 @@ describe("citation-ID observation runtime", () => {
         repairSend: async (messages) => {
           const prompt = String(messages[0]?.content ?? "");
           expect(prompt).toContain(alias);
+          expect(prompt).toContain(CITATION_ID_OBSERVATION_EXPECTED_SHAPE);
           return {
             text: response(alias, "修復後も保持する完全な主張"),
             inputTokens: 1,

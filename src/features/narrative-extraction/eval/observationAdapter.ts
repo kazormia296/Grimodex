@@ -53,7 +53,7 @@ export const OBSERVATION_CHRONICLE_EVAL_VERSIONS: NarrativeEvalVersions = {
 /** Versioned evaluation identity for the code-owned citation-ID protocol. */
 export const CITATION_ID_OBSERVATION_CHRONICLE_EVAL_VERSIONS: NarrativeEvalVersions =
   {
-    prompt: "narrative-observation-extract/citation-id-v2",
+    prompt: "narrative-observation-extract/citation-id-v3",
     responseSchema: "chronicle-raw-observation-evidence-refs/2",
     extractor: "narrative-observation-extract/citation-id-v2",
     parser: "citation-id-observation-materializer/2",

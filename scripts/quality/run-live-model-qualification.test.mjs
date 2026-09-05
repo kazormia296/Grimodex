@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,6 +28,8 @@ import {
   CHRONICLE_PRODUCTION_EXPECTED_DIMENSION_KEYS,
   CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS,
   CURRENT_NARRATIVE_EVAL_PROTOCOL,
+  sha256Buffer,
+  sha256Text,
 } from "./quality-evaluation-runtime.mjs";
 
 const repoRoot = path.resolve(
@@ -156,6 +166,241 @@ function chronicleReport({
     failedCases,
     ...overrides,
   };
+}
+
+const RAW_PROMPT_CANARY = "raw-prompt-must-not-persist";
+const RAW_RESPONSE_CANARY = "raw-response-must-not-persist";
+const FREE_ERROR_CANARY = "free-error-must-not-persist";
+const KEY_CANARY = "sk-or-v1-key-canary-must-not-persist";
+
+function chronicleDiagnosticCaseContext(caseId) {
+  return {
+    caseId,
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
+    corpusDigest: sha256Text(`corpus:${caseId}`),
+    fixturePromptDigest: sha256Text(`fixture:${caseId}`),
+  };
+}
+
+function chronicleDiagnosticDispatch(caseId) {
+  return {
+    promptDigest: sha256Text(`prompt:${caseId}`),
+    responseDigest: sha256Text(`response:${caseId}`),
+    stageId: "narrative_observation_extract",
+    invocationIndex: 0,
+    finishReason: "stop",
+    stopReason: "end_turn",
+    rawPrompt: RAW_PROMPT_CANARY,
+    rawResponse: RAW_RESPONSE_CANARY,
+    sessionId: "session-must-not-persist",
+    generationId: "generation-must-not-persist",
+  };
+}
+
+function chronicleSourceReport(childEnv) {
+  const cases = CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS.map((caseId, index) => {
+    const context = chronicleDiagnosticCaseContext(caseId);
+    const dispatch = chronicleDiagnosticDispatch(caseId);
+    return {
+      ...chronicleCase({
+        caseId,
+        passed: index !== 0,
+        evaluation: index === 0 ? { parseFailureCount: 1 } : {},
+      }),
+      corpusDigest: context.corpusDigest,
+      fixturePromptDigest: context.fixturePromptDigest,
+      dispatches: [
+        {
+          promptDigest: dispatch.promptDigest,
+          responseDigest: dispatch.responseDigest,
+          resolvedModel: "provider-model-must-not-persist",
+          inputTokens: 1,
+          outputTokens: 1,
+          runtimeMs: 1,
+          costUsd: 0,
+        },
+      ],
+    };
+  });
+  return chronicleReport({
+    candidateCommitSha: childEnv.QUALITY_EVALUATION_CANDIDATE_COMMIT_SHA,
+    candidateTreeSha: childEnv.QUALITY_EVALUATION_CANDIDATE_TREE_SHA,
+    suiteId: childEnv.QUALITY_EVALUATION_SUITE_ID,
+    runId: childEnv.QUALITY_EVALUATION_RUN_ID,
+    commandDigest: childEnv.QUALITY_EVALUATION_COMMAND_DIGEST,
+    certificationEligible: false,
+    cases,
+    summary: { passed: 13, failed: 1, parseFailureCount: 1 },
+  });
+}
+
+function chronicleSourceDiagnostics(
+  childEnv,
+  { invalidIndex = 0, terminalFailure = null } = {},
+) {
+  return {
+    schemaVersion: 1,
+    mode: "chronicle-production-live-diagnostics",
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    runId: childEnv.QUALITY_EVALUATION_RUN_ID,
+    attempt: 1,
+    nonAuthoritative: true,
+    diagnosticOnly: true,
+    certificationEligible: false,
+    startedAt: "2026-08-13T00:00:00.000Z",
+    completedAt: "2026-08-13T00:00:01.000Z",
+    candidateCommitSha: childEnv.QUALITY_EVALUATION_CANDIDATE_COMMIT_SHA,
+    candidateTreeSha: childEnv.QUALITY_EVALUATION_CANDIDATE_TREE_SHA,
+    qualityEvaluationSuiteId: childEnv.QUALITY_EVALUATION_SUITE_ID,
+    commandDigest: childEnv.QUALITY_EVALUATION_COMMAND_DIGEST,
+    model: {
+      provider: "provider-must-not-persist",
+      requestedModel: "model-must-not-persist",
+      effort: "medium",
+    },
+    caseCount: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS.length,
+    selectedCaseCapabilityReport: { message: FREE_ERROR_CANARY },
+    rawPrompt: RAW_PROMPT_CANARY,
+    rawResponse: RAW_RESPONSE_CANARY,
+    error: FREE_ERROR_CANARY,
+    apiKey: KEY_CANARY,
+    cases: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS.map((caseId, index) => {
+      const invalid = index === invalidIndex;
+      const context = chronicleDiagnosticCaseContext(caseId);
+      const dispatch = chronicleDiagnosticDispatch(caseId);
+      return {
+        ...context,
+        dispatches: [dispatch],
+        stageDiagnostics: [
+          {
+            stageId: dispatch.stageId,
+            invocationIndex: dispatch.invocationIndex,
+            evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+            json: { status: "object-found", rootType: "object" },
+            schema: {
+              status: invalid ? "invalid" : "valid",
+              errors: invalid
+                ? [
+                    {
+                      code: "SCHEMA_INVALID",
+                      path: "observations[0].payload.durationKind",
+                      message: FREE_ERROR_CANARY,
+                    },
+                    {
+                      code: "SCHEMA_UNKNOWN",
+                      path: `untrusted.${KEY_CANARY}`,
+                    },
+                  ]
+                : [],
+            },
+            refs: {
+              status: "valid",
+              checkedCount: 1,
+              rejectedCount: 0,
+              errors: [],
+            },
+            citation: invalid
+              ? {
+                  status: "not-evaluated",
+                  checkedCount: 0,
+                  rejectedCount: 0,
+                  resolvedCount: 0,
+                }
+              : {
+                  status: "resolved",
+                  checkedCount: 1,
+                  rejectedCount: 0,
+                  resolvedCount: 1,
+                },
+            output: invalid
+              ? {
+                  candidateCount: 1,
+                  schemaAcceptedCount: 0,
+                  schemaRejectedCount: 1,
+                  normalizerDroppedCount: 0,
+                  acceptedCount: 0,
+                  rejectedCount: 1,
+                  salvagedCount: 0,
+                }
+              : {
+                  candidateCount: 1,
+                  schemaAcceptedCount: 1,
+                  schemaRejectedCount: 0,
+                  normalizerDroppedCount: 0,
+                  acceptedCount: 1,
+                  rejectedCount: 0,
+                  salvagedCount: 0,
+                },
+            expectedParseStatus: invalid ? "invalid" : "parsed",
+            parseStatus: invalid ? "invalid" : "parsed",
+            rawResponse: RAW_RESPONSE_CANARY,
+            error: FREE_ERROR_CANARY,
+          },
+        ],
+        capability: { message: FREE_ERROR_CANARY },
+        evidenceAlias: "alias-must-not-persist",
+        catalogBinding: { quote: RAW_RESPONSE_CANARY },
+        ...(index === invalidIndex && terminalFailure
+          ? { terminalFailure }
+          : {}),
+      };
+    }),
+  };
+}
+
+function chronicleTerminalSourceReport(childEnv, terminalFailure) {
+  const report = chronicleSourceReport(childEnv);
+  const failedCase = report.cases.at(-1);
+  assert.ok(failedCase);
+  return {
+    ...report,
+    cases: report.cases
+      .slice(0, -1)
+      .map((entry, index) =>
+        index === 0 ? { ...entry, evaluation: chronicleEvaluation() } : entry,
+      ),
+    failedCases: [
+      {
+        caseId: failedCase.caseId,
+        evidenceMode: failedCase.evidenceMode,
+        receiptMode: failedCase.receiptMode,
+        versions: failedCase.versions,
+        corpusDigest: failedCase.corpusDigest,
+        fixturePromptDigest: failedCase.fixturePromptDigest,
+        dispatches: failedCase.dispatches,
+        terminalFailure,
+      },
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 1 },
+  };
+}
+
+async function writeChronicleSourceArtifacts(
+  childEnv,
+  {
+    report = chronicleSourceReport(childEnv),
+    diagnostics = chronicleSourceDiagnostics(childEnv),
+  } = {},
+) {
+  await writeFile(
+    childEnv.QUALITY_EVALUATION_OUTPUT_PATH,
+    JSON.stringify(report),
+    "utf8",
+  );
+  if (diagnostics === null) return;
+  const sourceRunDir = path.join(
+    childEnv.QUALITY_EVALUATION_ARTIFACT_ROOT,
+    childEnv.QUALITY_EVALUATION_RUN_ID,
+  );
+  await mkdir(sourceRunDir, { recursive: true });
+  await writeFile(
+    path.join(sourceRunDir, "diagnostics.json"),
+    typeof diagnostics === "string" ? diagnostics : JSON.stringify(diagnostics),
+    "utf8",
+  );
 }
 
 const fixedNow = () => new Date("2026-08-13T00:00:00.000Z");
@@ -999,6 +1244,413 @@ test("captured logs, source artifacts, and reports never retain credential value
   }
 });
 
+test("persists only bounded Chronicle failure diagnostics after deleting the source root", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-diagnostics-"));
+  let ephemeralRoot;
+  try {
+    const result = await runLiveModelQualification({
+      repoRoot,
+      args: args(temp, ["heavy-narrative-chronicle-production"]),
+      env: { OPENROUTER_API_KEY: KEY_CANARY },
+      candidateResolver: fixedCandidate,
+      executeCommand: async (_command, _cwd, childEnv) => {
+        ephemeralRoot = childEnv.QUALITY_EVALUATION_ARTIFACT_ROOT;
+        await writeChronicleSourceArtifacts(childEnv);
+        return capture({ status: "failed", exitCode: 1 });
+      },
+      idFactory: () => "failure-diagnostics",
+      now: fixedNow,
+    });
+
+    assert.equal(result.report.result, "FAILED");
+    const suiteReport = result.report.suites[0];
+    assert.ok(suiteReport);
+    assert.equal(suiteReport.result, "FAILED");
+    assert.match(suiteReport.failureDiagnosticsDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(suiteReport.failureDiagnosticsUnavailableReason, undefined);
+
+    const diagnosticsPath = path.join(
+      result.runDir,
+      "suites",
+      "heavy-narrative-chronicle-production",
+      "failure-diagnostics.json",
+    );
+    const bytes = await readFile(diagnosticsPath);
+    assert.equal(sha256Buffer(bytes), suiteReport.failureDiagnosticsDigest);
+    assert.deepEqual(JSON.parse(bytes.toString("utf8")), {
+      schemaVersion: 1,
+      mode: "live-model-qualification-failure-diagnostics",
+      nonAuthoritative: true,
+      diagnosticOnly: true,
+      certificationEligible: false,
+      runId: result.report.runId,
+      suiteId: "heavy-narrative-chronicle-production",
+      cases: [
+        {
+          caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0],
+          invocations: [
+            {
+              stageId: "narrative_observation_extract",
+              invocationIndex: 0,
+              promptTextDigest: sha256Text(
+                `prompt:${CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0]}`,
+              ),
+              responseTextDigest: sha256Text(
+                `response:${CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0]}`,
+              ),
+              finishReason: "stop",
+              stopReason: "end_turn",
+              json: { status: "object-found", rootType: "object" },
+              schema: {
+                status: "invalid",
+                errors: [
+                  {
+                    code: "SCHEMA_INVALID",
+                    path: "observations[0].payload.durationKind",
+                  },
+                  { code: "SCHEMA_UNKNOWN", path: "<redacted>" },
+                ],
+              },
+              refs: {
+                status: "valid",
+                checkedCount: 1,
+                rejectedCount: 0,
+                errors: [],
+              },
+              citation: {
+                status: "not-evaluated",
+                checkedCount: 0,
+                rejectedCount: 0,
+                resolvedCount: 0,
+              },
+              output: {
+                candidateCount: 1,
+                schemaAcceptedCount: 0,
+                schemaRejectedCount: 1,
+                normalizerDroppedCount: 0,
+                acceptedCount: 0,
+                rejectedCount: 1,
+                salvagedCount: 0,
+              },
+              expectedParseStatus: "invalid",
+              parseStatus: "invalid",
+            },
+          ],
+        },
+      ],
+    });
+
+    if (process.platform !== "win32") {
+      assert.equal((await stat(result.runDir)).mode & 0o777, 0o700);
+      assert.equal((await stat(diagnosticsPath)).mode & 0o777, 0o600);
+    }
+    await assert.rejects(
+      () =>
+        readFile(
+          path.join(ephemeralRoot, result.report.runId, "diagnostics.json"),
+        ),
+      { code: "ENOENT" },
+    );
+
+    const persistedFiles = await readdir(result.runDir, { recursive: true });
+    const persistedText = (
+      await Promise.all(
+        persistedFiles
+          .filter(
+            (relative) =>
+              relative.endsWith(".json") || relative.endsWith(".log"),
+          )
+          .map((relative) =>
+            readFile(path.join(result.runDir, relative), "utf8"),
+          ),
+      )
+    ).join("\n");
+    for (const canary of [
+      RAW_PROMPT_CANARY,
+      RAW_RESPONSE_CANARY,
+      FREE_ERROR_CANARY,
+      KEY_CANARY,
+      "provider-model-must-not-persist",
+      "session-must-not-persist",
+      "generation-must-not-persist",
+      "alias-must-not-persist",
+    ]) {
+      assert.doesNotMatch(persistedText, new RegExp(canary));
+    }
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("diagnostics persistence rejection preserves the canonical FAILED report", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-persist-fail-"));
+  try {
+    const result = await runLiveModelQualification({
+      repoRoot,
+      args: args(temp, ["heavy-narrative-chronicle-production"]),
+      // The bounded finishReason contains this value, exercising the final
+      // credential collision guard before the durable file is created.
+      env: { OPENROUTER_API_KEY: "stop" },
+      candidateResolver: fixedCandidate,
+      executeCommand: async (_command, _cwd, childEnv) => {
+        await writeChronicleSourceArtifacts(childEnv);
+        return capture({ status: "failed", exitCode: 1 });
+      },
+      idFactory: () => "persist-failure",
+      now: fixedNow,
+    });
+
+    assert.equal(result.report.result, "FAILED");
+    assert.equal(result.report.suites[0].result, "FAILED");
+    assert.equal(
+      result.report.suites[0].failureDiagnosticsUnavailableReason,
+      "projection-persist-failed",
+    );
+    assert.equal(result.report.suites[0].failureDiagnosticsDigest, undefined);
+    await assert.rejects(
+      () =>
+        readFile(
+          path.join(
+            result.runDir,
+            "suites",
+            "heavy-narrative-chronicle-production",
+            "failure-diagnostics.json",
+          ),
+        ),
+      { code: "ENOENT" },
+    );
+    assert.equal(
+      JSON.parse(await readFile(result.reportPath)).result,
+      "FAILED",
+    );
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("persists bounded terminal failed-case diagnostics from a 13 plus 1 report", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-terminal-"));
+  const terminalFailure = {
+    kind: "terminal-pipeline-failure",
+    stageId: "narrative_observation_extract",
+    invocationIndex: 0,
+    parseStatus: "invalid",
+  };
+  let ephemeralRoot;
+  try {
+    const result = await runLiveModelQualification({
+      repoRoot,
+      args: args(temp, ["heavy-narrative-chronicle-production"]),
+      env: { OPENROUTER_API_KEY: KEY_CANARY },
+      candidateResolver: fixedCandidate,
+      executeCommand: async (_command, _cwd, childEnv) => {
+        ephemeralRoot = childEnv.QUALITY_EVALUATION_ARTIFACT_ROOT;
+        const report = chronicleTerminalSourceReport(childEnv, terminalFailure);
+        assert.equal(report.cases.length, 13);
+        assert.equal(report.failedCases.length, 1);
+        await writeChronicleSourceArtifacts(childEnv, {
+          report,
+          diagnostics: chronicleSourceDiagnostics(childEnv, {
+            invalidIndex: 13,
+            terminalFailure,
+          }),
+        });
+        return capture({ status: "failed", exitCode: 1 });
+      },
+      idFactory: () => "terminal-failure",
+      now: fixedNow,
+    });
+
+    assert.equal(result.report.result, "FAILED");
+    const diagnosticsPath = path.join(
+      result.runDir,
+      "suites",
+      "heavy-narrative-chronicle-production",
+      "failure-diagnostics.json",
+    );
+    const persistedText = await readFile(diagnosticsPath, "utf8");
+    const persisted = JSON.parse(persistedText);
+    assert.equal(persisted.cases.length, 1);
+    assert.equal(
+      persisted.cases[0].caseId,
+      CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+    );
+    assert.deepEqual(persisted.cases[0].terminalFailure, {
+      code: "terminal-pipeline-failure",
+      stageId: "narrative_observation_extract",
+      invocationIndex: 0,
+      parseStatus: "invalid",
+    });
+    assert.equal(persisted.cases[0].invocations.length, 1);
+    assert.deepEqual(persisted.cases[0].invocations[0].schema, {
+      status: "invalid",
+      errors: [
+        {
+          code: "SCHEMA_INVALID",
+          path: "observations[0].payload.durationKind",
+        },
+        { code: "SCHEMA_UNKNOWN", path: "<redacted>" },
+      ],
+    });
+    assert.equal(
+      persisted.cases[0].invocations[0].responseTextDigest,
+      sha256Text(`response:${CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13]}`),
+    );
+    await assert.rejects(() => stat(ephemeralRoot), { code: "ENOENT" });
+    for (const canary of [
+      RAW_PROMPT_CANARY,
+      RAW_RESPONSE_CANARY,
+      FREE_ERROR_CANARY,
+      KEY_CANARY,
+      "provider-model-must-not-persist",
+      "session-must-not-persist",
+    ]) {
+      assert.doesNotMatch(persistedText, new RegExp(canary));
+    }
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("Chronicle source diagnostics fail closed with fixed unavailable reason codes", async (t) => {
+  const variants = [
+    {
+      name: "missing",
+      expectedReason: "source-missing",
+      build: () => null,
+    },
+    {
+      name: "malformed",
+      expectedReason: "source-malformed",
+      build: () => "{",
+    },
+    {
+      name: "oversize",
+      expectedReason: "source-oversize",
+      build: () => " ".repeat(2 * 1024 * 1024),
+    },
+    {
+      name: "depth limit",
+      expectedReason: "source-depth-limit",
+      build: (childEnv) => {
+        const diagnostics = chronicleSourceDiagnostics(childEnv);
+        let nested = {};
+        for (let depth = 0; depth < 80; depth += 1) {
+          nested = { nested };
+        }
+        diagnostics.additionalNestedData = nested;
+        return diagnostics;
+      },
+    },
+    {
+      name: "cardinality limit",
+      expectedReason: "source-cardinality-limit",
+      build: (childEnv) => {
+        const diagnostics = chronicleSourceDiagnostics(childEnv);
+        diagnostics.additionalCollection = Array.from(
+          { length: 5_000 },
+          () => null,
+        );
+        return diagnostics;
+      },
+    },
+    {
+      name: "binding mismatch",
+      expectedReason: "source-binding-mismatch",
+      build: (childEnv) => ({
+        ...chronicleSourceDiagnostics(childEnv),
+        runId: "different-run",
+      }),
+    },
+    {
+      name: "unknown enum",
+      expectedReason: "source-invalid",
+      build: (childEnv) => {
+        const diagnostics = chronicleSourceDiagnostics(childEnv);
+        diagnostics.cases[0].dispatches[0].finishReason = FREE_ERROR_CANARY;
+        return diagnostics;
+      },
+    },
+    {
+      name: "invalid digest",
+      expectedReason: "source-invalid",
+      build: (childEnv) => {
+        const diagnostics = chronicleSourceDiagnostics(childEnv);
+        diagnostics.cases[0].dispatches[0].responseDigest = KEY_CANARY;
+        return diagnostics;
+      },
+    },
+    {
+      name: "dispatch diagnostic parity mismatch",
+      expectedReason: "source-parity-mismatch",
+      build: (childEnv) => {
+        const diagnostics = chronicleSourceDiagnostics(childEnv);
+        diagnostics.cases[0].stageDiagnostics[0].invocationIndex = 1;
+        return diagnostics;
+      },
+    },
+  ];
+
+  for (const [index, variant] of variants.entries()) {
+    await t.test(variant.name, async () => {
+      const temp = await mkdtemp(
+        path.join(os.tmpdir(), `live-qual-diagnostics-${index}-`),
+      );
+      let ephemeralRoot;
+      try {
+        const result = await runLiveModelQualification({
+          repoRoot,
+          args: args(temp, ["heavy-narrative-chronicle-production"]),
+          env: { OPENROUTER_API_KEY: KEY_CANARY },
+          candidateResolver: fixedCandidate,
+          executeCommand: async (_command, _cwd, childEnv) => {
+            ephemeralRoot = childEnv.QUALITY_EVALUATION_ARTIFACT_ROOT;
+            await writeChronicleSourceArtifacts(childEnv, {
+              diagnostics: variant.build(childEnv),
+            });
+            return capture({ status: "failed", exitCode: 1 });
+          },
+          idFactory: () => `unavailable-${index}`,
+          now: fixedNow,
+        });
+
+        assert.equal(result.report.result, "FAILED");
+        const suiteReport = result.report.suites[0];
+        assert.ok(suiteReport);
+        assert.equal(
+          suiteReport.failureDiagnosticsUnavailableReason,
+          variant.expectedReason,
+        );
+        assert.equal(suiteReport.failureDiagnosticsDigest, undefined);
+        await assert.rejects(
+          () =>
+            readFile(
+              path.join(
+                result.runDir,
+                "suites",
+                "heavy-narrative-chronicle-production",
+                "failure-diagnostics.json",
+              ),
+            ),
+          { code: "ENOENT" },
+        );
+        await assert.rejects(() => stat(ephemeralRoot), { code: "ENOENT" });
+        const reportText = await readFile(result.reportPath, "utf8");
+        for (const canary of [
+          RAW_PROMPT_CANARY,
+          RAW_RESPONSE_CANARY,
+          FREE_ERROR_CANARY,
+          KEY_CANARY,
+        ]) {
+          assert.doesNotMatch(reportText, new RegExp(canary));
+        }
+      } finally {
+        await rm(temp, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 test("one failed suite prevents an overall QUALIFIED result", async () => {
   const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-fail-"));
   try {
@@ -1019,6 +1671,10 @@ test("one failed suite prevents an overall QUALIFIED result", async () => {
       result.report.suites.map((suite) => suite.result),
       ["QUALIFIED", "FAILED"],
     );
+    for (const suite of result.report.suites) {
+      assert.equal(suite.failureDiagnosticsDigest, undefined);
+      assert.equal(suite.failureDiagnosticsUnavailableReason, undefined);
+    }
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
@@ -1090,6 +1746,11 @@ test("Chronicle semantic threshold misses become HOLD, not FAILED or QUALIFIED",
     });
     assert.equal(result.report.result, "HOLD");
     assert.equal(result.report.suites[0].result, "HOLD");
+    assert.equal(
+      result.report.suites[0].failureDiagnosticsUnavailableReason,
+      undefined,
+    );
+    assert.equal(result.report.suites[0].failureDiagnosticsDigest, undefined);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
@@ -1105,6 +1766,66 @@ test("result aggregation preserves FAILED over HOLD and never invents execution"
     deriveQualificationResult([{ result: "HOLD" }, { result: "FAILED" }]),
     "FAILED",
   );
+});
+
+test("live report schema keeps failure diagnostics optional and FAILED-only", async () => {
+  const schema = JSON.parse(
+    await readFile(
+      path.join(
+        repoRoot,
+        "evals/qualifications/schemas/live-model-qualification-v1.schema.json",
+      ),
+      "utf8",
+    ),
+  );
+  const validateSuite = new Ajv2020({ strict: false }).compile(
+    schema.$defs.suiteResult,
+  );
+  const legacyFailed = {
+    suiteId: "heavy-narrative-chronicle-production",
+    startedAt: "2026-08-13T00:00:00.000Z",
+    completedAt: "2026-08-13T00:00:01.000Z",
+    exitCode: 1,
+    commandDigest: sha256Text("command"),
+    stdoutDigest: sha256Text("stdout"),
+    stderrDigest: sha256Text("stderr"),
+    sanitizedArtifactDigest: sha256Text("artifact"),
+    result: "FAILED",
+    message: "failed",
+  };
+  const digest = sha256Text("failure diagnostics");
+
+  assert.equal(validateSuite(legacyFailed), true);
+  assert.equal(
+    validateSuite({ ...legacyFailed, failureDiagnosticsDigest: digest }),
+    true,
+  );
+  assert.equal(
+    validateSuite({
+      ...legacyFailed,
+      failureDiagnosticsUnavailableReason: "source-missing",
+    }),
+    true,
+  );
+  for (const invalid of [
+    {
+      ...legacyFailed,
+      result: "QUALIFIED",
+      failureDiagnosticsDigest: digest,
+    },
+    {
+      ...legacyFailed,
+      result: "HOLD",
+      failureDiagnosticsUnavailableReason: "source-missing",
+    },
+    {
+      ...legacyFailed,
+      failureDiagnosticsDigest: digest,
+      failureDiagnosticsUnavailableReason: "source-missing",
+    },
+  ]) {
+    assert.equal(validateSuite(invalid), false);
+  }
 });
 
 test("Gate B2 and Live Qualification reports fail each other's schemas", async () => {

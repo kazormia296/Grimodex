@@ -18,6 +18,7 @@ import {
   citationBindingAuditMetadata,
   citationIdObservationParseStatus,
   citationSelectionAuditMetadata,
+  CITATION_ID_OBSERVATION_EXPECTED_SHAPE,
   CITATION_ID_OBSERVATION_EVIDENCE_MODE,
   LEGACY_OBSERVATION_EVIDENCE_MODE,
   materializeCitationIdObservations,
@@ -696,7 +697,7 @@ export async function runObservationExtractionTask(
   const repaired = await runStructuredRepairTask({
     brokenText: response.text,
     expectedShape: isCitationId
-      ? '{"observations":[{"localId":"string","evidenceRefs":["E<request-binding>-001"],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"string","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}'
+      ? CITATION_ID_OBSERVATION_EXPECTED_SHAPE
       : '{"observations":[{"localId":"string","evidence":[{"sourceRef":"S0001","quote":"string"}],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"string","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}',
     projectId,
     ...(isCitationId
