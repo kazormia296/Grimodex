@@ -22,12 +22,15 @@ import type {
   Sha256Digest,
 } from "@/features/narrative-extraction/source/types";
 import {
+  assertCapturedEvidenceSpanCatalogCoverage,
   assertEvidenceSpanCatalogCoverage,
-  bindEvidenceSpanCatalog,
+  assertEvidenceSpanCatalogCaptureMatches,
+  bindCapturedEvidenceSpanCatalog,
   buildEvidenceSpanCatalog,
-  validateEvidenceSpanCatalog,
+  captureEvidenceSpanCatalog,
   type EvidenceSpanCatalog,
   type EvidenceSpanCatalogBinding,
+  type EvidenceSpanCatalogCapture,
   type EvidenceSpanCatalogWindowInput,
 } from "@/features/narrative-extraction/evidence/spanCatalog";
 import type { NarrativeScopeAuthorityBasisV2 } from "@/features/narrative-extraction/source/scopeAuthorityBasisV2";
@@ -1090,7 +1093,10 @@ function assertSnapshotEvidenceCompanionShape(
 async function validateResumedEvidenceCompanion(
   payload: SnapshotArtifactPayload,
   requestedMode: ObservationEvidenceMode | undefined,
-): Promise<ObservationEvidenceMode> {
+): Promise<{
+  readonly mode: ObservationEvidenceMode;
+  readonly catalogCapture?: EvidenceSpanCatalogCapture;
+}> {
   const companion = payload.evidence;
   if (companion === undefined) {
     if (requestedMode === CITATION_ID_OBSERVATION_EVIDENCE_MODE) {
@@ -1101,7 +1107,7 @@ async function validateResumedEvidenceCompanion(
     }
     // Historical @2 artifacts predate this additive companion and remain on
     // their quote-based compatibility lane.
-    return requestedMode ?? LEGACY_OBSERVATION_EVIDENCE_MODE;
+    return { mode: requestedMode ?? LEGACY_OBSERVATION_EVIDENCE_MODE };
   }
   assertSnapshotEvidenceCompanionShape(
     companion,
@@ -1109,18 +1115,29 @@ async function validateResumedEvidenceCompanion(
     requestedMode,
   );
   if (companion.mode === CITATION_ID_OBSERVATION_EVIDENCE_MODE) {
-    const validation = await validateEvidenceSpanCatalog(
-      payload.snapshot,
-      companion.catalog!,
-    );
-    if (!validation.ok) {
+    let catalogCapture: EvidenceSpanCatalogCapture;
+    try {
+      // Capture is the resume precheck and the handle later used by every
+      // observation window. This keeps the complete persisted catalog
+      // validation and entry rebuild to one operation for this run.
+      catalogCapture = await captureEvidenceSpanCatalog(
+        payload.snapshot,
+        companion.catalog!,
+      );
+    } catch (error) {
       resumeFailure(
         "NEX_CHRONICLE_RESUME_EVIDENCE_CATALOG_INVALID",
-        validation.diagnostics.join("; "),
+        error instanceof Error
+          ? error.message
+          : "persisted evidence catalog validation failed",
       );
     }
+    return {
+      mode: companion.mode,
+      catalogCapture,
+    };
   }
-  return companion.mode;
+  return { mode: companion.mode };
 }
 
 function observationActuality(
@@ -1266,6 +1283,7 @@ async function executeTask(
   deps: ExtractionCoordinatorDeps,
   createId: () => string,
   stageReceipts: ChronicleStageTerminalReceiptV1[],
+  catalogCapture?: EvidenceSpanCatalogCapture,
 ): Promise<{
   outputJson: Readonly<Record<string, unknown>>;
   artifacts: ReturnType<typeof buildInlineJsonArtifact>[];
@@ -1327,6 +1345,8 @@ async function executeTask(
         );
         const collected: RawChronicleEventObservation[] = [];
         let citationCatalog: EvidenceSpanCatalog | undefined;
+        let verifiedCatalogCapture = catalogCapture;
+        let bindingCatalogCapture: EvidenceSpanCatalogCapture | undefined;
         let catalogWindowInputs: readonly EvidenceSpanCatalogWindowInput[] = [];
         if (evidenceMode === CITATION_ID_OBSERVATION_EVIDENCE_MODE) {
           const companion = snapshotPayload.evidence;
@@ -1339,13 +1359,43 @@ async function executeTask(
               "NEX_CHRONICLE_EVIDENCE_CATALOG_MISSING: citation-id-v2 observation requires the sealed snapshot catalog",
             );
           }
-          const validation = await validateEvidenceSpanCatalog(
-            snapshotPayload.snapshot,
-            companion.catalog,
-          );
-          if (!validation.ok) {
+          if (!verifiedCatalogCapture) {
+            try {
+              verifiedCatalogCapture = await captureEvidenceSpanCatalog(
+                snapshotPayload.snapshot,
+                companion.catalog,
+              );
+            } catch (error) {
+              throw new Error(
+                `NEX_CHRONICLE_EVIDENCE_CATALOG_INVALID: ${
+                  error instanceof Error
+                    ? error.message
+                    : "persisted evidence catalog validation failed"
+                }`,
+                { cause: error },
+              );
+            }
+          }
+          if (!verifiedCatalogCapture) {
             throw new Error(
-              `NEX_CHRONICLE_EVIDENCE_CATALOG_INVALID: ${validation.diagnostics.join("; ")}`,
+              "NEX_CHRONICLE_EVIDENCE_CATALOG_CAPTURE_MISSING: citation-id-v2 observation has no verified catalog capture",
+            );
+          }
+          bindingCatalogCapture = verifiedCatalogCapture;
+          try {
+            assertEvidenceSpanCatalogCaptureMatches(
+              verifiedCatalogCapture,
+              snapshotPayload.snapshot,
+              companion.catalog,
+            );
+          } catch (error) {
+            throw new Error(
+              `NEX_CHRONICLE_EVIDENCE_CATALOG_CAPTURE_MISMATCH: ${
+                error instanceof Error
+                  ? error.message
+                  : "verified catalog capture does not match the loaded artifact"
+              }`,
+              { cause: error },
             );
           }
           citationCatalog = companion.catalog;
@@ -1357,8 +1407,8 @@ async function executeTask(
           // This check intentionally happens before the first provider call.
           // A hole must fail the whole observe task, never dispatch a partial
           // planner roster and silently lose catalog occurrences.
-          assertEvidenceSpanCatalogCoverage(
-            citationCatalog,
+          assertCapturedEvidenceSpanCatalogCoverage(
+            verifiedCatalogCapture,
             catalogWindowInputs,
           );
         }
@@ -1373,6 +1423,11 @@ async function executeTask(
             | EvidenceSpanCatalogBinding
             | undefined;
           if (citationCatalog) {
+            if (!bindingCatalogCapture) {
+              throw new Error(
+                "NEX_CHRONICLE_EVIDENCE_CATALOG_CAPTURE_MISSING: citation-id-v2 observation has no verified catalog capture",
+              );
+            }
             const windowInput = catalogWindowInputs.find(
               (candidate) => candidate.windowId === window.windowId,
             );
@@ -1381,9 +1436,8 @@ async function executeTask(
                 `NEX_CHRONICLE_EVIDENCE_CATALOG_WINDOW_MISSING: ${window.windowId}`,
               );
             }
-            evidenceSpanCatalogBinding = await bindEvidenceSpanCatalog(
-              snapshotPayload.snapshot,
-              citationCatalog,
+            evidenceSpanCatalogBinding = await bindCapturedEvidenceSpanCatalog(
+              bindingCatalogCapture,
               {
                 requestIdentity: `run:${runId}:task:${taskExecution.taskId}:attempt:${taskExecution.attemptId}:window:${window.windowId}`,
                 windows: [windowInput],
@@ -1940,6 +1994,7 @@ export async function runChronicleExtractionCoordinator(
         readonly proposals: readonly ChronicleSavedProposalSeed[];
       }
     | undefined;
+  let catalogCapture: EvidenceSpanCatalogCapture | undefined;
 
   if (sealedRequest.resume) {
     const resumedRunId = sealedRequest.runId;
@@ -1976,10 +2031,12 @@ export async function runChronicleExtractionCoordinator(
     const durableEvidenceMode = evidenceModeFromCoverage(
       projection.run.coverageJson,
     );
-    effectiveEvidenceMode = await validateResumedEvidenceCompanion(
+    const resumedEvidence = await validateResumedEvidenceCompanion(
       snapshotPayload,
       explicitlyRequestedEvidenceMode ?? durableEvidenceMode,
     );
+    effectiveEvidenceMode = resumedEvidence.mode;
+    catalogCapture = resumedEvidence.catalogCapture;
     if (
       durableEvidenceMode !== undefined &&
       effectiveEvidenceMode !== durableEvidenceMode
@@ -2109,6 +2166,12 @@ export async function runChronicleExtractionCoordinator(
       effectiveEvidenceMode === CITATION_ID_OBSERVATION_EVIDENCE_MODE
         ? await buildEvidenceSpanCatalog(snapshotResult.snapshot)
         : null;
+    catalogCapture = evidenceCatalog
+      ? await captureEvidenceSpanCatalog(
+          snapshotResult.snapshot,
+          evidenceCatalog,
+        )
+      : undefined;
     const windowPlan = planExtractionWindows(snapshotResult.snapshot);
     const sourceViews = await buildSourceViewsForPlan(
       snapshotResult.snapshot,
@@ -2345,6 +2408,7 @@ export async function runChronicleExtractionCoordinator(
         sealedDeps,
         createId,
         stageReceipts,
+        catalogCapture,
       );
 
       let artifacts = executed.artifacts;

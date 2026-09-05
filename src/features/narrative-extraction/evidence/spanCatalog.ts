@@ -2,7 +2,11 @@ import {
   buildNarrativeSourceView,
   computeNarrativeSourceViewDigest,
 } from "../source/sourceView";
-import { digestStableJson, hasLoneSurrogate } from "../source/digest";
+import {
+  digestStableJson,
+  hasLoneSurrogate,
+  stableJsonStringify,
+} from "../source/digest";
 import { freezeDeep } from "../source/immutability";
 import type {
   CanonicalBlockSpan,
@@ -185,6 +189,17 @@ export interface EvidenceSpanCatalogBinding {
   readonly aliases: readonly EvidenceSpanCatalogAlias[];
 }
 
+/**
+ * Opaque proof that a snapshot/catalog pair was copied, fully verified, and
+ * sealed by this module. The runtime identity is checked through a private
+ * WeakMap; callers cannot manufacture a valid capture by freezing or cloning
+ * an object with the same apparent shape.
+ */
+declare const evidenceSpanCatalogCaptureBrand: unique symbol;
+export interface EvidenceSpanCatalogCapture {
+  readonly [evidenceSpanCatalogCaptureBrand]: true;
+}
+
 export interface ResolvedSelectedEvidenceRefs {
   readonly rawEvidenceReferences: readonly RawEvidenceReference[];
   readonly anchors: readonly ResolvedEvidenceAnchor[];
@@ -265,7 +280,22 @@ const verifiedCatalogPairs = new WeakMap<
   object,
   WeakMap<object, VerifiedCatalogHandle>
 >();
+/** Module-owned catalogs are safe cache keys; caller snapshot/catalog inputs are not. */
+const verifiedCatalogs = new WeakMap<object, VerifiedCatalogHandle>();
+const catalogCaptures = new WeakMap<object, VerifiedCatalogHandle>();
 const checkedBindingHandles = new WeakMap<object, CheckedBindingHandle>();
+
+let buildExpectedEntriesCountForTests = 0;
+
+/** Test-only instrumentation for proving full catalog preparation is bounded. */
+export function resetEvidenceSpanCatalogInstrumentationForTests(): void {
+  buildExpectedEntriesCountForTests = 0;
+}
+
+/** Test-only count of complete code-owned catalog entry rebuilds. */
+export function getEvidenceSpanCatalogBuildExpectedEntriesCountForTests(): number {
+  return buildExpectedEntriesCountForTests;
+}
 
 interface StableWindowInput {
   readonly windowId: string;
@@ -1003,6 +1033,7 @@ async function canonicalOccurrenceId(
 async function buildExpectedEntries(
   snapshot: NarrativeCorpusSnapshot,
 ): Promise<readonly EvidenceSpanCatalogEntry[]> {
+  buildExpectedEntriesCountForTests += 1;
   const seeds = buildSpanSeeds(snapshot);
   const entries = await Promise.all(
     seeds.map(async (seed, index) => {
@@ -1074,10 +1105,49 @@ function makeVerifiedCatalogHandle(
   });
 }
 
+function snapshotIdentityMatches(
+  snapshot: unknown,
+  verifiedSnapshot: NarrativeCorpusSnapshot,
+): boolean {
+  if (
+    !isRecord(snapshot) ||
+    snapshot.snapshotId !== verifiedSnapshot.snapshotId ||
+    snapshot.digest !== verifiedSnapshot.digest ||
+    snapshot.artifactDigest !== verifiedSnapshot.artifactDigest
+  ) {
+    return false;
+  }
+  try {
+    // The candidate snapshot is never used as authority; this comparison only
+    // proves that a module-owned catalog can be reused for this exact input.
+    // A caller-frozen forgery with copied scalar digests cannot bypass it.
+    return (
+      stableJsonStringify(snapshot) === stableJsonStringify(verifiedSnapshot)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function getVerifiedCatalogHandle(
   snapshot: NarrativeCorpusSnapshot,
   catalog: EvidenceSpanCatalog,
 ): VerifiedCatalogHandle | undefined {
+  if (
+    (typeof snapshot !== "object" && typeof snapshot !== "function") ||
+    snapshot === null ||
+    (typeof catalog !== "object" && typeof catalog !== "function") ||
+    catalog === null
+  ) {
+    return undefined;
+  }
+  const catalogHandle = verifiedCatalogs.get(catalog as object);
+  if (
+    catalogHandle &&
+    snapshotIdentityMatches(snapshot, catalogHandle.snapshot)
+  ) {
+    return catalogHandle;
+  }
   return verifiedCatalogPairs.get(snapshot as object)?.get(catalog as object);
 }
 
@@ -1086,12 +1156,95 @@ function rememberVerifiedCatalogHandle(
   catalog: EvidenceSpanCatalog,
   handle: VerifiedCatalogHandle,
 ): void {
+  verifiedCatalogs.set(catalog as object, handle);
   let catalogs = verifiedCatalogPairs.get(snapshot as object);
   if (!catalogs) {
     catalogs = new WeakMap<object, VerifiedCatalogHandle>();
     verifiedCatalogPairs.set(snapshot as object, catalogs);
   }
   catalogs.set(catalog as object, handle);
+}
+
+function makeCatalogCapture(
+  handle: VerifiedCatalogHandle,
+): EvidenceSpanCatalogCapture {
+  const capture = Object.freeze({}) as EvidenceSpanCatalogCapture;
+  catalogCaptures.set(capture as object, handle);
+  return capture;
+}
+
+function getCatalogCaptureHandle(
+  capture: EvidenceSpanCatalogCapture,
+): VerifiedCatalogHandle {
+  const handle =
+    capture !== null && typeof capture === "object"
+      ? catalogCaptures.get(capture as object)
+      : undefined;
+  if (!handle) {
+    throw new EvidenceSpanCatalogError(
+      "EVIDENCE_SPAN_CATALOG_CAPTURE_INVALID",
+      "Evidence span catalog capture was not created by the catalog module",
+    );
+  }
+  return handle;
+}
+
+function catalogIdentityMatches(
+  catalog: unknown,
+  verifiedCatalog: EvidenceSpanCatalog,
+): boolean {
+  if (!isRecord(catalog)) return false;
+  try {
+    return (
+      stableJsonStringify(catalog) === stableJsonStringify(verifiedCatalog)
+    );
+  } catch {
+    return false;
+  }
+}
+
+interface CatalogCaptureErrorCodes {
+  readonly uncopyableInput: string;
+  readonly invalidCatalog: string;
+}
+
+async function captureVerifiedCatalog(
+  snapshot: NarrativeCorpusSnapshot,
+  catalog: EvidenceSpanCatalog,
+  errorCodes: CatalogCaptureErrorCodes,
+): Promise<VerifiedCatalogHandle> {
+  const cached = getVerifiedCatalogHandle(snapshot, catalog);
+  if (cached) return cached;
+
+  // These copies are deliberately completed before the first await. The
+  // caller may mutate either persisted object while WebCrypto recomputes the
+  // snapshot/catalog digests, but the verification and returned handle only
+  // ever observe this module-owned copy.
+  let stableSnapshot: NarrativeCorpusSnapshot;
+  let stableCatalog: EvidenceSpanCatalog;
+  try {
+    stableSnapshot = freezeDeep(copySnapshot(snapshot));
+    stableCatalog = freezeDeep(copyCatalog(catalog));
+  } catch {
+    throw new EvidenceSpanCatalogError(
+      errorCodes.uncopyableInput,
+      "Evidence span catalog snapshot or catalog is not copyable",
+    );
+  }
+
+  const validation = await validateCopiedEvidenceSpanCatalog(
+    stableSnapshot,
+    stableCatalog,
+  );
+  if (!validation.ok) {
+    throw new EvidenceSpanCatalogError(
+      errorCodes.invalidCatalog,
+      validation.diagnostics.join("; "),
+    );
+  }
+  const handle = makeVerifiedCatalogHandle(stableSnapshot, stableCatalog);
+  rememberVerifiedCatalogHandle(stableSnapshot, stableCatalog, handle);
+  return handle;
 }
 
 function catalogMetadataDiagnostics(
@@ -1215,31 +1368,17 @@ export async function buildEvidenceSpanCatalog(
   const digest = await digestStableJson(catalogDigestInput(draft));
   const catalog = freezeDeep({ ...draft, digest });
   const handle = makeVerifiedCatalogHandle(stableSnapshot, catalog);
-  // Keep the original sealed snapshot paired with the module-owned catalog,
-  // while also allowing a later in-memory binding to reuse the captured copy.
-  rememberVerifiedCatalogHandle(snapshot, catalog, handle);
+  // Cache only module-owned objects. The catalog key lets a caller adopt the
+  // already-verified build result without ever caching the caller snapshot.
   rememberVerifiedCatalogHandle(stableSnapshot, catalog, handle);
   return catalog;
 }
 
-/** Reverify a persisted catalog against the current snapshot and code splitter. */
-export async function validateEvidenceSpanCatalog(
-  snapshot: NarrativeCorpusSnapshot,
-  catalog: EvidenceSpanCatalog,
+/** Verify already-copied inputs without crossing an ownership boundary. */
+async function validateCopiedEvidenceSpanCatalog(
+  stableSnapshot: NarrativeCorpusSnapshot,
+  stableCatalog: EvidenceSpanCatalog,
 ): Promise<EvidenceSpanCatalogValidation> {
-  if (getVerifiedCatalogHandle(snapshot, catalog)) {
-    return { ok: true, valid: true, diagnostics: [] };
-  }
-  let stableSnapshot: NarrativeCorpusSnapshot;
-  let stableCatalog: EvidenceSpanCatalog;
-  try {
-    stableSnapshot = copySnapshot(snapshot);
-    stableCatalog = copyCatalog(catalog);
-  } catch {
-    return validationFailure("invalid-catalog", [
-      "snapshot or catalog is not copyable",
-    ]);
-  }
   try {
     const snapshotDiagnostics = await verifySnapshotIntegrity(stableSnapshot);
     if (snapshotDiagnostics.length > 0) {
@@ -1298,6 +1437,50 @@ export async function validateEvidenceSpanCatalog(
       error instanceof Error ? error.message : "catalog validation failed",
     ]);
   }
+}
+
+/**
+ * Copy and fully verify a persisted snapshot/catalog pair once, then return an
+ * opaque module-owned capture for reuse by multiple window bindings.
+ */
+export async function captureEvidenceSpanCatalog(
+  snapshot: NarrativeCorpusSnapshot,
+  catalog: EvidenceSpanCatalog,
+): Promise<EvidenceSpanCatalogCapture> {
+  const handle = await captureVerifiedCatalog(snapshot, catalog, {
+    uncopyableInput: "EVIDENCE_SPAN_CATALOG_CAPTURE_INVALID",
+    invalidCatalog: "EVIDENCE_SPAN_CATALOG_CAPTURE_INVALID",
+  });
+  return makeCatalogCapture(handle);
+}
+
+/** Reverify a persisted catalog against the current snapshot and code splitter. */
+export async function validateEvidenceSpanCatalog(
+  snapshot: NarrativeCorpusSnapshot,
+  catalog: EvidenceSpanCatalog,
+): Promise<EvidenceSpanCatalogValidation> {
+  if (getVerifiedCatalogHandle(snapshot, catalog)) {
+    return { ok: true, valid: true, diagnostics: [] };
+  }
+  let stableSnapshot: NarrativeCorpusSnapshot;
+  let stableCatalog: EvidenceSpanCatalog;
+  try {
+    stableSnapshot = freezeDeep(copySnapshot(snapshot));
+    stableCatalog = freezeDeep(copyCatalog(catalog));
+  } catch {
+    return validationFailure("invalid-catalog", [
+      "snapshot or catalog is not copyable",
+    ]);
+  }
+  const validation = await validateCopiedEvidenceSpanCatalog(
+    stableSnapshot,
+    stableCatalog,
+  );
+  if (validation.ok) {
+    const handle = makeVerifiedCatalogHandle(stableSnapshot, stableCatalog);
+    rememberVerifiedCatalogHandle(stableSnapshot, stableCatalog, handle);
+  }
+  return validation;
 }
 
 function validateWindowInput(
@@ -1568,28 +1751,54 @@ export function assertEvidenceSpanCatalogCoverage(
   if (missing.length > 0) throw new EvidenceSpanCatalogCoverageError(missing);
 }
 
-/** Bind a request-local alias map to an explicit subset of original windows. */
-export async function bindEvidenceSpanCatalog(
+/** Run the same full-roster coverage check against a verified capture. */
+export function assertCapturedEvidenceSpanCatalogCoverage(
+  capture: EvidenceSpanCatalogCapture,
+  windows: readonly EvidenceSpanCatalogWindowInput[],
+): void {
+  assertEvidenceSpanCatalogCoverage(
+    getCatalogCaptureHandle(capture).catalog,
+    windows,
+  );
+}
+
+/**
+ * Ensure a capture still corresponds to the artifact loaded for this task.
+ * The loaded objects are compared only; all subsequent binding authority is
+ * taken from the module-owned capture.
+ */
+export function assertEvidenceSpanCatalogCaptureMatches(
+  capture: EvidenceSpanCatalogCapture,
   snapshot: NarrativeCorpusSnapshot,
   catalog: EvidenceSpanCatalog,
-  input: {
-    readonly requestIdentity: string;
-    readonly windows: readonly EvidenceSpanCatalogWindowInput[];
-  },
-): Promise<EvidenceSpanCatalogBinding> {
-  // Capture request identity before any digest/validation await. The caller
-  // object is mutable and must never be read again after an async boundary.
+): void {
+  const verified = getCatalogCaptureHandle(capture);
+  if (
+    !snapshotIdentityMatches(snapshot, verified.snapshot) ||
+    !catalogIdentityMatches(catalog, verified.catalog)
+  ) {
+    throw new EvidenceSpanCatalogError(
+      "EVIDENCE_SPAN_CATALOG_CAPTURE_MISMATCH",
+      "Evidence span catalog capture does not match the loaded snapshot/catalog",
+    );
+  }
+}
+
+interface StableBindingInput {
+  readonly requestIdentity: string;
+  readonly windows: readonly StableWindowInput[];
+}
+
+function copyBindingInput(input: {
+  readonly requestIdentity: string;
+  readonly windows: readonly EvidenceSpanCatalogWindowInput[];
+}): StableBindingInput {
+  // Capture all caller-owned binding inputs before any digest/validation
+  // await. The original request object and window roster remain untrusted.
   const requestIdentity = input.requestIdentity;
-  const cachedCatalog = getVerifiedCatalogHandle(snapshot, catalog);
-  let stableSnapshot: NarrativeCorpusSnapshot;
-  let stableCatalog: EvidenceSpanCatalog;
-  let stableWindows: readonly StableWindowInput[];
-  let verifiedCatalog: VerifiedCatalogHandle;
+  let windows: readonly StableWindowInput[];
   try {
-    stableSnapshot =
-      cachedCatalog?.snapshot ?? freezeDeep(copySnapshot(snapshot));
-    stableCatalog = cachedCatalog?.catalog ?? freezeDeep(copyCatalog(catalog));
-    stableWindows = input.windows.map(copyWindowInput);
+    windows = input.windows.map(copyWindowInput);
   } catch {
     throw new EvidenceSpanCatalogError(
       "EVIDENCE_SPAN_BINDING_INVALID_INPUT",
@@ -1606,32 +1815,23 @@ export async function bindEvidenceSpanCatalog(
       "Evidence span binding requires a non-empty request identity",
     );
   }
-  if (stableWindows.length === 0) {
+  if (windows.length === 0) {
     throw new EvidenceSpanCatalogError(
       "EVIDENCE_SPAN_BINDING_NO_WINDOWS",
       "Evidence span binding requires at least one reading window",
     );
   }
-  let stable: StableSnapshotFields;
-  if (cachedCatalog) {
-    verifiedCatalog = cachedCatalog;
-    stable = cachedCatalog.snapshotFields;
-  } else {
-    const validation = await validateEvidenceSpanCatalog(
-      stableSnapshot,
-      stableCatalog,
-    );
-    if (!validation.ok) {
-      throw new EvidenceSpanCatalogError(
-        "EVIDENCE_SPAN_BINDING_INVALID_CATALOG",
-        validation.diagnostics.join("; "),
-      );
-    }
-    const verified = makeVerifiedCatalogHandle(stableSnapshot, stableCatalog);
-    rememberVerifiedCatalogHandle(stableSnapshot, stableCatalog, verified);
-    verifiedCatalog = verified;
-    stable = verified.snapshotFields;
-  }
+  return { requestIdentity, windows };
+}
+
+async function bindVerifiedCatalogHandle(
+  verifiedCatalog: VerifiedCatalogHandle,
+  input: StableBindingInput,
+): Promise<EvidenceSpanCatalogBinding> {
+  const { requestIdentity, windows: stableWindows } = input;
+  const stableSnapshot = verifiedCatalog.snapshot;
+  const stableCatalog = verifiedCatalog.catalog;
+  const stable = verifiedCatalog.snapshotFields;
   const seenWindowIds = new Set<string>();
   for (const window of stableWindows) {
     if (seenWindowIds.has(window.windowId)) {
@@ -1691,6 +1891,40 @@ export async function bindEvidenceSpanCatalog(
     selectionIndex,
   });
   return frozenBinding;
+}
+
+/**
+ * Bind a request-local alias map to a previously captured, module-owned
+ * snapshot/catalog pair. This path performs only per-window validation and
+ * never rebuilds the complete occurrence catalog.
+ */
+export async function bindCapturedEvidenceSpanCatalog(
+  capture: EvidenceSpanCatalogCapture,
+  input: {
+    readonly requestIdentity: string;
+    readonly windows: readonly EvidenceSpanCatalogWindowInput[];
+  },
+): Promise<EvidenceSpanCatalogBinding> {
+  const stableInput = copyBindingInput(input);
+  const verifiedCatalog = getCatalogCaptureHandle(capture);
+  return bindVerifiedCatalogHandle(verifiedCatalog, stableInput);
+}
+
+/** Bind using the compatibility snapshot/catalog API, capturing them once. */
+export async function bindEvidenceSpanCatalog(
+  snapshot: NarrativeCorpusSnapshot,
+  catalog: EvidenceSpanCatalog,
+  input: {
+    readonly requestIdentity: string;
+    readonly windows: readonly EvidenceSpanCatalogWindowInput[];
+  },
+): Promise<EvidenceSpanCatalogBinding> {
+  const stableInput = copyBindingInput(input);
+  const handle = await captureVerifiedCatalog(snapshot, catalog, {
+    uncopyableInput: "EVIDENCE_SPAN_BINDING_INVALID_INPUT",
+    invalidCatalog: "EVIDENCE_SPAN_BINDING_INVALID_CATALOG",
+  });
+  return bindVerifiedCatalogHandle(handle, stableInput);
 }
 
 function copyBinding(binding: EvidenceSpanCatalogBinding): {

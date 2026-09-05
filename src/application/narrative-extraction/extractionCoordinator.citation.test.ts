@@ -10,6 +10,10 @@ import type {
 } from "./nativeApi";
 import { resetNarrativeArtifactIndexForTests } from "./artifactRepository";
 import { resetNarrativeExtractionRunIndexForTests } from "./runRepository";
+import {
+  getEvidenceSpanCatalogBuildExpectedEntriesCountForTests,
+  resetEvidenceSpanCatalogInstrumentationForTests,
+} from "@/features/narrative-extraction/evidence/spanCatalog";
 
 const claimMock = vi.hoisted(() => vi.fn());
 const finishMock = vi.hoisted(() => vi.fn());
@@ -99,6 +103,10 @@ const CHRONICLE_TASK_CHAIN = [
   CHRONICLE_EXTRACT_TASK_KINDS.planProposals,
 ] as const;
 const COMPLETED_PREFIX = new Set(CHRONICLE_TASK_CHAIN.slice(0, 6));
+const SNAPSHOT_AND_WINDOW_PLAN_COMPLETED = new Set([
+  CHRONICLE_EXTRACT_TASK_KINDS.snapshot,
+  CHRONICLE_EXTRACT_TASK_KINDS.windowPlan,
+]);
 
 function prose(text: string): string {
   return JSON.stringify({
@@ -210,6 +218,8 @@ function idObserver(
     readonly windowId: string;
     readonly bindingDigest: string;
     readonly bindingWindowCount: number;
+    readonly bindingCatalog: unknown;
+    readonly bindingSnapshot: unknown;
   }>,
 ): NonNullable<ExtractionCoordinatorDeps["observeWithAi"]> {
   return async ({
@@ -245,6 +255,8 @@ function idObserver(
       windowId: window.windowId,
       bindingDigest: evidenceSpanCatalogBinding.catalogDigest,
       bindingWindowCount: evidenceSpanCatalogBinding.windows.length,
+      bindingCatalog: evidenceSpanCatalogBinding.catalog,
+      bindingSnapshot: evidenceSpanCatalogBinding.snapshot,
     });
     await emitStageReceipt({ stageExecution, onStageReceipt });
     return [
@@ -495,18 +507,23 @@ function coordinatorContractDigest(prefix: DurablePrefix): string {
   return digest;
 }
 
-function runProjection(prefix: DurablePrefix, runId: string) {
+function runProjection(
+  prefix: DurablePrefix,
+  runId: string,
+  completedTaskKinds: ReadonlySet<string> = COMPLETED_PREFIX,
+) {
   const tasks = CHRONICLE_TASK_CHAIN.map((taskKind, index) => {
     const taskId = prefix.taskIdByKind.get(taskKind) ?? `task-${index + 1}`;
     const finished = prefix.finishByTaskId.get(taskId);
-    const status = COMPLETED_PREFIX.has(taskKind) ? "completed" : "queued";
+    const status = completedTaskKinds.has(taskKind) ? "completed" : "queued";
     return {
       taskId,
       runId,
       taskKind,
       status,
       inputJson: { stage: index + 1 },
-      outputJson: finished?.outputJson ?? null,
+      outputJson:
+        status === "completed" ? (finished?.outputJson ?? null) : null,
       priority: CHRONICLE_TASK_CHAIN.length - index,
       attemptCount: 1,
       leaseOwner: null,
@@ -519,6 +536,10 @@ function runProjection(prefix: DurablePrefix, runId: string) {
       version: 1,
     };
   });
+  const completedCount = tasks.filter(
+    (task) => task.status === "completed",
+  ).length;
+  const queuedCount = tasks.filter((task) => task.status === "queued").length;
   return {
     run: {
       runId,
@@ -540,9 +561,9 @@ function runProjection(prefix: DurablePrefix, runId: string) {
     },
     tasks,
     taskCounts: {
-      queued: 3,
+      queued: queuedCount,
       running: 0,
-      completed: 6,
+      completed: completedCount,
       failed: 0,
       cancelled: 0,
     },
@@ -553,13 +574,14 @@ function installResumeMocks(
   prefix: DurablePrefix,
   runId: string,
   artifacts = prefix.artifacts,
+  completedTaskKinds: ReadonlySet<string> = COMPLETED_PREFIX,
 ): void {
   resetNarrativeArtifactIndexForTests();
   resetNarrativeExtractionRunIndexForTests();
   vi.clearAllMocks();
   setCurrentWorkspaceIdentity({ path: "/workspace/a", openRevision: 1 });
   installNativeMocks();
-  let taskSequence = 6;
+  let taskSequence = completedTaskKinds.size;
   claimMock.mockImplementation(
     async (payload: { taskKinds?: readonly string[] }) => {
       taskSequence += 1;
@@ -579,12 +601,17 @@ function installResumeMocks(
       };
     },
   );
-  getRunMock.mockResolvedValue(runProjection(prefix, runId));
+  getRunMock.mockResolvedValue(
+    runProjection(prefix, runId, completedTaskKinds),
+  );
+  const completedTaskIds = taskIdsForKinds(prefix, completedTaskKinds);
   const bundle: GetRunReviewBundleResult = {
     runId,
     projectId: "project-a",
     artifacts,
-    stageReceipts: prefix.stageReceipts,
+    stageReceipts: prefix.stageReceipts.filter((receipt) =>
+      completedTaskIds.has(receipt.stageExecution.taskId),
+    ),
     proposalSet: null,
     proposals: [],
   };
@@ -599,6 +626,8 @@ async function createInterruptedIdRun(
     readonly windowId: string;
     readonly bindingDigest: string;
     readonly bindingWindowCount: number;
+    readonly bindingCatalog: unknown;
+    readonly bindingSnapshot: unknown;
   }> = [];
   const runPayloadPromise = new Promise<CreateRunPayload>((resolve) => {
     createRunMock.mockImplementationOnce(async (payload: CreateRunPayload) => {
@@ -634,6 +663,27 @@ function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function taskIdsForKinds(
+  prefix: DurablePrefix,
+  taskKinds: ReadonlySet<string>,
+): ReadonlySet<string> {
+  return new Set(
+    [...taskKinds]
+      .map((taskKind) => prefix.taskIdByKind.get(taskKind))
+      .filter((taskId): taskId is string => taskId !== undefined),
+  );
+}
+
+function artifactsForTaskKinds(
+  prefix: DurablePrefix,
+  taskKinds: ReadonlySet<string>,
+): readonly ReviewBundleArtifact[] {
+  const taskIds = taskIdsForKinds(prefix, taskKinds);
+  return prefix.artifacts.filter(
+    (artifact) => artifact.taskId !== null && taskIds.has(artifact.taskId),
+  );
+}
+
 function tamperSnapshotArtifact(
   prefix: DurablePrefix,
   mutate: (evidence: Record<string, unknown>) => Record<string, unknown>,
@@ -667,6 +717,7 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
     resetNarrativeExtractionRunIndexForTests();
     vi.clearAllMocks();
     planExtractionWindowsMock.mockClear();
+    resetEvidenceSpanCatalogInstrumentationForTests();
     installNativeMocks();
   });
 
@@ -676,6 +727,8 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
       readonly windowId: string;
       readonly bindingDigest: string;
       readonly bindingWindowCount: number;
+      readonly bindingCatalog: unknown;
+      readonly bindingSnapshot: unknown;
     }> = [];
 
     const result = await runChronicleExtractionCoordinator(
@@ -697,6 +750,7 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
     expect(
       new Set(observationCalls.map((call) => call.bindingDigest)).size,
     ).toBe(1);
+    expect(getEvidenceSpanCatalogBuildExpectedEntriesCountForTests()).toBe(1);
 
     const createPayload = createRunMock.mock.calls[0]?.[0] as
       | CreateRunPayload
@@ -759,7 +813,7 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
     expect(observationFinish?.outputJson).toEqual({ observationCount: 2 });
   });
 
-  it("cold-resumes an ID run from sealed artifacts without rebuilding a live snapshot", async () => {
+  it("cold-resumes with observation pending and shares one catalog capture across windows", async () => {
     const snapshot = await fixtureSnapshot("snapshot-citation-resume");
     const prefix = await createInterruptedIdRun(
       snapshot,
@@ -773,15 +827,23 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
       throw new Error("snapshot companion is missing");
     }
 
-    installResumeMocks(prefix, "run-citation-resume");
+    installResumeMocks(
+      prefix,
+      "run-citation-resume",
+      artifactsForTaskKinds(prefix, SNAPSHOT_AND_WINDOW_PLAN_COMPLETED),
+      SNAPSHOT_AND_WINDOW_PLAN_COMPLETED,
+    );
+    resetEvidenceSpanCatalogInstrumentationForTests();
     const buildSnapshot = vi.fn(async () => {
       throw new Error("resume must not rebuild a live snapshot");
     });
-    const observeWithAi: NonNullable<
-      ExtractionCoordinatorDeps["observeWithAi"]
-    > = async () => {
-      throw new Error("completed ID observation must not dispatch again");
-    };
+    const observationCalls: Array<{
+      readonly windowId: string;
+      readonly bindingDigest: string;
+      readonly bindingWindowCount: number;
+      readonly bindingCatalog: unknown;
+      readonly bindingSnapshot: unknown;
+    }> = [];
     const resumed = await runChronicleExtractionCoordinator(
       {
         ...request("run-citation-resume", true),
@@ -791,7 +853,7 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
         useAi: true,
         createId: createIdFactory("resume"),
         buildSnapshot,
-        observeWithAi,
+        observeWithAi: idObserver(observationCalls),
         synthesizeWithAi: successfulSynthesizer(),
       },
     );
@@ -800,6 +862,17 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
     expect(buildSnapshot).not.toHaveBeenCalled();
     expect(createRunMock).not.toHaveBeenCalled();
     expect(getRunReviewBundleMock).toHaveBeenCalledTimes(1);
+    expect(observationCalls).toHaveLength(snapshot.documents.length);
+    expect(
+      observationCalls.every((call) => call.bindingWindowCount === 1),
+    ).toBe(true);
+    expect(
+      new Set(observationCalls.map((call) => call.bindingCatalog)).size,
+    ).toBe(1);
+    expect(
+      new Set(observationCalls.map((call) => call.bindingSnapshot)).size,
+    ).toBe(1);
+    expect(getEvidenceSpanCatalogBuildExpectedEntriesCountForTests()).toBe(1);
     expect(originalCompanion).toMatchObject({
       mode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
     });
@@ -808,6 +881,10 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
         (payload as { taskKinds?: readonly string[] }).taskKinds?.[0],
     );
     expect(resumeClaims).toEqual([
+      CHRONICLE_EXTRACT_TASK_KINDS.observe,
+      CHRONICLE_EXTRACT_TASK_KINDS.resolveEvidence,
+      CHRONICLE_EXTRACT_TASK_KINDS.mergeObservations,
+      CHRONICLE_EXTRACT_TASK_KINDS.cluster,
       CHRONICLE_EXTRACT_TASK_KINDS.synthesize,
       CHRONICLE_EXTRACT_TASK_KINDS.matchExisting,
       CHRONICLE_EXTRACT_TASK_KINDS.planProposals,

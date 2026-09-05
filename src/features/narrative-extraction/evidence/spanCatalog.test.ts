@@ -11,9 +11,13 @@ import {
   EVIDENCE_SPAN_SEGMENTATION_VERSION,
   assertEvidenceSpanCatalogCoverage,
   bindEvidenceSpanCatalog,
+  bindCapturedEvidenceSpanCatalog,
   buildEvidenceSpanCatalog,
+  captureEvidenceSpanCatalog,
   createEvidenceSpanCatalogSelectionResolver,
+  getEvidenceSpanCatalogBuildExpectedEntriesCountForTests,
   resolveSelectedEvidenceRefs,
+  resetEvidenceSpanCatalogInstrumentationForTests,
   validateEvidenceSpanCatalogBinding,
   validateEvidenceSpanCatalog,
   type EvidenceSpanCatalog,
@@ -274,6 +278,69 @@ describe("evidence span catalog", () => {
       wrongVersion,
     );
     expect(versionResult.ok).toBe(false);
+  });
+
+  it("preserves compatibility errors for uncopyable snapshot and catalog inputs", async () => {
+    const snapshot = await makeSnapshot(["一文。"]);
+    const catalog = await buildEvidenceSpanCatalog(snapshot);
+    const window = await fullWindowInput(snapshot);
+    const input = {
+      requestIdentity: "request-uncopyable-input",
+      windows: [window],
+    };
+    const uncopyableSnapshot = {
+      ...snapshot,
+      documents: null,
+    } as unknown as NarrativeCorpusSnapshot;
+    const uncopyableCatalog = {
+      ...catalog,
+      entries: null,
+    } as unknown as EvidenceSpanCatalog;
+
+    await expect(
+      bindEvidenceSpanCatalog(uncopyableSnapshot, catalog, input),
+    ).rejects.toMatchObject({ code: "EVIDENCE_SPAN_BINDING_INVALID_INPUT" });
+    await expect(
+      captureEvidenceSpanCatalog(uncopyableSnapshot, catalog),
+    ).rejects.toMatchObject({
+      code: "EVIDENCE_SPAN_CATALOG_CAPTURE_INVALID",
+    });
+    await expect(
+      bindEvidenceSpanCatalog(snapshot, uncopyableCatalog, input),
+    ).rejects.toMatchObject({ code: "EVIDENCE_SPAN_BINDING_INVALID_INPUT" });
+    await expect(
+      captureEvidenceSpanCatalog(snapshot, uncopyableCatalog),
+    ).rejects.toMatchObject({
+      code: "EVIDENCE_SPAN_CATALOG_CAPTURE_INVALID",
+    });
+  });
+
+  it("preserves the compatibility error for a validation-invalid catalog", async () => {
+    const snapshot = await makeSnapshot(["一文。二文。"]);
+    const catalog = await buildEvidenceSpanCatalog(snapshot);
+    const first = catalog.entries[0];
+    if (!first) throw new Error("fixture catalog entry missing");
+    const forgedCatalog = {
+      ...catalog,
+      entries: catalog.entries.map((entry) =>
+        entry === first ? { ...entry, quote: "改竄", text: "改竄" } : entry,
+      ),
+    };
+    const window = await fullWindowInput(snapshot);
+
+    await expect(
+      bindEvidenceSpanCatalog(snapshot, forgedCatalog, {
+        requestIdentity: "request-invalid-catalog",
+        windows: [window],
+      }),
+    ).rejects.toMatchObject({
+      code: "EVIDENCE_SPAN_BINDING_INVALID_CATALOG",
+    });
+    await expect(
+      captureEvidenceSpanCatalog(snapshot, forgedCatalog),
+    ).rejects.toMatchObject({
+      code: "EVIDENCE_SPAN_CATALOG_CAPTURE_INVALID",
+    });
   });
 
   it("assigns aliases in canonical catalog order and stabilizes window IDs when windows are reversed", async () => {
@@ -575,6 +642,69 @@ describe("evidence span catalog", () => {
     expect(secondAgain.rawEvidenceReferences).toEqual(
       second.rawEvidenceReferences,
     );
+  });
+
+  it("captures a JSON-restored catalog once and shares its verified copy across windows", async () => {
+    const snapshot = await makeSnapshot(["一文。二文。三文。"]);
+    const catalog = await buildEvidenceSpanCatalog(snapshot);
+    const persistedSnapshot = JSON.parse(
+      JSON.stringify(snapshot),
+    ) as NarrativeCorpusSnapshot;
+    const persistedCatalog = JSON.parse(
+      JSON.stringify(catalog),
+    ) as EvidenceSpanCatalog;
+
+    resetEvidenceSpanCatalogInstrumentationForTests();
+    const capture = await captureEvidenceSpanCatalog(
+      persistedSnapshot,
+      persistedCatalog,
+    );
+    expect(getEvidenceSpanCatalogBuildExpectedEntriesCountForTests()).toBe(1);
+
+    const firstEntry = persistedCatalog.entries[0];
+    const secondEntry = persistedCatalog.entries[1];
+    if (!firstEntry || !secondEntry) {
+      throw new Error("fixture persisted catalog entries missing");
+    }
+    const firstWindow = await windowForEntryInput(
+      snapshot,
+      catalog.entries[0]!,
+      "window-captured-first",
+    );
+    const secondWindow = await windowForEntryInput(
+      snapshot,
+      catalog.entries[1]!,
+      "window-captured-second",
+    );
+
+    const firstBinding = await bindCapturedEvidenceSpanCatalog(capture, {
+      requestIdentity: "request-captured-first",
+      windows: [firstWindow],
+    });
+    const secondBinding = await bindCapturedEvidenceSpanCatalog(capture, {
+      requestIdentity: "request-captured-second",
+      windows: [secondWindow],
+    });
+
+    expect(getEvidenceSpanCatalogBuildExpectedEntriesCountForTests()).toBe(1);
+    expect(firstBinding.catalog).toBe(secondBinding.catalog);
+    expect(firstBinding.snapshot).toBe(secondBinding.snapshot);
+    expect(Object.isFrozen(firstBinding.catalog)).toBe(true);
+    expect(Object.isFrozen(firstBinding.snapshot)).toBe(true);
+    expect(firstBinding.catalog.entries[0]?.quote).toBe(firstEntry.quote);
+    expect(secondBinding.catalog.entries[1]?.quote).toBe(secondEntry.quote);
+
+    // A persisted caller object may be changed after capture; the binding still
+    // uses only the module-owned verified snapshot/catalog.
+    const persistedDocument = persistedSnapshot.documents[0];
+    const persistedEntry = persistedCatalog.entries[0];
+    if (!persistedDocument || !persistedEntry) {
+      throw new Error("fixture persisted catalog mutation target missing");
+    }
+    const originalFirstQuote = firstBinding.catalog.entries[0]?.quote;
+    (persistedDocument.canonical as { text: string }).text = "改竄された本文";
+    (persistedEntry as { quote: string }).quote = "改竄された引用";
+    expect(firstBinding.catalog.entries[0]?.quote).toBe(originalFirstQuote);
   });
 
   it("requires full catalog coverage separately and rejects a hole without expanding windows", async () => {

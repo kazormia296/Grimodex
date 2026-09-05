@@ -11,7 +11,11 @@ import {
   materializeCitationIdObservations,
   type ObservationEvidenceMode,
 } from "@/application/narrative-extraction/aiTasks/citationIdObservation";
-import { normalizeWindowObservations } from "@/features/chronicle/extraction/windowExtractor";
+import {
+  assertUniqueObservationLocalIds,
+  normalizeWindowObservations,
+  rekeyObservationsForWindow,
+} from "@/features/chronicle/extraction/windowExtractor";
 import { planExtractionWindows } from "@/features/chronicle/extraction/windowPlanner";
 import {
   assertEvidenceSpanCatalogCoverage,
@@ -483,7 +487,7 @@ export async function runProductionObservationExtraction(
   readonly observations: readonly RawChronicleEventObservation[];
 }> {
   const collected: RawChronicleEventObservation[] = [];
-  for (const window of prepared.windows) {
+  for (const [index, window] of prepared.windows.entries()) {
     const binding = prepared.evidenceSpanCatalogBindingsByWindowId?.get(
       window.windowId ?? "",
     );
@@ -503,8 +507,14 @@ export async function runProductionObservationExtraction(
       evidenceMode: prepared.evidenceMode,
       ...(binding ? { evidenceSpanCatalogBinding: binding } : {}),
     });
-    collected.push(...observations);
+    collected.push(
+      ...rekeyObservationsForWindow(
+        `eval-window-${String(index + 1).padStart(3, "0")}`,
+        observations,
+      ),
+    );
   }
+  assertUniqueObservationLocalIds(collected);
   const observations = collected;
   const evaluation = evaluateNormalizedObservations(
     prepared,

@@ -386,6 +386,8 @@ requirements:
       - src/features/narrative-extraction/eval/chronicle015Reference.ts
       - evals/narrative/reference-predictions/chronicle-015-v1/README.md
       - evals/narrative/manifest.yaml
+      - evals/qualifications/narrative-current-protocol-v2.json
+      - scripts/quality/quality-evaluation-runtime.mjs
     lightTests:
       - src/features/narrative-extraction/eval/caseSchema.test.ts
       - src/features/narrative-extraction/eval/replay.test.ts
@@ -399,6 +401,10 @@ requirements:
       - src/features/narrative-extraction/eval/responseDiagnostics.test.ts
       - src/features/narrative-extraction/eval/responseDiagnostics.taskContract.test.ts
       - src/features/narrative-extraction/eval/chronicle015Reference.test.ts
+      - src/features/narrative-extraction/eval/currentNarrativeProtocol.test.ts
+      - scripts/quality/narrative-current-protocol.test.mjs
+      - scripts/quality/run-live-model-qualification.test.mjs
+      - src/features/narrative-extraction/eval/observationAdapter.identity.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
       - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
@@ -420,6 +426,8 @@ requirements:
       - src/features/narrative-extraction/eval/productionChronicleScoring.ts
       - src/features/narrative-extraction/eval/chronicle015Reference.ts
       - evals/narrative/reference-predictions/chronicle-015-v1/README.md
+      - evals/qualifications/narrative-current-protocol-v2.json
+      - scripts/quality/quality-evaluation-runtime.mjs
     lightTests:
       - src/features/narrative-extraction/evidence/spanCatalog.test.ts
       - src/features/chronicle/extraction/schemas.citation.test.ts
@@ -434,6 +442,9 @@ requirements:
       - src/features/narrative-extraction/eval/corpusContract.test.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
       - src/features/narrative-extraction/eval/chronicle015Reference.test.ts
+      - src/features/narrative-extraction/eval/currentNarrativeProtocol.test.ts
+      - scripts/quality/narrative-current-protocol.test.mjs
+      - src/features/narrative-extraction/eval/observationAdapter.identity.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
       - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
@@ -460,6 +471,8 @@ requirements:
       - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
       - src/features/narrative-extraction/eval/productionChronicleCapabilities.test.ts
       - src/features/narrative-extraction/eval/chronicle015Reference.test.ts
+      - src/features/narrative-extraction/eval/currentNarrativeProtocol.test.ts
+      - src/features/narrative-extraction/eval/observationAdapter.identity.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
       - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts

@@ -28,6 +28,10 @@ import {
   sha256Text,
   stripCommandEnvironmentAssignments,
   stripCredentialPlaceholders,
+  CURRENT_NARRATIVE_EVAL_PROTOCOL,
+  validateChronicleProductionCaseAccounting,
+  validateChronicleProductionCertificationAccounting,
+  validateCurrentNarrativeEvalProtocolBinding,
   validateHeavyReportBinding,
 } from "./quality-evaluation-runtime.mjs";
 
@@ -324,6 +328,8 @@ export function classifyChronicleQualificationReport(
   }
   const binding = validateHeavyReportBinding(report, expected, expected);
   if (!binding.ok) return { result: "FAILED", message: binding.message };
+  const protocol = validateCurrentNarrativeEvalProtocolBinding(report);
+  if (!protocol.ok) return { result: "FAILED", message: protocol.message };
   if (report.mode !== "chronicle-production-live") {
     return { result: "FAILED", message: "Chronicle report mode is invalid" };
   }
@@ -333,24 +339,30 @@ export function classifyChronicleQualificationReport(
       message: "Chronicle qualification requires a full attempt 1 report",
     };
   }
-  if (report.caseCount !== 14) {
+  const accounting = validateChronicleProductionCaseAccounting(report);
+  if (!accounting.ok) return { result: "FAILED", message: accounting.message };
+  if (report.summary.parseFailureCount > 0) {
     return {
       result: "FAILED",
-      message: `Chronicle qualification expected 14 cases, got ${report.caseCount}`,
+      message: `Chronicle parser failures: ${report.summary.parseFailureCount}`,
     };
   }
-  const parseFailures = report.summary?.parseFailureCount;
-  if (!Number.isInteger(parseFailures) || parseFailures > 0) {
+  if (accounting.terminalFailureCount > 0) {
     return {
       result: "FAILED",
-      message: `Chronicle parser failures: ${parseFailures ?? "unknown"}`,
+      message: `Chronicle report contains ${accounting.terminalFailureCount} terminal failed case(s)`,
     };
   }
   if (report.certificationEligible === true) {
-    if (captured.status !== "passed") {
+    const certificationAccounting =
+      validateChronicleProductionCertificationAccounting(report, accounting);
+    if (!certificationAccounting.ok) {
+      return { result: "FAILED", message: certificationAccounting.message };
+    }
+    if (captured?.status !== "passed" || captured?.exitCode !== 0) {
       return {
         result: "FAILED",
-        message: `Chronicle harness exited ${captured.exitCode ?? "without a code"}`,
+        message: `Chronicle harness exited ${captured?.exitCode ?? "without a code"}`,
       };
     }
     return {
@@ -358,7 +370,16 @@ export function classifyChronicleQualificationReport(
       message: "Chronicle semantic thresholds satisfied",
     };
   }
-  if (Number.isInteger(report.summary?.failed) && report.summary.failed > 0) {
+  if (
+    report.certificationEligible === false &&
+    captured?.status === "failed" &&
+    captured?.exitCode === 1 &&
+    accounting.scoredCaseCount === 14 &&
+    accounting.passedCaseCount < 14 &&
+    accounting.failedCaseCount > 0 &&
+    accounting.terminalFailureCount === 0 &&
+    report.summary.parseFailureCount === 0
+  ) {
     return {
       result: "HOLD",
       message:
@@ -367,7 +388,8 @@ export function classifyChronicleQualificationReport(
   }
   return {
     result: "FAILED",
-    message: "Chronicle report was not qualification-eligible",
+    message:
+      "Chronicle report was not qualification-eligible after complete current scoring",
   };
 }
 
@@ -559,7 +581,11 @@ export async function runLiveModelQualification({
     }
     const commandString = stripCommandEnvironmentAssignments(
       stripCredentialPlaceholders(resolved.commandString),
-      ["OPENROUTER_MODEL", "OPENROUTER_REASONING_EFFORT"],
+      [
+        "OPENROUTER_MODEL",
+        "OPENROUTER_REASONING_EFFORT",
+        "NARRATIVE_EVAL_EVIDENCE_MODE",
+      ],
     );
     const commandDigest = sha256Text(JSON.stringify([commandString]));
     const suiteDir = path.join(runDir, "suites", suiteId);
@@ -580,6 +606,8 @@ export async function runLiveModelQualification({
       }),
       OPENROUTER_MODEL: args.model,
       OPENROUTER_REASONING_EFFORT: args.reasoningEffort,
+      NARRATIVE_EVAL_EVIDENCE_MODE:
+        CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
       QUALITY_EVALUATION_PROVIDER: provider,
       QUALITY_EVALUATION_MODEL: args.model,
       QUALITY_EVALUATION_REASONING_EFFORT: args.reasoningEffort,
