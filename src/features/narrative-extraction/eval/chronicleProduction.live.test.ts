@@ -55,6 +55,10 @@ import {
   type ProductionLivePipelineFailure,
   writeProductionLiveArtifacts,
 } from "./chronicleProductionDiagnostics";
+import {
+  buildProductionChronicleSemanticDiagnostics,
+  type ProductionChronicleSemanticDiagnostics,
+} from "./productionChronicleSemanticDiagnostics";
 import type { NarrativeEvalCaseV1 } from "./types";
 import type { NarrativeEvalVersions } from "./replay";
 
@@ -244,6 +248,7 @@ type ProductionLiveCaseReport = {
   readonly hypothesisCount: number;
   readonly proposalCount: number;
   readonly evaluation: ReturnType<typeof evaluateProductionChronicleArtifacts>;
+  readonly semanticDiagnostics: ProductionChronicleSemanticDiagnostics;
 };
 
 type ProductionLiveTerminalFailure =
@@ -582,6 +587,12 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
             prepared,
             artifacts,
           );
+          const semanticDiagnostics =
+            buildProductionChronicleSemanticDiagnostics(
+              prepared,
+              artifacts,
+              evaluation,
+            );
           caseReports.push({
             ...caseReportContext,
             dispatches,
@@ -589,6 +600,7 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
             hypothesisCount: artifacts.hypotheses.length,
             proposalCount: artifacts.plannedProposals.length,
             evaluation,
+            semanticDiagnostics,
           });
         }
         diagnosticCaseReports.push({

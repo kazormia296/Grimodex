@@ -19,6 +19,30 @@
 
 現行の legacy Chronicle 出力は、exact quote、actuality、attribution などを持たないため、旧経路の baseline を採取する用途には使えても、新しい Narrative Extraction 経路の認証には使えません。Production prompt、schema、parser を通した結果だけが認証対象です。
 
+## Chronicle 評価契約 v2（オフライン診断）
+
+v1 の Gold、scorer、diagnostics、実行記録は変更せず、その意味品質や認証結果を v2 へ読み替えません。v2 は既存の北門本文について、4つの原子的なObservationの主張（鎖の切断、門扉の倒壊、衛兵による鐘、通行人の広場への退避）を独立に注釈する契約です。4つのObservation、原文／Gold、および承認済みの2つの時間関係は確認済みですが、Goldの正式認証と実装全体の承認は未了です。Evidence は正規の引用IDと UTF-16 座標で本文へ厳格に結び付けます。Gold には `requiredDirectRegions` と `allowedContextRegions` を分けて固定し、actual の有効な引用範囲は必須直接範囲を隙間なく覆わなければなりません。小さな重なりだけでは対応を成立させず、`allowedContextRegions` が空なら追加文脈を要求せず、文脈が必要な場合は同じリクエスト範囲の検証済み可視部分だけを補助にします。述語・参加者・role・actuality・attribution・narrative frame は別の有限な照合器で比較します。`exhaustive` で actual がGoldの4件を超えた分は `cardinalityExcessLowerBound` に記録してFAILへ反映しますが、actual区分やFP/FN・分母へ重複計上しません。`targeted` ではこの値を0とし、注釈範囲外のactualを `unscored` として保持します。
+
+v2 Gold は本文だけから独立に作成した `candidateOutputContamination: false` の記録で、限定承認済みだが正式認証前の診断専用データです。機械可読な review record には原文／Gold確認、4つのatomic Observation、承認済みの2つの時間関係、4つの時間評価除外を記録し、対象外の承認や正式認証へ拡張しません。Proposal は Observation と分離し、この短文では重要度を決めないため `targeted`／`unscored` として明示します。未知の項目はその項目だけを有限の reason 付き `unobservable` として保持し、同じ actual の既知項目の比較を消去しません。未知actualに互換なGoldがあれば、完全一致で先に予約された場合でもactual行は `unobservable` として保持し、未予約Goldへ割り当てられる容量だけを `unknownMatchCapacity` に数えます。診断の `evaluationScope` は Proposal が未採点なら `observation-and-temporal`、採点する場合は `observation-temporal-and-proposal` とします。`accepted` は正式ゲートとして維持し、draft Gold では false です。診断データの `validation.ok` は形状・digest・層間整合性の検証結果であり、`accepted` とは独立です。実 API、14件の v1 corpus、実行suite の登録はこの v2 評価用データの対象外です。
+
+時間関係はObservationとは別のtargeted symbolic metadata層です。`夜半` を `chain-break` と `gate-fall` に付ける2 relationだけを採点し、`scene-north-gate` の UTF-16 `[0, 2)` を同じactual自身の検証済みcitation unionで覆うことを要求します。00:00や絶対日時への変換、後続文への時間継承、実体属性、Proposal importanceは採点しません。既知の `夜半` は `matched`、空または `朝` だけは `missing`、未知表現を含み `夜半` がない場合は `unobservable` とし、`夜半` に朝・未知・日付らしい追加値があっても減点しません。event identityが不確かな場合は `event-identity-unavailable` として時間側だけを `unobservable` にし、eventの6区分やFP/FN・分母へ戻しません。後続2主張の時間値は `unscoredGoldCount` 以外の結果を変えません。
+
+Contract document IDとprepared document IDは暗黙に同一視しません。evaluatorは title／text と Source View の検証結果から、`{ contractDocumentId, preparedDocumentId, sourceRef, evidenceSourceRefs }` の明示bindingを作ります。`sourceRef` はSource ViewのS参照、`evidenceSourceRefs` は同一prepared documentに属するSとE aliasの全集合で、文字列同一性には依存しません。各 `temporal.rawRows[].evidenceRefs` は、その `actualRef` の検証済みevidence alias集合とcanonicalに一致し、catalog全体のalias集合をコピーしません。欠落・重複・foreign binding、未知／別文書のalias、別actualのalias流用、document ID fallbackは拒否します。contextなしvalidatorはnumeric projection、digest、版、層間整合性を検証しますが、prepared title／textとの元照合や、raw／binding／relation／projectionを相互に整合する一式へ置き換えるcoherent rebindingは再証明しません。builderは与えられた入力からprojectionを再導出するだけで、完全に置き換えられた入力一式の真正性を認証しません。元のevaluation／contractを保持するcontext付きvalidatorだけが、同じremap helperとscorerを再実行し、document／alias parityとprojectionを元入力から再導出してcoherent rebindingを拒否できます。
+
+production parserは配列内の非文字列をsilent filterするため、`[123]` は `[]`、`["夜半", 123]` は `["夜半"]` になり得ます。このcharacterizationはmaterialized metadataの境界を記録するだけで、raw provider応答の文法妥当性、非文字列を含む応答の品質、parser前の省略や変形、一般的な時間理解を証明しません。永続diagnosticsはraw textや引用文ではなく、固定キー、有限列挙値、整数、真偽値、SHA-256 digestだけを保持します。
+
+この時間拡張の版bindingは schema `/2`、contract `/3`、Gold `/3`、evaluator `/4`、diagnostics `/4`、diagnostics schema `4`、temporal scorer `/1` です。event normalizer `/1` と event Alignment `/3` は変更しません。
+
+- `contracts/chronicle-v2/actual-gate-collapse.json`: 独立4件のGold評価用データ（限定承認済み、正式認証前）
+- `contracts/chronicle-v2/contract.schema.json`: v2評価用データのJSON Schema
+- `../../docs/plans/chronicle-evaluation-contract-v2.md`: v2 の証拠境界、alignment、Observation／Proposal 分離、offline acceptance 条件
+- `src/features/narrative-extraction/eval/chronicleV2Contract.ts`: 型付きローダーと評価用データに限定したactual正規化器
+- `src/features/narrative-extraction/eval/chronicleV2Alignment.ts`: Evidence candidate に基づく決定的な一対一対応付け
+- `src/features/narrative-extraction/eval/chronicleV2Evaluator.ts`: 本番に近い形で具体化したObservationの v2 evaluator
+- `src/features/narrative-extraction/eval/chronicleV2Temporal.ts`: Gold独立の temporal raw／normalized rows、evidence、2 relationのtargeted scorer
+- `src/features/narrative-extraction/eval/chronicleV2Diagnostics.ts`: raw text を保存しない digest-bound numeric projection と strict validator
+- `src/features/narrative-extraction/eval/chronicleV2Contract.test.ts`、`chronicleV2Alignment.test.ts`、`chronicleV2Evaluator.test.ts`、`chronicleV2Temporal.test.ts`、`chronicleV2Diagnostics.test.ts`: v2 contract、alignment、temporal relation、本番に近い評価、unknown／coverage／proposal／Gold leakage のオフライン試験
+
 ## ファイル
 
 - `manifest.yaml`: suite、要件、件数、release gate の正本

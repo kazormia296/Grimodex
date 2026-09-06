@@ -270,6 +270,7 @@ rules:
     reason: Narrative source, Evidence, semantic scoring, Detail and Temporal projection contracts, Gold corpus, and Chronicle extraction changes share one release gate.
     paths:
       - docs/plans/narrative-evidence-id-v1.md
+      - docs/plans/chronicle-evaluation-contract-v2.md
       - src/features/narrative-extraction/**
       - src/features/chronicle/extraction/**
       - src/application/narrative-extraction/aiTasks/**
