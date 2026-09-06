@@ -24,7 +24,7 @@ export const CHRONICLE_LLM_JUDGE_OFFLINE_SCHEMA_VERSION = 1 as const;
 export const CHRONICLE_LLM_JUDGE_OFFLINE_VERSION =
   "chronicle-llm-judge-offline/1" as const;
 export const CHRONICLE_LLM_JUDGE_RUBRIC_VERSION =
-  "chronicle-llm-judge-rubric/1" as const;
+  "chronicle-llm-judge-rubric/2" as const;
 export const CHRONICLE_LLM_JUDGE_PROJECTION_VERSION =
   "chronicle-llm-judge-projection/1" as const;
 
@@ -349,7 +349,7 @@ export const CHRONICLE_LLM_JUDGE_RUBRIC = Object.freeze({
   temporalRule:
     "Use only the primary exact-match actual for the target Gold event. If event identity is unavailable, use null, undetermined, and event-identity-unavailable.",
   sourceSupportRule:
-    "Judge whether the source text supports the actual claim separately from participant membership and participant roles.",
+    "Judge whether the permitted source text and evidence context support the complete explicitly asserted event, including its participant-role bindings, negation, actuality, attribution, and narrative frame. Predicate or entity presence alone is insufficient. An omission alone does not negate a supported known assertion; judge missing required information on the applicable completeness axes. Do not fill explicit unknowns from the source or Gold. Report source support independently when another axis mismatches. The same underlying error may make more than one independent axis mismatch; reporting it on one axis does not neutralize another. Keep temporal relations separate; a temporal mismatch does not change event source support. Treat evidenceCandidates.evidenceValid, overlap, directSupport, and contextSupport as citation-validity, reference-resolution, and range-coverage flags only; they never establish semantic entailment. A valid quote that covers the required range does not guarantee that the source supports the actual participant-role assertion.",
 } satisfies ChronicleLlmJudgeInput["rubric"]);
 
 const STATUS_VALUES = ["match", "mismatch", "undetermined"] as const;

@@ -7,6 +7,7 @@ import type { ChronicleV2Contract } from "./chronicleV2Contract";
 import { loadNarrativeEvalSuite } from "./narrativeEvalSuite";
 import {
   buildChronicleLlmJudgeResponse,
+  CHRONICLE_LLM_JUDGE_RUBRIC_VERSION,
   prepareChronicleLlmJudgeOfflineRun,
   type ChronicleLlmJudgeAxes,
   type ChronicleLlmJudgeDecisionProjection,
@@ -552,6 +553,13 @@ async function runCalibrationScenario(
     parseFailureCount: 0,
     unresolvedEvidenceCount: 0,
   });
+  expect(run.input.rubricVersion).toBe(CHRONICLE_LLM_JUDGE_RUBRIC_VERSION);
+  expect(run.input.rubricVersion).toBe("chronicle-llm-judge-rubric/2");
+  expect(run.input.rubric.sourceSupportRule).toBe(
+    "Judge whether the permitted source text and evidence context support the complete explicitly asserted event, including its participant-role bindings, negation, actuality, attribution, and narrative frame. Predicate or entity presence alone is insufficient. An omission alone does not negate a supported known assertion; judge missing required information on the applicable completeness axes. Do not fill explicit unknowns from the source or Gold. Report source support independently when another axis mismatches. The same underlying error may make more than one independent axis mismatch; reporting it on one axis does not neutralize another. Keep temporal relations separate; a temporal mismatch does not change event source support. Treat evidenceCandidates.evidenceValid, overlap, directSupport, and contextSupport as citation-validity, reference-resolution, and range-coverage flags only; they never establish semantic entailment. A valid quote that covers the required range does not guarantee that the source supports the actual participant-role assertion.",
+  );
+  const { inputDigest, ...inputWithoutDigest } = run.input;
+  await expect(digestStableJson(inputWithoutDigest)).resolves.toBe(inputDigest);
   expect(run.input.sourceDocuments).toHaveLength(1);
   expect(run.input.sourceDocuments[0]!.ref).not.toBe("scene-north-gate");
   expect(run.input.actualClaims).toHaveLength(responseRows.length);

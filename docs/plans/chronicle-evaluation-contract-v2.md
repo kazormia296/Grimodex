@@ -121,10 +121,17 @@ judge入力のactualは、述語、participant surface／role、actuality、attr
 actualの修復やGoldからの補完を返さない。participantはGoldの必須集合と比較し、roleはactualが明示したparticipantだけを比較する。
 明示的なunknownはその軸を `undetermined` とし、actual内の命令文らしい文字列はデータとして扱う。
 
+`sourceSupport` は、許可された原文とevidence contextが完全に明示されたevent（participant-roleの結び付き、否定、現実性、帰属、narrative frameを含む）を
+支持するかを、他の意味軸とは独立に判定する。`evidenceCandidates` の `evidenceValid`、`overlap`、`directSupport`、
+`contextSupport` は引用の有効性、参照解決、範囲被覆だけを表し、意味的含意を表さない。有効な引用が必須範囲を覆っていても、
+actualのparticipant-role assertionが原文に支持されることは保証しない。同じ根本原因が複数の独立した軸を不一致にすることがあり、
+1つの軸で報告しても別の軸を無効化しない。入力フィールドとresponse schemaは変更せず、judgeの軸値を後処理で書き換えない。
+
 judge responseは余分なキーや自由文を許さないJSON schemaとし、primary／unmatched actual／unmatched Gold／temporal relationの全入力を
 ちょうど一つの区分へ割り当てる。一対一のprimary、未知参照、duplicateの自己参照・連鎖、時間関係のretargetingをコードで拒否する。
 duplicateは別のprimary完全一致actualだけを参照できる。primaryの対応にも `evidenceValid`、`overlap`、`directSupport`、
-`contextSupport` の全条件を再適用し、judgeのsourceSupport判定で引用条件を免除しない。
+`contextSupport` の全条件を再適用し、judgeのsourceSupport判定で引用条件を免除しない。これらのフラグはsourceSupportの
+意味判定を代替しない。
 
 各runのsource／actual／Gold／relation／evidence refは意味を持たないopaque IDへ置き換え、元IDとの変換表はメモリだけに保持する。
 検証済み診断へ残すのは、opaque decision、固定enum、件数、軸別status件数、temporal件数、版とdigestだけである。
@@ -167,7 +174,7 @@ prepared documents／bindingsを保持するcontext付きvalidatorだけが、do
 ## 版と評価scope
 
 この時間拡張で固定する版は、schema `/2`、contract `/3`、Gold `/3`、evaluator `/4`、diagnostics `/4`、diagnostics schema `4`、
-temporal scorer `/1` である。event normalizer `/1` とevent Alignment `/3` は変更しない。Proposalが未採点のこのcaseの
+LLM judge rubric `/2`、temporal scorer `/1` である。event normalizer `/1` とevent Alignment `/3` は変更しない。Proposalが未採点のこのcaseの
 `evaluationScope` は `observation-and-temporal` とし、Proposalまで採点する別契約では `observation-temporal-and-proposal` とする。
 `accepted` は正式ゲートとしてdraft Goldではfalseのまま保持し、`validation.ok` はdiagnosticsの構造・数値・digest bindingが検証できたことだけを示す。
 

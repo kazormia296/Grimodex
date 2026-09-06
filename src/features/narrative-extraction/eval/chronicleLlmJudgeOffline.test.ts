@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { CITATION_ID_OBSERVATION_EVIDENCE_MODE } from "@/application/narrative-extraction/aiTasks/citationIdObservation";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import { loadNarrativeEvalSuite } from "./narrativeEvalSuite";
+import { digestStableJson } from "../source/digest";
 import {
   buildChronicleLlmJudgeResponse,
+  CHRONICLE_LLM_JUDGE_RUBRIC_VERSION,
   parseChronicleLlmJudgeResponse,
   prepareChronicleLlmJudgeOfflineRun,
   runChronicleLlmJudgeOffline,
@@ -366,6 +368,17 @@ async function prepareJudgeRun(claims: readonly FixedClaim[] = BASE_CLAIMS) {
 }
 
 describe("offline Chronicle LLM judge", () => {
+  it("binds source support rubric v2 and its digest to the prepared input", async () => {
+    const { run } = await prepareJudgeRun();
+    expect(run.input.rubricVersion).toBe(CHRONICLE_LLM_JUDGE_RUBRIC_VERSION);
+    expect(run.input.rubricVersion).toBe("chronicle-llm-judge-rubric/2");
+    expect(run.input.rubric.sourceSupportRule).toBe(
+      "Judge whether the permitted source text and evidence context support the complete explicitly asserted event, including its participant-role bindings, negation, actuality, attribution, and narrative frame. Predicate or entity presence alone is insufficient. An omission alone does not negate a supported known assertion; judge missing required information on the applicable completeness axes. Do not fill explicit unknowns from the source or Gold. Report source support independently when another axis mismatches. The same underlying error may make more than one independent axis mismatch; reporting it on one axis does not neutralize another. Keep temporal relations separate; a temporal mismatch does not change event source support. Treat evidenceCandidates.evidenceValid, overlap, directSupport, and contextSupport as citation-validity, reference-resolution, and range-coverage flags only; they never establish semantic entailment. A valid quote that covers the required range does not guarantee that the source supports the actual participant-role assertion.",
+    );
+    const { inputDigest, ...withoutInputDigest } = run.input;
+    await expect(digestStableJson(withoutInputDigest)).resolves.toBe(inputDigest);
+  });
+
   it("accepts only strict JSON responses and keeps the input identity opaque", async () => {
     expect(() => parseChronicleLlmJudgeResponse("prefix {} suffix")).toThrow(
       /JSON|schema/i,
@@ -498,6 +511,11 @@ describe("offline Chronicle LLM judge", () => {
     expect(result.projection.dimensions.roles).toEqual({
       match: 3,
       mismatch: 1,
+      undetermined: 0,
+    });
+    expect(result.projection.dimensions.sourceSupport).toEqual({
+      match: 4,
+      mismatch: 0,
       undetermined: 0,
     });
     expect(result.projection.semanticStatus).toBe("FAIL");
