@@ -393,6 +393,10 @@ requirements:
       - src/features/narrative-extraction/eval/chronicleV2Temporal.ts
       - src/features/narrative-extraction/eval/chronicleV2Evaluator.ts
       - src/features/narrative-extraction/eval/chronicleV2Diagnostics.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeStorage.node.ts
+      - evals/narrative/calibration/chronicle-llm-judge-v1.json
+      - evals/narrative/calibration/chronicle-llm-judge-v1.review.md
       - evals/narrative/reference-predictions/chronicle-015-v1/README.md
       - evals/narrative/manifest.yaml
       - evals/qualifications/narrative-current-protocol-v2.json
@@ -419,6 +423,9 @@ requirements:
       - src/features/narrative-extraction/eval/chronicleV2Temporal.test.ts
       - src/features/narrative-extraction/eval/chronicleV2Evaluator.test.ts
       - src/features/narrative-extraction/eval/chronicleV2Diagnostics.test.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.test.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeStorage.node.test.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeCalibration.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
       - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
@@ -447,6 +454,7 @@ requirements:
       - src/features/narrative-extraction/eval/chronicleV2Temporal.ts
       - src/features/narrative-extraction/eval/chronicleV2Evaluator.ts
       - src/features/narrative-extraction/eval/chronicleV2Diagnostics.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.ts
       - evals/narrative/reference-predictions/chronicle-015-v1/README.md
       - evals/qualifications/narrative-current-protocol-v2.json
       - scripts/quality/quality-evaluation-runtime.mjs
@@ -496,6 +504,7 @@ requirements:
       - src/features/narrative-extraction/eval/chronicleV2Alignment.ts
       - src/features/narrative-extraction/eval/chronicleV2Evaluator.ts
       - src/features/narrative-extraction/eval/chronicleV2Diagnostics.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.ts
       - evals/narrative/reference-predictions/chronicle-015-v1/README.md
     lightTests:
       - src/features/chronicle/extraction/observationMerger.test.ts
@@ -685,6 +694,7 @@ requirements:
       - src/features/narrative-extraction/eval/chronicleV2Alignment.ts
       - src/features/narrative-extraction/eval/chronicleV2Evaluator.ts
       - src/features/narrative-extraction/eval/chronicleV2Diagnostics.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.ts
     lightTests:
       - src/features/narrative-extraction/eval/caseSchema.test.ts
       - src/features/narrative-extraction/eval/scorer.test.ts

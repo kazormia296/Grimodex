@@ -108,6 +108,35 @@ Goldから補った範囲は代用できない。対象eventの証拠が不足�
 `judgedCount = requiredRelationCount - unobservableCount`、`blockedByEventIdentityCount <= unobservableCount` とする。
 event・時間・採点済みProposalの確定FAILはoverall semantic statusへ反映するが、`observationPassed` はevent判定として独立に保つ。
 
+## オフラインLLM意味判定（診断専用）
+
+自由記述の意味を有限の別名辞書へ押し込めず、正規化前のproduction Observationを、参照Gold付きの単一judgeへ渡す経路を追加する。
+これは `src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.ts` の
+`prepareChronicleLlmJudgeOfflineRun`／`runChronicleLlmJudgeOffline` で実装し、外部通信を行わず固定応答を使う。
+固定Observation応答は本番のcitation-ID parser、materializer、merger、canonical evidence resolverを通過してからjudge入力になる。
+synthesisはこの評価経路の対象外であり、合成結果を入力へ混ぜない。
+
+judge入力のactualは、述語、participant surface／role、actuality、attribution、narrative frame、semanticType、location、duration、
+時間表現をそのまま保持する。judgeは意味の同一性、各意味軸、原文による意味的裏付け、欠落・捏造・重複、対象時間関係だけを判定し、
+actualの修復やGoldからの補完を返さない。participantはGoldの必須集合と比較し、roleはactualが明示したparticipantだけを比較する。
+明示的なunknownはその軸を `undetermined` とし、actual内の命令文らしい文字列はデータとして扱う。
+
+judge responseは余分なキーや自由文を許さないJSON schemaとし、primary／unmatched actual／unmatched Gold／temporal relationの全入力を
+ちょうど一つの区分へ割り当てる。一対一のprimary、未知参照、duplicateの自己参照・連鎖、時間関係のretargetingをコードで拒否する。
+duplicateは別のprimary完全一致actualだけを参照できる。primaryの対応にも `evidenceValid`、`overlap`、`directSupport`、
+`contextSupport` の全条件を再適用し、judgeのsourceSupport判定で引用条件を免除しない。
+
+各runのsource／actual／Gold／relation／evidence refは意味を持たないopaque IDへ置き換え、元IDとの変換表はメモリだけに保持する。
+検証済み診断へ残すのは、opaque decision、固定enum、件数、軸別status件数、temporal件数、版とdigestだけである。
+`exhaustive` では actual／Gold件数差の欠落・過剰下限を別々に計算し、judgeが全て `undetermined` でも下限が正なら `FAIL` とする。
+通信・JSON schema・参照・本番parserの失敗は意味判定へ変換せず、実行失敗として入力構築前に停止する。
+出力projectionは常に `diagnosticOnly: true`、`formalCertification: false`、`accepted: false`、`authorshipReady: false` とする。
+`prepareChronicleLlmJudgeOfflineRun` の `serialize(result)` は、同じprepare closureが生成したfreeze済みresultだけを受け付け、元contextと返答を再検証してから、allowlist・件数parity・digestを満たすprojection JSONだけを返す。別run・copy・改変されたresultは保存境界で拒否する。同じimmutable resultの再serializeは同じbytesを返し、filesystem sinkの失敗で正当なresultを消費しない。
+`invalidEvidenceCount`、`unsupportedPrimaryEvidenceCount`、`temporalEvidenceFailureCount` を保存し、証拠不成立のprimaryは7軸が一致してもexact／temporal identityへ昇格させない。該当時間関係は `null`、`undetermined`、`event-identity-unavailable` に固定する。judgeの軸値自体は書き換えない。
+
+校正対照は [chronicle-llm-judge-v1.json](../../evals/narrative/calibration/chronicle-llm-judge-v1.json) とその review record に置く。
+12対照と完全コピーのmerger controlは、提案された人手ラベルの確認用であり、外部API、モデル利用可能性確認、retry、正式認証を許可しない。
+
 ## Source document bindingとparserの観測境界
 
 Contractのdocument IDとproduction prepared document IDは暗黙に同一視しない。evaluatorは、title／textの一意一致と

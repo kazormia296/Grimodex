@@ -173,6 +173,34 @@ interface GoldRanges {
 interface ActualEvidenceResult {
   readonly validation: ChronicleV2EvidenceValidation;
   readonly anchors: readonly ResolvedEvidenceAnchor[];
+  readonly occurrences: readonly ChronicleV2ProductionEvidenceOccurrence[];
+}
+
+/**
+ * Per-observation evidence facts produced by the canonical resolver.
+ *
+ * Quotes and source refs remain ephemeral production facts. Consumers that
+ * send them to another evaluator must remap the identity fields first; this
+ * export exists so a second semantic evaluator cannot accidentally implement
+ * a weaker evidence path than Chronicle v2.
+ */
+export interface ChronicleV2ProductionEvidenceOccurrence {
+  readonly actualRef: string;
+  readonly sourceRef: string;
+  readonly quote: string;
+  readonly valid: boolean;
+  readonly documentId?: string;
+  readonly start?: number;
+  readonly end?: number;
+}
+
+/** Evidence-only projection shared by deterministic and LLM evaluators. */
+export interface ChronicleV2ProductionEvidenceFacts {
+  readonly rawActualClaims: readonly ChronicleV2RawActualClaim[];
+  readonly evidence: readonly ChronicleV2EvidenceValidation[];
+  readonly evidenceCandidates: readonly ChronicleV2EvidenceCandidate[];
+  readonly sourceDocumentBindings: readonly ChronicleV2SourceDocumentBinding[];
+  readonly evidenceOccurrences: readonly ChronicleV2ProductionEvidenceOccurrence[];
 }
 
 interface ValidatedBindingContext {
@@ -452,10 +480,12 @@ async function resolveActualEvidence(
         ranges: [],
       },
       anchors: [],
+      occurrences: [],
     };
   }
   const ranges: ChronicleV2ResolvedActualEvidence[] = [];
   const anchors: ResolvedEvidenceAnchor[] = [];
+  const occurrences: ChronicleV2ProductionEvidenceOccurrence[] = [];
   let invalidCount = 0;
   let reason: ChronicleV2EvidenceValidation["reason"];
   const context = (() => {
@@ -468,6 +498,12 @@ async function resolveActualEvidence(
     if (!context || !alias) {
       invalidCount += 1;
       reason ??= "binding-mismatch";
+      occurrences.push({
+        actualRef: observation.localId,
+        sourceRef: evidence.sourceRef,
+        quote: evidence.quote,
+        valid: false,
+      });
       continue;
     }
     let selected: Awaited<ReturnType<EvidenceSpanCatalogSelectionResolver>>;
@@ -476,6 +512,12 @@ async function resolveActualEvidence(
     } catch {
       invalidCount += 1;
       reason ??= "binding-mismatch";
+      occurrences.push({
+        actualRef: observation.localId,
+        sourceRef: evidence.sourceRef,
+        quote: evidence.quote,
+        valid: false,
+      });
       continue;
     }
     const resolvedEvidence = selected.rawEvidenceReferences[0];
@@ -488,12 +530,24 @@ async function resolveActualEvidence(
     ) {
       invalidCount += 1;
       reason ??= "anchor-mismatch";
+      occurrences.push({
+        actualRef: observation.localId,
+        sourceRef: evidence.sourceRef,
+        quote: evidence.quote,
+        valid: false,
+      });
       continue;
     }
     const artifactAnchor = artifactAnchorFor(artifacts, resolutionAnchor);
     if (!artifactAnchor) {
       invalidCount += 1;
       reason ??= "anchor-mismatch";
+      occurrences.push({
+        actualRef: observation.localId,
+        sourceRef: evidence.sourceRef,
+        quote: evidence.quote,
+        valid: false,
+      });
       continue;
     }
     anchors.push(resolutionAnchor);
@@ -501,8 +555,23 @@ async function resolveActualEvidence(
     if (!documentId) {
       invalidCount += 1;
       reason ??= "resolver-failed";
+      occurrences.push({
+        actualRef: observation.localId,
+        sourceRef: evidence.sourceRef,
+        quote: evidence.quote,
+        valid: false,
+      });
       continue;
     }
+    occurrences.push({
+      actualRef: observation.localId,
+      sourceRef: evidence.sourceRef,
+      quote: evidence.quote,
+      valid: true,
+      documentId,
+      start: resolutionAnchor.canonicalRange.start,
+      end: resolutionAnchor.canonicalRange.end,
+    });
     ranges.push({
       sourceRef: evidence.sourceRef,
       documentId,
@@ -519,8 +588,9 @@ async function resolveActualEvidence(
       ...(reason ? { reason } : {}),
       ranges,
     },
-    anchors,
-  };
+      anchors,
+      occurrences,
+    };
 }
 
 function goldRanges(
@@ -687,6 +757,75 @@ function buildEvidenceCandidates(
     }
   }
   return result;
+}
+
+/**
+ * Resolve production evidence without applying the finite v2 semantic
+ * normalizer or alignment. This is the shared fact boundary for evaluators
+ * that need to judge the original observation wording themselves.
+ */
+export async function buildChronicleV2ProductionEvidenceFacts(
+  prepared: PreparedProductionChronicleEvalCase,
+  artifacts: ProductionChronicleArtifacts,
+  contract: ChronicleV2Contract,
+): Promise<ChronicleV2ProductionEvidenceFacts> {
+  if (prepared.evidenceMode !== "citation-id-v2") {
+    throw new Error(
+      "Chronicle v2 production evidence facts require citation-id-v2 evidence",
+    );
+  }
+  if (
+    !contract.authorship.independentSourceAnnotation ||
+    contract.authorship.candidateOutputContamination
+  ) {
+    throw new Error("Chronicle v2 Gold authorship is not independent");
+  }
+  const preparedMatches = documentMatches(prepared, contract);
+  const sourceDocumentBindings = sourceDocumentBindingsFor(
+    prepared,
+    preparedMatches,
+    contract,
+  );
+  const rangesByGoldId = goldRanges(contract, preparedMatches);
+  const bindingContexts = await validatedBindingContexts(prepared);
+  const rawActualClaims = artifacts.observations.map(rawActualFromObservation);
+  const evidenceResults: ActualEvidenceResult[] = [];
+  for (const observation of artifacts.observations) {
+    evidenceResults.push(
+      await resolveActualEvidence(
+        prepared,
+        observation,
+        artifacts,
+        bindingContexts,
+      ),
+    );
+  }
+  const evidenceCandidates = buildEvidenceCandidates(
+    prepared,
+    contract.observationGold.claims,
+    artifacts.observations,
+    evidenceResults,
+    rangesByGoldId,
+    bindingContexts,
+  );
+  validateChronicleV2EvidenceDocumentBindings(
+    evidenceResults.flatMap((result) =>
+      result.validation.ranges.map((range) => ({
+        sourceRef: range.sourceRef,
+        documentId: range.documentId,
+      })),
+    ),
+    sourceDocumentBindings,
+  );
+  return {
+    rawActualClaims,
+    evidence: evidenceResults.map((result) => result.validation),
+    evidenceCandidates,
+    sourceDocumentBindings,
+    evidenceOccurrences: evidenceResults.flatMap(
+      (result) => result.occurrences,
+    ),
+  };
 }
 
 function dimensionObservable(
@@ -875,57 +1014,24 @@ export async function evaluateChronicleV2Production(
   artifacts: ProductionChronicleArtifacts,
   contract: ChronicleV2Contract,
 ): Promise<ChronicleV2ProductionEvaluation> {
-  if (prepared.evidenceMode !== "citation-id-v2") {
-    throw new Error(
-      "Chronicle v2 production evaluation requires citation-id-v2 evidence",
-    );
-  }
-  if (
-    !contract.authorship.independentSourceAnnotation ||
-    contract.authorship.candidateOutputContamination
-  ) {
-    throw new Error("Chronicle v2 Gold authorship is not independent");
-  }
-  const preparedMatches = documentMatches(prepared, contract);
-  const sourceDocumentBindings = sourceDocumentBindingsFor(
+  const evidenceFacts = await buildChronicleV2ProductionEvidenceFacts(
     prepared,
-    preparedMatches,
+    artifacts,
     contract,
   );
-  const rangesByGoldId = goldRanges(contract, preparedMatches);
-  const bindingContexts = await validatedBindingContexts(prepared);
-  const rawActualClaims = artifacts.observations.map(rawActualFromObservation);
+  const rawActualClaims = evidenceFacts.rawActualClaims;
   const normalizedActualClaims = rawActualClaims.map(
     normalizeChronicleV2Actual,
-  );
-  const evidenceResults: ActualEvidenceResult[] = [];
-  for (const observation of artifacts.observations) {
-    evidenceResults.push(
-      await resolveActualEvidence(
-        prepared,
-        observation,
-        artifacts,
-        bindingContexts,
-      ),
-    );
-  }
-  const evidenceCandidates = buildEvidenceCandidates(
-    prepared,
-    contract.observationGold.claims,
-    artifacts.observations,
-    evidenceResults,
-    rangesByGoldId,
-    bindingContexts,
   );
   const alignmentInput: ChronicleV2AlignmentInput = {
     goldClaims: contract.observationGold.claims,
     normalizedActualClaims,
-    evidenceCandidates,
+    evidenceCandidates: evidenceFacts.evidenceCandidates,
     coverage: contract.coverage,
     proposalPolicy: contract.proposalPolicy,
   };
   const alignment = alignChronicleV2Claims(alignmentInput);
-  const evidence = evidenceResults.map((result) => result.validation);
+  const evidence = evidenceFacts.evidence;
   validateChronicleV2EvidenceDocumentBindings(
     evidence.flatMap((entry) =>
       entry.ranges.map((range) => ({
@@ -933,7 +1039,7 @@ export async function evaluateChronicleV2Production(
         documentId: range.documentId,
       })),
     ),
-    sourceDocumentBindings,
+    evidenceFacts.sourceDocumentBindings,
   );
   const temporalRawRows = buildChronicleV2TemporalRawRows(
     artifacts.observations,
@@ -941,7 +1047,7 @@ export async function evaluateChronicleV2Production(
   const temporal = evaluateChronicleV2Temporal({
     temporalGold: remapChronicleV2TemporalGoldDocumentIds(
       contract.temporalGold,
-      sourceDocumentBindings,
+      evidenceFacts.sourceDocumentBindings,
       contract.sourceDocuments,
     ),
     rawRows: temporalRawRows,
@@ -1031,8 +1137,8 @@ export async function evaluateChronicleV2Production(
     rawActualClaims,
     normalizedActualClaims,
     evidence,
-    evidenceCandidates,
-    sourceDocumentBindings,
+    evidenceCandidates: evidenceFacts.evidenceCandidates,
+    sourceDocumentBindings: evidenceFacts.sourceDocumentBindings,
     alignment,
     temporal,
     observation,
