@@ -548,7 +548,6 @@ export function citationBindingAuditMetadata(
     bindingKind: binding.kind,
     bindingVersion: binding.version,
     requestIdentity: binding.requestIdentity,
-    bindingToken: binding.bindingToken,
     snapshotId: binding.snapshotId,
     snapshotDigest: binding.snapshotDigest,
     snapshotArtifactDigest: binding.snapshotArtifactDigest,

@@ -3,7 +3,10 @@ import type { ResolvedEvidenceAnchor } from "@/features/narrative-extraction/evi
 import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
-import { planChronicleEventProposals } from "./proposalPlanner";
+import {
+  planChronicleEventProposals,
+  planChronicleEventProposalsWithDiagnostics,
+} from "./proposalPlanner";
 
 const DIGEST = `sha256:${"b".repeat(64)}` as Sha256Digest;
 
@@ -74,6 +77,50 @@ function anchor(
 }
 
 describe("planChronicleEventProposals", () => {
+  it.each(["rumored", "planned", "dreamed"] as const)(
+    "rejects a promoted %s hypothesis separately and retains the actual control",
+    (actuality) => {
+      const original = observation();
+      const rows = [
+        original,
+        observation({
+          localId: "nonactual",
+          payload: { ...original.payload, actuality },
+        }),
+      ];
+      const hypotheses = [
+        hypothesis(),
+        hypothesis({
+          hypothesisId: "promoted",
+          observationRefs: ["nonactual"],
+        }),
+      ];
+      const result = planChronicleEventProposalsWithDiagnostics({
+        hypotheses,
+        observations: rows,
+        anchors: [anchor()],
+        matchesByHypothesisId: new Map(),
+        createId: () => "event-control",
+      });
+      expect(result.planned.map((row) => row.hypothesisId)).toEqual(["hyp-1"]);
+      expect(result.rejectedHypotheses).toEqual([
+        {
+          hypothesisId: "promoted",
+          reason: "hypothesis-observation-actuality-mismatch",
+        },
+      ]);
+      expect(
+        planChronicleEventProposals({
+          hypotheses,
+          observations: rows,
+          anchors: [anchor()],
+          matchesByHypothesisId: new Map(),
+          createId: () => "event-control",
+        }),
+      ).toEqual(result.planned);
+    },
+  );
+
   it("emits proposals for actual/major events with resolved evidence", () => {
     const planned = planChronicleEventProposals({
       hypotheses: [hypothesis()],

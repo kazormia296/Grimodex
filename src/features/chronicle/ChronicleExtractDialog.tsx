@@ -1,3 +1,4 @@
+import { isChronicleReanalysisRequired } from "./extraction/savedPlanActualityGate";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -203,12 +204,27 @@ export function ChronicleExtractDialog({
         current.workspacePath === scope.workspacePath &&
         current.openRevision === scope.openRevision;
       if (!matched) {
+        const restoreGeneration = generationRef.current;
         void restoreChronicleExtractionReview({
           projectId: scope.projectId,
           workspacePath: scope.workspacePath,
           openRevision: scope.openRevision,
-        }).catch(() => {
-          // Soft-fail: empty review until the user runs analyze.
+        }).catch((error: unknown) => {
+          if (
+            isChronicleReanalysisRequired(error) &&
+            generationRef.current === restoreGeneration &&
+            openRef.current &&
+            isActiveRef.current &&
+            currentScopeKeyRef.current === currentScopeKey
+          ) {
+            toast.error(
+              t(
+                "chronicle.extract.reanalysisRequired",
+                "保存済みの抽出候補を復元できません。本文から再解析してください。",
+              ),
+            );
+          }
+          // Other restore failures keep the existing empty-review behavior.
         });
       }
       void discoverChronicleTaskResumeCandidates({
@@ -240,6 +256,7 @@ export function ChronicleExtractDialog({
     onOpenChange,
     open,
     scope,
+    t,
   ]);
 
   const handleSelectFolder = (id: string) => {

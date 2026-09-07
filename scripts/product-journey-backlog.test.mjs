@@ -32,6 +32,7 @@ const EXPECTED_JOURNEY_IDS = [
   "lint-native-roundtrip",
   "map-native-roundtrip",
   "snapshot-native-roundtrip",
+  "chronicle-extract-review-apply-reopen",
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map((entry) => entry.id),
   ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((entry) => entry.id),
 ];
@@ -49,9 +50,7 @@ const IMPLEMENTED_CONTRACT_IDS = [
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
     (entry) => entry.contracts[0],
   ),
-  ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.flatMap(
-    (entry) => entry.contracts,
-  ),
+  ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.flatMap((entry) => entry.contracts),
 ];
 
 const EXEMPTED_CHAT_SCOPE_CONTRACT_IDS = [

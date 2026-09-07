@@ -2031,6 +2031,7 @@ fn finish_bundle_with_artifacts_and_parsed_output_digest(
 
 enum SynthesisCompanionMutation {
     HypothesisField(&'static str, Value),
+    HypothesisAndEventActuality(&'static str),
     EventOutputField(&'static str, Value),
     EventRowField(&'static str, Value),
     DuplicateHypothesisId,
@@ -2096,6 +2097,10 @@ fn finish_bundle_with_companion_mutation(
         })]
     };
     match companion_mutation {
+        Some(SynthesisCompanionMutation::HypothesisAndEventActuality(actuality)) => {
+            event_output["events"][0]["actuality"] = json!(actuality);
+            hypotheses[0]["actuality"] = json!(actuality);
+        }
         Some(SynthesisCompanionMutation::HypothesisField(field, value)) => {
             hypotheses
                 .first_mut()
@@ -3163,6 +3168,171 @@ fn chronicle_synthesis_requires_native_raw_observation_digest() {
     assert_eq!(receipt_count, 0);
 }
 
+fn closure_with_authored_terminal_output(
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    raw: &Value,
+    event_output: &Value,
+) -> Value {
+    let closure = valid_stage_closure(
+        PROJECT_A,
+        run_id,
+        task_id,
+        attempt_id,
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+    );
+    let mut receipts = closure["receipts"]
+        .as_array()
+        .expect("closure receipts")
+        .clone();
+    let synthesis = receipts
+        .iter_mut()
+        .find(|receipt| receipt["stageExecution"]["stageId"] == EVENT_SYNTHESIS_STAGE_ID)
+        .expect("synthesis receipt");
+    bind_terminal_output(synthesis, raw, event_output);
+    closure_for_receipts(
+        PROJECT_A,
+        run_id,
+        task_id,
+        attempt_id,
+        Value::Array(receipts),
+    )
+}
+
+fn assert_chronicle_synthesis_preserves_rumored_raw(event_actuality: &'static str) {
+    let db = migrated_db();
+    let run_id = format!("run-stage-rumored-{event_actuality}");
+    let task_id = format!("task-stage-rumored-{event_actuality}");
+    create_run(&db, PROJECT_A, &run_id, &task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, &run_id);
+    let mut raw = raw_observations(&["observation:arrival"]);
+    raw["observations"][0]["payload"]["actuality"] = json!("rumored");
+    let mut event_output = event_output_for_refs(&raw_observation_refs(&raw));
+    event_output["events"][0]["actuality"] = json!(event_actuality);
+    let closure =
+        closure_with_authored_terminal_output(&run_id, &task_id, &attempt_id, &raw, &event_output);
+    finish_bundle_with_companion_mutation(
+        &db, &run_id, &task_id, &attempt_id, closure, 1,
+        json!(["observation:arrival"]),
+        vec![artifact(&format!("{task_id}-raw-observations"), "chronicle.raw-observations@1", raw.clone())],
+        None, None,
+        Some(SynthesisCompanionMutation::HypothesisAndEventActuality(event_actuality)),
+    ).unwrap_or_else(|error| panic!("rumored raw and {event_actuality} terminal must retain their original modalities: {error:#}"));
+
+    // This fixture terminalizes one stage, not the complete extraction DAG.
+    // Read the Native-persisted rows directly, as the other atomic C2A tests do.
+    let saved = |kind: &str| -> Value {
+        let records: Vec<(String, String)> = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT payload_json, payload_digest FROM narrative_extraction_artifacts
+                 WHERE run_id = ?1 AND task_id = ?2 AND artifact_kind = ?3",
+                )?;
+                let records = statement
+                    .query_map(rusqlite::params![run_id, task_id, kind], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(records)
+            })
+            .expect("read persisted stage artifact");
+        assert_eq!(records.len(), 1, "one saved {kind}");
+        let payload: Value = serde_json::from_str(&records[0].0).expect("saved JSON artifact");
+        assert_eq!(records[0].1, digest(&payload));
+        payload
+    };
+    assert_eq!(saved("chronicle.raw-observations@1"), raw);
+    let companion = saved("chronicle.stage-synthesis-outputs@1");
+    let terminal = &companion["outputs"][0];
+    assert_eq!(terminal["rawObservations"], raw);
+    assert_eq!(terminal["eventOutput"], event_output);
+    assert_eq!(terminal["output"]["rawObservationsDigest"], digest(&raw));
+    assert_eq!(
+        terminal["output"]["eventOutputDigest"],
+        digest(&event_output)
+    );
+    assert_eq!(
+        terminal["output"]["parsedOutputDigest"],
+        parsed_output_digest_for_output(&raw, &event_output)
+    );
+    let hypotheses = saved("chronicle.event-hypotheses@1");
+    let hypothesis = &hypotheses["hypotheses"][0];
+    let mut expected_hypothesis = event_output["events"][0].clone();
+    expected_hypothesis["hypothesisId"] = json!("hypothesis:arrival");
+    expected_hypothesis["clusterRef"] = json!("cluster:arrival");
+    assert_eq!(hypothesis, &expected_hypothesis);
+    let (receipt_json, task_status, proposal_count): (String, String, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT r.receipt_json, t.status,
+                    (SELECT COUNT(*) FROM narrative_proposals p
+                     JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                     WHERE s.run_id = ?1 AND s.project_id = ?4)
+             FROM narrative_extraction_stage_receipts r
+             JOIN narrative_extraction_tasks t ON t.id = r.task_id AND t.run_id = r.run_id
+             WHERE r.run_id = ?1 AND r.task_id = ?2 AND r.attempt_id = ?3 AND r.project_id = ?4
+               AND json_extract(r.receipt_json, '$.stageExecution.stageId') = ?5",
+                rusqlite::params![
+                    run_id,
+                    task_id,
+                    attempt_id,
+                    PROJECT_A,
+                    EVENT_SYNTHESIS_STAGE_ID
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .expect("read persisted receipt and task state");
+    let receipt: Value = serde_json::from_str(&receipt_json).expect("saved receipt JSON");
+    assert_eq!(receipt["rawObservationsDigest"], digest(&raw));
+    assert_eq!(
+        receipt["parsedOutputDigest"],
+        parsed_output_digest_for_output(&raw, &event_output)
+    );
+    assert_eq!(task_status, "completed");
+    assert_eq!(
+        proposal_count, 0,
+        "stage preservation itself must not write a Proposal"
+    );
+}
+
+#[test]
+fn chronicle_synthesis_preserves_rumored_raw_without_correcting_an_actual_hypothesis() {
+    // Provenance retains the model output; the later planner rejects unsupported promotion.
+    assert_chronicle_synthesis_preserves_rumored_raw("actual");
+}
+
+#[test]
+fn chronicle_synthesis_preserves_rumored_raw_hypothesis_and_terminal() {
+    assert_chronicle_synthesis_preserves_rumored_raw("rumored");
+}
+
+#[test]
+fn chronicle_synthesis_rejects_unknown_raw_actuality_atomically() {
+    let db = migrated_db();
+    let run_id = "run-stage-unknown-raw-actuality";
+    let task_id = "task-stage-unknown-raw-actuality";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let mut raw = raw_observations(&["observation:arrival"]);
+    raw["observations"][0]["payload"]["actuality"] = json!("future-actuality");
+    let event_output = event_output_for_refs(&raw_observation_refs(&raw));
+    let closure =
+        closure_with_authored_terminal_output(run_id, task_id, &attempt_id, &raw, &event_output);
+    let error = finish_bundle_with_raw(&db, run_id, task_id, &attempt_id, closure, raw, None, None)
+        .expect_err("unknown raw actuality must remain invalid");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_RAW_OBSERVATIONS_INVALID"),
+        "unexpected invalid-actuality error: {error:#}"
+    );
+    assert_stage_finish_rolled_back(&db, run_id, task_id, &attempt_id, "unknown-raw-actuality");
+}
+
 #[test]
 fn chronicle_synthesis_requires_native_parsed_output_digest() {
     let db = migrated_db();
@@ -3227,6 +3397,7 @@ fn chronicle_synthesis_rejects_hypothesis_semantics_not_bound_to_terminal_output
         ("title", "titleSuggestion", json!("Altered title")),
         ("summary", "summary", json!("Altered summary")),
         ("actuality", "actuality", json!("prevented")),
+        ("rumored-actuality", "actuality", json!("rumored")),
         ("significance", "significance", json!("minor")),
         (
             "semantic-type",
@@ -3353,6 +3524,46 @@ fn chronicle_synthesis_accepts_generated_id_independence_and_empty_semantic_type
 #[test]
 fn chronicle_synthesis_rejects_noncanonical_hypothesis_and_event_shapes_atomically() {
     for (case, mutation, expected_code) in [
+        (
+            "hypothesis-planned-actuality",
+            SynthesisCompanionMutation::HypothesisField("actuality", json!("planned")),
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID",
+        ),
+        (
+            "event-planned-actuality",
+            SynthesisCompanionMutation::EventRowField("actuality", json!("planned")),
+            "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID",
+        ),
+        (
+            "hypothesis-dreamed-actuality",
+            SynthesisCompanionMutation::HypothesisField("actuality", json!("dreamed")),
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID",
+        ),
+        (
+            "event-dreamed-actuality",
+            SynthesisCompanionMutation::EventRowField("actuality", json!("dreamed")),
+            "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID",
+        ),
+        (
+            "hypothesis-unknown-actuality",
+            SynthesisCompanionMutation::HypothesisField("actuality", json!("unknown")),
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID",
+        ),
+        (
+            "event-unknown-actuality",
+            SynthesisCompanionMutation::EventRowField("actuality", json!("unknown")),
+            "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID",
+        ),
+        (
+            "hypothesis-future-actuality-actuality",
+            SynthesisCompanionMutation::HypothesisField("actuality", json!("future-actuality")),
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID",
+        ),
+        (
+            "event-future-actuality-actuality",
+            SynthesisCompanionMutation::EventRowField("actuality", json!("future-actuality")),
+            "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID",
+        ),
         (
             "blank-hypothesis-id",
             SynthesisCompanionMutation::HypothesisField("hypothesisId", json!(" ")),

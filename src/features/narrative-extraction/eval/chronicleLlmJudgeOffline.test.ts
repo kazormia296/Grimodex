@@ -376,7 +376,9 @@ describe("offline Chronicle LLM judge", () => {
       "Judge whether the permitted source text and evidence context support the complete explicitly asserted event, including its participant-role bindings, negation, actuality, attribution, and narrative frame. Predicate or entity presence alone is insufficient. An omission alone does not negate a supported known assertion; judge missing required information on the applicable completeness axes. Do not fill explicit unknowns from the source or Gold. Report source support independently when another axis mismatches. The same underlying error may make more than one independent axis mismatch; reporting it on one axis does not neutralize another. Keep temporal relations separate; a temporal mismatch does not change event source support. Treat evidenceCandidates.evidenceValid, overlap, directSupport, and contextSupport as citation-validity, reference-resolution, and range-coverage flags only; they never establish semantic entailment. A valid quote that covers the required range does not guarantee that the source supports the actual participant-role assertion.",
     );
     const { inputDigest, ...withoutInputDigest } = run.input;
-    await expect(digestStableJson(withoutInputDigest)).resolves.toBe(inputDigest);
+    await expect(digestStableJson(withoutInputDigest)).resolves.toBe(
+      inputDigest,
+    );
   });
 
   it("accepts only strict JSON responses and keeps the input identity opaque", async () => {

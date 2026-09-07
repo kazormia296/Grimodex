@@ -642,9 +642,9 @@ async function resolveActualEvidence(
       ...(reason ? { reason } : {}),
       ranges,
     },
-      anchors,
-      occurrences,
-    };
+    anchors,
+    occurrences,
+  };
 }
 
 function goldRanges(
@@ -833,7 +833,8 @@ function buildScopeEvidenceCandidates(
     for (const exclusion of scopeExclusions) {
       const ranges = rangesByScopeId.get(exclusion.id);
       if (!ranges) continue;
-      const requiredDirectRanges = ranges.requiredDirect.get(exclusion.id) ?? [];
+      const requiredDirectRanges =
+        ranges.requiredDirect.get(exclusion.id) ?? [];
       const allowedContextRanges =
         ranges.allowedContext.get(exclusion.id) ?? [];
       const evidenceValid =

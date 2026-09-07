@@ -42,7 +42,16 @@ import {
   type ChronicleExistingMatch,
   type ExistingChronicleEventCatalogRecord,
 } from "@/features/chronicle/extraction/existingEventMatcher";
-import { planChronicleEventProposals } from "@/features/chronicle/extraction/proposalPlanner";
+import { assertSavedPlanActualitySupport } from "@/features/chronicle/extraction/savedPlanActualityGate";
+import { planChronicleEventProposalsWithDiagnostics } from "@/features/chronicle/extraction/proposalPlanner";
+import {
+  checkHypothesisActuality,
+  type RejectedHypothesisActuality,
+} from "@/features/chronicle/extraction/hypothesisActualityGate";
+import {
+  synthesizeHypothesesFromClusters,
+  type RejectedSynthesisCluster,
+} from "@/features/chronicle/extraction/eventSynthesisFallback";
 import {
   assertUniqueObservationLocalIds,
   rekeyObservationsForWindow,
@@ -281,6 +290,7 @@ interface ClusterArtifactPayload {
 
 interface HypothesisArtifactPayload {
   readonly hypotheses: readonly EventHypothesis[];
+  readonly rejectedClusters?: readonly RejectedSynthesisCluster[];
 }
 
 interface MatchArtifactPayload {
@@ -291,6 +301,8 @@ interface MatchArtifactPayload {
 }
 
 interface ProposalPlanArtifactPayload {
+  readonly rejectedHypotheses?: readonly RejectedHypothesisActuality[];
+  readonly rejectedClusters?: readonly RejectedSynthesisCluster[];
   readonly proposals: readonly CreateChronicleEventProposalPayloadV1[];
   readonly proposalSetId?: string;
   /** Planned rows including match metadata for Review UI (PR4). */
@@ -1162,11 +1174,6 @@ function extractEventSentences(text: string): readonly string[] {
   );
 }
 
-function titleFromSentence(sentence: string): string {
-  const trimmed = sentence.replace(/。$/u, "").trim();
-  return trimmed.length <= 32 ? trimmed : `${trimmed.slice(0, 29)}...`;
-}
-
 export async function observeChronicleEventsFromSnapshot(
   _snapshot: NarrativeCorpusSnapshot,
   sourceViews: readonly NarrativeSourceView[],
@@ -1220,46 +1227,6 @@ async function resolveObservationEvidence(
     }
   }
   return anchors;
-}
-
-function synthesizeHypothesesFromClusters(
-  clusters: ClusterArtifactPayload["clusters"],
-  observations: readonly RawChronicleEventObservation[],
-  createId: () => string,
-): readonly EventHypothesis[] {
-  const observationById = new Map(
-    observations.map((observation) => [observation.localId, observation]),
-  );
-  return clusters.flatMap((cluster) => {
-    const clusterObservations = cluster.observationRefs
-      .map((ref) => observationById.get(ref))
-      .filter(
-        (observation): observation is RawChronicleEventObservation =>
-          observation !== undefined,
-      );
-    if (clusterObservations.length === 0) return [];
-    const primary = clusterObservations[0];
-    const actuality = primary.payload.actuality;
-    if (
-      actuality !== "actual" &&
-      actuality !== "attempted" &&
-      actuality !== "prevented" &&
-      actuality !== "rumored"
-    ) {
-      return [];
-    }
-    return [
-      {
-        hypothesisId: createId(),
-        clusterRef: cluster.clusterRef,
-        observationRefs: cluster.observationRefs,
-        titleSuggestion: titleFromSentence(primary.payload.predicate),
-        summary: primary.payload.predicate,
-        actuality,
-        significance: "major" as const,
-      },
-    ];
-  });
 }
 
 function documentSourceKeyForRef(
@@ -1598,6 +1565,7 @@ async function executeTask(
       }
 
       let hypotheses: readonly EventHypothesis[];
+      let rejectedClusters: readonly RejectedSynthesisCluster[] = [];
       const terminalOutputs: ChronicleSynthesisTerminalOutput[] = [];
       if (deps.useAi) {
         const synthesize = deps.synthesizeWithAi ?? runEventSynthesisTask;
@@ -1639,16 +1607,21 @@ async function executeTask(
         }
         hypotheses = collected;
       } else {
-        hypotheses = synthesizeHypothesesFromClusters(
+        const fallback = synthesizeHypothesesFromClusters(
           clusterPayload.clusters,
           mergedPayload.observations,
           createId,
         );
+        hypotheses = fallback.hypotheses;
+        rejectedClusters = fallback.rejectedClusters;
       }
 
       const draft = buildInlineJsonArtifact(
         CHRONICLE_EXTRACT_ARTIFACT_KINDS.hypotheses,
-        { hypotheses },
+        {
+          hypotheses,
+          ...(rejectedClusters.length > 0 ? { rejectedClusters } : {}),
+        },
       );
       if (deps.useAi && clusterPayload.clusters.length > 0) {
         const expectedClusters = new Set(
@@ -1880,13 +1853,14 @@ async function executeTask(
           (entry) => [entry.hypothesisId, entry.match] as const,
         ),
       );
-      const planned = planChronicleEventProposals({
-        hypotheses: hypothesisPayload.hypotheses,
-        observations: observationPayload.observations,
-        anchors: evidencePayload.anchors,
-        matchesByHypothesisId,
-        createId,
-      });
+      const { planned, rejectedHypotheses } =
+        planChronicleEventProposalsWithDiagnostics({
+          hypotheses: hypothesisPayload.hypotheses,
+          observations: observationPayload.observations,
+          anchors: evidencePayload.anchors,
+          matchesByHypothesisId,
+          createId,
+        });
       const proposals = planned.map((entry) => entry.proposal);
       const hypothesisById = new Map(
         hypothesisPayload.hypotheses.map(
@@ -1896,7 +1870,12 @@ async function executeTask(
       const alreadySatisfied = matchPayload.matches.flatMap((entry) => {
         if (entry.match.status !== "already-satisfied") return [];
         const hypothesis = hypothesisById.get(entry.hypothesisId);
-        if (!hypothesis) return [];
+        if (
+          !hypothesis ||
+          !checkHypothesisActuality(hypothesis, observationPayload.observations)
+            .ok
+        )
+          return [];
         return [
           {
             hypothesisId: entry.hypothesisId,
@@ -1909,6 +1888,8 @@ async function executeTask(
         CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
         {
           proposals,
+          rejectedHypotheses,
+          rejectedClusters: hypothesisPayload.rejectedClusters ?? [],
           planned: planned.map((entry) => ({
             proposal: entry.proposal,
             match: entry.match,
@@ -1921,6 +1902,7 @@ async function executeTask(
         outputJson: {
           proposalCount: proposals.length,
           alreadySatisfiedCount: alreadySatisfied.length,
+          rejectedHypothesisCount: rejectedHypotheses.length,
         },
         artifacts: [draft],
       };
@@ -2094,6 +2076,37 @@ export async function runChronicleExtractionCoordinator(
         resumedRunId,
         completedPlan,
       );
+      const [planPayload, hypothesesPayload, observationsPayload] =
+        await Promise.all([
+          loadCoordinatorInlineArtifact<ProposalPlanArtifactPayload>(
+            resumedRunId,
+            sealedRequest.authority,
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
+            true,
+          ),
+          loadCoordinatorInlineArtifact<HypothesisArtifactPayload>(
+            resumedRunId,
+            sealedRequest.authority,
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.hypotheses,
+            true,
+          ),
+          loadCoordinatorInlineArtifact<ObservationArtifactPayload>(
+            resumedRunId,
+            sealedRequest.authority,
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.mergedObservations,
+            true,
+          ),
+        ]);
+      assertSavedPlanActualitySupport({
+        alreadySatisfied: planPayload?.alreadySatisfied,
+        proposalPayloads: planPayload?.proposals,
+        planned: planPayload?.planned,
+        hypotheses: hypothesesPayload?.hypotheses,
+        observations: observationsPayload?.observations,
+        currentProposals: resumedTerminalProposalSet.proposals.map(
+          (proposal) => proposal.payload!,
+        ),
+      });
     }
     if (sealedDeps.useAi && completedObservation?.status === "completed") {
       const observationCount =
@@ -2500,10 +2513,22 @@ export async function runChronicleExtractionCoordinator(
               "NEX_CHRONICLE_V2_PRODUCTION_DISABLED: Chronicle V2 production marker is disabled",
             );
           }
+          const clusterPayload =
+            await loadCoordinatorInlineArtifact<ClusterArtifactPayload>(
+              runId,
+              sealedRequest.authority,
+              CHRONICLE_EXTRACT_ARTIFACT_KINDS.clusters,
+              sealedRequest.resume === true,
+            );
+          if (!clusterPayload)
+            throw new Error(
+              "Missing synthesis clusters for proposal persistence",
+            );
           productionV2 = await buildChronicleProductionV2Envelopes({
             projectId: sealedRequest.projectId,
             runId,
             plannedProposals: plannedRows,
+            synthesisClusters: clusterPayload.clusters,
             hypotheses: hypothesisPayload.hypotheses,
             originalObservations: originalObservationPayload.observations,
             mergedObservations: mergedObservationPayload.observations,

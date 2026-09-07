@@ -269,6 +269,18 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     contracts: ["native-command-roundtrip:project-snapshot"],
     capabilities: ["electron", "napi"],
   },
+  {
+    id: "chronicle-extract-review-apply-reopen",
+    domains: ["chronicle-extraction"],
+    interactions: [
+      "chronicle-extraction->sqlite",
+      "sqlite->chronicle-extraction",
+    ],
+    contracts: ["chronicle:extract-review-apply-reopen"],
+    capabilities: ["electron", "napi"],
+    description:
+      "fixed provider response -> production extraction and quote display -> human review -> Native V2 Prepare/Apply -> restart without duplicate Events",
+  },
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
   ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
 ]);
@@ -391,6 +403,10 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
       "electron/scripts/product-journeys.mjs",
       "electron/main/productJourneyAi.ts",
       "electron/main/productJourneyAi.test.ts",
+      "electron/main/productJourneyChronicleAi*.ts",
+      "electron/shared/productJourneyChronicleFixture.json",
+      "electron/scripts/chronicle-extraction-product-journey.mjs",
+      "scripts/chronicle-extraction-product-journey.test.mjs",
       "scripts/product-journey-*.test.mjs",
       "scripts/electron-product-journey-*.test.mjs",
       "scripts/electron-product-journeys.test.mjs",
@@ -524,6 +540,23 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
     paths: ["src/features/chronicle/**"],
   },
   {
+    id: "chronicle-extraction",
+    domains: ["chronicle-extraction"],
+    contracts: ["chronicle:extract-review-apply-reopen"],
+    paths: [
+      "src/features/chronicle/ChronicleExtractDialog.*",
+      "src/features/chronicle/ChronicleEvidencePane.*",
+      "src/features/chronicle/ChronicleProposalReview.*",
+      "src/features/chronicle/ChronicleProposalCard.*",
+      "src/features/chronicle/chronicleExtraction*",
+      "src/features/chronicle/extraction/**",
+      "src/application/narrative-extraction/extractionCoordinator.*",
+      "src/application/narrative-extraction/chronicleV2Production.*",
+      "src/application/narrative-extraction/aiTasks/runObservationExtractionTask.*",
+      "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.*",
+    ],
+  },
+  {
     id: "lint-ui",
     domains: ["lint-ui"],
     paths: ["src/features/lint/**"],
@@ -602,6 +635,10 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
 ]);
 
 export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
+  {
+    id: "chronicle:extract-review-apply-reopen",
+    domains: ["chronicle-extraction"],
+  },
   {
     id: "roundtrip:editor",
     domains: ["editor", "scene-persistence"],
@@ -764,6 +801,14 @@ export const PRODUCT_NATIVE_PERSISTENCE_DOMAINS = freezeEntries([
 ]);
 
 export const PRODUCT_INTERACTION_REQUIREMENTS = freezeEntries([
+  {
+    id: "chronicle-extraction->sqlite",
+    domains: ["chronicle-extraction", "sqlite"],
+  },
+  {
+    id: "sqlite->chronicle-extraction",
+    domains: ["sqlite", "chronicle-extraction"],
+  },
   { id: "editor->sqlite", domains: ["editor", "sqlite"] },
   { id: "sqlite->editor", domains: ["sqlite", "editor"] },
   { id: "scene-scope->chat", domains: ["scene-scope", "chat"] },

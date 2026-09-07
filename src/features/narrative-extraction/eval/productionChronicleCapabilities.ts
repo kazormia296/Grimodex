@@ -257,7 +257,15 @@ function plannerEmitsCapabilityProbe(
   return (
     planChronicleEventProposals({
       hypotheses: [hypothesis],
-      observations: [PRODUCTION_CAPABILITY_PROBE_OBSERVATION],
+      observations: [
+        {
+          ...PRODUCTION_CAPABILITY_PROBE_OBSERVATION,
+          payload: {
+            ...PRODUCTION_CAPABILITY_PROBE_OBSERVATION.payload,
+            actuality: hypothesis.actuality,
+          },
+        },
+      ],
       anchors: [PRODUCTION_CAPABILITY_PROBE_ANCHOR],
       matchesByHypothesisId: new Map([[hypothesis.hypothesisId, match]]),
       createId: () => "capability-probe-event",

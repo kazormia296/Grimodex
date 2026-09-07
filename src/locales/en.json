@@ -5830,6 +5830,7 @@
     "extractShort": "Extract",
     "unnamed": "(unnamed)",
     "extract": {
+      "reanalysisRequired": "Saved extraction proposals could not be restored. Analyze the source text again.",
       "title": "Extract events from prose",
       "hint": "AI reads the chapter/folder's prose and proposes in-story events. Importing adds them to the chronicle.",
       "selectFolder": "Select chapter/folder…",

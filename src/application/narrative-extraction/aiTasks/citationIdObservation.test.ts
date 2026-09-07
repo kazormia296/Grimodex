@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  dispatchInvoke,
+  type NapiBackendLike,
+} from "../../../../electron/shared/ipcContract";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { buildNarrativeCorpusSnapshot } from "@/features/narrative-extraction/source/buildSnapshot";
 import { buildNarrativeSourceView } from "@/features/narrative-extraction/source/sourceView";
@@ -16,6 +20,7 @@ import {
   buildCitationIdRepairPromptArtifact,
   CITATION_ID_OBSERVATION_EXPECTED_SHAPE,
   CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+  citationBindingAuditMetadata,
   validateCitationIdBinding,
 } from "./citationIdObservation";
 import {
@@ -188,6 +193,103 @@ function expectCitationIdSemanticGuidance(prompt: string): void {
   expect(prompt).toContain("本文が真実を保証していない");
   expect(prompt).toContain("本文で裏付けられた出来事");
 }
+
+function auditAppendFixture(metadata: Record<string, unknown>) {
+  const aiAuditAppendBatch = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      insertedCount: 1,
+      tailSequence: 1,
+      tailHash: "audit-h",
+    }),
+  );
+  const args = {
+    projectId: "citation-task-test",
+    expectedWorkspacePath: "/workspaces/citation-task-test",
+    events: [
+      {
+        eventId: "citation-event",
+        executionId: "citation-execution",
+        operationId: "citation-operation",
+        parentExecutionId: null,
+        pathId: "narrative_observation_extract",
+        eventType: "request.prepared",
+        timestamp: 1_700_000_000_000,
+        payload: {
+          captureState: "complete",
+          credentialsExcluded: true,
+          request: { messages: [] },
+          metadata,
+        },
+      },
+    ],
+  };
+  return {
+    args,
+    aiAuditAppendBatch,
+    dispatch: () =>
+      dispatchInvoke("ai_audit_append_batch", args, {
+        backend: { aiAuditAppendBatch } as unknown as NapiBackendLike,
+        shell: {},
+      }),
+  };
+}
+
+describe("citation binding audit IPC boundary", () => {
+  it.each(["citationEvidence", "childCitationEvidence"] as const)(
+    "persists generated %s with the exact alias namespace",
+    async (field) => {
+      const { binding } = await fixture();
+      const originalBinding = JSON.stringify(binding);
+      const metadata = citationBindingAuditMetadata(binding);
+      const wrapped =
+        field === "childCitationEvidence"
+          ? { repairResolution: { childCitationEvidence: metadata } }
+          : { citationEvidence: metadata };
+      const audit = auditAppendFixture(wrapped);
+      expect(await audit.dispatch()).toMatchObject({ ok: true });
+      expect(audit.aiAuditAppendBatch).toHaveBeenCalledWith(
+        audit.args.expectedWorkspacePath,
+        audit.args.projectId,
+        audit.args.events,
+      );
+      expect(metadata).not.toHaveProperty("bindingToken");
+      expect(metadata).toMatchObject({
+        requestIdentity: binding.requestIdentity,
+        catalogDigest: binding.catalogDigest,
+        snapshotArtifactDigest: binding.snapshotArtifactDigest,
+        aliases: binding.aliases.map(({ alias }) => ({ alias })),
+      });
+      for (const { alias } of binding.aliases) {
+        expect(alias).toMatch(new RegExp(`^E${binding.bindingToken}-`));
+      }
+      expect(JSON.stringify(binding)).toBe(originalBinding);
+    },
+  );
+
+  it.each(["bindingToken", "apiKey", "authorization"])(
+    "still rejects %s in citation metadata before persistence",
+    async (field) => {
+      const { binding } = await fixture();
+      const metadata = {
+        ...citationBindingAuditMetadata(binding),
+        [field]: "forbidden-audit-value",
+      };
+      for (const wrapped of [
+        { citationEvidence: metadata },
+        { repairResolution: { childCitationEvidence: metadata } },
+      ]) {
+        const audit = auditAppendFixture(wrapped);
+        expect(await audit.dispatch()).toMatchObject({
+          ok: false,
+          error: expect.stringContaining(
+            "credential and transport-header keys are excluded",
+          ),
+        });
+        expect(audit.aiAuditAppendBatch).not.toHaveBeenCalled();
+      }
+    },
+  );
+});
 
 describe("citation-ID observation runtime", () => {
   it("defines the same independent actuality semantics for legacy observations", () => {
@@ -677,7 +779,7 @@ describe("citation-ID observation runtime", () => {
     expect(childAudit?.metadata).toMatchObject({
       citationEvidence: {
         mode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
-        bindingToken: binding.bindingToken,
+        aliases: binding.aliases.map(({ alias }) => ({ alias })),
       },
     });
     expect(parentAudit?.metadata?.chronicleStageAudit).toMatchObject({
@@ -686,5 +788,15 @@ describe("citation-ID observation runtime", () => {
     expect(childAudit?.metadata?.chronicleStageAudit).toMatchObject({
       responseDigest: await sha256Digest(repairedResponse),
     });
+    for (const auditInput of [parentAudit, childAudit]) {
+      expect(auditInput?.metadata).toBeDefined();
+      const audit = auditAppendFixture(auditInput!.metadata!);
+      expect(await audit.dispatch()).toMatchObject({ ok: true });
+      expect(audit.aiAuditAppendBatch).toHaveBeenCalledWith(
+        audit.args.expectedWorkspacePath,
+        audit.args.projectId,
+        audit.args.events,
+      );
+    }
   });
 });

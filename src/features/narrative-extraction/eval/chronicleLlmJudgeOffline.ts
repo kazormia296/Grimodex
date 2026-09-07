@@ -210,8 +210,7 @@ interface ChronicleLlmJudgeInputBase {
   };
 }
 
-export interface ChronicleLlmJudgeLegacyInput
-  extends ChronicleLlmJudgeInputBase {
+export interface ChronicleLlmJudgeLegacyInput extends ChronicleLlmJudgeInputBase {
   readonly schemaVersion: typeof CHRONICLE_LLM_JUDGE_OFFLINE_SCHEMA_VERSION;
   readonly judgeVersion: typeof CHRONICLE_LLM_JUDGE_OFFLINE_VERSION;
   readonly inputDigest: Sha256Digest;
@@ -367,16 +366,14 @@ interface ChronicleLlmJudgeDiagnosticProjectionBase {
   readonly decision: ChronicleLlmJudgeDecisionProjection;
 }
 
-export interface ChronicleLlmJudgeLegacyDiagnosticProjection
-  extends ChronicleLlmJudgeDiagnosticProjectionBase {
+export interface ChronicleLlmJudgeLegacyDiagnosticProjection extends ChronicleLlmJudgeDiagnosticProjectionBase {
   readonly schemaVersion: typeof CHRONICLE_LLM_JUDGE_OFFLINE_SCHEMA_VERSION;
   readonly projectionVersion: typeof CHRONICLE_LLM_JUDGE_PROJECTION_VERSION;
   readonly judgeVersion: typeof CHRONICLE_LLM_JUDGE_OFFLINE_VERSION;
   readonly unscoredActualCount?: never;
 }
 
-export interface ChronicleLlmJudgeScopedDiagnosticProjection
-  extends ChronicleLlmJudgeDiagnosticProjectionBase {
+export interface ChronicleLlmJudgeScopedDiagnosticProjection extends ChronicleLlmJudgeDiagnosticProjectionBase {
   readonly schemaVersion: typeof CHRONICLE_LLM_JUDGE_SCOPED_SCHEMA_VERSION;
   readonly projectionVersion: typeof CHRONICLE_LLM_JUDGE_SCOPED_PROJECTION_VERSION;
   readonly judgeVersion: typeof CHRONICLE_LLM_JUDGE_SCOPED_VERSION;
@@ -386,8 +383,10 @@ export interface ChronicleLlmJudgeScopedDiagnosticProjection
   readonly unscoredActualCount: number;
 }
 
-export type ChronicleLlmJudgeDiagnosticProjection =
-  (ChronicleLlmJudgeLegacyDiagnosticProjection | ChronicleLlmJudgeScopedDiagnosticProjection) &
+export type ChronicleLlmJudgeDiagnosticProjection = (
+  | ChronicleLlmJudgeLegacyDiagnosticProjection
+  | ChronicleLlmJudgeScopedDiagnosticProjection
+) &
   Record<string, unknown>;
 
 export interface ChronicleLlmJudgeOfflineResult {
@@ -628,13 +627,7 @@ function parseResponseValue(value: unknown): ChronicleLlmJudgeResponse {
         duplicate
           ? ["actualRef", "status", "duplicateOf"]
           : unscored
-            ? [
-                "actualRef",
-                "status",
-                "scopeRef",
-                "scopeMatch",
-                "sourceSupport",
-              ]
+            ? ["actualRef", "status", "scopeRef", "scopeMatch", "sourceSupport"]
             : ["actualRef", "status"],
         path,
         errors,
@@ -665,10 +658,7 @@ function parseResponseValue(value: unknown): ChronicleLlmJudgeResponse {
         if (!isStatus(item.scopeMatch) || item.scopeMatch !== "match") {
           errors.push(`${path}.scopeMatch: unscored actual requires match`);
         }
-        if (
-          !isStatus(item.sourceSupport) ||
-          item.sourceSupport !== "match"
-        ) {
+        if (!isStatus(item.sourceSupport) || item.sourceSupport !== "match") {
           errors.push(`${path}.sourceSupport: unscored actual requires match`);
         }
       }
@@ -1641,9 +1631,9 @@ function validateJudgeResponseStructure(
     }
     const candidate = scopedInput
       ? input.scope.evidenceCandidates.find(
-      (item) =>
-        item.actualRef === unmatched.actualRef &&
-        item.scopeRef === unmatched.scopeRef,
+          (item) =>
+            item.actualRef === unmatched.actualRef &&
+            item.scopeRef === unmatched.scopeRef,
         )
       : undefined;
     if (!scopeEvidenceCandidateSupported(candidate)) {
@@ -2017,7 +2007,7 @@ function assertStrictProjection(
       errors.push("projection Gold partition counts do not sum to goldCount");
     }
     const projectedUnscoredActualCount = scopedProjection
-      ? projection.unscoredActualCount ?? 0
+      ? (projection.unscoredActualCount ?? 0)
       : 0;
     if (
       projection.fabricatedActualCount +
@@ -2543,9 +2533,7 @@ async function projectJudgeResponse(
         judgeVersion: CHRONICLE_LLM_JUDGE_OFFLINE_VERSION,
         rubricVersion: CHRONICLE_LLM_JUDGE_RUBRIC_VERSION,
       };
-  return freezeDeep(
-    projection satisfies ChronicleLlmJudgeDiagnosticProjection,
-  );
+  return freezeDeep(projection satisfies ChronicleLlmJudgeDiagnosticProjection);
 }
 
 /**

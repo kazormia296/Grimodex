@@ -17,6 +17,7 @@ import {
 import { createProductJourneyHarness } from "./product-journey-harness.mjs";
 import { launchProductJourneyMcpClient } from "./product-journey-mcp-client.mjs";
 import { createNativeRoundTripJourneys } from "./product-journey-native-roundtrips.mjs";
+import { createChronicleExtractionJourney } from "./chronicle-extraction-product-journey.mjs";
 import { createNarrativeMaintenanceProductJourneys } from "./narrative-maintenance-product-journeys.mjs";
 import {
   C2ZC_RESTORE_FIXTURE_ENV,
@@ -2281,6 +2282,10 @@ export const PRODUCT_JOURNEYS = [
     run: runMcpExternalWriteConflictJourney,
   },
   ...NATIVE_ROUND_TRIP_JOURNEYS,
+  createChronicleExtractionJourney({
+    configureWorkspace,
+    evidenceDirectory: path.dirname(resolveResultsPath()),
+  }),
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS,
   ...NARRATIVE_C2ZC_PRODUCT_JOURNEYS,
 ];
