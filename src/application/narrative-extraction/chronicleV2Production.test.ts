@@ -9,6 +9,7 @@ import {
   buildChronicleProductionV2Envelope,
   buildChronicleProductionV2Envelopes,
   buildEventSynthesisContextManifests,
+  type ChronicleV2ProductionInput,
 } from "./chronicleV2Production";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
 import {
@@ -111,7 +112,9 @@ const snapshot = {
   artifactDigest: DIGEST,
 } as unknown as NarrativeCorpusSnapshot;
 
-async function receipts() {
+async function receipts(
+  clusterObservations: readonly RawChronicleEventObservation[] = [observation],
+) {
   const observationExecution = createStageExecutionContext({
     projectId: "project:chronicle",
     runId: "run:production",
@@ -130,7 +133,7 @@ async function receipts() {
   });
   const contextSet = buildEventSynthesisContextManifests(
     hypothesis.clusterRef,
-    [observation],
+    clusterObservations,
   );
   const contextDigest =
     await import("@/features/narrative-extraction/reconciler/chroniclePromptBuilder").then(
@@ -148,7 +151,7 @@ async function receipts() {
   const rawObservationsDigest = await digestStableJson({
     kind: "chronicle.raw-observations@1",
     version: 1,
-    observations: [observation],
+    observations: clusterObservations,
   });
   const eventOutput = {
     clusterRef: hypothesis.clusterRef,
@@ -166,9 +169,9 @@ async function receipts() {
   const parsedOutputDigest = await digestStableJson({
     domain: "chronicle.parsed-output/1",
     kind: "chronicle.event-synthesis-output@1",
-    observationCount: 1,
+    observationCount: clusterObservations.length,
     eventCount: 1,
-    observationRefs: [observation.localId],
+    observationRefs: clusterObservations.map((item) => item.localId),
     rawObservationsDigest,
     eventOutputDigest: await digestStableJson(eventOutput),
   });
@@ -248,6 +251,27 @@ async function repairReceipts() {
   return [observationReceipt, failedRoot, repair];
 }
 
+async function productionInput(): Promise<ChronicleV2ProductionInput> {
+  return {
+    projectId: "project:chronicle",
+    runId: "run:production",
+    proposalKey: "event:arrival:0",
+    proposal,
+    hypothesis,
+    synthesisCluster: {
+      clusterRef: hypothesis.clusterRef,
+      observationRefs: [observation.localId],
+    },
+    originalObservations: [observation],
+    mergedObservations: [observation],
+    evidenceAnchors: [anchor],
+    existingEventMatch: { status: "none" },
+    snapshot,
+    sourceBasis: buildSnapshotSourceBasis("run:production", snapshot),
+    stageReceipts: await receipts(),
+  };
+}
+
 describe("Chronicle V2 production adapter boundary", () => {
   it("builds the exact synthesis Context Set declarations", () => {
     expect(
@@ -278,6 +302,10 @@ describe("Chronicle V2 production adapter boundary", () => {
       proposalKey: "event:arrival:0",
       proposal,
       hypothesis,
+      synthesisCluster: {
+        clusterRef: hypothesis.clusterRef,
+        observationRefs: [observation.localId],
+      },
       originalObservations: [observation],
       mergedObservations: [observation],
       evidenceAnchors: [anchor],
@@ -328,6 +356,12 @@ describe("Chronicle V2 production adapter boundary", () => {
         },
       ],
       hypotheses: [hypothesis],
+      synthesisClusters: [
+        {
+          clusterRef: hypothesis.clusterRef,
+          observationRefs: [observation.localId],
+        },
+      ],
       originalObservations: [observation],
       mergedObservations: [observation],
       evidenceAnchors: [anchor],
@@ -352,6 +386,10 @@ describe("Chronicle V2 production adapter boundary", () => {
       proposalKey: "event:arrival:repair",
       proposal,
       hypothesis,
+      synthesisCluster: {
+        clusterRef: hypothesis.clusterRef,
+        observationRefs: [observation.localId],
+      },
       originalObservations: [observation],
       mergedObservations: [observation],
       evidenceAnchors: [anchor],
@@ -377,6 +415,172 @@ describe("Chronicle V2 production adapter boundary", () => {
     );
   });
 
+  it.each(["planned", "dreamed", "rumored"] as const)(
+    "keeps the full %s/actual synthesis context while projecting only the actual claim",
+    async (actuality) => {
+      const contrast: RawChronicleEventObservation = {
+        ...observation,
+        localId: `observation:${actuality}`,
+        payload: { ...observation.payload, actuality },
+      };
+      const all = [observation, contrast];
+      const stageReceipts = await receipts(all);
+      const before = JSON.stringify({ stageReceipts, hypothesis, all });
+      const result = await buildChronicleProductionV2Envelope({
+        projectId: "project:chronicle",
+        runId: "run:production",
+        proposalKey: "event:arrival:0",
+        proposal,
+        hypothesis,
+        synthesisCluster: {
+          clusterRef: hypothesis.clusterRef,
+          observationRefs: all.map((item) => item.localId),
+        },
+        originalObservations: all,
+        mergedObservations: all,
+        evidenceAnchors: [anchor],
+        existingEventMatch: { status: "none" },
+        snapshot,
+        sourceBasis: buildSnapshotSourceBasis("run:production", snapshot),
+        stageReceipts,
+      });
+      const revisionBasis = result.envelope.revisionBasis;
+      if (revisionBasis.kind !== "interpretation") {
+        throw new Error("Expected a synthesis interpretation revision basis");
+      }
+      expect(revisionBasis.contextSetDigest).toBe(
+        stageReceipts[1]!.contextSetDigest,
+      );
+      expect(result.envelope.assertion.payload.observationRefs).toEqual([
+        observation.localId,
+      ]);
+      expect(result.envelope.assertion.payload.actuality).toBe("actual");
+      expect(revisionBasis.contextSet).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            inputRef: `observation:${contrast.localId}`,
+          }),
+        ]),
+      );
+      expect(result.envelope.effectiveMaterialBasis.dependencySet).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            inputRef: `observation:${contrast.localId}`,
+            role: "opaque-model-context",
+          }),
+        ]),
+      );
+      expect(JSON.stringify({ stageReceipts, hypothesis, all })).toBe(before);
+    },
+  );
+
+  it.each([
+    ["missing cluster", undefined],
+    [
+      "mismatched cluster",
+      { clusterRef: "cluster:other", observationRefs: [observation.localId] },
+    ],
+    [
+      "empty cluster",
+      { clusterRef: hypothesis.clusterRef, observationRefs: [] },
+    ],
+    [
+      "duplicate cluster refs",
+      {
+        clusterRef: hypothesis.clusterRef,
+        observationRefs: [observation.localId, observation.localId],
+      },
+    ],
+    [
+      "unavailable cluster observation",
+      {
+        clusterRef: hypothesis.clusterRef,
+        observationRefs: [observation.localId, "observation:missing"],
+      },
+    ],
+    [
+      "hypothesis outside cluster",
+      {
+        clusterRef: hypothesis.clusterRef,
+        observationRefs: ["observation:other"],
+      },
+    ],
+  ] as const)(
+    "rejects %s without reconstructing a hypothesis-only context",
+    async (_name, synthesisCluster) => {
+      const input = await productionInput();
+      await expect(
+        buildChronicleProductionV2Envelope({
+          ...input,
+          synthesisCluster,
+        } as ChronicleV2ProductionInput),
+      ).rejects.toThrow(/NEX_CHRONICLE_V2_(OBSERVATION_)?PROVENANCE_MISSING/);
+    },
+  );
+
+  it.each(["originalObservations", "mergedObservations"] as const)(
+    "rejects duplicate localIds in %s",
+    async (field) => {
+      const input = await productionInput();
+      await expect(
+        buildChronicleProductionV2Envelope({
+          ...input,
+          [field]: [
+            observation,
+            {
+              ...observation,
+              payload: { ...observation.payload, actuality: "planned" },
+            },
+          ],
+        }),
+      ).rejects.toThrow("Observation localIds must be nonempty and unique");
+    },
+  );
+
+  it("rejects a subset-only receipt for a saved mixed synthesis cluster", async () => {
+    const contrast: RawChronicleEventObservation = {
+      ...observation,
+      localId: "observation:planned",
+      payload: { ...observation.payload, actuality: "planned" },
+    };
+    const input = await productionInput();
+    await expect(
+      buildChronicleProductionV2Envelope({
+        ...input,
+        synthesisCluster: {
+          clusterRef: hypothesis.clusterRef,
+          observationRefs: [observation.localId, contrast.localId],
+        },
+        originalObservations: [observation, contrast],
+        mergedObservations: [observation, contrast],
+      }),
+    ).rejects.toThrow("no C1 synthesis receipt matches cluster");
+  });
+
+  it.each([0, 2])(
+    "rejects a batch with %i matching saved synthesis clusters",
+    async (count) => {
+      const input = await productionInput();
+      await expect(
+        buildChronicleProductionV2Envelopes({
+          ...input,
+          hypotheses: [hypothesis],
+          synthesisClusters: Array.from(
+            { length: count },
+            () => input.synthesisCluster,
+          ),
+          plannedProposals: [
+            {
+              proposal,
+              match: { status: "none" },
+              hypothesisId: hypothesis.hypothesisId,
+            },
+          ],
+        }),
+      ).rejects.toThrow("exactly one saved synthesis cluster must match");
+    },
+  );
+
   it("fails closed when the C1 synthesis receipt is absent", async () => {
     const stageReceipts = await receipts();
     await expect(
@@ -386,6 +590,10 @@ describe("Chronicle V2 production adapter boundary", () => {
         proposalKey: "event:arrival:0",
         proposal,
         hypothesis,
+        synthesisCluster: {
+          clusterRef: hypothesis.clusterRef,
+          observationRefs: [observation.localId],
+        },
         originalObservations: [observation],
         mergedObservations: [observation],
         evidenceAnchors: [anchor],

@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "chronicle-judge-case-contract/1",
+  "caseId": "transfer-actual-001",
+  "authorship": {
+    "status": "draft-for-human-review",
+    "derivation": "source-text-only",
+    "independentSourceAnnotation": true,
+    "candidateOutputContamination": false,
+    "reviewRequired": true,
+    "formalCertification": false,
+    "semanticGoldStatus": "user-approved",
+    "runtimeCapability": "supported",
+    "ordinaryQualityRun": "enabled",
+    "reviewScope": {
+      "sourceAndGoldReviewed": true,
+      "eventObservationPolicy": "case-atomic-claims-user-approved",
+      "atomicObservationClaimIds": ["A1", "A2"],
+      "temporalScope": "all-relations-unscored",
+      "temporalRelationIds": [],
+      "excludedTemporalScopes": ["temporal-metadata", "proposal-importance"],
+      "scopeExclusionIds": ["color-descriptor", "temporal-metadata", "proposal-importance"]
+    },
+    "excludedInputs": [
+      "deleted-provider-response",
+      "candidate-observation-wording",
+      "v1-scorer-decision"
+    ]
+  },
+  "coverage": {
+    "observation": "exhaustive",
+    "temporal": "targeted",
+    "proposal": "targeted"
+  },
+  "sourceDocuments": [
+    {
+      "id": "transfer-actual-source",
+      "title": "実際の出来事",
+      "text": "ナギは赤い布を箱に入れた。トウマは箱の蓋を閉めた。",
+      "textSha256": "7e3c35f54a6a243ee03b8b0b234354b3f29f46e9f19f7622e7df493da02c61f9"
+    }
+  ],
+  "observationGold": {
+    "claims": [
+      {
+        "id": "A1",
+        "predicate": "put",
+        "participants": [
+          { "entity": "ナギ", "role": "agent" },
+          { "entity": "赤い布", "role": "theme" },
+          { "entity": "箱", "role": "destination" }
+        ],
+        "actuality": "actual",
+        "attribution": "narrator",
+        "narrativeFrame": "story-world",
+        "requiredDirectRegions": [
+          { "documentId": "transfer-actual-source", "start": 0, "end": 12 }
+        ],
+        "allowedContextRegions": [],
+        "granularity": "atomic"
+      },
+      {
+        "id": "A2",
+        "predicate": "close",
+        "participants": [
+          { "entity": "トウマ", "role": "agent" },
+          { "entity": "箱の蓋", "role": "theme" }
+        ],
+        "actuality": "actual",
+        "attribution": "narrator",
+        "narrativeFrame": "story-world",
+        "requiredDirectRegions": [
+          { "documentId": "transfer-actual-source", "start": 13, "end": 24 }
+        ],
+        "allowedContextRegions": [],
+        "granularity": "atomic"
+      }
+    ]
+  },
+  "temporalGold": {
+    "coverage": "targeted",
+    "relations": [],
+    "unscoredClaimIds": ["A1", "A2"]
+  },
+  "proposalPolicy": {
+    "mode": "unscored",
+    "scoredClaimIds": [],
+    "reason": "importance-not-annotated"
+  },
+  "scopeExclusions": [
+    {
+      "id": "color-descriptor",
+      "meaning": "赤いという色属性は別のatomic Observationとして採点しない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-actual-source", "start": 3, "end": 5 }
+      ],
+      "allowedContextRegions": [
+        { "documentId": "transfer-actual-source", "start": 0, "end": 12 }
+      ],
+      "reason": "属性はイベント主張の粒度に含めない。"
+    },
+    {
+      "id": "temporal-metadata",
+      "meaning": "出来事の時間値は今回の対象範囲に含めない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-actual-source", "start": 0, "end": 12 }
+      ],
+      "allowedContextRegions": [],
+      "reason": "temporal coverage is targeted with no relation Gold."
+    },
+    {
+      "id": "proposal-importance",
+      "meaning": "Proposalの重要度と選別は今回の対象範囲に含めない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-actual-source", "start": 13, "end": 24 }
+      ],
+      "allowedContextRegions": [],
+      "reason": "importance is not annotated."
+    }
+  ]
+}

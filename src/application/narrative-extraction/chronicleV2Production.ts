@@ -36,12 +36,18 @@ export const CHRONICLE_PRODUCTION_RECONCILER_ID =
 export const CHRONICLE_PRODUCTION_RECONCILER_VERSION = "1" as const;
 export const CHRONICLE_SCENE_EVENT_V2_PRODUCTION = true as const;
 
+export interface ChronicleV2SynthesisCluster {
+  readonly clusterRef: string;
+  readonly observationRefs: readonly string[];
+}
+
 export interface ChronicleV2ProductionInput {
   readonly projectId: string;
   readonly runId: string;
   readonly proposalKey: string;
   readonly proposal: CreateChronicleEventProposalPayloadV1;
   readonly hypothesis: EventHypothesis;
+  readonly synthesisCluster: ChronicleV2SynthesisCluster;
   readonly originalObservations: readonly RawChronicleEventObservation[];
   readonly mergedObservations: readonly RawChronicleEventObservation[];
   readonly evidenceAnchors: readonly ResolvedEvidenceAnchor[];
@@ -69,6 +75,7 @@ export interface ChronicleV2ProductionBatchInput {
   readonly runId: string;
   readonly plannedProposals: readonly ChronicleV2PlannedProposal[];
   readonly hypotheses: readonly EventHypothesis[];
+  readonly synthesisClusters: readonly ChronicleV2SynthesisCluster[];
   readonly originalObservations: readonly RawChronicleEventObservation[];
   readonly mergedObservations: readonly RawChronicleEventObservation[];
   readonly evidenceAnchors: readonly ResolvedEvidenceAnchor[];
@@ -109,13 +116,26 @@ export function buildEventSynthesisContextManifests(
   ];
 }
 
+function indexObservations(
+  observations: readonly RawChronicleEventObservation[],
+): ReadonlyMap<string, RawChronicleEventObservation> {
+  const byId = new Map<string, RawChronicleEventObservation>();
+  for (const observation of observations) {
+    if (!observation.localId.trim() || byId.has(observation.localId)) {
+      throw new Error(
+        "NEX_CHRONICLE_V2_OBSERVATION_PROVENANCE_MISSING: Observation localIds must be nonempty and unique",
+      );
+    }
+    byId.set(observation.localId, observation);
+  }
+  return byId;
+}
+
 function observationsForHypothesis(
   observations: readonly RawChronicleEventObservation[],
   hypothesis: EventHypothesis,
 ): readonly RawChronicleEventObservation[] {
-  const byId = new Map(
-    observations.map((observation) => [observation.localId, observation]),
-  );
+  const byId = indexObservations(observations);
   const selected = hypothesis.observationRefs.map((ref) => byId.get(ref));
   if (selected.some((observation) => observation === undefined)) {
     throw new Error(
@@ -123,6 +143,40 @@ function observationsForHypothesis(
     );
   }
   return selected as readonly RawChronicleEventObservation[];
+}
+
+function observationsForSynthesisContext(
+  input: ChronicleV2ProductionInput,
+): readonly RawChronicleEventObservation[] {
+  const cluster = input.synthesisCluster;
+  if (
+    !cluster ||
+    cluster.clusterRef !== input.hypothesis.clusterRef ||
+    !Array.isArray(cluster.observationRefs) ||
+    cluster.observationRefs.length === 0 ||
+    cluster.observationRefs.some((ref) => !ref.trim()) ||
+    new Set(cluster.observationRefs).size !== cluster.observationRefs.length
+  ) {
+    throw new Error(
+      "NEX_CHRONICLE_V2_PROVENANCE_MISSING: a unique saved synthesis cluster with nonempty Observation refs is required",
+    );
+  }
+  const clusterRefs = new Set(cluster.observationRefs);
+  if (input.hypothesis.observationRefs.some((ref) => !clusterRefs.has(ref))) {
+    throw new Error(
+      "NEX_CHRONICLE_V2_OBSERVATION_PROVENANCE_MISSING: hypothesis references an Observation outside its synthesis cluster",
+    );
+  }
+  const byId = indexObservations(input.mergedObservations);
+  return cluster.observationRefs.map((ref) => {
+    const observation = byId.get(ref);
+    if (!observation) {
+      throw new Error(
+        "NEX_CHRONICLE_V2_OBSERVATION_PROVENANCE_MISSING: synthesis cluster references an unavailable Observation",
+      );
+    }
+    return observation;
+  });
 }
 
 function buildDependencyDeclarations(
@@ -332,7 +386,7 @@ export async function buildChronicleProductionV2Envelope(
   );
   const contextManifests = buildEventSynthesisContextManifests(
     input.hypothesis.clusterRef,
-    mergedObservations,
+    observationsForSynthesisContext(input),
   );
   const contextSetDigest = await digestChronicleContextSet(
     contextManifests,
@@ -489,12 +543,21 @@ export async function buildChronicleProductionV2Envelopes(
         `Missing hypothesis for Chronicle V2 proposal ${proposalKey}`,
       );
     }
+    const synthesisClusters = input.synthesisClusters?.filter(
+      (cluster) => cluster.clusterRef === hypothesis.clusterRef,
+    );
+    if (synthesisClusters?.length !== 1 || !synthesisClusters[0]) {
+      throw new Error(
+        `NEX_CHRONICLE_V2_PROVENANCE_MISSING: exactly one saved synthesis cluster must match '${hypothesis.clusterRef}'`,
+      );
+    }
     const builtV2 = await buildChronicleProductionV2Envelope({
       projectId: input.projectId,
       runId: input.runId,
       proposalKey,
       proposal: plannedRow.proposal,
       hypothesis,
+      synthesisCluster: synthesisClusters[0],
       originalObservations: input.originalObservations,
       mergedObservations: input.mergedObservations,
       evidenceAnchors: input.evidenceAnchors,

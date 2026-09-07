@@ -9,6 +9,27 @@ import {
 } from "./artifactRepository";
 import { resetNarrativeExtractionRunIndexForTests } from "./runRepository";
 
+vi.mock("@/features/ai-policy/policyGuard", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/features/ai-policy/policyGuard")
+  >()),
+  blockIfPolicyOff: () => false,
+}));
+vi.mock("@/features/license/gate", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/license/gate")>()),
+  blockIfUnlicensed: () => false,
+}));
+vi.mock("@/features/ai-usage/recordAiUsage", () => ({
+  recordAiUsage: vi.fn(),
+}));
+vi.mock("@/features/chat/modelRouting", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/chat/modelRouting")>()),
+  resolveRoleSendOverride: () => ({
+    model: "fixed-modality-model",
+    provider: "fixed-modality-provider",
+  }),
+}));
+
 const claimMock = vi.hoisted(() => vi.fn());
 const finishMock = vi.hoisted(() => vi.fn());
 const failMock = vi.hoisted(() => vi.fn());
@@ -60,6 +81,16 @@ import {
   CHRONICLE_EXTRACT_RUN_SPEC_KIND,
   runChronicleExtractionCoordinator,
 } from "./extractionCoordinator";
+import {
+  CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+  LEGACY_OBSERVATION_EVIDENCE_MODE,
+} from "./aiTasks/citationIdObservation";
+import { runObservationExtractionTask } from "./aiTasks/runObservationExtractionTask";
+import { runEventSynthesisTask } from "./aiTasks/runEventSynthesisTask";
+import { buildNarrativeSourceView } from "@/features/narrative-extraction/source/sourceView";
+import { resolveEvidenceReference } from "@/features/narrative-extraction/evidence/resolveEvidence";
+import { planExtractionWindows } from "@/features/chronicle/extraction/windowPlanner";
+import { rekeyObservationsForWindow } from "@/features/chronicle/extraction/windowExtractor";
 import { loadInlineJsonArtifact } from "./artifactRepository";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
@@ -200,6 +231,219 @@ const CATALOG_EVENT: ExistingChronicleEventCatalogRecord = {
   applicationProvenanceKeys: [],
 };
 
+type ModalityClaim = {
+  readonly actuality: "actual" | "rumored" | "planned" | "dreamed";
+  readonly quote: string;
+  readonly predicate: string;
+  readonly assertion: RawChronicleEventObservation["assertion"];
+  readonly participants: RawChronicleEventObservation["payload"]["participants"];
+};
+
+const MODALITY_CLAIMS: readonly ModalityClaim[] = [
+  {
+    actuality: "actual",
+    quote: "人々は広場へ避難した。",
+    predicate: "人々が広場へ避難する",
+    assertion: { attribution: "narrator", narrativeFrame: "story-world" },
+    participants: [
+      { surface: "人々", role: "agent" },
+      { surface: "広場", role: "destination" },
+    ],
+  },
+  {
+    actuality: "rumored",
+    quote: "兵士は塔が崩れたと聞いた。",
+    predicate: "塔が崩れる",
+    assertion: { attribution: "character:兵士", narrativeFrame: "reported" },
+    participants: [{ surface: "塔", role: "theme" }],
+  },
+  {
+    actuality: "planned",
+    quote: "使者は荷物を運ぶ予定だと話した。",
+    predicate: "使者が荷物を運ぶ",
+    assertion: { attribution: "character:使者", narrativeFrame: "reported" },
+    participants: [
+      { surface: "使者", role: "agent" },
+      { surface: "荷物", role: "theme" },
+    ],
+  },
+  {
+    actuality: "dreamed",
+    quote: "夢の中で魚が空を泳いだ。",
+    predicate: "魚が空を泳ぐ",
+    assertion: { attribution: "narrator", narrativeFrame: "dream" },
+    participants: [{ surface: "魚", role: "agent" }],
+  },
+];
+
+function modalityPayload(
+  claim: ModalityClaim,
+): RawChronicleEventObservation["payload"] {
+  return {
+    predicate: claim.predicate,
+    actuality: claim.actuality,
+    participants: claim.participants,
+    temporalExpressions: [],
+    durationKind: "unknown",
+  };
+}
+
+async function modalitySnapshot(claims: readonly ModalityClaim[]) {
+  const built = await buildNarrativeCorpusSnapshot({
+    snapshotId: "snapshot-modalities",
+    language: "ja",
+    origin: { kind: "grimodex-project", projectId: "project-a" },
+    documents: [
+      {
+        sourceKey: "project:scene:one",
+        parentSourceKey: null,
+        title: "Modalities",
+        orderIndex: 0,
+        proseMirrorJson: prose(claims.map((claim) => claim.quote).join("")),
+        origin: {
+          kind: "project-node",
+          projectId: "project-a",
+          nodeId: "scene-one",
+          sourceVersion: 1,
+          sourceUpdatedAt: "2026-09-07T00:00:00.000Z",
+          sourceUri: null,
+        },
+      },
+    ],
+    omissions: [],
+    createdAt: "2026-09-07T00:00:00.000Z",
+  });
+  if (!built.ok) throw new Error("modality snapshot failed");
+  return built.snapshot;
+}
+
+async function modalityArtifacts(runId: string) {
+  const options = {
+    scope: {
+      projectId: "project-a",
+      workspacePath: "/workspace/a",
+      workspaceOpenRevision: 1,
+    },
+  };
+  const original = await loadInlineJsonArtifact<{
+    observations: readonly RawChronicleEventObservation[];
+  }>(runId, CHRONICLE_EXTRACT_ARTIFACT_KINDS.observations, options);
+  const merged = await loadInlineJsonArtifact<{
+    observations: readonly RawChronicleEventObservation[];
+  }>(runId, CHRONICLE_EXTRACT_ARTIFACT_KINDS.mergedObservations, options);
+  const hypotheses = await loadInlineJsonArtifact<{
+    hypotheses: readonly EventHypothesis[];
+  }>(runId, CHRONICLE_EXTRACT_ARTIFACT_KINDS.hypotheses, options);
+  if (!original || !merged || !hypotheses)
+    throw new Error("modality stage artifact missing");
+  const proposalPlan = await loadInlineJsonArtifact<{
+    rejectedHypotheses: readonly { hypothesisId: string; reason: string }[];
+    rejectedClusters: readonly { clusterRef: string; reason: string }[];
+  }>(runId, CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals, options);
+  if (!proposalPlan) throw new Error("modality plan artifact missing");
+  return {
+    proposalPlan,
+    hypothesisArtifact: hypotheses,
+    original: original.observations,
+    merged: merged.observations,
+    hypotheses: hypotheses.hypotheses,
+  };
+}
+
+async function runFixedModalityCoordinator(
+  claims: readonly ModalityClaim[],
+  promote: boolean,
+) {
+  const runId = "run-modality-citation";
+  const snapshot = await modalitySnapshot(claims);
+  const synthesisInputs: RawChronicleEventObservation[] = [];
+  const result = await runChronicleExtractionCoordinator(
+    {
+      projectId: "project-a",
+      folderId: "folder-1",
+      language: "ja",
+      sceneIds: ["scene-one"],
+      authority: authority(),
+      runId,
+    },
+    {
+      useAi: true,
+      evidenceMode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+      buildSnapshot: async () => ({
+        ok: true as const,
+        snapshot,
+        scopeAuthorityDocuments: [],
+        flush: { status: "already-clean" as const, blockedDocuments: [] },
+      }),
+      observeWithAi: (input) =>
+        runObservationExtractionTask({
+          ...input,
+          repairOnFailure: false,
+          send: async () => {
+            const binding = input.evidenceSpanCatalogBinding;
+            if (!binding) throw new Error("real citation binding missing");
+            const segments = binding.windows.flatMap(
+              (window) => window.segments,
+            );
+            const rows = claims.flatMap((claim) => {
+              const segment = segments.find(
+                (item) => item.kind === "span" && item.text === claim.quote,
+              );
+              return segment?.evidenceRef
+                ? [
+                    {
+                      localId: claim.actuality,
+                      evidenceRefs: [segment.evidenceRef],
+                      assertion: claim.assertion,
+                      payload: modalityPayload(claim),
+                    },
+                  ]
+                : [];
+            });
+            return {
+              text: JSON.stringify({ observations: rows }),
+              inputTokens: 1,
+              outputTokens: 1,
+            };
+          },
+        }),
+      synthesizeWithAi: (input) => {
+        synthesisInputs.push(...input.observations);
+        expect(input.observations).toHaveLength(1);
+        const primary = input.observations[0]!;
+        // Fixed response describes the same event; never the outer speech/hearing act.
+        const actuality = promote ? "actual" : primary.payload.actuality;
+        const events =
+          actuality === "actual" || actuality === "rumored"
+            ? [
+                {
+                  observationRefs: [primary.localId],
+                  titleSuggestion: primary.payload.predicate,
+                  summary: primary.payload.predicate,
+                  actuality,
+                  significance: "major",
+                },
+              ]
+            : [];
+        return runEventSynthesisTask({
+          ...input,
+          repairOnFailure: false,
+          send: async () => ({
+            text: JSON.stringify({
+              clusterRef: input.clusterRef,
+              resolution: events.length ? "single-event" : "unresolved",
+              events,
+            }),
+            inputTokens: 1,
+            outputTokens: 1,
+          }),
+        });
+      },
+    },
+  );
+  return { result, synthesisInputs, artifacts: await modalityArtifacts(runId) };
+}
+
 describe("runChronicleExtractionCoordinator (fake path)", () => {
   beforeEach(() => {
     setCurrentWorkspaceIdentity({ path: "/workspace/a", openRevision: 1 });
@@ -312,6 +556,289 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
       createdAt: "2026-08-10T00:00:00.000Z",
     });
   });
+
+  it("preserves citation modalities through real synthesis and keeps only the actual control Proposal", async () => {
+    const { result, synthesisInputs, artifacts } =
+      await runFixedModalityCoordinator(MODALITY_CLAIMS, false);
+    expect(Object.keys(artifacts.hypothesisArtifact)).toEqual(["hypotheses"]);
+    for (const observations of [
+      artifacts.original,
+      artifacts.merged,
+      synthesisInputs,
+    ]) {
+      expect(
+        observations.map((item) => ({
+          assertion: item.assertion,
+          payload: item.payload,
+        })),
+      ).toEqual(
+        MODALITY_CLAIMS.map((claim) => ({
+          assertion: claim.assertion,
+          payload: modalityPayload(claim),
+        })),
+      );
+    }
+    expect(artifacts.hypotheses.map((item) => item.actuality)).toEqual([
+      "actual",
+      "rumored",
+    ]);
+    // planned/dreamed remain Observations; valid empty synthesis outputs do not invent Hypotheses.
+    expect(
+      result.proposals.map((item) => ({
+        title: item.title,
+        actuality: item.actuality,
+      })),
+    ).toEqual([{ title: MODALITY_CLAIMS[0]!.predicate, actuality: "actual" }]);
+    expect(result.proposals[0]!.evidenceAnchorIds.length).toBeGreaterThan(0);
+  });
+
+  it.each(["rumored", "planned", "dreamed"] as const)(
+    "rejects unjustified actual synthesis of a %s event while retaining the independent actual Proposal",
+    async (actuality) => {
+      const control = MODALITY_CLAIMS[0]!;
+      const nonactual = MODALITY_CLAIMS.find(
+        (claim) => claim.actuality === actuality,
+      )!;
+      const { result, artifacts } = await runFixedModalityCoordinator(
+        [control, nonactual],
+        true,
+      );
+      expect(artifacts.merged.map((item) => item.payload.actuality)).toEqual([
+        "actual",
+        actuality,
+      ]);
+      expect(artifacts.hypotheses).toHaveLength(2);
+      expect(artifacts.proposalPlan.rejectedHypotheses).toEqual([
+        {
+          hypothesisId: artifacts.hypotheses[1]!.hypothesisId,
+          reason: "hypothesis-observation-actuality-mismatch",
+        },
+      ]);
+      expect(result.proposals).toContainEqual(
+        expect.objectContaining({
+          title: control.predicate,
+          actuality: "actual",
+        }),
+      );
+      // A normal regression assertion: a model's unsupported promotion must not become a Proposal.
+      expect(
+        result.proposals.map((item) => ({
+          title: item.title,
+          actuality: item.actuality,
+        })),
+      ).toEqual([{ title: control.predicate, actuality: "actual" }]);
+    },
+  );
+
+  it.each(["fallback", "persisted-hypotheses"] as const)(
+    "resumes typed modality artifacts through %s without promoting them or discarding the actual control",
+    async (resumeStage) => {
+      // This starts from typed artifacts, not raw-text modality recognition by the fallback extractor.
+      const runId = "run-modality-fallback";
+      const snapshot = await modalitySnapshot(MODALITY_CLAIMS);
+      const document = snapshot.documents[0]!;
+      const plan = planExtractionWindows(snapshot);
+      expect(plan.windows).toHaveLength(1);
+      const sourceView = await buildNarrativeSourceView({
+        ref: plan.windows[0]!.sourceRef,
+        document,
+        documentRange: { start: 0, end: document.canonical.text.length },
+      });
+      const observations = rekeyObservationsForWindow(
+        plan.windows[0]!.windowId,
+        MODALITY_CLAIMS.map((claim) => ({
+          localId: claim.actuality,
+          evidence: [{ sourceRef: sourceView.ref, quote: claim.quote }],
+          assertion: claim.assertion,
+          payload: modalityPayload(claim),
+        })),
+      );
+      const anchors = [];
+      for (const observation of observations) {
+        const resolution = await resolveEvidenceReference(
+          observation.evidence[0]!,
+          {
+            snapshot,
+            sourceViews: [sourceView],
+            createAnchorId: () => `anchor-${observation.localId}`,
+          },
+        );
+        if (resolution.status !== "resolved")
+          throw new Error("typed modality evidence must resolve");
+        anchors.push(resolution.anchor);
+      }
+      const sealed = await sealedResumeSpec("deterministic-fallback");
+      const projection = resumableProjection(runId, sealed);
+      const completedCount = resumeStage === "fallback" ? 6 : 8;
+      const tasks = TEST_CHRONICLE_TASK_CHAIN.map((taskKind, index) => ({
+        taskId: `modality-task-${index + 1}`,
+        runId,
+        taskKind,
+        status: index < completedCount ? "completed" : "queued",
+        inputJson: {},
+        outputJson: index === 0 ? { snapshotDigest: snapshot.digest } : {},
+        priority: 9 - index,
+        attemptCount: 1,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        errorMessage: null,
+        createdAt: "2026-09-07T00:00:00.000Z",
+        startedAt: null,
+        completedAt: index < completedCount ? "2026-09-07T00:00:00.000Z" : null,
+        version: 1,
+      }));
+      getRunMock.mockResolvedValue({
+        ...projection,
+        run: { ...projection.run, snapshotDigest: snapshot.digest },
+        tasks,
+        taskCounts: {
+          queued: 9 - completedCount,
+          running: 0,
+          completed: completedCount,
+          failed: 0,
+          cancelled: 0,
+        },
+      });
+      const payloads: Record<string, unknown>[] = [
+        {
+          snapshot,
+          sourceViews: [sourceView],
+          scopeAuthorityDocuments: [
+            {
+              documentRef: document.ref,
+              sourceKey: document.sourceKey,
+              rawStoryKey: null,
+            },
+          ],
+          existingEventsCatalog: {
+            kind: "chronicle.existing-events-catalog@1",
+            events: [],
+          },
+        },
+        { ...plan },
+        { observations },
+        { anchors },
+        { observations },
+        { clusters: clusterEventObservations(observations) },
+      ];
+      const kinds: string[] = [
+        CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+        CHRONICLE_EXTRACT_ARTIFACT_KINDS.windowPlan,
+        CHRONICLE_EXTRACT_ARTIFACT_KINDS.observations,
+        CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence,
+        CHRONICLE_EXTRACT_ARTIFACT_KINDS.mergedObservations,
+        CHRONICLE_EXTRACT_ARTIFACT_KINDS.clusters,
+      ];
+      if (resumeStage === "persisted-hypotheses") {
+        const hypotheses = observations.map((observation, index) => ({
+          hypothesisId: `saved-hyp-${index}`,
+          clusterRef: `cluster-${index}`,
+          observationRefs: [observation.localId],
+          titleSuggestion: observation.payload.predicate,
+          summary: observation.payload.predicate,
+          actuality: "actual" as const,
+          significance: "major" as const,
+        }));
+        payloads.push(
+          { hypotheses },
+          {
+            matches: hypotheses.map((hypothesis) => ({
+              hypothesisId: hypothesis.hypothesisId,
+              match: { status: "none" },
+            })),
+          },
+        );
+        kinds.push(
+          CHRONICLE_EXTRACT_ARTIFACT_KINDS.hypotheses,
+          CHRONICLE_EXTRACT_ARTIFACT_KINDS.matches,
+        );
+      }
+      getRunReviewBundleMock.mockResolvedValue({
+        runId,
+        projectId: "project-a",
+        stageReceipts: [],
+        proposalSet: null,
+        proposals: [],
+        artifacts: payloads.map((payloadJson, index) => ({
+          artifactId: `modality-artifact-${index}`,
+          runId,
+          taskId: tasks[index]!.taskId,
+          attemptId: `modality-attempt-${index}`,
+          artifactKind: kinds[index],
+          payloadStorage: "inline-json",
+          payloadJson,
+          payloadRef: null,
+          payloadDigest: TEST_STAGE_DIGEST,
+          createdAt: "2026-09-07T00:00:00.000Z",
+        })),
+      });
+      claimMock.mockImplementation(
+        async ({ taskKinds }: { taskKinds: string[] }) => {
+          const task = tasks.find((item) => item.taskKind === taskKinds[0])!;
+          return {
+            claimed: true,
+            task: {
+              ...task,
+              status: "running",
+              attemptId: `attempt-${task.taskId}`,
+              attemptNumber: 1,
+              leaseOwner: "test",
+              leaseExpiresAt: "2099-01-01T00:00:00.000Z",
+            },
+          };
+        },
+      );
+      const result = await runChronicleExtractionCoordinator(
+        {
+          projectId: "project-a",
+          folderId: "folder-1",
+          language: "ja",
+          sceneIds: ["scene-one"],
+          authority: authority(),
+          runId,
+          resume: true,
+          specDigest: TEST_COORDINATOR_CONTRACT_DIGEST,
+        },
+        { useAi: false },
+      );
+      const artifacts = await modalityArtifacts(runId);
+      expect(claimMock.mock.calls.map(([input]) => input.taskKinds[0])).toEqual(
+        TEST_CHRONICLE_TASK_CHAIN.slice(completedCount),
+      );
+      expect(artifacts.merged.map((item) => item.payload.actuality)).toEqual([
+        "actual",
+        "rumored",
+        "planned",
+        "dreamed",
+      ]);
+      expect(artifacts.hypotheses.map((item) => item.actuality)).toEqual(
+        resumeStage === "fallback"
+          ? ["actual", "rumored"]
+          : ["actual", "actual", "actual", "actual"],
+      );
+      expect(artifacts.proposalPlan.rejectedHypotheses).toEqual(
+        resumeStage === "fallback"
+          ? []
+          : [1, 2, 3].map((index) => ({
+              hypothesisId: `saved-hyp-${index}`,
+              reason: "hypothesis-observation-actuality-mismatch",
+            })),
+      );
+      expect(artifacts.proposalPlan.rejectedClusters).toHaveLength(
+        resumeStage === "fallback" ? 2 : 0,
+      );
+      expect(
+        result.proposals.map((item) => ({
+          title: item.title,
+          actuality: item.actuality,
+        })),
+      ).toEqual([
+        { title: MODALITY_CLAIMS[0]!.predicate, actuality: "actual" },
+      ]);
+      expect(result.proposals[0]!.evidenceAnchorIds.length).toBeGreaterThan(0);
+    },
+  );
 
   it("runs the fake extractor DAG and persists proposals", async () => {
     const built = await buildNarrativeCorpusSnapshot({
@@ -515,6 +1042,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
       },
       {
         useAi: true,
+        evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
         createId: (() => {
           let n = 0;
           return () => `id-${++n}`;
@@ -728,6 +1256,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         },
         {
           useAi: true,
+          evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
           createId: (() => {
             let n = 0;
             return () => `first-${++n}`;
@@ -1003,6 +1532,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
       },
       {
         useAi: true,
+        evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
         buildSnapshot: async () => {
           throw new Error("resume must not rebuild a live snapshot");
         },
@@ -1105,281 +1635,374 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     );
   });
 
-  it("hydrates a completed terminal Run with its current human revision, not the immutable plan payload or parent decision", async () => {
-    const built = await buildNarrativeCorpusSnapshot({
-      snapshotId: "snapshot-completed-current-revision",
-      language: "ja",
-      origin: { kind: "grimodex-project", projectId: "project-a" },
-      documents: [
-        {
-          sourceKey: "project:scene:one",
-          parentSourceKey: null,
-          title: "Completed revision hydration",
-          orderIndex: 0,
-          proseMirrorJson: prose("砲撃が終わった。"),
-          origin: {
-            kind: "project-node",
-            projectId: "project-a",
-            nodeId: "scene-one",
-            sourceVersion: 1,
-            sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
-            sourceUri: null,
-          },
-        },
+  it.each(
+    (["actual", "rumored", "planned", "dreamed"] as const).flatMap(
+      (actuality) => [
+        { actuality, alreadySatisfiedOnly: false },
+        { actuality, alreadySatisfiedOnly: true },
       ],
-      omissions: [],
-      createdAt: "2026-08-10T00:00:00.000Z",
-    });
-    expect(built.ok).toBe(true);
-    if (!built.ok) return;
+    ),
+  )(
+    "validates terminal $actuality support with alreadySatisfiedOnly=$alreadySatisfiedOnly before restoring history",
+    async ({ actuality, alreadySatisfiedOnly }) => {
+      const built = await buildNarrativeCorpusSnapshot({
+        snapshotId: "snapshot-completed-current-revision",
+        language: "ja",
+        origin: { kind: "grimodex-project", projectId: "project-a" },
+        documents: [
+          {
+            sourceKey: "project:scene:one",
+            parentSourceKey: null,
+            title: "Completed revision hydration",
+            orderIndex: 0,
+            proseMirrorJson: prose("砲撃が終わった。"),
+            origin: {
+              kind: "project-node",
+              projectId: "project-a",
+              nodeId: "scene-one",
+              sourceVersion: 1,
+              sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+              sourceUri: null,
+            },
+          },
+        ],
+        omissions: [],
+        createdAt: "2026-08-10T00:00:00.000Z",
+      });
+      expect(built.ok).toBe(true);
+      if (!built.ok) return;
 
-    const runId = "run-completed-current-revision";
-    const planTaskId = "task-plan-completed";
-    const proposalSetId = `chronicle-plan-proposals:${runId}:${planTaskId}`;
-    const sealed = await sealedResumeSpec("deterministic-fallback");
-    const terminalProposal = {
-      eventId: "event-terminal",
-      title: "Immutable terminal plan payload",
-      note: null,
-      actuality: "actual",
-      significance: "scene-level",
-      evidenceAnchorIds: ["anchor-terminal"],
-      evidenceDocumentRefs: ["D000001"],
-      disclosure: { secret: false, revealDocumentRef: "D000001" },
-      unresolvedMetadata: {
-        participantSurfaces: [],
-        locationSurface: null,
-        temporalExpressions: [],
-      },
-    } satisfies CreateChronicleEventProposalPayloadV1;
-    const revisedPayload = {
-      ...terminalProposal,
-      title: "Current human revision payload",
-      note: "revision two",
-    } satisfies CreateChronicleEventProposalPayloadV1;
-    const taskRows = CHRONICLE_EXTRACT_TASK_KINDS;
-    getRunMock.mockResolvedValue({
-      run: {
+      const runId = "run-completed-current-revision";
+      const planTaskId = "task-plan-completed";
+      const proposalSetId = `chronicle-plan-proposals:${runId}:${planTaskId}`;
+      const sealed = await sealedResumeSpec("deterministic-fallback");
+      const terminalProposal = {
+        eventId: "event-terminal",
+        title: "Immutable terminal plan payload",
+        note: null,
+        actuality: "actual",
+        significance: "scene-level",
+        evidenceAnchorIds: ["anchor-terminal"],
+        evidenceDocumentRefs: ["D000001"],
+        disclosure: { secret: false, revealDocumentRef: "D000001" },
+        unresolvedMetadata: {
+          participantSurfaces: [],
+          locationSurface: null,
+          temporalExpressions: [],
+        },
+      } satisfies CreateChronicleEventProposalPayloadV1;
+      const revisedPayload = {
+        ...terminalProposal,
+        title: "Current human revision payload",
+        note: "revision two",
+      } satisfies CreateChronicleEventProposalPayloadV1;
+      const taskRows = CHRONICLE_EXTRACT_TASK_KINDS;
+      getRunMock.mockResolvedValue({
+        run: {
+          runId,
+          projectId: "project-a",
+          surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
+          scopeJson: { folderId: "folder-1", sceneIds: ["scene-one"] },
+          specJson: sealed.specJson,
+          specDigest: sealed.specDigest,
+          snapshotDigest: built.snapshot.digest,
+          catalogDigest: sealed.catalogDigest,
+          registryDigest: null,
+          status: "completed",
+          coverageJson: {},
+          outcomeSummaryJson: null,
+          createdAt: "2026-08-10T00:00:00.000Z",
+          startedAt: "2026-08-10T00:00:00.000Z",
+          completedAt: "2026-08-10T00:01:00.000Z",
+          version: 1,
+        },
+        tasks: Object.values(taskRows).map((taskKind, index) => ({
+          taskId:
+            taskKind === CHRONICLE_EXTRACT_TASK_KINDS.planProposals
+              ? planTaskId
+              : `completed-task-${index + 1}`,
+          runId,
+          taskKind,
+          status: "completed",
+          inputJson: {},
+          outputJson:
+            taskKind === CHRONICLE_EXTRACT_TASK_KINDS.snapshot
+              ? { snapshotDigest: built.snapshot.digest }
+              : taskKind === CHRONICLE_EXTRACT_TASK_KINDS.observe
+                ? { observationCount: 0 }
+                : taskKind === CHRONICLE_EXTRACT_TASK_KINDS.planProposals
+                  ? {
+                      proposalSetId,
+                      proposalCount: alreadySatisfiedOnly ? 0 : 1,
+                    }
+                  : {},
+          priority: 9 - index,
+          attemptCount: 1,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          heartbeatAt: null,
+          errorMessage: null,
+          createdAt: "2026-08-10T00:00:00.000Z",
+          startedAt: "2026-08-10T00:00:00.000Z",
+          completedAt: "2026-08-10T00:01:00.000Z",
+          version: 1,
+        })),
+        taskCounts: {
+          queued: 0,
+          running: 0,
+          completed: 9,
+          failed: 0,
+          cancelled: 0,
+        },
+      });
+      const artifact = (
+        artifactId: string,
+        taskId: string,
+        artifactKind: string,
+        payloadJson: Record<string, unknown>,
+      ) => ({
+        artifactId,
         runId,
-        projectId: "project-a",
-        surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
-        scopeJson: { folderId: "folder-1", sceneIds: ["scene-one"] },
-        specJson: sealed.specJson,
-        specDigest: sealed.specDigest,
-        snapshotDigest: built.snapshot.digest,
-        catalogDigest: sealed.catalogDigest,
-        registryDigest: null,
-        status: "completed",
-        coverageJson: {},
-        outcomeSummaryJson: null,
-        createdAt: "2026-08-10T00:00:00.000Z",
-        startedAt: "2026-08-10T00:00:00.000Z",
-        completedAt: "2026-08-10T00:01:00.000Z",
-        version: 1,
-      },
-      tasks: Object.values(taskRows).map((taskKind, index) => ({
-        taskId:
-          taskKind === CHRONICLE_EXTRACT_TASK_KINDS.planProposals
-            ? planTaskId
-            : `completed-task-${index + 1}`,
-        runId,
-        taskKind,
-        status: "completed",
-        inputJson: {},
-        outputJson:
-          taskKind === CHRONICLE_EXTRACT_TASK_KINDS.snapshot
-            ? { snapshotDigest: built.snapshot.digest }
-            : taskKind === CHRONICLE_EXTRACT_TASK_KINDS.observe
-              ? { observationCount: 0 }
-              : taskKind === CHRONICLE_EXTRACT_TASK_KINDS.planProposals
-                ? { proposalSetId, proposalCount: 1 }
-                : {},
-        priority: 9 - index,
-        attemptCount: 1,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        heartbeatAt: null,
-        errorMessage: null,
-        createdAt: "2026-08-10T00:00:00.000Z",
-        startedAt: "2026-08-10T00:00:00.000Z",
-        completedAt: "2026-08-10T00:01:00.000Z",
-        version: 1,
-      })),
-      taskCounts: {
-        queued: 0,
-        running: 0,
-        completed: 9,
-        failed: 0,
-        cancelled: 0,
-      },
-    });
-    const artifact = (
-      artifactId: string,
-      taskId: string,
-      artifactKind: string,
-      payloadJson: Record<string, unknown>,
-    ) => ({
-      artifactId,
-      runId,
-      taskId,
-      attemptId: `attempt-${taskId}`,
-      artifactKind,
-      payloadStorage: "inline-json" as const,
-      payloadJson,
-      payloadRef: null,
-      payloadDigest: TEST_STAGE_DIGEST,
-      createdAt: "2026-08-10T00:01:00.000Z",
-    });
-    getRunReviewBundleMock.mockResolvedValue({
-      runId,
-      projectId: "project-a",
-      artifacts: [
-        artifact(
-          "artifact-snapshot",
-          "completed-task-1",
-          CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
-          {
-            snapshot: built.snapshot,
-            sourceViews: [],
-            scopeAuthorityDocuments: [
-              {
-                documentRef: built.snapshot.documents[0]?.ref,
-                sourceKey: "project:scene:one",
-                rawStoryKey: null,
-              },
-            ],
-          },
-        ),
-        artifact(
-          "artifact-window-plan",
-          "completed-task-2",
-          CHRONICLE_EXTRACT_ARTIFACT_KINDS.windowPlan,
-          { windows: [] },
-        ),
-        artifact(
-          "artifact-observations",
-          "completed-task-3",
-          CHRONICLE_EXTRACT_ARTIFACT_KINDS.observations,
-          { observations: [] },
-        ),
-        artifact(
-          "artifact-evidence",
-          "completed-task-4",
-          CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence,
-          { anchors: [] },
-        ),
-        artifact(
-          "artifact-merged",
-          "completed-task-5",
-          CHRONICLE_EXTRACT_ARTIFACT_KINDS.mergedObservations,
-          { observations: [] },
-        ),
-        artifact(
-          "artifact-clusters",
-          "completed-task-6",
-          CHRONICLE_EXTRACT_ARTIFACT_KINDS.clusters,
-          { clusters: [] },
-        ),
-        artifact(
-          "artifact-hypotheses",
-          "completed-task-7",
-          CHRONICLE_EXTRACT_ARTIFACT_KINDS.hypotheses,
-          { hypotheses: [] },
-        ),
-        artifact(
-          "artifact-matches",
-          "completed-task-8",
-          CHRONICLE_EXTRACT_ARTIFACT_KINDS.matches,
-          { matches: [] },
-        ),
-        artifact(
-          "artifact-proposals",
-          planTaskId,
-          CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
-          {
-            proposalSetId,
-            proposals: [terminalProposal],
-            planned: [
-              {
-                proposal: terminalProposal,
-                match: { status: "none" },
-                hypothesisId: "hyp-terminal",
-              },
-            ],
-            alreadySatisfied: [],
-          },
-        ),
-      ],
-      stageReceipts: [],
-      proposalSet: {
-        proposalSetId,
-        runId,
-        projectId: "project-a",
-        setKind: "chronicle.extract.review@1",
-        status: "draft",
-        summaryJson: {},
+        taskId,
+        attemptId: `attempt-${taskId}`,
+        artifactKind,
+        payloadStorage: "inline-json" as const,
+        payloadJson,
+        payloadRef: null,
+        payloadDigest: TEST_STAGE_DIGEST,
         createdAt: "2026-08-10T00:01:00.000Z",
-        updatedAt: "2026-08-10T00:01:00.000Z",
-        version: 1,
-      },
-      proposals: [
-        {
-          proposalId: "proposal-current-revision",
+      });
+      getRunReviewBundleMock.mockResolvedValue({
+        runId,
+        projectId: "project-a",
+        artifacts: [
+          artifact(
+            "artifact-snapshot",
+            "completed-task-1",
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+            {
+              snapshot: built.snapshot,
+              sourceViews: [],
+              scopeAuthorityDocuments: [
+                {
+                  documentRef: built.snapshot.documents[0]?.ref,
+                  sourceKey: "project:scene:one",
+                  rawStoryKey: null,
+                },
+              ],
+            },
+          ),
+          artifact(
+            "artifact-window-plan",
+            "completed-task-2",
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.windowPlan,
+            { windows: [] },
+          ),
+          artifact(
+            "artifact-observations",
+            "completed-task-3",
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.observations,
+            {
+              observations: [
+                {
+                  localId: "obs-terminal",
+                  evidence: [{ sourceRef: "S1", quote: "砲撃が終わった。" }],
+                  assertion: {
+                    attribution: "narrator",
+                    narrativeFrame: "story-world",
+                  },
+                  payload: {
+                    predicate: "砲撃が終わる",
+                    actuality,
+                    participants: [],
+                    temporalExpressions: [],
+                  },
+                },
+              ],
+            },
+          ),
+          artifact(
+            "artifact-evidence",
+            "completed-task-4",
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence,
+            { anchors: [] },
+          ),
+          artifact(
+            "artifact-merged",
+            "completed-task-5",
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.mergedObservations,
+            {
+              observations: [
+                {
+                  localId: "obs-terminal",
+                  evidence: [{ sourceRef: "S1", quote: "砲撃が終わった。" }],
+                  assertion: {
+                    attribution: "narrator",
+                    narrativeFrame: "story-world",
+                  },
+                  payload: {
+                    predicate: "砲撃が終わる",
+                    actuality,
+                    participants: [],
+                    temporalExpressions: [],
+                  },
+                },
+              ],
+            },
+          ),
+          artifact(
+            "artifact-clusters",
+            "completed-task-6",
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.clusters,
+            { clusters: [] },
+          ),
+          artifact(
+            "artifact-hypotheses",
+            "completed-task-7",
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.hypotheses,
+            {
+              hypotheses: [
+                {
+                  hypothesisId: "hyp-terminal",
+                  clusterRef: "cluster-terminal",
+                  observationRefs: ["obs-terminal"],
+                  titleSuggestion: terminalProposal.title,
+                  summary: "砲撃が終わる",
+                  actuality: "actual",
+                  significance: "scene-level",
+                },
+              ],
+            },
+          ),
+          artifact(
+            "artifact-matches",
+            "completed-task-8",
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.matches,
+            { matches: [] },
+          ),
+          artifact(
+            "artifact-proposals",
+            planTaskId,
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
+            {
+              proposalSetId,
+              proposals: alreadySatisfiedOnly ? [] : [terminalProposal],
+              planned: alreadySatisfiedOnly
+                ? []
+                : [
+                    {
+                      proposal: terminalProposal,
+                      match: { status: "none" },
+                      hypothesisId: "hyp-terminal",
+                    },
+                  ],
+              alreadySatisfied: alreadySatisfiedOnly
+                ? [
+                    {
+                      hypothesisId: "hyp-terminal",
+                      title: terminalProposal.title,
+                      existingRef: "existing-terminal",
+                    },
+                  ]
+                : [],
+            },
+          ),
+        ],
+        stageReceipts: [],
+        proposalSet: {
           proposalSetId,
-          proposalKey: "event-terminal:0",
-          kind: "chronicle.create-event@1",
-          status: "unreviewed",
-          payloadJson: revisedPayload,
-          currentRevisionId: "revision-2-current",
+          runId,
+          projectId: "project-a",
+          setKind: "chronicle.extract.review@1",
+          status: "draft",
+          summaryJson: {},
           createdAt: "2026-08-10T00:01:00.000Z",
           updatedAt: "2026-08-10T00:01:00.000Z",
-          latestDecision: {
-            decisionId: "decision-revision-1",
-            proposalId: "proposal-current-revision",
-            revisionId: "revision-1-terminal",
-            decision: "approved",
-            decisionJson: { probableDuplicateChoice: "create-as-new" },
-            createdAt: "2026-08-10T00:00:30.000Z",
-            createdBy: "human-reviewer",
+          version: 1,
+        },
+        proposals: alreadySatisfiedOnly
+          ? []
+          : [
+              {
+                proposalId: "proposal-current-revision",
+                proposalSetId,
+                proposalKey: "event-terminal:0",
+                kind: "chronicle.create-event@1",
+                status: "unreviewed",
+                payloadJson: revisedPayload,
+                currentRevisionId: "revision-2-current",
+                createdAt: "2026-08-10T00:01:00.000Z",
+                updatedAt: "2026-08-10T00:01:00.000Z",
+                latestDecision: {
+                  decisionId: "decision-revision-1",
+                  proposalId: "proposal-current-revision",
+                  revisionId: "revision-1-terminal",
+                  decision: "approved",
+                  decisionJson: { probableDuplicateChoice: "create-as-new" },
+                  createdAt: "2026-08-10T00:00:30.000Z",
+                  createdBy: "human-reviewer",
+                },
+              },
+            ],
+        omissions: [],
+        createdAt: "2026-08-10T00:00:00.000Z",
+      });
+
+      const execution = runChronicleExtractionCoordinator(
+        {
+          projectId: "project-a",
+          folderId: "folder-1",
+          language: "ja",
+          sceneIds: ["scene-one"],
+          authority: authority(),
+          runId,
+          resume: true,
+          specDigest: TEST_COORDINATOR_CONTRACT_DIGEST,
+        },
+        {
+          useAi: false,
+          buildSnapshot: async () => {
+            throw new Error(
+              "completed resume must not snapshot live workspace",
+            );
           },
         },
-      ],
-      omissions: [],
-      createdAt: "2026-08-10T00:00:00.000Z",
-    });
+      );
 
-    const resumed = await runChronicleExtractionCoordinator(
-      {
-        projectId: "project-a",
-        folderId: "folder-1",
-        language: "ja",
-        sceneIds: ["scene-one"],
-        authority: authority(),
-        runId,
-        resume: true,
-        specDigest: TEST_COORDINATOR_CONTRACT_DIGEST,
-      },
-      {
-        useAi: false,
-        buildSnapshot: async () => {
-          throw new Error("completed resume must not snapshot live workspace");
-        },
-      },
-    );
-
-    expect(createRunMock).not.toHaveBeenCalled();
-    expect(claimMock).not.toHaveBeenCalled();
-    expect(resumed.savedProposalSetId).toBe(proposalSetId);
-    expect(resumed.proposals[0]?.title).toBe("Immutable terminal plan payload");
-    expect(resumed.savedProposals).toEqual([
-      expect.objectContaining({
-        proposalId: "proposal-current-revision",
-        revisionId: "revision-2-current",
-        payload: revisedPayload,
-      }),
-    ]);
-    expect(resumed.savedProposals[0]?.probableDuplicateChoice).toBeUndefined();
-  });
+      if (actuality !== "actual") {
+        await expect(execution).rejects.toThrow(
+          "NEX_CHRONICLE_REANALYSIS_REQUIRED",
+        );
+        expect(createRunMock).not.toHaveBeenCalled();
+        expect(claimMock).not.toHaveBeenCalled();
+        expect(finishMock).not.toHaveBeenCalled();
+        return;
+      }
+      const resumed = await execution;
+      expect(createRunMock).not.toHaveBeenCalled();
+      expect(claimMock).not.toHaveBeenCalled();
+      expect(resumed.savedProposalSetId).toBe(proposalSetId);
+      if (alreadySatisfiedOnly) {
+        expect(resumed.proposals).toEqual([]);
+        expect(resumed.savedProposals).toEqual([]);
+        expect(finishMock).not.toHaveBeenCalled();
+        return;
+      }
+      expect(resumed.proposals[0]?.title).toBe(
+        "Immutable terminal plan payload",
+      );
+      expect(resumed.savedProposals).toEqual([
+        expect.objectContaining({
+          proposalId: "proposal-current-revision",
+          revisionId: "revision-2-current",
+          payload: revisedPayload,
+        }),
+      ]);
+      expect(
+        resumed.savedProposals[0]?.probableDuplicateChoice,
+      ).toBeUndefined();
+    },
+  );
 
   it("fails Native-detected restart hydration corruption before it claims a task", async () => {
     const resumeSpec = await sealedResumeSpec("deterministic-fallback");
@@ -2159,6 +2782,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         },
         {
           useAi: true,
+          evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
           buildSnapshot: async () => ({
             ok: true as const,
             snapshot: built.snapshot,
@@ -2227,6 +2851,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         },
         {
           useAi: true,
+          evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
           buildSnapshot: async () => ({
             ok: true as const,
             snapshot: built.snapshot,
@@ -2315,6 +2940,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         },
         {
           useAi: true,
+          evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
           buildSnapshot: async () => ({
             ok: true as const,
             snapshot: built.snapshot,

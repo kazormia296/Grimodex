@@ -1,3 +1,9 @@
+import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
+import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
+import {
+  assertSavedPlanActualitySupport,
+  isChronicleReanalysisRequired,
+} from "./extraction/savedPlanActualityGate";
 import type {
   ChronicleExtractionRequest,
   ChronicleExtractionResult,
@@ -1236,19 +1242,6 @@ function coverageFromRunJson(
   };
 }
 
-function plannedRowsFromArtifact(
-  proposalArtifact: ProposalPlanArtifactPayload | null,
-): PlannedProposalArtifactRow[] {
-  if (proposalArtifact?.planned) {
-    return [...proposalArtifact.planned];
-  }
-  return (proposalArtifact?.proposals ?? []).map((proposal) => ({
-    proposal,
-    match: { status: "none" } as const,
-    hypothesisId: proposal.eventId,
-  }));
-}
-
 /**
  * Return the in-memory review projection for a Run owned by the given project.
  * Foreign project/workspace runs are rejected (dialog scope isolation).
@@ -1344,17 +1337,36 @@ export async function getChronicleExtractionReview(
       },
     );
 
-  const planned = plannedRowsFromArtifact(proposalArtifact);
-  if (planned.length === 0 && bundle.proposals.length > 0) {
-    for (const [index, native] of bundle.proposals.entries()) {
-      assertCurrentChronicleProposalPayload(native.payloadJson);
-      planned.push({
-        proposal: native.payloadJson,
-        match: { status: "none" },
-        hypothesisId: native.payloadJson.eventId || `native-${index}`,
-      });
-    }
-  }
+  const [hypothesisArtifact, observationArtifact] = await Promise.all([
+    loadInlineJsonArtifact<{ readonly hypotheses: readonly EventHypothesis[] }>(
+      runId,
+      CHRONICLE_EXTRACT_ARTIFACT_KINDS.hypotheses,
+      {
+        scope: artifactCacheScope(scope),
+        requireNativeConfirmation: true,
+      },
+    ),
+    loadInlineJsonArtifact<{
+      readonly observations: readonly RawChronicleEventObservation[];
+    }>(runId, CHRONICLE_EXTRACT_ARTIFACT_KINDS.mergedObservations, {
+      scope: artifactCacheScope(scope),
+      requireNativeConfirmation: true,
+    }),
+  ]);
+  const currentProposals = bundle.proposals.map((proposal) => {
+    assertCurrentChronicleProposalPayload(proposal.payloadJson);
+    return proposal.payloadJson;
+  });
+  assertSavedPlanActualitySupport({
+    alreadySatisfied: proposalArtifact?.alreadySatisfied,
+    proposalPayloads: proposalArtifact?.proposals,
+    planned: proposalArtifact?.planned,
+    hypotheses: hypothesisArtifact?.hypotheses,
+    observations: observationArtifact?.observations,
+    currentProposals,
+  });
+
+  const planned = [...(proposalArtifact?.planned ?? [])];
 
   const titleBySceneId = new Map<string, string>();
   for (const document of snapshotArtifact?.snapshot.documents ?? []) {
@@ -1417,14 +1429,16 @@ export async function restoreChronicleExtractionReview(scope: {
     for (const candidate of resumable) {
       try {
         return await getChronicleExtractionReview(candidate.run.runId, scope);
-      } catch {
+      } catch (error) {
+        if (isChronicleReanalysisRequired(error)) throw error;
         // Newer crashed runs without a durable ProposalSet must not hide
         // older completed reviews that still hydrate.
         continue;
       }
     }
     return null;
-  } catch {
+  } catch (error) {
+    if (isChronicleReanalysisRequired(error)) throw error;
     return null;
   }
 }

@@ -25,6 +25,7 @@ import {
   buildChroniclePromptArtifact,
   buildChroniclePromptDigests,
   CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_ID,
+  CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_VERSION,
   type ChroniclePromptArtifact,
 } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
 import {
@@ -107,12 +108,14 @@ export interface ChronicleSynthesisTerminalOutput {
 
 const EVENT_COMPONENT_CONTRACT = {
   contractId: CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_ID,
-  contractVersion: "1",
+  contractVersion: CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_VERSION,
   instruction: `あなたは小説の出来事統合アシスタントです。同一候補 Cluster 内の Observation を評価し、Event Hypothesis を JSON で返してください。
 本文全量は再送しません。Observation Ref と短い Evidence 表示だけを使います。未知の Observation Ref は出力しないでください。
-出力の clusterRef は Context Set の event-cluster 値を一字一句そのまま使用し、出力例のプレースホルダーを値としてコピーしないでください。`,
+出力の clusterRef は Context Set の event-cluster 値を一字一句そのまま使用し、出力例のプレースホルダーを値としてコピーしないでください。
+出力の events[].observationRefs は、このリクエストの Context Set にある同一候補 Cluster の Observation 行の localId 値だけを一字一句そのままコピーしてください。
+contextId や inputRef、出力例のプレースホルダーは参照値ではありません。event-observation: や observation: を追加せず、localId の接頭辞・区切り・桁数を省略、推測、正規化しないでください。別リクエストや別 Cluster の ID は使用しないでください。`,
   outputShape:
-    '{"clusterRef":"<event-cluster-ref-from-context>","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"短いタイトル","summary":"要約","actuality":"actual","significance":"major"}]}',
+    '{"clusterRef":"<event-cluster-ref-from-context>","resolution":"single-event","events":[{"observationRefs":["<observation-localId-from-context>"],"titleSuggestion":"短いタイトル","summary":"要約","actuality":"actual","significance":"major"}]}',
 } as const;
 
 function buildSynthesisPromptArtifact(

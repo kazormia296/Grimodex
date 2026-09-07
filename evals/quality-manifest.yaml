@@ -375,16 +375,67 @@ requirements:
       - src/features/narrative-extraction/eval/caseSchema.ts
       - src/features/narrative-extraction/eval/replay.ts
       - src/features/narrative-extraction/eval/liveRunner.ts
+      - src/features/narrative-extraction/eval/narrativeEvalSuite.ts
+      - src/features/narrative-extraction/eval/chronicleProductionReportPaths.ts
+      - src/features/narrative-extraction/eval/chronicleProductionDiagnostics.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.ts
       - src/features/narrative-extraction/eval/productionChronicleScoring.ts
       - src/features/narrative-extraction/eval/productionChronicleTypes.ts
+      - src/features/narrative-extraction/eval/productionChronicleCapabilities.ts
+      - src/features/narrative-extraction/eval/responseDiagnostics.ts
+      - src/features/narrative-extraction/eval/chronicle015Reference.ts
+      - docs/plans/chronicle-evaluation-contract-v2.md
+      - evals/narrative/README.md
+      - evals/narrative/contracts/chronicle-v2/actual-gate-collapse.json
+      - evals/narrative/contracts/chronicle-v2/contract.schema.json
+      - src/features/narrative-extraction/eval/chronicleV2Contract.ts
+      - src/features/narrative-extraction/eval/chronicleV2Alignment.ts
+      - src/features/narrative-extraction/eval/chronicleV2Temporal.ts
+      - src/features/narrative-extraction/eval/chronicleV2Evaluator.ts
+      - src/features/narrative-extraction/eval/chronicleV2Diagnostics.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.ts
+      - src/features/narrative-extraction/eval/chronicleJudgeCaseContract.ts
+      - docs/plans/chronicle-llm-judge-transfer-plan.md
+      - evals/narrative/contracts/chronicle-transfer-v1/manifest.json
+      - evals/narrative/contracts/chronicle-transfer-v1/contract.schema.json
+      - evals/narrative/contracts/chronicle-transfer-v1/transfer-actual-001.json
+      - evals/narrative/contracts/chronicle-transfer-v1/transfer-plan-001.json
+      - evals/narrative/contracts/chronicle-transfer-v1/transfer-hearsay-001.json
+      - evals/narrative/contracts/chronicle-transfer-v1/transfer-dream-001.json
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeStorage.node.ts
+      - evals/narrative/calibration/chronicle-llm-judge-v1.json
+      - evals/narrative/calibration/chronicle-llm-judge-v1.review.md
+      - evals/narrative/reference-predictions/chronicle-015-v1/README.md
       - evals/narrative/manifest.yaml
+      - evals/qualifications/narrative-current-protocol-v2.json
+      - scripts/quality/quality-evaluation-runtime.mjs
     lightTests:
       - src/features/narrative-extraction/eval/caseSchema.test.ts
       - src/features/narrative-extraction/eval/replay.test.ts
       - src/features/narrative-extraction/eval/liveRunner.test.ts
+      - src/features/narrative-extraction/eval/narrativeEvalSuite.test.ts
+      - src/features/narrative-extraction/eval/chronicleProductionReportPaths.test.ts
+      - src/features/narrative-extraction/eval/chronicleProductionDiagnostics.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
+      - src/features/narrative-extraction/eval/productionChronicleCapabilities.test.ts
+      - src/features/narrative-extraction/eval/responseDiagnostics.test.ts
+      - src/features/narrative-extraction/eval/responseDiagnostics.taskContract.test.ts
+      - src/features/narrative-extraction/eval/chronicle015Reference.test.ts
+      - src/features/narrative-extraction/eval/currentNarrativeProtocol.test.ts
+      - scripts/quality/narrative-current-protocol.test.mjs
+      - scripts/quality/run-live-model-qualification.test.mjs
+      - src/features/narrative-extraction/eval/observationAdapter.identity.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Contract.test.ts
+      - src/features/narrative-extraction/eval/chronicleJudgeCaseContract.test.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeScoped.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Alignment.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Temporal.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Evaluator.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Diagnostics.test.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.test.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeStorage.node.test.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeCalibration.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
       - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
@@ -394,16 +445,61 @@ requirements:
     title: Narrative Evidence resolves exact immutable quotes without model offsets.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-EVIDENCE-001
     implementedBy:
+      - docs/plans/narrative-evidence-id-v1.md
+      - src/features/narrative-extraction/evidence/spanCatalog.ts
+      - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
+      - src/application/narrative-extraction/extractionCoordinator.ts
+      - src/features/chronicle/extraction/schemas.ts
       - src/features/narrative-extraction/evidence/resolveEvidence.ts
       - src/features/narrative-extraction/eval/fixtureSnapshot.ts
       - src/features/narrative-extraction/eval/caseSchema.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.ts
       - src/features/narrative-extraction/eval/productionChronicleScoring.ts
+      - src/features/narrative-extraction/eval/chronicle015Reference.ts
+      - docs/plans/chronicle-evaluation-contract-v2.md
+      - evals/narrative/contracts/chronicle-v2/actual-gate-collapse.json
+      - evals/narrative/contracts/chronicle-v2/contract.schema.json
+      - src/features/narrative-extraction/eval/chronicleV2Contract.ts
+      - src/features/narrative-extraction/eval/chronicleV2Alignment.ts
+      - src/features/narrative-extraction/eval/chronicleV2Temporal.ts
+      - src/features/narrative-extraction/eval/chronicleV2Evaluator.ts
+      - src/features/narrative-extraction/eval/chronicleV2Diagnostics.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.ts
+      - src/features/narrative-extraction/eval/chronicleJudgeCaseContract.ts
+      - docs/plans/chronicle-llm-judge-transfer-plan.md
+      - evals/narrative/contracts/chronicle-transfer-v1/manifest.json
+      - evals/narrative/contracts/chronicle-transfer-v1/contract.schema.json
+      - evals/narrative/contracts/chronicle-transfer-v1/transfer-actual-001.json
+      - evals/narrative/contracts/chronicle-transfer-v1/transfer-plan-001.json
+      - evals/narrative/contracts/chronicle-transfer-v1/transfer-hearsay-001.json
+      - evals/narrative/contracts/chronicle-transfer-v1/transfer-dream-001.json
+      - evals/narrative/reference-predictions/chronicle-015-v1/README.md
+      - evals/qualifications/narrative-current-protocol-v2.json
+      - scripts/quality/quality-evaluation-runtime.mjs
     lightTests:
+      - src/features/narrative-extraction/evidence/spanCatalog.test.ts
+      - src/features/chronicle/extraction/schemas.citation.test.ts
+      - src/application/narrative-extraction/aiTasks/citationIdObservation.test.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
+      - src/application/narrative-extraction/extractionCoordinator.test.ts
+      - src/application/narrative-extraction/extractionCoordinator.citation.test.ts
+      - src/features/narrative-extraction/eval/observationAdapter.citation.test.ts
+      - src/features/narrative-extraction/eval/productionChronicleAdapter.citation.test.ts
       - src/features/narrative-extraction/evidence/resolveEvidence.test.ts
       - src/features/narrative-extraction/eval/fixtureSnapshot.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
+      - src/features/narrative-extraction/eval/chronicle015Reference.test.ts
+      - src/features/narrative-extraction/eval/currentNarrativeProtocol.test.ts
+      - scripts/quality/narrative-current-protocol.test.mjs
+      - src/features/narrative-extraction/eval/observationAdapter.identity.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Contract.test.ts
+      - src/features/narrative-extraction/eval/chronicleJudgeCaseContract.test.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeScoped.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Alignment.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Temporal.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Evaluator.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Diagnostics.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
       - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
@@ -413,16 +509,59 @@ requirements:
     title: Narrative assertion dimensions remain independent and missing dimensions never pass.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-SEMANTIC-001
     implementedBy:
+      - src/features/narrative-extraction/ir/inferences/eventHypothesis.ts
+      - src/features/chronicle/extraction/eventSynthesis.ts
+      - src/features/chronicle/extraction/proposalPlanner.ts
+      - src/application/narrative-extraction/extractionCoordinator.ts
+      - src/features/narrative-extraction/ir/observations/eventOccurrence.ts
+      - src/features/chronicle/extraction/schemas.ts
+      - src/application/narrative-extraction/aiTasks/citationIdObservation.ts
+      - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
+      - src/application/narrative-extraction/aiTasks/observationPromptGuidance.ts
+      - src/features/chronicle/extraction/observationMerger.ts
       - src/features/narrative-extraction/eval/types.ts
       - src/features/narrative-extraction/eval/scorer.ts
       - src/features/narrative-extraction/eval/legacyChronicleAdapter.ts
       - src/features/narrative-extraction/eval/productionChronicleScoring.ts
       - src/features/narrative-extraction/eval/productionChronicleTypes.ts
+      - src/features/narrative-extraction/eval/productionChronicleCapabilities.ts
+      - src/features/narrative-extraction/eval/chronicle015Reference.ts
+      - docs/plans/chronicle-evaluation-contract-v2.md
+      - evals/narrative/contracts/chronicle-v2/actual-gate-collapse.json
+      - evals/narrative/contracts/chronicle-v2/contract.schema.json
+      - src/features/narrative-extraction/eval/chronicleV2Contract.ts
+      - src/features/narrative-extraction/eval/chronicleV2Alignment.ts
+      - src/features/narrative-extraction/eval/chronicleV2Evaluator.ts
+      - src/features/narrative-extraction/eval/chronicleV2Diagnostics.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.ts
+      - src/features/narrative-extraction/eval/chronicleJudgeCaseContract.ts
+      - docs/plans/chronicle-llm-judge-transfer-plan.md
+      - evals/narrative/contracts/chronicle-transfer-v1/manifest.json
+      - evals/narrative/contracts/chronicle-transfer-v1/contract.schema.json
+      - evals/narrative/contracts/chronicle-transfer-v1/transfer-actual-001.json
+      - evals/narrative/contracts/chronicle-transfer-v1/transfer-plan-001.json
+      - evals/narrative/contracts/chronicle-transfer-v1/transfer-hearsay-001.json
+      - evals/narrative/contracts/chronicle-transfer-v1/transfer-dream-001.json
+      - evals/narrative/reference-predictions/chronicle-015-v1/README.md
     lightTests:
+      - src/features/chronicle/extraction/eventSynthesis.test.ts
+      - src/features/chronicle/extraction/proposalPlanner.test.ts
+      - src/application/narrative-extraction/aiTasks/citationIdObservation.test.ts
+      - src/features/chronicle/extraction/observationMerger.test.ts
       - src/features/narrative-extraction/eval/scorer.test.ts
       - src/features/narrative-extraction/eval/legacyChronicleAdapter.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
+      - src/features/narrative-extraction/eval/productionChronicleCapabilities.test.ts
+      - src/features/narrative-extraction/eval/chronicle015Reference.test.ts
+      - src/features/narrative-extraction/eval/currentNarrativeProtocol.test.ts
+      - src/features/narrative-extraction/eval/observationAdapter.identity.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Contract.test.ts
+      - src/features/narrative-extraction/eval/chronicleJudgeCaseContract.test.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeScoped.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Alignment.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Evaluator.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Diagnostics.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
       - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
@@ -590,11 +729,23 @@ requirements:
       - src/features/narrative-extraction/eval/scorer.ts
       - src/features/narrative-extraction/eval/productionChronicleScoring.ts
       - evals/narrative/cases/chronicle-micro-v1.yaml
+      - docs/plans/chronicle-evaluation-contract-v2.md
+      - evals/narrative/contracts/chronicle-v2/actual-gate-collapse.json
+      - evals/narrative/contracts/chronicle-v2/contract.schema.json
+      - src/features/narrative-extraction/eval/chronicleV2Contract.ts
+      - src/features/narrative-extraction/eval/chronicleV2Alignment.ts
+      - src/features/narrative-extraction/eval/chronicleV2Evaluator.ts
+      - src/features/narrative-extraction/eval/chronicleV2Diagnostics.ts
+      - src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.ts
     lightTests:
       - src/features/narrative-extraction/eval/caseSchema.test.ts
       - src/features/narrative-extraction/eval/scorer.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Contract.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Alignment.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Evaluator.test.ts
+      - src/features/narrative-extraction/eval/chronicleV2Diagnostics.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
       - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
@@ -821,6 +972,10 @@ heavyEvaluations:
     suiteId: narrative-extraction
     command: OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:chronicle:production:live
     reason: Maintainer-local Production Chronicle full seam (observation→evidence→cluster→synthesis→match→proposal). Missing credentials are INCOMPLETE and semantic threshold misses are HOLD.
+  - id: heavy-narrative-chronicle-motif-boundary-diagnostic
+    suiteId: narrative-extraction
+    command: pnpm eval:narrative:chronicle:motif:diagnostic:live
+    reason: Maintainer-local diagnostic-only Production Chronicle run for the five chronicle-motif-boundary-v1 cases. It is not part of Live Model Qualification defaultProfile or formal certification and can never produce certification eligibility.
   - id: heavy-narrative-chronicle-legacy-baseline
     suiteId: narrative-extraction
     command: OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:live

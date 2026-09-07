@@ -67,8 +67,8 @@ use super::plot_thread_operations::{
     OP_KIND_PLOT_THREAD_CREATE, OP_KIND_PLOT_THREAD_PATCH,
 };
 use super::reconciliation_envelope::{
-    load_read_set_rows, load_source_basis_rows, validate_reconciliation_envelope, SourceBasisRow,
-    ORIGIN_ENVELOPED,
+    envelope_schema_version, load_read_set_rows, load_source_basis_rows,
+    validate_reconciliation_envelope, SourceBasisRow, ORIGIN_ENVELOPED,
 };
 use super::repository::{
     current_chronicle_revision_requires_probable_duplicate_review,
@@ -497,6 +497,22 @@ fn build_source_contract(
             }));
         }
 
+        if envelope_schema_version(&envelope) == Some(2) {
+            for row in super::v2_apply_sources::load_v2_apply_sources(
+                conn,
+                project_id,
+                run_id,
+                revision_id,
+                &envelope,
+            )? {
+                read_rows.push(json!({
+                    "proposalId": proposal_id, "revisionId": revision_id,
+                    "inputRef": row.source_key, "kind": row.source_kind,
+                    "revisionToken": row.revision_token,
+                }));
+            }
+            continue;
+        }
         let read_set = envelope
             .get("readSet")
             .and_then(Value::as_array)
@@ -775,6 +791,10 @@ fn load_retraction_metadata(
     let object = envelope.as_object().ok_or_else(|| {
         anyhow::anyhow!("NEX_RETRACTION_ENVELOPE_INVALID: envelope is not an object")
     })?;
+    if envelope_schema_version(&envelope) == Some(2) {
+        super::v2_apply_sources::ensure_supported_intent(&envelope)?;
+        return Ok(("add".to_string(), None));
+    }
     let change_kind = object
         .get("changeKind")
         .and_then(Value::as_str)
@@ -1516,7 +1536,17 @@ pub fn narrative_extraction_apply_commit(
                     |row| row.get(0),
                 )?;
                 let envelope: Value = serde_json::from_str(&envelope_json)?;
-                let read_set = load_read_set_rows(&envelope)?;
+                let read_set = if envelope_schema_version(&envelope) == Some(2) {
+                    super::v2_apply_sources::load_v2_apply_sources(
+                        conn,
+                        &payload.project_id,
+                        &payload.run_id,
+                        &application.revision_id,
+                        &envelope,
+                    )?
+                } else {
+                    load_read_set_rows(&envelope)?
+                };
                 let source_rows = source_basis.into_iter().chain(read_set).collect::<Vec<_>>();
                 let generic_freshness_canonical = is_generic_freshness_canonical(conn)?;
                 if generic_freshness_canonical {

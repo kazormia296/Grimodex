@@ -84,6 +84,7 @@ mod temporal_undo;
 mod terminal_failure;
 mod undo;
 mod verify_coverage;
+mod v2_apply_sources;
 
 pub(crate) const INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID: &str =
     "narrative-incremental-freshness/v1";

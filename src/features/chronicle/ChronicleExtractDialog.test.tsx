@@ -708,6 +708,62 @@ describe("ChronicleExtractDialog run-path cutover", () => {
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 
+  it("保存済み候補の実在性不整合を再解析案内として通知する", async () => {
+    extractionMocks.restoreChronicleExtractionReview.mockRejectedValue(
+      new Error("NEX_CHRONICLE_REANALYSIS_REQUIRED: invalid saved support"),
+    );
+    render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(
+        "保存済みの抽出候補を復元できません。本文から再解析してください。",
+      ),
+    );
+    expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+  });
+
+  it.each(["closed", "scope-changed"] as const)(
+    "失効した%sダイアログへの遅延復元エラーは通知しない",
+    async (invalidation) => {
+      let rejectRestore!: (error: Error) => void;
+      extractionMocks.restoreChronicleExtractionReview.mockReturnValue(
+        new Promise((_, reject) => {
+          rejectRestore = reject;
+        }),
+      );
+      const onOpenChange = vi.fn();
+      const { rerender } = render(
+        <ChronicleExtractDialog
+          open
+          scope={SCOPE_A}
+          isActive
+          onOpenChange={onOpenChange}
+        />,
+      );
+      if (invalidation === "scope-changed") act(() => publishScope(SCOPE_B));
+      rerender(
+        <ChronicleExtractDialog
+          open={invalidation !== "closed"}
+          scope={invalidation === "scope-changed" ? SCOPE_B : SCOPE_A}
+          isActive
+          onOpenChange={onOpenChange}
+        />,
+      );
+      await act(async () => {
+        rejectRestore(
+          new Error("NEX_CHRONICLE_REANALYSIS_REQUIRED: invalid saved support"),
+        );
+      });
+      expect(toastMocks.error).not.toHaveBeenCalled();
+    },
+  );
+
   it("再オープン時に同scopeの投影を保持し、legacy propose を呼ばない", async () => {
     const onOpenChange = vi.fn();
     const { rerender } = render(

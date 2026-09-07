@@ -603,7 +603,7 @@ fn is_trimmed_nonempty(value: &str) -> bool {
 }
 
 fn is_hypothesis_actuality(value: &str) -> bool {
-    matches!(value, "actual" | "attempted" | "prevented")
+    matches!(value, "actual" | "attempted" | "prevented" | "rumored")
 }
 
 fn is_hypothesis_significance(value: &str) -> bool {
@@ -650,6 +650,7 @@ fn validate_raw_observations(raw: &ChronicleRawObservationsShape) -> anyhow::Res
                         | "hypothetical"
                         | "counterfactual"
                         | "dreamed"
+                        | "rumored"
                         | "unknown"
                 )
                 && matches!(
@@ -1533,7 +1534,7 @@ fn validate_v2_envelope_stage_receipt(
     run_id: &str,
     envelope: &Value,
     refs: &[ChronicleStageReceiptRef],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<VerifiedV2ContextArtifact> {
     let task_id = required_envelope_string(envelope, "/revisionBasis/taskId")?;
     let context_set_digest = required_envelope_string(envelope, "/revisionBasis/contextSetDigest")?;
     let component_contract_digest =
@@ -1641,8 +1642,8 @@ fn validate_v2_envelope_stage_receipt(
         )
     })?;
     ensure_digest(parsed_output_digest, "receipt.parsedOutputDigest")?;
-    let companion_count: i64 = conn.query_row(
-        "SELECT COUNT(*)
+    let mut statement = conn.prepare(
+        "SELECT a.id, a.payload_digest, a.payload_json, output.value
            FROM narrative_extraction_artifacts a,
                 json_each(a.payload_json, '$.outputs') AS output
           WHERE a.run_id = ?1 AND a.task_id = ?2 AND a.attempt_id = ?3
@@ -1651,24 +1652,100 @@ fn validate_v2_envelope_stage_receipt(
             AND json_extract(output.value, '$.terminalStageExecutionId') = ?6
             AND json_extract(output.value, '$.disposition') = ?7
             AND json_extract(output.value, '$.output.parsedOutputDigest') = ?8",
-        params![
-            run_id,
-            terminal.stage_execution.task_id,
-            terminal.stage_execution.attempt_id,
-            CHRONICLE_STAGE_SYNTHESIS_OUTPUTS_KIND,
-            root.stage_execution.stage_execution_id,
-            terminal.stage_execution.stage_execution_id,
-            disposition.wire_name(),
-            parsed_output_digest,
-        ],
+    )?;
+    let companions = statement
+        .query_map(
+            params![
+                run_id,
+                terminal.stage_execution.task_id,
+                terminal.stage_execution.attempt_id,
+                CHRONICLE_STAGE_SYNTHESIS_OUTPUTS_KIND,
+                root.stage_execution.stage_execution_id,
+                terminal.stage_execution.stage_execution_id,
+                disposition.wire_name(),
+                parsed_output_digest,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(companions.len() == 1,
+        "NEX_CHRONICLE_STAGE_PROVENANCE_REQUIRED: terminal receipt lacks its unique typed companion");
+    let (artifact_id, artifact_digest, payload_json, output_json) = &companions[0];
+    let payload: Value = serde_json::from_str(payload_json)?;
+    anyhow::ensure!(
+        canonical_json_digest(&payload)? == *artifact_digest,
+        "NEX_CHRONICLE_SYNTHESIS_COMPANION_DIGEST_MISMATCH: stored companion payload differs"
+    );
+    let output: ChronicleSynthesisTerminalOutputShape = serde_json::from_str(output_json)?;
+    let raw: ChronicleRawObservationsShape =
+        serde_json::from_value(output.raw_observations.clone())?;
+    let observation_refs = validate_raw_observations(&raw)?;
+    anyhow::ensure!(raw.kind == CHRONICLE_RAW_OBSERVATIONS_KIND && raw.version == 1
+        && output.event_output.get("clusterRef").and_then(Value::as_str) == Some(output.cluster_ref.as_str())
+        && output.output.kind == CHRONICLE_EVENT_SYNTHESIS_OUTPUT_KIND
+        && output.output.observation_refs == observation_refs
+        && output.output.observation_count == observation_refs.len() as u64
+        && canonical_json_digest(&output.raw_observations)? == output.output.raw_observations_digest
+        && canonical_json_digest(&output.event_output)? == output.output.event_output_digest
+        && terminal.raw_observations_digest.as_deref() == Some(output.output.raw_observations_digest.as_str())
+        && canonical_parsed_output_digest(&output.output.kind, output.output.observation_count,
+            output.output.event_count, &output.output.observation_refs,
+            &output.output.raw_observations_digest, &output.output.event_output_digest)? == parsed_output_digest,
+        "NEX_CHRONICLE_SYNTHESIS_COMPANION_DIGEST_MISMATCH: companion differs from terminal receipt");
+    Ok(VerifiedV2ContextArtifact {
+        source_key: format!("artifact:{artifact_id}"),
+        revision_token: artifact_digest.clone(),
+        cluster_ref: output.cluster_ref,
+        observation_refs,
+    })
+}
+
+pub(crate) struct VerifiedV2ContextArtifact {
+    pub source_key: String,
+    pub revision_token: String,
+    pub cluster_ref: String,
+    pub observation_refs: Vec<String>,
+}
+
+/// Revalidate the revision's original roster, including repaired terminal paths,
+/// before a context alias can participate in a Prepared Commit source seal.
+pub(crate) fn load_v2_context_artifact(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    revision_id: &str,
+    envelope: &Value,
+) -> anyhow::Result<VerifiedV2ContextArtifact> {
+    let summary_json: String = conn.query_row(
+        "SELECT s.summary_json FROM narrative_proposal_sets s
+         JOIN narrative_proposals p ON p.proposal_set_id = s.id
+         JOIN narrative_proposal_revisions v ON v.proposal_id = p.id
+         WHERE v.id = ?1 AND s.run_id = ?2",
+        params![revision_id, run_id],
         |row| row.get(0),
     )?;
+    let summary: Value = serde_json::from_str(&summary_json)?;
+    let refs: Vec<ChronicleStageReceiptRef> = serde_json::from_value(
+        summary
+            .get("chronicleStageReceiptRefs")
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!("NEX_CHRONICLE_STAGE_PROVENANCE_REQUIRED: revision roster is missing")
+            })?,
+    )?;
     anyhow::ensure!(
-        companion_count == 1,
-        "NEX_CHRONICLE_STAGE_PROVENANCE_REQUIRED: terminal receipt '{}' lacks its verified typed synthesis-output companion",
-        terminal.stage_execution.stage_execution_id
+        !refs.is_empty(),
+        "NEX_CHRONICLE_STAGE_PROVENANCE_REQUIRED: revision roster is empty"
     );
-    Ok(())
+    validate_receipt_roster(conn, project_id, run_id, &refs)?;
+    validate_v2_envelope_stage_receipt(conn, project_id, run_id, envelope, &refs)
 }
 
 fn validate_closure_shape(

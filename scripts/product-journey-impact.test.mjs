@@ -67,6 +67,7 @@ test("the current catalog has complete journey, contract, and interaction covera
     "lint-native-roundtrip",
     "map-native-roundtrip",
     "snapshot-native-roundtrip",
+    "chronicle-extract-review-apply-reopen",
     ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
       (journey) => journey.id,
     ),

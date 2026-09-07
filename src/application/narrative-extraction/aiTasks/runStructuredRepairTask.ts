@@ -29,7 +29,17 @@ import type {
   ChronicleStageTerminalReceiptV1,
   StageModelExecutionBindingV1,
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
+import { sha256Digest } from "@/features/narrative-extraction/source/digest";
 import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
+import type { EvidenceSpanCatalogBinding } from "@/features/narrative-extraction/evidence/spanCatalog";
+import {
+  buildCitationIdRepairPromptArtifactFromCaptured,
+  citationBindingAuditMetadata,
+  citationIdObservationParseStatus,
+  CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+  type ObservationEvidenceMode,
+  validateCitationIdBinding,
+} from "./citationIdObservation";
 
 export const NARRATIVE_STRUCTURED_REPAIR_PATH =
   "narrative_structured_repair" as const;
@@ -37,6 +47,8 @@ export const NARRATIVE_STRUCTURED_REPAIR_PATH =
 export interface RunStructuredRepairTaskInput {
   readonly brokenText: string;
   readonly expectedShape: string;
+  readonly evidenceMode?: ObservationEvidenceMode;
+  readonly evidenceSpanCatalogBinding?: EvidenceSpanCatalogBinding;
   readonly projectId?: string | null;
   /** Child Stage identity when called from a Chronicle pilot stage. */
   readonly stageExecution?: NarrativeStageExecutionContext;
@@ -47,6 +59,10 @@ export interface RunStructuredRepairTaskInput {
   /** Non-authoritative receipt observation seam for shadow/C1 harnesses. */
   readonly onStageReceipt?: (
     receipt: ChronicleStageTerminalReceiptV1,
+  ) => void | Promise<void>;
+  /** Raw provider response digest, before JSON extraction, for parent linkage. */
+  readonly onResponseDigest?: (
+    responseDigest: Sha256Digest,
   ) => void | Promise<void>;
   /**
    * Parent-stage owned output projection.  A successful repair is the
@@ -66,7 +82,7 @@ export type StructuredRepairParseStatus = "parsed" | "invalid";
 
 export type StructuredRepairResponseValidator = (
   responseText: string,
-) => StructuredRepairParseStatus;
+) => StructuredRepairParseStatus | Promise<StructuredRepairParseStatus>;
 
 export type StructuredRepairSend = (
   messages: Parameters<typeof sendChatMessageWithThinking>[0],
@@ -127,6 +143,56 @@ function buildStructuredRepairPromptArtifact(
   });
 }
 
+function isCitationIdRepair(input: RunStructuredRepairTaskInput): boolean {
+  return input.evidenceMode === CITATION_ID_OBSERVATION_EVIDENCE_MODE;
+}
+
+function citationIdRepairBinding(
+  input: RunStructuredRepairTaskInput,
+): EvidenceSpanCatalogBinding {
+  if (isCitationIdRepair(input) && !input.evidenceSpanCatalogBinding) {
+    throw new TypeError(
+      "Citation-ID structured repair requires an EvidenceSpanCatalogBinding",
+    );
+  }
+  return input.evidenceSpanCatalogBinding as EvidenceSpanCatalogBinding;
+}
+
+async function buildStructuredRepairPromptArtifactForInput(
+  input: RunStructuredRepairTaskInput,
+  capturedBinding?: EvidenceSpanCatalogBinding,
+): Promise<ChroniclePromptArtifact> {
+  if (isCitationIdRepair(input)) {
+    if (!capturedBinding) {
+      throw new TypeError(
+        "Citation-ID structured repair prompt requires a captured EvidenceSpanCatalogBinding",
+      );
+    }
+    return buildCitationIdRepairPromptArtifactFromCaptured({
+      expectedShape: input.expectedShape,
+      brokenText: input.brokenText,
+      binding: capturedBinding,
+    });
+  }
+  return buildStructuredRepairPromptArtifact(input);
+}
+
+function captureStructuredRepairInput(
+  input: RunStructuredRepairTaskInput,
+): RunStructuredRepairTaskInput {
+  return {
+    ...input,
+    brokenText: input.brokenText,
+    expectedShape: input.expectedShape,
+    ...(input.evidenceMode !== undefined
+      ? { evidenceMode: input.evidenceMode }
+      : {}),
+    ...(input.evidenceSpanCatalogBinding
+      ? { evidenceSpanCatalogBinding: input.evidenceSpanCatalogBinding }
+      : {}),
+  };
+}
+
 function buildLegacyStructuredRepairPrompt(
   input: RunStructuredRepairTaskInput,
 ): string {
@@ -163,11 +229,22 @@ function assertStructuredRepairStageContract(
   }
 }
 
-function resolveStructuredRepairParseStatus(
+async function resolveStructuredRepairParseStatus(
   input: RunStructuredRepairTaskInput,
   responseText: string,
-): StructuredRepairParseStatus {
-  if (!input.stageExecution) return structuredRepairParseStatus(responseText);
+  capturedBinding?: EvidenceSpanCatalogBinding,
+): Promise<StructuredRepairParseStatus> {
+  if (!input.stageExecution) {
+    if (isCitationIdRepair(input) && capturedBinding) {
+      return (await citationIdObservationParseStatus(
+        responseText,
+        capturedBinding,
+      )) === "parsed"
+        ? "parsed"
+        : "invalid";
+    }
+    return structuredRepairParseStatus(responseText);
+  }
 
   const responseValidator = input.responseValidator;
   if (typeof responseValidator !== "function") {
@@ -176,7 +253,9 @@ function resolveStructuredRepairParseStatus(
     );
   }
   try {
-    return responseValidator(responseText) === "parsed" ? "parsed" : "invalid";
+    return (await responseValidator(responseText)) === "parsed"
+      ? "parsed"
+      : "invalid";
   } catch {
     return "invalid";
   }
@@ -197,6 +276,7 @@ async function recordStructuredRepairStageAudit(
   onStageReceipt?: RunStructuredRepairTaskInput["onStageReceipt"],
   capturedTerminalMetadata?: ChronicleStageAuditMetadata,
   capturedStageReceipt?: ChronicleStageTerminalReceiptV1,
+  citationAudit?: AiAuditJsonObject,
 ): Promise<void> {
   if (!input.stageExecution) return;
   const digests = await buildChroniclePromptDigests(promptArtifact);
@@ -232,6 +312,7 @@ async function recordStructuredRepairStageAudit(
     metadata: {
       pathId: NARRATIVE_STRUCTURED_REPAIR_PATH,
       chronicleStageAudit: terminal,
+      ...(citationAudit ? { citationEvidence: citationAudit } : {}),
     },
   });
 }
@@ -241,8 +322,12 @@ async function recordStructuredRepairStageAudit(
  * Called at most once after a JSON extract/parse failure on another stage.
  */
 export async function runStructuredRepairTask(
-  input: RunStructuredRepairTaskInput,
+  callerInput: RunStructuredRepairTaskInput,
 ): Promise<string | null> {
+  // Capture the repair payload and protocol before any asynchronous work. A
+  // mutable caller must not be able to change the text, mode, or binding
+  // between prompt construction, provider response, audit, and validation.
+  const input = captureStructuredRepairInput(callerInput);
   if (input.stageExecution) {
     assertStageExecutionContext(input.stageExecution);
     if (
@@ -261,12 +346,19 @@ export async function runStructuredRepairTask(
     }
   }
 
+  const isCitationId = isCitationIdRepair(input);
+  const capturedCitationBinding = isCitationId
+    ? await validateCitationIdBinding(citationIdRepairBinding(input))
+    : undefined;
   const blocked = blockNarrativeAiTask();
   const emptyInput =
     input.stageExecution !== undefined && input.brokenText.trim().length === 0;
   if (blocked || emptyInput) {
     if (input.stageExecution) {
-      const promptArtifact = buildStructuredRepairPromptArtifact(input);
+      const promptArtifact = await buildStructuredRepairPromptArtifactForInput(
+        input,
+        capturedCitationBinding,
+      );
       const promptDigests = await buildChroniclePromptDigests(promptArtifact);
       await emitChronicleStageAuditSkippedReceipt({
         stageExecution: input.stageExecution,
@@ -287,9 +379,13 @@ export async function runStructuredRepairTask(
     assertStructuredRepairStageContract(input);
   }
 
-  const promptArtifact = input.stageExecution
-    ? buildStructuredRepairPromptArtifact(input)
-    : undefined;
+  const promptArtifact =
+    isCitationId || input.stageExecution
+      ? await buildStructuredRepairPromptArtifactForInput(
+          input,
+          capturedCitationBinding,
+        )
+      : undefined;
   const prompt = promptArtifact
     ? promptArtifact.messages[0].content
     : buildLegacyStructuredRepairPrompt(input);
@@ -306,6 +402,15 @@ export async function runStructuredRepairTask(
   const baseAuditContext = {
     projectId,
     pathId: NARRATIVE_STRUCTURED_REPAIR_PATH,
+    ...(isCitationId
+      ? {
+          metadata: {
+            citationEvidence: citationBindingAuditMetadata(
+              capturedCitationBinding!,
+            ),
+          },
+        }
+      : {}),
   } as const;
   let sealedModelBinding: StageModelExecutionBindingV1 | undefined;
   let capturedTerminalMetadata: ChronicleStageAuditMetadata | undefined;
@@ -329,9 +434,10 @@ export async function runStructuredRepairTask(
             metadata?: AiAuditJsonObject,
             responseDigest?: Sha256Digest,
           ) => {
-            const parseStatus = resolveStructuredRepairParseStatus(
+            const parseStatus = await resolveStructuredRepairParseStatus(
               input,
               responseText,
+              capturedCitationBinding,
             );
             const outputDigests = input.terminalOutputDigests
               ? await input.terminalOutputDigests(responseText, parseStatus)
@@ -356,6 +462,13 @@ export async function runStructuredRepairTask(
             capturedTerminalMetadata = terminal;
             return {
               chronicleStage: terminal as unknown as AiAuditJsonObject,
+              ...(isCitationId
+                ? {
+                    citationEvidence: citationBindingAuditMetadata(
+                      capturedCitationBinding!,
+                    ),
+                  }
+                : {}),
             };
           },
           onNoResponseTerminalMetadata: async (
@@ -406,8 +519,15 @@ export async function runStructuredRepairTask(
         ov.provider,
         ov.endpointId,
       );
+  if (input.onResponseDigest) {
+    await input.onResponseDigest(await sha256Digest(response.text));
+  }
   const repaired = extractJsonObject(response.text);
-  const parseStatus = resolveStructuredRepairParseStatus(input, response.text);
+  const parseStatus = await resolveStructuredRepairParseStatus(
+    input,
+    response.text,
+    capturedCitationBinding,
+  );
   if (input.stageExecution && promptArtifact) {
     await recordStructuredRepairStageAudit(
       input,
@@ -424,6 +544,9 @@ export async function runStructuredRepairTask(
       emitStageReceipt,
       capturedTerminalMetadata,
       capturedStageReceipt,
+      isCitationId
+        ? citationBindingAuditMetadata(capturedCitationBinding!)
+        : undefined,
     );
   } else {
     void recordAiUsage({
@@ -433,9 +556,20 @@ export async function runStructuredRepairTask(
       tokensIn: response.inputTokens,
       tokensOut: response.outputTokens,
       projectId,
-      metadata: { pathId: NARRATIVE_STRUCTURED_REPAIR_PATH },
+      metadata: {
+        pathId: NARRATIVE_STRUCTURED_REPAIR_PATH,
+        ...(isCitationId
+          ? {
+              citationEvidence: citationBindingAuditMetadata(
+                capturedCitationBinding!,
+              ),
+            }
+          : {}),
+      },
     });
   }
 
-  return input.stageExecution && parseStatus !== "parsed" ? null : repaired;
+  return (input.stageExecution || isCitationId) && parseStatus !== "parsed"
+    ? null
+    : repaired;
 }

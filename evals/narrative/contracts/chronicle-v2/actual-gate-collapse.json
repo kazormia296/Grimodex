@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 2,
+  "contractVersion": "chronicle-evaluation-v2/3",
+  "caseId": "chronicle.v2.actual-gate-collapse-001",
+  "authorship": {
+    "status": "draft-for-human-review",
+    "derivation": "source-text-only",
+    "independentSourceAnnotation": true,
+    "candidateOutputContamination": false,
+    "reviewRequired": true,
+    "formalCertification": false,
+    "reviewScope": {
+      "sourceAndGoldReviewed": true,
+      "eventObservationPolicy": "four-atomic-claims-user-approved",
+      "atomicObservationClaimIds": [
+        "chain-break",
+        "gate-fall",
+        "guards-ring-bell",
+        "guards-evacuate-passersby"
+      ],
+      "temporalRelationScope": "night-half-to-first-two-claims-user-approved",
+      "temporalRelationIds": ["night-half-chain-break", "night-half-gate-fall"],
+      "temporalUnscoredClaimIds": [
+        "guards-ring-bell",
+        "guards-evacuate-passersby"
+      ],
+      "excludedTemporalScopes": [
+        "absolute-date-conversion",
+        "downstream-sentence-time-inheritance",
+        "structured-entity-properties",
+        "proposal-importance"
+      ]
+    },
+    "excludedInputs": [
+      "deleted-provider-response",
+      "candidate-observation-wording",
+      "v1-scorer-decision"
+    ]
+  },
+  "coverage": {
+    "observation": "exhaustive",
+    "proposal": "targeted"
+  },
+  "sourceDocuments": [
+    {
+      "id": "scene-north-gate",
+      "title": "北門の夜",
+      "text": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+    }
+  ],
+  "observationGold": {
+    "claims": [
+      {
+        "id": "chain-break",
+        "predicate": "chain-break",
+        "participants": [{ "entity": "north-gate-chain", "role": "theme" }],
+        "actuality": "actual",
+        "attribution": "narrator",
+        "narrativeFrame": "story-world",
+        "requiredDirectRegions": [
+          { "documentId": "scene-north-gate", "start": 3, "end": 10 }
+        ],
+        "allowedContextRegions": [],
+        "granularity": "atomic"
+      },
+      {
+        "id": "gate-fall",
+        "predicate": "gate-fall",
+        "participants": [
+          { "entity": "gate-leaf", "role": "theme" },
+          { "entity": "street", "role": "destination" }
+        ],
+        "actuality": "actual",
+        "attribution": "narrator",
+        "narrativeFrame": "story-world",
+        "requiredDirectRegions": [
+          { "documentId": "scene-north-gate", "start": 11, "end": 22 }
+        ],
+        "allowedContextRegions": [],
+        "granularity": "atomic"
+      },
+      {
+        "id": "guards-ring-bell",
+        "predicate": "ring-bell",
+        "participants": [
+          { "entity": "guard", "role": "agent" },
+          { "entity": "bell", "role": "theme" }
+        ],
+        "actuality": "actual",
+        "attribution": "narrator",
+        "narrativeFrame": "story-world",
+        "requiredDirectRegions": [
+          { "documentId": "scene-north-gate", "start": 23, "end": 31 }
+        ],
+        "allowedContextRegions": [],
+        "granularity": "atomic"
+      },
+      {
+        "id": "guards-evacuate-passersby",
+        "predicate": "evacuate",
+        "participants": [
+          { "entity": "guard", "role": "agent" },
+          { "entity": "passerby", "role": "theme" },
+          { "entity": "square", "role": "destination" }
+        ],
+        "actuality": "actual",
+        "attribution": "narrator",
+        "narrativeFrame": "story-world",
+        "requiredDirectRegions": [
+          { "documentId": "scene-north-gate", "start": 32, "end": 44 }
+        ],
+        "allowedContextRegions": [
+          { "documentId": "scene-north-gate", "start": 23, "end": 26 }
+        ],
+        "granularity": "atomic"
+      }
+    ]
+  },
+  "temporalGold": {
+    "coverage": "targeted",
+    "relations": [
+      {
+        "id": "night-half-chain-break",
+        "targetClaimId": "chain-break",
+        "relation": "occurs-at",
+        "expression": "夜半",
+        "requiredRegion": {
+          "documentId": "scene-north-gate",
+          "start": 0,
+          "end": 2
+        }
+      },
+      {
+        "id": "night-half-gate-fall",
+        "targetClaimId": "gate-fall",
+        "relation": "occurs-at",
+        "expression": "夜半",
+        "requiredRegion": {
+          "documentId": "scene-north-gate",
+          "start": 0,
+          "end": 2
+        }
+      }
+    ],
+    "unscoredClaimIds": ["guards-ring-bell", "guards-evacuate-passersby"]
+  },
+  "proposalPolicy": {
+    "mode": "unscored",
+    "scoredClaimIds": [],
+    "reason": "importance-not-annotated"
+  }
+}

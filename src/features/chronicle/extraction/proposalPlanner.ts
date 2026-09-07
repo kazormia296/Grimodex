@@ -3,6 +3,10 @@ import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferen
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
 import type { ChronicleExistingMatch } from "./existingEventMatcher";
+import {
+  checkHypothesisActuality,
+  type RejectedHypothesisActuality,
+} from "./hypothesisActualityGate";
 
 export interface PlannedProposal {
   readonly proposal: CreateChronicleEventProposalPayloadV1;
@@ -54,6 +58,15 @@ function collectAnchorsForHypothesis(
 export function planChronicleEventProposals(
   input: ProposalPlannerInput,
 ): readonly PlannedProposal[] {
+  return planChronicleEventProposalsWithDiagnostics(input).planned;
+}
+
+export function planChronicleEventProposalsWithDiagnostics(
+  input: ProposalPlannerInput,
+): {
+  readonly planned: readonly PlannedProposal[];
+  readonly rejectedHypotheses: readonly RejectedHypothesisActuality[];
+} {
   const createId = input.createId ?? (() => crypto.randomUUID());
   const anchorsByQuoteAndSource = new Map<
     string,
@@ -75,7 +88,19 @@ export function planChronicleEventProposals(
   }
 
   const planned: PlannedProposal[] = [];
+  const rejectedHypotheses: RejectedHypothesisActuality[] = [];
   for (const hypothesis of input.hypotheses) {
+    const actualityCheck = checkHypothesisActuality(
+      hypothesis,
+      input.observations,
+    );
+    if (!actualityCheck.ok) {
+      rejectedHypotheses.push({
+        hypothesisId: hypothesis.hypothesisId,
+        reason: actualityCheck.reason,
+      });
+      continue;
+    }
     if (
       hypothesis.actuality !== "actual" &&
       hypothesis.actuality !== "attempted" &&
@@ -166,5 +191,5 @@ export function planChronicleEventProposals(
     });
   }
 
-  return planned;
+  return { planned, rejectedHypotheses };
 }

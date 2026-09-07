@@ -4873,75 +4873,116 @@ test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics"
   );
 });
 
-test("trusted restore and open reload allow only the exact Ubuntu Xvfb Skia mailbox line", async (t) => {
+test("restore reload allowance enforces exact phase, message, and expiry", async (t) => {
   const exact =
     "[146128:0824/022134.434622:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n";
-  for (const { phase, message, allowed } of [
+  for (const { name, phase, message, allowed, now = "2026-09-07" } of [
     {
+      name: "exact restore message",
       phase: "c2-5b-restore-verify-rebuild-verify/restore",
-      message: exact,
-      allowed: false,
-    },
-    {
-      phase: "c2-5b-restore-verify-rebuild-verify/open",
       message: exact,
       allowed: true,
     },
     {
+      name: "old open phase is rejected",
       phase: "c2-5b-restore-verify-rebuild-verify/open",
+      message: exact,
+      allowed: false,
+    },
+    {
+      name: "near match in restore is rejected",
+      phase: "c2-5b-restore-verify-rebuild-verify/restore",
       message: exact.replace("ProduceSkia:", "ProduceSkiaNearMatch:"),
       allowed: false,
     },
     {
-      phase: "c2-5b-restore-verify-rebuild-verify/open",
+      name: "other GPU error in restore is rejected",
+      phase: "c2-5b-restore-verify-rebuild-verify/restore",
       message: exact.replace("ProduceSkia:", "ProduceMemory:"),
       allowed: false,
     },
+    {
+      name: "expired exact restore message is rejected",
+      phase: "c2-5b-restore-verify-rebuild-verify/restore",
+      message: exact,
+      allowed: false,
+      now: "2026-10-01",
+    },
   ]) {
-    const mainStderr = new EventEmitter();
-    const page = {
-      isClosed: () => false,
-      on: () => undefined,
-      waitForFunction: async () => undefined,
-      screenshot: async () => undefined,
-    };
-    const app = {
-      firstWindow: async () => page,
-      process: () => childProcessStub({ stderr: mainStderr }),
-    };
-    const harness = createProductJourneyHarness({
-      mainCjs: "/tmp/fake-main.cjs",
-      electronBin: "/tmp/fake-electron",
-      electronLauncher: {
-        launch: async () => app,
-      },
-      closeApp: async () => {
-        mainStderr.emit("end");
-      },
+    await t.test(name, async (t) => {
+      t.mock.timers.enable({ apis: ["Date"], now: new Date(now) });
+      const artifactRoot = await mkdtemp(
+        path.join(os.tmpdir(), "skia-boundary-"),
+      );
+      t.after(() => rm(artifactRoot, { recursive: true, force: true }));
+      const mainStderr = new EventEmitter();
+      const page = {
+        isClosed: () => false,
+        on: () => undefined,
+        waitForFunction: async () => undefined,
+        screenshot: async () => undefined,
+      };
+      const app = {
+        firstWindow: async () => page,
+        process: () => childProcessStub({ stderr: mainStderr }),
+      };
+      const harness = createProductJourneyHarness({
+        artifactRoot,
+        mainCjs: "/tmp/fake-main.cjs",
+        electronBin: "/tmp/fake-electron",
+        electronLauncher: {
+          launch: async () => app,
+        },
+        closeApp: async () => {
+          mainStderr.emit("end");
+        },
+      });
+      t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+      const launched = await harness.launch(phase);
+      mainStderr.emit("data", message);
+      await harness.close(launched.app, launched.page, phase);
+
+      const error = await harness.finalizeDiagnostics().then(
+        () => null,
+        (cause) => cause,
+      );
+      assert.equal(
+        error?.name ?? null,
+        allowed ? null : "MainProcessDiagnosticsError",
+      );
+      const diagnostics = harness.diagnostics();
+      assert.equal(diagnostics.mainErrorCount, 1);
+      assert.equal(diagnostics.mainCleanPass, allowed);
+      assert.deepEqual(
+        diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
+          phase,
+          message,
+        })),
+        allowed ? [] : [{ phase, message }],
+      );
+      await harness.captureFailureArtifact("boundary");
+      const records = JSON.parse(
+        await readFile(
+          path.join(
+            artifactRoot,
+            "boundary",
+            "runtime",
+            "diagnostics",
+            "main-diagnostics.json",
+          ),
+          "utf8",
+        ),
+      );
+      assert.equal(records.length, 1);
+      assert.equal(records[0].phase, phase);
+      assert.equal(records[0].message, message);
+      assert.equal(records[0].classification, "error");
+      assert.equal(
+        records[0].allowance?.id ?? null,
+        allowed ? "ubuntu-xvfb-restore-reload-shared-image-skia" : null,
+      );
     });
-    t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
-
-    const launched = await harness.launch(phase);
-    mainStderr.emit("data", message);
-    await harness.close(launched.app, launched.page, phase);
-
-    const error = await harness.finalizeDiagnostics().then(
-      () => null,
-      (cause) => cause,
-    );
-    if (allowed) {
-      assert.equal(error, null);
-      return;
-    }
-    assert.equal(error?.name, "MainProcessDiagnosticsError");
-    assert.equal(error.diagnostics.mainErrorCount, 1);
-    assert.deepEqual(
-      error.diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
-        phase,
-        message,
-      })),
-      [{ phase, message }],
-    );
   }
 });
 
