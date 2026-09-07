@@ -62,6 +62,121 @@ fn raw_sha256_digest(bytes: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
 }
 
+#[cfg(feature = "nir1-material-diagnostics")]
+mod material_roster_diagnostics {
+    use super::*;
+    use grimodex_db::narrative_extraction::material_roster::{
+        inspect_material_roster, RosterStatus,
+    };
+    use rusqlite::{Connection, OpenFlags};
+
+    fn persisted_fixture() -> (std::path::PathBuf, String) {
+        let db = migrated_db();
+        let run = "roster-run";
+        let task = "roster-task";
+        create_run(&db, PROJECT_A, run, task);
+        let refs = seal_stage_receipts_for_v2(&db, run, task);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                 (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('roster-epoch', ?1, 0, 'initial', '2026-08-25T00:00:00.000Z')",
+                [PROJECT_A],
+            )?;
+            Ok(())
+        })
+        .expect("epoch");
+        let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+            &db,
+            SaveProposalSetPayload {
+                run_id: run.into(),
+                project_id: PROJECT_A.into(),
+                proposal_set_id: Some("roster-set".into()),
+                set_kind: "chronicle.extract.review@1".into(),
+                summary_json: Some(json!({"chronicleStageReceiptRefs": refs})),
+                proposals: vec![ProposalSeed {
+                    proposal_id: Some("roster-proposal".into()),
+                    proposal_key: "event:roster".into(),
+                    kind: PROPOSAL_KIND.into(),
+                    payload_json: proposal_payload("Arrival", false),
+                    reconciliation_envelope: Some(envelope_v2(
+                        &db, PROJECT_A, run, task, "Arrival",
+                    )),
+                }],
+            },
+        )
+        .expect("save through Native production persistence");
+        let revision = saved["proposals"][0]["revisionId"]
+            .as_str()
+            .expect("revision")
+            .to_owned();
+        let path =
+            std::env::temp_dir().join(format!("nir1-roster-{}.sqlite", uuid::Uuid::new_v4()));
+        db.with_conn(|conn| {
+            conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
+            Ok(())
+        })
+        .expect("isolated durable copy");
+        drop(db);
+        (path, revision)
+    }
+
+    #[test]
+    fn material_roster_reopens_valid_native_rows_without_claiming_membership() {
+        let (path, revision) = persisted_fixture();
+        let before = std::fs::read(&path).expect("before bytes");
+        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("read only");
+        let report = inspect_material_roster(&conn, PROJECT_A, &revision).expect("diagnose");
+        assert_eq!(report.status, RosterStatus::Incomplete);
+        assert!(!report.verified_receipts.is_empty());
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "snapshot-binding-missing"));
+        assert!(
+            report.materials.is_empty(),
+            "partial receipts are not material authority"
+        );
+        drop(conn);
+        assert_eq!(before, std::fs::read(&path).expect("after bytes"));
+        std::fs::remove_file(path).expect("remove isolated fixture");
+    }
+
+    #[test]
+    fn material_roster_missing_required_receipt_is_not_smaller_complete_roster() {
+        let (path, revision) = persisted_fixture();
+        let conn = Connection::open(&path).expect("negative copy");
+        conn.execute("DELETE FROM narrative_extraction_stage_receipts", [])
+            .expect("remove required receipts");
+        let report = inspect_material_roster(&conn, PROJECT_A, &revision).expect("diagnose");
+        assert_eq!(report.status, RosterStatus::Inconsistent);
+        assert!(report.materials.is_empty());
+        drop(conn);
+        std::fs::remove_file(path).expect("remove isolated fixture");
+    }
+
+    #[test]
+    fn material_roster_corrupt_receipt_and_foreign_project_are_distinct() {
+        let (path, revision) = persisted_fixture();
+        let conn = Connection::open(&path).expect("negative copy");
+        let foreign = inspect_material_roster(&conn, PROJECT_B, &revision).expect("foreign");
+        assert_eq!(foreign.status, RosterStatus::Incomplete);
+        assert!(foreign.verified_receipts.is_empty());
+        assert_eq!(foreign.issues[0].code, "revision-not-found");
+        conn.execute(
+            "UPDATE narrative_extraction_stage_receipts SET receipt_digest = ?1",
+            [FORGED_DIGEST],
+        )
+        .expect("tamper well-formed receipt digest");
+        let corrupt = inspect_material_roster(&conn, PROJECT_A, &revision).expect("corrupt");
+        assert_eq!(corrupt.status, RosterStatus::Inconsistent);
+        assert!(corrupt.materials.is_empty());
+        drop(conn);
+        std::fs::remove_file(path).expect("remove isolated fixture");
+    }
+}
+
 fn migrated_db() -> Database {
     let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
     db.migrate().expect("migrate");

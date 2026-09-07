@@ -74,6 +74,8 @@ mod semantic_epoch;
 mod semantic_index_diagnostics;
 mod source_revision;
 mod stage_provenance;
+#[cfg(feature = "nir1-material-diagnostics")]
+pub mod material_roster;
 mod task_leases;
 mod temporal_constraints;
 mod temporal_nodes;
