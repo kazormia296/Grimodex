@@ -18,7 +18,10 @@ import {
   CITATION_ID_OBSERVATION_EVIDENCE_MODE,
   validateCitationIdBinding,
 } from "./citationIdObservation";
-import { runObservationExtractionTask } from "./runObservationExtractionTask";
+import {
+  buildObservationExtractionPrompt,
+  runObservationExtractionTask,
+} from "./runObservationExtractionTask";
 
 vi.mock("@/features/ai-policy/policyGuard", () => ({
   blockIfPolicyOff: () => false,
@@ -48,7 +51,7 @@ function prose(text: string): string {
   });
 }
 
-async function fixture(): Promise<{
+async function fixture(text = "同じ文。門が開いた。"): Promise<{
   readonly binding: Awaited<ReturnType<typeof bindEvidenceSpanCatalog>>;
   readonly window: {
     readonly windowId: string;
@@ -66,7 +69,7 @@ async function fixture(): Promise<{
         parentSourceKey: null,
         title: "一場",
         orderIndex: 0,
-        proseMirrorJson: prose("同じ文。門が開いた。"),
+        proseMirrorJson: prose(text),
         origin: {
           kind: "project-node",
           projectId: "citation-task-test",
@@ -149,18 +152,49 @@ function expectCitationIdSemanticGuidance(prompt: string): void {
   );
   expect(prompt).toContain("文字列だけの要素は許可しません");
   expect(prompt).toContain("surface と role はどちらも空でない文字列");
-  for (const durationKind of [
-    "instant",
-    "bounded-interval",
-    "ongoing-process",
-    "unknown",
+  for (const values of [
+    [
+      "actual",
+      "planned",
+      "intended",
+      "attempted",
+      "prevented",
+      "hypothetical",
+      "counterfactual",
+      "dreamed",
+      "rumored",
+      "unknown",
+    ],
+    [
+      "story-world",
+      "flashback",
+      "dream",
+      "reported",
+      "hypothetical",
+      "unknown",
+    ],
+    ["instant", "bounded-interval", "ongoing-process", "unknown"],
   ]) {
-    expect(prompt).toContain(`"${durationKind}"`);
+    for (const value of values) expect(prompt).toContain(`"${value}"`);
   }
+  expect(prompt).toContain('"narrator"');
+  expect(prompt).toContain('"character:本文中の人物表記"');
+  expect(prompt).toContain(
+    "temporalExpressions は本文中の時間表現を文字列で並べる配列",
+  );
+  expect(prompt).toContain("語り手が夢の内容を述べる場合も");
   expect(prompt).toContain('既定値へ決め打ちせず "unknown"');
+  expect(prompt).toContain('"rumored"');
+  expect(prompt).toContain("本文が真実を保証していない");
+  expect(prompt).toContain("本文で裏付けられた出来事");
 }
 
 describe("citation-ID observation runtime", () => {
+  it("defines the same independent actuality semantics for legacy observations", () => {
+    const prompt = buildObservationExtractionPrompt([]);
+    expectCitationIdSemanticGuidance(prompt);
+  });
+
   it("renders the participant object and complete duration contracts", async () => {
     const { binding, window } = await fixture();
     const artifact = await buildCitationIdObservationPromptArtifact(
@@ -169,7 +203,7 @@ describe("citation-ID observation runtime", () => {
     );
     const prompt = artifact.messages[0].content;
 
-    expect(artifact.componentContract.contractVersion).toBe("3");
+    expect(artifact.componentContract.contractVersion).toBe("5");
     expect(artifact.componentContract.outputShape).toBe(
       CITATION_ID_OBSERVATION_EXPECTED_SHAPE,
     );
@@ -177,6 +211,8 @@ describe("citation-ID observation runtime", () => {
       '"participants":[{"surface":"登場人物の表記","role":"出来事での役割"}]',
     );
     expectCitationIdSemanticGuidance(prompt);
+    expect(prompt).toContain("evidenceRefs は提示済み ID の空でない配列");
+    expect(prompt).toContain("同じ Observation 内に重複 ID を入れない");
   });
 
   it("renders the same semantic contract for citation-ID repair", async () => {
@@ -188,10 +224,152 @@ describe("citation-ID observation runtime", () => {
     });
     const prompt = artifact.messages[0].content;
 
-    expect(artifact.componentContract.contractVersion).toBe("3");
+    expect(artifact.componentContract.contractVersion).toBe("5");
     expect(prompt).toContain(CITATION_ID_OBSERVATION_EXPECTED_SHAPE);
     expectCitationIdSemanticGuidance(prompt);
+    expect(prompt).toContain("evidenceRefs は提示済み ID の空でない配列");
+    expect(prompt).toContain("同じ Observation 内に重複 ID を入れない");
   });
+
+  it.each([
+    {
+      actuality: "planned",
+      narrativeFrame: "reported",
+      attribution: "character:係員",
+      text: "係員は夕暮れに灯台の明かりを消す予定だと話した。",
+    },
+    {
+      actuality: "hypothetical",
+      narrativeFrame: "hypothetical",
+      attribution: "narrator",
+      text: "もし夕暮れに灯台の明かりが消えたら、船は待機する。",
+    },
+    {
+      actuality: "dreamed",
+      narrativeFrame: "dream",
+      attribution: "narrator",
+      text: "語り手は夢で夕暮れに灯台の明かりが消えるのを見た。",
+    },
+    {
+      actuality: "rumored",
+      narrativeFrame: "reported",
+      attribution: "character:係員",
+      text: "係員は夕暮れに灯台の明かりが消えたと聞いた。",
+    },
+    {
+      actuality: "actual",
+      narrativeFrame: "reported",
+      attribution: "character:係員",
+      text: "係員が目撃し報告したとおり、夕暮れに灯台の明かりが消えた。",
+    },
+    {
+      actuality: "unknown",
+      narrativeFrame: "unknown",
+      attribution: "unknown",
+      text: "夕暮れの明かりについて記録は定かでなかった。",
+    },
+  ])(
+    "materializes $actuality with independent $attribution / $narrativeFrame",
+    async ({ text, actuality, narrativeFrame, attribution }) => {
+      const { binding, window } = await fixture(text);
+      const occurrence = binding.aliases[0];
+      if (!occurrence) throw new Error("fixture alias missing");
+      const payload = {
+        predicate: "消える",
+        actuality,
+        participants: [{ surface: "明かり", role: "theme" }],
+        temporalExpressions: ["夕暮れ"],
+        durationKind: "unknown",
+        semanticType: "change",
+        locationSurface: "灯台",
+      };
+      const assertion = { attribution, narrativeFrame };
+      const observations = await runObservationExtractionTask({
+        windows: [window],
+        evidenceMode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+        evidenceSpanCatalogBinding: binding,
+        repairOnFailure: false,
+        projectId: "citation-task-test",
+        send: async (messages) => {
+          expectCitationIdSemanticGuidance(String(messages[0]?.content ?? ""));
+          return {
+            text: JSON.stringify({
+              observations: [
+                {
+                  localId: "modality-claim",
+                  evidenceRefs: [occurrence.alias],
+                  assertion,
+                  payload,
+                },
+              ],
+            }),
+            inputTokens: 1,
+            outputTokens: 1,
+          };
+        },
+      });
+      expect(observations).toEqual([
+        {
+          localId: "modality-claim",
+          assertion,
+          payload,
+          evidence: [{ sourceRef: occurrence.canonicalSourceRef, quote: text }],
+        },
+      ]);
+    },
+  );
+
+  it.each([
+    { field: "actuality", value: "future", section: "payload" },
+    { field: "narrativeFrame", value: "planned", section: "assertion" },
+    { field: "durationKind", value: "forever", section: "payload" },
+    { field: "attribution", value: "speaker", section: "assertion" },
+    {
+      field: "temporalExpressions",
+      value: { text: "夕暮れ" },
+      section: "payload",
+    },
+  ])(
+    "rejects unsupported $section.$field through the production materializer",
+    async ({ field, value, section }) => {
+      const { binding, window } = await fixture();
+      const alias = binding.aliases[0]?.alias;
+      if (!alias) throw new Error("fixture alias missing");
+      const invalid = {
+        localId: "invalid-claim",
+        evidenceRefs: [alias],
+        assertion: {
+          attribution: "narrator",
+          narrativeFrame: "story-world",
+          ...(section === "assertion" ? { [field]: value } : {}),
+        },
+        payload: {
+          predicate: "開く",
+          actuality: "actual",
+          participants: [],
+          temporalExpressions: [],
+          durationKind: "instant",
+          ...(section === "payload" ? { [field]: value } : {}),
+        },
+      };
+      await expect(
+        runObservationExtractionTask({
+          windows: [window],
+          evidenceMode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+          evidenceSpanCatalogBinding: binding,
+          repairOnFailure: false,
+          projectId: "citation-task-test",
+          send: async () => ({
+            text: JSON.stringify({ observations: [invalid] }),
+            inputTokens: 1,
+            outputTokens: 1,
+          }),
+        }),
+      ).rejects.toMatchObject({
+        code: "NEX_CHRONICLE_CITATION_ID_SCHEMA_INVALID",
+      });
+    },
+  );
 
   it("materializes code-owned occurrence text and rejects an unknown alias", async () => {
     const { binding, window } = await fixture();

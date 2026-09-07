@@ -1243,7 +1243,8 @@ function synthesizeHypothesesFromClusters(
     if (
       actuality !== "actual" &&
       actuality !== "attempted" &&
-      actuality !== "prevented"
+      actuality !== "prevented" &&
+      actuality !== "rumored"
     ) {
       return [];
     }

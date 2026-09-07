@@ -14,7 +14,6 @@ import {
   type ChronicleV2EvidenceRegion,
   type ChronicleV2EvidenceCandidate,
   type ChronicleV2EvaluationScope,
-  type ChronicleV2GoldClaim,
   type ChronicleV2NormalizedActualClaim,
   type ChronicleV2RawActualClaim,
 } from "./chronicleV2Contract";
@@ -199,8 +198,63 @@ export interface ChronicleV2ProductionEvidenceFacts {
   readonly rawActualClaims: readonly ChronicleV2RawActualClaim[];
   readonly evidence: readonly ChronicleV2EvidenceValidation[];
   readonly evidenceCandidates: readonly ChronicleV2EvidenceCandidate[];
+  /** Evidence eligibility for explicitly declared targeted exclusions. */
+  readonly scopeEvidenceCandidates: readonly ChronicleV2ScopeEvidenceCandidate[];
   readonly sourceDocumentBindings: readonly ChronicleV2SourceDocumentBinding[];
   readonly evidenceOccurrences: readonly ChronicleV2ProductionEvidenceOccurrence[];
+}
+
+/**
+ * The evidence-only contract accepted by the shared resolver.  The semantic
+ * evaluator still consumes the finite Chronicle v2 contract; this structural
+ * bridge lets a separate case descriptor reuse the same source/evidence
+ * boundary without widening Chronicle v2's vocabulary.
+ */
+export interface ChronicleV2EvidenceContract {
+  readonly authorship: {
+    readonly independentSourceAnnotation: boolean;
+    readonly candidateOutputContamination: boolean;
+  };
+  readonly sourceDocuments: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly text: string;
+  }[];
+  readonly observationGold: {
+    readonly claims: readonly ChronicleV2EvidenceGoldClaim[];
+  };
+  readonly scopeExclusions?: readonly ChronicleV2EvidenceScopeExclusion[];
+}
+
+export interface ChronicleV2EvidenceGoldClaim {
+  readonly id: string;
+  readonly predicate: string;
+  readonly participants: readonly {
+    readonly entity: string;
+    readonly role: string;
+  }[];
+  readonly actuality: string;
+  readonly attribution: string;
+  readonly narrativeFrame: string;
+  readonly requiredDirectRegions: readonly ChronicleV2EvidenceRegion[];
+  readonly allowedContextRegions: readonly ChronicleV2EvidenceRegion[];
+  readonly granularity: "atomic";
+}
+
+export interface ChronicleV2EvidenceScopeExclusion {
+  readonly id: string;
+  readonly meaning: string;
+  readonly requiredDirectRegions: readonly ChronicleV2EvidenceRegion[];
+  readonly allowedContextRegions: readonly ChronicleV2EvidenceRegion[];
+}
+
+export interface ChronicleV2ScopeEvidenceCandidate {
+  readonly actualRef: string;
+  readonly scopeId: string;
+  readonly evidenceValid: boolean;
+  readonly overlap: boolean;
+  readonly directSupport: boolean;
+  readonly contextSupport: boolean;
 }
 
 interface ValidatedBindingContext {
@@ -287,7 +341,7 @@ function hasOverlap(left: GoldRange, right: GoldRange): boolean {
 
 function documentMatches(
   prepared: PreparedProductionChronicleEvalCase,
-  contract: ChronicleV2Contract,
+  contract: ChronicleV2EvidenceContract,
 ): ReadonlyMap<string, PreparedDocumentMatch> {
   const result = new Map<string, PreparedDocumentMatch>();
   for (const source of contract.sourceDocuments) {
@@ -323,7 +377,7 @@ function documentMatches(
 function sourceDocumentBindingsFor(
   preparedCase: PreparedProductionChronicleEvalCase,
   preparedMatches: ReadonlyMap<string, PreparedDocumentMatch>,
-  contract: ChronicleV2Contract,
+  contract: ChronicleV2EvidenceContract,
 ): readonly ChronicleV2SourceDocumentBinding[] {
   const bindings = contract.sourceDocuments.map((document) => {
     const preparedMatch = preparedMatches.get(document.id);
@@ -594,14 +648,14 @@ async function resolveActualEvidence(
 }
 
 function goldRanges(
-  contract: ChronicleV2Contract,
+  contract: ChronicleV2EvidenceContract,
   preparedMatches: ReadonlyMap<string, PreparedDocumentMatch>,
 ): GoldRanges {
   const requiredDirect = new Map<string, readonly GoldRange[]>();
   const allowedContext = new Map<string, readonly GoldRange[]>();
   for (const claim of contract.observationGold.claims) {
     const resolveRegions = (
-      regions: ChronicleV2GoldClaim["requiredDirectRegions"],
+      regions: ChronicleV2EvidenceGoldClaim["requiredDirectRegions"],
     ): readonly GoldRange[] => {
       const ranges: GoldRange[] = [];
       for (const region of regions) {
@@ -701,7 +755,7 @@ function contextSupportForObservation(
 
 function buildEvidenceCandidates(
   prepared: PreparedProductionChronicleEvalCase,
-  claims: readonly ChronicleV2GoldClaim[],
+  claims: readonly ChronicleV2EvidenceGoldClaim[],
   observations: readonly RawChronicleEventObservation[],
   evidence: readonly ActualEvidenceResult[],
   rangesByGoldId: GoldRanges,
@@ -759,6 +813,61 @@ function buildEvidenceCandidates(
   return result;
 }
 
+function buildScopeEvidenceCandidates(
+  prepared: PreparedProductionChronicleEvalCase,
+  observations: readonly RawChronicleEventObservation[],
+  evidence: readonly ActualEvidenceResult[],
+  scopeExclusions: readonly ChronicleV2EvidenceScopeExclusion[],
+  rangesByScopeId: ReadonlyMap<string, GoldRanges>,
+  contexts: ReadonlyMap<string, ValidatedBindingContext>,
+): readonly ChronicleV2ScopeEvidenceCandidate[] {
+  const result: ChronicleV2ScopeEvidenceCandidate[] = [];
+  for (const [index, observation] of observations.entries()) {
+    const actualEvidence = evidence[index];
+    if (!actualEvidence) continue;
+    const actualRanges = actualEvidence.validation.ranges.map((range) => ({
+      documentId: range.documentId,
+      start: range.start,
+      end: range.end,
+    }));
+    for (const exclusion of scopeExclusions) {
+      const ranges = rangesByScopeId.get(exclusion.id);
+      if (!ranges) continue;
+      const requiredDirectRanges = ranges.requiredDirect.get(exclusion.id) ?? [];
+      const allowedContextRanges =
+        ranges.allowedContext.get(exclusion.id) ?? [];
+      const evidenceValid =
+        actualEvidence.validation.valid && actualRanges.length > 0;
+      const overlap =
+        evidenceValid &&
+        actualRanges.some((actualRange) =>
+          requiredDirectRanges.some((scopeRange) =>
+            hasOverlap(actualRange, scopeRange),
+          ),
+        );
+      const directSupport =
+        evidenceValid &&
+        requiredDirectRanges.length > 0 &&
+        chronicleV2CoversAllRanges(actualRanges, requiredDirectRanges);
+      const contextSupport = contextSupportForObservation(
+        prepared,
+        observation,
+        allowedContextRanges,
+        contexts,
+      );
+      result.push({
+        actualRef: observation.localId,
+        scopeId: exclusion.id,
+        evidenceValid,
+        overlap,
+        directSupport,
+        contextSupport,
+      });
+    }
+  }
+  return result;
+}
+
 /**
  * Resolve production evidence without applying the finite v2 semantic
  * normalizer or alignment. This is the shared fact boundary for evaluators
@@ -767,7 +876,7 @@ function buildEvidenceCandidates(
 export async function buildChronicleV2ProductionEvidenceFacts(
   prepared: PreparedProductionChronicleEvalCase,
   artifacts: ProductionChronicleArtifacts,
-  contract: ChronicleV2Contract,
+  contract: ChronicleV2EvidenceContract,
 ): Promise<ChronicleV2ProductionEvidenceFacts> {
   if (prepared.evidenceMode !== "citation-id-v2") {
     throw new Error(
@@ -808,6 +917,54 @@ export async function buildChronicleV2ProductionEvidenceFacts(
     rangesByGoldId,
     bindingContexts,
   );
+  const scopeExclusions = contract.scopeExclusions ?? [];
+  const rangesByScopeId = new Map<string, GoldRanges>();
+  for (const exclusion of scopeExclusions) {
+    const requiredDirect = new Map<string, readonly GoldRange[]>();
+    const allowedContext = new Map<string, readonly GoldRange[]>();
+    const resolveRegions = (
+      regions: readonly ChronicleV2EvidenceRegion[],
+    ): readonly GoldRange[] =>
+      regions.map((region) => {
+        const source = preparedMatches.get(region.documentId);
+        if (!source) {
+          throw new Error(
+            `Chronicle v2 scope exclusion document is unmapped: ${region.documentId}`,
+          );
+        }
+        if (
+          region.start < 0 ||
+          region.end <= region.start ||
+          region.end > source.text.length
+        ) {
+          throw new Error(
+            `Chronicle v2 scope exclusion range is outside the source: ${exclusion.id}`,
+          );
+        }
+        return {
+          documentId: source.documentId,
+          start: region.start,
+          end: region.end,
+        };
+      });
+    requiredDirect.set(
+      exclusion.id,
+      resolveRegions(exclusion.requiredDirectRegions),
+    );
+    allowedContext.set(
+      exclusion.id,
+      resolveRegions(exclusion.allowedContextRegions),
+    );
+    rangesByScopeId.set(exclusion.id, { requiredDirect, allowedContext });
+  }
+  const scopeEvidenceCandidates = buildScopeEvidenceCandidates(
+    prepared,
+    artifacts.observations,
+    evidenceResults,
+    scopeExclusions,
+    rangesByScopeId,
+    bindingContexts,
+  );
   validateChronicleV2EvidenceDocumentBindings(
     evidenceResults.flatMap((result) =>
       result.validation.ranges.map((range) => ({
@@ -821,6 +978,7 @@ export async function buildChronicleV2ProductionEvidenceFacts(
     rawActualClaims,
     evidence: evidenceResults.map((result) => result.validation),
     evidenceCandidates,
+    scopeEvidenceCandidates,
     sourceDocumentBindings,
     evidenceOccurrences: evidenceResults.flatMap(
       (result) => result.occurrences,

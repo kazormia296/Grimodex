@@ -242,14 +242,16 @@ const PRODUCTION_CAPABILITY_PROBE_ANCHOR: ResolvedEvidenceAnchor = {
 function plannerEmitsCapabilityProbe(
   significance: string,
   match: ChronicleExistingMatch,
+  actuality: string,
 ): boolean {
+  if (!productionHypothesisActualityAccepted(actuality)) return false;
   const hypothesis: EventHypothesis = {
     hypothesisId: "capability-probe-hypothesis",
     clusterRef: "capability-probe-cluster",
     observationRefs: [PRODUCTION_CAPABILITY_PROBE_OBSERVATION.localId],
     titleSuggestion: "capability probe",
     summary: "capability probe",
-    actuality: "actual",
+    actuality: actuality as EventHypothesis["actuality"],
     significance: significance as EventHypothesis["significance"],
   };
   return (
@@ -263,13 +265,20 @@ function plannerEmitsCapabilityProbe(
   );
 }
 
-function plannerCanRepresentCandidate(significance: string): boolean {
+function plannerCanRepresentCandidate(
+  significance: string,
+  actuality: string,
+): boolean {
   return (
-    plannerEmitsCapabilityProbe(significance, { status: "none" }) &&
-    !plannerEmitsCapabilityProbe(significance, {
-      status: "already-satisfied",
-      existingRef: "capability-probe-existing-event",
-    })
+    plannerEmitsCapabilityProbe(significance, { status: "none" }, actuality) &&
+    !plannerEmitsCapabilityProbe(
+      significance,
+      {
+        status: "already-satisfied",
+        existingRef: "capability-probe-existing-event",
+      },
+      actuality,
+    )
   );
 }
 
@@ -360,7 +369,10 @@ export function classifyProductionChronicleExpectation(
     (dimensions.evidence?.length ?? 0) > 0;
   const plannerCanEmitEligibleHypothesis =
     dimensions.significance !== undefined &&
-    plannerCanRepresentCandidate(dimensions.significance);
+    plannerCanRepresentCandidate(
+      dimensions.significance,
+      dimensions.actuality ?? "actual",
+    );
   if (
     dimensions.proposalGate === "suppress" &&
     plannerCanEmitEligibleHypothesis &&
@@ -407,7 +419,7 @@ function buildConstraints(): readonly ProductionChronicleCapabilityConstraint[] 
       scope: "observation-schema",
       dimensions: ["actuality"],
       message:
-        "The canonical observation parser determines the actuality values that can be projected. It excludes rumored; values accepted here remain observation-stage values and are not implicitly hypothesis values.",
+        "The canonical observation parser determines the actuality values that can be projected. It includes rumored without promoting hearsay to actual; values accepted here remain observation-stage values and are not implicitly hypothesis values.",
     },
     {
       id: "synthesis-actuality-allowlist",
@@ -415,7 +427,7 @@ function buildConstraints(): readonly ProductionChronicleCapabilityConstraint[] 
       scope: "synthesis-schema",
       dimensions: ["actuality"],
       message:
-        "The canonical event-synthesis parser has a narrower actuality contract than observation parsing. This report records that stage separation without converting an observation actuality into a different value.",
+        "The canonical event-synthesis parser has a narrower actuality contract than observation parsing. It accepts rumored hypotheses, which remain ineligible for writing proposals. This report records that stage separation without converting an observation actuality into a different value.",
     },
     {
       id: "synthesis-significance-allowlist",

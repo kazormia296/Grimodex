@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "chronicle-judge-case-contract/1",
+  "caseId": "transfer-hearsay-001",
+  "authorship": {
+    "status": "draft-for-human-review",
+    "derivation": "source-text-only",
+    "independentSourceAnnotation": true,
+    "candidateOutputContamination": false,
+    "reviewRequired": true,
+    "formalCertification": false,
+    "semanticGoldStatus": "user-approved",
+    "runtimeCapability": "supported",
+    "ordinaryQualityRun": "enabled",
+    "reviewScope": {
+      "sourceAndGoldReviewed": true,
+      "eventObservationPolicy": "case-atomic-claims-user-approved",
+      "atomicObservationClaimIds": ["H1"],
+      "temporalScope": "all-relations-unscored",
+      "temporalRelationIds": [],
+      "excludedTemporalScopes": ["temporal-metadata", "proposal-importance"],
+      "scopeExclusionIds": [
+        "speech-act",
+        "hearing-act",
+        "perception-negation",
+        "temporal-metadata",
+        "proposal-importance"
+      ]
+    },
+    "excludedInputs": [
+      "deleted-provider-response",
+      "candidate-observation-wording",
+      "v1-scorer-decision"
+    ]
+  },
+  "coverage": {
+    "observation": "targeted",
+    "temporal": "targeted",
+    "proposal": "targeted"
+  },
+  "sourceDocuments": [
+    {
+      "id": "transfer-hearsay-source",
+      "title": "人物が話す伝聞",
+      "text": "ハルはミナに「山小屋が燃えたと旅人から聞いた」と話した。ハルは山小屋を見ていない。",
+      "textSha256": "38b2ccf2ae6087d6a2b618070afb97e0b7a5ddd83041874bd5ac3292809e4433"
+    }
+  ],
+  "observationGold": {
+    "claims": [
+      {
+        "id": "H1",
+        "predicate": "burn",
+        "participants": [{ "entity": "山小屋", "role": "theme" }],
+        "actuality": "rumored",
+        "attribution": "character:ハル",
+        "narrativeFrame": "reported",
+        "requiredDirectRegions": [
+          { "documentId": "transfer-hearsay-source", "start": 7, "end": 22 }
+        ],
+        "allowedContextRegions": [
+          { "documentId": "transfer-hearsay-source", "start": 0, "end": 6 },
+          { "documentId": "transfer-hearsay-source", "start": 23, "end": 27 }
+        ],
+        "granularity": "atomic"
+      }
+    ]
+  },
+  "temporalGold": {
+    "coverage": "targeted",
+    "relations": [],
+    "unscoredClaimIds": ["H1"]
+  },
+  "proposalPolicy": {
+    "mode": "unscored",
+    "scoredClaimIds": [],
+    "reason": "importance-not-annotated"
+  },
+  "scopeExclusions": [
+    {
+      "id": "speech-act",
+      "meaning": "伝聞内容を話したという発話行為は、伝聞内容H1とは別のObservationとして採点しない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-hearsay-source", "start": 23, "end": 27 }
+      ],
+      "allowedContextRegions": [
+        { "documentId": "transfer-hearsay-source", "start": 0, "end": 6 },
+        { "documentId": "transfer-hearsay-source", "start": 7, "end": 22 }
+      ],
+      "reason": "The speech act is outside the targeted event scope."
+    },
+    {
+      "id": "hearing-act",
+      "meaning": "旅人から聞いたという聴取行為は、伝聞内容H1とは別のObservationとして採点しない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-hearsay-source", "start": 15, "end": 22 }
+      ],
+      "allowedContextRegions": [
+        { "documentId": "transfer-hearsay-source", "start": 0, "end": 6 },
+        { "documentId": "transfer-hearsay-source", "start": 7, "end": 22 }
+      ],
+      "reason": "The hearing act is outside the originally approved targeted event scope."
+    },
+    {
+      "id": "perception-negation",
+      "meaning": "ハル本人が山小屋を見ていないという知覚の否定は、伝聞内容H1とは別のObservationとして採点しない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-hearsay-source", "start": 28, "end": 41 }
+      ],
+      "allowedContextRegions": [],
+      "reason": "The perception negation is outside the targeted event scope."
+    },
+    {
+      "id": "temporal-metadata",
+      "meaning": "伝聞内容の時間値は今回の対象範囲に含めない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-hearsay-source", "start": 7, "end": 22 }
+      ],
+      "allowedContextRegions": [],
+      "reason": "temporal coverage is targeted with no relation Gold."
+    },
+    {
+      "id": "proposal-importance",
+      "meaning": "伝聞内容のProposal重要度と選別は今回の対象範囲に含めない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-hearsay-source", "start": 7, "end": 22 }
+      ],
+      "allowedContextRegions": [],
+      "reason": "importance is not annotated."
+    }
+  ]
+}

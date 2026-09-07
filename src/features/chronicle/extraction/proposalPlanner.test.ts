@@ -93,6 +93,17 @@ describe("planChronicleEventProposals", () => {
     });
   });
 
+  it("suppresses a rumored major hypothesis even with resolved evidence", () => {
+    expect(
+      planChronicleEventProposals({
+        hypotheses: [hypothesis({ actuality: "rumored" })],
+        observations: [observation()],
+        anchors: [anchor()],
+        matchesByHypothesisId: new Map([["hyp-1", { status: "none" }]]),
+      }),
+    ).toEqual([]);
+  });
+
   it("skips planned / minor / unresolved-evidence / already-satisfied", () => {
     const planned = planChronicleEventProposals({
       hypotheses: [

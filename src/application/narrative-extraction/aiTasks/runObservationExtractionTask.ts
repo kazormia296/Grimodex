@@ -4,6 +4,7 @@ import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
+import { OBSERVATION_CLAIM_GUIDANCE } from "./observationPromptGuidance";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { normalizeWindowObservations } from "@/features/chronicle/extraction/windowExtractor";
 import { parseRawChronicleEventObservationList } from "@/features/chronicle/extraction/schemas";
@@ -109,9 +110,10 @@ export interface RunObservationExtractionTaskInput {
 
 const OBSERVATION_COMPONENT_CONTRACT = {
   contractId: "chronicle.observation-extraction.prompt",
-  contractVersion: "1",
+  contractVersion: "3",
   instruction: `あなたは小説本文の観測アシスタントです。与えられた Source View 断片から、作中で提示されている出来事の Observation を JSON で列挙してください。
-Project ID / Scene ID / Event ID / DB version は出力にも入力にも使いません。evidence.sourceRef には与えた sourceRef（例: S0001）だけを使います。`,
+Project ID / Scene ID / Event ID / DB version は出力にも入力にも使いません。evidence.sourceRef には与えた sourceRef（例: S0001）だけを使います。
+${OBSERVATION_CLAIM_GUIDANCE}`,
   outputShape:
     '{"observations":[{"localId":"obs-1","evidence":[{"sourceRef":"S0001","quote":"原文の完全一致引用"}],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"出来事の述語","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}',
 } as const;

@@ -13,7 +13,7 @@ export interface RawChronicleEventObservationEvidenceRefs {
   readonly payload: RawChronicleEventObservation["payload"];
 }
 
-const OBSERVATION_ACTUALITIES = [
+export const OBSERVATION_ACTUALITIES = [
   "actual",
   "planned",
   "intended",
@@ -22,17 +22,23 @@ const OBSERVATION_ACTUALITIES = [
   "hypothetical",
   "counterfactual",
   "dreamed",
+  "rumored",
   "unknown",
 ] as const;
 
-const DURATION_KINDS = [
+export const DURATION_KINDS = [
   "instant",
   "bounded-interval",
   "ongoing-process",
   "unknown",
 ] as const;
 
-const HYPOTHESIS_ACTUALITIES = ["actual", "attempted", "prevented"] as const;
+const HYPOTHESIS_ACTUALITIES = [
+  "actual",
+  "attempted",
+  "prevented",
+  "rumored",
+] as const;
 
 const SIGNIFICANCES = ["major", "scene-level", "minor", "incidental"] as const;
 
@@ -43,7 +49,7 @@ const SYNTHESIS_RESOLUTIONS = [
   "unresolved",
 ] as const;
 
-const NARRATIVE_FRAMES = [
+export const NARRATIVE_FRAMES = [
   "story-world",
   "flashback",
   "dream",

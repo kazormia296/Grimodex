@@ -386,23 +386,28 @@ function fixtureDecision(
       ),
       axes: assignment.axes,
     })),
-    unmatchedActuals: decision.unmatchedActuals.map((unmatched) => ({
-      actualLocalId: requireRef(
-        actualReverseMap,
-        unmatched.actualRef,
-        "opaque unmatched actual",
-      ),
-      status: unmatched.status,
-      ...(unmatched.duplicateOf
-        ? {
-            duplicateOf: requireRef(
-              actualReverseMap,
-              unmatched.duplicateOf,
-              "opaque duplicate target",
-            ),
-          }
-        : {}),
-    })),
+    unmatchedActuals: decision.unmatchedActuals.map((unmatched) => {
+      if (unmatched.status === "unscored") {
+        throw new Error("legacy calibration cannot contain unscored actuals");
+      }
+      return {
+        actualLocalId: requireRef(
+          actualReverseMap,
+          unmatched.actualRef,
+          "opaque unmatched actual",
+        ),
+        status: unmatched.status,
+        ...(unmatched.duplicateOf
+          ? {
+              duplicateOf: requireRef(
+                actualReverseMap,
+                unmatched.duplicateOf,
+                "opaque duplicate target",
+              ),
+            }
+          : {}),
+      };
+    }),
     unmatchedGolds: decision.unmatchedGolds.map((unmatched) => ({
       goldClaimId: requireRef(
         goldReverseMap,

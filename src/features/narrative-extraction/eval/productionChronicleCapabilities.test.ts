@@ -80,9 +80,6 @@ describe("production Chronicle capability report", () => {
     const expectedNegativeDetection = required(
       (observation) => observation.dimensions.eventDetection === false,
     ).map(({ caseId }) => caseId);
-    const expectedRumored = required(
-      (observation) => observation.dimensions.actuality === "rumored",
-    ).map(({ caseId }) => caseId);
     const expectedNoneSignificance = required(
       (observation) => observation.dimensions.significance === "none",
     ).map(({ caseId }) => caseId);
@@ -90,6 +87,10 @@ describe("production Chronicle capability report", () => {
       (observation) =>
         (observation.dimensions.significance === "major" ||
           observation.dimensions.significance === "scene-level") &&
+        (observation.dimensions.actuality === undefined ||
+          ["actual", "attempted", "prevented"].includes(
+            observation.dimensions.actuality,
+          )) &&
         observation.dimensions.proposalGate === "suppress" &&
         (observation.dimensions.evidence?.length ?? 0) > 0,
     );
@@ -102,8 +103,8 @@ describe("production Chronicle capability report", () => {
     expect(
       report.gaps.find(
         (gap) => gap.code === "actuality-rumored-unrepresentable",
-      )?.caseIds,
-    ).toEqual([...new Set(expectedRumored)]);
+      ),
+    ).toBeUndefined();
     expect(
       report.gaps.find(
         (gap) => gap.code === "significance-none-unrepresentable",
@@ -121,7 +122,6 @@ describe("production Chronicle capability report", () => {
         (gap) => gap.code === "suppressed-eligible-proposal-unrepresentable",
       )?.expectationIds,
     ).toHaveLength(expectedEligibleSuppress.length);
-    expect(expectedEligibleSuppress).toHaveLength(10);
 
     expect(report.limitations.map((limitation) => limitation.code)).toEqual(
       expect.arrayContaining([
@@ -211,9 +211,17 @@ describe("production Chronicle capability report", () => {
       code: "event-detection-negative-unrepresentable",
       scope: "evaluation-adapter",
     });
-    expect(issueCodes(expectation({ actuality: "rumored" }))).toContain(
-      "actuality-rumored-unrepresentable",
-    );
+    expect(issueCodes(expectation({ actuality: "rumored" }))).toEqual([]);
+    expect(
+      issueCodes(
+        expectation({
+          actuality: "rumored",
+          significance: "major",
+          proposalGate: "suppress",
+          evidence: [{ documentId: "scene", quote: "event" }],
+        }),
+      ),
+    ).toEqual([]);
     expect(issueCodes(expectation({ actuality: "planned" }))).toEqual([]);
     expect(issueCodes(expectation({ actuality: "dreamed" }))).toEqual([]);
     expect(issueCodes(expectation({ actuality: "hypothetical" }))).toEqual([]);
