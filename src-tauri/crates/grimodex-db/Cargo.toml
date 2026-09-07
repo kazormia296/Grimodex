@@ -54,6 +54,11 @@ name = "nir1-material-roster"
 path = "src/bin/nir1-material-roster.rs"
 required-features = ["nir1-material-diagnostics"]
 
+[[bin]]
+name = "nir1-disclosure-precheck"
+path = "src/bin/nir1-disclosure-precheck.rs"
+required-features = ["nir1-material-diagnostics"]
+
 [dev-dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }
 sha2 = "0.11"

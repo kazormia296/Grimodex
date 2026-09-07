@@ -863,3 +863,9 @@ pub fn temporal_scene_patch(
         }
     })
 }
+
+#[cfg(feature = "nir1-material-diagnostics")]
+pub mod disclosure_precheck;
+
+#[cfg(feature = "nir1-material-diagnostics")]
+pub mod disclosure_policy;
