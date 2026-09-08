@@ -167,6 +167,11 @@ rules:
       - src/features/chat/context/**
       - src/features/chat/contextBuilder.chatRecall.test.ts
       - src/features/related-scenes/**
+      - evals/nir1-retrieval/**
+      - policies/narrative/nir1-related-scenes-ranking.json
+      - scripts/quality/nir1-retrieval/**
+      - scripts/quality/run-nir1-retrieval.mjs
+      - scripts/quality/validate-nir1-retrieval.mjs
       - src/features/settings/types.ts
       - src/features/settings/categories/AiProjectSettings.tsx
       - src/features/settings/categories/AiProjectSettings.test.tsx

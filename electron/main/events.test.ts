@@ -400,3 +400,43 @@ describe("trusted event broadcast", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("renderer gone"));
   });
 });
+
+describe("NIR-1 invalidation event", () => {
+  it("accepts only the Native opaque query binding and refuses renderer spoofing", () => {
+    const window = makeWindow(41);
+    allWindows.push(window);
+    const backend = makeBackend();
+    registerEventBus(backend);
+    backend.capturedCallback?.("related-scenes:invalidated", '{"queryBinding":"query-binding"}');
+    expect(window.webContents.send).toHaveBeenCalledExactlyOnceWith(IPC.event, "related-scenes:invalidated", { queryBinding: "query-binding" });
+    window.webContents.send.mockClear();
+    emitFromRenderer(window, "related-scenes:invalidated", { queryBinding: "query-binding" });
+    expect(window.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it("does not forward malformed payloads or extra Native data", () => {
+    const window = makeWindow(42);
+    allWindows.push(window);
+    const backend = makeBackend();
+    registerEventBus(backend);
+    for (const payload of ['not-json', '{}', '{"queryBinding":" "}', '{"queryBinding":"ok","envelope":"must-not-leak"}']) {
+      backend.capturedCallback?.("related-scenes:invalidated", payload);
+    }
+    expect(window.webContents.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("NIR-1 newly usable index notification", () => {
+  it("accepts a Native project-only readiness event and refuses extra disclosure", () => {
+    const window = makeWindow(43);
+    allWindows.push(window);
+    const backend = makeBackend();
+    registerEventBus(backend);
+    backend.capturedCallback?.("related-scenes:index-ready", '{"projectId":"project"}');
+    expect(window.webContents.send).toHaveBeenCalledExactlyOnceWith(IPC.event, "related-scenes:index-ready", { projectId: "project" });
+    window.webContents.send.mockClear();
+    backend.capturedCallback?.("related-scenes:index-ready", '{"projectId":"project","count":9}');
+    emitFromRenderer(window, "related-scenes:index-ready", { projectId: "project" });
+    expect(window.webContents.send).not.toHaveBeenCalled();
+  });
+});

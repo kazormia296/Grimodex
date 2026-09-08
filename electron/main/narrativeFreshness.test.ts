@@ -80,6 +80,111 @@ describe("createNarrativeFreshnessScheduler", () => {
     expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
   });
 
+  it("coalesces validated Native invalidations into one early idle cycle", async () => {
+    const runNarrativeFreshnessCycle = vi.fn().mockResolvedValue(null);
+    const { scheduler } = createScheduler({ runNarrativeFreshnessCycle });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    scheduler.handleBackendEvent("related-scenes:invalidated", {
+      queryBinding: "query-1",
+    });
+    scheduler.handleBackendEvent("related-scenes:invalidated", {
+      queryBinding: "query-2",
+    });
+    expect(scheduler.getQuiescenceState?.().wakePending).toBe(true);
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
+    expect(scheduler.getQuiescenceState?.().wakePending).toBe(false);
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS - 1);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps one follow-up without overlapping an in-flight cycle or claiming quiescence", async () => {
+    const first = deferred<string | null>();
+    const idle = JSON.stringify({
+      hasMore: false,
+      noWrite: true,
+      quiescenceState: { stateDigest: "digest" },
+    });
+    const runNarrativeFreshnessCycle = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(idle);
+    const onCycleCompleted = vi.fn();
+    const { scheduler } = createScheduler(
+      { runNarrativeFreshnessCycle },
+      vi.fn(),
+      { onCycleCompleted },
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    scheduler.handleBackendEvent("related-scenes:invalidated", {
+      queryBinding: "query-1",
+    });
+    scheduler.handleBackendEvent("related-scenes:invalidated", {
+      queryBinding: "query-2",
+    });
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS * 2);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledOnce();
+    first.resolve(idle);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onCycleCompleted).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        wakePending: true,
+        nextCycleGuardStateDigest: null,
+      }),
+    );
+    expect(scheduler.getQuiescenceState?.()).toMatchObject({
+      inFlight: false,
+      wakePending: true,
+      nextCycleGuardStateDigest: null,
+      quiescenceState: null,
+    });
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
+    expect(scheduler.getQuiescenceState?.()).toMatchObject({
+      wakePending: false,
+      nextCycleGuardStateDigest: "digest",
+    });
+    scheduler.handleBackendEvent("related-scenes:invalidated", {
+      queryBinding: "query-3",
+    });
+    expect(scheduler.getQuiescenceState?.()).toMatchObject({
+      wakePending: true,
+      nextCycleGuardStateDigest: null,
+      quiescenceState: null,
+    });
+  });
+
+  it("ignores unrelated or malformed notifications and notifications outside its lifetime", async () => {
+    const runNarrativeFreshnessCycle = vi.fn().mockResolvedValue(null);
+    const { scheduler } = createScheduler({ runNarrativeFreshnessCycle });
+    const valid = { queryBinding: "query-1" };
+    scheduler.handleBackendEvent("related-scenes:invalidated", valid);
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeFreshnessCycle).not.toHaveBeenCalled();
+    scheduler.start();
+    scheduler.handleBackendEvent("related-scenes:index-ready", valid);
+    scheduler.handleBackendEvent("related-scenes:invalidated", {
+      projectId: "project-1",
+    });
+    scheduler.handleBackendEvent("related-scenes:invalidated", {
+      ...valid,
+      projectId: "project-1",
+    });
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS - 1);
+    expect(runNarrativeFreshnessCycle).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    scheduler.handleBackendEvent("related-scenes:invalidated", valid);
+    scheduler.dispose();
+    scheduler.handleBackendEvent("related-scenes:invalidated", valid);
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledOnce();
+    expect(scheduler.getQuiescenceState?.().wakePending).toBe(false);
+  });
+
   it("hasMore=trueは次の有界cycleだけを短いdelayで投入する", async () => {
     const runNarrativeFreshnessCycle = vi
       .fn()

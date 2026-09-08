@@ -2443,14 +2443,14 @@ mod c2b_atomic_materialization_red {
                 .iter()
                 .filter_map(|source| source["sourceKind"].as_str())
                 .collect::<Vec<_>>(),
-            vec!["scene-body", "project-scope-authority"]
+            vec!["scene-body", "scope-dependency-projection-v1"]
         );
         assert_eq!(source_rows.len(), 2);
-        assert_eq!(source_rows[1].0, "project-scope-authority");
-        assert_eq!(
-            source_rows[1].1,
-            format!("project:scope-authority:{PROJECT_A}")
-        );
+        assert_eq!(source_rows[1].0, "scope-dependency-projection-v1");
+        let identity = grimodex_core::narrative_scope_dependency_projection::ScopeDependencyIdentity::from_source_key(&source_rows[1].1).expect("new Native identity");
+        assert_eq!(identity.project_id, PROJECT_A);
+        assert_eq!(identity.anchor_scene_ref, format!("scene:{SCENE_ID}"));
+        assert!(identity.secret);
         assert_eq!(edge_count, 2, "V1 must include the live authority Source");
         assert_eq!(
             scope_declaration_count, 1,
@@ -2597,7 +2597,7 @@ mod c2b_atomic_materialization_red {
                 let authority_token: String = conn.query_row(
                     "SELECT revision_token
                        FROM narrative_revision_source_basis
-                      WHERE revision_id = ?1 AND source_kind = 'project-scope-authority'",
+                      WHERE revision_id = ?1 AND source_kind = 'scope-dependency-projection-v1'",
                     [child_revision_id],
                     |row| row.get(0),
                 )?;

@@ -799,6 +799,7 @@ pub struct AppState {
     /// runtime。EventQueue cloneは同じTSFn sinkを指すため、progress 2chも
     /// backend.onEvent → main → 全窓broadcastへ載る。
     pub semantic: Arc<grimodex_semantic::runtime::SemanticRuntime>,
+    pub(crate) related_scenes: crate::related_scenes::RelatedScenesService,
     /// Gate 2 cross-encoder cache shared by diagnostic shadow and opt-in apply.
     /// The outer mutex is both the non-queuing native concurrency=1 guard and
     /// Session::run's mutable owner. Callers must use `try_lock` and return the
@@ -893,6 +894,7 @@ impl AppState {
                 dir.join("license.json"),
             )),
             semantic,
+            related_scenes: crate::related_scenes::RelatedScenesService::default(),
             semantic_reranker: Mutex::new(grimodex_semantic::reranker::RerankerRuntime::new(
                 reranker_resource_root,
             )),

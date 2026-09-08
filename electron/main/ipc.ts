@@ -47,6 +47,8 @@ import {
   scheduleNarrativeMaintenanceForegroundRelease,
 } from "./narrativeMaintenance.js";
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
+import { createRelatedScenesSearchAuthority } from "./relatedScenesSearchAuthority.js";
+import { createRelatedScenesReconciler } from "./relatedScenesReconciler.js";
 
 const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_create",
@@ -244,6 +246,21 @@ const HISTORY_JOURNAL_WRITER_COMMANDS = new Set([
   "foreshadow_delete",
   "foreshadow_update_setup",
   "foreshadow_setup_create_ai",
+]);
+
+const RELATED_SCENES_MUTATION_WAKE_COMMANDS = new Set([
+  ...HISTORY_JOURNAL_WRITER_COMMANDS,
+  "narrative_extraction_save_proposal_set",
+  "narrative_extraction_create_human_derived_revision",
+  "narrative_extraction_append_revision",
+  "narrative_extraction_append_decision",
+  "narrative_extraction_append_human_decision",
+  "narrative_extraction_revise_and_decide",
+  "narrative_extraction_revise_and_decide_as_human",
+  "narrative_extraction_apply_commit",
+  "narrative_extraction_undo_commit",
+  "narrative_extraction_redo_commit",
+  "semantic_cancel_background",
 ]);
 
 const MAX_RENDERER_HISTORY_JOURNALS = 4096;
@@ -1932,6 +1949,25 @@ export function registerIpcRouter(
   broadcast?: (channel: string, payload: unknown) => void,
   narrativeMaintenanceCiSeam: NarrativeMaintenanceCiSeam = { active: false },
 ): void {
+  const relatedScenesReconciler = createRelatedScenesReconciler({
+    reconcile: async () => {
+      if (!backend?.relatedScenesReconcile)
+        throw new Error("RELATED_SCENES_RECONCILIATION_UNAVAILABLE");
+      return JSON.parse(await backend.relatedScenesReconcile()) as {
+        activeOperations: number;
+      };
+    },
+    reportFailure: () =>
+      console.warn("[related-scenes] Native generation reconciliation failed"),
+  });
+  const relatedScenesAuthority = createRelatedScenesSearchAuthority({
+    releaseOwner: (ownerKey) => {
+      relatedScenesReconciler.releaseOwner(ownerKey);
+      return backend?.relatedScenesReleaseOwner?.(ownerKey);
+    },
+    onReleaseFailure: () =>
+      console.warn("[related-scenes] Native owner cleanup failed"),
+  });
   ipcMain.handle(
     IPC.invoke,
     async (event, cmd: unknown, args: unknown): Promise<Envelope> => {
@@ -1952,28 +1988,55 @@ export function registerIpcRouter(
             ? extraShellHandlers(win)
             : extraShellHandlers;
         const rawArgs = isRecord(args) ? args : {};
-        const boundArgs = bindRendererAuthorityForIpc(
+        const canonicalArgs = bindRendererAuthorityForIpc(
           cmd,
           rawArgs,
           event.sender.id,
         );
-        const envelope = await dispatchInvoke(
+        const boundArgs = relatedScenesAuthority.bind(
           cmd,
-          boundArgs,
-          {
-            backend,
-            shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
-            secrets,
-            broadcast,
-            issueAgentAuthorityCapabilities: (agentArgs, response) =>
-              issueAgentAuthorityCapabilitiesForSender(
-                event.sender.id,
-                agentArgs,
-                response,
-                backend,
-              ),
-          },
+          canonicalArgs,
+          event.sender,
         );
+        const envelope = await dispatchInvoke(cmd, boundArgs, {
+          backend,
+          shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
+          secrets,
+          broadcast,
+          issueAgentAuthorityCapabilities: (agentArgs, response) =>
+            issueAgentAuthorityCapabilitiesForSender(
+              event.sender.id,
+              agentArgs,
+              response,
+              backend,
+            ),
+        });
+        if (envelope.ok && typeof boundArgs.ownerKey === "string") {
+          if (cmd === "related_scenes_begin" && isRecord(envelope.value)) {
+            const ir = envelope.value.ir;
+            if (
+              isRecord(ir) &&
+              ir.status === "pending" &&
+              typeof ir.operationTicket === "string"
+            ) {
+              relatedScenesReconciler.track(
+                boundArgs.ownerKey,
+                ir.operationTicket,
+              );
+            }
+          } else if (
+            cmd === "related_scenes_release" &&
+            typeof boundArgs.operationTicket === "string"
+          ) {
+            relatedScenesReconciler.release(
+              boundArgs.ownerKey,
+              boundArgs.operationTicket,
+            );
+          }
+        }
+        if (envelope.ok && RELATED_SCENES_MUTATION_WAKE_COMMANDS.has(cmd)) {
+          relatedScenesReconciler.wake();
+        }
         if (
           narrativeMaintenanceCiSeam.active &&
           narrativeMaintenanceCiSeam.trigger === "foreground-workspace-wake" &&
@@ -1986,10 +2049,11 @@ export function registerIpcRouter(
             ? boundArgs.payload
             : boundArgs;
           if (isNonEmptyTrimmedString(payload.projectId)) {
-            const claimedRunId = await claimNarrativeMaintenanceForegroundRelease(
-              backend,
-              payload.projectId,
-            );
+            const claimedRunId =
+              await claimNarrativeMaintenanceForegroundRelease(
+                backend,
+                payload.projectId,
+              );
             if (claimedRunId !== null) {
               scheduleNarrativeMaintenanceForegroundRelease(
                 backend,

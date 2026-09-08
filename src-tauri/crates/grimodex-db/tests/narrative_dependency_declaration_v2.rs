@@ -94,8 +94,8 @@ fn migration_adds_schema_33_sealed_declaration_storage() {
         .expect("inspect D1 schema");
 
     // D1's declaration tables are introduced at SCHEMA 33; the current
-    // migration continues through the C2A SCHEMA 34 checkpoint.
-    assert_eq!(version, 34);
+    // migration continues through the NIR-1 SCHEMA 35 checkpoint.
+    assert_eq!(version, 35);
     assert_eq!(
         tables,
         vec![
@@ -375,7 +375,69 @@ fn rewinding_the_marker_and_removing_d1_objects_replays_migration() {
         .with_conn(|conn| Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?))
         .expect("read replayed marker");
     // Replaying from the historical SCHEMA 32 parent runs D1 (33) and then
-    // reaches the current C2A checkpoint (34).
-    assert_eq!(version, 34);
+    // reaches the current NIR-1 checkpoint (35).
+    assert_eq!(version, 35);
     assert!(verify_dependency_declaration_storage(&db).expect("verify replayed schema"));
+}
+
+#[test]
+fn repeated_selectors_cannot_borrow_another_entries_binding_or_a_previous_read() {
+    use grimodex_core::narrative_dependency::{
+        compute_dependency_set_digest, DependencySetDigestEntry,
+    };
+    for field in [
+        "dependency_role",
+        "selector_json",
+        "selector_digest",
+        "dependency_key",
+    ] {
+        let db = migrated_db();
+        let receipt = write_dependency_declaration_set(
+            &db,
+            request(
+                "repeated-selector",
+                1,
+                0,
+                (0..8)
+                    .map(|i| scene_declaration(&format!("project:scene:repeated-{i}")))
+                    .collect(),
+            ),
+        )
+        .expect("seal repeated complete selectors");
+        let read = || {
+            read_active_dependency_declaration_set(&db, PROJECT_ID, CONSUMER_KIND, CONSUMER_KEY)
+                .expect("read complete set")
+        };
+        assert_eq!(read().expect("valid set").entries.len(), 8);
+        assert_eq!(read().expect("fresh independent read").entries.len(), 8);
+        db.with_conn(|conn| {
+            let value = match field {
+                "dependency_role" => "ranking-only".to_owned(),
+                "selector_json" => "{ \"kind\": \"whole-source\" }".to_owned(),
+                _ => format!("sha256:{}", "0".repeat(64)),
+            };
+            conn.execute(
+                &format!("UPDATE narrative_dependency_declaration_entries SET {field}=?1
+                    WHERE id=(SELECT id FROM narrative_dependency_declaration_entries
+                    WHERE declaration_set_id=?2 ORDER BY id DESC LIMIT 1)"),
+                params![value, receipt.declaration_set_id],
+            )?;
+            // Bind the aggregate to the altered tuple: rejection must also
+            // validate that tuple, not depend only on a stale set digest.
+            let mut statement = conn.prepare("SELECT source_object_identity,dependency_key,selector_digest
+                FROM narrative_dependency_declaration_entries WHERE declaration_set_id=?1")?;
+            let entries = statement.query_map([&receipt.declaration_set_id], |row| Ok(
+                DependencySetDigestEntry {
+                    source_object_identity: row.get(0)?,
+                    dependency_key: row.get(1)?,
+                    selector_digest: row.get(2)?,
+                }
+            ))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let digest = compute_dependency_set_digest(&entries)?;
+            conn.execute("UPDATE narrative_dependency_declaration_sets SET dependency_set_digest=?1 WHERE id=?2",
+                params![digest, receipt.declaration_set_id])?;
+            Ok(())
+        }).expect("bounded storage-corruption fixture");
+        assert!(read().is_none(), "altered {field} must be revalidated");
+    }
 }

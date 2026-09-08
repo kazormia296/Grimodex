@@ -66,7 +66,15 @@
       "status": "reserved",
       "consumerKeyMeaning": "narrative_semantic_index_metadata.index_key -- one index a project builds (for example a lexical index and an embedding index are two Consumers).",
       "durableIdentitySource": "narrative_semantic_index_metadata.index_key",
-      "notes": "The table's primary key is (project_id, index_key); only index_key belongs in the Consumer key, because narrative_consumer_freshness already carries project_id as its own column and a Consumer key must never repeat the project scope. semantic-core-authorities.json keeps semantic-index reserved with no Narrative dependency authority claim. While reserved, no semantic-index Generic Freshness/metadata rows are permitted; any non-zero footprint is manual-terminal evidence and never a Rebuild-Derived target. Only existing Scene/Codex/Event/Chat embedding chunk rows are rebuildable acceleration, and they cannot imply Narrative dependency authority. No Producer declares Edges under this kind yet."
+      "notes": "The table's primary key is (project_id, index_key); only index_key belongs in the Consumer key because project_id is already the canonical Freshness scope. Only the exact declaredBindings tuple may publish canonical dependency rows; numeric generation must match the active sealed D1 head and producer ID/version must be explicit. Unknown or incoherent identities have no Narrative dependency authority claim: no semantic-index Generic Freshness/metadata rows are permitted for them; their non-zero footprint is manual-terminal and never a Rebuild-Derived target. A recognized dirty, pending, paused, or cold NIR-1 index is rebuildable but not query usable until the canonical evaluator and current Native proof qualify it. Only existing Scene/Codex/Event/Chat embedding chunk rows are rebuildable acceleration without the declared binding and cannot imply Narrative dependency authority.",
+      "declaredBindings": [
+        {
+          "consumerKey": "nir1-reviewed-chronicle:v1",
+          "producerId": "nir1-reviewed-chronicle-v1",
+          "producerVersion": "nir1-reviewed-chronicle/v1",
+          "registryGeneration": "nir1-reviewed-chronicle/v1"
+        }
+      ]
     },
     {
       "kind": "narrative-ir-revision",
@@ -114,7 +122,11 @@
   },
   "freshnessAuthority": {
     "canonicalTable": "narrative_consumer_freshness",
-    "canonicalKey": ["project_id", "consumer_kind", "consumer_key"],
+    "canonicalKey": [
+      "project_id",
+      "consumer_kind",
+      "consumer_key"
+    ],
     "compatibilityMirror": "narrative_projection_freshness",
     "compatibilityMirrorRole": "compatibility-only",
     "secondaryFreshnessAuthorityPolicy": "forbid",

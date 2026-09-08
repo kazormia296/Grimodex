@@ -10,6 +10,8 @@ import {
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
 import type { RelatedScene } from "./selectRelatedScenes";
+import type { Nir1RelatedScenesFetchResult } from "./nir1RelatedScenesFetchTypes";
+import type { Nir1RelatedScenesSession } from "./nir1RelatedScenesSession";
 
 vi.mock("./fetchRelatedScenes", () => ({
   fetchRelatedPastScenes: vi.fn(),
@@ -17,10 +19,30 @@ vi.mock("./fetchRelatedScenes", () => ({
   RELATED_SCENES_FETCH_LIMIT: 30,
 }));
 
+vi.mock("./nir1RelatedScenesApi", () => ({
+  listenRelatedScenesIndexReady: vi.fn(async () => () => {}),
+  qualifyNir1Evidence: vi.fn(),
+}));
+
 import { fetchRelatedPastScenes } from "./fetchRelatedScenes";
 import { RelatedScenesSection } from "./RelatedScenesSection";
 
 const mockFetch = vi.mocked(fetchRelatedPastScenes);
+
+function rawResult(scenes: RelatedScene[]): Nir1RelatedScenesFetchResult {
+  return {
+    status: "completed",
+    rawStatus: "completed",
+    origin: null,
+    queryBinding: "binding",
+    initialSnapshot: null,
+    completion: null,
+    rawScenes: scenes,
+    result: { kind: "raw", scenes, ir: { status: "empty" } },
+    session: null,
+    timing: { tFetchMs: 0, tRawReadyMs: 1, tReturnMs: 1 },
+  };
+}
 
 function setActive(id: string) {
   useTreeStore.setState({ activeSceneId: id });
@@ -65,14 +87,17 @@ describe("RelatedScenesSection", () => {
         score: 0.92,
       },
     ];
-    mockFetch.mockResolvedValue(scenes);
+    mockFetch.mockResolvedValue(rawResult(scenes));
     setActive("s2");
     render(<RelatedScenesSection enabled />);
 
     await waitFor(() => {
       expect(screen.getByText("井戸端の密談")).toBeTruthy();
     });
-    expect(mockFetch).toHaveBeenCalledWith("s2");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "s2",
+      expect.objectContaining({ mode: "hybrid" }),
+    );
     expect(screen.getByText("92%")).toBeTruthy();
     expect(screen.getByText("エリカが鍵を渡した場面")).toBeTruthy();
   });
@@ -86,7 +111,7 @@ describe("RelatedScenesSection", () => {
         score: 0.92,
       },
     ];
-    mockFetch.mockResolvedValue(scenes);
+    mockFetch.mockResolvedValue(rawResult(scenes));
     setActive("s2");
     render(<RelatedScenesSection enabled />);
 
@@ -111,7 +136,7 @@ describe("RelatedScenesSection", () => {
         score: 0.92,
       },
     ];
-    mockFetch.mockResolvedValue(scenes);
+    mockFetch.mockResolvedValue(rawResult(scenes));
     seedNodes(["s1", "s2"]);
     setActive("s2");
     render(<RelatedScenesSection enabled />);
@@ -135,7 +160,7 @@ describe("RelatedScenesSection", () => {
         score: 0.9,
       },
     ];
-    mockFetch.mockResolvedValue(scenes);
+    mockFetch.mockResolvedValue(rawResult(scenes));
     seedNodes(["s2"]); // "deleted" は tree に無い
     setActive("s2");
     render(<RelatedScenesSection enabled />);
@@ -145,5 +170,85 @@ describe("RelatedScenesSection", () => {
 
     expect(useSemanticNavStore.getState().pendingJump).toBeNull();
     expect(useTreeStore.getState().activeSceneId).toBe("s2");
+  });
+});
+
+describe("NIR interpretation display", () => {
+  it("keeps Raw excerpt separate, shows full modality and never labels RRF as cosine percent", async () => {
+    const raw = {
+      sceneId: "s1",
+      sceneTitle: "Bridge",
+      chunkText: "Original prose",
+      score: 0.92,
+    };
+    const result = rawResult([raw]);
+    const ir = {
+      sceneId: "s1",
+      sceneTitle: "Bridge",
+      irCosine: 0.91,
+      interpretation: {
+        summary: "The bridge may have fallen",
+        actuality: "rumored",
+        attribution: "the guard",
+        narrativeFrame: "reported speech",
+      },
+      validatedEvidence: {
+        excerpt: "Only verified evidence",
+        navigationIdentity: "opaque",
+      },
+      review: "human-approved" as const,
+      freshness: "fresh" as const,
+    };
+    mockFetch.mockResolvedValue({
+      ...result,
+      result: {
+        kind: "fused",
+        ir: { status: "available" },
+        scenes: [
+          {
+            kind: "raw-ir",
+            sceneId: "s1",
+            sceneTitle: "Bridge",
+            rank1: 1,
+                raw,
+            ir,
+          },
+        ],
+      },
+    });
+    setActive("s2");
+    render(<RelatedScenesSection />);
+    await screen.findByText("The bridge may have fallen");
+    expect(screen.getByText("Original prose")).toBeTruthy();
+    expect(screen.getByText("rumored")).toBeTruthy();
+    expect(screen.getByText("the guard")).toBeTruthy();
+    expect(screen.getByText("reported speech")).toBeTruthy();
+    expect(screen.getByTestId("nir1-evidence-link").textContent).toContain(
+      "Only verified evidence",
+    );
+    expect(screen.queryByText("3%")).toBeNull();
+    expect(screen.queryByText("92%")).toBeNull();
+  });
+
+  it("distinguishes unavailable IR from empty search and releases the displayed owner on collapse", async () => {
+    const release = vi.fn();
+    const value = rawResult([]);
+    mockFetch.mockResolvedValue({
+      ...value,
+      result: {
+        kind: "raw",
+        scenes: [],
+        ir: { status: "unavailable", reason: "index-unavailable" },
+      },
+      session: {
+        release,
+        subscribeInvalidation: () => () => {},
+      } as unknown as Nir1RelatedScenesSession,
+    });
+    setActive("s2");
+    render(<RelatedScenesSection />);
+    expect(await screen.findByTestId("nir1-unavailable")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { expanded: true }));
+    await waitFor(() => expect(release).toHaveBeenCalledOnce());
   });
 });

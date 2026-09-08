@@ -287,6 +287,8 @@ export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
   "post_effect:error",
   "semantic:model_download_progress",
   "semantic:reindex_progress",
+  "related-scenes:invalidated",
+  "related-scenes:index-ready",
   "vivliostyle:log",
   "vivliostyle:done",
   "vivliostyle:error",
@@ -649,6 +651,14 @@ export interface NapiBackendLike {
     sceneScope?: string | null,
     descriptionMode?: boolean | null,
   ): Promise<string>;
+  relatedScenesBegin?(request: unknown): Promise<string>;
+  relatedScenesContinue?(ownerKey: string, operationTicket: string): Promise<string>;
+  relatedScenesRelease?(ownerKey: string, operationTicket: string): Promise<string>;
+  nir1EvidenceQualify?(ownerKey: string, navigationIdentity: string): Promise<string>;
+  /** Main lifecycle only; deliberately absent from the renderer command map. */
+  relatedScenesReleaseOwner?(ownerKey: string): Promise<string>;
+  /** Main observer only; never a renderer command. */
+  relatedScenesReconcile?(): Promise<string>;
   semanticRerankerShadowScore?(request: unknown): Promise<string>;
   codexIndexEntry?(
     expectedWorkspacePath: string,
@@ -6306,6 +6316,21 @@ export interface NapiCommandSpec {
   ): Promise<unknown>;
 }
 
+function requireRelatedScenesBeginRequest(args: CommandArgs) {
+  const command = "related_scenes_begin";
+  const query = requireNonEmptyString(args, "query", command);
+  if (query.trim().length === 0 || query.length > 500) {
+    throw new Error("IPC_INVALID_REQUEST: related_scenes_begin query exceeds Raw UTF-16 tail");
+  }
+  return {
+    ownerKey: requireNonEmptyString(args, "ownerKey", command),
+    expectedWorkspacePath: requireNonEmptyString(args, "expectedWorkspacePath", command),
+    projectId: requireNonEmptyString(args, "projectId", command),
+    currentSceneId: requireNonEmptyString(args, "currentSceneId", command),
+    query,
+  };
+}
+
 /** napi 実装済みコマンドの明示写像（Phase 3 の各バッチで追加）。 */
 export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   db_execute: {
@@ -7340,6 +7365,37 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           optionalBoolean(a, "descriptionMode", "semantic_search"),
         ),
       ),
+  },
+  related_scenes_begin: {
+    run: async (b, a) => parseWire(
+      await requireNapiMethod(b, b.relatedScenesBegin, "relatedScenesBegin")(
+        requireRelatedScenesBeginRequest(a),
+      ),
+    ),
+  },
+  related_scenes_continue: {
+    run: async (b, a) => parseWire(
+      await requireNapiMethod(b, b.relatedScenesContinue, "relatedScenesContinue")(
+        requireNonEmptyString(a, "ownerKey", "related_scenes_continue"),
+        requireNonEmptyString(a, "operationTicket", "related_scenes_continue"),
+      ),
+    ),
+  },
+  related_scenes_release: {
+    run: async (b, a) => parseWire(
+      await requireNapiMethod(b, b.relatedScenesRelease, "relatedScenesRelease")(
+        requireNonEmptyString(a, "ownerKey", "related_scenes_release"),
+        requireNonEmptyString(a, "operationTicket", "related_scenes_release"),
+      ),
+    ),
+  },
+  nir1_evidence_qualify: {
+    run: async (b, a) => parseWire(
+      await requireNapiMethod(b, b.nir1EvidenceQualify, "nir1EvidenceQualify")(
+        requireNonEmptyString(a, "ownerKey", "nir1_evidence_qualify"),
+        requireNonEmptyString(a, "navigationIdentity", "nir1_evidence_qualify"),
+      ),
+    ),
   },
   semantic_reranker_shadow_score: {
     run: async (b, a) =>

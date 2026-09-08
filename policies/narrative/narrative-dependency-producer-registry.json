@@ -12,7 +12,11 @@
       "generation": "proposal-revision-dependency/v1",
       "declarationSetGeneration": 1,
       "consumerKind": "proposal-revision",
-      "declaration": "validated reconciliation-envelope sourceBasis rows"
+      "declaration": "validated reconciliation-envelope sourceBasis rows; generation 1 legacy, generation 2 binds Native Scope dependency projection /1; projection-only inherits material contract",
+      "supportedDeclarationSetGenerations": [
+        1,
+        2
+      ]
     },
     {
       "id": "legacy-application-projection-dependency",
@@ -33,6 +37,18 @@
       "generation": "c2zc-application-dependency/v1",
       "consumerKind": "application",
       "declaration": "post-cutover Apply-path Application Generic Edge rows"
+    },
+    {
+      "id": "nir1-reviewed-chronicle-v1",
+      "writer": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+        "symbol": "publish_chronicle_index_build_in_tx"
+      },
+      "generation": "nir1-reviewed-chronicle/v1",
+      "consumerKind": "semantic-index",
+      "consumerKey": "nir1-reviewed-chronicle:v1",
+      "producerVersion": "nir1-reviewed-chronicle/v1",
+      "declaration": "NIR-1 reviewed Chronicle current eligibility Source and complete admitted Scene Source dependencies"
     }
   ]
 }

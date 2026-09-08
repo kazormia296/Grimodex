@@ -3489,7 +3489,7 @@ impl Database {
                 PRIMARY KEY(project_id, finding_key)
             );
             -- SCHEMA 24 (Gate C2 Lane K/N Run Kind Policy). A Semantic Index
-            -- may own only the five fields fixed in
+            -- retains the cache fields fixed in
             -- semantic-core-authorities.json's semanticIndexAllowedFields;
             -- index_key distinguishes multiple indexes a project may build
             -- (e.g. embeddings vs. a future secondary index) under one row
@@ -3502,6 +3502,8 @@ impl Database {
                 source_digest           TEXT NOT NULL CHECK(length(source_digest) > 0),
                 dependency_set_digest   TEXT NOT NULL CHECK(length(dependency_set_digest) > 0),
                 dirty_cache_flag        INTEGER NOT NULL CHECK(dirty_cache_flag IN (0, 1)),
+                producer_id             TEXT,
+                producer_version        TEXT,
                 PRIMARY KEY(project_id, index_key)
             );
             -- SCHEMA 24 (Gate C2 Lane N Repair). Durable claim covering the
@@ -3555,6 +3557,40 @@ impl Database {
                 ON narrative_application_contributions(project_id, application_id);
             CREATE INDEX IF NOT EXISTS idx_narrative_finding_observations_key
                 ON narrative_maintenance_finding_observations(project_id, finding_key, semantic_epoch_id);",
+        )?;
+
+        // SCHEMA 35: explicit producer identity never upgrades legacy NULL
+        // metadata to authority. Vectors remain a rebuildable derived cache.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_semantic_index_metadata",
+            "producer_id",
+            "TEXT",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_semantic_index_metadata",
+            "producer_version",
+            "TEXT",
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_nir1_chronicle_vectors (
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                revision_id TEXT NOT NULL,
+                generation INTEGER NOT NULL CHECK(generation > 0),
+                envelope_digest TEXT NOT NULL,
+                statement_digest TEXT NOT NULL,
+                serializer_ref TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                artifact_sha256 TEXT NOT NULL,
+                tokenizer_sha256 TEXT NOT NULL,
+                embedding_dim INTEGER NOT NULL CHECK(embedding_dim > 0),
+                chunker_version TEXT NOT NULL,
+                audit_operation_id TEXT NOT NULL,
+                audit_execution_id TEXT NOT NULL,
+                embedding BLOB NOT NULL CHECK(length(embedding) = embedding_dim * 4),
+                PRIMARY KEY(project_id, revision_id)
+            );",
         )?;
 
         // SCHEMA_VERSION 33 / NIR-0 D1: sealed Dependency Declaration Set
@@ -3890,6 +3926,11 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_commit
                 ON narrative_application_contributions(project_id, commit_id);",
         )?;
+
+        // NIR1 replays accepted Task/Attempt/Artifact bindings for every
+        // candidate. Install these non-unique lookup indexes after the v23
+        // table rebuilds, which would otherwise discard them on upgrade.
+        Self::repair_nir1_extraction_query_indexes(&conn)?;
 
         // SCHEMA 31: versioned Finding identity and append-only lifecycle.
         // This is deliberately after the C2-2 re-key so the backfill can
@@ -9433,19 +9474,19 @@ impl Database {
     /// EXISTS` cannot repair that case, and leaving the checkpoint false would
     /// otherwise make every current-schema open replay the migration forever.
     fn repair_timelapse_query_indexes(conn: &Connection) -> anyhow::Result<()> {
-        const SAVEPOINT: &str = "timelapse_query_index_repair";
-        conn.execute_batch(&format!("SAVEPOINT {SAVEPOINT}"))?;
-        let repair = (|| -> anyhow::Result<()> {
-            for (table, name, columns) in [
+        Self::repair_query_indexes(
+            conn,
+            "timelapse_query_index_repair",
+            &[
                 (
                     "change_events",
                     "idx_change_events_project_domain_op_entity_seq",
-                    vec!["project_id", "domain", "op_type", "entity_id", "sequence"],
+                    &["project_id", "domain", "op_type", "entity_id", "sequence"],
                 ),
                 (
                     "state_snapshots",
                     "idx_state_snap_project_domain_type_entity_seq",
-                    vec![
+                    &[
                         "project_id",
                         "domain",
                         "entity_id",
@@ -9453,7 +9494,48 @@ impl Database {
                         "anchor_sequence",
                     ],
                 ),
-            ] {
+            ],
+        )
+    }
+
+    fn repair_nir1_extraction_query_indexes(conn: &Connection) -> anyhow::Result<()> {
+        Self::repair_query_indexes(
+            conn,
+            "nir1_extraction_query_index_repair",
+            &[
+                (
+                    "narrative_extraction_tasks",
+                    "idx_narrative_tasks_run_kind_status",
+                    &["run_id", "task_kind", "status"],
+                ),
+                (
+                    "narrative_extraction_attempts",
+                    "idx_narrative_attempts_task_number_status",
+                    &["task_id", "attempt_number", "status"],
+                ),
+                (
+                    "narrative_extraction_artifacts",
+                    "idx_narrative_artifacts_run_task_attempt_kind",
+                    &[
+                        "run_id",
+                        "task_id",
+                        "attempt_id",
+                        "artifact_kind",
+                        "payload_storage",
+                    ],
+                ),
+            ],
+        )
+    }
+
+    fn repair_query_indexes(
+        conn: &Connection,
+        savepoint: &str,
+        indexes: &[(&str, &str, &[&str])],
+    ) -> anyhow::Result<()> {
+        conn.execute_batch(&format!("SAVEPOINT {savepoint}"))?;
+        let repair = (|| -> anyhow::Result<()> {
+            for &(table, name, columns) in indexes {
                 let index_table = conn
                     .query_row(
                         "SELECT tbl_name FROM sqlite_master
@@ -9500,21 +9582,21 @@ impl Database {
             Ok(())
         })();
         match repair {
-            Ok(()) => match conn.execute_batch(&format!("RELEASE {SAVEPOINT}")) {
+            Ok(()) => match conn.execute_batch(&format!("RELEASE {savepoint}")) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     let _ = conn
-                        .execute_batch(&format!("ROLLBACK TO {SAVEPOINT}; RELEASE {SAVEPOINT}"));
+                        .execute_batch(&format!("ROLLBACK TO {savepoint}; RELEASE {savepoint}"));
                     Err(error.into())
                 }
             },
             Err(error) => {
                 if let Err(unwind) =
-                    conn.execute_batch(&format!("ROLLBACK TO {SAVEPOINT}; RELEASE {SAVEPOINT}"))
+                    conn.execute_batch(&format!("ROLLBACK TO {savepoint}; RELEASE {savepoint}"))
                 {
                     tracing::error!(
                         %unwind,
-                        "failed to unwind timelapse query index repair"
+                        "failed to unwind query index repair"
                     );
                 }
                 Err(error)

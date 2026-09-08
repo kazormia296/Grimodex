@@ -2,6 +2,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 import ts from "typescript";
@@ -37,7 +38,7 @@ const REPO_ROOT = path.resolve(
 // remains its input.
 // SCHEMA 34 (NIR-0 C2A) adds non-authoritative Chronicle V2 persistence and
 // stage-provenance closure storage; D2 V2 evaluation remains a shadow lane.
-export const EXPECTED_SCHEMA_VERSION = 34;
+export const EXPECTED_SCHEMA_VERSION = 35;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,
@@ -82,6 +83,52 @@ const REQUIRED_SEMANTIC_INDEX_FOOTPRINT_SURFACES = Object.freeze([
   }),
 ]);
 
+const APPROVED_NIR1_INDEX_BINDING = Object.freeze({
+  "consumerKey": "nir1-reviewed-chronicle:v1",
+  "producerId": "nir1-reviewed-chronicle-v1",
+  "producerVersion": "nir1-reviewed-chronicle/v1",
+  "registryGeneration": "nir1-reviewed-chronicle/v1",
+  "declarationSetGeneration": "positive-monotonic-per-project",
+  "metadataBinding": {
+    "indexKey": "equals-consumer-key",
+    "producerId": "explicit-exact-producer-id",
+    "producerVersion": "explicit-exact-producer-version",
+    "generation": "equals-active-sealed-D1-head-consumer-scoped-generation",
+    "dependencySetDigest": "equals-active-sealed-D1-set-digest"
+  },
+  "eligibilitySource": {
+    "kind": "nir1-chronicle-eligibility-set",
+    "keyFormat": "project:nir1-chronicle-eligibility:{projectId}",
+    "digestBasis": "sorted-current-revision-envelope-and-own-human-decision-identities",
+    "freshnessInDigest": "forbidden"
+  },
+  "writer": {
+    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+    "symbol": "publish_chronicle_index_build_in_tx"
+  },
+  "recognizedUnavailable": "rebuildable-not-query-usable",
+  "queryUsability": "canonical-fresh-and-clean-current-native-proof",
+  "unknownOrIncoherentBinding": "manual-terminal"
+});
+const APPROVED_NIR1_CONSUMER_BINDING = Object.freeze({
+  "consumerKey": "nir1-reviewed-chronicle:v1",
+  "producerId": "nir1-reviewed-chronicle-v1",
+  "producerVersion": "nir1-reviewed-chronicle/v1",
+  "registryGeneration": "nir1-reviewed-chronicle/v1"
+});
+const APPROVED_NIR1_PRODUCER = Object.freeze({
+  "id": "nir1-reviewed-chronicle-v1",
+  "writer": {
+    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+    "symbol": "publish_chronicle_index_build_in_tx"
+  },
+  "generation": "nir1-reviewed-chronicle/v1",
+  "consumerKind": "semantic-index",
+  "consumerKey": "nir1-reviewed-chronicle:v1",
+  "producerVersion": "nir1-reviewed-chronicle/v1",
+  "declaration": "NIR-1 reviewed Chronicle current eligibility Source and complete admitted Scene Source dependencies"
+});
+
 const REQUIRED_SEMANTIC_INDEX_UNAPPROVED_DECISIONS = Object.freeze([
   "fixed-keys",
   "producer-registry",
@@ -96,8 +143,8 @@ const REQUIRED_SEMANTIC_INDEX_UNAPPROVED_DECISIONS = Object.freeze([
   "dirty-pending-semantics",
   "Codex-source-granularity",
 ]);
-const RESERVED_SEMANTIC_INDEX_CANONICAL_AUTHORITY =
-  "none (semantic-index reserved; NIR-1 pending)";
+const DECLARED_SEMANTIC_INDEX_CANONICAL_AUTHORITY =
+  "nir1-reviewed-chronicle-v1 producer";
 const REQUIRED_RESERVED_SEMANTIC_INDEX_NOTE_FRAGMENTS = Object.freeze([
   "no Narrative dependency authority claim",
   "no semantic-index Generic Freshness/metadata rows are permitted",
@@ -1334,9 +1381,9 @@ export function validateSemanticIndexReservation(matrix, errors) {
         "semantic-index reservation must declare the four required authority footprint surfaces",
       );
     }
-    if (footprint.passCondition !== "all-zero") {
+    if (footprint.passCondition !== "unrecognized-all-zero") {
       errors.push(
-        "semantic-index authority footprint may pass only when all four counts are zero",
+        "semantic-index authority footprint may pass only when all four unrecognized counts are zero",
       );
     }
     if (footprint.nonZeroDisposition !== "manual-terminal") {
@@ -1349,6 +1396,13 @@ export function validateSemanticIndexReservation(matrix, errors) {
         "semantic-index authority footprint must keep Rebuild-Derived as a forbidden target",
       );
     }
+  }
+
+  if (footprint?.classification !== "exclude-only-validated-declared-bindings") {
+    errors.push("semantic-index footprint must exclude only validated declared bindings, never a known key alone");
+  }
+  if (!isDeepStrictEqual(reservation.declaredBindings, [APPROVED_NIR1_INDEX_BINDING])) {
+    errors.push("semantic-index must retain the exact approved NIR-1 binding only");
   }
 
   const chunkRows = reservation.chunkRows;
@@ -1370,9 +1424,9 @@ export function validateSemanticIndexReservation(matrix, errors) {
     );
     return;
   }
-  if (binding.status !== "dormant" || binding.approvalGate !== "NIR-1") {
+  if (binding.status !== "dormant" || binding.approvalGate !== "NIR-1" || binding.scope !== "all-other-producers") {
     errors.push(
-      "semantic-index future binding must remain dormant pending NIR-1 approval",
+      "semantic-index future binding must remain dormant for all other producers pending NIR-1 approval",
     );
   }
   if (binding.firstCandidate !== "one-shared-producer") {
@@ -1400,6 +1454,20 @@ export function validateSemanticIndexReservation(matrix, errors) {
     errors.push(
       "semantic-index dormant binding must retain every unapproved NIR-1 decision",
     );
+  }
+}
+
+export function validateSemanticIndexDeclaredBindings(matrix, consumerContract, producerRegistry, errors) {
+  if (!isDeepStrictEqual(matrix?.semanticIndexReservation?.declaredBindings, [APPROVED_NIR1_INDEX_BINDING])) {
+    errors.push("semantic-index must retain the exact approved NIR-1 binding only");
+  }
+  const consumers = consumerContract?.consumerKinds?.filter((entry) => entry?.kind === "semantic-index") ?? [];
+  if (consumers.length !== 1 || !isDeepStrictEqual(consumers[0]?.declaredBindings, [APPROVED_NIR1_CONSUMER_BINDING])) {
+    errors.push("semantic-index consumer must declare exactly the approved NIR-1 identity tuple");
+  }
+  const producers = producerRegistry?.entries?.filter((entry) => entry?.consumerKind === "semantic-index" || entry?.id === APPROVED_NIR1_PRODUCER.id) ?? [];
+  if (!isDeepStrictEqual(producers, [APPROVED_NIR1_PRODUCER])) {
+    errors.push("semantic-index producer registry must retain the exact approved NIR-1 binding and monotonic D1 generation, never a fixed declarationSetGeneration");
   }
 }
 
@@ -1463,11 +1531,11 @@ function validateAuthorityMatrix(matrix, errors) {
       if (
         authority.concern === "search-generation" &&
         (authority.canonicalAuthority !==
-          RESERVED_SEMANTIC_INDEX_CANONICAL_AUTHORITY ||
-          authority.writePolicy !== "reserved-no-writer")
+          DECLARED_SEMANTIC_INDEX_CANONICAL_AUTHORITY ||
+          authority.writePolicy !== "declared-bindings-only")
       ) {
         errors.push(
-          `search-generation must declare ${JSON.stringify(RESERVED_SEMANTIC_INDEX_CANONICAL_AUTHORITY)} and reserved-no-writer`,
+          `search-generation must declare ${JSON.stringify(DECLARED_SEMANTIC_INDEX_CANONICAL_AUTHORITY)} and declared-bindings-only`,
         );
       }
     }
@@ -1479,6 +1547,8 @@ function validateAuthorityMatrix(matrix, errors) {
     "sourceDigest",
     "dependencySetDigest",
     "dirtyCacheFlag",
+    "producerId",
+    "producerVersion",
   ];
   if (
     JSON.stringify(matrix.semanticIndexAllowedFields) !==
@@ -7172,6 +7242,9 @@ export function validateConsumerContract(repoRoot, contract, errors) {
     );
   } else {
     const [semanticIndex] = semanticIndexEntries;
+    if (!isDeepStrictEqual(semanticIndex.declaredBindings, [APPROVED_NIR1_CONSUMER_BINDING])) {
+      errors.push("semantic-index consumer must declare exactly the approved NIR-1 identity tuple");
+    }
     if (semanticIndex.status !== "reserved") {
       errors.push("semantic-index consumer must remain reserved");
     }
@@ -7901,6 +7974,8 @@ export function validateSemanticCoreBoundary({
     "narrative consumer contract",
   );
   validateConsumerContract(repoRoot, consumerContract, errors);
+  const producerRegistry = readJson(repoRoot, "policies/narrative/narrative-dependency-producer-registry.json", errors, "narrative dependency producer registry");
+  validateSemanticIndexDeclaredBindings(authorityMatrix, consumerContract, producerRegistry, errors);
   const findingContract = readJson(
     repoRoot,
     findingContractPath,

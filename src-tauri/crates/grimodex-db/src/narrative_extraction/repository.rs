@@ -4681,6 +4681,7 @@ fn insert_proposal_seed(
         )?;
     }
 
+    super::nir1_chronicle_index::invalidate::suspend_project_in_tx(conn, project_id)?;
     Ok(json!({
         "proposalId": proposal_id,
         "proposalKey": seed.proposal_key,
@@ -5165,6 +5166,7 @@ fn append_revision_on_conn(
         "NEX_PROPOSAL_REVISION_CONFLICT: current revision changed concurrently"
     );
 
+    super::nir1_chronicle_index::invalidate::suspend_project_in_tx(conn, &payload.project_id)?;
     Ok(json!({
         "proposalId": payload.proposal_id,
         "revisionId": revision_id,
@@ -5313,6 +5315,7 @@ fn append_decision_on_conn(
         "NEX_PROPOSAL_REVISION_MISMATCH: current revision changed concurrently"
     );
 
+    super::nir1_chronicle_index::invalidate::suspend_project_in_tx(conn, &payload.project_id)?;
     Ok(json!({
         "decisionId": decision_id,
         "proposalId": payload.proposal_id,
@@ -6007,6 +6010,13 @@ mod unit_tests {
                     start_time INTEGER,
                     end_time INTEGER,
                     version INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE narrative_semantic_index_metadata (
+                    project_id TEXT NOT NULL,
+                    index_key TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    dirty_cache_flag INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (project_id, index_key)
                 );",
             )?;
             ensure_test_schema(conn)

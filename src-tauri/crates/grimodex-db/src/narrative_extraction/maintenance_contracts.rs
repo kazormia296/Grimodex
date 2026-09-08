@@ -59,6 +59,14 @@ const EXPECTED_PRODUCER_WRITERS: &[(&str, &str, &str, &str, &str, Option<i64>)] 
         APPLICATION_CONSUMER_KIND,
         None,
     ),
+    (
+        super::nir1_chronicle_index::PRODUCER_ID,
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+        "publish_chronicle_index_build_in_tx",
+        super::nir1_chronicle_index::PRODUCER_VERSION,
+        "semantic-index",
+        None,
+    ),
 ];
 
 const REPOSITORY_SOURCE: &str = include_str!(concat!(
@@ -75,6 +83,7 @@ const C2ZC_CANONICAL_CUTOVER_SOURCE: &str = include_str!(concat!(
 ));
 
 const PRODUCER_MARKER_PREFIX: &str = "// NARRATIVE_DEPENDENCY_PRODUCER: ";
+const NIR1_INDEX_SOURCE: &str = include_str!("nir1_chronicle_index/publish.rs");
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,6 +107,8 @@ pub struct DependencyProducerEntry {
     pub generation: String,
     #[serde(default)]
     pub declaration_set_generation: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_declaration_set_generations: Vec<i64>,
     pub consumer_kind: String,
     pub declaration: String,
 }
@@ -209,6 +220,9 @@ fn parse_dependency_producer_registry(registry_json: &str) -> Result<DependencyP
             entry.declaration_set_generation == *declaration_set_generation,
             "NEX_PRODUCER_REGISTRY_INVALID: writer '{id}' declarationSetGeneration does not match its Rust source contract"
         );
+        let expected_supported: &[i64] = if *id == "proposal-revision-source-basis" { &[PROPOSAL_REVISION_D1_PRODUCER_GENERATION, super::human_material_basis::SCOPE_DEPENDENCY_D1_GENERATION] } else { &[] };
+        ensure!(entry.supported_declaration_set_generations == expected_supported,
+            "NEX_PRODUCER_REGISTRY_INVALID: writer '{id}' supported D1 generations differ from implementation");
         let source = match *module {
             "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs" => {
                 REPOSITORY_SOURCE
@@ -219,6 +233,7 @@ fn parse_dependency_producer_registry(registry_json: &str) -> Result<DependencyP
             "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs" => {
                 C2ZC_CANONICAL_CUTOVER_SOURCE
             }
+            "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs" => NIR1_INDEX_SOURCE,
             _ => "",
         };
         ensure!(
@@ -258,6 +273,10 @@ fn validate_dependency_producer_traceability(entries: &[DependencyProducerEntry]
         (
             "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs",
             C2ZC_CANONICAL_CUTOVER_SOURCE,
+        ),
+        (
+            "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+            NIR1_INDEX_SOURCE,
         ),
     ];
     let mut discovered = Vec::new();

@@ -389,17 +389,20 @@ pub(crate) fn verify_application_revision_artifact_references(
 /// passing result; any row is explicit incomplete evidence and remains a
 /// manual/terminal repair condition (never a Rebuild-derived condition).
 ///
-/// If a later NIR-1 owner is approved, its binding contract is explicit: the
+/// The approved NIR-1 owner has one explicit binding: the
 /// metadata `index_key` must equal the D1 `consumer_key` and freshness
 /// `consumer_key`; metadata `generation` must equal the active sealed D1
 /// head's `producer_generation`; and metadata `dependency_set_digest` must
-/// equal the active sealed D1 declaration set's digest.  This function does
-/// not create or validate that future binding because the producer remains
-/// reserved in C2-ZC.
+/// equal the active sealed D1 declaration set's digest. Only that complete
+/// binding is removed from reserved counts; mixed unknown rows stay visible.
 pub(crate) fn verify_semantic_index_checks(
     conn: &Connection,
     project_id: &str,
 ) -> anyhow::Result<(VerifyCoverageCheck, VerifyCoverageCheck)> {
+    if conn.is_autocommit() {
+        let tx = conn.unchecked_transaction()?;
+        return verify_semantic_index_checks(&tx, project_id);
+    }
     let mut observed_counts = BTreeMap::new();
     let reserved_surfaces = [
         (
@@ -437,7 +440,30 @@ pub(crate) fn verify_semantic_index_checks(
         observed_counts.insert(surface.to_string(), count);
     }
 
-    let footprint_is_empty = observed_counts.values().all(|count| *count == 0);
+    let mut reserved_counts = observed_counts.clone();
+    if super::nir1_chronicle_index::is_complete_registered_chronicle_index(
+        conn,
+        project_id,
+        super::nir1_chronicle_index::INDEX_KEY,
+    )? {
+        let known_edge_count: i64 = conn.query_row("SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id=?1 AND consumer_kind='semantic-index' AND consumer_key=?2",
+            params![project_id,super::nir1_chronicle_index::INDEX_KEY],|row|row.get(0))?;
+        for (surface, known) in [
+            ("metadataRows", 1),
+            ("activeD1HeadRows", 1),
+            ("v1EdgeRows", usize::try_from(known_edge_count)?),
+            ("consumerFreshnessRows", 1),
+        ] {
+            let raw = reserved_counts
+                .get_mut(surface)
+                .ok_or_else(|| anyhow::anyhow!("missing semantic index surface"))?;
+            *raw = raw.checked_sub(known).ok_or_else(|| {
+                anyhow::anyhow!("declared semantic index count exceeds observed count")
+            })?;
+        }
+    }
+    let footprint_is_empty = reserved_counts.values().all(|count| *count == 0);
+    observed_counts = reserved_counts.clone();
     let mut digest_check = VerifyCoverageCheck {
         observed_counts: observed_counts.clone(),
         ..VerifyCoverageCheck::default()
@@ -449,12 +475,12 @@ pub(crate) fn verify_semantic_index_checks(
     if !footprint_is_empty {
         let summary = format!(
             "reserved-consumer-kind-footprint:metadataRows={}:activeD1HeadRows={}:v1EdgeRows={}:consumerFreshnessRows={}",
-            digest_check.observed_counts["metadataRows"],
-            digest_check.observed_counts["activeD1HeadRows"],
-            digest_check.observed_counts["v1EdgeRows"],
-            digest_check.observed_counts["consumerFreshnessRows"],
+            reserved_counts["metadataRows"],
+            reserved_counts["activeD1HeadRows"],
+            reserved_counts["v1EdgeRows"],
+            reserved_counts["consumerFreshnessRows"],
         );
-        // No current Rebuild writer owns these reserved surfaces.  Keep the
+        // No declared writer owns the remaining reserved surfaces. Keep the
         // finding incomplete (rather than `issues`) so downstream repair
         // classification remains ManualRepair/TerminalIncomplete.
         digest_check.incomplete.push(summary.clone());

@@ -4158,6 +4158,15 @@
     "slashMenuLabel": "インライン AI コマンド"
   },
   "relatedScenes": {
+    "rank": "{{rank}}位",
+    "approvedInterpretation": "承認済みの解釈",
+    "fresh": "参照元を確認済み",
+    "actuality": "成立性",
+    "attribution": "帰属",
+    "narrativeFrame": "語りの枠組み",
+    "openEvidence": "根拠の本文を開く",
+    "irUnsupported": "この参照条件では承認済み解釈を検索できません。本文検索の結果を表示します。",
+    "irUnavailable": "承認済み解釈は現在参照できません。本文検索の結果を表示します。",
     "noActiveScene": "シーンを選ぶと、関連する過去シーンが表示されます",
     "loading": "検索中…",
     "empty": "関連する過去シーンは見つかりませんでした",

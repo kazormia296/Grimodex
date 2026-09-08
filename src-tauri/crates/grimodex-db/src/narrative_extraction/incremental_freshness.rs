@@ -2010,7 +2010,17 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
     if let Some(error) = batch.preparation_error.as_deref() {
         anyhow::bail!("{error}");
     }
-    let identities = affected_source_identities(&batch.project_id, &batch.events)?;
+    let mut identities = affected_source_identities(&batch.project_id, &batch.events)?;
+    // Scope projection notifications are deliberately conservative. Resolve
+    // each bound projection after selection; a project tree event is not
+    // itself evidence that every projection's revision changed.
+    let scope_event = batch.events.iter().rev().find(|event| event_changes_project_scope_authority(event));
+    let projection_sources = if scope_event.is_some() {
+        db.with_conn(|conn| Ok::<_, anyhow::Error>(all_project_edges(conn, &batch.project_id)?
+            .into_iter().filter(|edge| edge.source_object_identity.starts_with("scope-dependency:v1:"))
+            .map(|edge| edge.source_object_identity).collect::<BTreeSet<_>>()))?
+    } else { BTreeSet::new() };
+    identities.extend(projection_sources.iter().cloned());
     // An Apply can create a new Application whose Feed event has no Source
     // locator (for example a chronicle event).  The typed transaction still
     // carries the exact Application identities it declared; include those
@@ -2022,7 +2032,12 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
         .iter()
         .flat_map(|event| event.application_ids.iter().cloned())
         .collect::<BTreeSet<_>>();
-    let signals = event_signals_by_source(&batch.project_id, &batch.events)?;
+    let mut signals = event_signals_by_source(&batch.project_id, &batch.events)?;
+    if let Some(event) = scope_event {
+        for identity in projection_sources {
+            upsert_project_scope_authority_signals(&mut signals, identity, event);
+        }
+    }
     let v2_shadow_scope = select_v2_shadow_scope(&batch.events, signals.keys().cloned());
     let component_changed = batch.events.iter().any(is_component_schema_change);
     let requires_full_graph = batch.events.iter().any(requires_full_graph_evaluation);
@@ -2077,9 +2092,9 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
         }
         edge_declaration_guards.push(edge.clone());
         if is_reserved_semantic_index_consumer_kind(&edge.consumer_kind) {
-            // The Semantic Index owns its metadata/D1/V1 surface. Keep the
-            // Edge declaration CAS guard, but do not route this reserved Edge
-            // through the Generic Freshness evaluator or publisher.
+            // The declared NIR-1 producer rebuilds its complete audited pool;
+            // unknown bindings remain reserved. Retain the Edge CAS guard,
+            // but leave both classes to their owning classification/worker.
             continue;
         }
         if !is_declared_consumer_kind(&edge.consumer_kind) {
@@ -3281,7 +3296,7 @@ fn requeue_after_failure(
     })
 }
 
-fn affected_source_identities(
+pub(crate) fn affected_source_identities(
     project_id: &str,
     events: &[NarrativeChangeEventRecord],
 ) -> anyhow::Result<Vec<String>> {
@@ -3470,7 +3485,7 @@ fn folder_event_has_live_scene_subtree_impact(event: &NarrativeChangeEventRecord
     before_count > 0 || after_count > 0
 }
 
-fn event_changes_project_scope_authority(event: &NarrativeChangeEventRecord) -> bool {
+pub(crate) fn event_changes_project_scope_authority(event: &NarrativeChangeEventRecord) -> bool {
     let node_type = match event.object_key.get("kind").and_then(Value::as_str) {
         Some("scene") => Some("scene"),
         Some("component") => event
@@ -3783,7 +3798,7 @@ fn is_project_epoch_reset_marker(event: &NarrativeChangeEventRecord) -> bool {
         )
 }
 
-fn requires_full_graph_evaluation(event: &NarrativeChangeEventRecord) -> bool {
+pub(crate) fn requires_full_graph_evaluation(event: &NarrativeChangeEventRecord) -> bool {
     let kind = event.object_key.get("kind").and_then(Value::as_str);
     let structural_event = event
         .structural_impact

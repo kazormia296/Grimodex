@@ -2338,6 +2338,7 @@ mod tests {
             "narrative_dependency_edge_states",
             "narrative_consumer_freshness",
             "narrative_semantic_index_metadata",
+            "narrative_nir1_chronicle_vectors",
             "narrative_maintenance_finding_lifecycle",
             "narrative_maintenance_finding_observations",
             "narrative_maintenance_repair_leases",

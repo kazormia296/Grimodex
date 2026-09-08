@@ -555,6 +555,7 @@ if (!gotSingleInstanceLock) {
     // 届かない（FE 購読者なしのデバッグチャネル — TSFn 実証は
     // workspace:opened が担う）。
     registerEventBus(backend, (channel, payload) => {
+      narrativeFreshness.handleBackendEvent(channel, payload);
       narrativeMaintenanceTriggers?.handleBackendEvent(channel, payload);
       if (channel === "workspace:opened") {
         void codexApp.handleWorkspaceChanged();

@@ -1,7 +1,7 @@
-//! Candidate-scoped, single-window, identity-merge no-repair recipe.
+//! Candidate-scoped, one/two-window, identity-merge no-repair recipes.
 //! This is deliberately narrower than every citation-ID production path.
 use super::super::stage_provenance::VerifiedV2ContextArtifact;
-use super::{array_at, prompt, segments, string_at};
+use super::{array_at, prompt, required, segments, string_at};
 use anyhow::{ensure, Result};
 use rusqlite::{params, Connection};
 use serde_json::Value;
@@ -67,6 +67,7 @@ pub(super) fn resolve(
     root: &VerifiedV2ContextArtifact,
     coverage: &Value,
     receipts: &[Value],
+    envelope: &Value,
 ) -> Result<Outcome> {
     for receipt in receipts {
         let stage = string_at(receipt, "/stageExecution/stageId")?;
@@ -95,7 +96,7 @@ pub(super) fn resolve(
         coverage["windowCount"].as_u64() == Some(windows.len() as u64),
         "window-plan-coverage-mismatch"
     );
-    if windows.len() != 1 {
+    if !(1..=2).contains(&windows.len()) {
         return Ok(Outcome::Unsupported("multi-window-recipe-not-implemented"));
     }
     if snapshot.payload["evidence"]["catalog"]["version"] != 1
@@ -167,13 +168,22 @@ pub(super) fn resolve(
             && ids == root.observation_refs,
         "cluster-input-membership-mismatch"
     );
-    let prefix = format!("{}:", string_at(&windows[0], "/windowId")?);
+    let window_ids = windows
+        .iter()
+        .map(|w| string_at(w, "/windowId"))
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    ensure!(window_ids.len() == windows.len(), "duplicate-window-id");
     let all_observations = array_at(&raw.payload, "/observations")?;
     let mut all_ids = std::collections::BTreeSet::new();
     for o in all_observations {
         let id = string_at(o, "/localId")?;
         ensure!(
-            id.starts_with(&prefix) && all_ids.insert(id),
+            window_ids
+                .iter()
+                .filter(|w| id.starts_with(&format!("{w}:")))
+                .count()
+                == 1
+                && all_ids.insert(id),
             "observation-window-lineage-invalid"
         );
     }
@@ -191,7 +201,7 @@ pub(super) fn resolve(
         .filter(|r| r["stageExecution"]["stageId"] == prompt::OBSERVATION)
         .collect::<Vec<_>>();
     ensure!(
-        obs_receipts.len() == 1 && owner(obs_receipts[0], &raw),
+        obs_receipts.len() == windows.len() && obs_receipts.iter().all(|r| owner(r, &raw)),
         "observation-request-roster-invalid"
     );
     let syn_receipts = receipts
@@ -202,29 +212,61 @@ pub(super) fn resolve(
         syn_receipts.len() == 1 && owner(syn_receipts[0], &synthesis),
         "synthesis-request-roster-invalid"
     );
-    let (obs_digest, materials) =
-        segments::observation(&snapshot.payload, &windows[0], obs_receipts[0])?;
-    let obs_proof = prompt::proof(obs_receipts[0], obs_digest)?;
+    let required = required::windows(envelope, &snapshot.payload, windows, &ids)?;
+    let mut materials = vec![];
+    let mut proofs = vec![];
+    let mut used_receipts = std::collections::BTreeSet::new();
+    for window in windows {
+        let window_id = string_at(window, "/windowId")?;
+        let mut matches = vec![];
+        for receipt in &obs_receipts {
+            let (digests, segments) = segments::observation(&snapshot.payload, window, receipt)?;
+            if digests.context_set_digest == receipt["contextSetDigest"] {
+                let proof = prompt::proof(receipt, digests)?;
+                matches.push((segments, proof));
+            }
+        }
+        ensure!(
+            matches.len() == 1,
+            "observation-window-request-binding-invalid"
+        );
+        let (window_materials, proof) = matches
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("missing observation request"))?;
+        ensure!(
+            used_receipts.insert(proof.execution_id.clone()),
+            "duplicate-window-request"
+        );
+        // Check evidence against its own ancestor request, including when
+        // different windows expose overlapping canonical source ranges.
+        for observation in observations.iter().filter(|o| {
+            o["localId"]
+                .as_str()
+                .is_some_and(|id| id.starts_with(&format!("{window_id}:")))
+        }) {
+            for evidence in array_at(observation, "/evidence")? {
+                let source_ref = string_at(evidence, "/sourceRef")?;
+                let matches = window_materials
+                    .iter()
+                    .filter(|m| m.canonical_source_ref.as_deref() == Some(&source_ref))
+                    .collect::<Vec<_>>();
+                ensure!(
+                    matches.len() == 1
+                        && matches[0].content_digest
+                            == grimodex_core::canonical_json_digest(&evidence["quote"])?,
+                    "synthesis-source-material-binding-invalid"
+                );
+            }
+        }
+        if required.contains(&window_id) {
+            materials.extend(window_materials);
+            proofs.push(proof);
+        }
+    }
     let syn_proof = prompt::proof(
         syn_receipts[0],
         prompt::synthesis(&root.cluster_ref, observations)?,
     )?;
-    // Every synthesis Evidence item maps back to a complete observation input
-    // span; selected revision Evidence alone is never used as the input roster.
-    for observation in observations {
-        for evidence in array_at(observation, "/evidence")? {
-            let source_ref = string_at(evidence, "/sourceRef")?;
-            let matches = materials
-                .iter()
-                .filter(|m| m.canonical_source_ref.as_deref() == Some(&source_ref))
-                .collect::<Vec<_>>();
-            ensure!(
-                matches.len() == 1
-                    && matches[0].content_digest
-                        == grimodex_core::canonical_json_digest(&evidence["quote"])?,
-                "synthesis-source-material-binding-invalid"
-            );
-        }
-    }
-    Ok(Outcome::Complete(materials, vec![obs_proof, syn_proof]))
+    proofs.push(syn_proof);
+    Ok(Outcome::Complete(materials, proofs))
 }

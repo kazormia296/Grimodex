@@ -3394,7 +3394,7 @@ export const narrativeMaintenanceAttention = sqliteTable(
 );
 
 // SCHEMA_VERSION 24 (Gate C2 Run Kind Policy). A Semantic Index may own only
-// the five fields fixed in semantic-core-authorities.json's
+// the cache fields fixed in semantic-core-authorities.json's
 // semanticIndexAllowedFields; indexKey distinguishes multiple indexes a
 // project may build (e.g. embeddings vs. a future secondary index) under one
 // row shape.
@@ -3410,8 +3410,32 @@ export const narrativeSemanticIndexMetadata = sqliteTable(
     sourceDigest: text("source_digest").notNull(),
     dependencySetDigest: text("dependency_set_digest").notNull(),
     dirtyCacheFlag: integer("dirty_cache_flag").notNull(),
+    producerId: text("producer_id"),
+    producerVersion: text("producer_version"),
   },
   (table) => [primaryKey({ columns: [table.projectId, table.indexKey] })],
+);
+
+// SCHEMA 35. Native-owned derived vectors; no material closure or persisted proof.
+export const narrativeNir1ChronicleVectors = sqliteTable(
+  "narrative_nir1_chronicle_vectors",
+  {
+    projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    revisionId: text("revision_id").notNull(),
+    generation: integer("generation").notNull(),
+    envelopeDigest: text("envelope_digest").notNull(),
+    statementDigest: text("statement_digest").notNull(),
+    serializerRef: text("serializer_ref").notNull(),
+    modelId: text("model_id").notNull(),
+    artifactSha256: text("artifact_sha256").notNull(),
+    tokenizerSha256: text("tokenizer_sha256").notNull(),
+    embeddingDim: integer("embedding_dim").notNull(),
+    chunkerVersion: text("chunker_version").notNull(),
+    auditOperationId: text("audit_operation_id").notNull(),
+    auditExecutionId: text("audit_execution_id").notNull(),
+    embedding: blob("embedding", { mode: "buffer" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.revisionId] })],
 );
 
 // SCHEMA_VERSION 24 (Gate C2 Run Kind Policy, Repair). Durable claim covering

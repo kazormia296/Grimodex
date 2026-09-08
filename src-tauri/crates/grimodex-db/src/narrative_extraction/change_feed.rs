@@ -282,7 +282,9 @@ fn digest_value(value: &Value) -> anyhow::Result<String> {
     ))
 }
 
-fn payload_digest(input: &AppendNarrativeChangeTransactionInput) -> anyhow::Result<String> {
+pub(crate) fn payload_digest(
+    input: &AppendNarrativeChangeTransactionInput,
+) -> anyhow::Result<String> {
     let mut normalized = input.clone();
     normalized.application_ids.sort();
     digest_value(&serde_json::to_value(normalized)?)
@@ -776,7 +778,7 @@ fn validate_text_impact(impact: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_event(event: &NarrativeChangeEventInput) -> anyhow::Result<()> {
+pub(crate) fn validate_event(event: &NarrativeChangeEventInput) -> anyhow::Result<()> {
     let key = event
         .object_key
         .as_object()
@@ -1906,6 +1908,7 @@ pub fn append_narrative_change_transaction_in_tx(
         event_ids.push(event_id);
     }
 
+    super::nir1_chronicle_index::invalidate::suspend_project_in_tx(conn, &input.project_id)?;
     Ok(AppendNarrativeChangeTransactionResult {
         transaction_id,
         canonical_sequence,

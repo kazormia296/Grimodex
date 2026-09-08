@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -436,7 +436,7 @@ fn validate_freshness_evaluation_reference(
 /// shared maintenance lifecycle owned by `dependency-rebuild-derived`.
 /// Otherwise a stale Verify/Backfill id or an incomplete Rebuild ledger can
 /// make old evidence look current after canonical cutover.
-fn validate_current_evaluation_run_reference(
+pub(crate) fn validate_current_evaluation_run_reference(
     conn: &Connection,
     project_id: &str,
     current_epoch_id: &str,
@@ -451,7 +451,7 @@ fn validate_current_evaluation_run_reference(
         String,
         Option<String>,
         String,
-        String,
+        Option<String>,
         Option<String>,
     );
     let row: Option<EvaluationPublisherRow> = conn
@@ -490,6 +490,9 @@ fn validate_current_evaluation_run_reference(
             "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISSING: application '{application_id}' references missing Freshness publisher Run '{run_id}'"
         );
     };
+    let work_key = work_key.ok_or_else(|| anyhow::anyhow!(
+        "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: consumer '{application_id}' references publisher Run '{run_id}' without a work key"
+    ))?;
     anyhow::ensure!(
         !is_idle_checkpoint_publisher(
             &spec_json,
@@ -511,9 +514,9 @@ fn validate_current_evaluation_run_reference(
             Ok(())
         }
         Some("semantic-index-rebuild") => {
-            let handle = load_completed_maintenance_run_in_tx(conn, run_id).map_err(|error| {
-                anyhow::anyhow!(
-                    "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Rebuild Run '{run_id}' without the exact completed maintenance lifecycle: {error}"
+            let handle = load_completed_maintenance_run_in_tx(conn, run_id).with_context(|| {
+                format!(
+                    "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: consumer '{application_id}' references Rebuild Run '{run_id}' without the exact completed maintenance lifecycle"
                 )
             })?;
             anyhow::ensure!(
