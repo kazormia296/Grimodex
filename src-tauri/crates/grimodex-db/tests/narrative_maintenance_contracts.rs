@@ -51,6 +51,10 @@ fn bundled_producer_registry_is_traceable_to_current_writer_paths() {
                 "record_legacy_dependency_edges_in_tx"
             ),
             (
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+                "publish_chronicle_index_build_in_tx"
+            ),
+            (
                 "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs",
                 "write_application_dependencies_in_tx"
             ),
