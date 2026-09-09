@@ -49,6 +49,7 @@ import {
   terminalRetryCandidates,
   runRestoreVerifyRebuildVerifyScenario,
   selectChangedDigestRun,
+  finishDigestChangeBaseline,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import * as narrativeMaintenanceProductJourneys from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import {
@@ -937,6 +938,162 @@ test("digest-change journey waits past canonical Verify runs for the changed coo
       evidence: JSON.parse(changed.outcomeSummaryJson).skipEvidence,
     },
   );
+});
+
+test("digest-change baseline waits for durable cutover before settling, closing, and continuing", async () => {
+  const events = [];
+  const initialRuns = [{ id: "before-observation" }];
+  const settledRuns = [{ id: "after-cutover" }];
+  const launch = { app: {}, page: {} };
+  let markerRows = [];
+  let releaseMarker;
+  const markerReady = new Promise((resolve) => {
+    releaseMarker = resolve;
+  });
+  let reportFirstPoll;
+  const firstPoll = new Promise((resolve) => {
+    reportFirstPoll = resolve;
+  });
+  const marker = {
+    migrationId: "narrative-c2-canonical-freshness-v1",
+    contractVersion: 1,
+    appliedAt: "2026-09-09T08:27:54.500Z",
+  };
+  const context = {
+    baselineRuns: initialRuns,
+    query: async (sql, params) => {
+      assert.match(sql, /SELECT migration_id AS migrationId/);
+      assert.match(
+        sql,
+        /FROM schema_data_migrations\s+WHERE migration_id = \?/,
+      );
+      assert.deepEqual(params, [marker.migrationId]);
+      events.push("marker-query");
+      return markerRows;
+    },
+    record: (name, evidence) => {
+      assert.equal(name, "baseline-canonical-cutover-observed");
+      assert.deepEqual(evidence, { coordinate: "ruleRegistryDigest", marker });
+      events.push("marker-observed");
+    },
+  };
+  const harness = {
+    waitUntil: async (predicate, label, timeoutMs, intervalMs) => {
+      assert.equal(label, "ruleRegistryDigest baseline canonical cutover");
+      assert.equal(timeoutMs, 5_000);
+      assert.equal(intervalMs, 100);
+      await assert.rejects(predicate(), /canonical cutover is not durable/);
+      reportFirstPoll();
+      await markerReady;
+      return predicate();
+    },
+    close: async (app, page, phase) => {
+      assert.equal(app, launch.app);
+      assert.equal(page, launch.page);
+      assert.equal(phase, "digest-journey/baseline");
+      events.push("baseline-close");
+    },
+  };
+  const finished = finishDigestChangeBaseline(
+    harness,
+    launch,
+    "workspace",
+    "digest-journey",
+    "ruleRegistryDigest",
+    {
+      contextForLaunchFn: async () => context,
+      waitForLedgerFn: async (_, predicate) => {
+        const completed = [
+          { runKind: "dependency-verify", status: "completed" },
+        ];
+        assert.equal(predicate(completed), completed);
+        assert.equal(
+          predicate([{ runKind: "dependency-verify", status: "running" }]),
+          null,
+        );
+        events.push("verify-completed");
+        return completed;
+      },
+      waitForStableLedgerFn: async (observedContext, baseline) => {
+        assert.equal(observedContext, context);
+        assert.equal(baseline, initialRuns);
+        events.push("stable-ledger");
+        return settledRuns;
+      },
+    },
+  ).then((result) => {
+    events.push("changed-phase");
+    return result;
+  });
+  await firstPoll;
+  assert.deepEqual(events, ["verify-completed", "marker-query"]);
+  markerRows = [marker];
+  releaseMarker();
+  assert.equal(await finished, context);
+  assert.equal(context.baselineRuns, settledRuns);
+  assert.deepEqual(events, [
+    "verify-completed",
+    "marker-query",
+    "marker-query",
+    "marker-observed",
+    "stable-ledger",
+    "baseline-close",
+    "changed-phase",
+  ]);
+});
+
+test("digest-change baseline cannot continue when the exact cutover marker is unavailable or invalid", async () => {
+  const valid = {
+    migrationId: "narrative-c2-canonical-freshness-v1",
+    contractVersion: 1,
+    appliedAt: "2026-09-09T08:27:54.500Z",
+  };
+  for (const markerRows of [
+    [],
+    [valid, valid],
+    [{ ...valid, migrationId: "other-marker" }],
+    [{ ...valid, contractVersion: 2 }],
+    [{ ...valid, appliedAt: "" }],
+    [{ ...valid, appliedAt: "2026-02-30T00:00:00.000Z" }],
+  ]) {
+    let closed = 0;
+    let continued = false;
+    await assert.rejects(
+      finishDigestChangeBaseline(
+        {
+          waitUntil: (predicate) => predicate(),
+          close: async () => {
+            closed += 1;
+          },
+        },
+        { app: {}, page: {} },
+        "workspace",
+        "digest-journey",
+        "ruleRegistryDigest",
+        {
+          contextForLaunchFn: async () => ({
+            baselineRuns: [],
+            query: async () => markerRows,
+            record: () => assert.fail("invalid marker must not be recorded"),
+          }),
+          waitForLedgerFn: async () => [
+            { runKind: "dependency-verify", status: "completed" },
+          ],
+          waitForStableLedgerFn: async () =>
+            assert.fail("invalid marker must not settle baseline"),
+        },
+      ).then(() => {
+        continued = true;
+      }),
+      /canonical cutover is not durable|baseline cutover appliedAt/,
+    );
+    assert.equal(closed, 1, "failed baseline still closes its process");
+    assert.equal(
+      continued,
+      false,
+      "changed phase must not start after failed baseline",
+    );
+  }
 });
 
 test("C2-5B journey seam constants keep exact durable failure contracts", () => {

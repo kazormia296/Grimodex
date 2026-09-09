@@ -3490,6 +3490,89 @@ export async function runRestoreVerifyRebuildVerifyScenario(
   };
 }
 
+export async function finishDigestChangeBaseline(
+  harness,
+  baselineLaunch,
+  workspace,
+  id,
+  coordinate,
+  {
+    contextForLaunchFn = contextForLaunch,
+    waitForLedgerFn = waitForLedger,
+    waitForStableLedgerFn = waitForStableLedger,
+  } = {},
+) {
+  try {
+    const context = await contextForLaunchFn(
+      harness,
+      baselineLaunch,
+      workspace,
+      id,
+    );
+    const preObservationRuns = context.baselineRuns;
+    await waitForLedgerFn(
+      context,
+      (rows) =>
+        rows.some(
+          (row) =>
+            row.runKind === "dependency-verify" && row.status === "completed",
+        )
+          ? rows
+          : null,
+      `${coordinate} baseline Verify`,
+    );
+    // The changed CI coordinate intentionally differs from the compiled
+    // cutover contract. Finish ordinary activation before starting that seam;
+    // a completed Verify or a settled Run ledger does not prove activation.
+    const marker = await harness.waitUntil(
+      async () => {
+        const rows = await context.query(
+          `SELECT migration_id AS migrationId,
+                  contract_version AS contractVersion,
+                  applied_at AS appliedAt
+             FROM schema_data_migrations
+            WHERE migration_id = ?`,
+          ["narrative-c2-canonical-freshness-v1"],
+        );
+        const marker = rows[0];
+        if (
+          rows.length !== 1 ||
+          marker?.migrationId !== "narrative-c2-canonical-freshness-v1" ||
+          Number(marker?.contractVersion) !== 1
+        ) {
+          throw new Error(
+            `${coordinate} baseline canonical cutover is not durable: ${JSON.stringify(rows)}`,
+          );
+        }
+        parseInstant(
+          marker.appliedAt,
+          `${coordinate} baseline cutover appliedAt`,
+        );
+        return marker;
+      },
+      `${coordinate} baseline canonical cutover`,
+      NARRATIVE_MAINTENANCE_WAIT_MS,
+      100,
+    );
+    context.record("baseline-canonical-cutover-observed", {
+      coordinate,
+      marker,
+    });
+    context.baselineRuns = await waitForStableLedgerFn(
+      context,
+      preObservationRuns,
+      `${coordinate} baseline settled ledger`,
+    );
+    return context;
+  } finally {
+    await harness.close(
+      baselineLaunch.app,
+      baselineLaunch.page,
+      `${id}/baseline`,
+    );
+  }
+}
+
 async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
   const id = "c2-5b-restore-verify-rebuild-verify";
   // The restore process is intentionally scheduler-free. Start a second,
@@ -3530,38 +3613,13 @@ async function runDigestChangeJourney(
     { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
     () => harness.launch(`${id}/baseline`),
   );
-  let baselineContext;
-  try {
-    baselineContext = await contextForLaunch(
-      harness,
-      baselineLaunch,
-      workspace,
-      id,
-    );
-    const preObservationRuns = baselineContext.baselineRuns;
-    await waitForLedger(
-      baselineContext,
-      (rows) =>
-        rows.some(
-          (row) =>
-            row.runKind === "dependency-verify" && row.status === "completed",
-        )
-          ? rows
-          : null,
-      `${coordinate} baseline Verify`,
-    );
-    baselineContext.baselineRuns = await waitForStableLedger(
-      baselineContext,
-      preObservationRuns,
-      `${coordinate} baseline settled ledger`,
-    );
-  } finally {
-    await harness.close(
-      baselineLaunch.app,
-      baselineLaunch.page,
-      `${id}/baseline`,
-    );
-  }
+  const baselineContext = await finishDigestChangeBaseline(
+    harness,
+    baselineLaunch,
+    workspace,
+    id,
+    coordinate,
+  );
 
   const changedLaunch = await withLaunchEnvironment(
     {
