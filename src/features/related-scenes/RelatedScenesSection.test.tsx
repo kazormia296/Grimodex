@@ -2,8 +2,8 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import {
   render,
+  act,
   screen,
-  waitFor,
   cleanup,
   fireEvent,
 } from "@testing-library/react";
@@ -54,6 +54,7 @@ function seedNodes(ids: string[]) {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   vi.clearAllMocks();
   useSemanticNavStore.setState({ pendingJump: null });
   seedNodes([]);
@@ -62,7 +63,19 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
+
+// Complete listener registration, then advance the real hook's debounce.
+// Rendering assertions must not depend on host scheduling during the full suite.
+async function finishFetch() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(400);
+  });
+}
 
 describe("RelatedScenesSection", () => {
   it("アクティブシーンが無いときは検索せず、行を出さない", async () => {
@@ -91,9 +104,8 @@ describe("RelatedScenesSection", () => {
     setActive("s2");
     render(<RelatedScenesSection enabled />);
 
-    await waitFor(() => {
-      expect(screen.getByText("井戸端の密談")).toBeTruthy();
-    });
+    await finishFetch();
+    expect(screen.getByText("井戸端の密談")).toBeTruthy();
     expect(mockFetch).toHaveBeenCalledWith(
       "s2",
       expect.objectContaining({ mode: "hybrid" }),
@@ -115,16 +127,15 @@ describe("RelatedScenesSection", () => {
     setActive("s2");
     render(<RelatedScenesSection enabled />);
 
-    const row = await screen.findByText("井戸端の密談");
+    await finishFetch();
+    const row = screen.getByText("井戸端の密談");
     expect(row).toBeTruthy();
 
     // 見出し(aria-expanded ボタン)をクリックして折りたたむ
     const header = screen.getByRole("button", { expanded: true });
     fireEvent.click(header);
 
-    await waitFor(() => {
-      expect(screen.queryAllByTestId("related-scene-row")).toHaveLength(0);
-    });
+    expect(screen.queryAllByTestId("related-scene-row")).toHaveLength(0);
   });
 
   it("行クリックで requestJump + setActiveScene が走る (ジャンプ配線)", async () => {
@@ -141,7 +152,8 @@ describe("RelatedScenesSection", () => {
     setActive("s2");
     render(<RelatedScenesSection enabled />);
 
-    const row = await screen.findByText("井戸端の密談");
+    await finishFetch();
+    const row = screen.getByText("井戸端の密談");
     fireEvent.click(row);
 
     expect(useSemanticNavStore.getState().pendingJump).toEqual({
@@ -165,7 +177,8 @@ describe("RelatedScenesSection", () => {
     setActive("s2");
     render(<RelatedScenesSection enabled />);
 
-    const row = await screen.findByText("消えた章");
+    await finishFetch();
+    const row = screen.getByText("消えた章");
     fireEvent.click(row);
 
     expect(useSemanticNavStore.getState().pendingJump).toBeNull();
@@ -218,7 +231,8 @@ describe("NIR interpretation display", () => {
     });
     setActive("s2");
     render(<RelatedScenesSection />);
-    await screen.findByText("The bridge may have fallen");
+    await finishFetch();
+    expect(screen.getByText("The bridge may have fallen")).toBeTruthy();
     expect(screen.getByText("Original prose")).toBeTruthy();
     expect(screen.getByText("rumored")).toBeTruthy();
     expect(screen.getByText("the guard")).toBeTruthy();
@@ -247,8 +261,9 @@ describe("NIR interpretation display", () => {
     });
     setActive("s2");
     render(<RelatedScenesSection />);
-    expect(await screen.findByTestId("nir1-unavailable")).toBeTruthy();
+    await finishFetch();
+    expect(screen.getByTestId("nir1-unavailable")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { expanded: true }));
-    await waitFor(() => expect(release).toHaveBeenCalledOnce());
+    expect(release).toHaveBeenCalledOnce();
   });
 });
