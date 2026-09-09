@@ -109,10 +109,10 @@ impl<T> RelatedScenesRegistry<T> {
     }
 
     pub fn release(&mut self, ticket: &str, owner: &str) -> bool {
-        if !self
+        if self
             .entries
             .get(ticket)
-            .is_some_and(|entry| entry.owner == owner)
+            .is_none_or(|entry| entry.owner != owner)
         {
             return false;
         }

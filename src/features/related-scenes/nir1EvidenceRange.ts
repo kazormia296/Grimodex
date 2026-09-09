@@ -1,4 +1,5 @@
 import { serializeProseMirrorDocument } from "@/features/narrative-extraction/source/proseMirrorSerializer";
+export { serializeProseMirrorDocument };
 import { projectCanonicalRange } from "@/features/narrative-extraction/source/textProjection";
 import {
   CANONICAL_TEXT_NORMALIZER_VERSION,

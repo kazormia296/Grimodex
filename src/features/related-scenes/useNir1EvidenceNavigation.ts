@@ -10,8 +10,6 @@ import {
   claimNir1EvidenceNavigation,
   subscribeNir1EvidenceNavigation,
 } from "./nir1EvidenceNavigation";
-import { resolveNir1EvidenceRange } from "./nir1EvidenceRange";
-import { serializeProseMirrorDocument } from "@/features/narrative-extraction/source/proseMirrorSerializer";
 import { sha256Digest } from "@/features/narrative-extraction/source/digest";
 
 interface Options {
@@ -39,6 +37,9 @@ export function useNir1EvidenceNavigation(options: Options): void {
         const editor = latest.current.editor;
         if (!editor || editor.isDestroyed) return;
         const documentJson = JSON.stringify(editor.getJSON());
+        const { resolveNir1EvidenceRange, serializeProseMirrorDocument } =
+          await import("./nir1EvidenceRange");
+        if (cancelled || !claim.isCurrent() || editor.isDestroyed) return;
         const serialized = serializeProseMirrorDocument(
           documentJson,
           "database",

@@ -76,7 +76,7 @@ fn retrieval_statement_is_ordered_immutable_assertion_text_with_exact_bindings()
                 snapshot.query_context.audience,
                 grimodex_db::narrative_extraction::QueryIdentityState::Resolved("reader".into())
             );
-            assert_eq!(snapshot.query_context.allow_secrets, false);
+            assert!(!snapshot.query_context.allow_secrets);
             let parsed: Value = serde_json::from_str(&snapshot.document.serialized_statement)
                 .expect("statement JSON");
             assert_eq!(parsed.as_object().expect("object").len(), 4);

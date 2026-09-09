@@ -61,12 +61,13 @@ function fixture(texts: string[]) {
     },
   };
   const finish = vi.fn();
+  let current = true;
   vi.mocked(claimNir1EvidenceNavigation)
     .mockReturnValueOnce({
       identity: "evidence",
       queryBinding: "query",
       sceneId: "s1",
-      isCurrent: () => true,
+      isCurrent: () => current,
       finish,
     })
     .mockReturnValue(null);
@@ -75,6 +76,9 @@ function fixture(texts: string[]) {
     editor,
     selection,
     finish,
+    invalidate: () => {
+      current = false;
+    },
     getState: () => state,
     setState: (next: Partial<Nir1EvidenceEditorState>) => {
       state = { ...state, ...next };
@@ -104,6 +108,30 @@ async function qualified(document: unknown, quote: string) {
 beforeEach(() => vi.clearAllMocks());
 
 describe("NIR Evidence editor consumer", () => {
+  it.each(["query", "unmount", "destroyed"])(
+    "does not qualify or select when %s cancels while the resolver is loading",
+    async (change) => {
+      const f = fixture(["full evidence quote"]);
+      const hook = renderHook(() =>
+        useNir1EvidenceNavigation({
+          editor: f.editor,
+          sceneId: "s1",
+          ready: true,
+          captureState: f.getState,
+          beforeSelection: vi.fn(),
+        }),
+      );
+      expect(qualifyNir1Evidence).not.toHaveBeenCalled();
+      if (change === "query") f.invalidate();
+      else if (change === "unmount") hook.unmount();
+      else Object.assign(f.editor, { isDestroyed: true });
+      await waitFor(() => expect(f.finish).toHaveBeenCalledOnce());
+      expect(qualifyNir1Evidence).not.toHaveBeenCalled();
+      expect(f.selection).not.toHaveBeenCalled();
+      hook.unmount();
+    },
+  );
+
   it.each([false, true])(
     "consumes after an editor becomes ready (initial ready=%s) and selects the full later quote",
     async (initialReady) => {
@@ -140,9 +168,16 @@ describe("NIR Evidence editor consumer", () => {
     },
   );
 
-  it.each(["dirty", "saved", "reload"])(
-    "does not select if %s changes while backend qualification is pending",
-    async (kind) => {
+  it.each(
+    ["dirty", "saved", "reload"].flatMap((kind) =>
+      ["resolver", "qualification"].map((pendingStage) => ({
+        kind,
+        pendingStage,
+      })),
+    ),
+  )(
+    "does not select if $kind changes while $pendingStage is pending",
+    async ({ kind, pendingStage }) => {
       const f = fixture(["full evidence quote"]);
       let resolve!: (value: Awaited<ReturnType<typeof qualified>>) => void;
       vi.mocked(qualifyNir1Evidence).mockReturnValue(
@@ -160,7 +195,9 @@ describe("NIR Evidence editor consumer", () => {
           beforeSelection: vi.fn(),
         }),
       );
-      await waitFor(() => expect(qualifyNir1Evidence).toHaveBeenCalledOnce());
+      if (pendingStage === "qualification")
+        await waitFor(() => expect(qualifyNir1Evidence).toHaveBeenCalledOnce());
+      else expect(qualifyNir1Evidence).not.toHaveBeenCalled();
       if (kind === "dirty") f.setState({ isDirty: true });
       else if (kind === "saved")
         f.setState({
