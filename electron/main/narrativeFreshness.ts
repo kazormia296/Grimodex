@@ -6,6 +6,11 @@
  * cycleを早める。renderer IPC / preload surfaceは持たない。
  */
 
+import {
+  isRelatedScenesInvalidatedEvent,
+  RELATED_SCENES_INVALIDATED_EVENT,
+} from "../shared/relatedScenesSearchWire.js";
+
 const INITIAL_DELAY_MS = 250;
 const IDLE_POLL_INTERVAL_MS = 1_000;
 const BACKLOG_DELAY_MS = 10;
@@ -18,6 +23,8 @@ export interface NarrativeFreshnessBackendLike {
 
 export interface NarrativeFreshnessScheduler {
   start(): void;
+  /** Trusted Native event-bus notification; no renderer/preload entry point. */
+  handleBackendEvent(channel: string, payload: unknown): void;
   /** Main-only synchronous state recheck for the CI quiescence writer. */
   getQuiescenceState?(): {
     mutationRevision: number;
@@ -50,7 +57,7 @@ interface SchedulerOptions {
     noWrite: boolean;
     heldProjectId: string | null;
     cutoverNotReady: boolean;
-    /** No wake callback is queued while this completion observation is emitted. */
+    /** A Native invalidation arrived after this cycle started. */
     wakePending: boolean;
     timerScheduled: boolean;
     nextCycleGuardStateDigest: string | null;
@@ -149,6 +156,7 @@ export function createNarrativeFreshnessScheduler(
   let started = false;
   let disposed = false;
   let inFlight = false;
+  let wakePending = false;
   let cycleGeneration = 0;
   let mutationRevision = 0;
   let lastCompletedObservation: ReturnType<
@@ -185,6 +193,7 @@ export function createNarrativeFreshnessScheduler(
     if (typeof method !== "function") return;
 
     inFlight = true;
+    wakePending = false;
     noteMutation();
     // A previous idle result cannot certify the new cycle while this native
     // call is running or may schedule a retry. The runtime recheck therefore
@@ -235,7 +244,7 @@ export function createNarrativeFreshnessScheduler(
       inFlight = false;
       noteMutation();
       // setIntervalを使わず、必ず前cycle完了後に次の1件だけを予約する。
-      if (!disposed) schedule(nextDelayMs);
+      if (!disposed) schedule(wakePending ? BACKLOG_DELAY_MS : nextDelayMs);
       if (!disposed && completedObservation !== null) {
         cycleGeneration += 1;
         noteMutation();
@@ -253,11 +262,12 @@ export function createNarrativeFreshnessScheduler(
         }
         const nextCycleGuardStateDigest =
           timerScheduled &&
+          !wakePending &&
           completedObservation.noWrite &&
           !completedObservation.hasMore
             ? stateDigest
             : null;
-        lastCompletedObservation = completedObservation;
+        lastCompletedObservation = wakePending ? null : completedObservation;
         lastNextCycleGuardStateDigest = nextCycleGuardStateDigest;
         try {
           const callback = options.onCycleCompleted?.({
@@ -269,7 +279,7 @@ export function createNarrativeFreshnessScheduler(
             noWrite: completedObservation.noWrite,
             heldProjectId: completedObservation.heldProjectId,
             cutoverNotReady: completedObservation.cutoverNotReady,
-            wakePending: false,
+            wakePending,
             timerScheduled,
             nextCycleGuardStateDigest,
             quiescenceState: completedObservation.quiescenceState,
@@ -304,6 +314,25 @@ export function createNarrativeFreshnessScheduler(
       schedule(INITIAL_DELAY_MS);
     },
 
+    handleBackendEvent(channel, payload): void {
+      if (
+        !started ||
+        disposed ||
+        wakePending ||
+        typeof backend?.runNarrativeFreshnessCycle !== "function" ||
+        channel !== RELATED_SCENES_INVALIDATED_EVENT ||
+        !isRelatedScenesInvalidatedEvent(payload)
+      )
+        return;
+      wakePending = true;
+      noteMutation();
+      lastCompletedObservation = null;
+      lastNextCycleGuardStateDigest = null;
+      // An in-flight cycle may already have captured its Feed range. Preserve
+      // one follow-up after it completes; never invoke Native concurrently.
+      if (!inFlight) schedule(BACKLOG_DELAY_MS);
+    },
+
     getQuiescenceState() {
       return {
         mutationRevision,
@@ -311,7 +340,7 @@ export function createNarrativeFreshnessScheduler(
         hasMore: lastCompletedObservation?.hasMore === true,
         heldProjectId: lastCompletedObservation?.heldProjectId ?? null,
         cutoverNotReady: lastCompletedObservation?.cutoverNotReady === true,
-        wakePending: false,
+        wakePending,
         timerScheduled: timer !== null,
         nextCycleGuardStateDigest:
           timer !== null ? lastNextCycleGuardStateDigest : null,
@@ -322,6 +351,7 @@ export function createNarrativeFreshnessScheduler(
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      wakePending = false;
       noteMutation();
       clearTimer();
       // in-flight native callは強制取消しない。完了後の再scheduleだけを抑止する。

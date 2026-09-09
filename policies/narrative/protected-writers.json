@@ -460,6 +460,13 @@
     "enforcement": "active"
   },
   {
+    "aggregate": "narrative-nir1-index",
+    "table": "narrative_nir1_chronicle_vectors",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "narrative-c2zc-finding",
     "table": "narrative_maintenance_finding_lifecycle",
     "protection": "table",

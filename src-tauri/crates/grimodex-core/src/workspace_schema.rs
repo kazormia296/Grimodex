@@ -596,7 +596,7 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// atomically projects non-empty body creation baselines from the canonical
 /// Narrative Change Feed lifecycle event.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 34
+    Ok(SCHEMA_VERSION == 35
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -636,7 +636,8 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         // V2 remains a non-authoritative shadow until a later cutover lane.
         && has_v33_dependency_declaration_storage(conn)?
         && has_v34_c2a_stage_storage(conn)?
-        && has_timelapse_query_indexes(conn)?
+        && has_v35_nir1_index_storage(conn)?
+        && has_current_query_indexes(conn)?
         // The durable wake outbox and the V2 pointer monotonicity guard ship
         // as an in-version repair of SCHEMA 34: their absence forces a full
         // idempotent DDL replay rather than a version bump.
@@ -644,11 +645,64 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_timelapse_creation_baseline_triggers(conn)?)
 }
 
-/// Timelapse genesis and restore eligibility are project/entity lookups. Keep
-/// their composite indexes in the current-schema checkpoint so an older
-/// workspace is repaired through the full idempotent migrator instead of
-/// silently falling back to project-wide event/snapshot scans.
-fn has_timelapse_query_indexes(conn: &Connection) -> anyhow::Result<bool> {
+fn has_v35_nir1_index_storage(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_nir1_chronicle_vectors")? {
+        return Ok(false);
+    }
+    let metadata = table_columns(conn, "narrative_semantic_index_metadata")?;
+    if !["producer_id", "producer_version"].iter().all(|name| {
+        metadata.iter().any(|column| {
+            column.name == *name && column.declared_type == "TEXT" && !column.not_null
+        })
+    }) {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "narrative_nir1_chronicle_vectors")?;
+    let expected = [
+        ("project_id", "TEXT"),
+        ("revision_id", "TEXT"),
+        ("generation", "INTEGER"),
+        ("envelope_digest", "TEXT"),
+        ("statement_digest", "TEXT"),
+        ("serializer_ref", "TEXT"),
+        ("model_id", "TEXT"),
+        ("artifact_sha256", "TEXT"),
+        ("tokenizer_sha256", "TEXT"),
+        ("embedding_dim", "INTEGER"),
+        ("chunker_version", "TEXT"),
+        ("audit_operation_id", "TEXT"),
+        ("audit_execution_id", "TEXT"),
+        ("embedding", "BLOB"),
+    ];
+    let shape = columns.len() == expected.len()
+        && columns
+            .iter()
+            .zip(expected)
+            .enumerate()
+            .all(|(i, (column, (name, kind)))| {
+                column.name == name
+                    && column.declared_type == kind
+                    && column.not_null
+                    && column.primary_key == if i < 2 { (i + 1) as i32 } else { 0 }
+            });
+    let sql = compact_sql(&table_sql(conn, "narrative_nir1_chronicle_vectors")?);
+    Ok(shape
+        && sql.contains("check(generation>0)")
+        && sql.contains("check(embedding_dim>0)")
+        && sql.contains("check(length(embedding)=embedding_dim*4)")
+        && foreign_key_matches(
+            conn,
+            "narrative_nir1_chronicle_vectors",
+            "project_id",
+            "projects",
+            "id",
+        )?)
+}
+
+/// Keep Timelapse and NIR1 accepted-artifact lookup indexes in the physical
+/// checkpoint. Older workspaces repair them through the idempotent migrator
+/// instead of repeatedly scanning unrelated projects, Runs and Attempts.
+fn has_current_query_indexes(conn: &Connection) -> anyhow::Result<bool> {
     for (table, name, expected_columns) in [
         (
             "change_events",
@@ -664,6 +718,28 @@ fn has_timelapse_query_indexes(conn: &Connection) -> anyhow::Result<bool> {
                 "entity_id",
                 "entity_type",
                 "anchor_sequence",
+            ]
+            .as_slice(),
+        ),
+        (
+            "narrative_extraction_tasks",
+            "idx_narrative_tasks_run_kind_status",
+            ["run_id", "task_kind", "status"].as_slice(),
+        ),
+        (
+            "narrative_extraction_attempts",
+            "idx_narrative_attempts_task_number_status",
+            ["task_id", "attempt_number", "status"].as_slice(),
+        ),
+        (
+            "narrative_extraction_artifacts",
+            "idx_narrative_artifacts_run_task_attempt_kind",
+            [
+                "run_id",
+                "task_id",
+                "attempt_id",
+                "artifact_kind",
+                "payload_storage",
             ]
             .as_slice(),
         ),

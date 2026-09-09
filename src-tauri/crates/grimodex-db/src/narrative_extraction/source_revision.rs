@@ -31,9 +31,25 @@ pub(crate) fn resolve_source_revision(
             resolve_domain_projection(conn, project_id, source_key)
         }
         "codex-catalog" => resolve_codex_catalog(conn, project_id, source_key),
+        "scope-dependency-projection-v1" => ensure_non_empty_token(
+            super::scope_dependency_projection::resolve(conn, project_id, run_id, source_key)?,
+        ),
         "project-scope-authority" => {
             let authority = load_live_project_scope_authority(conn, project_id, source_key)?;
             ensure_non_empty_token(authority.source.revision_token)
+        }
+        super::nir1_chronicle_index::SOURCE_KIND => {
+            anyhow::ensure!(
+                source_key == super::nir1_chronicle_index::source::source_key(project_id),
+                "NEX_SOURCE_KEY_INVALID: eligibility Source must belong to the exact project"
+            );
+            let source = if conn.is_autocommit() {
+                let tx = conn.unchecked_transaction()?;
+                super::nir1_chronicle_index::source::read_eligibility_source(&tx, project_id)?
+            } else {
+                super::nir1_chronicle_index::source::read_eligibility_source(conn, project_id)?
+            };
+            ensure_non_empty_token(source.digest)
         }
         "narrative-artifact" => resolve_narrative_artifact(conn, project_id, source_key),
         "import-capture" => resolve_import_capture(conn, source_key),
@@ -85,8 +101,55 @@ pub(crate) fn resolve_current_source_state(
     source_kind: &str,
     source_key: &str,
 ) -> anyhow::Result<CurrentSourceState> {
-    let resolved = match resolve_source_revision(conn, project_id, run_id, source_kind, source_key)
-    {
+    current_source_state_from_resolution(
+        source_kind,
+        resolve_source_revision(conn, project_id, run_id, source_kind, source_key),
+    )
+}
+
+/// Only the bounded, read-only edge batch owns this temporary authority.
+/// Each versioned Scope Source still verifies its sealed Run/document binding.
+/// Do not retain this state between batches or across a write in the caller.
+pub(super) fn resolve_current_source_state_in_batch(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    source_kind: &str,
+    source_key: &str,
+    authority: &mut Option<
+        grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
+    >,
+) -> anyhow::Result<CurrentSourceState> {
+    anyhow::ensure!(!conn.is_autocommit(), "Source batch requires a transaction");
+    let resolved = if source_kind == "scope-dependency-projection-v1" {
+        (|| {
+            if authority.is_none() {
+                *authority = Some(load_live_project_scope_authority(
+                    conn,
+                    project_id,
+                    &format!("project:scope-authority:{project_id}"),
+                )?);
+            }
+            let authority = authority
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Scope batch authority unavailable"))?;
+            ensure_non_empty_token(
+                super::scope_dependency_projection::resolve_with_authority_in_tx(
+                    conn, project_id, run_id, source_key, authority,
+                )?,
+            )
+        })()
+    } else {
+        resolve_source_revision(conn, project_id, run_id, source_kind, source_key)
+    };
+    current_source_state_from_resolution(source_kind, resolved)
+}
+
+fn current_source_state_from_resolution(
+    source_kind: &str,
+    resolved: anyhow::Result<CurrentSourceRevision>,
+) -> anyhow::Result<CurrentSourceState> {
+    let resolved = match resolved {
         Ok(resolved) => resolved,
         Err(error) if is_source_missing_error(&error) => {
             return Ok(CurrentSourceState {
@@ -228,13 +291,14 @@ fn resolve_snapshot_document(
         "NEX_SOURCE_PROJECT_MISMATCH: snapshot source does not belong to prepared run"
     );
     let row: Option<(String, Option<String>)> = conn
-        .query_row(
+        .prepare_cached(
             "SELECT project_id, snapshot_digest
                FROM narrative_extraction_runs
               WHERE id = ?1",
-            params![snapshot_run_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        )?
+        .query_row(params![snapshot_run_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .optional()?;
     let Some((source_project_id, snapshot_digest)) = row else {
         anyhow::bail!("NEX_SOURCE_MISSING: snapshot run '{snapshot_run_id}' was not found");
@@ -265,13 +329,14 @@ fn resolve_scene_body(
             )
         })?;
     let row: Option<(i64, String)> = conn
-        .query_row(
+        .prepare_cached(
             "SELECT version, updated_at
                FROM tree_nodes
               WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
-            params![scene_id, project_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        )?
+        .query_row(params![scene_id, project_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .optional()?;
     let Some((version, updated_at)) = row else {
         anyhow::bail!("NEX_SOURCE_MISSING: scene '{scene_id}' was not found");

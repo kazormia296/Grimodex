@@ -28,6 +28,8 @@ default = []
 # Offline C2-ZC fixture generation is an explicitly opted-in support tool. It
 # must not be linked into Electron/N-API or other default production builds.
 c2zc-fixture-builder = []
+# Opt-in, read-only NIR-1 feasibility diagnostics; no product IPC or writers.
+nir1-material-diagnostics = []
 # CI-only failpoints for migration supervisor crash injection. Must never be
 # enabled in production / release Electron builds.
 test-failpoints = []
@@ -46,6 +48,16 @@ required-features = ["test-failpoints"]
 name = "c2zc-restore-fixture"
 path = "src/bin/c2zc-restore-fixture.rs"
 required-features = ["c2zc-fixture-builder"]
+
+[[bin]]
+name = "nir1-material-roster"
+path = "src/bin/nir1-material-roster.rs"
+required-features = ["nir1-material-diagnostics"]
+
+[[bin]]
+name = "nir1-disclosure-precheck"
+path = "src/bin/nir1-disclosure-precheck.rs"
+required-features = ["nir1-material-diagnostics"]
 
 [dev-dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }

@@ -1,0 +1,31 @@
+{
+  "version": "nir1-reviewed-child-cold-test/1",
+  "origin": "Standard production planner + existing local deterministic provider; UI secret-off; explicit current-child Human approval; cold reopen. No database rows or immutable seals altered.",
+  "generatedAt": "2026-09-08",
+  "uncompressedDatabaseSha256": "57a4911287359a9c2ffb975c659ee1884009144d2c9e28fdbfaa18a8e3606567",
+  "compressedDatabaseSha256": "67beade4fcbd45608239c310591819c5eb5bba8e2cfd7dd4e864798191a2e279",
+  "buildReceiptSha256": "e000210ccdc4587fa83ec60de2a2affbf4f74d8ebdd9f09c4875bfa422b1976b",
+  "producerRunnerSha256": {
+    "electron/scripts/nir1-reviewed-child-product-journey.mjs": "54a097957f8449fe6ff6bcbc87659941b02f00b23b50ea7f78a5f12a45ac51e3",
+    "electron/scripts/nir1-reviewed-child-evidence.mjs": "4a2830d0544567bae3a72389beddf82560093f4e62a5a1ddfe3f25c3d72bf431",
+    "scripts/nir1-reviewed-child-product-journey.test.mjs": "34f7e46c1ea33ed6312ad55746213bdef99bb027c4d677c1eccc3f1d0e4dc5a0"
+  },
+  "head": "9bb942de7f58d869e9d5de52fb49d9adc49e965b",
+  "projectId": "default-project",
+  "runId": "6ac293ec-5eeb-4066-97da-6b6658d7d346",
+  "s1": "3442cf86-0f80-41dd-92f1-2ccf0e088f02",
+  "s2": "200a3232-40be-4a95-8133-bf3c404a4d7b",
+  "rootRevisionIds": [
+    "955f9158-dd44-4b46-ba6d-b4bb14e8f1b1",
+    "752dfbbf-10cf-4844-8b3a-9e03d6053662"
+  ],
+  "revisionIds": [
+    "5e3b2277-f6f9-4702-9d16-6ed3ac73f375",
+    "0554881d-028d-495c-8486-08596855b5eb"
+  ],
+  "expectedMaterialCount": 9,
+  "expectedRequestCount": 2,
+  "membershipExpected": "complete",
+  "searchEligibility": "not-evaluated",
+  "diagnosticOnly": true
+}

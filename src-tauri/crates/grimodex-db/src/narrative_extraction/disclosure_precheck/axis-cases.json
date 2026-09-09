@@ -1,0 +1,150 @@
+[
+  {
+    "id": "auto-no-story-keys",
+    "scenes": [
+      {
+        "sceneId": "s1",
+        "rawStoryKey": null
+      },
+      {
+        "sceneId": "s2",
+        "rawStoryKey": null
+      }
+    ],
+    "mode": "auto",
+    "s2": "s2",
+    "expected": {
+      "axisUsed": "reading",
+      "fallbackReason": "auto-incomplete-story-coverage"
+    }
+  },
+  {
+    "id": "reading-no-story-keys",
+    "scenes": [
+      {
+        "sceneId": "s1",
+        "rawStoryKey": null
+      },
+      {
+        "sceneId": "s2",
+        "rawStoryKey": null
+      }
+    ],
+    "mode": "reading",
+    "s2": "s2",
+    "expected": {
+      "axisUsed": "reading",
+      "fallbackReason": null
+    }
+  },
+  {
+    "id": "story-unresolved-current",
+    "scenes": [
+      {
+        "sceneId": "s1",
+        "rawStoryKey": null
+      },
+      {
+        "sceneId": "s2",
+        "rawStoryKey": null
+      }
+    ],
+    "mode": "story",
+    "s2": "s2",
+    "expected": {
+      "axisUsed": "reading",
+      "fallbackReason": "story-current-unresolved"
+    }
+  },
+  {
+    "id": "auto-complete-reversed-story",
+    "scenes": [
+      {
+        "sceneId": "s1",
+        "rawStoryKey": "a1"
+      },
+      {
+        "sceneId": "s2",
+        "rawStoryKey": "a0"
+      }
+    ],
+    "mode": "auto",
+    "s2": "s2",
+    "expected": {
+      "axisUsed": "story",
+      "fallbackReason": null
+    }
+  },
+  {
+    "id": "auto-partial-coverage",
+    "scenes": [
+      {
+        "sceneId": "s1",
+        "rawStoryKey": "a0"
+      },
+      {
+        "sceneId": "s2",
+        "rawStoryKey": null
+      }
+    ],
+    "mode": "auto",
+    "s2": "s2",
+    "expected": {
+      "axisUsed": "reading",
+      "fallbackReason": "auto-incomplete-story-coverage"
+    }
+  },
+  {
+    "id": "story-inherited-current",
+    "scenes": [
+      {
+        "sceneId": "s1",
+        "rawStoryKey": "a0"
+      },
+      {
+        "sceneId": "s2",
+        "rawStoryKey": null
+      }
+    ],
+    "mode": "story",
+    "s2": "s2",
+    "expected": {
+      "axisUsed": "story",
+      "fallbackReason": null
+    }
+  },
+  {
+    "id": "missing-s2",
+    "scenes": [
+      {
+        "sceneId": "s1",
+        "rawStoryKey": null
+      }
+    ],
+    "mode": "auto",
+    "s2": "s2",
+    "expected": {
+      "axisUsed": null,
+      "fallbackReason": "current-scene-missing"
+    }
+  },
+  {
+    "id": "auto-duplicate-story-keys-retains-ts-axis-not-authority-rank",
+    "scenes": [
+      {
+        "sceneId": "s1",
+        "rawStoryKey": "a0"
+      },
+      {
+        "sceneId": "s2",
+        "rawStoryKey": "a0"
+      }
+    ],
+    "mode": "auto",
+    "s2": "s2",
+    "expected": {
+      "axisUsed": "story",
+      "fallbackReason": null
+    }
+  }
+]

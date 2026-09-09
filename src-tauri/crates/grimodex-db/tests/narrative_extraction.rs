@@ -4510,7 +4510,7 @@ fn revise_and_decide_rejects_stale_expected_current_revision() {
 
 #[test]
 fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
-    let db = test_db();
+    let db = migrated_db();
     create_run_with_task(&db, "run-review-bundle", "task-review-bundle");
 
     let claim = claim_with_owner(&db, "run-review-bundle", "worker-bundle", 120);

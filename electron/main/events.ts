@@ -19,6 +19,12 @@ import {
   isAllowedRendererEventChannel,
 } from "../shared/ipcContract.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
+import {
+  isRelatedScenesInvalidatedEvent,
+  isRelatedScenesIndexReadyEvent,
+  RELATED_SCENES_INVALIDATED_EVENT,
+  RELATED_SCENES_INDEX_READY_EVENT,
+} from "../shared/relatedScenesSearchWire.js";
 
 /** Native completion signal consumed by main only; never broadcast to a window. */
 export const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT =
@@ -138,6 +144,14 @@ function handleBackendEvent(
       // ベストエフォート契約 — 生文字列のまま流し、原因調査は warn に頼る）。
       console.warn(`[backend:event] non-JSON payload on ${channel}`);
     }
+  }
+  if (channel === RELATED_SCENES_INVALIDATED_EVENT && !isRelatedScenesInvalidatedEvent(payload)) {
+    console.warn("[backend:event] invalid related-scenes invalidation payload");
+    return;
+  }
+  if (channel === RELATED_SCENES_INDEX_READY_EVENT && !isRelatedScenesIndexReadyEvent(payload)) {
+    console.warn("[backend:event] invalid related-scenes index readiness payload");
+    return;
   }
   try {
     observer?.(channel, payload);

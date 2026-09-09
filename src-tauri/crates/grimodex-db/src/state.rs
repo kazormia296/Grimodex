@@ -23,17 +23,25 @@ pub struct WorkspaceAuthority {
     path: PathBuf,
     lease: WorkspaceLease,
     identity: u64,
+    nir_chronicle_index:
+        crate::narrative_extraction::nir1_chronicle_index::NirChronicleIndexRuntime,
 }
 
 static NEXT_WORKSPACE_AUTHORITY_ID: AtomicU64 = AtomicU64::new(1);
 
 impl WorkspaceAuthority {
     pub fn new(db: Database, path: PathBuf, lease: WorkspaceLease) -> Self {
+        let identity = NEXT_WORKSPACE_AUTHORITY_ID.fetch_add(1, Ordering::Relaxed);
+        let nir_chronicle_index =
+            crate::narrative_extraction::nir1_chronicle_index::NirChronicleIndexRuntime::new(
+                &db, identity,
+            );
         Self {
             db,
             path,
             lease,
-            identity: NEXT_WORKSPACE_AUTHORITY_ID.fetch_add(1, Ordering::Relaxed),
+            identity,
+            nir_chronicle_index,
         }
     }
 
@@ -54,6 +62,12 @@ impl WorkspaceAuthority {
     /// replaces the previous authority.
     pub fn identity(&self) -> u64 {
         self.identity
+    }
+
+    pub fn nir_chronicle_index_runtime(
+        &self,
+    ) -> &crate::narrative_extraction::nir1_chronicle_index::NirChronicleIndexRuntime {
+        &self.nir_chronicle_index
     }
 
     /// Build authority for tests / fixtures (acquires a shared lease on `path`).

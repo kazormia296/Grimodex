@@ -557,6 +557,21 @@ impl Database {
         let conn = self.lock_conn()?;
         f(&conn)
     }
+
+    /// Read several Native observations from one SQLite snapshot. The shell
+    /// need not depend directly on rusqlite to compose canonical readers.
+    /// Errors drop/roll back the transaction before releasing the DB lock.
+    pub fn with_read_transaction<T, F>(&self, f: F) -> anyhow::Result<T>
+    where
+        F: FnOnce(&Connection) -> anyhow::Result<T>,
+    {
+        self.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let value = f(&tx)?;
+            tx.commit()?;
+            Ok(value)
+        })
+    }
 }
 
 pub mod agent_writes;

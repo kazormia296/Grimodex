@@ -467,6 +467,12 @@ evaluations remain explicitly deferred and were not counted as passing evidence.
 
 **State:** Planned — Ready; C2-ZC final acceptance is complete and NIR-1 implementation has not started
 
+Integrated execution and approval draft:
+[NIR-1 統合実装計画](narrative-ir-nir1-implementation-plan.md). It carries forward
+the completed membership, Adapter-fixture and diagnostic-policy evidence, and
+orders normal-operation reachability, Related Scenes, Graph and Context Packing
+without treating diagnostic approval as product activation.
+
 NIR-1's start condition is satisfied by the recorded C2-ZC product journey,
 clean Full CI with receipt verification, and Sol final, with the complete
 Verify set at production coverage 13/13 and the reserved Semantic Index

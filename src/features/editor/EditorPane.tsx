@@ -215,6 +215,8 @@ import {
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
+import { useNir1EvidenceNavigation } from "@/features/related-scenes/useNir1EvidenceNavigation";
+import { hasPendingNir1EvidenceNavigation } from "@/features/related-scenes/nir1EvidenceNavigation";
 import {
   AlreadyNotifiedSaveError,
   INLINE_AI_SAVE_BLOCKED_MESSAGE,
@@ -1642,6 +1644,29 @@ export function EditorPane({
       prevSceneIdRef.current === navigationSceneId,
     applyJump: applySemanticJump,
   });
+  useNir1EvidenceNavigation({
+    editor,
+    sceneId: navigationSceneId,
+    ready:
+      Boolean(editor) &&
+      !isSceneContentLoading &&
+      prevSceneIdRef.current === navigationSceneId,
+    captureState: () => {
+      const currentEditor = editorRef.current;
+      const key = loadedDocumentKeyRef.current;
+      if (!currentEditor || currentEditor.isDestroyed || !key) return null;
+      return {
+        editor: currentEditor,
+        documentKey: encodeDocumentKey(key),
+        loadToken: key,
+        saveSnapshot: mutationGate.captureSave(),
+        isDirty: isDirtyRef.current,
+      };
+    },
+    beforeSelection: () => {
+      pendingCursorRestoreRef.current = null;
+    },
+  });
 
   const focusLoadedEditor = useCallback(() => {
     editorRef.current?.chain().focus().run();
@@ -2423,7 +2448,11 @@ export function EditorPane({
         const fJump = useForeshadowNavStore.getState().consumeJump(nodeId);
         const sJumpRaw = useSemanticNavStore.getState().consumeJump(nodeId);
         const sJump = fJump ? null : sJumpRaw;
-        if (fJump && !cancelled) {
+        if (hasPendingNir1EvidenceNavigation(nodeId)) {
+          // The NIR consumer requalifies after this load commits. Do not queue
+          // a saved cursor or a Raw-prefix jump over its final selection.
+          pendingCursorRestoreRef.current = null;
+        } else if (fJump && !cancelled) {
           requestAnimationFrame(() => {
             if (cancelled) return;
             const ed = editorRef.current;

@@ -278,6 +278,19 @@ requirements:
     title: Answers and prompts preserve current, attributable grounding.
     definedIn: policies/quality/iron-laws.md#GDX-GROUND-001
     implementedBy:
+      - evals/nir1-retrieval/manifest.json
+      - policies/narrative/nir1-related-scenes-ranking.json
+      - evals/nir1-retrieval/ranking-candidate-v2.json
+      - evals/nir1-retrieval/recovery-workload-v2.json
+      - evals/nir1-retrieval/acceptance-policy-v2.json
+      - scripts/quality/nir1-retrieval/acceptance-policy.mjs
+      - scripts/quality/nir1-retrieval/candidate-policy.mjs
+      - scripts/quality/nir1-retrieval/recovery-workload.mjs
+      - evals/nir1-retrieval/corpus.json
+      - scripts/quality/nir1-retrieval/contract.mjs
+      - scripts/quality/nir1-retrieval/paired.mjs
+      - scripts/quality/nir1-retrieval/renderer.ts
+      - scripts/quality/validate-nir1-retrieval.mjs
       - src/features/chat/citationVerify.ts
       - src/features/chat/chatRecall.ts
       - src/features/chat/context/chatContextPlanner.ts
@@ -299,6 +312,9 @@ requirements:
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
       - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
+      - scripts/quality/nir1-retrieval/contract.test.mjs
+      - scripts/quality/nir1-retrieval/candidate-policy.test.mjs
+      - scripts/quality/validate-nir1-retrieval.mjs
       - src/features/chat/citationVerify.test.ts
       - src/features/chat/chatRecall.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
@@ -313,6 +329,7 @@ requirements:
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
     heavyTests:
+      - scripts/quality/run-nir1-retrieval.mjs
       - src/features/related-scenes/liveEval/relatedScenesLive.eval.test.ts
       - scripts/quality/run-related-scenes-heavy.mjs
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/reranker_gate2_runner.py
@@ -936,6 +953,10 @@ requirements:
       - eval-route-search-scenes
       - eval-narrative-runtime-authority-fail-closed
 heavyEvaluations:
+  - id: heavy-nir1-raw-retrieval-baseline
+    suiteId: retrieval-grounding
+    command: node scripts/quality/run-nir1-retrieval.mjs
+    reason: Actual Electron Raw baseline only; requires independently frozen NIR-1 expectations, the pinned local ja/en ONNX artifacts in NIR1_JA_MODEL/NIR1_EN_MODEL, standard build receipt in NIR1_BUILD_RECEIPT, and a display. Missing prerequisites are blocked; this does not accept IR, Graph, Packing or author value.
   - id: heavy-c2-5b-narrative-maintenance-product-journeys
     suiteId: narrative-runtime
     command: GRIMODEX_PRODUCT_JOURNEY_SET=c2-5b pnpm electron:product-journeys

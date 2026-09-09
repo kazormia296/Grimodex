@@ -42,6 +42,7 @@ pub(crate) fn create_epoch_in_tx(
         "NEX_SEMANTIC_EPOCH_REASON_INVALID: reason '{reason}' is not a recognized semantic epoch reason"
     );
 
+    super::nir1_chronicle_index::invalidate::suspend_project_in_tx(conn, project_id)?;
     let epoch_number: i64 = conn.query_row(
         "SELECT COALESCE(MAX(epoch_number), -1) + 1
            FROM narrative_semantic_epochs

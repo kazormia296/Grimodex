@@ -34,6 +34,7 @@ mod maintenance_lifecycle;
 pub mod maintenance_route_registry;
 pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
+pub mod nir1_chronicle_index;
 pub use declaration_storage::{
     read_active_dependency_declaration_set, verify_dependency_declaration_storage,
     write_dependency_declaration_set, write_dependency_declaration_set_in_tx,
@@ -56,6 +57,16 @@ pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 mod human_derivation;
 pub mod human_material_basis;
 mod human_materialization;
+mod material_membership;
+mod material_membership_root;
+pub use material_membership::{
+    read_revision_material_membership, MaterialMembershipRead, RevisionMaterialMembership,
+    VerifiedMaterialRevision,
+};
+pub use material_membership_root::{
+    Material, RequestDigests, RequestProof, RosterIssue, RosterStatus, VerifiedArtifact,
+    VerifiedReceipt,
+};
 mod models;
 mod phase_operations;
 mod phase_snapshots;
@@ -63,9 +74,25 @@ mod phase_undo;
 mod plot_thread_operations;
 mod plot_thread_undo;
 mod project_scope_authority;
+mod scope_dependency_projection;
 mod publish_runtime;
 mod reconciliation_envelope;
 mod repair;
+mod retrieval_admission;
+pub use retrieval_admission::{
+    read_retrieval_query_context, read_retrieval_scene_source, read_revision_retrieval_eligibility,
+    ChronicleRetrievalDocument, QueryIdentityState, RetrievalQueryContext,
+    RetrievalQueryContextRead, RetrievalSceneSource, RetrievalSceneSourceBinding,
+    RetrievalSceneSourceRead, RevisionEligibilityRead, RevisionEligibilityReason,
+    RevisionEligibilitySnapshot,
+};
+mod revision_eligibility;
+pub use revision_eligibility::{
+    read_revision_canonical_freshness, RevisionFreshnessRead, RevisionFreshnessReason,
+    RevisionFreshnessSnapshot,
+};
+#[cfg(feature = "nir1-material-diagnostics")]
+pub mod material_roster;
 mod repository;
 mod restore_rebuild;
 mod scope_authority_runtime;
@@ -83,8 +110,8 @@ mod temporal_snapshots;
 mod temporal_undo;
 mod terminal_failure;
 mod undo;
-mod verify_coverage;
 mod v2_apply_sources;
+mod verify_coverage;
 
 pub(crate) const INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID: &str =
     "narrative-incremental-freshness/v1";
@@ -861,3 +888,9 @@ pub fn temporal_scene_patch(
         }
     })
 }
+
+#[cfg(feature = "nir1-material-diagnostics")]
+pub mod disclosure_precheck;
+
+#[cfg(feature = "nir1-material-diagnostics")]
+pub mod disclosure_policy;

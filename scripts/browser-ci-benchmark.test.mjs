@@ -218,6 +218,13 @@ test("measureCommand observes a child that exits during the initial sample", asy
 
 const fakeChild = (pid, kill) =>
   Object.assign(new EventEmitter(), { pid, kill });
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
 const linuxRuntime = (pid, readProcRecords = async () => []) => ({
   platform: "linux",
   readIdentity: async () => ({
@@ -281,6 +288,7 @@ test("early SIGINT settles rootless Linux cleanup and preserves the requested si
     throw new Error("rootless child must not receive a direct signal");
   });
   const signals = [];
+  const identityStarted = deferred();
   const started = Date.now();
   const resultPromise = measureCommand(process.execPath, ["-e", ""], {
     timeoutMs: 200,
@@ -291,11 +299,17 @@ test("early SIGINT settles rootless Linux cleanup and preserves the requested si
     runtime: {
       platform: "linux",
       cleanupTimeoutMs: 40,
-      readIdentity: async () => new Promise(() => {}),
+      readIdentity: async () => {
+        identityStarted.resolve();
+        return new Promise(() => {});
+      },
       readProcRecords: async () => [],
     },
   });
-  setImmediate(() => process.emit("SIGINT"));
+  // The identity read starts after signal listeners are installed.
+  await identityStarted.promise;
+  assert.equal(process.emit("SIGINT"), true);
+  assert.deepEqual(signals, []);
 
   const result = await resultPromise;
   assert.ok(Date.now() - started < 500);
@@ -317,6 +331,8 @@ test("early SIGINT waits for a delayed verified identity before group cleanup", 
     throw new Error("verified Linux cleanup must use the process group");
   });
   const signals = [];
+  const identityStarted = deferred();
+  const identityReady = deferred();
   const resultPromise = measureCommand(process.execPath, ["-e", ""], {
     timeoutMs: 200,
     stdio: "ignore",
@@ -327,7 +343,8 @@ test("early SIGINT waits for a delayed verified identity before group cleanup", 
       platform: "linux",
       cleanupTimeoutMs: 40,
       readIdentity: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        identityStarted.resolve();
+        await identityReady.promise;
         return {
           state: "alive",
           identity: { pid: child.pid, startTimeTicks: 7 },
@@ -337,7 +354,10 @@ test("early SIGINT waits for a delayed verified identity before group cleanup", 
       readProcRecords: async () => [],
     },
   });
-  setImmediate(() => process.emit("SIGINT"));
+  await identityStarted.promise;
+  assert.equal(process.emit("SIGINT"), true);
+  assert.deepEqual(signals, []);
+  identityReady.resolve();
 
   const result = await resultPromise;
   assert.equal(result.exitCode, 1);

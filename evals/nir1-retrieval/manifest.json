@@ -1,0 +1,259 @@
+{
+  "schemaVersion": "nir1-retrieval/1",
+  "status": "draft-awaiting-independent-expectation-review",
+  "scope": "L0-L5 first Related Scenes product path; not Graph, Packing, general retrieval quality or author value acceptance",
+  "canonicalPlan": "docs/plans/narrative-ir-nir1-implementation-plan.md#7-実装前に固定する品質期待値と早期比較",
+  "requirements": [
+    "GDX-GROUND-001",
+    "GDX-POLICY-001",
+    "GDX-ISOLATION-001",
+    "GDX-TRACE-001"
+  ],
+  "corpus": "evals/nir1-retrieval/corpus.json",
+  "goldOrigin": "design-expectations; independent pre-retrieval review; not human author measurements",
+  "isolation": "Every case receives a fresh workspace and project with its language corpus and only its own current S2. No query history, generated artifact, or decision is shared between cases. Raw and hybrid use equivalent sealed setup snapshots; no semantic re-extraction during comparison.",
+  "models": {
+    "ja": {
+      "modelId": "cl-nagoya/ruri-v3-30m@local/model_int8.onnx/prefix-v1",
+      "directory": "ruri-v3-30m",
+      "artifactSha256": "946ae837c9cd3f78baf93af541e77facec62d31049921d7c00fbcb57b4610bcf",
+      "tokenizerSha256": "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062",
+      "dimensions": 256,
+      "queryPrefix": "検索クエリ: ",
+      "documentPrefix": "検索文書: ",
+      "pooling": "MeanWithMask",
+      "maxSequenceLength": 8192,
+      "chunkerVersion": "semantic-prose-chunker-v1",
+      "gateScore": 0.85
+    },
+    "en": {
+      "modelId": "BAAI/bge-small-en-v1.5@local/model_int8.onnx/en-v1",
+      "directory": "bge-small-en-v15",
+      "artifactSha256": "4f1831710bec8904589cf50c58ad4d9ed3e66386f4973173c13f1e9d3ae8e44b",
+      "tokenizerSha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+      "dimensions": 384,
+      "queryPrefix": "",
+      "documentPrefix": "",
+      "pooling": "Cls",
+      "maxSequenceLength": 512,
+      "chunkerVersion": "semantic-prose-chunker-en-v1",
+      "gateScore": 0.51
+    }
+  },
+  "rawRoute": {
+    "entry": "src/features/related-scenes/fetchRelatedScenes.ts#fetchRelatedPastScenes",
+    "selector": "src/features/related-scenes/selectRelatedScenes.ts#selectRelatedPastScenes",
+    "dense": "Native semanticSearch with production chunker, prefix, audit and model; top 30 chunks before production selector",
+    "sparse": "Native ftsSearch(project, buildSparseQuery(tail, fullBody), scenes, 10); no trigram surrogate",
+    "queryTailUtf16Units": 500,
+    "denseLimit": 30,
+    "sparseLimit": 10,
+    "maxScenes": 8,
+    "rescueMargin": 0.05,
+    "relativeGap": 0.05,
+    "rrfK": 60,
+    "winnerAnchor": "Preserve the actual production confident dense winner; no inferred anchor when Raw did not anchor one.",
+    "fallbackEquality": [
+      "membership",
+      "order",
+      "score",
+      "sceneTitle",
+      "chunkText"
+    ]
+  },
+  "irRoute": {
+    "serializer": "chronicle-semantic-retrieval/1",
+    "serializerKeysInOrder": [
+      "summary",
+      "actuality",
+      "attribution",
+      "narrativeFrame"
+    ],
+    "serializerEncoding": "compact UTF-8 JSON; JSON escaping only; no mutable title/note substitution",
+    "sourceOfInterpretationSeed": "Design-expected semantic content for fixture creation through normal extraction/explicit approval. Seeds are not persisted authority, accepted runtime outputs, or a completed extraction-quality result.",
+    "admission": "Whole-material disclosure, current explicit approval, usable canonical Revision and Index Freshness, Evidence and sealed generation/roster identity before cosine/ranking/cap.",
+    "floor": "same frozen production language gateScore",
+    "fusion": "scene max cosine; equal-weight RRF Raw+IR, per-list scene once; actual Raw confident winner stays first; cap 8",
+    "bindingCapture": [
+      "workspace",
+      "project",
+      "query S2",
+      "revision",
+      "envelope",
+      "decision",
+      "canonical epoch",
+      "dependency",
+      "Freshness",
+      "eligibility roster",
+      "generation",
+      "Evidence source token",
+      "serializer digest",
+      "model digest"
+    ],
+    "unimplementedCaptureIs": "blocked, never invented or supplied by Gold"
+  },
+  "quality": {
+    "positiveQueryCount": 24,
+    "semanticQueryCount": 12,
+    "rawProseQueryCount": 12,
+    "languageCounts": {
+      "ja": 12,
+      "en": 12
+    },
+    "forbiddenCaseCount": 10,
+    "k": 8,
+    "relevanceGrades": [0, 1, 2, 3],
+    "recall": "Number of returned scenes with grade > 0 divided by all eligible scenes with grade > 0; unique scene IDs; missing results remain misses.",
+    "ndcg": "DCG sum((2^grade-1)/log2(rank1+1)) divided by ideal eligible descending-grade DCG at 8.",
+    "aggregation": "Unweighted query macro for all, semantic, raw-prose, ja and en; zero-positive safety cases excluded and reported separately.",
+    "required": {
+      "macroAndEachGroupRecallDeltaMin": 0,
+      "macroAndEachGroupNdcgDeltaMin": 0,
+      "predeclaredIrBenefitRankImprovementsMin": 1,
+      "requiredRawPassageRetention": 1,
+      "returnedIrEvidenceBindingValidity": 1,
+      "forbiddenIrCandidateScoreSlotExcerptPackedViolationsMax": 0,
+      "forbiddenCasesMustAllPass": true,
+      "top1Regressions": "report individually; no aggregate concealment",
+      "allIrUnavailableRawTie": "HOLD"
+    }
+  },
+  "performance": {
+    "clock": "monotonic performance.now in the actual Electron renderer for query times; monotonic host clock for process/build/recovery with explicit clock ownership",
+    "queryMilestones": {
+      "t_fetch": "Immediately before calling actual fetchRelatedPastScenes; includes saved scene loading, query preparation, IPC/DB, audit, embedding, retrieval, disclosure and final selection.",
+      "t_snapshot": "The backend's consistent query/profile/Index admission snapshot; usability fixed here for timeout denominator.",
+      "t_raw_ready": "Same query Raw R is complete; IR extra-wait D begins here, even when IR work started in parallel.",
+      "t_return": "Final safe result resolves for that query. Late IR never modifies this result.",
+      "debounceAndPaint": "Separate diagnostic values; excluded from B."
+    },
+    "warm": {
+      "warmupsPerQueryPerArm": 5,
+      "measuredRunsPerQueryPerArm": 30,
+      "callsPerArm": 720,
+      "order": "Pair Raw/hybrid runs per query, alternating AB/BA by repetition; Raw pre-IR baseline follows same fixed query order and is remeasured unchanged with hybrid later.",
+      "percentile": "nearest-rank sorted[ceil(p*N)-1]; pooled equal query counts",
+      "B": "Raw-only p95(t_return-t_fetch), actual Electron IPC route only",
+      "D": "min(100ms, 0.20*B)",
+      "hybridP95Limit": "B+D",
+      "failureHandling": "Keep every scheduled call. Raw/transport failure, query transport timeout or absence of a completed safe result prevents a pass. An IR deadline with timely exact Raw is completed-safe-fallback: retain its full latency and count its IR timeout against the fixed <=1% denominator. Report finite latency separately without dropping failed calls.",
+      "timeoutDenominator": "Every call whose immutable t_snapshot has usable Index and supported query/profile, including calls later invalidated/cancelled/timed out.",
+      "timeoutNumerator": "Those denominator calls that exceed the IR extra-wait deadline and return Raw for timeout; cancellation/invalidation also reported separately.",
+      "timeoutRateMax": 0.01,
+      "availabilityDenominator": "Every scheduled query, including unsupported, stale, unknown, failed, cancelled and timeout calls.",
+      "availabilityReport": [
+        "IR usable",
+        "IR contributed",
+        "fallback",
+        "timeout",
+        "cancelled",
+        "invalidated",
+        "error",
+        "suspended duration",
+        "affected queries"
+      ]
+    },
+    "build": {
+      "independentFreshDbTrials": 5,
+      "start": "After model load and workspace open/replay, immediately before the production full-build request in a fresh DB with no reusable vectors/index.",
+      "rawEnd": "All expected Raw chunks persisted and actual production query probes can search them.",
+      "combinedEnd": "rawEnd plus usable Revision and Index canonical Freshness, matching sealed generation/roster, no relevant pending Feed, and actual IR query probes.",
+      "T": "Median of five Raw full-build trial durations on the same frozen corpus/model/host.",
+      "combinedLimit": "Median of five combined trials <= 2*T.",
+      "separate": [
+        "model cold load",
+        "workspace migration/open",
+        "no-op rebuild",
+        "restore",
+        "cold process startup"
+      ]
+    },
+    "recovery": {
+      "currentRevisions": 100,
+      "independentRestoredTrialsPerMutationClass": 100,
+      "start": "Committed mutation acknowledgement (after COMMIT), not task dispatch or worker pickup.",
+      "end": "First actual expected query probe with latest sealed generation/roster, processed relevant Feed, correct Revision/Index canonical qualification and observed invalidation of old UI result.",
+      "automaticP95LimitMs": 2000,
+      "terminals": [
+        "usable-included",
+        "usable-excluded",
+        "legitimately-pending"
+      ],
+      "workloads": [
+        {
+          "id": "source-edit",
+          "mutation": "Edit one supporting source text through its canonical writer.",
+          "terminal": "usable-excluded",
+          "expected": "Old Revision stays stale and is excluded; remaining eligible roster and Raw are usable; old visible result revoked."
+        },
+        {
+          "id": "approval-withdrawal",
+          "mutation": "Withdraw supported pre-Apply approval through Decision writer.",
+          "terminal": "usable-excluded",
+          "expected": "Withdrawn Revision stays unapproved/excluded; remaining eligible roster and Raw are usable; old visible result revoked."
+        },
+        {
+          "id": "new-approval",
+          "mutation": "Explicitly approve a fresh nonsecret current child with normal UI Decision.",
+          "terminal": "usable-included",
+          "expected": "Current child becomes discoverable with its own Decision; old parent remains excluded."
+        },
+        {
+          "id": "reading-order-change",
+          "mutation": "Move one supporting scene after S2 through canonical tree writer.",
+          "terminal": "usable-excluded",
+          "expected": "History-only material is denied at this S2; refreshed valid roster and Raw remain usable."
+        },
+        {
+          "id": "child-awaiting-approval",
+          "mutation": "Create current ScopeOverride child without a Decision.",
+          "terminal": "legitimately-pending",
+          "expected": "No inherited approval; report wait duration and Raw availability separately until explicit human approval."
+        }
+      ],
+      "denominator": "All predeclared automatic trials retain failures/timeouts. Legitimately-pending is predeclared only and never assigned after observing a slow or failing trial.",
+      "restore": "From restore publication entry or cold process launch through a current-epoch qualified query. Report separately; returning an old cache even once fails."
+    },
+    "hostCapture": [
+      "OS/kernel",
+      "CPU/model/count",
+      "RAM",
+      "Node/Electron/native artifact digests",
+      "model/tokenizer digests",
+      "process CPU/I/O",
+      "device/PSI",
+      "concurrent load",
+      "audit settings",
+      "cold/warm state"
+    ],
+    "budgetsFile": "Generated baseline receipt binds measured B/T and computed D to this frozen manifest, corpus, candidate and artifacts; values are not estimated."
+  },
+  "authorMeasurement": {
+    "status": "not-measured",
+    "technicalAcceptance": "separate",
+    "protocol": "Blinded, alternating-order same find-and-verify-Evidence tasks; median manual confirmation time <= Raw; wrong-Evidence confirmation count 0.",
+    "automationIsNotSubstitute": true
+  },
+  "evidenceBoundary": {
+    "localOnly": true,
+    "allowPinnedModelArtifactAcquisition": true,
+    "sendFixtureManuscriptOrCredentialsExternally": false,
+    "existingLockedRerankerHoldoutUsed": false,
+    "artificialVectorsAsQualityProof": false,
+    "rawOnlyReceipt": "baseline-complete or blocked; cannot award hybrid product acceptance",
+    "nativeOnlyLatency": "component-diagnostic; cannot fix B",
+    "missingModelOrRoute": "blocked",
+    "qualityFailure": "HOLD; keep fixed Gold, thresholds and original report"
+  },
+  "fixtureGeneration": {
+    "rawSetup": "Use isolated workspace per query and canonical typed project/tree writers to persist all source scenes and only that query S2. Read the persisted content and ordering back before measurements.",
+    "irSetup": "Use the existing registered deterministic local fixture provider through actual production Chronicle prompt planner, observation/synthesis parser and Adapter before first Proposal persistence. Extend its synthetic output mapping for this corpus as required; use request-bound evidenceRef IDs supplied by the real prompt, never invented receipts.",
+    "childSetup": "After initial persistence, use normal UI Disclosure/ScopeOverride to create a nonsecret current child and projection-only edit if applicable, then explicitly approve that current child through its own Decision. Parent approval never substitutes.",
+    "forbiddenWrites": "No post-persistence SQL rewrite, injection of semantic payload or materials, re-signing envelopes, or promotion of the old diagnostic fixture to a product positive.",
+    "actualityContract": "All positive interpretation seeds describe actual observable events. rumor-only is the actual act of a traveller uttering an unverified allegation; the alleged fort sale remains unconfirmed by that Evidence. A dreamed event stays Raw-only in this initial profile.",
+    "materialContract": "Keep all actual prompt materials in the bound recipe. Disable optional story inputs only through real planner settings; never omit them from replay or disclosure. Use the approved one-window/no-repair/identity-merge recipe.",
+    "qualificationCapture": "Generated runtime revision/envelope/decision/epoch/dependency/Freshness/generation identities belong to setup receipts linked to frozen source/query hashes. They are not invented inside Gold.",
+    "failure": "If the current planner/provider cannot create a positive through this route, mark setup blocked and fix its in-scope fixture provider mapping; do not bypass production guards or weaken the expected semantic meaning.",
+    "negativeIsolation": "First 8 deny cases produce only target IR; other corpus scenes are Raw-only. Additional mixed cases retain eligible IR and compare allowed contributions against an allowed-only IR control with identical Raw content."
+  }
+}

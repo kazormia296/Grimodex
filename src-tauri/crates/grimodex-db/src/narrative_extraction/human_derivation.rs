@@ -320,7 +320,7 @@ pub(crate) fn create_human_derived_revision_in_tx_with_authorities(
     }))
 }
 
-fn canonical_human_changed_paths(paths: &[String]) -> Vec<String> {
+pub(crate) fn canonical_human_changed_paths(paths: &[String]) -> Vec<String> {
     let mut paths = paths.to_vec();
     paths.sort_by_key(|path| match path.as_str() {
         "/title" => 0,
@@ -517,7 +517,9 @@ fn build_human_envelope(
         if let Some(source) = trusted_material_basis
             .source_basis
             .iter()
-            .find(|source| source.source_kind == "project-scope-authority")
+            .find(|source| trusted_material_basis.dependency_set.iter().any(|dependency|
+                dependency.role == grimodex_core::narrative_dependency::DependencyRole::ScopeResolution
+                    && dependency.input_ref == source.source_key))
         {
             derivation_context.push(json!({
                 "contextId": "context:chronicle-scope-resolver",

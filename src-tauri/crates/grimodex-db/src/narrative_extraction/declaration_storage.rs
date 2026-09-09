@@ -455,6 +455,12 @@ pub fn write_dependency_declaration_set_in_tx(
         )?;
     }
 
+    super::nir1_chronicle_index::invalidate::suspend_current_revision_in_tx(
+        conn,
+        &request.project_id,
+        &request.consumer_kind,
+        &request.consumer_key,
+    )?;
     Ok(DependencyDeclarationSetReceipt {
         declaration_set_id,
         state: DependencyDeclarationSetState::Sealed,
@@ -751,6 +757,10 @@ fn load_verified_set_by_id(
 
     let mut digest_entries = Vec::with_capacity(entries.len());
     let mut seen = HashSet::new();
+    // Reuse only an identical selector tuple in this one read snapshot.
+    // Entry identity, ownership and the complete set digest are still checked
+    // for every row; no verdict survives this function or a DB mutation.
+    let mut verified_selectors = HashSet::new();
     for entry in &entries {
         if entry.declaration_set_id != set.id
             || entry.role_contract_version != DEPENDENCY_ROLE_CONTRACT_VERSION
@@ -764,27 +774,38 @@ fn load_verified_set_by_id(
         {
             return Ok(None);
         }
-        let selector_value: serde_json::Value = match serde_json::from_str(&entry.selector_json) {
-            Ok(value) => value,
-            Err(_) => return Ok(None),
-        };
-        let selector = match grimodex_core::narrative_dependency::validate_dependency_selector_value(
-            &selector_value,
-            None,
-        ) {
-            Ok(selector) => selector,
-            Err(_) => return Ok(None),
-        };
-        let canonical_selector = match canonicalize_dependency_selector(&selector) {
-            Ok(value) => value,
-            Err(_) => return Ok(None),
-        };
-        if canonical_selector != entry.selector_json
-            || digest_string(&canonical_selector) != entry.selector_digest
-            || compute_dependency_key(entry.dependency_role.as_str(), &selector).ok()
-                != Some(entry.dependency_key.clone())
-        {
-            return Ok(None);
+        let selector_binding = (
+            entry.dependency_role.as_str(),
+            entry.selector_json.as_str(),
+            entry.selector_digest.as_str(),
+            entry.dependency_key.as_str(),
+        );
+        if !verified_selectors.contains(&selector_binding) {
+            let selector_value: serde_json::Value = match serde_json::from_str(&entry.selector_json)
+            {
+                Ok(value) => value,
+                Err(_) => return Ok(None),
+            };
+            let selector =
+                match grimodex_core::narrative_dependency::validate_dependency_selector_value(
+                    &selector_value,
+                    None,
+                ) {
+                    Ok(selector) => selector,
+                    Err(_) => return Ok(None),
+                };
+            let canonical_selector = match canonicalize_dependency_selector(&selector) {
+                Ok(value) => value,
+                Err(_) => return Ok(None),
+            };
+            if canonical_selector != entry.selector_json
+                || digest_string(&canonical_selector) != entry.selector_digest
+                || compute_dependency_key(entry.dependency_role.as_str(), &selector).ok()
+                    != Some(entry.dependency_key.clone())
+            {
+                return Ok(None);
+            }
+            verified_selectors.insert(selector_binding);
         }
         digest_entries.push(DependencySetDigestEntry {
             source_object_identity: entry.source_object_identity.clone(),

@@ -512,6 +512,12 @@ export declare class Backend {
    * 返り値: camelCase `CodexCandidate[]` の JSON 文字列。
    */
   extractCodexCandidates(projectId: string, minCount?: number | undefined | null): Promise<string>
+  relatedScenesBegin(payload: any): Promise<string>
+  relatedScenesContinue(ownerKey: string, operationTicket: string): Promise<string>
+  relatedScenesRelease(ownerKey: string, operationTicket: string): Promise<string>
+  relatedScenesReleaseOwner(ownerKey: string): Promise<string>
+  relatedScenesReconcile(): Promise<string>
+  nir1EvidenceQualify(ownerKey: string, navigationIdentity: string): Promise<string>
   /**
    * Rebuild可能なsemantic background indexingを協調停止する。
    * 4-cache epochをrotateし、既にpin済みのscene/bulk jobはitem/chunk境界で

@@ -118,7 +118,7 @@ contextId や inputRef、出力例のプレースホルダーは参照値では�
     '{"clusterRef":"<event-cluster-ref-from-context>","resolution":"single-event","events":[{"observationRefs":["<observation-localId-from-context>"],"titleSuggestion":"短いタイトル","summary":"要約","actuality":"actual","significance":"major"}]}',
 } as const;
 
-function buildSynthesisPromptArtifact(
+export function buildSynthesisPromptArtifact(
   input: RunEventSynthesisTaskInput,
 ): ChroniclePromptArtifact {
   const observationRows = input.observations.map((observation) => {

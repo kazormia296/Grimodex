@@ -4165,6 +4165,15 @@
     "slashMenuLabel": "Inline AI commands"
   },
   "relatedScenes": {
+    "rank": "Rank {{rank}}",
+    "approvedInterpretation": "Approved interpretation",
+    "fresh": "Sources checked",
+    "actuality": "Actuality",
+    "attribution": "Attribution",
+    "narrativeFrame": "Narrative frame",
+    "openEvidence": "Open supporting passage",
+    "irUnsupported": "Approved interpretations are unavailable for these reading conditions. Showing text search results.",
+    "irUnavailable": "Approved interpretations are currently unavailable. Showing text search results.",
     "noActiveScene": "Select a scene to see related earlier scenes.",
     "loading": "Searching…",
     "empty": "No related earlier scenes found.",

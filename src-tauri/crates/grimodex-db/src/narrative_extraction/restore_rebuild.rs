@@ -422,7 +422,11 @@ pub(crate) struct RebuildVerifyReport {
 /// the same as a missing Source (see its doc comment) rather than silently
 /// skipping the Edge.
 fn infer_source_kind(source_object_identity: &str) -> Option<&'static str> {
-    if source_object_identity.starts_with("project:scope-authority:") {
+    if source_object_identity.starts_with("project:nir1-chronicle-eligibility:") {
+        Some(super::nir1_chronicle_index::SOURCE_KIND)
+    } else if source_object_identity.starts_with("scope-dependency:v1:") {
+        Some("scope-dependency-projection-v1")
+    } else if source_object_identity.starts_with("project:scope-authority:") {
         Some("project-scope-authority")
     } else if source_object_identity.starts_with("project:scene:") {
         Some("scene-body")
@@ -580,6 +584,45 @@ pub(crate) fn evaluate_edge_from_db(
 ) -> anyhow::Result<EdgeObservation> {
     let input = build_edge_comparison_input(conn, project_id, run_id, edge)?;
     Ok(evaluate_edge(&input))
+}
+
+/// Evaluate a set whose Sources each name their own Run in one caller-owned
+/// SQLite snapshot. Only the current project authority is shared; every Source
+/// binding and comparison is verified. The authority cannot escape this call,
+/// and this loop performs no writes or callbacks between its reads.
+pub(crate) fn evaluate_owned_edges_from_db_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    edges: &[DependencyEdge],
+) -> anyhow::Result<Vec<EdgeObservation>> {
+    anyhow::ensure!(!conn.is_autocommit(), "Edge batch requires a transaction");
+    let mut authority = None;
+    edges
+        .iter()
+        .map(|edge| {
+            let run_id = edge.owning_run_id.as_deref().unwrap_or("");
+            let Some(source_kind) = infer_source_kind(&edge.source_object_identity) else {
+                return evaluate_edge_from_db(conn, project_id, run_id, edge);
+            };
+            let state = super::source_revision::resolve_current_source_state_in_batch(
+                conn,
+                project_id,
+                run_id,
+                source_kind,
+                &edge.source_object_identity,
+                &mut authority,
+            )?;
+            let state = ResolvedEdgeSourceState {
+                current_source_exists: state.exists,
+                comparison_available: state.usable,
+                current_revision_token: state.revision_token,
+                current_digest: state.content_digest,
+            };
+            Ok(evaluate_edge(
+                &build_edge_comparison_input_from_source_state(edge, &state)?,
+            ))
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------
@@ -1255,11 +1298,9 @@ fn rebuild_derived_state_edges_in_project(
                     return Ok(());
                 }
                 if is_reserved_semantic_index_consumer_kind(&consumer_kind) {
-                    // Semantic Index metadata, D1, and its V1 Edge graph are
-                    // a reserved manual-terminal surface. Rebuild-Derived
-                    // must not reinterpret it as a Generic Freshness
-                    // Consumer, including when an older/newer build left a
-                    // mixed graph behind.
+                    // The declared NIR-1 index is rebuilt by its own audited
+                    // producer. Unknown bindings remain manual-terminal.
+                    // Generic Rebuild must not publish either as usable.
                     tracing::debug!(
                         target: "narrative.rebuild",
                         consumer_kind = %consumer_kind,
@@ -3292,7 +3333,13 @@ pub fn verify_narrative_dependency_graph_for_project(
         // Consumer-kind support is resolved once per Consumer. Snapshot Run
         // scope is resolved per Edge below because SCHEMA 30 records the
         // declaring Run on each Edge independently.
-        let kind_is_declared = is_declared_consumer_kind(consumer_kind);
+        let kind_is_declared = is_declared_consumer_kind(consumer_kind)
+            || (is_reserved_semantic_index_consumer_kind(consumer_kind)
+                && super::nir1_chronicle_index::is_complete_registered_chronicle_index(
+                    conn,
+                    project_id,
+                    consumer_key,
+                )?);
         if !kind_is_declared {
             report
                 .edge_ids_with_unresolvable_consumer_scope
@@ -3600,6 +3647,34 @@ fn resolve_edge_consumer_scope<'a>(
     consumer_kind: &str,
     consumer_key: &'a str,
 ) -> anyhow::Result<EdgeConsumerScope<'a>> {
+    // This Source is bound to sealed documents in one exact Run. Unlike a
+    // Run-independent project Scope authority, its resolver must receive the
+    // validated owner; passing the NotRequired sentinel would mark a healthy
+    // Source missing and permanently block canonical cutover/rebuild.
+    if edge.source_object_identity.starts_with(
+        grimodex_core::narrative_scope_dependency_projection::SOURCE_PREFIX,
+    ) {
+        let Ok(identity) = grimodex_core::narrative_scope_dependency_projection::ScopeDependencyIdentity::from_source_key(
+            &edge.source_object_identity,
+        ) else {
+            return Ok(EdgeConsumerScope::Unresolvable);
+        };
+        let Some(owner) = edge.owning_run_id.as_deref().or_else(|| {
+            owning_run_id_for_consumer(consumer_kind, consumer_key)
+        }) else {
+            return Ok(EdgeConsumerScope::Unresolvable);
+        };
+        if owner.trim().is_empty()
+            || owner.trim() != owner
+            || identity.project_id != project_id
+            || identity.run_id != owner
+            || (consumer_kind == RUN_CONSUMER_KIND && consumer_key != owner)
+            || project_id_for_run(conn, owner)?.as_deref() != Some(project_id)
+        {
+            return Ok(EdgeConsumerScope::Unresolvable);
+        }
+        return Ok(EdgeConsumerScope::Resolved(owner));
+    }
     let snapshot_run_id =
         match parse_snapshot_run_id_from_source_identity(&edge.source_object_identity) {
             Ok(run_id) => run_id,
@@ -4190,6 +4265,14 @@ pub(crate) fn rebuild_repair_dependency_edges_in_tx(
     bound_params.push(project_id.to_string());
     bound_params.extend(edge_ids.iter().cloned());
 
+    let affects_current: bool = conn.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM narrative_dependency_edges e JOIN narrative_proposals p ON p.current_revision_id=e.consumer_key
+            WHERE e.project_id=?1 AND e.consumer_kind='proposal-revision' AND e.id IN ({placeholders}))"),
+        params_from_iter(bound_params.iter()), |row| row.get(0),
+    )?;
+    if affects_current {
+        super::nir1_chronicle_index::invalidate::suspend_project_in_tx(conn, project_id)?;
+    }
     let deleted = conn.execute(&sql, params_from_iter(bound_params.iter()))?;
     Ok(deleted)
 }

@@ -19,6 +19,7 @@ import {
   validateInterpreterBoundary,
   validateScopeRelationContract,
   validateSemanticIndexReservation,
+  validateSemanticIndexDeclaredBindings,
   validateSemanticCoreBoundary,
 } from "./validate-semantic-core-boundary.mjs";
 
@@ -35,6 +36,84 @@ const PRODUCER_REGISTRY_POLICY_PATH = path.join(
   REPO_ROOT,
   "policies/narrative/narrative-dependency-producer-registry.json",
 );
+
+function readNir1PolicyDocuments() {
+  return {
+    matrix: JSON.parse(readFileSync(path.join(REPO_ROOT, "policies/narrative/semantic-core-authorities.json"), "utf8")),
+    consumer: JSON.parse(readFileSync(path.join(REPO_ROOT, "policies/narrative/narrative-consumer-contract.json"), "utf8")),
+    producer: JSON.parse(readFileSync(PRODUCER_REGISTRY_POLICY_PATH, "utf8")),
+  };
+}
+
+describe("NIR-1 declared index binding", () => {
+  it("declares exactly the approved producer and preserves reserved unknown identities", () => {
+    const { matrix, consumer, producer } = readNir1PolicyDocuments();
+    const errors = [];
+    validateSemanticIndexDeclaredBindings(matrix, consumer, producer, errors);
+    assert.deepEqual(errors, []);
+    const [binding] = matrix.semanticIndexReservation.declaredBindings;
+    assert.equal(binding.consumerKey, "nir1-reviewed-chronicle:v1");
+    assert.equal(binding.producerId, "nir1-reviewed-chronicle-v1");
+    assert.equal(binding.producerVersion, "nir1-reviewed-chronicle/v1");
+    assert.equal(binding.declarationSetGeneration, "positive-monotonic-per-project");
+    assert.equal(binding.recognizedUnavailable, "rebuildable-not-query-usable");
+    assert.equal(matrix.semanticIndexReservation.status, "reserved");
+    assert.equal(matrix.semanticIndexReservation.authorityFootprint.classification, "exclude-only-validated-declared-bindings");
+    assert.equal(matrix.semanticIndexReservation.authorityFootprint.nonZeroDisposition, "manual-terminal");
+    assert.equal(matrix.authorities.find((entry) => entry.concern === "evidence-freshness").canonicalAuthority, "C2 consumer freshness evaluator");
+    assert.deepEqual(matrix.semanticIndexAllowedFields, ["generation", "builtAt", "sourceDigest", "dependencySetDigest", "dirtyCacheFlag", "producerId", "producerVersion"]);
+  });
+
+  for (const [name, mutate] of [
+    ["unknown index key", (binding) => { binding.consumerKey = "other-index:v1"; }],
+    ["known key with another producer", (binding) => { binding.producerId = "other-producer"; }],
+    ["known key with another producer version", (binding) => { binding.producerVersion = "nir1-reviewed-chronicle/v2"; }],
+    ["static generation substituted for numeric D1 generation", (binding) => { binding.declarationSetGeneration = 1; }],
+    ["dirty or pending treated as query usable", (binding) => { binding.recognizedUnavailable = "query-usable"; }],
+    ["NULL producer identity inferred from index key", (binding) => { binding.metadataBinding.producerId = "infer-from-index-key"; }],
+    ["index metadata made Freshness authority", (binding) => { binding.queryUsability = "metadata-fresh-flag"; }],
+  ]) {
+    it(`rejects ${name}`, () => {
+      const { matrix, consumer, producer } = readNir1PolicyDocuments();
+      mutate(matrix.semanticIndexReservation.declaredBindings[0]);
+      const errors = [];
+      validateSemanticIndexDeclaredBindings(matrix, consumer, producer, errors);
+      assert.ok(errors.some((error) => /exact approved NIR-1 binding/i.test(error)), JSON.stringify(errors));
+    });
+  }
+
+  it("rejects extra bindings, consumer drift, producer drift, and fixed D1 generations", () => {
+    for (const mutate of [
+      ({ matrix }) => matrix.semanticIndexReservation.declaredBindings.push(structuredClone(matrix.semanticIndexReservation.declaredBindings[0])),
+      ({ consumer }) => { consumer.consumerKinds.find((entry) => entry.kind === "semantic-index").declaredBindings[0].consumerKey = "other:v1"; },
+      ({ producer }) => { producer.entries.find((entry) => entry.id === "nir1-reviewed-chronicle-v1").generation = "other/v1"; },
+      ({ producer }) => { producer.entries.find((entry) => entry.id === "nir1-reviewed-chronicle-v1").declarationSetGeneration = 1; },
+      ({ producer }) => producer.entries.push({ ...producer.entries.find((entry) => entry.id === "nir1-reviewed-chronicle-v1"), id: "another-semantic-index-producer" }),
+    ]) {
+      const documents = readNir1PolicyDocuments();
+      mutate(documents);
+      const errors = [];
+      validateSemanticIndexDeclaredBindings(documents.matrix, documents.consumer, documents.producer, errors);
+      assert.ok(errors.length > 0, "cross-contract drift must not be accepted");
+    }
+  });
+
+  it("schema rejects known-index identity widening and extra metadata authority", () => {
+    for (const [documentName, schemaName, mutate] of [
+      ["matrix", "semantic-core-authorities", (value) => { value.semanticIndexReservation.declaredBindings[0].producerVersion = "other"; }],
+      ["matrix", "semantic-core-authorities", (value) => { value.semanticIndexAllowedFields.push("isAuthoritativeFresh"); }],
+      ["consumer", "narrative-consumer-contract", (value) => { value.consumerKinds.find((entry) => entry.kind === "semantic-index").declaredBindings[0].consumerKey = "other"; }],
+      ["producer", "narrative-dependency-producer-registry", (value) => { value.entries.find((entry) => entry.id === "nir1-reviewed-chronicle-v1").consumerKey = "other"; }],
+    ]) {
+      const value = readNir1PolicyDocuments()[documentName];
+      const schema = JSON.parse(readFileSync(path.join(REPO_ROOT, `policies/narrative/schemas/${schemaName}.schema.json`), "utf8"));
+      const validate = new Ajv2020({ strict: false }).compile(schema);
+      assert.equal(validate(value), true, JSON.stringify(validate.errors));
+      mutate(value);
+      assert.equal(validate(value), false, `${schemaName} must reject the changed binding`);
+    }
+  });
+});
 
 function writeJson(root, relativePath, value) {
   const target = path.join(root, relativePath);
@@ -286,9 +365,9 @@ describe("validate-semantic-core-boundary", () => {
     );
     assert.equal(
       searchGeneration.canonicalAuthority,
-      "none (semantic-index reserved; NIR-1 pending)",
+      "nir1-reviewed-chronicle-v1 producer",
     );
-    assert.equal(searchGeneration.writePolicy, "reserved-no-writer");
+    assert.equal(searchGeneration.writePolicy, "declared-bindings-only");
     assert.deepEqual(
       matrix.semanticIndexReservation.authorityFootprint.surfaces,
       [
@@ -320,7 +399,7 @@ describe("validate-semantic-core-boundary", () => {
     );
     assert.equal(
       matrix.semanticIndexReservation.authorityFootprint.passCondition,
-      "all-zero",
+      "unrecognized-all-zero",
     );
     assert.equal(
       matrix.semanticIndexReservation.authorityFootprint.nonZeroDisposition,
@@ -468,7 +547,7 @@ describe("validate-semantic-core-boundary", () => {
     const result = validateSemanticCoreBoundary({ repoRoot: REPO_ROOT });
     assert.deepEqual(result.errors, []);
     assert.ok(result.operationCount > 0);
-    assert.equal(result.schemaVersion, 34);
+    assert.equal(result.schemaVersion, 35);
     assert.equal(result.checks.scopeRelationContract, true);
     assert.equal(result.checks.dependencyRoleContract, true);
     assert.equal(result.checks.artifactAuthorityContract, true);

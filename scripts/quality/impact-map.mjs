@@ -139,6 +139,12 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/related-scenes/selectRelatedScenes.test.ts",
       ],
       ["node", "scripts/quality/validate-retrieval-fixtures.mjs"],
+      ["node", "--test", "scripts/quality/nir1-retrieval/contract.test.mjs"],
+      [
+        "node",
+        "scripts/quality/validate-nir1-retrieval.mjs",
+        "--require-freeze",
+      ],
     ],
   },
   "narrative-runtime": {

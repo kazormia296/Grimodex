@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 34,
+  "schemaVersion": 35,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -9027,6 +9027,123 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_maintenance_wake_outbox ( id TEXT NOT NULL PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, operation TEXT NOT NULL CHECK(length(operation) > 0), reason TEXT NOT NULL CHECK(length(reason) > 0), created_at TEXT NOT NULL, acked_at TEXT )"
     },
+    "narrative_nir1_chronicle_vectors": {
+      "kind": "table",
+      "columns": {
+        "artifact_sha256": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "audit_execution_id": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "audit_operation_id": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "chunker_version": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "embedding": {
+          "ordinal": 13,
+          "declaredType": "BLOB",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "embedding_dim": {
+          "ordinal": 9,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "envelope_digest": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "generation": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "model_id": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "revision_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "serializer_ref": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "statement_digest": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "tokenizer_sha256": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_nir1_chronicle_vectors ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, revision_id TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation > 0), envelope_digest TEXT NOT NULL, statement_digest TEXT NOT NULL, serializer_ref TEXT NOT NULL, model_id TEXT NOT NULL, artifact_sha256 TEXT NOT NULL, tokenizer_sha256 TEXT NOT NULL, embedding_dim INTEGER NOT NULL CHECK(embedding_dim > 0), chunker_version TEXT NOT NULL, audit_operation_id TEXT NOT NULL, audit_execution_id TEXT NOT NULL, embedding BLOB NOT NULL CHECK(length(embedding) = embedding_dim * 4), PRIMARY KEY(project_id, revision_id) )"
+    },
     "narrative_projection_dependencies": {
       "kind": "table",
       "columns": {
@@ -9720,6 +9837,20 @@
           "default": null,
           "primaryKey": 2
         },
+        "producer_id": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "producer_version": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
         "project_id": {
           "ordinal": 0,
           "declaredType": "TEXT",
@@ -9748,7 +9879,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_semantic_index_metadata ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, index_key TEXT NOT NULL CHECK(length(index_key) > 0), generation INTEGER NOT NULL CHECK(generation >= 0), built_at TEXT NOT NULL, source_digest TEXT NOT NULL CHECK(length(source_digest) > 0), dependency_set_digest TEXT NOT NULL CHECK(length(dependency_set_digest) > 0), dirty_cache_flag INTEGER NOT NULL CHECK(dirty_cache_flag IN (0, 1)), PRIMARY KEY(project_id, index_key) )"
+      "createSql": "CREATE TABLE narrative_semantic_index_metadata ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, index_key TEXT NOT NULL CHECK(length(index_key) > 0), generation INTEGER NOT NULL CHECK(generation >= 0), built_at TEXT NOT NULL, source_digest TEXT NOT NULL CHECK(length(source_digest) > 0), dependency_set_digest TEXT NOT NULL CHECK(length(dependency_set_digest) > 0), dirty_cache_flag INTEGER NOT NULL CHECK(dirty_cache_flag IN (0, 1)), producer_id TEXT, producer_version TEXT, PRIMARY KEY(project_id, index_key) )"
     },
     "narrative_temporal_constraints": {
       "kind": "table",
@@ -14975,6 +15106,54 @@
       ],
       "createSql": "CREATE INDEX idx_narrative_application_contributions_target ON narrative_application_contributions(project_id, target_object_identity)"
     },
+    "idx_narrative_artifacts_run_task_attempt_kind": {
+      "table": "narrative_extraction_artifacts",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "run_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "task_id"
+        },
+        {
+          "ordinal": 2,
+          "column": "attempt_id"
+        },
+        {
+          "ordinal": 3,
+          "column": "artifact_kind"
+        },
+        {
+          "ordinal": 4,
+          "column": "payload_storage"
+        }
+      ],
+      "createSql": "CREATE INDEX \"idx_narrative_artifacts_run_task_attempt_kind\" ON \"narrative_extraction_artifacts\"(run_id, task_id, attempt_id, artifact_kind, payload_storage)"
+    },
+    "idx_narrative_attempts_task_number_status": {
+      "table": "narrative_extraction_attempts",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "task_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "attempt_number"
+        },
+        {
+          "ordinal": 2,
+          "column": "status"
+        }
+      ],
+      "createSql": "CREATE INDEX \"idx_narrative_attempts_task_number_status\" ON \"narrative_extraction_attempts\"(task_id, attempt_number, status)"
+    },
     "idx_narrative_change_cursors_project": {
       "table": "narrative_change_cursors",
       "unique": false,
@@ -15362,6 +15541,26 @@
         }
       ],
       "createSql": "CREATE INDEX idx_narrative_stage_receipts_owner ON narrative_extraction_stage_receipts(project_id, run_id, task_id, attempt_id)"
+    },
+    "idx_narrative_tasks_run_kind_status": {
+      "table": "narrative_extraction_tasks",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "run_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "task_kind"
+        },
+        {
+          "ordinal": 2,
+          "column": "status"
+        }
+      ],
+      "createSql": "CREATE INDEX \"idx_narrative_tasks_run_kind_status\" ON \"narrative_extraction_tasks\"(run_id, task_kind, status)"
     },
     "idx_narrative_temporal_constraints_project": {
       "table": "narrative_temporal_constraints",

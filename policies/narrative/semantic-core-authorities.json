@@ -22,9 +22,9 @@
     },
     {
       "concern": "search-generation",
-      "canonicalAuthority": "none (semantic-index reserved; NIR-1 pending)",
+      "canonicalAuthority": "nir1-reviewed-chronicle-v1 producer",
       "compatibilityMirror": null,
-      "writePolicy": "reserved-no-writer"
+      "writePolicy": "declared-bindings-only"
     },
     {
       "concern": "review",
@@ -56,7 +56,9 @@
     "builtAt",
     "sourceDigest",
     "dependencySetDigest",
-    "dirtyCacheFlag"
+    "dirtyCacheFlag",
+    "producerId",
+    "producerVersion"
   ],
   "semanticIndexReservation": {
     "status": "reserved",
@@ -87,9 +89,10 @@
           "predicate": "project_id = ?1 AND consumer_kind = 'semantic-index'"
         }
       ],
-      "passCondition": "all-zero",
+      "passCondition": "unrecognized-all-zero",
       "nonZeroDisposition": "manual-terminal",
-      "rebuildTarget": "forbidden"
+      "rebuildTarget": "forbidden",
+      "classification": "exclude-only-validated-declared-bindings"
     },
     "chunkRows": {
       "allowed": true,
@@ -118,8 +121,38 @@
         "metadata-producer-identity-composition",
         "dirty-pending-semantics",
         "Codex-source-granularity"
-      ]
-    }
+      ],
+      "scope": "all-other-producers"
+    },
+    "declaredBindings": [
+      {
+        "consumerKey": "nir1-reviewed-chronicle:v1",
+        "producerId": "nir1-reviewed-chronicle-v1",
+        "producerVersion": "nir1-reviewed-chronicle/v1",
+        "registryGeneration": "nir1-reviewed-chronicle/v1",
+        "declarationSetGeneration": "positive-monotonic-per-project",
+        "metadataBinding": {
+          "indexKey": "equals-consumer-key",
+          "producerId": "explicit-exact-producer-id",
+          "producerVersion": "explicit-exact-producer-version",
+          "generation": "equals-active-sealed-D1-head-consumer-scoped-generation",
+          "dependencySetDigest": "equals-active-sealed-D1-set-digest"
+        },
+        "eligibilitySource": {
+          "kind": "nir1-chronicle-eligibility-set",
+          "keyFormat": "project:nir1-chronicle-eligibility:{projectId}",
+          "digestBasis": "sorted-current-revision-envelope-and-own-human-decision-identities",
+          "freshnessInDigest": "forbidden"
+        },
+        "writer": {
+          "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+          "symbol": "publish_chronicle_index_build_in_tx"
+        },
+        "recognizedUnavailable": "rebuildable-not-query-usable",
+        "queryUsability": "canonical-fresh-and-clean-current-native-proof",
+        "unknownOrIncoherentBinding": "manual-terminal"
+      }
+    ]
   },
   "forbiddenFreshnessClaims": [
     "assertion-is-authoritative-fresh",

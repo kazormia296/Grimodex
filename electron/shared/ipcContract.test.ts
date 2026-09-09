@@ -5594,6 +5594,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_maintenance_inbox_list",
       "narrative_runtime_policy_get",
       "narrative_runtime_policy_set",
+      "nir1_evidence_qualify",
       "open_workspace",
       "plot_thread_branch_create",
       "plot_thread_branch_delete",
@@ -5618,6 +5619,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "project_snapshot_restore_context",
       "quarantine_live_database",
       "rebuild_narrative_derived_state",
+      "related_scenes_begin",
+      "related_scenes_continue",
+      "related_scenes_release",
       "repair_integrity",
       "repair_narrative_dependency_declarations",
       "reply_to_annotation",
@@ -10320,4 +10324,54 @@ describe("Post-effect Phase 3d コマンド", () => {
       expect(methods.startPostEffectRunMulti).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("NIR-1 two-result command boundary", () => {
+  const ownerKey = "related-scenes-owner:main-issued";
+  const begin = {
+    ownerKey,
+    expectedWorkspacePath: "/workspace",
+    projectId: "project",
+    currentSceneId: "s2",
+    query: "saved tail",
+  };
+
+  it("maps only validated begin fields and keeps operation ownership on follow-ups", async () => {
+    const relatedScenesBegin = vi.fn().mockResolvedValue('{"status":"raw-ready"}');
+    const relatedScenesContinue = vi.fn().mockResolvedValue('{"status":"available","scenes":[]}');
+    const relatedScenesRelease = vi.fn().mockResolvedValue('{"status":"released"}');
+    const nir1EvidenceQualify = vi.fn().mockResolvedValue('{"status":"unavailable","reason":"invalidated"}');
+    const deps = { backend: { relatedScenesBegin, relatedScenesContinue, relatedScenesRelease, nir1EvidenceQualify } as unknown as NapiBackendLike, shell: {} };
+    expect(await dispatchInvoke("related_scenes_begin", { ...begin, arbitraryDb: "/other" }, deps)).toMatchObject({ ok: true });
+    expect(relatedScenesBegin).toHaveBeenCalledExactlyOnceWith(begin);
+    await dispatchInvoke("related_scenes_continue", { ownerKey, operationTicket: "ticket", projectId: "cannot-rebind" }, deps);
+    expect(relatedScenesContinue).toHaveBeenCalledExactlyOnceWith(ownerKey, "ticket");
+    await dispatchInvoke("related_scenes_release", { ownerKey, operationTicket: "ticket" }, deps);
+    expect(relatedScenesRelease).toHaveBeenCalledExactlyOnceWith(ownerKey, "ticket");
+    await dispatchInvoke("nir1_evidence_qualify", { ownerKey, navigationIdentity: "handle", sceneId: "cannot-rebind" }, deps);
+    expect(nir1EvidenceQualify).toHaveBeenCalledExactlyOnceWith(ownerKey, "handle");
+  });
+
+  it("rejects malformed begin bindings before Native execution", async () => {
+    const relatedScenesBegin = vi.fn();
+    const deps = { backend: { relatedScenesBegin } as unknown as NapiBackendLike, shell: {} };
+    for (const invalid of [
+      { ...begin, ownerKey: "" },
+      { ...begin, expectedWorkspacePath: "" },
+      { ...begin, projectId: "" },
+      { ...begin, currentSceneId: "" },
+      { ...begin, query: " " },
+      { ...begin, query: "x".repeat(501) },
+      { ...begin, query: 7 },
+    ]) expect((await dispatchInvoke("related_scenes_begin", invalid, deps)).ok).toBe(false);
+    expect(relatedScenesBegin).not.toHaveBeenCalled();
+  });
+
+  it("exposes explicit backend/version-skew errors, and never exposes owner release to renderer", async () => {
+    for (const command of ["related_scenes_begin", "related_scenes_continue", "related_scenes_release", "nir1_evidence_qualify"]) {
+      expect(await dispatchInvoke(command, begin, { backend: null, shell: {} })).toMatchObject({ ok: false, error: expect.stringContaining("IPC_BACKEND_UNAVAILABLE") });
+      expect(await dispatchInvoke(command, begin, { backend: {} as NapiBackendLike, shell: {} })).toMatchObject({ ok: false });
+    }
+    expect(NAPI_COMMANDS).not.toHaveProperty("related_scenes_release_owner");
+  });
 });

@@ -1,4 +1,8 @@
 import fixture from "../shared/productJourneyChronicleFixture.json" with { type: "json" };
+import {
+  productJourneyNir1Observation,
+  productJourneyNir1Synthesis,
+} from "./productJourneyNir1Ai.js";
 
 type JsonObject = Record<string, unknown>;
 type ContextSection = { contextId: string; inputRef: string; value: string };
@@ -64,6 +68,8 @@ function contextSections(args: JsonObject): ContextSection[] {
   return sections;
 }
 function observationReply(sections: ContextSection[]): JsonObject {
+  const nir1 = productJourneyNir1Observation(sections);
+  if (nir1) return nir1 as JsonObject;
   const windows = sections.filter((row) =>
     row.contextId.startsWith("observation-citation-window:"),
   );
@@ -105,6 +111,8 @@ function observationReply(sections: ContextSection[]): JsonObject {
   return { observations };
 }
 function synthesisReply(sections: ContextSection[]): JsonObject {
+  const nir1 = productJourneyNir1Synthesis(sections);
+  if (nir1) return nir1 as JsonObject;
   const clusters = sections.filter((row) =>
     row.contextId.startsWith("event-cluster:"),
   );

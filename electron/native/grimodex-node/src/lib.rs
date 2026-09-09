@@ -19,6 +19,11 @@ mod convert;
 mod legacy_keyring;
 mod narrative_maintenance;
 mod post_effect_runtime;
+mod related_scenes;
+mod related_scenes_build_registry;
+mod related_scenes_context;
+mod related_scenes_query;
+mod related_scenes_registry;
 mod state;
 #[cfg(test)]
 mod test_link_stubs;
@@ -5894,6 +5899,73 @@ impl Backend {
             Ok(serde_json::to_string(&candidates).map_err(anyhow::Error::from)?)
         })
         .await
+    }
+
+    #[napi]
+    pub async fn related_scenes_begin(&self, payload: serde_json::Value) -> Result<String> {
+        let dto = serde_json::from_value(payload)
+            .map_err(|_| Error::from_reason("RELATED_SCENES_INVALID_REQUEST"))?;
+        let result = related_scenes::begin(Arc::clone(&self.state), dto)
+            .await
+            .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))?;
+        Ok(result.to_string())
+    }
+
+    #[napi]
+    pub async fn related_scenes_continue(
+        &self,
+        owner_key: String,
+        operation_ticket: String,
+    ) -> Result<String> {
+        related_scenes::continue_query(Arc::clone(&self.state), owner_key, operation_ticket)
+            .await
+            .map(|value| value.to_string())
+            .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))
+    }
+
+    #[napi]
+    pub async fn related_scenes_release(
+        &self,
+        owner_key: String,
+        operation_ticket: String,
+    ) -> Result<String> {
+        related_scenes::release(&self.state, &owner_key, &operation_ticket)
+            .map(|value| value.to_string())
+            .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))
+    }
+
+    #[napi]
+    pub async fn related_scenes_release_owner(&self, owner_key: String) -> Result<String> {
+        related_scenes::release_owner(&self.state, &owner_key)
+            .map(|value| value.to_string())
+            .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))
+    }
+
+    #[napi]
+    pub async fn related_scenes_reconcile(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        napi::tokio::task::spawn_blocking(move || {
+            related_scenes::reconcile(&state).map(|value| value.to_string())
+        })
+        .await
+        .map_err(join_err_to_napi)?
+        .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))
+    }
+
+    #[napi]
+    pub async fn nir1_evidence_qualify(
+        &self,
+        owner_key: String,
+        navigation_identity: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        napi::tokio::task::spawn_blocking(move || {
+            related_scenes::qualify_evidence(&state, &owner_key, &navigation_identity)
+                .map(|value| value.to_string())
+        })
+        .await
+        .map_err(join_err_to_napi)?
+        .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))
     }
 
     // ─────────────────────── semantic Phase 3 Batch 4 ───────────────────

@@ -2105,3 +2105,23 @@ describe("registerIpcRouter workspace-open main trace", () => {
     expect(info).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("NIR-1 router sender binding", () => {
+  it("passes a main owner to Native and prevents a second WebContents from copying it", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const relatedScenesBegin = vi.fn(async (request: Record<string, unknown>) => {
+      calls.push(request);
+      return '{"status":"raw-ready"}';
+    });
+    registerIpcRouter({ relatedScenesBegin } as unknown as NapiBackendLike);
+    const createSender = () => ({ id: 99, isDestroyed: () => false, once: vi.fn() });
+    const first = createSender();
+    const payload = { expectedWorkspacePath: "/workspace", projectId: "p", currentSceneId: "s2", query: "tail", ownerKey: "forged" };
+    expect((await invokeHandler()({ sender: first }, "related_scenes_begin", payload)).ok).toBe(true);
+    const owner = calls[0]?.ownerKey;
+    expect(owner).not.toBe("forged");
+    expect(typeof owner).toBe("string");
+    expect((await invokeHandler()({ sender: createSender() }, "related_scenes_begin", { ...payload, ownerKey: owner })).ok).toBe(true);
+    expect(calls[1]?.ownerKey).not.toBe(owner);
+  });
+});

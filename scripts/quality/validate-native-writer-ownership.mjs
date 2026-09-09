@@ -338,9 +338,26 @@ function collectRustFiles(rootDir) {
   return out;
 }
 
-function isAllowedForWriter(relativePath, writer) {
-  const allowed = WRITER_TO_MODULES[writer] ?? [];
+const NIR1_CACHE_WRITERS = {
+  narrative_semantic_index_metadata: [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/invalidate.rs",
+  ],
+  narrative_nir1_chronicle_vectors: [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+  ],
+};
+
+export function isAllowedForWriter(relativePath, writer, table) {
   const normalized = relativePath.replaceAll("\\", "/");
+  // A cache publisher receives only these table-specific exact paths. Adding
+  // its generic filename to writer-wide basename matching would grant more.
+  if (
+    writer === "narrative.authority" &&
+    NIR1_CACHE_WRITERS[table]?.includes(normalized)
+  )
+    return true;
+  const allowed = WRITER_TO_MODULES[writer] ?? [];
   return allowed.some(
     (modulePath) =>
       normalized === modulePath ||
@@ -384,7 +401,7 @@ export function validateNativeWriterOwnership({
       const table = match[2];
       const writer = tableToWriter.get(table);
       if (!writer) continue;
-      if (isAllowedForWriter(relative, writer)) continue;
+      if (isAllowedForWriter(relative, writer, table)) continue;
       violations.push({
         file: relative,
         table,
