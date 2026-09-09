@@ -5032,7 +5032,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/core (3.29.2)
+### @tiptap/core (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5066,7 +5066,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-blockquote (3.29.2)
+### @tiptap/extension-blockquote (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5100,7 +5100,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-bold (3.29.2)
+### @tiptap/extension-bold (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5134,7 +5134,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-bubble-menu (3.29.2)
+### @tiptap/extension-bubble-menu (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5168,7 +5168,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-bullet-list (3.29.2)
+### @tiptap/extension-bullet-list (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5202,7 +5202,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-character-count (3.29.2)
+### @tiptap/extension-character-count (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5236,7 +5236,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-code (3.29.2)
+### @tiptap/extension-code (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5270,7 +5270,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-code-block (3.29.2)
+### @tiptap/extension-code-block (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5304,7 +5304,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-document (3.29.2)
+### @tiptap/extension-document (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5338,7 +5338,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-dropcursor (3.29.2)
+### @tiptap/extension-dropcursor (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5372,7 +5372,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-floating-menu (3.29.2)
+### @tiptap/extension-floating-menu (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5406,7 +5406,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-gapcursor (3.29.2)
+### @tiptap/extension-gapcursor (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5440,7 +5440,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-hard-break (3.29.2)
+### @tiptap/extension-hard-break (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5474,7 +5474,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-heading (3.29.2)
+### @tiptap/extension-heading (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5508,7 +5508,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-horizontal-rule (3.29.2)
+### @tiptap/extension-horizontal-rule (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5542,7 +5542,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-image (3.29.2)
+### @tiptap/extension-image (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5576,7 +5576,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-italic (3.29.2)
+### @tiptap/extension-italic (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5610,7 +5610,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-link (3.29.2)
+### @tiptap/extension-link (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5644,7 +5644,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-list (3.29.2)
+### @tiptap/extension-list (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5678,7 +5678,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-list-item (3.29.2)
+### @tiptap/extension-list-item (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5712,7 +5712,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-list-keymap (3.29.2)
+### @tiptap/extension-list-keymap (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5746,7 +5746,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-mention (3.29.2)
+### @tiptap/extension-mention (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5780,7 +5780,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-ordered-list (3.29.2)
+### @tiptap/extension-ordered-list (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5814,7 +5814,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-paragraph (3.29.2)
+### @tiptap/extension-paragraph (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5848,7 +5848,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-placeholder (3.29.2)
+### @tiptap/extension-placeholder (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5882,7 +5882,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-strike (3.29.2)
+### @tiptap/extension-strike (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5916,7 +5916,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-table (3.29.2)
+### @tiptap/extension-table (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5950,7 +5950,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-table-cell (3.29.2)
+### @tiptap/extension-table-cell (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -5984,7 +5984,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-table-header (3.29.2)
+### @tiptap/extension-table-header (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -6018,7 +6018,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-table-row (3.29.2)
+### @tiptap/extension-table-row (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -6052,7 +6052,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-task-item (3.29.2)
+### @tiptap/extension-task-item (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -6086,7 +6086,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-task-list (3.29.2)
+### @tiptap/extension-task-list (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -6120,7 +6120,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-text (3.29.2)
+### @tiptap/extension-text (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -6154,7 +6154,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-typography (3.29.2)
+### @tiptap/extension-typography (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -6188,7 +6188,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-underline (3.29.2)
+### @tiptap/extension-underline (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -6222,7 +6222,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extensions (3.29.2)
+### @tiptap/extensions (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -6256,7 +6256,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/pm (3.29.2)
+### @tiptap/pm (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -6290,7 +6290,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/react (3.29.2)
+### @tiptap/react (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -6324,7 +6324,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/starter-kit (3.29.2)
+### @tiptap/starter-kit (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -6358,7 +6358,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/suggestion (3.29.2)
+### @tiptap/suggestion (3.30.5)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -11059,7 +11059,7 @@ SOFTWARE.
 ```
 </details>
 
-### fast-equals (5.4.1)
+### fast-equals (5.4.2)
 
 - License: MIT
 - Repository: https://github.com/planttheidea/fast-equals
@@ -12143,7 +12143,7 @@ THE SOFTWARE.
 ```
 </details>
 
-### js-yaml (4.3.1)
+### js-yaml (4.3.2)
 
 - License: MIT
 - Repository: nodeca/js-yaml
@@ -15434,7 +15434,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 </details>
 
-### prosemirror-changeset (2.4.1)
+### prosemirror-changeset (2.4.2)
 
 - License: MIT
 - Repository: https://code.haverbeke.berlin/prosemirror/prosemirror-changeset
@@ -15466,10 +15466,10 @@ THE SOFTWARE.
 ```
 </details>
 
-### prosemirror-commands (1.7.1)
+### prosemirror-commands (1.7.2)
 
 - License: MIT
-- Repository: git://github.com/prosemirror/prosemirror-commands
+- Repository: https://code.haverbeke.berlin/prosemirror/prosemirror-commands
 
 <details>
 <summary>License Text</summary>
@@ -15818,10 +15818,10 @@ THE SOFTWARE.
 ```
 </details>
 
-### prosemirror-transform (1.12.0)
+### prosemirror-transform (1.12.1)
 
 - License: MIT
-- Repository: git://github.com/prosemirror/prosemirror-transform
+- Repository: https://code.haverbeke.berlin/prosemirror/prosemirror-transform
 
 <details>
 <summary>License Text</summary>
