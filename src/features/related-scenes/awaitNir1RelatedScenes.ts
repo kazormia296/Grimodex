@@ -40,25 +40,26 @@ export function awaitNir1RelatedScenes(input: {
       // Construct the safe result before the final time/authority checks. The
       // transport arrival time alone does not bound admission/projection/fusion.
       let result = fuseNir1RelatedScenes(input.raw, ir);
-      const cancelled = !input.isCurrent() || !input.session.isActive();
+      const cancelled =
+        !input.isCurrent() || input.session.stopReason === "cancelled";
+      const invalidated =
+        !cancelled &&
+        (!input.session.isActive() ||
+          (ir.status === "unavailable" && ir.reason === "invalidated"));
       const now = performance.now();
-      const completion = cancelled
-        ? deadline.stop(
-            input.session.stopReason === "cancelled"
-              ? "cancelled"
-              : "invalidated",
-            now,
-          )
-        : timedOut
-          ? deadline.expire(now)
-          : ir.status === "available"
-            ? deadline.completeIr(now)
-            : deadline.stop(
-                ir.reason === "failed" ? "failed" : "ir-unavailable",
-                now,
-              );
+      const completion =
+        cancelled || invalidated
+          ? deadline.stop(cancelled ? "cancelled" : "invalidated", now)
+          : timedOut
+            ? deadline.expire(now)
+            : ir.status === "available"
+              ? deadline.completeIr(now)
+              : deadline.stop(
+                  ir.reason === "failed" ? "failed" : "ir-unavailable",
+                  now,
+                );
       if (!completion) return;
-      if (cancelled) {
+      if (cancelled || invalidated) {
         result = fuseNir1RelatedScenes(input.raw, {
           status: "unavailable",
           reason:
@@ -74,7 +75,11 @@ export function awaitNir1RelatedScenes(input: {
       resolve({
         result,
         completion,
-        status: cancelled ? "cancelled" : "completed",
+        status: cancelled
+          ? "cancelled"
+          : invalidated
+            ? "invalidated"
+            : "completed",
       });
     }
 

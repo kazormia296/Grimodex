@@ -5,6 +5,8 @@ use crate::embedding::DocumentTokenLimit;
 use crate::spec::SPEC_EN;
 use grimodex_db::WorkspaceAuthority;
 use std::path::Path;
+use std::sync::mpsc;
+use std::time::Duration;
 
 struct QuietEvents;
 impl EventSink for QuietEvents {
@@ -104,12 +106,14 @@ fn run(
     input: &Nir1EmbeddingDocument,
     pipeline: &mut impl Nir1DocumentPipeline,
 ) -> Result<Nir1DocumentEmbeddingOutcome> {
+    let (model, tokenizer) = identities();
     embed_document_with(
-        runtime,
-        request,
-        "p",
-        input,
-        &SPEC_EN,
+        runtime, request, "p", input, &SPEC_EN, model, tokenizer, pipeline,
+    )
+}
+
+fn identities() -> (ModelArtifactIdentity, TokenizerIdentity) {
+    (
         ModelArtifactIdentity {
             identity_version: 1,
             fingerprint_algorithm: "sha256",
@@ -118,7 +122,6 @@ fn run(
             byte_length: SPEC_EN.artifact_size,
         },
         TokenizerIdentity::from_bytes("tokenizer.json", b"synthetic tokenizer identity"),
-        pipeline,
     )
 }
 
@@ -277,5 +280,242 @@ fn nir1_document_rejects_wrong_digest_order_extra_keys_and_mutable_substitutes_b
         assert!(run(&runtime, &request, &doc, &mut pipeline).is_err());
         assert_eq!(pipeline.tokenize_calls, 0);
         assert_eq!(pipeline.inference_calls, 0);
+    }
+}
+
+#[test]
+fn nir1_document_batch_yields_to_audited_raw_query_between_documents() {
+    let (runtime, request) = fixture();
+    let documents: Vec<_> = (1..=3)
+        .map(|index| Nir1EmbeddingDocument {
+            revision_id: format!("revision-{index}"),
+            ..input()
+        })
+        .collect();
+    let entries = Mutex::new(Vec::new());
+    let (first_done, first_ready) = mpsc::channel();
+    let (resume, resumed) = mpsc::channel();
+    let runtime = &runtime;
+    let request = &request;
+    let entries = &entries;
+    let documents = &documents;
+
+    let (outcomes, query) = std::thread::scope(|scope| {
+        let background = scope.spawn(move || {
+            let mut pipeline = Pipeline {
+                request: request.clone(),
+                tokenize_calls: 0,
+                inference_calls: 0,
+                skip: false,
+                fail_terminal: false,
+            };
+            let outcomes = runtime
+                .embed_nir1_documents_with(request, "p", documents, |document, spec| {
+                    assert_eq!(spec.dir_name, SPEC_EN.dir_name);
+                    entries
+                        .lock()
+                        .expect("entries")
+                        .push(document.revision_id.clone());
+                    let outcome = run(runtime, request, document, &mut pipeline)?;
+                    if document.revision_id == "revision-1" {
+                        first_done.send(()).expect("first document completed");
+                        resumed
+                            .recv_timeout(Duration::from_secs(5))
+                            .expect("release document");
+                    }
+                    Ok(outcome)
+                })
+                .expect("all documents indexed");
+            assert_eq!(pipeline.inference_calls, 3);
+            outcomes
+        });
+        first_ready
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first document");
+        let foreground = scope.spawn(move || {
+            runtime
+                .embedder_admission
+                .foreground(|| {
+                    let (model, tokenizer) = identities();
+                    super::audited_query::prepare_query_with(
+                        runtime,
+                        request,
+                        "p",
+                        "collapsed bridge",
+                        30,
+                        &SPEC_EN,
+                        model,
+                        tokenizer,
+                        || {
+                            entries.lock().expect("entries").push("raw-query".into());
+                            let mut vector = vec![0.0; SPEC_EN.embedding_dim];
+                            vector[0] = 1.0;
+                            Ok(vector)
+                        },
+                    )
+                })
+                .expect("audited Raw query")
+        });
+        assert!(runtime.embedder_admission.wait_for_foreground_waiters(1));
+        resume.send(()).expect("release first document");
+        (
+            background.join().expect("background"),
+            foreground.join().expect("foreground"),
+        )
+    });
+
+    assert_eq!(
+        *entries.lock().expect("entries"),
+        ["revision-1", "raw-query", "revision-2", "revision-3"]
+    );
+    let revisions: Vec<_> = outcomes
+        .iter()
+        .map(|outcome| match outcome {
+            Nir1DocumentEmbeddingOutcome::Indexed { document, .. } => document.revision_id.as_str(),
+            _ => panic!("expected complete document result"),
+        })
+        .collect();
+    assert_eq!(revisions, ["revision-1", "revision-2", "revision-3"]);
+    assert!(runtime
+        .semantic_search_with_query(&query, 30, None, Some(false))
+        .expect("Raw search")
+        .is_empty());
+    let audit = request
+        .db()
+        .read_ai_audit_snapshot("p", None, None, None)
+        .expect("audit");
+    assert_eq!(
+        audit
+            .events
+            .iter()
+            .filter(|event| event.event_type == "request.prepared")
+            .count(),
+        4
+    );
+    assert_eq!(
+        audit
+            .events
+            .iter()
+            .filter(|event| event.event_type == "execution.succeeded")
+            .count(),
+        4
+    );
+    assert!(audit
+        .events
+        .iter()
+        .any(|event| event.event_type == "execution.succeeded"
+            && event.execution_id == query.audit_binding().execution_id));
+}
+
+#[test]
+fn queued_nir1_document_and_raw_query_recheck_epoch_and_model_before_inference() {
+    for change in ["epoch", "model"] {
+        let (runtime, request) = fixture();
+        let documents = [
+            input(),
+            Nir1EmbeddingDocument {
+                revision_id: "revision-2".into(),
+                ..input()
+            },
+        ];
+        let (first_done, first_ready) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        let runtime = &runtime;
+        let request = &request;
+        let documents = &documents;
+
+        std::thread::scope(|scope| {
+            let background = scope.spawn(move || {
+                let mut pipeline = Pipeline {
+                    request: request.clone(),
+                    tokenize_calls: 0,
+                    inference_calls: 0,
+                    skip: false,
+                    fail_terminal: false,
+                };
+                let result =
+                    runtime.embed_nir1_documents_with(request, "p", documents, |document, _| {
+                        let outcome = run(runtime, request, document, &mut pipeline)?;
+                        if document.revision_id == "revision-1" {
+                            first_done.send(()).expect("first document completed");
+                            resumed
+                                .recv_timeout(Duration::from_secs(5))
+                                .expect("release document");
+                        }
+                        Ok(outcome)
+                    });
+                let error = result.err().expect("entire batch is rejected");
+                assert!(error.to_string().contains(if change == "epoch" {
+                    "SEMANTIC_QUERY_STALE"
+                } else {
+                    "SEMANTIC_QUERY_MODEL_CHANGED"
+                }));
+                assert_eq!(pipeline.tokenize_calls, 1);
+                assert_eq!(pipeline.inference_calls, 1);
+            });
+            first_ready
+                .recv_timeout(Duration::from_secs(5))
+                .expect("first document");
+            let foreground = scope.spawn(move || {
+                runtime
+                    .embedder_admission
+                    .foreground(|| {
+                        let (model, tokenizer) = identities();
+                        super::audited_query::prepare_query_with(
+                            runtime,
+                            request,
+                            "p",
+                            "collapsed bridge",
+                            30,
+                            &SPEC_EN,
+                            model,
+                            tokenizer,
+                            || panic!("stale queued query must not infer"),
+                        )
+                    })
+                    .err()
+                    .expect("stale Raw query is rejected")
+            });
+            assert!(runtime.embedder_admission.wait_for_foreground_waiters(1));
+            if change == "epoch" {
+                runtime.rotate_workspace_epoch();
+            } else {
+                request
+                    .db()
+                    .with_conn(|connection| {
+                        connection.execute("UPDATE projects SET language='ja' WHERE id='p'", [])?;
+                        Ok(())
+                    })
+                    .expect("change model while queued");
+            }
+            resume.send(()).expect("release document");
+            background.join().expect("background");
+            let query_error = foreground.join().expect("foreground");
+            assert!(query_error.to_string().contains(if change == "epoch" {
+                "IPC_DERIVED_CANCELLED"
+            } else {
+                "SEMANTIC_QUERY_MODEL_CHANGED"
+            }));
+        });
+        let audit = request
+            .db()
+            .read_ai_audit_snapshot("p", None, None, None)
+            .expect("audit");
+        assert_eq!(
+            audit
+                .events
+                .iter()
+                .filter(|event| event.event_type == "request.prepared")
+                .count(),
+            1
+        );
+        assert_eq!(
+            audit
+                .events
+                .iter()
+                .filter(|event| event.event_type == "execution.succeeded")
+                .count(),
+            1
+        );
     }
 }

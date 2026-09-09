@@ -214,15 +214,9 @@ impl SemanticRuntime {
         project_id: &str,
         documents: &[Nir1EmbeddingDocument],
     ) -> Result<Vec<Nir1DocumentEmbeddingOutcome>> {
-        self.ensure_background_request_current(request)?;
-        let spec = strict_project_spec(request, project_id)?;
-        if documents.is_empty() {
-            return Ok(Vec::new());
-        }
-        self.with_embedder(spec, |embedder| {
-            let mut outcomes = Vec::with_capacity(documents.len());
-            for document in documents {
-                outcomes.push(embed_document_with(
+        self.embed_nir1_documents_with(request, project_id, documents, |document, spec| {
+            self.with_admitted_embedder(spec, |embedder| {
+                embed_document_with(
                     self,
                     request,
                     project_id,
@@ -231,9 +225,24 @@ impl SemanticRuntime {
                     embedder.model_artifact_identity().clone(),
                     embedder.tokenizer_identity().clone(),
                     embedder,
-                )?);
-            }
-            Ok(outcomes)
+                )
+            })
         })
+    }
+
+    pub(super) fn embed_nir1_documents_with(
+        &self,
+        request: &SemanticRequest,
+        project_id: &str,
+        documents: &[Nir1EmbeddingDocument],
+        mut operation: impl FnMut(
+            &Nir1EmbeddingDocument,
+            &'static EmbeddingModelSpec,
+        ) -> Result<Nir1DocumentEmbeddingOutcome>,
+    ) -> Result<Vec<Nir1DocumentEmbeddingOutcome>> {
+        self.ensure_background_request_current(request)?;
+        let spec = strict_project_spec(request, project_id)?;
+        self.embedder_admission
+            .map_background(documents, |document| operation(document, spec))
     }
 }

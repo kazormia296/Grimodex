@@ -112,7 +112,8 @@ export async function fetchNir1RelatedPastScenes(
       fuseNir1RelatedScenes(raw, { status: "unavailable", reason });
     session?.completeFetch();
     if (result.kind === "raw") session?.releaseOperation();
-    if (status !== "completed" || rawStatus !== "completed") session?.release();
+    if (options.rawOnly || status !== "completed" || rawStatus !== "completed")
+      session?.release();
     return {
       status,
       rawStatus,
@@ -122,7 +123,7 @@ export async function fetchNir1RelatedPastScenes(
       completion: completed?.completion ?? null,
       rawScenes: raw.scenes,
       result,
-      session,
+      session: options.rawOnly ? null : session,
       timing: {
         tFetchMs,
         tRawReadyMs,
@@ -134,7 +135,9 @@ export async function fetchNir1RelatedPastScenes(
 
   if (!session || !workspace) return output("failed", "index-unavailable");
   if (options.signal?.aborted) return output("cancelled", "cancelled");
-  const connected = session.connect();
+  const connected = options.rawOnly
+    ? Promise.resolve(false)
+    : session.connect();
   try {
     // This exact existing Raw pipeline includes loadSceneContent's pending
     // source-write barrier. Native independently checks the same saved query.
@@ -176,7 +179,7 @@ export async function fetchNir1RelatedPastScenes(
       return [] as string[];
     });
     if (!listening) {
-      if (session.stopReason !== "listener-unavailable")
+      if (!options.rawOnly && session.stopReason !== "listener-unavailable")
         return output("cancelled", "invalidated");
       const denseHits = await semanticSearch({
         projectId,
@@ -189,9 +192,18 @@ export async function fetchNir1RelatedPastScenes(
       });
       rawStatus = "completed";
       tRawReadyMs = performance.now();
+      // Revocation may also mean the query source changed. A recovery query
+      // has no IR lease: re-read through the saved-write barrier before exposing
+      // Raw, then recheck every captured context coordinate synchronously.
+      const sourceCurrent =
+        !options.rawOnly || (await loadSceneContent(sceneId)) === json;
       return output(
-        stopIfContextChanged() ? "cancelled" : "completed",
-        "failed",
+        stopIfContextChanged()
+          ? "cancelled"
+          : sourceCurrent
+            ? "completed"
+            : "invalidated",
+        options.rawOnly ? "invalidated" : "failed",
       );
     }
     const response = await beginRelatedScenes({

@@ -71,6 +71,12 @@ use std::hash::{Hash, Hasher};
 use std::sync::Condvar;
 
 #[cfg(feature = "semantic-embedding")]
+#[path = "runtime_embedder_admission.rs"]
+mod embedder_admission;
+#[cfg(feature = "semantic-embedding")]
+use embedder_admission::EmbedderAdmission;
+
+#[cfg(feature = "semantic-embedding")]
 #[path = "runtime_audited_query.rs"]
 mod audited_query;
 #[cfg(feature = "semantic-embedding")]
@@ -320,6 +326,8 @@ pub struct SemanticRuntime {
     #[cfg(feature = "semantic-embedding")]
     embedders: Mutex<HashMap<&'static str, Embedder>>,
     #[cfg(feature = "semantic-embedding")]
+    embedder_admission: EmbedderAdmission,
+    #[cfg(feature = "semantic-embedding")]
     downloads_inflight: Mutex<HashSet<&'static str>>,
 }
 
@@ -336,6 +344,8 @@ impl SemanticRuntime {
             reindex_flights: Mutex::new(HashMap::new()),
             #[cfg(feature = "semantic-embedding")]
             embedders: Mutex::new(HashMap::new()),
+            #[cfg(feature = "semantic-embedding")]
+            embedder_admission: EmbedderAdmission::default(),
             #[cfg(feature = "semantic-embedding")]
             downloads_inflight: Mutex::new(HashSet::new()),
         }
@@ -1009,6 +1019,16 @@ impl SemanticRuntime {
     }
 
     fn with_embedder<T>(
+        &self,
+        spec: &'static EmbeddingModelSpec,
+        operation: impl FnOnce(&mut Embedder) -> Result<T>,
+    ) -> Result<T> {
+        self.embedder_admission
+            .foreground(|| self.with_admitted_embedder(spec, operation))
+    }
+
+    /// Caller holds an admission permit for the complete operation.
+    fn with_admitted_embedder<T>(
         &self,
         spec: &'static EmbeddingModelSpec,
         operation: impl FnOnce(&mut Embedder) -> Result<T>,

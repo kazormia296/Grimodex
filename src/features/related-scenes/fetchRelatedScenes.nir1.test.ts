@@ -344,7 +344,7 @@ describe("NIR1 production fetch orchestration", () => {
     h.invalidate!("query-a");
     begin.resolve(beginResponse());
     const response = await pending;
-    expect(response.status).toBe("cancelled");
+    expect(response.status).toBe("invalidated");
     expect(h.continue).not.toHaveBeenCalled();
     expect(h.release).toHaveBeenCalledExactlyOnceWith("ticket-a");
   });

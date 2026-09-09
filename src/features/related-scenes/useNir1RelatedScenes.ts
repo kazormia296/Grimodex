@@ -71,7 +71,14 @@ export function useNir1RelatedScenes(enabled: boolean) {
     let retries = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     setLoading(true);
-    const run = () => {
+    const recoverRaw = () => {
+      // An IR lease can be revoked for a source mutation too. Never publish
+      // its old Raw snapshot; re-read the current S2 without waiting on IR.
+      setFetch(null);
+      clearTimeout(timer);
+      timer = setTimeout(() => run(true), FETCH_DEBOUNCE_MS);
+    };
+    const run = (rawOnly = false) => {
       if (disposed) return;
       const generation = ++nextQueryGeneration;
       current.current = generation;
@@ -83,6 +90,7 @@ export function useNir1RelatedScenes(enabled: boolean) {
       observeNir1RelatedScenesQuery(sceneId);
       void fetchRelatedPastScenes(sceneId, {
         mode: "hybrid",
+        ...(rawOnly ? { rawOnly: true } : {}),
         signal: abort.signal,
         queryGeneration: generation,
         isCurrent: () => current.current === generation && !disposed,
@@ -95,20 +103,13 @@ export function useNir1RelatedScenes(enabled: boolean) {
           published = value;
           if (value.status !== "completed") {
             value.session?.release();
+            if (value.status === "invalidated") recoverRaw();
             return;
           }
           setFetch(value);
           unsubscribe = value.session?.subscribeInvalidation(() => {
             if (disposed || current.current !== generation) return;
-            setFetch({
-              ...value,
-              result: {
-                kind: "raw",
-                scenes: value.rawScenes,
-                ir: { status: "unavailable", reason: "invalidated" },
-              },
-            });
-            setRefresh((version) => version + 1);
+            recoverRaw();
           });
           // A ready notification can be followed by a transient timeout. Keep
           // its completed Raw result visible and start a distinct request;
@@ -120,17 +121,17 @@ export function useNir1RelatedScenes(enabled: boolean) {
             retries < MAX_TIMEOUT_RETRIES
           ) {
             retries++;
-            timer = setTimeout(run, FETCH_DEBOUNCE_MS);
+            timer = setTimeout(() => run(), FETCH_DEBOUNCE_MS);
           }
         })
         .catch(() => {
-          if (!disposed) setFetch(null);
+          if (!disposed && current.current === generation) setFetch(null);
         })
         .finally(() => {
-          if (!disposed) setLoading(false);
+          if (!disposed && current.current === generation) setLoading(false);
         });
     };
-    timer = setTimeout(run, FETCH_DEBOUNCE_MS);
+    timer = setTimeout(() => run(), FETCH_DEBOUNCE_MS);
     return () => {
       disposed = true;
       clearTimeout(timer);

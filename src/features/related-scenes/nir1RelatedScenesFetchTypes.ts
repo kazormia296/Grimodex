@@ -10,6 +10,8 @@ import type { RelatedScenesBeginResponse } from "@/../electron/shared/relatedSce
 
 export interface Nir1RelatedScenesFetchOptions {
   readonly mode: "hybrid";
+  /** Fresh Raw recovery after revocation, independent of IR readiness. */
+  readonly rawOnly?: boolean;
   readonly signal?: AbortSignal;
   /** Assigned by a consumer at fetch start, never when a response arrives. */
   readonly queryGeneration?: number;
@@ -17,7 +19,7 @@ export interface Nir1RelatedScenesFetchOptions {
 }
 
 export interface Nir1RelatedScenesFetchResult {
-  readonly status: "completed" | "cancelled" | "failed";
+  readonly status: "completed" | "cancelled" | "invalidated" | "failed";
   readonly rawStatus: "not-started" | "completed" | "failed";
   readonly origin: Nir1EvidenceOrigin | null;
   readonly queryBinding: string | null;
