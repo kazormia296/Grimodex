@@ -3420,7 +3420,9 @@ export const narrativeSemanticIndexMetadata = sqliteTable(
 export const narrativeNir1ChronicleVectors = sqliteTable(
   "narrative_nir1_chronicle_vectors",
   {
-    projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
     revisionId: text("revision_id").notNull(),
     generation: integer("generation").notNull(),
     envelopeDigest: text("envelope_digest").notNull(),

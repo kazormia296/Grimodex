@@ -89,7 +89,9 @@ export function Nir1RelatedSceneRow({
           <button
             type="button"
             data-testid="nir1-evidence-link"
-            data-nir1-navigation-identity={ir.validatedEvidence.navigationIdentity}
+            data-nir1-navigation-identity={
+              ir.validatedEvidence.navigationIdentity
+            }
             onClick={openEvidence}
             className="mt-1 cursor-pointer text-left text-primary hover:underline"
           >

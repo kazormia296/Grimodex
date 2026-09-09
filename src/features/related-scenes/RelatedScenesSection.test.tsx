@@ -210,7 +210,7 @@ describe("NIR interpretation display", () => {
             sceneId: "s1",
             sceneTitle: "Bridge",
             rank1: 1,
-                raw,
+            raw,
             ir,
           },
         ],
