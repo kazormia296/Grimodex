@@ -754,6 +754,8 @@
     "c2-zc-rust-acceptance-gate": {
       "label": "Candidate-bound C2-ZC Rust acceptance receipt",
       "env": {
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
         "GRIMODEX_C2ZC_RUST_RECEIPT_PATH": ".artifacts/local-ci/c2-zc-rust-acceptance.json",
         "GRIMODEX_C2ZC_RUST_REQUESTED_BASE": "origin/master",
         "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD": "HEAD"
@@ -782,6 +784,10 @@
     },
     "c2-zc-restore-fixture-builder": {
       "label": "Candidate-bound C2-ZC offline restore fixture",
+      "env": {
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
       "commands": [
         {
           "label": "Build C2-ZC offline restore fixture",
@@ -1075,10 +1081,10 @@
           "id": "journeys.mcp-build",
           "after": ["electron.build", "native.build"],
           "lane": "cargo-shared",
-          "slots": 4,
+          "slots": 2,
           "timeoutMs": 180000,
           "env": {
-            "CARGO_BUILD_JOBS": "4"
+            "CARGO_BUILD_JOBS": "2"
           }
         },
         {
@@ -1103,7 +1109,7 @@
             "webgl.tests"
           ],
           "lane": "journey-shard-1",
-          "slots": 3,
+          "slots": 2,
           "timeoutMs": 240000,
           "obligations": []
         },
@@ -1129,7 +1135,33 @@
             "webgl.tests"
           ],
           "lane": "journey-shard-2",
-          "slots": 3,
+          "slots": 2,
+          "timeoutMs": 240000,
+          "obligations": []
+        },
+        {
+          "label": "Run product journey shard 3",
+          "command": "xvfb-run",
+          "args": [
+            "--auto-display",
+            "--server-args=-screen 0 1920x1080x24",
+            "node",
+            "electron/scripts/product-journey-shards.mjs",
+            "run",
+            "--shard",
+            "3",
+            "--output-dir",
+            ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys"
+          ],
+          "id": "journeys.shard-3",
+          "after": [
+            "journeys.mcp-build",
+            "native.public-tests",
+            "c2zc.fixture-verify",
+            "webgl.tests"
+          ],
+          "lane": "journey-shard-3",
+          "slots": 2,
           "timeoutMs": 240000,
           "obligations": []
         },
@@ -1143,7 +1175,7 @@
             ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys"
           ],
           "id": "journeys.run",
-          "after": ["journeys.shard-1", "journeys.shard-2"],
+          "after": ["journeys.shard-1", "journeys.shard-2", "journeys.shard-3"],
           "slots": 1,
           "timeoutMs": 30000
         }

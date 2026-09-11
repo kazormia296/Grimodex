@@ -2,7 +2,7 @@
 
 `pnpm ci:local:quick` and `pnpm ci:local:full` read
 `scripts/local-ci-registry.json`. Full maps the existing 16 logical groups and
-52 obligations onto 59 scheduled tasks. The duplicate
+52 obligations onto 60 scheduled tasks. The duplicate
 `workspace_migration_supervisor` failpoint
 invocation is one task whose receipt result names both obligations. Supporting
 shard commands can declare an empty obligation list; the `rust.tests` terminal
@@ -27,6 +27,15 @@ cannot overlap the C2-ZC and other tasks registered on that lane. Each execution
 uses Cargo's target, runner, and dynamic-library environment directly; there is
 no test-executable discovery or replay layer.
 
+The C2-ZC Rust acceptance and restore-fixture tasks use the same debug-free dev
+and test Cargo profiles as the shared workspace compilation. This lets those
+candidate-bound tasks reuse the same compiled profile without changing their
+gates or fixture contract.
+
+The MCP journey dependency build reserves two scheduler admission slots and
+caps Cargo build jobs at two. Cargo may reuse compatible earlier debug-free
+artifacts when their feature, `cfg`, and fingerprint inputs match.
+
 Migration and recovery Rust checks use the separate `cargo-recovery` lane. Its
 first failpoint task starts after dependency bootstrap, so it can overlap the
 shared-Rust lanes while the global slot bound still limits host load. The six
@@ -40,11 +49,18 @@ new command and waits for commands that already started. A Full run has a
 checks, and the external verifier. The four-slot runtime contract task starts
 after workspace dependency bootstrap and can overlap independent gates. Runtime
 performance waits for it and every pre-runtime terminal task, then owns all
-twelve slots as the final group. Product journeys run as two fixed, disjoint
-processes covering 13 and 14 catalog entries. Each process atomically allocates
-a separate Xvfb display and owns a separate artifact directory; a final one-slot
-task rejects missing, duplicate, extra, failed, unclean, or differently bound
-results before writing the existing canonical v5 result and v1 manifest.
+twelve slots as the final group. Product journeys run as three fixed, disjoint
+processes covering nine catalog entries each. Catalog order is retained within
+each shard, and only the shard containing the catalog's C2-ZC acceptance roles
+sets `acceptanceRequired` and can complete C2-ZC acceptance. Each process
+has a calibrated two-slot scheduler admission weight. Exact co-load with all
+three journey processes, four-slot quality contracts, and two-slot browser tests
+fills the twelve-slot limit. The weights control scheduler admission; each
+process retains its own CPU and thread behavior. Each process atomically
+allocates a separate Xvfb display and owns a separate artifact directory; a
+final one-slot task rejects missing, duplicate, extra, failed, unclean, or
+differently bound results before writing the existing canonical v5 result and
+v1 manifest.
 
 Full's deterministic priority order starts bootstrap and recovery work, then
 admits security and renderer checks early enough to avoid resource contention.

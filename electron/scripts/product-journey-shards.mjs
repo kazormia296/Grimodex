@@ -64,9 +64,71 @@ if (
   throw new Error("fixed product journey shards need rebalancing");
 
 export const FIXED_PRODUCT_JOURNEY_SHARDS = Object.freeze([
-  Object.freeze(IDS.slice(0, 13)),
-  Object.freeze(IDS.slice(13)),
+  Object.freeze([
+    "editor-persistence",
+    "chat-stream-workspace-switch",
+    "lint-native-roundtrip",
+    "snapshot-native-roundtrip",
+    "c2-5b-restore-verify-rebuild-verify",
+    "c2-5b-rule-digest-no-skip",
+    "c2-5b-transient-bounded-retry",
+    "c2-zc-canonical-authority-cutover",
+    "c2-zc-renderer-mcp-dml-denial",
+  ]),
+  Object.freeze([
+    "chat-stream-project-switch",
+    "editor-pending-project-switch",
+    "mcp-external-write-conflict",
+    "map-native-roundtrip",
+    "chronicle-extract-review-apply-reopen",
+    "c2-5b-schema-backfill-verify",
+    "c2-5b-producer-generation-no-skip",
+    "c2-5b-interrupted-run-recovery",
+    "c2-5b-incremental-liveness",
+  ]),
+  Object.freeze([
+    "chat-authority-isolation",
+    "workspace-switch-authority",
+    "external-write-conflict",
+    "cross-feature-authoring",
+    "chronicle-native-roundtrip",
+    "c2-5b-graph-digest-no-skip",
+    "c2-5b-terminal-failure-inbox",
+    "c2-5b-no-automatic-repair",
+    "c2-5b-foreground-write-workspace-wake",
+  ]),
 ]);
+
+const acceptanceJourneyIds = new Set(
+  PRODUCT_JOURNEY_CATALOG.filter(
+    ({ acceptanceRole }) => acceptanceRole !== undefined,
+  ).map(({ id }) => id),
+);
+const fixedIds = FIXED_PRODUCT_JOURNEY_SHARDS.flat();
+const acceptanceShardNumbers = FIXED_PRODUCT_JOURNEY_SHARDS.flatMap(
+  (ids, index) =>
+    ids.some((id) => acceptanceJourneyIds.has(id)) ? [index + 1] : [],
+);
+if (
+  FIXED_PRODUCT_JOURNEY_SHARDS.length !== 3 ||
+  FIXED_PRODUCT_JOURNEY_SHARDS.some(
+    (ids) =>
+      ids.length !== 9 ||
+      !isDeepStrictEqual(
+        ids,
+        IDS.filter((id) => ids.includes(id)),
+      ),
+  ) ||
+  fixedIds.length !== IDS.length ||
+  new Set(fixedIds).size !== IDS.length ||
+  fixedIds.some((id) => !IDS.includes(id)) ||
+  IDS.some((id) => !fixedIds.includes(id)) ||
+  acceptanceJourneyIds.size === 0 ||
+  acceptanceShardNumbers.length !== 1
+) {
+  throw new Error("fixed product journey shards need rebalancing");
+}
+const ACCEPTANCE_SHARD_NUMBER = acceptanceShardNumbers[0];
 
 function same(actual, expected, label) {
   if (!isDeepStrictEqual(actual, expected))
@@ -117,8 +179,12 @@ export async function runFixedProductJourneyShard({
 } = {}) {
   assertCanonical(environment);
   const number = Number(shard);
-  if (!Number.isSafeInteger(number) || number < 1 || number > 2) {
-    throw new Error("fixed product journey shard must be 1 or 2");
+  if (
+    !Number.isSafeInteger(number) ||
+    number < 1 ||
+    number > FIXED_PRODUCT_JOURNEY_SHARDS.length
+  ) {
+    throw new Error("fixed product journey shard must be 1, 2, or 3");
   }
   const artifactDirectory = shardDirectory(
     resolveOutput(outputDirectory, root),
@@ -215,7 +281,7 @@ async function assertShard(
     ids,
     `fixed shard ${number} result order`,
   );
-  const c2 = number === 2;
+  const c2 = number === ACCEPTANCE_SHARD_NUMBER;
   const refreshed = refreshProductJourneyOutcome(structuredClone(report));
   if (
     report.version !== 5 ||
@@ -243,7 +309,7 @@ async function assertShard(
     assertC2ZcProductJourneyFixtureSummary(
       report.c2zcRestoreFixture,
       fixture,
-      "fixed shard 2 C2 fixture",
+      `fixed shard ${number} C2 fixture`,
     );
   }
   if (manifest.version !== 1)
@@ -297,7 +363,7 @@ async function publish(output, report, artifacts, root) {
   });
 }
 
-/** Merge two fixed shard reports into the unchanged canonical v5 contract. */
+/** Merge three fixed shard reports into the unchanged canonical v5 contract. */
 export async function aggregateProductJourneyShards({
   outputDirectory,
   root = rootDir,
@@ -309,10 +375,11 @@ export async function aggregateProductJourneyShards({
 } = {}) {
   assertCanonical(environment);
   const output = resolveOutput(outputDirectory, root);
-  const shards = await Promise.all([
-    readShard(output, 1),
-    readShard(output, 2),
-  ]);
+  const shards = await Promise.all(
+    FIXED_PRODUCT_JOURNEY_SHARDS.map((_, index) =>
+      readShard(output, index + 1),
+    ),
+  );
   assertExactUnion(shards);
   const { artifacts } = await assertArtifacts(PRODUCT_JOURNEYS, {
     catalog: PRODUCT_JOURNEY_CATALOG,
@@ -341,12 +408,12 @@ export async function aggregateProductJourneyShards({
   const liveEvidence = { artifacts, buildReceipt, rustAcceptance, fixture };
   for (const shard of shards) await assertShard(shard, liveEvidence);
 
-  const [first, second] = shards.map(({ report }) => report);
+  const acceptanceReport = shards[ACCEPTANCE_SHARD_NUMBER - 1].report;
   const byId = new Map(
-    [...first.journeys, ...second.journeys].map((row) => [row.id, row]),
+    shards.flatMap(({ report }) => report.journeys).map((row) => [row.id, row]),
   );
   const report = {
-    ...second,
+    ...acceptanceReport,
     catalogJourneyIds: IDS,
     journeyIds: IDS,
     requiredJourneyIds: IDS,
@@ -391,7 +458,7 @@ function parseCli(args) {
     return { action: "aggregate", outputDirectory: args[2] };
   }
   throw new Error(
-    "usage: product-journey-shards.mjs run --shard 1|2 --output-dir DIR; or aggregate --output-dir DIR",
+    "usage: product-journey-shards.mjs run --shard 1|2|3 --output-dir DIR; or aggregate --output-dir DIR",
   );
 }
 

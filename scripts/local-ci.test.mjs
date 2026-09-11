@@ -520,7 +520,7 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
   });
 
   assert.equal(result.status, "passed");
-  assert.equal(executed.length, 5);
+  assert.equal(executed.length, 6);
   const rustCommand = executed.find(
     (command) =>
       command.command === "node" &&
@@ -545,6 +545,7 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
       "journeys.mcp-build",
       "journeys.shard-1",
       "journeys.shard-2",
+      "journeys.shard-3",
       "journeys.run",
     ],
   );
@@ -2996,11 +2997,12 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "journeys.mcp-build",
       "journeys.shard-1",
       "journeys.shard-2",
+      "journeys.shard-3",
       "journeys.run",
     ],
   );
-  assert.equal(plan.tasks.length, 59);
-  assert.equal(tasksById.size, 59);
+  assert.equal(plan.tasks.length, 60);
+  assert.equal(tasksById.size, 60);
   assert.equal(obligations.length, 52);
   assert.equal(new Set(obligations).size, 52);
   assert.equal(
@@ -3040,11 +3042,17 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     "c2zc.fixture-verify",
     "webgl.tests",
   ];
-  assert.deepEqual(tasksById.get("journeys.mcp-build").after, [
-    "electron.build",
-    "native.build",
-  ]);
-  for (const shard of ["1", "2"]) {
+  const mcpBuildTask = tasksById.get("journeys.mcp-build");
+  assert.equal(mcpBuildTask.command.command, "pnpm");
+  assert.deepEqual(mcpBuildTask.command.args, ["mcp:build"]);
+  assert.deepEqual(mcpBuildTask.after, ["electron.build", "native.build"]);
+  assert.equal(mcpBuildTask.lane, "cargo-shared");
+  assert.equal(mcpBuildTask.slots, 2);
+  assert.equal(mcpBuildTask.timeoutMs, 180_000);
+  assert.equal(mcpBuildTask.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
+  assert.equal(mcpBuildTask.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
+  assert.equal(mcpBuildTask.command.env.CARGO_BUILD_JOBS, "2");
+  for (const shard of ["1", "2", "3"]) {
     const task = tasksById.get(`journeys.shard-${shard}`);
     assert.equal(task.command.command, "xvfb-run");
     assert.deepEqual(task.command.args, [
@@ -3062,9 +3070,31 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     assert.deepEqual(task.after, shardDependencies);
     assert.deepEqual(task.obligations, []);
     assert.equal(task.lane, `journey-shard-${shard}`);
-    assert.equal(task.slots, 3);
+    assert.equal(task.slots, 2);
     assert.equal(task.timeoutMs, 240_000);
   }
+  const calibratedJourneyCoLoad = [
+    ...["1", "2", "3"].map((shard) => tasksById.get(`journeys.shard-${shard}`)),
+    tasksById.get("quality.contracts"),
+    tasksById.get("browser.tests"),
+  ];
+  assert.deepEqual(
+    calibratedJourneyCoLoad.map(({ id, slots }) => [id, slots]),
+    [
+      ["journeys.shard-1", 2],
+      ["journeys.shard-2", 2],
+      ["journeys.shard-3", 2],
+      ["quality.contracts", 4],
+      ["browser.tests", 2],
+    ],
+  );
+  assert.equal(
+    calibratedJourneyCoLoad.reduce(
+      (usedSlots, task) => usedSlots + task.slots,
+      0,
+    ),
+    registry.maxSlots,
+  );
   const aggregate = tasksById.get("journeys.run");
   assert.equal(aggregate.command.command, "node");
   assert.deepEqual(aggregate.command.args, [
@@ -3074,7 +3104,11 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     journeyArtifactDir,
   ]);
   assert.deepEqual(aggregate.command.env, journeyEnv);
-  assert.deepEqual(aggregate.after, ["journeys.shard-1", "journeys.shard-2"]);
+  assert.deepEqual(aggregate.after, [
+    "journeys.shard-1",
+    "journeys.shard-2",
+    "journeys.shard-3",
+  ]);
   assert.equal(aggregate.obligations, undefined);
   assert.equal(
     obligations.filter((obligation) => obligation === "journeys.run").length,
@@ -3149,6 +3183,8 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
   assert.equal(rustTestsTask.lane, c2Task.lane);
   assert.deepEqual(c2Task.after, ["rust.supervisor-failpoints"]);
   assert.equal(c2Task.slots, 2);
+  assert.equal(c2Task.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
+  assert.equal(c2Task.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
   assert.equal(c2Task.command.env.CARGO_BUILD_JOBS, "2");
   assert.equal(c2Task.command.env.RUST_TEST_THREADS, "2");
   const c2Dependencies = new Set();
@@ -3183,6 +3219,8 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
   for (const id of ["c2zc.fixture-build", "c2zc.fixture-verify"]) {
     const task = tasksById.get(id);
     assert.equal(task.slots, 2);
+    assert.equal(task.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
+    assert.equal(task.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
     assert.equal(task.command.env.CARGO_BUILD_JOBS, "2");
   }
 

@@ -18,9 +18,15 @@ import {
 const catalogIds = PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id);
 const acceptanceJourneyIds = new Set(
   PRODUCT_JOURNEY_CATALOG.filter(
-    (journey) => journey.acceptanceRole === "required",
+    (journey) => journey.acceptanceRole !== undefined,
   ).map((journey) => journey.id),
 );
+
+function shardRequiresAcceptance(shardNumber) {
+  return FIXED_PRODUCT_JOURNEY_SHARDS[shardNumber - 1].some((id) =>
+    acceptanceJourneyIds.has(id),
+  );
+}
 
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -58,7 +64,7 @@ function fixtureSummary() {
 async function writeShard(directory, shardNumber, bindings, mutate = () => {}) {
   await mkdir(directory, { recursive: true });
   const ids = [...FIXED_PRODUCT_JOURNEY_SHARDS[shardNumber - 1]];
-  const acceptanceRequired = shardNumber === 2;
+  const acceptanceRequired = shardRequiresAcceptance(shardNumber);
   const report = {
     version: 5,
     status: "passed",
@@ -170,14 +176,14 @@ async function setupAggregateFixture(t) {
     rustAcceptance,
   };
   const outputDirectory = path.join(root, "product-journeys");
-  const shardDirectories = [
-    path.join(outputDirectory, "shard-1"),
-    path.join(outputDirectory, "shard-2"),
-  ];
-  await Promise.all([
-    writeShard(shardDirectories[0], 1, bindings),
-    writeShard(shardDirectories[1], 2, bindings),
-  ]);
+  const shardDirectories = FIXED_PRODUCT_JOURNEY_SHARDS.map((_, index) =>
+    path.join(outputDirectory, `shard-${index + 1}`),
+  );
+  await Promise.all(
+    shardDirectories.map((directory, index) =>
+      writeShard(directory, index + 1, bindings),
+    ),
+  );
   const dependencies = {
     assertArtifacts: async () => ({ artifacts }),
     readBuildReceipt: () => buildReceipt,
@@ -187,27 +193,64 @@ async function setupAggregateFixture(t) {
   return { bindings, dependencies, outputDirectory, root, shardDirectories };
 }
 
-test("fixed shards are disjoint and cover the current 27-entry catalog in order", () => {
+test("fixed shards are disjoint and preserve catalog order within all 27 entries", () => {
   assert.deepEqual(
     FIXED_PRODUCT_JOURNEY_SHARDS.map((ids) => ids.length),
-    [13, 14],
+    [9, 9, 9],
   );
-  assert.equal(FIXED_PRODUCT_JOURNEY_SHARDS[0][0], "editor-persistence");
-  assert.equal(
-    FIXED_PRODUCT_JOURNEY_SHARDS[0].at(-1),
-    "snapshot-native-roundtrip",
-  );
-  assert.equal(
-    FIXED_PRODUCT_JOURNEY_SHARDS[1][0],
-    "chronicle-extract-review-apply-reopen",
-  );
-  assert.deepEqual(FIXED_PRODUCT_JOURNEY_SHARDS.flat(), catalogIds);
+  assert.deepEqual(FIXED_PRODUCT_JOURNEY_SHARDS, [
+    [
+      "editor-persistence",
+      "chat-stream-workspace-switch",
+      "lint-native-roundtrip",
+      "snapshot-native-roundtrip",
+      "c2-5b-restore-verify-rebuild-verify",
+      "c2-5b-rule-digest-no-skip",
+      "c2-5b-transient-bounded-retry",
+      "c2-zc-canonical-authority-cutover",
+      "c2-zc-renderer-mcp-dml-denial",
+    ],
+    [
+      "chat-stream-project-switch",
+      "editor-pending-project-switch",
+      "mcp-external-write-conflict",
+      "map-native-roundtrip",
+      "chronicle-extract-review-apply-reopen",
+      "c2-5b-schema-backfill-verify",
+      "c2-5b-producer-generation-no-skip",
+      "c2-5b-interrupted-run-recovery",
+      "c2-5b-incremental-liveness",
+    ],
+    [
+      "chat-authority-isolation",
+      "workspace-switch-authority",
+      "external-write-conflict",
+      "cross-feature-authoring",
+      "chronicle-native-roundtrip",
+      "c2-5b-graph-digest-no-skip",
+      "c2-5b-terminal-failure-inbox",
+      "c2-5b-no-automatic-repair",
+      "c2-5b-foreground-write-workspace-wake",
+    ],
+  ]);
   assert.equal(new Set(FIXED_PRODUCT_JOURNEY_SHARDS.flat()).size, 27);
+  assert.deepEqual(
+    new Set(FIXED_PRODUCT_JOURNEY_SHARDS.flat()),
+    new Set(catalogIds),
+  );
+  const catalogIndex = new Map(catalogIds.map((id, index) => [id, index]));
+  for (const shard of FIXED_PRODUCT_JOURNEY_SHARDS) {
+    const positions = shard.map((id) => catalogIndex.get(id));
+    assert.deepEqual(
+      positions,
+      [...positions].sort((a, b) => a - b),
+    );
+  }
   assert.deepEqual(
     FIXED_PRODUCT_JOURNEY_SHARDS.flatMap((ids, index) =>
       ids.some((id) => acceptanceJourneyIds.has(id)) ? [index + 1] : [],
     ),
-    [2],
+    [1],
   );
 });
 
@@ -217,7 +260,7 @@ test("fixed shard runner binds its partition and private artifact directory", as
   let received;
   const marker = {};
   const result = await runFixedProductJourneyShard({
-    shard: 2,
+    shard: 3,
     outputDirectory: "artifacts/product-journeys",
     root,
     environment: { GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL: "true" },
@@ -226,20 +269,20 @@ test("fixed shard runner binds its partition and private artifact directory", as
       return marker;
     },
   });
-  const shardDirectory = path.join(root, "artifacts/product-journeys/shard-2");
+  const shardDirectory = path.join(root, "artifacts/product-journeys/shard-3");
 
   assert.equal(result, marker);
   assert.deepEqual(
     received.journeys.map(({ id }) => id),
-    FIXED_PRODUCT_JOURNEY_SHARDS[1],
+    FIXED_PRODUCT_JOURNEY_SHARDS[2],
   );
   assert.equal(received.artifactJourneys.length, 27);
   assert.deepEqual(
     received.requiredJourneyIds,
-    FIXED_PRODUCT_JOURNEY_SHARDS[1],
+    FIXED_PRODUCT_JOURNEY_SHARDS[2],
   );
   assert.equal(received.requireAll, false);
-  assert.equal(received.selectionName, "fixed-shard-2");
+  assert.equal(received.selectionName, "fixed-shard-3");
   assert.equal(received.resultsPath, path.join(shardDirectory, "results.json"));
   assert.equal(
     received.environment.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR,
@@ -247,7 +290,7 @@ test("fixed shard runner binds its partition and private artifact directory", as
   );
 });
 
-test("aggregate accepts two clean bound shards and writes the canonical v5 result and v1 manifest", async (t) => {
+test("aggregate accepts three clean bound shards and writes the canonical v5 result and v1 manifest", async (t) => {
   const fixture = await setupAggregateFixture(t);
   const report = await aggregateProductJourneyShards({
     ...fixture,
@@ -380,21 +423,21 @@ test("aggregate rejects shard evidence that does not match live acceptance input
   const reportCases = [
     {
       name: "fabricated Rust receipt",
-      shard: 2,
+      shard: 1,
       mutate: (report) => {
         report.c2zcRustAcceptance.receiptSha256 = `sha256:${"f".repeat(64)}`;
       },
     },
     {
       name: "mismatched fixture",
-      shard: 2,
+      shard: 1,
       mutate: (report) => {
         report.c2zcRestoreFixture.fixtureSha256 = `sha256:${"f".repeat(64)}`;
       },
     },
     {
       name: "mismatched build receipt",
-      shard: 1,
+      shard: 2,
       mutate: (report) => {
         report.buildReceipt.candidate.worktreeFingerprint = "f".repeat(64);
       },
