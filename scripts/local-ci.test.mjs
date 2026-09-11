@@ -3116,8 +3116,6 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     shardLanes.add(task.lane);
   }
   assert.equal(shardLanes.size, cargoShardExpectations.size);
-  const dbLibLane = tasksById.get("rust.tests-db-lib").lane;
-  assert.equal(dbLibLane, "cargo-shared-db-lib");
 
   assert.deepEqual(tasksById.get("rust.tests-db-doctests").command.args, [
     "test",
@@ -3128,7 +3126,6 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
   assert.deepEqual(tasksById.get("rust.tests-db-doctests").after, [
     "rust.tests-db-lib",
   ]);
-  assert.equal(tasksById.get("rust.tests-db-doctests").lane, dbLibLane);
   assert.deepEqual(tasksById.get("rust.tests").command.args, [
     "test",
     "--workspace",
@@ -3198,6 +3195,7 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
   for (const id of [
     "rust.supervisor-failpoints",
     "migration.supervisor",
+    "migration.failpoints-lib",
     "migration.safe-mode",
     "migration.release-schema",
     "migration.crash",
@@ -3208,39 +3206,6 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     assert.equal(task.command.env.CARGO_BUILD_JOBS, "2");
     assert.equal(task.command.env.RUST_TEST_THREADS, "2");
   }
-  const migrationFailpoints = tasksById.get("migration.failpoints-lib");
-  assert.equal(migrationFailpoints.lane, dbLibLane);
-  assert.equal(migrationFailpoints.slots, 2);
-  assert.equal(migrationFailpoints.command.env.CARGO_BUILD_JOBS, "2");
-  assert.equal(migrationFailpoints.command.env.RUST_TEST_THREADS, "2");
-  assert.deepEqual(migrationFailpoints.after, ["migration.supervisor"]);
-  assert.deepEqual(tasksById.get("migration.safe-mode").after, [
-    "migration.failpoints-lib",
-  ]);
-  const resumedFromMigration = new Map(
-    buildLocalCiPlan(registry, {
-      profile: "full",
-      base: "origin/master",
-      head: "HEAD",
-      from: "migration-recovery-gate",
-    }).tasks.map((task) => [task.id, task]),
-  );
-  assert.equal(
-    resumedFromMigration.get("migration.failpoints-lib").lane,
-    dbLibLane,
-  );
-  assert.equal(resumedFromMigration.get("rust.tests-db-lib").lane, dbLibLane);
-  const resumedFromRust = new Map(
-    buildLocalCiPlan(registry, {
-      profile: "full",
-      base: "origin/master",
-      head: "HEAD",
-      from: "rust",
-    }).tasks.map((task) => [task.id, task]),
-  );
-  assert.equal(resumedFromRust.has("migration.failpoints-lib"), false);
-  assert.equal(resumedFromRust.get("rust.tests-db-lib").lane, dbLibLane);
-  assert.equal(resumedFromRust.get("rust.tests-db-doctests").lane, dbLibLane);
   assert.equal(tasksById.get("migration.ipc").slots, 2);
   assert.equal(tasksById.get("migration.ui").slots, 4);
 

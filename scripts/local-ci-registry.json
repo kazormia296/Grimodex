@@ -892,7 +892,7 @@
           "cwd": "src-tauri",
           "id": "migration.failpoints-lib",
           "after": ["migration.supervisor"],
-          "lane": "cargo-shared-db-lib",
+          "lane": "cargo-recovery",
           "slots": 2,
           "env": {
             "CARGO_BUILD_JOBS": "2",
