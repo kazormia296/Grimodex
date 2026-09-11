@@ -6,9 +6,9 @@
     "full": [
       "bootstrap",
       "migration-recovery-gate",
-      "rust",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
+      "rust",
       "frontend",
       "electron-product-journeys",
       "electron",
@@ -83,7 +83,7 @@
       "label": "Frontend checks and production artifact",
       "commands": [
         {
-          "label": "Renderer unit tests",
+          "label": "Renderer unit tests (shard 1/2)",
           "command": "pnpm",
           "args": [
             "exec",
@@ -92,11 +92,32 @@
             "vitest.config.ts",
             "--run",
             "--maxWorkers",
-            "4"
+            "2",
+            "--shard",
+            "1/2"
+          ],
+          "id": "frontend.unit-shard-1",
+          "after": ["bootstrap.workspace-build"],
+          "slots": 2,
+          "obligations": []
+        },
+        {
+          "label": "Renderer unit tests (shard 2/2)",
+          "command": "pnpm",
+          "args": [
+            "exec",
+            "vitest",
+            "--config",
+            "vitest.config.ts",
+            "--run",
+            "--maxWorkers",
+            "2",
+            "--shard",
+            "2/2"
           ],
           "id": "frontend.unit",
           "after": ["bootstrap.workspace-build"],
-          "slots": 4
+          "slots": 2
         },
         {
           "label": "Renderer type-check",
@@ -202,14 +223,14 @@
             "--runs",
             "1",
             "--max-workers",
-            "4",
+            "2",
             "--output",
             ".artifacts/browser-ci/browser.json"
           ],
           "id": "browser.tests",
           "after": ["bootstrap.workspace-build", "bootstrap.chromium"],
           "lane": "browser",
-          "slots": 4
+          "slots": 2
         }
       ]
     },
@@ -729,17 +750,14 @@
           ],
           "cwd": ".",
           "id": "c2zc.rust-acceptance",
-          "after": [
-            "rust.check",
-            "rust.clippy",
-            "rust.tests",
-            "rust.supervisor-failpoints",
-            "rust.runtime-authority",
-            "rust.license"
-          ],
+          "after": ["rust.supervisor-failpoints"],
           "lane": "cargo-shared",
-          "slots": 4,
-          "timeoutMs": 240000
+          "slots": 2,
+          "timeoutMs": 240000,
+          "env": {
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
+          }
         }
       ]
     },
@@ -776,7 +794,10 @@
           "id": "c2zc.fixture-build",
           "after": ["c2zc.rust-acceptance"],
           "lane": "cargo-shared",
-          "slots": 4
+          "slots": 2,
+          "env": {
+            "CARGO_BUILD_JOBS": "2"
+          }
         },
         {
           "label": "Verify C2-ZC offline restore fixture",
@@ -804,7 +825,10 @@
           "id": "c2zc.fixture-verify",
           "after": ["c2zc.fixture-build"],
           "lane": "cargo-shared",
-          "slots": 4
+          "slots": 2,
+          "env": {
+            "CARGO_BUILD_JOBS": "2"
+          }
         }
       ]
     },
@@ -970,6 +994,7 @@
             "frontend.lint",
             "frontend.architecture",
             "frontend.browser-contracts",
+            "frontend.unit-shard-1",
             "frontend.unit",
             "frontend.web-build",
             "lfm.dataset",
@@ -983,7 +1008,12 @@
             "native.clippy",
             "native.tests",
             "native.mcp-tests",
-            "journeys.run"
+            "journeys.run",
+            "rust.check",
+            "rust.clippy",
+            "rust.tests",
+            "rust.runtime-authority",
+            "rust.license"
           ],
           "slots": 12,
           "timeoutMs": 90000

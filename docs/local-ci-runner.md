@@ -2,11 +2,14 @@
 
 `pnpm ci:local:quick` and `pnpm ci:local:full` read
 `scripts/local-ci-registry.json`. Full maps the existing 16 logical groups and
-52 obligations onto 57 scheduled tasks. The duplicate
+52 obligations onto 58 scheduled tasks. The duplicate
 `workspace_migration_supervisor` failpoint
 invocation is one task whose receipt result names both obligations. Supporting
 shard commands can declare an empty obligation list; the `rust.tests` terminal
 task carries the original shared-Rust test obligation exactly once.
+The renderer unit suite runs as complementary Vitest `1/2` and `2/2` shards;
+one task carries the existing `frontend.unit` obligation, and both results are
+bound into the receipt.
 
 Each registry command has a stable `id`. `after` lists direct task
 dependencies, `lane` prevents two tasks with the same exclusive lane from

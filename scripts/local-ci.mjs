@@ -79,9 +79,9 @@ const C2ZC_RESTORE_FIXTURE_RUN_ID_PATTERN =
 const C2ZC_FULL_STAGE_ORDER = Object.freeze([
   "bootstrap",
   "migration-recovery-gate",
-  "rust",
   C2ZC_RUST_ACCEPTANCE_GATE_STAGE,
   C2ZC_RESTORE_FIXTURE_STAGE,
+  "rust",
   "frontend",
   "electron-product-journeys",
   "electron",
