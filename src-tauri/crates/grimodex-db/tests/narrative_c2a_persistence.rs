@@ -10,6 +10,9 @@
 //! observation-derived semantic payload.  Every digest below is computed by
 //! the shared Native canonicalizer; there are no placeholder digests.
 
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::{
     self, AppendRevisionPayload, ArtifactInput, ChronicleStageC1ExecutionBinding,
@@ -178,8 +181,7 @@ mod material_roster_diagnostics {
 }
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         conn.execute(
             "INSERT INTO projects (id, title) VALUES (?1, ?2)",

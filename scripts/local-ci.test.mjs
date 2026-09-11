@@ -29,6 +29,7 @@ import {
   buildLocalCiPlan,
   captureC2ZcRestoreFixtureEvidence,
   collectProductJourneyEvidence,
+  createLocalCiPlanDescriptor,
   expectedC2ZcAcceptanceForPlan,
   parseLocalCiArgs,
   prepareLocalCiArtifacts,
@@ -38,6 +39,7 @@ import {
   validateLocalCiCandidate,
   validateLocalCiRegistry,
   verifyLocalCiReceipt,
+  verifyLocalCiTaskEvidence,
 } from "./local-ci.mjs";
 import {
   C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
@@ -63,6 +65,15 @@ async function read(relativePath) {
 
 async function readRegistry() {
   return JSON.parse(await read("scripts/local-ci-registry.json"));
+}
+
+function productFixtureCommands(registry) {
+  const commands = registry.stages["electron-product-journeys"].commands;
+  const mcpBuild = commands.find(({ id }) => id === "journeys.mcp-build");
+  const aggregate = commands.find(({ id }) => id === "journeys.run");
+  assert.ok(mcpBuild, "product fixture requires journeys.mcp-build");
+  assert.ok(aggregate, "product fixture requires journeys.run");
+  return { aggregate, mcpBuild };
 }
 
 function completeCandidate(overrides = {}) {
@@ -206,8 +217,8 @@ function fullStageBindingPlan({ productJourneySet = "not-c2zc" } = {}) {
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
       "migration-recovery-gate",
-      "electron-runtime-performance",
       "electron-product-journeys",
+      "electron-runtime-performance",
     ].map((id, index) => ({
       id,
       label: `stage-${index}`,
@@ -501,7 +512,7 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
   });
 
   assert.equal(result.status, "passed");
-  assert.equal(executed.length, 3);
+  assert.equal(executed.length, 5);
   const rustCommand = executed.find(
     (command) =>
       command.command === "node" &&
@@ -517,13 +528,24 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
     "origin/master",
   );
   assert.equal(rustCommand.env.GRIMODEX_C2ZC_RUST_REQUESTED_HEAD, "HEAD");
-  const productCommand = executed.find(
-    (command) => command.label === "Run every product journey",
+  const productCommands = executed.filter(({ id }) =>
+    id?.startsWith("journeys."),
   );
-  assert.equal(
-    productCommand.env.GRIMODEX_C2ZC_RUST_RECEIPT_SHA256,
-    receipt.receiptSha256,
+  assert.deepEqual(
+    productCommands.map(({ id }) => id),
+    [
+      "journeys.mcp-build",
+      "journeys.shard-1",
+      "journeys.shard-2",
+      "journeys.run",
+    ],
   );
+  for (const command of productCommands.slice(1)) {
+    assert.equal(
+      command.env.GRIMODEX_C2ZC_RUST_RECEIPT_SHA256,
+      receipt.receiptSha256,
+    );
+  }
   assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 17);
   assert.equal(C2ZC_RUST_ACCEPTANCE_GATES[0].argv.command, "cargo");
   assert.match(
@@ -580,6 +602,7 @@ test("local Full builds and verifies an external C2-ZC fixture before passing it
   ]);
 
   const registry = await readRegistry();
+  const { aggregate, mcpBuild } = productFixtureCommands(registry);
   registry.stages["electron-product-journeys"] = {
     label: "C2-ZC product journeys",
     env: {
@@ -589,14 +612,17 @@ test("local Full builds and verifies an external C2-ZC fixture before passing it
     },
     commands: [
       {
+        ...mcpBuild,
         label: "Build MCP journey dependency",
         command: "pnpm",
         args: ["mcp:build"],
       },
       {
+        ...aggregate,
         label: "Run every product journey",
         command: "pnpm",
         args: ["electron:product-journeys"],
+        after: ["journeys.mcp-build"],
       },
     ],
   };
@@ -1321,6 +1347,7 @@ test("local Full passes the verified copied fixture to product journeys, never t
     writeFile(rendererPath, "renderer"),
   ]);
   const registry = await readRegistry();
+  const { aggregate, mcpBuild } = productFixtureCommands(registry);
   registry.stages["electron-product-journeys"] = {
     label: "C2-ZC product journeys",
     env: {
@@ -1329,8 +1356,21 @@ test("local Full passes the verified copied fixture to product journeys, never t
       GRIMODEX_NODE_PATH: nativePath,
     },
     commands: [
-      { label: "build", command: "build", args: [], cwd: "." },
-      { label: "journeys", command: "journeys", args: [], cwd: "." },
+      {
+        ...mcpBuild,
+        label: "build",
+        command: "build",
+        args: [],
+        cwd: ".",
+      },
+      {
+        ...aggregate,
+        label: "journeys",
+        command: "journeys",
+        args: [],
+        cwd: ".",
+        after: ["journeys.mcp-build"],
+      },
     ],
   };
   const full = buildLocalCiPlan(registry, {
@@ -1515,6 +1555,7 @@ test("local CI records the selected C2-ZC build artifact identities in the produ
     writeFile(nativePath, "native"),
   ]);
   const registry = await readRegistry();
+  const { aggregate, mcpBuild } = productFixtureCommands(registry);
   registry.stages["electron-product-journeys"] = {
     label: "C2-ZC product journeys",
     env: {
@@ -1523,8 +1564,21 @@ test("local CI records the selected C2-ZC build artifact identities in the produ
       GRIMODEX_NODE_PATH: nativePath,
     },
     commands: [
-      { label: "build", command: "build", args: [], cwd: "." },
-      { label: "journeys", command: "journeys", args: [], cwd: "." },
+      {
+        ...mcpBuild,
+        label: "build",
+        command: "build",
+        args: [],
+        cwd: ".",
+      },
+      {
+        ...aggregate,
+        label: "journeys",
+        command: "journeys",
+        args: [],
+        cwd: ".",
+        after: ["journeys.mcp-build"],
+      },
     ],
   };
   const full = buildLocalCiPlan(registry, {
@@ -1589,6 +1643,7 @@ test("local CI does not self-attest a product build receipt before the build com
     writeFile(nativePath, "native"),
   ]);
   const registry = await readRegistry();
+  const { aggregate, mcpBuild } = productFixtureCommands(registry);
   registry.stages["electron-product-journeys"] = {
     label: "C2-ZC product journeys",
     env: {
@@ -1597,8 +1652,21 @@ test("local CI does not self-attest a product build receipt before the build com
       GRIMODEX_NODE_PATH: nativePath,
     },
     commands: [
-      { label: "build", command: "build", args: [], cwd: "." },
-      { label: "journeys", command: "journeys", args: [], cwd: "." },
+      {
+        ...mcpBuild,
+        label: "build",
+        command: "build",
+        args: [],
+        cwd: ".",
+      },
+      {
+        ...aggregate,
+        label: "journeys",
+        command: "journeys",
+        args: [],
+        cwd: ".",
+        after: ["journeys.mcp-build"],
+      },
     ],
   };
   const full = buildLocalCiPlan(registry, {
@@ -1983,6 +2051,74 @@ test("Full receipt verification binds every planned stage and command", () => {
     verifyLocalCiReceipt(receipt, { profile: "full", candidate, plan }),
   );
 
+  const runOwnedPlan = fullStageBindingPlan();
+  const artifactDirectory =
+    ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys";
+  const runOwnedPlanCommand = runOwnedPlan.stages.find(
+    ({ id }) => id === "electron-product-journeys",
+  ).commands[0];
+  runOwnedPlanCommand.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR =
+    artifactDirectory;
+  const runOwnedReceipt = {
+    ...receipt,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    stages: passedStagesForPlan(runOwnedPlan),
+  };
+  const runOwnedReceiptCommand = runOwnedReceipt.stages.find(
+    ({ id }) => id === "electron-product-journeys",
+  ).commands[0];
+  runOwnedReceiptCommand.env = {
+    ...runOwnedReceiptCommand.env,
+    GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: artifactDirectory.replaceAll(
+      "__LOCAL_CI_RUN_ID__",
+      LOCAL_CI_TEST_RUN_ID,
+    ),
+  };
+  assert.doesNotThrow(() =>
+    verifyLocalCiReceipt(runOwnedReceipt, {
+      profile: "full",
+      candidate,
+      plan: runOwnedPlan,
+    }),
+  );
+  assert.equal(
+    runOwnedPlanCommand.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR,
+    artifactDirectory,
+  );
+
+  const wrongRunReceipt = structuredClone(runOwnedReceipt);
+  wrongRunReceipt.stages.find(
+    ({ id }) => id === "electron-product-journeys",
+  ).commands[0].env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR =
+    artifactDirectory.replaceAll(
+      "__LOCAL_CI_RUN_ID__",
+      "88888888-8888-4888-8888-888888888888",
+    );
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(wrongRunReceipt, {
+        profile: "full",
+        candidate,
+        plan: runOwnedPlan,
+      }),
+    /env does not match the planned command/u,
+  );
+
+  for (const runId of [undefined, "../wrong-run"]) {
+    const invalidRunReceipt = structuredClone(runOwnedReceipt);
+    if (runId === undefined) delete invalidRunReceipt.runId;
+    else invalidRunReceipt.runId = runId;
+    assert.throws(
+      () =>
+        verifyLocalCiReceipt(invalidRunReceipt, {
+          profile: "full",
+          candidate,
+          plan: runOwnedPlan,
+        }),
+      /run must be a UUIDv4/u,
+    );
+  }
+
   for (const [label, mutate] of [
     ["missing stage", (mutated) => mutated.stages.pop()],
     ["reordered stage", (mutated) => mutated.stages.reverse()],
@@ -2100,8 +2236,8 @@ test("Full receipt verification binds every planned stage and command", () => {
       plan: customPlan,
     }),
   );
-  customReceipt.stages.at(
-    -1,
+  customReceipt.stages.find(
+    ({ id }) => id === "electron-product-journeys",
   ).commands[0].env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE = "origin/master";
   assert.throws(
     () =>
@@ -2253,6 +2389,9 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   const artifactRoot = path.join(
     temporaryRoot,
     ".artifacts",
+    "local-ci",
+    "runs",
+    LOCAL_CI_TEST_RUN_ID,
     "product-journeys",
   );
   const resultsPath = path.join(artifactRoot, "results.json");
@@ -2351,7 +2490,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
           {
             env: {
               GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR:
-                ".artifacts/product-journeys",
+                ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys",
               GRIMODEX_NODE_PATH: nativePath,
               GRIMODEX_MCP_PATH: mcpRequestedPath,
             },
@@ -2360,15 +2499,27 @@ test("Full product journey evidence binds result and manifest bytes to the recei
       },
     ],
   };
-  const evidence = await collectProductJourneyEvidence(plan, {
-    root: temporaryRoot,
-  });
+  const collectEvidence = (options = {}) =>
+    collectProductJourneyEvidence(plan, {
+      root: temporaryRoot,
+      runId: LOCAL_CI_TEST_RUN_ID,
+      ...options,
+    });
+  await assert.rejects(
+    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    /Product journey evidence run must be a UUIDv4/u,
+  );
+  const evidence = await collectEvidence();
+  assert.equal(
+    plan.stages[0].commands[0].env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR,
+    ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys",
+  );
   assert.deepEqual(evidence.journeyIds, journeyIds);
   assert.equal(evidence.results.sha256, resultsSha256);
   assert.equal(evidence.artifacts.length, 6);
   assert.equal(
     evidence.manifest.path,
-    ".artifacts/product-journeys/manifest.json",
+    `.artifacts/local-ci/runs/${LOCAL_CI_TEST_RUN_ID}/product-journeys/manifest.json`,
   );
   assert.match(evidence.artifactDigest, /^sha256:[0-9a-f]{64}$/);
 
@@ -2399,10 +2550,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     `${JSON.stringify(missingManifestArtifact, null, 2)}\n`,
     "utf8",
   );
-  await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
-    /exactly .*build artifacts|missing/i,
-  );
+  await assert.rejects(collectEvidence(), /exactly .*build artifacts|missing/i);
   await writeFile(manifestPath, manifestText, "utf8");
 
   const reorderedManifest = JSON.parse(manifestText);
@@ -2413,7 +2561,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     "utf8",
   );
   await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    collectEvidence(),
     /exactly|order|artifact/i,
     "manifest artifact order mutation must be rejected",
   );
@@ -2427,7 +2575,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     "utf8",
   );
   await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    collectEvidence(),
     /size|artifact/i,
     "manifest artifact size mutation must be rejected",
   );
@@ -2464,14 +2612,14 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     "utf8",
   );
   await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    collectEvidence(),
     /changed after preflight|artifact.*mismatch/i,
   );
   await writeFile(manifestPath, manifestText, "utf8");
 
   await writeFile(mainPath, "electron main tampered", "utf8");
   await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    collectEvidence(),
     /changed after preflight|artifact.*mismatch/i,
   );
   await writeFile(mainPath, "electron main", "utf8");
@@ -2479,17 +2627,14 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   await rm(mcpRequestedPath);
   await symlink(path.basename(mcpTargetB), mcpRequestedPath);
   await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    collectEvidence(),
     /changed after preflight|artifact.*mismatch/i,
   );
   await rm(mcpRequestedPath);
   await symlink(path.basename(mcpTargetA), mcpRequestedPath);
 
   await rm(nativePath);
-  await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
-    /ENOENT|regular file|artifact/i,
-  );
+  await assert.rejects(collectEvidence(), /ENOENT|regular file|artifact/i);
 
   await writeFile(nativePath, "native module", "utf8");
   const rustReceipt = await createC2ZcRustAcceptanceReceipt({
@@ -2556,10 +2701,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     `${JSON.stringify(acceptedManifest, null, 2)}\n`,
     "utf8",
   );
-  const acceptedEvidence = await collectProductJourneyEvidence(plan, {
-    candidate,
-    root: temporaryRoot,
-  });
+  const acceptedEvidence = await collectEvidence({ candidate });
   assert.equal(acceptedEvidence.acceptanceRequired, true);
   assert.equal(acceptedEvidence.acceptanceComplete, true);
   assert.equal(
@@ -2660,7 +2802,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     "utf8",
   );
   await assert.rejects(
-    collectProductJourneyEvidence(plan, { candidate, root: temporaryRoot }),
+    collectEvidence({ candidate }),
     /does not bind|match|receipt/i,
   );
 });
@@ -2701,8 +2843,620 @@ test("package scripts expose canonical local CI entrypoints", async () => {
     packageJson.scripts["ci:local:verify"],
     "node scripts/local-ci.mjs --verify",
   );
+  assert.equal(
+    packageJson.scripts["ci:build:desktop"],
+    "node electron/scripts/build.mjs && pnpm exec vite build",
+  );
+  assert.equal(
+    packageJson.scripts["ci:verify:quality"],
+    packageJson.scripts["verify:quality"].replace(
+      "pnpm eval:narrative",
+      "pnpm ci:eval:narrative",
+    ),
+  );
+  assert.equal(
+    packageJson.scripts["ci:eval:narrative"]
+      .replace(/^vitest --config vitest\.config\.ts /u, "")
+      .replace(/ --maxWorkers 4$/u, ""),
+    packageJson.scripts["eval:narrative"].replace(/^pnpm test:node /u, ""),
+  );
+  assert.doesNotMatch(
+    packageJson.scripts["ci:eval:narrative"],
+    /build:workspace:dependencies/u,
+  );
   assert.match(packageJson.scripts["test:quality"], /local-ci\.test\.mjs/);
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /^node --test --test-concurrency=4 /u,
+  );
+  assert.match(
+    packageJson.scripts["test:browser-ci"],
+    /^node --test --test-concurrency=2 /u,
+  );
+  assert.match(
+    packageJson.scripts["test:product-journey-contracts"],
+    /electron\/scripts\/product-journey-shards\.test\.mjs/u,
+  );
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /local-ci-runner\.test\.mjs/,
+  );
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /local-ci-process-supervisor\.test\.mjs/,
+  );
   assert.match(packageJson.scripts["test:quality"], /ci-pause\.test\.mjs/);
+});
+
+test("Full task plan preserves obligations across Cargo-native Rust shards", async () => {
+  const registry = await readRegistry();
+  const plan = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const tasksById = new Map(plan.tasks.map((task) => [task.id, task]));
+  const obligations = plan.tasks.flatMap(
+    (task) => task.obligations ?? [task.id],
+  );
+
+  assert.equal(plan.tasks.length, 57);
+  assert.equal(tasksById.size, 57);
+  assert.equal(obligations.length, 52);
+  assert.equal(new Set(obligations).size, 52);
+  assert.deepEqual(tasksById.get("rust.supervisor-failpoints").obligations, [
+    "rust.supervisor-failpoints",
+    "migration.supervisor-failpoints",
+  ]);
+  assert.equal(
+    obligations.filter((obligation) => obligation === "rust.tests").length,
+    1,
+  );
+
+  const journeyArtifactDir =
+    ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys";
+  const journeyEnv = {
+    CI: "true",
+    CARGO_PROFILE_DEV_DEBUG: "0",
+    CARGO_PROFILE_TEST_DEBUG: "0",
+    GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: journeyArtifactDir,
+    GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL: "true",
+    GRIMODEX_PRODUCT_JOURNEY_IDS: "",
+    GRIMODEX_PRODUCT_JOURNEY_SET: "",
+    GRIMODEX_C2ZC_RUST_RECEIPT_PATH:
+      ".artifacts/local-ci/c2-zc-rust-acceptance.json",
+    GRIMODEX_C2ZC_RUST_REQUESTED_BASE: "origin/master",
+    GRIMODEX_C2ZC_RUST_REQUESTED_HEAD: "HEAD",
+  };
+  const shardDependencies = [
+    "journeys.mcp-build",
+    "native.public-tests",
+    "c2zc.fixture-verify",
+    "browser.tests",
+    "webgl.tests",
+    "storybook.tests",
+  ];
+  for (const shard of ["1", "2"]) {
+    const task = tasksById.get(`journeys.shard-${shard}`);
+    assert.equal(task.command.command, "xvfb-run");
+    assert.deepEqual(task.command.args, [
+      "--auto-servernum",
+      "--server-args=-screen 0 1920x1080x24",
+      "node",
+      "electron/scripts/product-journey-shards.mjs",
+      "run",
+      "--shard",
+      shard,
+      "--output-dir",
+      journeyArtifactDir,
+    ]);
+    assert.deepEqual(task.command.env, journeyEnv);
+    assert.deepEqual(task.after, shardDependencies);
+    assert.deepEqual(task.obligations, []);
+    assert.equal(task.lane, `journey-shard-${shard}`);
+    assert.equal(task.slots, 3);
+    assert.equal(task.timeoutMs, 240_000);
+  }
+  const aggregate = tasksById.get("journeys.run");
+  assert.equal(aggregate.command.command, "node");
+  assert.deepEqual(aggregate.command.args, [
+    "electron/scripts/product-journey-shards.mjs",
+    "aggregate",
+    "--output-dir",
+    journeyArtifactDir,
+  ]);
+  assert.deepEqual(aggregate.command.env, journeyEnv);
+  assert.deepEqual(aggregate.after, ["journeys.shard-1", "journeys.shard-2"]);
+  assert.equal(aggregate.obligations, undefined);
+  assert.equal(
+    obligations.filter((obligation) => obligation === "journeys.run").length,
+    1,
+  );
+
+  const cargoShardExpectations = new Map([
+    ["rust.tests-db-lib", ["test", "-p", "grimodex-db", "--lib"]],
+    [
+      "rust.tests-db-integrations",
+      ["test", "-p", "grimodex-db", "--test", "*", "--bin", "schema-contract"],
+    ],
+    [
+      "rust.tests-other-workspace",
+      [
+        "test",
+        "--workspace",
+        "--exclude",
+        "grimodex",
+        "--exclude",
+        "grimodex-db",
+        "--features",
+        "grimodex-semantic/semantic-embedding",
+      ],
+    ],
+  ]);
+  const shardLanes = new Set();
+  for (const [id, args] of cargoShardExpectations) {
+    const task = tasksById.get(id);
+    assert.equal(task.command.command, "cargo");
+    assert.deepEqual(task.command.args, args);
+    assert.equal(task.command.cwd, "src-tauri");
+    assert.equal(task.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
+    assert.equal(task.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
+    assert.equal(task.command.env.CARGO_BUILD_JOBS, "2");
+    assert.equal(task.command.env.RUST_TEST_THREADS, "2");
+    assert.equal(task.slots, 2);
+    assert.deepEqual(task.obligations, []);
+    shardLanes.add(task.lane);
+  }
+  assert.equal(shardLanes.size, cargoShardExpectations.size);
+
+  assert.deepEqual(tasksById.get("rust.tests-db-doctests").command.args, [
+    "test",
+    "-p",
+    "grimodex-db",
+    "--doc",
+  ]);
+  assert.deepEqual(tasksById.get("rust.tests-db-doctests").after, [
+    "rust.tests-db-lib",
+  ]);
+  assert.deepEqual(tasksById.get("rust.tests").command.args, [
+    "test",
+    "--workspace",
+    "--exclude",
+    "grimodex",
+    "--features",
+    "grimodex-semantic/semantic-embedding",
+    "--no-run",
+  ]);
+  assert.deepEqual(tasksById.get("rust.tests").after, [
+    "rust.tests-db-lib",
+    "rust.tests-db-integrations",
+    "rust.tests-other-workspace",
+    "rust.tests-db-doctests",
+  ]);
+  assert.deepEqual(tasksById.get("rust.tests").obligations, ["rust.tests"]);
+  const c2Dependencies = new Set();
+  const visitC2Dependency = (id) => {
+    for (const dependency of tasksById.get(id).after) {
+      if (c2Dependencies.has(dependency)) continue;
+      c2Dependencies.add(dependency);
+      visitC2Dependency(dependency);
+    }
+  };
+  visitC2Dependency("c2zc.rust-acceptance");
+  for (const id of [
+    ...cargoShardExpectations.keys(),
+    "rust.tests-db-doctests",
+    "rust.tests",
+  ]) {
+    assert.ok(c2Dependencies.has(id), `${id} must gate C2-ZC Rust acceptance`);
+  }
+
+  assert.equal(
+    tasksById.get("rust.supervisor-failpoints").lane,
+    "cargo-recovery",
+  );
+  assert.deepEqual(tasksById.get("rust.supervisor-failpoints").after, [
+    "bootstrap.install",
+  ]);
+  assert.deepEqual(tasksById.get("migration.supervisor").after, [
+    "rust.supervisor-failpoints",
+  ]);
+  for (const id of [
+    "migration.supervisor",
+    "migration.failpoints-lib",
+    "migration.safe-mode",
+    "migration.release-schema",
+    "migration.crash",
+  ]) {
+    assert.equal(tasksById.get(id).lane, "cargo-recovery");
+  }
+
+  assert.equal(registry.maxSlots, 12);
+  assert.equal(plan.stages.at(-1).id, "electron-runtime-performance");
+  assert.equal(plan.tasks.at(-1).id, "runtime.benchmark");
+  assert.equal(plan.tasks.at(-1).slots, registry.maxSlots);
+  assert.ok(plan.tasks.at(-1).after.includes("runtime.contracts"));
+  const preRuntimeTasks = plan.tasks.filter(
+    ({ id }) => !id.startsWith("runtime."),
+  );
+  const dependedOnBeforeRuntime = new Set(
+    preRuntimeTasks.flatMap(({ after }) => after),
+  );
+  const preRuntimeTerminals = preRuntimeTasks
+    .filter(({ id }) => !dependedOnBeforeRuntime.has(id))
+    .map(({ id }) => id)
+    .sort();
+  assert.deepEqual(
+    [...tasksById.get("runtime.contracts").after].sort(),
+    preRuntimeTerminals,
+  );
+  assert.equal(tasksById.get("runtime.contracts").slots, registry.maxSlots);
+  assert.match(
+    plan.tasks
+      .find(({ id }) => id === "frontend.web-build")
+      .command.args.join(" "),
+    /__LOCAL_CI_RUN_ID__\/web-editor/u,
+  );
+  assert.deepEqual(
+    plan.tasks.find(({ id }) => id === "electron.build").command.args,
+    ["ci:build:desktop"],
+  );
+  assert.deepEqual(plan.tasks.find(({ id }) => id === "electron.build").after, [
+    "electron.typecheck",
+  ]);
+  assert.equal(
+    plan.tasks.find(({ id }) => id === "electron.build").lane,
+    undefined,
+  );
+  assert.equal(
+    plan.tasks.find(({ id }) => id === "frontend.web-build").lane,
+    undefined,
+  );
+  assert.deepEqual(
+    plan.tasks.find(({ id }) => id === "quality.contracts").command.args,
+    ["ci:verify:quality"],
+  );
+  assert.equal(
+    plan.tasks.find(({ id }) => id === "frontend.browser-contracts").slots,
+    2,
+  );
+  assert.ok(
+    plan.tasks
+      .find(({ id }) => id === "electron.contracts")
+      .command.args.includes("--test-concurrency=4"),
+  );
+  assert.deepEqual(
+    plan.tasks.find(({ id }) => id === "electron.unit").command.args.slice(-2),
+    ["--maxWorkers", "4"],
+  );
+  assert.deepEqual(
+    plan.tasks.find(({ id }) => id === "migration.ui").command.args.slice(0, 5),
+    ["exec", "vitest", "--run", "--maxWorkers", "4"],
+  );
+  assert.equal(
+    plan.tasks.find(({ id }) => id === "journeys.run").command.env
+      .GRIMODEX_PRODUCT_JOURNEY_WORKERS,
+    undefined,
+  );
+});
+
+test("receipt plan binding rejects descriptor changes and Full over 600 seconds", async () => {
+  const registry = await readRegistry();
+  const plan = buildLocalCiPlan(registry, {
+    profile: "quick",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const candidate = completeCandidate();
+  const receipt = {
+    version: 3,
+    profile: "quick",
+    status: "passed",
+    coverage: plan.coverage,
+    candidate,
+    candidateAfter: candidate,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    durationMs: 10,
+    registryDigest: plan.registryDigest,
+    plan: createLocalCiPlanDescriptor(plan),
+    tasks: [
+      {
+        id: "impact.select",
+        status: "passed",
+        exitCode: 0,
+        signal: null,
+        cleanup: { complete: true },
+        durationMs: 1,
+        logs: {
+          stdout: {
+            path: `.artifacts/local-ci/runs/${LOCAL_CI_TEST_RUN_ID}/logs/impact.select.stdout.log`,
+            size: 0,
+            sha256: `sha256:${"0".repeat(64)}`,
+          },
+          stderr: {
+            path: `.artifacts/local-ci/runs/${LOCAL_CI_TEST_RUN_ID}/logs/impact.select.stderr.log`,
+            size: 0,
+            sha256: `sha256:${"0".repeat(64)}`,
+          },
+        },
+      },
+    ],
+  };
+  assert.equal(
+    verifyLocalCiReceipt(receipt, { candidate, plan, profile: "quick" }),
+    receipt,
+  );
+
+  const tampered = structuredClone(receipt);
+  tampered.plan.tasks[0].command.args.push("--changed");
+  assert.throws(
+    () => verifyLocalCiReceipt(tampered, { candidate, plan, profile: "quick" }),
+    /exact task plan/u,
+  );
+
+  const missingCandidateAfter = structuredClone(receipt);
+  delete missingCandidateAfter.candidateAfter;
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(missingCandidateAfter, {
+        candidate,
+        plan,
+        profile: "quick",
+      }),
+    /post-run candidate binding/u,
+  );
+
+  const timedOut = structuredClone(receipt);
+  timedOut.tasks[0].timedOut = true;
+  assert.throws(
+    () => verifyLocalCiReceipt(timedOut, { candidate, plan, profile: "quick" }),
+    /did not pass cleanly/u,
+  );
+
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(
+        {
+          ...receipt,
+          profile: "full",
+          coverage: { completeness: "complete", fromStage: null },
+          durationMs: 600_001,
+        },
+        { candidate, plan: { ...plan, profile: "full" }, profile: "full" },
+      ),
+    /600000/u,
+  );
+});
+
+test("task log verification detects tampering and does not rewrite evidence", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-ci-log-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const relativeLogRoot = `.artifacts/local-ci/runs/${LOCAL_CI_TEST_RUN_ID}/logs`;
+  const stdoutPath = path.join(
+    temporaryRoot,
+    relativeLogRoot,
+    "task.stdout.log",
+  );
+  const stderrPath = path.join(
+    temporaryRoot,
+    relativeLogRoot,
+    "task.stderr.log",
+  );
+  await mkdir(path.dirname(stdoutPath), { recursive: true });
+  await Promise.all([
+    writeFile(stdoutPath, "original"),
+    writeFile(stderrPath, "original"),
+  ]);
+  const identity = (stream) => ({
+    path: `${relativeLogRoot}/task.${stream}.log`,
+    size: 8,
+    sha256: `sha256:${createHash("sha256").update("original").digest("hex")}`,
+  });
+  const receipt = {
+    runId: LOCAL_CI_TEST_RUN_ID,
+    tasks: [
+      {
+        id: "task",
+        status: "passed",
+        exitCode: 0,
+        signal: null,
+        cleanup: { complete: true },
+        logs: { stdout: identity("stdout"), stderr: identity("stderr") },
+      },
+    ],
+  };
+  const before = JSON.stringify(receipt);
+  await verifyLocalCiTaskEvidence(receipt, { root: temporaryRoot });
+  assert.equal(JSON.stringify(receipt), before);
+
+  await writeFile(stdoutPath, "tampered");
+  await assert.rejects(
+    verifyLocalCiTaskEvidence(receipt, { root: temporaryRoot }),
+    /log identity changed/u,
+  );
+});
+
+test("concurrent plan execution preserves dependency and receipt ordering", async () => {
+  const runId = LOCAL_CI_TEST_RUN_ID;
+  const command = (id, argument) => ({
+    id,
+    label: id,
+    command: "test-command",
+    args: [argument],
+    cwd: ".",
+    env: {},
+  });
+  const prepare = command("prepare", "__LOCAL_CI_RUN_ID__");
+  const fails = command("fails", "fails");
+  const later = command("later", "later");
+  const task = (entry, stageId, commandIndex, after = []) => ({
+    id: entry.id,
+    stageId,
+    stageLabel: stageId,
+    commandIndex,
+    command: {
+      label: entry.label,
+      command: entry.command,
+      args: entry.args,
+      cwd: entry.cwd,
+      env: entry.env,
+    },
+    after,
+  });
+  const plan = {
+    profile: "quick",
+    comparison: { base: "origin/master", head: "HEAD" },
+    coverage: { completeness: "complete", fromStage: null },
+    maxSlots: 2,
+    registryDigest: `sha256:${"a".repeat(64)}`,
+    releaseOnlyJobs: [],
+    stages: [
+      { id: "first", label: "first", commands: [prepare] },
+      { id: "second", label: "second", commands: [fails, later] },
+    ],
+    tasks: [
+      task(prepare, "first", 0),
+      task(fails, "second", 0, ["prepare"]),
+      task(later, "second", 1, ["fails"]),
+    ],
+  };
+  const executed = [];
+  const result = await runLocalCiPlan(plan, {
+    candidate: completeCandidate(),
+    concurrent: true,
+    runId,
+    async executeCommand(entry, { taskId }) {
+      executed.push({ id: taskId, args: entry.args });
+      const logs = Object.fromEntries(
+        ["stdout", "stderr"].map((stream) => [
+          stream,
+          {
+            path: `.artifacts/local-ci/runs/${runId}/logs/${taskId}.${stream}.log`,
+            size: 0,
+            sha256: `sha256:${"0".repeat(64)}`,
+          },
+        ]),
+      );
+      return {
+        cleanup: { complete: true },
+        durationMs: 1,
+        exitCode: taskId === "fails" ? 1 : 0,
+        logs,
+        signal: null,
+      };
+    },
+  });
+
+  assert.deepEqual(executed, [
+    { id: "prepare", args: [runId] },
+    { id: "fails", args: ["fails"] },
+  ]);
+  assert.deepEqual(
+    result.tasks.map(({ id, status }) => [id, status]),
+    [
+      ["prepare", "passed"],
+      ["fails", "failed"],
+      ["later", "not-run"],
+    ],
+  );
+  assert.deepEqual(
+    result.stages.map((stage) => [
+      stage.id,
+      stage.status,
+      stage.commands.map(({ id }) => id),
+    ]),
+    [
+      ["first", "passed", ["prepare"]],
+      ["second", "failed", ["fails", "later"]],
+    ],
+  );
+  assert.equal(result.stages[0].commands[0].args[0], runId);
+  assert.equal(result.tasks[0].cleanup.complete, true);
+});
+
+test("concurrent plan forwards run scope and external abort to the supervisor", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-ci-run-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = LOCAL_CI_TEST_RUN_ID;
+  const ready = path.join(temporaryRoot, "ready");
+  const command = {
+    id: "node-command",
+    label: "node command",
+    command: process.execPath,
+    args: [
+      "--input-type=commonjs",
+      "-e",
+      `process.stdout.write('scoped');require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000)`,
+    ],
+    cwd: ".",
+    env: {},
+  };
+  const plan = {
+    profile: "quick",
+    comparison: { base: "origin/master", head: "HEAD" },
+    coverage: { completeness: "complete", fromStage: null },
+    maxSlots: 1,
+    registryDigest: `sha256:${"a".repeat(64)}`,
+    releaseOnlyJobs: [],
+    stages: [{ id: "only", label: "only", commands: [command] }],
+    tasks: [
+      {
+        id: command.id,
+        stageId: "only",
+        stageLabel: "only",
+        commandIndex: 0,
+        command: {
+          label: command.label,
+          command: command.command,
+          args: command.args,
+          cwd: command.cwd,
+          env: command.env,
+        },
+        after: [],
+      },
+    ],
+  };
+
+  const controller = new AbortController();
+  const running = runLocalCiPlan(plan, {
+    candidate: completeCandidate(),
+    concurrent: true,
+    root: temporaryRoot,
+    runId,
+    signal: controller.signal,
+  });
+  while (true) {
+    try {
+      await readFile(ready);
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  controller.abort(new Error("test interrupt"));
+  const result = await running;
+
+  const task = result.tasks[0];
+  assert.equal(result.status, "failed");
+  assert.equal(result.interrupted, true);
+  assert.equal(task.interrupted, true);
+  assert.equal(task.cleanup.complete, true);
+  assert.equal(
+    task.logs.stdout.path,
+    `.artifacts/local-ci/runs/${runId}/logs/node-command.stdout.log`,
+  );
+  assert.equal(
+    await readFile(path.join(temporaryRoot, task.logs.stdout.path), "utf8"),
+    "scoped",
+  );
+  assert.throws(
+    () => process.kill(-task.pid, 0),
+    (error) => error?.code === "ESRCH",
+  );
 });
 
 test("AI workflow authorities require local Quick and complete Full evidence", async () => {

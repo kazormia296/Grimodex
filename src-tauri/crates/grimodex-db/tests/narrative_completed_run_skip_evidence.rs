@@ -4,6 +4,9 @@
 //! fail-closed decision. They do not start the Electron scheduler or any
 //! Verify/Rebuild production trigger.
 
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::narrative_extraction::maintenance_skip_evidence::{
     evaluate_completed_run_skip, persist_completed_run_skip_evidence,
     persist_completed_run_skip_evidence_in_tx, read_completed_run_skip_evidence,
@@ -32,8 +35,7 @@ const RUN_CONTRACT_VERSION: &str = VERIFY_RUN_KIND_CONTRACT_VERSION;
 const REBUILD_RUN_ID: &str = "run-c2-5b-b-rebuild";
 
 fn fixture_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         ensure_test_schema(conn)?;
         conn.execute(

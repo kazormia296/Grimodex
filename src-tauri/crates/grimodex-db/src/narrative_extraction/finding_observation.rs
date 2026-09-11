@@ -1885,9 +1885,7 @@ mod tests {
     use crate::Database;
 
     fn open_db() -> Database {
-        let db = Database::new(std::path::Path::new(":memory:")).expect("open db");
-        db.migrate().expect("migrate");
-        db
+        crate::test_support::current_schema_memory().expect("current-schema fixture")
     }
 
     fn seed_project_and_epoch(conn: &Connection, project_id: &str, epoch_id: &str) {

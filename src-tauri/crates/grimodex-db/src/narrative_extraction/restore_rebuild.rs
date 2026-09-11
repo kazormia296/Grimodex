@@ -4299,6 +4299,14 @@ mod tests {
     fn test_db() -> Database {
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
         db.migrate().expect("migrate");
+        seed_database(db)
+    }
+
+    fn current_schema_db() -> Database {
+        seed_database(crate::test_support::current_schema_memory().expect("current-schema fixture"))
+    }
+
+    fn seed_database(db: Database) -> Database {
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
@@ -4785,7 +4793,7 @@ mod tests {
 
     #[test]
     fn verify_reports_no_missing_sources_when_every_edge_resolves() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
 
         let report = db
@@ -4803,7 +4811,7 @@ mod tests {
 
     #[test]
     fn verify_detects_a_deleted_scene_source_as_missing() {
-        let db = test_db();
+        let db = current_schema_db();
         let healthy_id = seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
         let missing_id = seed_run_edge(
             &db,
@@ -4823,7 +4831,7 @@ mod tests {
 
     #[test]
     fn verify_treats_an_unrecognized_source_identity_shape_as_missing() {
-        let db = test_db();
+        let db = current_schema_db();
         let unrecognized_id = seed_run_edge(&db, "project-1", "run-1", "totally:unknown:identity");
 
         let report = db
@@ -4836,7 +4844,7 @@ mod tests {
 
     #[test]
     fn verify_is_scoped_to_the_named_run_and_project() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_run_edge(
             &db,
             "project-1",
@@ -4861,7 +4869,7 @@ mod tests {
 
     #[test]
     fn repair_deletes_only_the_named_edges() {
-        let db = test_db();
+        let db = current_schema_db();
         let keep_id = seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
         let broken_id = seed_run_edge(
             &db,
@@ -4890,7 +4898,7 @@ mod tests {
 
     #[test]
     fn repair_does_not_touch_another_projects_edges() {
-        let db = test_db();
+        let db = current_schema_db();
         let project_1_edge = seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
         let project_2_edge = seed_run_edge(&db, "project-2", "run-1", "project:scene:scene-live");
 
@@ -4923,7 +4931,7 @@ mod tests {
 
     #[test]
     fn repair_with_empty_edge_ids_is_a_no_op() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
 
         let deleted = db
@@ -4957,7 +4965,7 @@ mod tests {
 
     #[test]
     fn evaluate_edge_from_db_reports_fresh_when_stored_token_matches_current() {
-        let db = test_db();
+        let db = current_schema_db();
         let current_token = current_scene_revision_token(&db, "scene-live");
         let edge_id = db
             .with_conn(|conn| {
@@ -4990,7 +4998,7 @@ mod tests {
 
     #[test]
     fn evaluate_edge_from_db_reports_stale_when_stored_token_is_outdated() {
-        let db = test_db();
+        let db = current_schema_db();
         let edge_id = db
             .with_conn(|conn| {
                 record_dependency_edge_in_tx(
@@ -5025,7 +5033,7 @@ mod tests {
 
     #[test]
     fn evaluate_edge_from_db_reports_source_missing_for_a_deleted_scene() {
-        let db = test_db();
+        let db = current_schema_db();
         let edge_id = db
             .with_conn(|conn| {
                 record_dependency_edge_in_tx(
@@ -5060,7 +5068,7 @@ mod tests {
 
     #[test]
     fn evaluate_edge_from_db_treats_an_unrecognized_source_identity_as_missing() {
-        let db = test_db();
+        let db = current_schema_db();
         let edge_id = db
             .with_conn(|conn| {
                 record_dependency_edge_in_tx(
@@ -5563,7 +5571,7 @@ mod tests {
 
     #[test]
     fn project_verify_reports_missing_and_malformed_across_every_consumer() {
-        let db = test_db();
+        let db = current_schema_db();
         let healthy_id = seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
         let missing_id = seed_run_edge(
             &db,
@@ -5591,7 +5599,7 @@ mod tests {
 
     #[test]
     fn project_verify_is_clean_with_only_healthy_edges() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
 
         let report = db
@@ -5641,7 +5649,7 @@ mod tests {
 
     #[test]
     fn project_verify_rejects_reserved_semantic_index_checks_without_all_counts() {
-        let db = test_db();
+        let db = current_schema_db();
         let mut report = db
             .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
@@ -5671,7 +5679,7 @@ mod tests {
 
     #[test]
     fn reserved_semantic_index_checks_ignore_unrelated_embedding_chunks() {
-        let db = test_db();
+        let db = current_schema_db();
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO scene_chunks
@@ -5731,7 +5739,7 @@ mod tests {
 
     #[test]
     fn project_verify_reports_a_missing_revision_artifact_reference() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_application_fixture(&db, "application-1", "commit-1", "proposal-1", "revision-1");
         db.with_conn(|conn| {
             conn.execute(
@@ -5782,7 +5790,7 @@ mod tests {
 
     #[test]
     fn project_verify_reports_an_application_with_a_missing_commit() {
-        let db = test_db();
+        let db = current_schema_db();
         db.with_conn(|conn| {
             // A missing Commit is project-scoped only when its Proposal Set
             // supplies the authoritative owner.  Keep the fixture inside
@@ -7501,7 +7509,7 @@ mod tests {
     /// no longer attached to anything.
     #[test]
     fn project_verify_reports_an_attention_row_whose_consumer_no_longer_exists() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
         db.with_conn(|conn| {
             for (finding_key, disposition) in [

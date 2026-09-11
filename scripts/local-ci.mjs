@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import {
   copyFile,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rename,
@@ -45,6 +46,9 @@ import {
   C2ZC_RUST_ACCEPTANCE_RECEIPT_PATH,
   verifyC2ZcRustAcceptanceReceipt,
 } from "./c2zc-rust-acceptance-receipt.mjs";
+import { validateWebEditorArtifact } from "./validate-web-editor-artifact.mjs";
+import { runLocalCiTasks, validateLocalCiTasks } from "./local-ci-runner.mjs";
+import { runLocalCiCommand } from "./local-ci-process-supervisor.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -77,9 +81,10 @@ const C2ZC_FULL_STAGE_ORDER = Object.freeze([
   C2ZC_RUST_ACCEPTANCE_GATE_STAGE,
   C2ZC_RESTORE_FIXTURE_STAGE,
   "migration-recovery-gate",
-  "electron-runtime-performance",
   "electron-product-journeys",
+  "electron-runtime-performance",
 ]);
+const LOCAL_CI_FULL_DEADLINE_MS = 600_000;
 const C2ZC_RESTORE_FIXTURE_DIAGNOSTIC_VERSION = 1;
 const C2ZC_RESTORE_FIXTURE_DIAGNOSTIC_MAX_ERROR_LENGTH = 512;
 const C2ZC_RUST_REQUESTED_BASE_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_BASE";
@@ -256,6 +261,9 @@ export function validateLocalCiRegistry(registry) {
     throw new Error("local CI registry version must be 1");
   }
   requireString(registry.defaultBase, "local CI defaultBase");
+  if (!Number.isSafeInteger(registry.maxSlots) || registry.maxSlots < 1) {
+    throw new Error("local CI maxSlots must be a positive integer");
+  }
   if (!isPlainObject(registry.profiles)) {
     throw new Error("local CI profiles must be an object");
   }
@@ -283,6 +291,31 @@ export function validateLocalCiRegistry(registry) {
       requireString(command.label, `${label} label`);
       requireString(command.command, `${label} command`);
       requireStringArray(command.args, `${label} args`);
+      requireString(command.id, `${label} id`);
+      requireStringArray(command.after ?? [], `${label} after`);
+      assertUnique(command.after ?? [], `${label} after`);
+      if (
+        command.lane !== undefined &&
+        (typeof command.lane !== "string" || command.lane.length === 0)
+      ) {
+        throw new Error(`${label} lane must be a non-empty string`);
+      }
+      if (
+        command.slots !== undefined &&
+        (!Number.isSafeInteger(command.slots) || command.slots < 1)
+      ) {
+        throw new Error(`${label} slots must be a positive integer`);
+      }
+      if (
+        command.timeoutMs !== undefined &&
+        (!Number.isSafeInteger(command.timeoutMs) || command.timeoutMs < 1)
+      ) {
+        throw new Error(`${label} timeoutMs must be a positive integer`);
+      }
+      if (command.obligations !== undefined) {
+        requireStringArray(command.obligations, `${label} obligations`);
+        assertUnique(command.obligations, `${label} obligations`);
+      }
       validateWorkingDirectory(command.cwd, `${label} cwd`);
       validateEnvironment(command.env, `${label} env`);
       if (
@@ -318,6 +351,20 @@ export function validateLocalCiRegistry(registry) {
     registry.profiles.full,
     "local CI full profile C2-ZC stages",
   );
+
+  const allCommands = Object.values(registry.stages).flatMap(
+    (stage) => stage.commands,
+  );
+  validateLocalCiTasks(allCommands, { maxSlots: registry.maxSlots });
+  const fullCommands = registry.profiles.full.flatMap(
+    (stageId) => registry.stages[stageId].commands,
+  );
+  const obligations = fullCommands.flatMap(
+    (command) => command.obligations ?? [command.id],
+  );
+  if (obligations.length !== 52 || new Set(obligations).size !== 52) {
+    throw new Error("local CI Full must map exactly 52 unique obligations");
+  }
 
   for (const [jobId, coverage] of Object.entries(registry.hostedJobs)) {
     requireString(jobId, "hosted CI job id");
@@ -367,11 +414,43 @@ function resolveCommand(command, stage, comparison) {
     );
   }
   return {
+    id: command.id,
     label: command.label,
     command: command.command,
     args,
     cwd: command.cwd ?? ".",
     env: { ...(stage.env ?? {}), ...(command.env ?? {}) },
+    ...(command.after === undefined ? {} : { after: [...command.after] }),
+    ...(command.lane === undefined ? {} : { lane: command.lane }),
+    ...(command.slots === undefined ? {} : { slots: command.slots }),
+    ...(command.timeoutMs === undefined
+      ? {}
+      : { timeoutMs: command.timeoutMs }),
+    ...(command.obligations === undefined
+      ? {}
+      : { obligations: [...command.obligations] }),
+  };
+}
+
+function taskCommandDescriptor(command) {
+  return {
+    label: command.label,
+    command: command.command,
+    args: [...command.args],
+    cwd: command.cwd,
+    env: { ...command.env },
+  };
+}
+
+export function createLocalCiPlanDescriptor(plan) {
+  return {
+    profile: plan.profile,
+    comparison: plan.comparison,
+    coverage: plan.coverage,
+    registryDigest: plan.registryDigest,
+    maxSlots: plan.maxSlots,
+    releaseOnlyJobs: plan.releaseOnlyJobs,
+    tasks: plan.tasks,
   };
 }
 
@@ -411,6 +490,27 @@ export function buildLocalCiPlan(
           .filter(([, coverage]) => coverage.releaseOnly)
           .map(([id, coverage]) => ({ id, reason: coverage.reason }))
       : [];
+  const includedTaskIds = new Set(
+    stages.flatMap((stage) => stage.commands.map((command) => command.id)),
+  );
+  const tasks = stages.flatMap((stage) =>
+    stage.commands.map((command, commandIndex) => ({
+      id: command.id,
+      stageId: stage.id,
+      stageLabel: stage.label,
+      commandIndex,
+      command: taskCommandDescriptor(command),
+      after: (command.after ?? []).filter((id) => includedTaskIds.has(id)),
+      ...(command.lane === undefined ? {} : { lane: command.lane }),
+      ...(command.slots === undefined ? {} : { slots: command.slots }),
+      ...(command.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: command.timeoutMs }),
+      ...(command.obligations === undefined
+        ? {}
+        : { obligations: [...command.obligations] }),
+    })),
+  );
   return {
     comparison,
     coverage: {
@@ -418,8 +518,11 @@ export function buildLocalCiPlan(
       fromStage: from,
     },
     profile,
+    maxSlots: registry.maxSlots,
+    registryDigest: digestJson(registry),
     releaseOnlyJobs,
     stages,
+    tasks,
   };
 }
 
@@ -607,7 +710,7 @@ async function collectArtifactFiles(directory, { root }) {
 
 function resolveProductJourneyArtifactDirectory(
   plan,
-  { root = repoRoot } = {},
+  { root = repoRoot, runId = null } = {},
 ) {
   const stage = plan.stages.find(
     (candidate) => candidate.id === "electron-product-journeys",
@@ -615,7 +718,15 @@ function resolveProductJourneyArtifactDirectory(
   const configured = stage?.commands
     .map((command) => command.env?.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR)
     .find((value) => value !== undefined && value !== "");
-  return path.resolve(root, configured ?? PRODUCT_JOURNEY_ARTIFACT_DIR);
+  const artifactDirectory = configured ?? PRODUCT_JOURNEY_ARTIFACT_DIR;
+  if (!artifactDirectory.includes("__LOCAL_CI_RUN_ID__")) {
+    return path.resolve(root, artifactDirectory);
+  }
+  assertC2ZcRestoreFixtureRunId(runId, "Product journey evidence run");
+  return path.resolve(
+    root,
+    artifactDirectory.replaceAll("__LOCAL_CI_RUN_ID__", runId),
+  );
 }
 
 function resolveC2ZcRustAcceptanceReceiptPath(plan, { root = repoRoot } = {}) {
@@ -1562,9 +1673,17 @@ function productJourneySelectionForPlan(plan, report) {
 /** Collect and validate the immutable product-journey evidence for a Full receipt. */
 export async function collectProductJourneyEvidence(
   plan,
-  { candidate = null, root = repoRoot, restoreFixtureEvidence = null } = {},
+  {
+    candidate = null,
+    root = repoRoot,
+    restoreFixtureEvidence = null,
+    runId = null,
+  } = {},
 ) {
-  const artifactRoot = resolveProductJourneyArtifactDirectory(plan, { root });
+  const artifactRoot = resolveProductJourneyArtifactDirectory(plan, {
+    root,
+    runId,
+  });
   const resultsPath = path.join(artifactRoot, "results.json");
   const manifestPath = path.join(artifactRoot, "manifest.json");
   const files = await collectArtifactFiles(artifactRoot, { root });
@@ -1984,7 +2103,7 @@ function verifyProductJourneyEvidence(
 function assertFullReceiptCommandArgs(
   receiptArgs,
   plannedArgs,
-  { stageId, plan, candidate, label },
+  { stageId, plan, candidate, label, runId },
 ) {
   if (!Array.isArray(receiptArgs) || !Array.isArray(plannedArgs)) {
     throw new Error(`${label} args must match the planned command.`);
@@ -1995,6 +2114,21 @@ function assertFullReceiptCommandArgs(
   for (const [index, plannedArg] of plannedArgs.entries()) {
     const option = index > 0 ? plannedArgs[index - 1] : null;
     const receiptArg = receiptArgs[index];
+    if (
+      typeof plannedArg === "string" &&
+      plannedArg.includes("__LOCAL_CI_RUN_ID__")
+    ) {
+      const expectedArg =
+        typeof runId === "string"
+          ? plannedArg.replaceAll("__LOCAL_CI_RUN_ID__", runId)
+          : plannedArg;
+      if (receiptArg !== expectedArg) {
+        throw new Error(
+          `${label} run-specific path does not match the receipt.`,
+        );
+      }
+      continue;
+    }
     if (stageId === C2ZC_RESTORE_FIXTURE_STAGE) {
       if (
         option === "--repo-root" ||
@@ -2038,10 +2172,22 @@ function assertFullReceiptCommandArgs(
 function assertFullReceiptCommandEnvironment(
   receiptEnv,
   plannedEnv,
-  { stageId, plan, candidate, label },
+  { stageId, plan, candidate, label, runId },
 ) {
   const actual = isPlainObject(receiptEnv) ? receiptEnv : {};
   const expected = isPlainObject(plannedEnv) ? { ...plannedEnv } : {};
+  const runSpecificKeys = Object.entries(expected)
+    .filter(
+      ([, value]) =>
+        typeof value === "string" && value.includes("__LOCAL_CI_RUN_ID__"),
+    )
+    .map(([key]) => key);
+  if (runSpecificKeys.length > 0) {
+    assertC2ZcRestoreFixtureRunId(runId, `${label} run`);
+    for (const key of runSpecificKeys) {
+      expected[key] = expected[key].replaceAll("__LOCAL_CI_RUN_ID__", runId);
+    }
+  }
   const isDynamicallyBoundStage =
     stageId === C2ZC_RUST_ACCEPTANCE_GATE_STAGE ||
     stageId === "electron-product-journeys";
@@ -2121,7 +2267,7 @@ function assertC2ZcFixtureReceiptPathCoherence(receiptStage, plannedStage) {
   }
 }
 
-function assertFullReceiptStageBinding(receiptStages, plan, candidate) {
+function assertFullReceiptStageBinding(receiptStages, plan, candidate, runId) {
   if (
     !isPlainObject(plan) ||
     plan.profile !== "full" ||
@@ -2205,6 +2351,7 @@ function assertFullReceiptStageBinding(receiptStages, plan, candidate) {
         plan,
         candidate,
         label: commandLabel,
+        runId,
       });
       if (receiptCommand.cwd !== plannedCommand.cwd) {
         throw new Error(
@@ -2219,6 +2366,7 @@ function assertFullReceiptStageBinding(receiptStages, plan, candidate) {
           plan,
           candidate,
           label: commandLabel,
+          runId,
         },
       );
     }
@@ -2226,6 +2374,114 @@ function assertFullReceiptStageBinding(receiptStages, plan, candidate) {
       assertC2ZcFixtureReceiptPathCoherence(receiptStage, plannedStage);
     }
   }
+}
+
+function assertTaskLogIdentity(log, label, expectedPath = null) {
+  if (
+    !isPlainObject(log) ||
+    typeof log.path !== "string" ||
+    log.path.length === 0 ||
+    path.isAbsolute(log.path) ||
+    log.path.split(/[\\/]/u).includes("..") ||
+    !Number.isSafeInteger(log.size) ||
+    log.size < 0 ||
+    !/^sha256:[0-9a-f]{64}$/u.test(log.sha256 ?? "")
+  ) {
+    throw new Error(`${label} is invalid`);
+  }
+  if (expectedPath !== null && log.path !== expectedPath) {
+    throw new Error(`${label} does not match its run-specific path`);
+  }
+}
+
+function assertExactTaskReceipt(receipt, plan, { required = false } = {}) {
+  const hasTaskEvidence =
+    receipt.tasks !== undefined || receipt.plan !== undefined;
+  if (!required && !hasTaskEvidence) return;
+  if (!Array.isArray(plan?.tasks)) {
+    throw new Error("Local CI task receipt requires an exact task plan.");
+  }
+  assertC2ZcRestoreFixtureRunId(receipt.runId, "Local CI task receipt");
+  if (
+    receipt.registryDigest !== plan.registryDigest ||
+    JSON.stringify(receipt.plan) !==
+      JSON.stringify(createLocalCiPlanDescriptor(plan))
+  ) {
+    throw new Error("Local CI receipt does not match the exact task plan.");
+  }
+  if (
+    !Array.isArray(receipt.tasks) ||
+    receipt.tasks.length !== plan.tasks.length
+  ) {
+    throw new Error("Local CI receipt must contain every exact task result.");
+  }
+  for (const [index, task] of plan.tasks.entries()) {
+    const result = receipt.tasks[index];
+    if (
+      !isPlainObject(result) ||
+      result.id !== task.id ||
+      result.status !== "passed" ||
+      result.exitCode !== 0 ||
+      result.signal !== null ||
+      result.cleanup?.complete !== true ||
+      result.interrupted === true ||
+      result.timedOut === true ||
+      result.error !== undefined
+    ) {
+      throw new Error(`Local CI task ${task.id} did not pass cleanly.`);
+    }
+    for (const stream of ["stdout", "stderr"]) {
+      assertTaskLogIdentity(
+        result.logs?.[stream],
+        `Local CI task ${task.id} ${stream} log`,
+        path.posix.join(
+          ".artifacts",
+          "local-ci",
+          "runs",
+          receipt.runId,
+          "logs",
+          `${task.id}.${stream}.log`,
+        ),
+      );
+    }
+  }
+}
+
+export async function verifyLocalCiTaskEvidence(
+  receipt,
+  { root = repoRoot } = {},
+) {
+  if (!Array.isArray(receipt?.tasks)) {
+    throw new Error("Local CI task evidence is required.");
+  }
+  assertC2ZcRestoreFixtureRunId(receipt.runId, "Local CI task evidence");
+  for (const task of receipt.tasks) {
+    for (const stream of ["stdout", "stderr"]) {
+      const expected = task.logs?.[stream];
+      assertTaskLogIdentity(
+        expected,
+        `Local CI task ${task.id} ${stream} log`,
+        path.posix.join(
+          ".artifacts",
+          "local-ci",
+          "runs",
+          receipt.runId,
+          "logs",
+          `${task.id}.${stream}.log`,
+        ),
+      );
+      const current = await resolveArtifactEvidence(expected.path, { root });
+      if (
+        current.size !== expected.size ||
+        current.sha256 !== expected.sha256
+      ) {
+        throw new Error(
+          `Local CI task ${task.id} ${stream} log identity changed.`,
+        );
+      }
+    }
+  }
+  return receipt;
 }
 
 export function verifyLocalCiReceipt(
@@ -2236,6 +2492,7 @@ export function verifyLocalCiReceipt(
     currentProductJourneyEvidence = null,
     currentC2ZcRestoreFixtureEvidence = null,
     plan = null,
+    requireTaskEvidence = false,
   },
 ) {
   if (!isPlainObject(receipt) || receipt.version !== LOCAL_CI_RECEIPT_VERSION) {
@@ -2257,9 +2514,40 @@ export function verifyLocalCiReceipt(
   if (profile === "full" && receipt.candidate?.worktreeClean !== true) {
     throw new Error("A clean-worktree Full local CI receipt is required.");
   }
+  if (
+    profile === "full" &&
+    (requireTaskEvidence || receipt.durationMs !== undefined) &&
+    (!Number.isSafeInteger(receipt.durationMs) ||
+      receipt.durationMs > LOCAL_CI_FULL_DEADLINE_MS)
+  ) {
+    throw new Error("Full local CI receipt exceeds 600000 ms.");
+  }
   verifyCandidateBinding(receipt.candidate, candidate);
+  const hasTaskEvidence =
+    receipt.tasks !== undefined || receipt.plan !== undefined;
+  if (
+    (requireTaskEvidence || hasTaskEvidence) &&
+    receipt.candidateAfter === undefined
+  ) {
+    throw new Error(
+      "Local CI task receipt requires the post-run candidate binding.",
+    );
+  }
+  if (receipt.candidateAfter !== undefined) {
+    verifyCandidateBinding(receipt.candidateAfter, candidate);
+    verifyCandidateBinding(receipt.candidate, receipt.candidateAfter);
+  }
+  if (receipt.deadlineExceeded === true) {
+    throw new Error("Local CI receipt exceeded its execution deadline.");
+  }
+  assertExactTaskReceipt(receipt, plan, { required: requireTaskEvidence });
   if (profile === "full") {
-    assertFullReceiptStageBinding(receipt.stages, plan, candidate);
+    assertFullReceiptStageBinding(
+      receipt.stages,
+      plan,
+      candidate,
+      receipt.runId,
+    );
     const expectedC2ZcAcceptance =
       plan?.profile === "full" ? expectedC2ZcAcceptanceForPlan(plan) : null;
     if (
@@ -2340,34 +2628,22 @@ export function parseLocalCiArgs(argv) {
   return result;
 }
 
-function executeCommand(entry, { root = repoRoot } = {}) {
-  return new Promise((resolve) => {
-    const started = performance.now();
-    const executable =
-      process.platform === "win32" && entry.command === "pnpm"
-        ? "pnpm.cmd"
-        : entry.command;
-    const child = spawn(executable, entry.args, {
-      cwd: path.resolve(root, entry.cwd),
-      env: { ...process.env, ...entry.env },
-      shell: false,
-      stdio: "inherit",
-    });
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      resolve({
-        durationMs: Math.round(performance.now() - started),
-        ...result,
-      });
-    };
-    child.once("error", (error) =>
-      finish({ error: error.message, exitCode: null, signal: null }),
-    );
-    child.once("exit", (exitCode, signal) =>
-      finish({ exitCode, signal: signal ?? null }),
-    );
+function executeCommand(
+  entry,
+  {
+    logDirectory = ".artifacts/local-ci/logs",
+    root = repoRoot,
+    signal = null,
+    taskId = entry.id ?? `command-${randomUUID()}`,
+    timeoutMs = entry.timeoutMs,
+  } = {},
+) {
+  return runLocalCiCommand(entry, {
+    logDirectory,
+    root,
+    signal,
+    taskId,
+    timeoutMs,
   });
 }
 
@@ -2569,22 +2845,302 @@ async function bindC2ZcProductJourneyCommand(
   };
 }
 
+function bindRunId(command, runId) {
+  const replace = (value) => value.replaceAll("__LOCAL_CI_RUN_ID__", runId);
+  return {
+    ...command,
+    args: command.args.map(replace),
+    env: Object.fromEntries(
+      Object.entries(command.env ?? {}).map(([key, value]) => [
+        key,
+        replace(value),
+      ]),
+    ),
+  };
+}
+
+function executionPassed(execution) {
+  return (
+    execution.exitCode === 0 &&
+    execution.signal == null &&
+    execution.cleanup?.complete === true &&
+    execution.interrupted !== true &&
+    execution.timedOut !== true &&
+    execution.error === undefined
+  );
+}
+
+async function validateRunSpecificWebArtifact(command, { root, runId }) {
+  const outputIndex = command.args.indexOf("--outDir");
+  const expected = path.join(
+    ".artifacts",
+    "local-ci",
+    "runs",
+    runId,
+    "web-editor",
+  );
+  if (outputIndex === -1 || command.args[outputIndex + 1] !== expected) {
+    throw new Error(
+      "Web Editor build must use its exact run-specific output path",
+    );
+  }
+  await validateWebEditorArtifact(path.resolve(root, expected));
+}
+
+async function runConcurrentLocalCiPlan(
+  plan,
+  {
+    candidate,
+    deadlineMs,
+    execute,
+    logDirectory,
+    notify,
+    productJourneyEvidence,
+    root,
+    runId,
+    signal,
+  },
+) {
+  const startedAt = new Date().toISOString();
+  const started = performance.now();
+  const completed = new Map();
+  const commandRecords = new Map();
+  let c2zcRestoreFixtureContext = null;
+  let c2zcRestoreFixtureDiagnostic = null;
+  let c2zcRestoreFixtureEvidenceOwned = false;
+
+  const scheduled = await runLocalCiTasks(plan.tasks, {
+    deadlineMs,
+    maxSlots: plan.maxSlots,
+    signal,
+    notify(event) {
+      if (event.type === "task-start") {
+        notify({
+          command: event.task.command,
+          stage: { id: event.task.stageId, label: event.task.stageLabel },
+          type: "command-start",
+        });
+      }
+    },
+    async executeTask(task, { signal }) {
+      let command = task.command;
+      const fixtureBinding = await bindC2ZcRestoreFixtureCommand(
+        command,
+        task.stageId,
+        {
+          root,
+          plan,
+          candidate,
+          context: c2zcRestoreFixtureContext,
+        },
+      );
+      c2zcRestoreFixtureContext = fixtureBinding.context;
+      command = bindC2ZcRustGateCommand(command, task.stageId, {
+        plan,
+        candidate,
+      });
+      command = await bindC2ZcProductJourneyCommand(
+        {
+          ...command,
+          ...(fixtureBinding.command === task.command
+            ? {}
+            : { args: fixtureBinding.command.args }),
+        },
+        task.stageId,
+        {
+          root,
+          plan,
+          candidate,
+          restoreFixtureEvidence: c2zcRestoreFixtureContext?.evidence,
+          buildStagePassed:
+            completed.get("journeys.mcp-build")?.status === "passed",
+        },
+      );
+      command = bindRunId(command, runId);
+
+      let execution;
+      try {
+        execution = await execute(command, {
+          logDirectory,
+          root,
+          signal,
+          taskId: task.id,
+          timeoutMs: task.timeoutMs,
+        });
+      } catch (error) {
+        execution = {
+          ...(isPlainObject(error?.result) ? error.result : {}),
+          cleanup: error?.result?.cleanup ?? { complete: false },
+          durationMs: error?.result?.durationMs ?? 0,
+          error: error instanceof Error ? error.message : String(error),
+          exitCode: error?.result?.exitCode ?? null,
+          signal: error?.result?.signal ?? null,
+        };
+      }
+      execution = {
+        ...execution,
+        cleanup: execution.cleanup ?? { complete: true },
+      };
+
+      if (executionPassed(execution) && task.id === "frontend.web-build") {
+        try {
+          await validateRunSpecificWebArtifact(command, { root, runId });
+        } catch (error) {
+          execution = {
+            ...execution,
+            error: error instanceof Error ? error.message : String(error),
+            exitCode: 1,
+          };
+        }
+      }
+
+      if (
+        executionPassed(execution) &&
+        task.stageId === C2ZC_RESTORE_FIXTURE_STAGE
+      ) {
+        try {
+          const operation = fixtureCommandOperation(command);
+          await validateC2ZcRestoreFixtureContext(c2zcRestoreFixtureContext);
+          if (operation === "verify") {
+            c2zcRestoreFixtureContext.evidence =
+              await captureC2ZcRestoreFixtureEvidence(
+                c2zcRestoreFixtureContext,
+                root,
+                { runId },
+              );
+            c2zcRestoreFixtureEvidenceOwned = true;
+          }
+        } catch (error) {
+          execution = {
+            ...execution,
+            error: error instanceof Error ? error.message : String(error),
+            exitCode: 1,
+          };
+        }
+      }
+      const status = executionPassed(execution) ? "passed" : "failed";
+      if (task.stageId === C2ZC_RESTORE_FIXTURE_STAGE && status === "failed") {
+        if (c2zcRestoreFixtureEvidenceOwned) {
+          await removeCopiedC2ZcRestoreFixture(root, runId);
+          c2zcRestoreFixtureEvidenceOwned = false;
+        }
+        c2zcRestoreFixtureDiagnostic = c2zcFixtureDiagnostic({
+          runId,
+          stage: task.stageId,
+          command,
+          operation: fixtureCommandOperation(command),
+          candidate,
+          error: execution.error ?? "C2-ZC fixture command failed",
+        });
+      }
+      completed.set(task.id, { status });
+      commandRecords.set(task.id, { command, execution });
+      notify({
+        command,
+        execution,
+        stage: { id: task.stageId, label: task.stageLabel },
+        status,
+        type: "command-end",
+      });
+      return execution;
+    },
+  });
+
+  if (c2zcRestoreFixtureContext?.outputDir) {
+    await rm(c2zcRestoreFixtureContext.outputDir, {
+      recursive: true,
+      force: true,
+    });
+    c2zcRestoreFixtureContext.outputDir = null;
+  }
+
+  const taskResults = new Map(
+    scheduled.tasks.map((result) => [result.id, result]),
+  );
+  const stages = plan.stages.map((stage) => {
+    const commands = stage.commands.map((planned) => {
+      const result = taskResults.get(planned.id);
+      const record = commandRecords.get(planned.id);
+      return {
+        ...(record?.command ?? planned),
+        ...result,
+      };
+    });
+    const status = commands.some((command) => command.status === "failed")
+      ? "failed"
+      : commands.every((command) => command.status === "passed")
+        ? "passed"
+        : "not-run";
+    return {
+      id: stage.id,
+      label: stage.label,
+      status,
+      durationMs: commands.reduce(
+        (total, command) => total + (command.durationMs ?? 0),
+        0,
+      ),
+      commands,
+    };
+  });
+
+  return {
+    version: LOCAL_CI_RECEIPT_VERSION,
+    profile: plan.profile,
+    comparison: plan.comparison,
+    coverage: plan.coverage,
+    candidate,
+    runId,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    durationMs: Math.round(performance.now() - started),
+    status: scheduled.status,
+    deadlineExceeded: scheduled.deadlineExceeded,
+    interrupted: scheduled.interrupted,
+    registryDigest: plan.registryDigest,
+    plan: createLocalCiPlanDescriptor(plan),
+    tasks: scheduled.tasks,
+    c2zcRestoreFixture: c2zcRestoreFixtureContext?.evidence ?? null,
+    c2zcRestoreFixtureDiagnostic,
+    productJourneyEvidence,
+    releaseOnlyJobs: plan.releaseOnlyJobs,
+    stages,
+  };
+}
+
 export async function runLocalCiPlan(
   plan,
   {
     candidate = null,
     dryRun = false,
-    executeCommand: execute = (entry) => executeCommand(entry),
+    executeCommand: execute = (entry, options) =>
+      executeCommand(entry, options),
     notify = () => {},
     productJourneyEvidence = null,
     root = repoRoot,
     runId: requestedRunId = null,
+    concurrent = false,
+    deadlineMs = Number.POSITIVE_INFINITY,
+    logDirectory = null,
+    signal = null,
   } = {},
 ) {
   const startedAt = new Date().toISOString();
   const started = performance.now();
   const runId = requestedRunId ?? randomUUID();
   assertC2ZcRestoreFixtureRunId(runId, "Local CI run");
+  if (concurrent && !dryRun) {
+    return runConcurrentLocalCiPlan(plan, {
+      candidate,
+      deadlineMs,
+      execute,
+      logDirectory: logDirectory ?? `.artifacts/local-ci/runs/${runId}/logs`,
+      notify,
+      productJourneyEvidence,
+      root,
+      runId,
+      signal,
+    });
+  }
   const stages = [];
   let failedStage = null;
   let c2zcRestoreFixtureContext = null;
@@ -2782,7 +3338,11 @@ export async function prepareLocalCiArtifacts(plan, { root = repoRoot } = {}) {
   for (const stage of plan.stages) {
     for (const command of stage.commands) {
       for (let index = 0; index < command.args.length - 1; index += 1) {
-        if (!["--output", "--report"].includes(command.args[index])) continue;
+        if (
+          !["--outDir", "--output", "--report"].includes(command.args[index])
+        ) {
+          continue;
+        }
         directories.add(
           path.dirname(
             path.resolve(root, command.cwd, command.args[index + 1]),
@@ -2822,10 +3382,89 @@ function printRegistry(registry) {
 
 async function writeReport(reportPath, result) {
   await mkdir(path.dirname(reportPath), { recursive: true });
-  await writeFile(reportPath, `${JSON.stringify(result, null, 2)}\n`);
+  const temporaryPath = path.join(
+    path.dirname(reportPath),
+    `.${path.basename(reportPath)}.${randomUUID()}.tmp`,
+  );
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(result, null, 2)}\n`, {
+      flag: "wx",
+    });
+    await rename(temporaryPath, reportPath);
+  } catch (error) {
+    await rm(temporaryPath, { force: true });
+    throw error;
+  }
+}
+
+async function acquireCheckoutLock(root) {
+  const lockPath = path.join(root, ".artifacts", "local-ci", "checkout.lock");
+  await mkdir(path.dirname(lockPath), { recursive: true });
+  let handle;
+  try {
+    handle = await open(lockPath, "wx");
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw new Error(
+        `Local CI checkout lock already exists; inspect and remove it manually if no run is active: ${lockPath}`,
+      );
+    }
+    throw error;
+  }
+  try {
+    await handle.writeFile(
+      `${JSON.stringify({ createdAt: new Date().toISOString(), pid: process.pid })}\n`,
+    );
+  } catch (error) {
+    await handle.close();
+    await rm(lockPath, { force: true });
+    throw error;
+  }
+  return { handle, path: lockPath };
+}
+
+async function releaseCheckoutLock(lock) {
+  if (!lock) return;
+  await lock.handle.close();
+  await rm(lock.path);
+}
+
+function remainingFullWallTime(profile, started) {
+  if (profile !== "full") return Number.POSITIVE_INFINITY;
+  return LOCAL_CI_FULL_DEADLINE_MS - (performance.now() - started);
+}
+
+async function runExternalVerifier({ args, reportPath, signal, timeoutMs }) {
+  const verifierArgs = [
+    fileURLToPath(import.meta.url),
+    args.profile,
+    "--verify",
+    "--base",
+    args.base,
+    "--head",
+    args.head,
+    "--report",
+    reportPath,
+  ];
+  const { stdout, stderr } = await execFileAsync(
+    process.execPath,
+    verifierArgs,
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 10 * 1024 * 1024,
+      signal,
+      timeout: Number.isFinite(timeoutMs)
+        ? Math.max(1, Math.floor(timeoutMs))
+        : 120_000,
+    },
+  );
+  if (stdout) process.stdout.write(stdout);
+  if (stderr) process.stderr.write(stderr);
 }
 
 async function main() {
+  const invocationStarted = performance.now();
   const args = parseLocalCiArgs(process.argv.slice(2));
   const registry = validateLocalCiRegistry(
     JSON.parse(await readFile(registryPath, "utf8")),
@@ -2837,10 +3476,12 @@ async function main() {
   if (args.profile === null) {
     throw new Error("Usage: local-ci.mjs <quick|full> [options]");
   }
+  args.base ??= registry.defaultBase;
+  args.head ??= "HEAD";
   const plan = buildLocalCiPlan(registry, {
     profile: args.profile,
-    base: args.base ?? registry.defaultBase,
-    head: args.head ?? "HEAD",
+    base: args.base,
+    head: args.head,
     from: args.from,
   });
   process.stdout.write(
@@ -2848,13 +3489,6 @@ async function main() {
   );
   for (const job of plan.releaseOnlyJobs) {
     process.stdout.write(`[local-ci] release-only ${job.id}: ${job.reason}\n`);
-  }
-  let candidate = null;
-  if (!args.dryRun) {
-    candidate = validateLocalCiCandidate(
-      plan,
-      await resolveLocalCiCandidate(plan),
-    );
   }
   const reportPath = path.resolve(
     repoRoot,
@@ -2864,12 +3498,17 @@ async function main() {
     if (args.dryRun) {
       throw new Error("--verify cannot be combined with --dry-run");
     }
+    const candidate = validateLocalCiCandidate(
+      plan,
+      await resolveLocalCiCandidate(plan),
+    );
     const receipt = JSON.parse(await readFile(reportPath, "utf8"));
     const currentProductJourneyEvidence =
       plan.profile === "full"
         ? await collectProductJourneyEvidence(plan, {
             candidate,
             restoreFixtureEvidence: receipt.c2zcRestoreFixture,
+            runId: receipt.runId,
           })
         : null;
     verifyLocalCiReceipt(receipt, {
@@ -2879,34 +3518,90 @@ async function main() {
       currentProductJourneyEvidence,
       currentC2ZcRestoreFixtureEvidence:
         currentProductJourneyEvidence?.c2zcRestoreFixture ?? null,
+      requireTaskEvidence: true,
     });
+    await verifyLocalCiTaskEvidence(receipt, { root: repoRoot });
     process.stdout.write(`[local-ci] verified=${reportPath}\n`);
     return;
   }
-  if (!args.dryRun) await prepareLocalCiArtifacts(plan);
-  const result = await runLocalCiPlan(plan, {
-    candidate,
-    dryRun: args.dryRun,
-    root: repoRoot,
-    notify(event) {
-      if (event.type === "stage-start") {
-        process.stdout.write(
-          `\n[local-ci] ${event.stage.id}: ${event.stage.label}\n`,
-        );
-      } else if (event.type === "command-start") {
-        process.stdout.write(`[local-ci] $ ${formatCommand(event.command)}\n`);
-      } else if (event.type === "command-end") {
-        process.stdout.write(
-          `[local-ci] ${event.status.toUpperCase()} ${event.command.label}\n`,
-        );
+  const notify = (event) => {
+    if (event.type === "stage-start") {
+      process.stdout.write(
+        `\n[local-ci] ${event.stage.id}: ${event.stage.label}\n`,
+      );
+    } else if (event.type === "command-start") {
+      process.stdout.write(`[local-ci] $ ${formatCommand(event.command)}\n`);
+    } else if (event.type === "command-end") {
+      process.stdout.write(
+        `[local-ci] ${event.status.toUpperCase()} ${event.command.label}\n`,
+      );
+      if (event.status === "failed") {
+        if (event.execution?.error) {
+          process.stderr.write(`[local-ci] error=${event.execution.error}\n`);
+        }
+        for (const stream of ["stderr", "stdout"]) {
+          const logPath = event.execution?.logs?.[stream]?.path;
+          if (logPath)
+            process.stderr.write(`[local-ci] ${stream}=${logPath}\n`);
+        }
       }
-    },
-  });
-  if (!args.dryRun) {
+    }
+  };
+  if (args.dryRun) {
+    const result = await runLocalCiPlan(plan, {
+      dryRun: true,
+      notify,
+      root: repoRoot,
+    });
+    process.stdout.write(`[local-ci] status=${result.status}\n`);
+    return;
+  }
+
+  const cliAbort = new AbortController();
+  const interrupt = (signalName) => {
+    if (!cliAbort.signal.aborted) {
+      cliAbort.abort(new Error(`Local CI interrupted by ${signalName}.`));
+    }
+  };
+  const onSigint = () => interrupt("SIGINT");
+  const onSigterm = () => interrupt("SIGTERM");
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  let checkoutLock = null;
+  let result = null;
+  let stagingReceiptPath = null;
+  try {
+    checkoutLock = await acquireCheckoutLock(repoRoot);
+    if (cliAbort.signal.aborted) throw cliAbort.signal.reason;
+    const candidate = validateLocalCiCandidate(
+      plan,
+      await resolveLocalCiCandidate(plan),
+    );
+    await prepareLocalCiArtifacts(plan);
+    const remainingBeforeTasks = remainingFullWallTime(
+      plan.profile,
+      invocationStarted,
+    );
+    if (remainingBeforeTasks <= 0) {
+      throw new Error(
+        "Full local CI exceeded 600000 ms before task admission.",
+      );
+    }
+    const runId = randomUUID();
+    result = await runLocalCiPlan(plan, {
+      candidate,
+      concurrent: true,
+      deadlineMs: remainingBeforeTasks,
+      notify,
+      root: repoRoot,
+      runId,
+      signal: cliAbort.signal,
+    });
     const finishedCandidate = validateLocalCiCandidate(
       plan,
       await resolveLocalCiCandidate(plan),
     );
+    result.candidateAfter = finishedCandidate;
     try {
       verifyCandidateBinding(result.candidate, finishedCandidate);
       if (plan.profile === "full" && result.status === "passed") {
@@ -2915,8 +3610,24 @@ async function main() {
           {
             candidate: finishedCandidate,
             restoreFixtureEvidence: result.c2zcRestoreFixture,
+            runId: result.runId,
           },
         );
+      }
+      if (cliAbort.signal.aborted) throw cliAbort.signal.reason;
+      result.durationMs = Math.round(performance.now() - invocationStarted);
+      if (
+        plan.profile === "full" &&
+        result.durationMs > LOCAL_CI_FULL_DEADLINE_MS
+      ) {
+        throw new Error(
+          "Full local CI exceeded 600000 ms before verification.",
+        );
+      }
+      if (
+        result.status === "passed" &&
+        plan.coverage.completeness === "complete"
+      ) {
         verifyLocalCiReceipt(result, {
           profile: plan.profile,
           candidate: finishedCandidate,
@@ -2924,18 +3635,71 @@ async function main() {
           currentProductJourneyEvidence: result.productJourneyEvidence,
           currentC2ZcRestoreFixtureEvidence:
             result.productJourneyEvidence?.c2zcRestoreFixture ?? null,
+          requireTaskEvidence: true,
         });
+        await verifyLocalCiTaskEvidence(result, { root: repoRoot });
       }
     } catch (error) {
       result.status = "failed";
       result.receiptError =
         error instanceof Error ? error.message : String(error);
     }
-    await writeReport(reportPath, result);
+    if (
+      result.status === "passed" &&
+      plan.coverage.completeness === "complete"
+    ) {
+      stagingReceiptPath = path.join(
+        path.dirname(reportPath),
+        `.${path.basename(reportPath)}.${result.runId}.staging`,
+      );
+      await writeReport(stagingReceiptPath, result);
+      const remainingBeforeVerify = remainingFullWallTime(
+        plan.profile,
+        invocationStarted,
+      );
+      if (remainingBeforeVerify <= 0) {
+        throw new Error(
+          "Full local CI exceeded 600000 ms before verification.",
+        );
+      }
+      await runExternalVerifier({
+        args,
+        reportPath: stagingReceiptPath,
+        signal: cliAbort.signal,
+        timeoutMs: remainingBeforeVerify,
+      });
+      if (cliAbort.signal.aborted) throw cliAbort.signal.reason;
+      if (remainingFullWallTime(plan.profile, invocationStarted) < 0) {
+        throw new Error(
+          "Full local CI exceeded 600000 ms during verification.",
+        );
+      }
+      await mkdir(path.dirname(reportPath), { recursive: true });
+      await rename(stagingReceiptPath, reportPath);
+      stagingReceiptPath = null;
+      if (remainingFullWallTime(plan.profile, invocationStarted) < 0) {
+        await rm(reportPath, { force: true });
+        throw new Error(
+          "Full local CI exceeded 600000 ms while publishing verification.",
+        );
+      }
+    } else {
+      await writeReport(reportPath, result);
+    }
     process.stdout.write(`[local-ci] report=${reportPath}\n`);
+  } catch (error) {
+    if (stagingReceiptPath) await rm(stagingReceiptPath, { force: true });
+    throw error;
+  } finally {
+    try {
+      await releaseCheckoutLock(checkoutLock);
+    } finally {
+      process.removeListener("SIGINT", onSigint);
+      process.removeListener("SIGTERM", onSigterm);
+    }
   }
-  process.stdout.write(`[local-ci] status=${result.status}\n`);
-  if (result.status === "failed") process.exitCode = 1;
+  process.stdout.write(`[local-ci] status=${result?.status ?? "failed"}\n`);
+  if (result?.status !== "passed") process.exitCode = 1;
 }
 
 if (

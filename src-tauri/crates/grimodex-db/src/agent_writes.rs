@@ -9602,7 +9602,6 @@ pub fn agent_event_relation_mutate_with_authority_impl(
 mod tests {
     use super::*;
     use crate::Database;
-    use std::path::Path;
 
     /// Same contract snapshots the grimodex-core (MCP path) tests assert —
     /// this is the in-app mirror side of the parity gate.
@@ -9616,9 +9615,7 @@ mod tests {
     ));
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
-        db.migrate().expect("migrate");
-        db
+        crate::test_support::current_schema_memory().expect("current schema fixture")
     }
 
     fn renderer_authority_fields(route: &str, caller: &str) -> (String, String, Vec<String>) {

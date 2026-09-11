@@ -3510,12 +3510,9 @@ pub fn load_anchors_for_scene(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
-        db.migrate().expect("migrate");
-        db
+        crate::test_support::current_schema_memory().expect("current schema fixture")
     }
 
     fn insert_project(db: &Database) -> String {

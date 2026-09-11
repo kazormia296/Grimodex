@@ -373,12 +373,9 @@ pub fn embed_chat_text(embedder: &mut crate::embedding::Embedder, text: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     fn mem_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open mem db");
-        db.migrate().expect("migrate");
-        db
+        crate::test_support::current_schema_memory().expect("current-schema fixture")
     }
 
     /// project + chat_session + chat_message を seed する。

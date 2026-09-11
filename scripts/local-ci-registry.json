@@ -18,8 +18,8 @@
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
       "migration-recovery-gate",
-      "electron-runtime-performance",
-      "electron-product-journeys"
+      "electron-product-journeys",
+      "electron-runtime-performance"
     ]
   },
   "stages": {
@@ -30,7 +30,8 @@
           "label": "Select and run affected Light suites",
           "command": "pnpm",
           "args": ["eval:impact", "--"],
-          "comparison": true
+          "comparison": true,
+          "id": "impact.select"
         }
       ]
     },
@@ -40,17 +41,25 @@
         {
           "label": "Verify pnpm lockfile and dependencies",
           "command": "pnpm",
-          "args": ["install", "--frozen-lockfile"]
+          "args": ["install", "--frozen-lockfile"],
+          "id": "bootstrap.install"
         },
         {
           "label": "Build shared workspace dependencies",
           "command": "pnpm",
-          "args": ["build:workspace:dependencies"]
+          "args": ["build:workspace:dependencies"],
+          "id": "bootstrap.workspace-build",
+          "after": ["bootstrap.install"],
+          "lane": "workspace-build",
+          "slots": 2
         },
         {
           "label": "Ensure Playwright Chromium is available",
           "command": "pnpm",
-          "args": ["exec", "playwright", "install", "chromium"]
+          "args": ["exec", "playwright", "install", "chromium"],
+          "id": "bootstrap.chromium",
+          "after": ["bootstrap.install"],
+          "lane": "browser"
         }
       ]
     },
@@ -63,7 +72,10 @@
         {
           "label": "Canonical quality workflow",
           "command": "pnpm",
-          "args": ["verify:quality"]
+          "args": ["ci:verify:quality"],
+          "id": "quality.contracts",
+          "after": ["bootstrap.workspace-build"],
+          "slots": 4
         }
       ]
     },
@@ -73,32 +85,63 @@
         {
           "label": "Renderer type-check",
           "command": "pnpm",
-          "args": ["exec", "tsc", "--noEmit"]
+          "args": ["exec", "tsc", "--noEmit"],
+          "id": "frontend.typecheck",
+          "after": ["bootstrap.workspace-build"]
         },
         {
           "label": "Renderer lint",
           "command": "pnpm",
-          "args": ["lint"]
+          "args": ["lint"],
+          "id": "frontend.lint",
+          "after": ["bootstrap.workspace-build"]
         },
         {
           "label": "Architecture baseline",
           "command": "pnpm",
-          "args": ["validate:architecture"]
+          "args": ["validate:architecture"],
+          "id": "frontend.architecture",
+          "after": ["bootstrap.workspace-build"]
         },
         {
           "label": "Browser CI performance contracts",
           "command": "pnpm",
-          "args": ["test:browser-ci"]
+          "args": ["test:browser-ci"],
+          "id": "frontend.browser-contracts",
+          "after": ["bootstrap.workspace-build"],
+          "slots": 2
         },
         {
           "label": "Renderer unit tests",
           "command": "pnpm",
-          "args": ["test:node", "--run"]
+          "args": [
+            "exec",
+            "vitest",
+            "--config",
+            "vitest.config.ts",
+            "--run",
+            "--maxWorkers",
+            "4"
+          ],
+          "id": "frontend.unit",
+          "after": ["bootstrap.workspace-build"],
+          "slots": 4
         },
         {
           "label": "Web Editor production artifact",
           "command": "pnpm",
-          "args": ["build:web-editor"]
+          "args": [
+            "exec",
+            "vite",
+            "build",
+            "--mode",
+            "web-editor",
+            "--outDir",
+            ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/web-editor"
+          ],
+          "id": "frontend.web-build",
+          "after": ["bootstrap.workspace-build"],
+          "slots": 2
         }
       ]
     },
@@ -109,13 +152,21 @@
           "label": "Sync fixed CPU environment",
           "command": "uv",
           "args": ["sync", "--frozen", "--extra", "cpu"],
-          "cwd": "experiments/lfm25-encoder-phase0"
+          "cwd": "experiments/lfm25-encoder-phase0",
+          "id": "lfm.setup",
+          "after": ["bootstrap.install"],
+          "lane": "lfm",
+          "slots": 2
         },
         {
           "label": "LFM unit and contract tests",
           "command": "uv",
           "args": ["run", "--frozen", "--extra", "cpu", "pytest"],
-          "cwd": "experiments/lfm25-encoder-phase0"
+          "cwd": "experiments/lfm25-encoder-phase0",
+          "id": "lfm.tests",
+          "after": ["lfm.setup"],
+          "lane": "lfm",
+          "slots": 4
         },
         {
           "label": "Public dataset contracts",
@@ -129,7 +180,11 @@
             "tools/validate_dataset.py",
             "data/public"
           ],
-          "cwd": "experiments/lfm25-encoder-phase0"
+          "cwd": "experiments/lfm25-encoder-phase0",
+          "id": "lfm.dataset",
+          "after": ["lfm.tests"],
+          "lane": "lfm",
+          "slots": 2
         }
       ]
     },
@@ -150,7 +205,11 @@
             "4",
             "--output",
             ".artifacts/browser-ci/browser.json"
-          ]
+          ],
+          "id": "browser.tests",
+          "after": ["bootstrap.workspace-build", "bootstrap.chromium"],
+          "lane": "browser",
+          "slots": 4
         }
       ]
     },
@@ -160,7 +219,10 @@
         {
           "label": "Zen shader WebGL contracts",
           "command": "pnpm",
-          "args": ["test:zen-shader-webgl", "--run"]
+          "args": ["test:zen-shader-webgl", "--run"],
+          "id": "webgl.zen",
+          "after": ["bootstrap.workspace-build", "bootstrap.chromium"],
+          "lane": "browser"
         },
         {
           "label": "WebGL suite with resource metrics",
@@ -178,7 +240,10 @@
             "1",
             "--output",
             ".artifacts/browser-ci/webgl.json"
-          ]
+          ],
+          "id": "webgl.tests",
+          "after": ["webgl.zen"],
+          "lane": "browser"
         }
       ]
     },
@@ -197,7 +262,11 @@
             "1",
             "--output",
             ".artifacts/browser-ci/storybook.json"
-          ]
+          ],
+          "id": "storybook.tests",
+          "after": ["bootstrap.workspace-build", "bootstrap.chromium"],
+          "lane": "browser",
+          "slots": 2
         }
       ]
     },
@@ -214,12 +283,17 @@
             "audit",
             "--audit-level",
             "high"
-          ]
+          ],
+          "id": "security.pnpm-audit",
+          "after": ["bootstrap.install"]
         },
         {
           "label": "Shared Rust dependency audit",
           "command": "cargo",
-          "args": ["audit", "--file", "src-tauri/Cargo.lock"]
+          "args": ["audit", "--file", "src-tauri/Cargo.lock"],
+          "id": "security.shared-rust-audit",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared"
         },
         {
           "label": "Electron native dependency audit",
@@ -228,7 +302,10 @@
             "audit",
             "--file",
             "electron/native/grimodex-node/Cargo.lock"
-          ]
+          ],
+          "id": "security.native-rust-audit",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-native"
         }
       ]
     },
@@ -240,6 +317,7 @@
           "command": "node",
           "args": [
             "--test",
+            "--test-concurrency=4",
             "scripts/validate-release-version.test.mjs",
             "scripts/resolve-release-workflow.test.mjs",
             "scripts/compose-github-release-notes.test.mjs",
@@ -260,30 +338,44 @@
             "scripts/electron-product-journey-results.test.mjs",
             "scripts/electron-product-journey-cleanup-results.test.mjs",
             "scripts/electron-product-journeys.test.mjs",
+            "electron/scripts/product-journey-shards.test.mjs",
             "scripts/generate-licenses.test.mjs",
             "scripts/license-policy.test.mjs",
             "scripts/semantic-reranker-release.test.mjs"
-          ]
+          ],
+          "id": "electron.contracts",
+          "after": ["bootstrap.workspace-build"],
+          "slots": 4
         },
         {
           "label": "Electron type-check",
           "command": "pnpm",
-          "args": ["exec", "tsc", "-p", "electron/tsconfig.json", "--noEmit"]
+          "args": ["exec", "tsc", "-p", "electron/tsconfig.json", "--noEmit"],
+          "id": "electron.typecheck",
+          "after": ["bootstrap.workspace-build"]
         },
         {
           "label": "Electron unit tests",
           "command": "pnpm",
-          "args": ["test:electron", "--run"]
+          "args": ["test:electron", "--run", "--maxWorkers", "4"],
+          "id": "electron.unit",
+          "after": ["bootstrap.workspace-build"],
+          "slots": 4
         },
         {
           "label": "Electron production build",
           "command": "pnpm",
-          "args": ["electron:build"]
+          "args": ["ci:build:desktop"],
+          "id": "electron.build",
+          "after": ["electron.typecheck"],
+          "slots": 2
         },
         {
           "label": "Renderer performance budget",
           "command": "pnpm",
-          "args": ["perf:budget"]
+          "args": ["perf:budget"],
+          "id": "electron.budget",
+          "after": ["electron.build"]
         }
       ]
     },
@@ -297,12 +389,28 @@
         {
           "label": "Build development N-API module",
           "command": "pnpm",
-          "args": ["napi:build"]
+          "args": ["napi:build"],
+          "id": "native.build",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-native",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4"
+          }
         },
         {
           "label": "Test N-API public boundary",
           "command": "pnpm",
-          "args": ["--dir", "electron/native/grimodex-node", "test"]
+          "args": [
+            "--dir",
+            "electron/native/grimodex-node",
+            "test",
+            "--test-concurrency=4"
+          ],
+          "id": "native.public-tests",
+          "after": ["native.build"],
+          "lane": "cargo-native",
+          "slots": 4
         },
         {
           "label": "Check release-only native features",
@@ -313,7 +421,14 @@
             "electron/native/grimodex-node/Cargo.toml",
             "--features",
             "licensing,legacy-keyring-migration"
-          ]
+          ],
+          "id": "native.check",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-native",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4"
+          }
         },
         {
           "label": "Clippy release-only native features",
@@ -328,7 +443,14 @@
             "--",
             "-D",
             "warnings"
-          ]
+          ],
+          "id": "native.clippy",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-native",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4"
+          }
         },
         {
           "label": "Test release-only native features",
@@ -339,7 +461,15 @@
             "electron/native/grimodex-node/Cargo.toml",
             "--features",
             "licensing,legacy-keyring-migration"
-          ]
+          ],
+          "id": "native.tests",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-native",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4",
+            "RUST_TEST_THREADS": "4"
+          }
         },
         {
           "label": "Test licensed MCP sidecar",
@@ -352,7 +482,15 @@
             "grimodex-mcp",
             "--features",
             "licensing"
-          ]
+          ],
+          "id": "native.mcp-tests",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4",
+            "RUST_TEST_THREADS": "4"
+          }
         }
       ]
     },
@@ -374,7 +512,14 @@
             "--features",
             "grimodex-semantic/semantic-embedding"
           ],
-          "cwd": "src-tauri"
+          "cwd": "src-tauri",
+          "id": "rust.check",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4"
+          }
         },
         {
           "label": "Shared Rust clippy",
@@ -391,10 +536,94 @@
             "-D",
             "warnings"
           ],
-          "cwd": "src-tauri"
+          "cwd": "src-tauri",
+          "id": "rust.clippy",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4"
+          }
         },
         {
-          "label": "Shared Rust tests",
+          "label": "Shared Rust DB library tests",
+          "command": "cargo",
+          "args": ["test", "-p", "grimodex-db", "--lib"],
+          "cwd": "src-tauri",
+          "id": "rust.tests-db-lib",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared-db-lib",
+          "slots": 2,
+          "env": {
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
+          },
+          "obligations": []
+        },
+        {
+          "label": "Shared Rust DB integration and schema-contract tests",
+          "command": "cargo",
+          "args": [
+            "test",
+            "-p",
+            "grimodex-db",
+            "--test",
+            "*",
+            "--bin",
+            "schema-contract"
+          ],
+          "cwd": "src-tauri",
+          "id": "rust.tests-db-integrations",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared-db-integrations",
+          "slots": 2,
+          "env": {
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
+          },
+          "obligations": []
+        },
+        {
+          "label": "Shared Rust non-DB workspace tests and doctests",
+          "command": "cargo",
+          "args": [
+            "test",
+            "--workspace",
+            "--exclude",
+            "grimodex",
+            "--exclude",
+            "grimodex-db",
+            "--features",
+            "grimodex-semantic/semantic-embedding"
+          ],
+          "cwd": "src-tauri",
+          "id": "rust.tests-other-workspace",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared-other-workspace",
+          "slots": 2,
+          "env": {
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
+          },
+          "obligations": []
+        },
+        {
+          "label": "Shared Rust DB doctests",
+          "command": "cargo",
+          "args": ["test", "-p", "grimodex-db", "--doc"],
+          "cwd": "src-tauri",
+          "id": "rust.tests-db-doctests",
+          "after": ["rust.tests-db-lib"],
+          "lane": "cargo-shared-db-lib",
+          "slots": 2,
+          "env": {
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
+          },
+          "obligations": []
+        },
+        {
+          "label": "Compile every shared Rust test target",
           "command": "cargo",
           "args": [
             "test",
@@ -402,9 +631,23 @@
             "--exclude",
             "grimodex",
             "--features",
-            "grimodex-semantic/semantic-embedding"
+            "grimodex-semantic/semantic-embedding",
+            "--no-run"
           ],
-          "cwd": "src-tauri"
+          "cwd": "src-tauri",
+          "id": "rust.tests",
+          "after": [
+            "rust.tests-db-lib",
+            "rust.tests-db-integrations",
+            "rust.tests-other-workspace",
+            "rust.tests-db-doctests"
+          ],
+          "lane": "cargo-shared-other-workspace",
+          "slots": 2,
+          "env": {
+            "CARGO_BUILD_JOBS": "2"
+          },
+          "obligations": ["rust.tests"]
         },
         {
           "label": "Migration supervisor failpoints",
@@ -418,7 +661,19 @@
             "--test",
             "workspace_migration_supervisor"
           ],
-          "cwd": "src-tauri"
+          "cwd": "src-tauri",
+          "id": "rust.supervisor-failpoints",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-recovery",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4",
+            "RUST_TEST_THREADS": "4"
+          },
+          "obligations": [
+            "rust.supervisor-failpoints",
+            "migration.supervisor-failpoints"
+          ]
         },
         {
           "label": "Narrative runtime authority",
@@ -430,13 +685,29 @@
             "--test",
             "narrative_runtime_authority"
           ],
-          "cwd": "src-tauri"
+          "cwd": "src-tauri",
+          "id": "rust.runtime-authority",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4",
+            "RUST_TEST_THREADS": "4"
+          }
         },
         {
           "label": "Licensed runtime",
           "command": "cargo",
           "args": ["test", "-p", "grimodex-license", "--features", "licensing"],
-          "cwd": "src-tauri"
+          "cwd": "src-tauri",
+          "id": "rust.license",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4",
+            "RUST_TEST_THREADS": "4"
+          }
         }
       ]
     },
@@ -456,7 +727,19 @@
             "--output",
             ".artifacts/local-ci/c2-zc-rust-acceptance.json"
           ],
-          "cwd": "."
+          "cwd": ".",
+          "id": "c2zc.rust-acceptance",
+          "after": [
+            "rust.check",
+            "rust.clippy",
+            "rust.tests",
+            "rust.supervisor-failpoints",
+            "rust.runtime-authority",
+            "rust.license"
+          ],
+          "lane": "cargo-shared",
+          "slots": 4,
+          "timeoutMs": 240000
         }
       ]
     },
@@ -489,7 +772,11 @@
             "--expected-tree",
             "__C2ZC_RESTORE_FIXTURE_EXPECTED_TREE__"
           ],
-          "cwd": "."
+          "cwd": ".",
+          "id": "c2zc.fixture-build",
+          "after": ["c2zc.rust-acceptance"],
+          "lane": "cargo-shared",
+          "slots": 4
         },
         {
           "label": "Verify C2-ZC offline restore fixture",
@@ -513,7 +800,11 @@
             "--candidate",
             "HEAD"
           ],
-          "cwd": "."
+          "cwd": ".",
+          "id": "c2zc.fixture-verify",
+          "after": ["c2zc.fixture-build"],
+          "lane": "cargo-shared",
+          "slots": 4
         }
       ]
     },
@@ -534,21 +825,15 @@
             "--test",
             "workspace_migration_supervisor"
           ],
-          "cwd": "src-tauri"
-        },
-        {
-          "label": "Migration supervisor failpoint suite",
-          "command": "cargo",
-          "args": [
-            "test",
-            "-p",
-            "grimodex-db",
-            "--features",
-            "test-failpoints",
-            "--test",
-            "workspace_migration_supervisor"
-          ],
-          "cwd": "src-tauri"
+          "cwd": "src-tauri",
+          "id": "migration.supervisor",
+          "after": ["rust.supervisor-failpoints"],
+          "lane": "cargo-recovery",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4",
+            "RUST_TEST_THREADS": "4"
+          }
         },
         {
           "label": "Migration recovery failpoint library tests",
@@ -561,7 +846,15 @@
             "test-failpoints",
             "--lib"
           ],
-          "cwd": "src-tauri"
+          "cwd": "src-tauri",
+          "id": "migration.failpoints-lib",
+          "after": ["migration.supervisor"],
+          "lane": "cargo-recovery",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4",
+            "RUST_TEST_THREADS": "4"
+          }
         },
         {
           "label": "Safe Mode structured outcome",
@@ -575,7 +868,15 @@
             "--test",
             "workspace_safe_mode_outcome"
           ],
-          "cwd": "src-tauri"
+          "cwd": "src-tauri",
+          "id": "migration.safe-mode",
+          "after": ["migration.failpoints-lib"],
+          "lane": "cargo-recovery",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4",
+            "RUST_TEST_THREADS": "4"
+          }
         },
         {
           "label": "Release-schema migration fixture",
@@ -587,7 +888,15 @@
             "--test",
             "release_schema_migration"
           ],
-          "cwd": "src-tauri"
+          "cwd": "src-tauri",
+          "id": "migration.release-schema",
+          "after": ["migration.safe-mode"],
+          "lane": "cargo-recovery",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4",
+            "RUST_TEST_THREADS": "4"
+          }
         },
         {
           "label": "Subprocess crash recovery",
@@ -603,7 +912,15 @@
             "--test",
             "restore_subprocess_crash"
           ],
-          "cwd": "src-tauri"
+          "cwd": "src-tauri",
+          "id": "migration.crash",
+          "after": ["migration.release-schema"],
+          "lane": "cargo-recovery",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4",
+            "RUST_TEST_THREADS": "4"
+          }
         },
         {
           "label": "Safe Mode IPC contract",
@@ -612,17 +929,26 @@
             "test:electron",
             "--run",
             "electron/shared/ipcContract.test.ts"
-          ]
+          ],
+          "id": "migration.ipc",
+          "after": ["migration.crash"],
+          "slots": 2
         },
         {
           "label": "Recovery Shell frontend tests",
           "command": "pnpm",
           "args": [
-            "test",
+            "exec",
+            "vitest",
             "--run",
+            "--maxWorkers",
+            "4",
             "src/features/workspace/store.test.ts",
             "src/features/workspace/recovery/RecoveryShell.test.tsx"
-          ]
+          ],
+          "id": "migration.ui",
+          "after": ["migration.ipc"],
+          "slots": 4
         }
       ]
     },
@@ -636,12 +962,40 @@
         {
           "label": "Runtime performance contracts",
           "command": "pnpm",
-          "args": ["test:electron-perf"]
+          "args": ["test:electron-perf"],
+          "id": "runtime.contracts",
+          "after": [
+            "quality.contracts",
+            "frontend.typecheck",
+            "frontend.lint",
+            "frontend.architecture",
+            "frontend.browser-contracts",
+            "frontend.unit",
+            "frontend.web-build",
+            "lfm.dataset",
+            "security.pnpm-audit",
+            "security.shared-rust-audit",
+            "security.native-rust-audit",
+            "electron.contracts",
+            "electron.unit",
+            "electron.budget",
+            "native.check",
+            "native.clippy",
+            "native.tests",
+            "native.mcp-tests",
+            "journeys.run"
+          ],
+          "slots": 12,
+          "timeoutMs": 90000
         },
         {
           "label": "50k-character runtime performance gate",
           "command": "pnpm",
-          "args": ["electron:perf:ci"]
+          "args": ["electron:perf:ci"],
+          "id": "runtime.benchmark",
+          "after": ["runtime.contracts"],
+          "slots": 12,
+          "timeoutMs": 180000
         }
       ]
     },
@@ -651,7 +1005,7 @@
         "CI": "true",
         "CARGO_PROFILE_DEV_DEBUG": "0",
         "CARGO_PROFILE_TEST_DEBUG": "0",
-        "GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR": ".artifacts/product-journeys",
+        "GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR": ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys",
         "GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL": "true",
         "GRIMODEX_PRODUCT_JOURNEY_IDS": "",
         "GRIMODEX_PRODUCT_JOURNEY_SET": "",
@@ -663,25 +1017,114 @@
         {
           "label": "Build MCP journey dependency",
           "command": "pnpm",
-          "args": ["mcp:build"]
+          "args": ["mcp:build"],
+          "id": "journeys.mcp-build",
+          "after": ["migration.ui", "electron.build", "native.build"],
+          "lane": "cargo-shared",
+          "slots": 4,
+          "timeoutMs": 180000,
+          "env": {
+            "CARGO_BUILD_JOBS": "4"
+          }
+        },
+        {
+          "label": "Run product journey shard 1",
+          "command": "xvfb-run",
+          "args": [
+            "--auto-servernum",
+            "--server-args=-screen 0 1920x1080x24",
+            "node",
+            "electron/scripts/product-journey-shards.mjs",
+            "run",
+            "--shard",
+            "1",
+            "--output-dir",
+            ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys"
+          ],
+          "id": "journeys.shard-1",
+          "after": [
+            "journeys.mcp-build",
+            "native.public-tests",
+            "c2zc.fixture-verify",
+            "browser.tests",
+            "webgl.tests",
+            "storybook.tests"
+          ],
+          "lane": "journey-shard-1",
+          "slots": 3,
+          "timeoutMs": 240000,
+          "obligations": []
+        },
+        {
+          "label": "Run product journey shard 2",
+          "command": "xvfb-run",
+          "args": [
+            "--auto-servernum",
+            "--server-args=-screen 0 1920x1080x24",
+            "node",
+            "electron/scripts/product-journey-shards.mjs",
+            "run",
+            "--shard",
+            "2",
+            "--output-dir",
+            ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys"
+          ],
+          "id": "journeys.shard-2",
+          "after": [
+            "journeys.mcp-build",
+            "native.public-tests",
+            "c2zc.fixture-verify",
+            "browser.tests",
+            "webgl.tests",
+            "storybook.tests"
+          ],
+          "lane": "journey-shard-2",
+          "slots": 3,
+          "timeoutMs": 240000,
+          "obligations": []
         },
         {
           "label": "Run every product journey",
-          "command": "pnpm",
-          "args": ["electron:product-journeys"]
+          "command": "node",
+          "args": [
+            "electron/scripts/product-journey-shards.mjs",
+            "aggregate",
+            "--output-dir",
+            ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys"
+          ],
+          "id": "journeys.run",
+          "after": ["journeys.shard-1", "journeys.shard-2"],
+          "slots": 1,
+          "timeoutMs": 30000
         }
       ]
     }
   },
   "hostedJobs": {
-    "quality": { "localStage": "quality" },
-    "frontend": { "localStage": "frontend" },
-    "lfm-encoder-phase0": { "localStage": "lfm-encoder-phase0" },
-    "browser": { "localStage": "browser" },
-    "webgl": { "localStage": "webgl" },
-    "storybook": { "localStage": "storybook" },
-    "security": { "localStage": "security" },
-    "electron": { "localStage": "electron" },
+    "quality": {
+      "localStage": "quality"
+    },
+    "frontend": {
+      "localStage": "frontend"
+    },
+    "lfm-encoder-phase0": {
+      "localStage": "lfm-encoder-phase0"
+    },
+    "browser": {
+      "localStage": "browser"
+    },
+    "webgl": {
+      "localStage": "webgl"
+    },
+    "storybook": {
+      "localStage": "storybook"
+    },
+    "security": {
+      "localStage": "security"
+    },
+    "electron": {
+      "localStage": "electron"
+    },
     "electron-runtime-performance": {
       "localStage": "electron-runtime-performance"
     },
@@ -692,10 +1135,15 @@
       "releaseOnly": true,
       "reason": "Requires a Windows runner and final NSIS compilation; retained in manual and release Full CI."
     },
-    "electron-native": { "localStage": "electron-native" },
-    "rust": { "localStage": "rust" },
+    "electron-native": {
+      "localStage": "electron-native"
+    },
+    "rust": {
+      "localStage": "rust"
+    },
     "migration-recovery-gate": {
       "localStage": "migration-recovery-gate"
     }
-  }
+  },
+  "maxSlots": 12
 }

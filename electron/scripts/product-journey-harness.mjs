@@ -4571,22 +4571,6 @@ export function createProductJourneyHarness({
     await rm(retainedRendererPath, { force: true });
     retainedRendererScreenshotPromise = null;
     const launchId = `launch-${randomUUID()}`;
-    let resolveLateLaunch;
-    const lateLaunchCompletion = new Promise((resolve) => {
-      resolveLateLaunch = resolve;
-    });
-    const launchContext = {
-      phase,
-      launchId,
-      app: null,
-      lateLaunchCompletion,
-      resolveLateLaunch,
-      lateLaunchSettled: false,
-      lateLaunchStarted: false,
-      lateLaunchAwaitExpired: false,
-      unverifiedCloseDiagnosticRecorded: false,
-    };
-    launchContexts.set(launchId, launchContext);
     recordTimeline("launch-requested", { phase, launchId });
     if (!lastResources.app) {
       lastResources.phase = phase;
@@ -4616,6 +4600,24 @@ export function createProductJourneyHarness({
       receiptCount: 0,
     };
     await requireCleanNarrativeMaintenanceReceiptRoot(receiptState.root, phase);
+    // Only an invoked launcher can resolve late. Receipt-root precheck failure
+    // must not leave a launch promise for cleanup to wait on.
+    let resolveLateLaunch;
+    const lateLaunchCompletion = new Promise((resolve) => {
+      resolveLateLaunch = resolve;
+    });
+    const launchContext = {
+      phase,
+      launchId,
+      app: null,
+      lateLaunchCompletion,
+      resolveLateLaunch,
+      lateLaunchSettled: false,
+      lateLaunchStarted: false,
+      lateLaunchAwaitExpired: false,
+      unverifiedCloseDiagnosticRecorded: false,
+    };
+    launchContexts.set(launchId, launchContext);
     let app;
     try {
       app = await runHarnessOperation(
@@ -4696,6 +4698,11 @@ export function createProductJourneyHarness({
     launchContext.appProcess = appProcess;
     trackChild(appProcess);
     appChildProcesses.set(app, appProcess);
+    // The launch resolved and its child is now owned by normal cleanup. Later
+    // receipt/bridge failure must retain that child, but is not a pending late
+    // launch. Timed-out launcher promises still use onLateResolve above.
+    settleLaunchContext(launchContext);
+    launchContexts.delete(launchId);
     if (!allowProcessInterruption) {
       const browserContext =
         typeof app.context === "function" ? app.context() : null;
