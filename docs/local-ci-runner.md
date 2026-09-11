@@ -44,11 +44,12 @@ a separate Xvfb display and owns a separate artifact directory; a final one-slot
 task rejects missing, duplicate, extra, failed, unclean, or differently bound
 results before writing the existing canonical v5 result and v1 manifest.
 
-Full's deterministic priority order starts bootstrap and recovery work before
-the native checks, keeps the candidate-bound C2-ZC receipt and fixture adjacent,
-and then prioritizes quality, product journeys, LFM, security, renderer, Rust,
-WebGL, Storybook, browser, and Electron work. Dependency edges still control
-actual eligibility, and the runtime benchmark remains the final fan-in.
+Full's deterministic priority order starts bootstrap and recovery work, then
+admits security and renderer checks early enough to avoid resource contention.
+It keeps the candidate-bound C2-ZC receipt and fixture adjacent before quality,
+product journeys, LFM, Rust, WebGL, Storybook, browser, and Electron work.
+Dependency edges still control actual eligibility, and the runtime benchmark
+remains the final fan-in.
 
 The canonical plan retains `__LOCAL_CI_RUN_ID__` in run-owned paths. Command
 execution and post-run evidence collection bind the same validated run UUID

@@ -525,6 +525,122 @@ describe("caller timeout policy（electron 分岐）", () => {
     ]);
   });
 
+  it("begin result と同じ turn に cancel しても late ticket を一度だけ release する", async () => {
+    let resolveBegin!: (value: {
+      ok: true;
+      value: {
+        ir: { status: "pending"; operationTicket: string };
+      };
+    }) => void;
+    const beginResult = new Promise<Parameters<typeof resolveBegin>[0]>(
+      (resolve) => {
+        resolveBegin = resolve;
+      },
+    );
+    const bridge = installBridge({
+      invoke: vi.fn((command: string) =>
+        command === "related_scenes_begin"
+          ? beginResult
+          : Promise.resolve({ ok: true, value: { status: "released" } }),
+      ),
+    });
+    const [{ invoke }, { cancelDerivedIpcCallersForLifecycle }] =
+      await Promise.all([import("./tauri"), import("./ipcQueue")]);
+    const callerResult = invoke("related_scenes_begin").catch(
+      (error: unknown) => error,
+    );
+    await Promise.resolve();
+
+    resolveBegin({
+      ok: true,
+      value: { ir: { status: "pending", operationTicket: "ticket-race" } },
+    });
+    queueMicrotask(cancelDerivedIpcCallersForLifecycle);
+
+    await expect(callerResult).resolves.toMatchObject({
+      code: "IPC_DERIVED_CANCELLED",
+    });
+    await vi.waitFor(() => expect(bridge.invoke).toHaveBeenCalledTimes(2));
+    expect(bridge.invoke.mock.calls[1]).toEqual([
+      "related_scenes_release",
+      { operationTicket: "ticket-race" },
+    ]);
+  });
+
+  it.each([
+    ["null response", null],
+    ["array response", []],
+    ["missing ir", { status: "raw-ready" }],
+    ["non-pending ir", { ir: { status: "unavailable" } }],
+    ["blank ticket", { ir: { status: "pending", operationTicket: "  " } }],
+  ])("cancel 後の %s は release しない", async (_label, value) => {
+    let resolveBegin!: (value: { ok: true; value: unknown }) => void;
+    const beginResult = new Promise<Parameters<typeof resolveBegin>[0]>(
+      (resolve) => {
+        resolveBegin = resolve;
+      },
+    );
+    const bridge = installBridge({
+      invoke: vi.fn(() => beginResult),
+    });
+    const [{ invoke }, { cancelDerivedIpcCallersForLifecycle }] =
+      await Promise.all([import("./tauri"), import("./ipcQueue")]);
+    const callerResult = invoke("related_scenes_begin").catch(
+      (error: unknown) => error,
+    );
+    await Promise.resolve();
+
+    cancelDerivedIpcCallersForLifecycle();
+    await expect(callerResult).resolves.toMatchObject({
+      code: "IPC_DERIVED_CANCELLED",
+    });
+    resolveBegin({ ok: true, value });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(bridge.invoke).toHaveBeenCalledOnce();
+  });
+
+  it("late ticket の release failure を処理済み rejection として記録する", async () => {
+    let resolveBegin!: (value: {
+      ok: true;
+      value: { ir: { status: "pending"; operationTicket: string } };
+    }) => void;
+    const beginResult = new Promise<Parameters<typeof resolveBegin>[0]>(
+      (resolve) => {
+        resolveBegin = resolve;
+      },
+    );
+    const bridge = installBridge({
+      invoke: vi.fn((command: string) =>
+        command === "related_scenes_begin"
+          ? beginResult
+          : Promise.resolve({ ok: false, error: "release failed" }),
+      ),
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const [{ invoke }, { cancelDerivedIpcCallersForLifecycle }] =
+      await Promise.all([import("./tauri"), import("./ipcQueue")]);
+    const callerResult = invoke("related_scenes_begin").catch(
+      (error: unknown) => error,
+    );
+    await Promise.resolve();
+
+    cancelDerivedIpcCallersForLifecycle();
+    await expect(callerResult).resolves.toMatchObject({
+      code: "IPC_DERIVED_CANCELLED",
+    });
+    resolveBegin({
+      ok: true,
+      value: { ir: { status: "pending", operationTicket: "ticket-fails" } },
+    });
+
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+    expect(bridge.invoke.mock.calls[1]).toEqual([
+      "related_scenes_release",
+      { operationTicket: "ticket-fails" },
+    ]);
+    warn.mockRestore();
+  });
+
   it("related_scenes_release は実処理が完了するまで lifecycle quiescence を保持する", async () => {
     let resolveBridge!: (value: { ok: true; value: null }) => void;
     installBridge({
