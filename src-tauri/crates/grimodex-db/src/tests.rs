@@ -1334,8 +1334,7 @@ fn test_search_fts_codex_like_matches_content() {
 
 #[test]
 fn test_search_fts_en_project_stems_query() {
-    let db = Database::new(Path::new(":memory:")).expect("open");
-    db.migrate().expect("migrate");
+    let db = current_schema_db();
     {
         let conn = db.conn.lock().expect("lock");
         conn.execute_batch(
@@ -1615,8 +1614,7 @@ fn test_en_fts_triggers_route_and_stem() {
 
 #[test]
 fn test_rebuild_en_fts_repopulates_after_wipe() {
-    let db = Database::new(Path::new(":memory:")).expect("open");
-    db.migrate().expect("migrate");
+    let db = current_schema_db();
     {
         let conn = db.conn.lock().expect("lock");
         conn.execute_batch(
@@ -1656,8 +1654,7 @@ fn test_rebuild_en_fts_repopulates_after_wipe() {
 /// unguarded delete triggers must remove the row on cascade.
 #[test]
 fn test_en_fts_no_orphan_on_cascade_delete() {
-    let db = Database::new(Path::new(":memory:")).expect("open");
-    db.migrate().expect("migrate");
+    let db = current_schema_db();
     let conn = db.conn.lock().expect("lock");
 
     conn.execute_batch(
@@ -1887,7 +1884,7 @@ fn test_delete_tree_node_preserves_snapshot_protected_versions() {
 /// snapshot-protected content_version) during the wipe.
 #[test]
 fn test_defer_foreign_keys_wipe_and_restore_round_trip() {
-    let db = test_db();
+    let db = current_schema_db();
     let p = |s: &str| Value::String(s.into());
 
     db.execute(
@@ -1964,7 +1961,7 @@ fn test_defer_foreign_keys_wipe_and_restore_round_trip() {
 /// applyPlan.ts buildUndoStatements がこの順序を組む。
 #[test]
 fn test_ai_tree_group_undo_preserves_existing_scene() {
-    let db = test_db();
+    let db = current_schema_db();
     let p = |s: &str| Value::String(s.into());
 
     // 既存シーン S を root に作る。
@@ -2045,7 +2042,7 @@ fn test_ai_tree_group_undo_preserves_existing_scene() {
 /// あることを裏付ける(applyPlan.ts が踏襲してはならない順序)。
 #[test]
 fn test_ai_tree_naive_undo_order_loses_existing_scene() {
-    let db = test_db();
+    let db = current_schema_db();
     let p = |s: &str| Value::String(s.into());
 
     db.execute(
@@ -2327,8 +2324,7 @@ fn test_fts_optimize_succeeds() {
 
 #[test]
 fn test_fts_rebuild_includes_en_tables() {
-    let db = Database::new(Path::new(":memory:")).expect("open");
-    db.migrate().expect("migrate");
+    let db = current_schema_db();
     {
         let conn = db.conn.lock().expect("lock");
         conn.execute_batch(
@@ -3718,8 +3714,7 @@ fn test_migrate_impact_review_categories_widens_legacy_timeline_check() {
 
 #[test]
 fn test_language_switch_reroutes_en_index() {
-    let db = Database::new(Path::new(":memory:")).expect("open");
-    db.migrate().expect("migrate");
+    let db = current_schema_db();
     {
         let conn = db.conn.lock().expect("lock");
         conn.execute_batch(
@@ -3983,7 +3978,7 @@ fn test_slim_preserves_event_chunks_for_offline_dense_search() {
 fn test_rebuild_fts_if_stale_repopulates_empty_index() {
     // slim バックアップ復元の happy path 以外（再オープン失敗経由の reload / 手動昇格）
     // で開かれた「content あり・FTS 空」の DB を open 時に自己修復することを gate する。
-    let db = test_db();
+    let db = current_schema_db();
     db.execute(
         "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) \
          VALUES ('c1','default-project','character','セラフ','古代の守護者スロウン','[]', datetime('now'), datetime('now'))",

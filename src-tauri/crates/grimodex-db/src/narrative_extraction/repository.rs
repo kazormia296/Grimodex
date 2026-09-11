@@ -6036,6 +6036,15 @@ mod unit_tests {
     fn full_migrated_db() -> Database {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
         db.migrate().expect("migrate");
+        seed_full_db(db)
+    }
+
+    fn current_schema_full_db() -> Database {
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
+        seed_full_db(db)
+    }
+
+    fn seed_full_db(db: Database) -> Database {
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
@@ -7034,7 +7043,7 @@ mod unit_tests {
 
     #[test]
     fn live_chronicle_catalog_matches_fresh_start_canonical_contract() {
-        let db = full_migrated_db();
+        let db = current_schema_full_db();
         db.with_conn(|conn| {
             // Same ordinal deliberately exercises the fresh path's secondary
             // `id` order independently of insertion order.
@@ -9509,7 +9518,7 @@ mod unit_tests {
             find_edges_by_consumer, PROPOSAL_REVISION_CONSUMER_KIND,
         };
 
-        let db = full_migrated_db();
+        let db = current_schema_full_db();
         create_run(
             &db,
             CreateRunPayload {

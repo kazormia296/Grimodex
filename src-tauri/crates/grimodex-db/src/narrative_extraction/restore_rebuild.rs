@@ -5442,7 +5442,7 @@ mod tests {
 
     #[test]
     fn rebuild_derived_state_evaluates_and_publishes_every_consumer() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_epoch_for_rebuild(&db, "project-1");
         let current_token = current_scene_revision_token(&db, "scene-live");
 
@@ -5613,7 +5613,7 @@ mod tests {
 
     #[test]
     fn persisted_rebuild_required_must_match_recomputed_repairability() {
-        let clean_db = test_db();
+        let clean_db = current_schema_db();
         let clean_report = clean_db
             .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("compute a clean Verify report");
@@ -5626,7 +5626,7 @@ mod tests {
             })
             .expect_err("a clean/manual report cannot store rebuildRequired=true");
 
-        let repairable_db = test_db();
+        let repairable_db = current_schema_db();
         seed_epoch_for_rebuild(&repairable_db, "project-1");
         seed_run_edge(
             &repairable_db,
@@ -5766,7 +5766,7 @@ mod tests {
 
     #[test]
     fn project_verify_rejects_an_applied_legacy_unbound_revision() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_application_fixture_with_origin(
             &db,
             "application-legacy-unbound",
@@ -5842,7 +5842,7 @@ mod tests {
 
     #[test]
     fn missing_commit_applications_are_scoped_by_their_proposal_set_project() {
-        let db = test_db();
+        let db = current_schema_db();
         db.with_conn(|conn| {
             let (project_id, suffix) = ("project-1", "a");
             conn.execute(
@@ -5979,7 +5979,7 @@ mod tests {
 
     #[test]
     fn project_verify_reports_contribution_commit_provenance_drift() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_application_fixture(&db, "application-1", "commit-1", "proposal-1", "revision-1");
         db.with_conn(|conn| {
             conn.execute(
@@ -6008,7 +6008,7 @@ mod tests {
 
     #[test]
     fn project_verify_reports_legacy_generic_mirror_status_drift() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_application_fixture(&db, "application-1", "commit-1", "proposal-1", "revision-1");
         let epoch_id = db
             .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
@@ -6045,7 +6045,7 @@ mod tests {
 
     #[test]
     fn project_verify_reports_a_cursor_acknowledging_past_the_feed_head() {
-        let db = test_db();
+        let db = current_schema_db();
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO change_events
@@ -6098,7 +6098,7 @@ mod tests {
 
     #[test]
     fn project_verify_rejects_reserved_semantic_index_metadata_footprint() {
-        let db = test_db();
+        let db = current_schema_db();
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO narrative_semantic_index_metadata
@@ -6141,7 +6141,7 @@ mod tests {
         };
         use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 
-        let db = test_db();
+        let db = current_schema_db();
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO narrative_semantic_index_metadata
@@ -6212,7 +6212,7 @@ mod tests {
 
     #[test]
     fn project_verify_rejects_reserved_semantic_index_freshness_footprint() {
-        let db = test_db();
+        let db = current_schema_db();
         let epoch_id = db
             .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
             .expect("mint current epoch");
@@ -6258,7 +6258,7 @@ mod tests {
     /// the unknown Consumer receives an explicit Unknown/Manual publication.
     #[test]
     fn rebuild_derived_state_skips_an_unresolvable_consumer_without_failing_the_run() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
         db.with_conn(|conn| {
             record_dependency_edge_in_tx(
@@ -6318,7 +6318,7 @@ mod tests {
         };
         use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 
-        let db = test_db();
+        let db = current_schema_db();
         let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
         seed_run_edge(
             &db,
@@ -6596,7 +6596,7 @@ mod tests {
 
     #[test]
     fn a_blank_snapshot_owner_is_unresolvable_and_counted_when_every_edge_is_skipped() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_sealed_snapshot_run(&db, "project-1", "run-1");
         seed_raw_snapshot_edge(
             &db,
@@ -6635,7 +6635,7 @@ mod tests {
 
     #[test]
     fn a_partial_skip_counts_the_edge_once_without_skipping_the_consumer() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_sealed_snapshot_run(&db, "project-1", "run-1");
         db.with_conn(|conn| {
             record_dependency_edge_in_tx(
@@ -7070,7 +7070,7 @@ mod tests {
 
     #[test]
     fn a_run_snapshot_edge_with_a_different_stored_owner_is_unresolvable_not_missing() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_sealed_snapshot_run(&db, "project-1", "run-1");
         seed_sealed_snapshot_run(&db, "project-1", "run-2");
         seed_raw_snapshot_edge(
@@ -7099,7 +7099,7 @@ mod tests {
 
     #[test]
     fn a_blank_stored_owner_does_not_hide_a_run_consumers_exact_fallback() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_sealed_snapshot_run(&db, "project-1", "run-1");
         seed_raw_snapshot_edge(
             &db,
@@ -7125,7 +7125,7 @@ mod tests {
 
     #[test]
     fn a_snapshot_owner_from_another_project_is_unresolvable_not_missing() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_sealed_snapshot_run(&db, "project-2", "foreign-run");
         seed_raw_snapshot_edge(
             &db,
@@ -7162,7 +7162,7 @@ mod tests {
 
     #[test]
     fn a_double_prefixed_snapshot_identity_is_unresolvable_not_missing() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_sealed_snapshot_run(&db, "project-1", "run-1");
         seed_raw_snapshot_edge(
             &db,
@@ -7188,7 +7188,7 @@ mod tests {
 
     #[test]
     fn project_verify_names_an_unresolvable_consumer_scope_without_calling_the_source_missing() {
-        let db = test_db();
+        let db = current_schema_db();
         let run_scoped = seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
         let unknown_scope = db
             .with_conn(|conn| {
@@ -7235,7 +7235,7 @@ mod tests {
     /// dependency set that no longer exists.
     #[test]
     fn project_verify_detects_a_consumer_freshness_dependency_set_digest_that_drifted() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
         let dropped = seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-second");
         db.with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
@@ -7282,7 +7282,7 @@ mod tests {
     /// a missing Source would be a fabricated Finding about a present Source.
     #[test]
     fn a_snapshot_edge_with_no_declaring_run_is_unresolvable_not_missing() {
-        let db = test_db();
+        let db = current_schema_db();
         // A real, sealed Run whose snapshot the Edge names.
         seed_sealed_snapshot_run(&db, "project-1", "run-1");
         seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
@@ -7318,7 +7318,7 @@ mod tests {
 
     #[test]
     fn proposal_revision_owner_failures_are_unresolvable_for_non_snapshot_sources() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_sealed_snapshot_run(&db, "project-2", "foreign-run");
         for (edge_id, consumer_key, owning_run_id) in [
             ("edge-scene-owner-blank", "revision-blank", Some("")),
@@ -7397,7 +7397,7 @@ mod tests {
 
     #[test]
     fn application_owner_scope_requires_a_same_project_persisted_run() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_sealed_snapshot_run(&db, "project-1", "application-owner-local");
         seed_sealed_snapshot_run(&db, "project-2", "application-owner-foreign");
         seed_raw_edge(
@@ -7452,7 +7452,7 @@ mod tests {
 
     #[test]
     fn application_snapshot_dependency_uses_embedded_apply_run_with_fresh_owner() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_sealed_snapshot_run(&db, "project-1", "backfill-owner");
         seed_sealed_snapshot_run(&db, "project-1", "apply-run");
         db.with_conn(|conn| {
@@ -7480,7 +7480,7 @@ mod tests {
 
     #[test]
     fn a_dangling_snapshot_owner_is_unresolvable_not_missing() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_raw_snapshot_edge(
             &db,
             "edge-dangling-owner",
@@ -7543,7 +7543,7 @@ mod tests {
 
     #[test]
     fn project_verify_reports_exact_edge_candidates_and_target_conflicts_for_attention_rehome() {
-        let db = test_db();
+        let db = current_schema_db();
         let epoch_id = db
             .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
             .expect("create current epoch");
@@ -7640,7 +7640,7 @@ mod tests {
     /// as incomplete rather than stale: not a defect, but not a clean Verify.
     #[test]
     fn project_verify_is_not_clean_when_a_dependency_set_digest_was_never_computed() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
         let epoch_id = db
             .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
@@ -7683,7 +7683,7 @@ mod tests {
 
     #[test]
     fn project_verify_keeps_orphaned_freshness_manual_instead_of_routing_rebuild() {
-        let db = test_db();
+        let db = current_schema_db();
         let epoch_id = db
             .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
             .expect("mint an epoch");
@@ -7987,7 +7987,7 @@ mod tests {
 
     #[test]
     fn project_verify_detects_a_cross_project_run_consumer() {
-        let db = test_db();
+        let db = current_schema_db();
         // A Run that belongs to project-2 but has an Edge recorded under
         // project-1 -- exactly the boundary slip this check exists to
         // catch (the Edge's own source_object_identity carries no project
@@ -8090,7 +8090,7 @@ mod tests {
 
     #[test]
     fn graph_state_excludes_only_exact_terminal_failure_output_rows() {
-        let db = test_db();
+        let db = current_schema_db();
         let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
         let baseline = db
             .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
@@ -8218,7 +8218,7 @@ mod tests {
 
     #[test]
     fn graph_state_cas_includes_contribution_and_active_cursor_row_closures() {
-        let contribution_db = test_db();
+        let contribution_db = current_schema_db();
         contribution_db
             .with_conn(|conn| {
                 conn.execute(
@@ -8423,7 +8423,7 @@ mod tests {
             "active Run work key is outside Verify's cursor/feed read closure"
         );
 
-        let freshness_db = test_db();
+        let freshness_db = current_schema_db();
         let freshness_epoch = freshness_db
             .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
             .expect("seed current epoch for freshness closure");
@@ -8550,7 +8550,7 @@ mod tests {
 
     #[test]
     fn graph_state_cas_ignores_unreferenced_legacy_change_events() {
-        let db = test_db();
+        let db = current_schema_db();
         let baseline = db
             .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest baseline without legacy layout event");
@@ -8580,7 +8580,7 @@ mod tests {
 
     #[test]
     fn graph_state_cas_tracks_referenced_canonical_event_mutations_and_absence() {
-        let db = test_db();
+        let db = current_schema_db();
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO change_events
@@ -8687,7 +8687,7 @@ mod tests {
 
     #[test]
     fn graph_state_cas_includes_each_edge_scope_and_source_resolution_closure() {
-        let owner_db = test_db();
+        let owner_db = current_schema_db();
         owner_db
             .with_conn(|conn| {
                 conn.execute(
@@ -8735,7 +8735,7 @@ mod tests {
             "an Edge's owning Run project is a Verify scope input"
         );
 
-        let owner_snapshot_db = test_db();
+        let owner_snapshot_db = current_schema_db();
         owner_snapshot_db
             .with_conn(|conn| {
                 conn.execute(
@@ -8799,7 +8799,7 @@ mod tests {
             "an Edge's missing owning Run must invalidate the graph CAS"
         );
 
-        let source_db = test_db();
+        let source_db = current_schema_db();
         seed_raw_edge(
             &source_db,
             "scene-resolution-edge",
@@ -8844,7 +8844,7 @@ mod tests {
             "an Edge's missing Source resolver row must invalidate the graph CAS"
         );
 
-        let snapshot_db = test_db();
+        let snapshot_db = current_schema_db();
         seed_sealed_snapshot_run(&snapshot_db, "project-1", "edge-snapshot-source");
         seed_raw_snapshot_edge(
             &snapshot_db,
@@ -8898,7 +8898,7 @@ mod tests {
 
     #[test]
     fn rebuild_derived_state_resolves_a_snapshot_document_source_correctly() {
-        let db = test_db();
+        let db = current_schema_db();
         seed_epoch_for_rebuild(&db, "project-1");
 
         // The Run that produced and sealed a snapshot -- this is the
