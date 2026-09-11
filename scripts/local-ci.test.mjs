@@ -3135,14 +3135,18 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     "grimodex-semantic/semantic-embedding",
     "--no-run",
   ]);
-  assert.deepEqual(tasksById.get("rust.tests").after, [
+  const rustTestsTask = tasksById.get("rust.tests");
+  assert.equal(rustTestsTask.lane, "cargo-shared");
+  assert.equal(rustTestsTask.slots, 2);
+  assert.deepEqual(rustTestsTask.after, [
     "rust.tests-db-lib",
     "rust.tests-db-integrations",
     "rust.tests-other-workspace",
     "rust.tests-db-doctests",
   ]);
-  assert.deepEqual(tasksById.get("rust.tests").obligations, ["rust.tests"]);
+  assert.deepEqual(rustTestsTask.obligations, ["rust.tests"]);
   const c2Task = tasksById.get("c2zc.rust-acceptance");
+  assert.equal(rustTestsTask.lane, c2Task.lane);
   assert.deepEqual(c2Task.after, ["rust.supervisor-failpoints"]);
   assert.equal(c2Task.slots, 2);
   assert.equal(c2Task.command.env.CARGO_BUILD_JOBS, "2");

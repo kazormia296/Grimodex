@@ -708,7 +708,7 @@
             "rust.tests-other-workspace",
             "rust.tests-db-doctests"
           ],
-          "lane": "cargo-shared-other-workspace",
+          "lane": "cargo-shared",
           "slots": 2,
           "env": {
             "CARGO_BUILD_JOBS": "2"

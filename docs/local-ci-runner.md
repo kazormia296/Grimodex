@@ -22,8 +22,10 @@ DB library, the DB integration targets plus `schema-contract`, and the rest of
 the workspace. The non-DB shard retains its doctests; a fourth Cargo task runs
 the DB doctests. Once those pass, the `rust.tests` terminal task runs the
 original workspace selector with `--no-run`, which retains compile-only target
-coverage. Each execution uses Cargo's target, runner, and dynamic-library
-environment directly; there is no test-executable discovery or replay layer.
+coverage. This terminal compile-all task uses the `cargo-shared` lane, so it
+cannot overlap the C2-ZC and other tasks registered on that lane. Each execution
+uses Cargo's target, runner, and dynamic-library environment directly; there is
+no test-executable discovery or replay layer.
 
 Migration and recovery Rust checks use the separate `cargo-recovery` lane. Its
 first failpoint task starts after dependency bootstrap, so it can overlap the
