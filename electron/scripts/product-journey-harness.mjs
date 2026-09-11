@@ -3074,6 +3074,7 @@ export function createProductJourneyHarness({
   launchTimeoutMs = 60_000,
   operationTimeoutMs = PRODUCT_JOURNEY_OPERATION_TIMEOUT_MS,
   laneWatchdogMs = null,
+  failureCleanupTimeoutMs = PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
   journalPath = null,
   mainProcessDrainTimeoutMs = MAIN_PROCESS_DRAIN_TIMEOUT_MS,
   artifactRoot = process.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ?? null,
@@ -3096,6 +3097,14 @@ export function createProductJourneyHarness({
     );
   }
   if (
+    !Number.isFinite(failureCleanupTimeoutMs) ||
+    failureCleanupTimeoutMs <= 0
+  ) {
+    throw new Error(
+      "product journey harness requires a positive failureCleanupTimeoutMs",
+    );
+  }
+  if (
     laneWatchdogMs !== null &&
     (!Number.isFinite(laneWatchdogMs) || laneWatchdogMs <= 0)
   ) {
@@ -3104,6 +3113,7 @@ export function createProductJourneyHarness({
     );
   }
   validateMainProcessNoiseAllowlist(mainProcessNoiseAllowlist);
+  const failureCleanupBudget = Math.max(1, Math.floor(failureCleanupTimeoutMs));
   const trustedCloseApp = closeApp === closeElectronAppWithDiagnostics;
 
   const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "grimodex-product-"));
@@ -3350,10 +3360,9 @@ export function createProductJourneyHarness({
         (launchContext) => launchContext.lateLaunchCompletion,
       ),
     );
-    await settleWithin(
-      completion,
-      PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS + 250,
-    ).catch(() => undefined);
+    await settleWithin(completion, failureCleanupBudget + 250).catch(
+      () => undefined,
+    );
     for (const launchContext of pendingContexts) {
       if (!launchContext.lateLaunchSettled) {
         // The lane watchdog failure and the launch-cleanup failure are
@@ -3497,7 +3506,7 @@ export function createProductJourneyHarness({
         phase: closePhase,
         command: "electron-close",
         args: { reason },
-        timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+        timeoutMs: failureCleanupBudget,
         useLaneSignal: false,
         suppressTimeoutCleanup: true,
         journal: operationJournalClosed ? null : operationJournal,
@@ -3510,10 +3519,9 @@ export function createProductJourneyHarness({
         recordFatalCloseDiagnostic(app, closePhase, closeFailure, childProcess);
       }
     } else {
-      await settleWithin(
-        closeOperation,
-        PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
-      ).catch(() => undefined);
+      await settleWithin(closeOperation, failureCleanupBudget).catch(
+        () => undefined,
+      );
     }
     await settleWithin(
       Promise.resolve().then(() => drainMainDiagnosticStream(app)),
@@ -3571,7 +3579,7 @@ export function createProductJourneyHarness({
           launchContexts.get(pending.launchId),
         );
         resolve();
-      }, PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS);
+      }, failureCleanupBudget);
       pending.timeoutId = timeoutId;
     });
     pending.release = release;
@@ -3684,7 +3692,7 @@ export function createProductJourneyHarness({
                 phase: `${phase}/late-launch`,
                 command: "electron-close",
                 args: { launchId },
-                timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+                timeoutMs: failureCleanupBudget,
                 journal: operationJournalClosed ? null : operationJournal,
                 onTimeout: null,
               },
@@ -3735,12 +3743,12 @@ export function createProductJourneyHarness({
               phase: `${phase}/late-launch`,
               command: "electron-close",
               args: { launchId },
-              timeoutMs: PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+              timeoutMs: failureCleanupBudget,
               journal: operationJournalClosed ? null : operationJournal,
               onTimeout: null,
             },
           ),
-          PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS + 250,
+          failureCleanupBudget + 250,
         ).catch((error) => {
           recordFatalCloseDiagnostic(
             app,

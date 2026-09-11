@@ -319,6 +319,7 @@ const HUNG_SCREENSHOT_CAPTURE_COMPLETION_TIMEOUT_MS = 2_000;
 const LOADED_ELECTRON_LANE_TIMEOUT_MS = 1_000;
 const LOADED_ELECTRON_OPERATION_TIMEOUT_MS = 3_000;
 const LOADED_ELECTRON_BARRIER_TIMEOUT_MS = 5_000;
+const HANGING_CLEANUP_TIMEOUT_MS = 500;
 
 async function awaitHeldFreshnessBeforeRequestBarrier(
   harness,
@@ -2402,6 +2403,7 @@ test("launch timeout fallback records unverified cleanup when no app resolves", 
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
     artifactRoot,
+    failureCleanupTimeoutMs: HANGING_CLEANUP_TIMEOUT_MS,
     launchTimeoutMs: 10,
     operationTimeoutMs: 10,
     electronLauncher: {
@@ -2429,7 +2431,10 @@ test("launch timeout fallback records unverified cleanup when no app resolves", 
     harness.launch("no-late-launch-resolution"),
     /timed out/,
   );
-  await new Promise((resolve) => globalThis.setTimeout(resolve, 5_200));
+  await harness.dispose({
+    success: false,
+    name: "no-late-launch-resolution",
+  });
 
   const retainedDiagnostics = JSON.parse(
     await readFile(
@@ -2492,6 +2497,7 @@ test("late cleanup owns the capture when it starts before the fallback deadline"
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
     artifactRoot,
+    failureCleanupTimeoutMs: HANGING_CLEANUP_TIMEOUT_MS,
     launchTimeoutMs: 10,
     operationTimeoutMs: 10,
     electronLauncher: {
@@ -2518,9 +2524,9 @@ test("late cleanup owns the capture when it starts before the fallback deadline"
   });
 
   await assert.rejects(harness.launch("late-cleanup-deadline"), /timed out/);
-  setTimeout(() => resolveLaunch(app), 3_500);
+  setTimeout(() => resolveLaunch(app), HANGING_CLEANUP_TIMEOUT_MS / 2);
   await closeStarted;
-  await new Promise((resolve) => globalThis.setTimeout(resolve, 6_500));
+  await harness.dispose({ success: false, name: "late-cleanup-deadline" });
 
   const diagnostics = harness.diagnostics();
   assert.equal(diagnostics.cleanPass, false);
@@ -2893,6 +2899,7 @@ test("late valid launches persist close and termination failures before capture"
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
       artifactRoot,
+      failureCleanupTimeoutMs: HANGING_CLEANUP_TIMEOUT_MS,
       launchTimeoutMs: 10,
       operationTimeoutMs: 10,
       electronLauncher: {
@@ -2980,6 +2987,7 @@ test("late close timeout treats a concurrent verified exit as authoritative", as
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
       artifactRoot,
+      failureCleanupTimeoutMs: HANGING_CLEANUP_TIMEOUT_MS,
       launchTimeoutMs: 10,
       operationTimeoutMs: 10,
       electronLauncher: {
@@ -4060,6 +4068,33 @@ test("fixture DML seam stays outside production bundle and preload entrypoints",
   ]) {
     assert.doesNotMatch(source, /executeFixtureOperations/);
     assert.doesNotMatch(source, /executeFixtureDml/);
+  }
+});
+
+test("cleanup timeout stays production-safe and rejects non-positive overrides", async () => {
+  const [harnessSource, runnerSource] = await Promise.all([
+    read("electron/scripts/product-journey-harness.mjs"),
+    read("electron/scripts/product-journeys.mjs"),
+  ]);
+  assert.match(
+    harnessSource,
+    /const PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS = 5_000;/,
+  );
+  assert.match(
+    harnessSource,
+    /failureCleanupTimeoutMs\s*=\s*PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS/,
+  );
+  assert.doesNotMatch(runnerSource, /failureCleanupTimeoutMs/);
+
+  for (const timeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () =>
+        createProductJourneyHarness({
+          mainCjs: "/tmp/fake-main.cjs",
+          failureCleanupTimeoutMs: timeoutMs,
+        }),
+      /positive failureCleanupTimeoutMs/,
+    );
   }
 });
 
@@ -5861,6 +5896,7 @@ test("lane timeout records pending Electron launch cleanup without duplicate art
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
     artifactRoot,
+    failureCleanupTimeoutMs: HANGING_CLEANUP_TIMEOUT_MS,
     operationTimeoutMs: 100,
     launchTimeoutMs: 10_000,
     electronLauncher: {
@@ -5888,7 +5924,10 @@ test("lane timeout records pending Electron launch cleanup without duplicate art
     phase,
   );
   await assert.rejects(running, /watchdog.*lane-pending-forever/i);
-  assert.ok(Date.now() - startedAt < 7_000);
+  assert.ok(
+    Date.now() - startedAt < 4_000,
+    "pending launch must use the injected cleanup timeout",
+  );
   assert.equal(launchCalls, 1);
 
   assert.deepEqual(await readdir(artifactRoot), [artifactName]);
@@ -6035,6 +6074,7 @@ test("late Electron close hang is bounded and retained as a fatal diagnostic", a
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
     artifactRoot,
+    failureCleanupTimeoutMs: HANGING_CLEANUP_TIMEOUT_MS,
     operationTimeoutMs: 100,
     launchTimeoutMs: 10_000,
     electronLauncher: {
@@ -6065,7 +6105,7 @@ test("late Electron close hang is bounded and retained as a fatal diagnostic", a
   );
   await assert.rejects(running, /watchdog.*late-close-hang/i);
   const elapsedMs = Date.now() - startedAt;
-  assert.ok(elapsedMs < 7_000, `late cleanup exceeded bound: ${elapsedMs}ms`);
+  assert.ok(elapsedMs < 4_000, `late cleanup exceeded bound: ${elapsedMs}ms`);
   await harness.dispose({ success: false, name: artifactName });
 
   assert.deepEqual(await readdir(artifactRoot), [artifactName]);
@@ -6083,11 +6123,12 @@ test("late Electron close hang is bounded and retained as a fatal diagnostic", a
   );
   assert.equal(artifactDiagnostics.cleanPass, false);
   assert.equal(artifactDiagnostics.closeDiagnostics.length, 2);
-  const closeDiagnostic = artifactDiagnostics.closeDiagnostics.find((issue) =>
-    issue.message.includes("timed out"),
+  const closeDiagnostic = artifactDiagnostics.closeDiagnostics.find(
+    (issue) => issue.errorName === "ProductJourneyOperationTimeoutError",
   );
   assert.ok(closeDiagnostic, JSON.stringify(artifactDiagnostics));
   assert.equal(closeDiagnostic.fatal, true);
+  assert.match(closeDiagnostic.message, /after 500ms/u);
   assert.ok(
     artifactDiagnostics.closeDiagnostics.some(
       (issue) => issue.errorName === "ProductJourneyLaneWatchdogError",
