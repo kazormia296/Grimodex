@@ -64,8 +64,8 @@ if (
   throw new Error("fixed product journey shards need rebalancing");
 
 export const FIXED_PRODUCT_JOURNEY_SHARDS = Object.freeze([
-  Object.freeze(IDS.slice(0, 12)),
-  Object.freeze(IDS.slice(12)),
+  Object.freeze(IDS.slice(0, 13)),
+  Object.freeze(IDS.slice(13)),
 ]);
 
 function same(actual, expected, label) {

@@ -2,14 +2,14 @@
 
 `pnpm ci:local:quick` and `pnpm ci:local:full` read
 `scripts/local-ci-registry.json`. Full maps the existing 16 logical groups and
-52 obligations onto 58 scheduled tasks. The duplicate
+52 obligations onto 59 scheduled tasks. The duplicate
 `workspace_migration_supervisor` failpoint
 invocation is one task whose receipt result names both obligations. Supporting
 shard commands can declare an empty obligation list; the `rust.tests` terminal
 task carries the original shared-Rust test obligation exactly once.
-The renderer unit suite runs as complementary Vitest `1/2` and `2/2` shards;
-one task carries the existing `frontend.unit` obligation, and both results are
-bound into the receipt.
+The renderer unit suite runs as complementary Vitest `1/3`, `2/3`, and `3/3`
+shards; the final task carries the existing `frontend.unit` obligation, and all
+three results are bound into the receipt.
 
 Each registry command has a stable `id`. `after` lists direct task
 dependencies, `lane` prevents two tasks with the same exclusive lane from
@@ -35,19 +35,20 @@ limits.
 The DAG schedules individual commands. After the first failure it admits no
 new command and waits for commands that already started. A Full run has a
 600,000 ms wall-clock limit covering candidate prechecks, every task, receipt
-checks, and the external verifier. The runtime contract task explicitly depends
-on every pre-runtime terminal task. Runtime performance then owns all twelve
-slots and is the final group. Product journeys run as two fixed, disjoint
-processes covering 12 and 15 catalog entries. Each process owns a separate
-Xvfb display and artifact directory; a final one-slot task rejects missing,
-duplicate, extra, failed, unclean, or differently bound results before writing
-the existing canonical v5 result and v1 manifest.
+checks, and the external verifier. The four-slot runtime contract task starts
+after workspace dependency bootstrap and can overlap independent gates. Runtime
+performance waits for it and every pre-runtime terminal task, then owns all
+twelve slots as the final group. Product journeys run as two fixed, disjoint
+processes covering 13 and 14 catalog entries. Each process atomically allocates
+a separate Xvfb display and owns a separate artifact directory; a final one-slot
+task rejects missing, duplicate, extra, failed, unclean, or differently bound
+results before writing the existing canonical v5 result and v1 manifest.
 
-Full's deterministic priority order places the candidate-bound C2-ZC receipt
-and fixture first, followed by the native and Electron artifact producers,
-adjacent renderer unit shards, and the WebGL gate needed by product journeys.
-Recovery, shared Rust, browser, and Storybook checks remain fail-closed through
-their dependency edges and the final runtime fan-in.
+Full's deterministic priority order starts bootstrap and recovery work before
+the native checks, keeps the candidate-bound C2-ZC receipt and fixture adjacent,
+and then prioritizes quality, product journeys, LFM, security, renderer, Rust,
+WebGL, Storybook, browser, and Electron work. Dependency edges still control
+actual eligibility, and the runtime benchmark remains the final fan-in.
 
 The canonical plan retains `__LOCAL_CI_RUN_ID__` in run-owned paths. Command
 execution and post-run evidence collection bind the same validated run UUID
@@ -60,10 +61,11 @@ Commands run with Node `spawn({ detached: true })`. Each command writes to:
 .artifacts/local-ci/runs/<run-id>/logs/<task-id>.stderr.log
 ```
 
-The receipt records each log's size and SHA-256. Timeout or interruption sends
-`SIGTERM` and then `SIGKILL` to the negative process-group ID, waits for the
-child `close` event, and rejects a command whose process group still exists.
-CI commands must not daemonize, call `setsid`, or double-fork because those
+The receipt records each log's size and SHA-256. After a normal child `close`,
+the supervisor gives its process group the bounded TERM grace to finish an
+already-started teardown. A group still present is rejected after `SIGTERM` and
+`SIGKILL` cleanup; timeout or interruption starts that cleanup immediately. CI
+commands must not daemonize, call `setsid`, or double-fork because those
 operations escape ordinary process-group cleanup.
 
 The Web Editor Vite build writes directly to

@@ -5,20 +5,20 @@
     "quick": ["impact"],
     "full": [
       "bootstrap",
+      "migration-recovery-gate",
+      "electron-native",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
-      "electron-native",
-      "electron",
-      "frontend",
-      "webgl",
-      "electron-product-journeys",
-      "migration-recovery-gate",
-      "rust",
-      "browser",
-      "storybook",
       "quality",
+      "electron-product-journeys",
       "lfm-encoder-phase0",
       "security",
+      "frontend",
+      "rust",
+      "webgl",
+      "storybook",
+      "browser",
+      "electron",
       "electron-runtime-performance"
     ]
   },
@@ -83,7 +83,7 @@
       "label": "Frontend checks and production artifact",
       "commands": [
         {
-          "label": "Renderer unit tests (shard 1/2)",
+          "label": "Renderer unit tests (shard 1/3)",
           "command": "pnpm",
           "args": [
             "exec",
@@ -94,7 +94,7 @@
             "--maxWorkers",
             "2",
             "--shard",
-            "1/2"
+            "1/3"
           ],
           "id": "frontend.unit-shard-1",
           "after": ["bootstrap.workspace-build"],
@@ -102,7 +102,7 @@
           "obligations": []
         },
         {
-          "label": "Renderer unit tests (shard 2/2)",
+          "label": "Renderer unit tests (shard 2/3)",
           "command": "pnpm",
           "args": [
             "exec",
@@ -113,7 +113,26 @@
             "--maxWorkers",
             "2",
             "--shard",
-            "2/2"
+            "2/3"
+          ],
+          "id": "frontend.unit-shard-2",
+          "after": ["bootstrap.workspace-build"],
+          "slots": 2,
+          "obligations": []
+        },
+        {
+          "label": "Renderer unit tests (shard 3/3)",
+          "command": "pnpm",
+          "args": [
+            "exec",
+            "vitest",
+            "--config",
+            "vitest.config.ts",
+            "--run",
+            "--maxWorkers",
+            "2",
+            "--shard",
+            "3/3"
           ],
           "id": "frontend.unit",
           "after": ["bootstrap.workspace-build"],
@@ -988,6 +1007,15 @@
           "command": "pnpm",
           "args": ["test:electron-perf"],
           "id": "runtime.contracts",
+          "after": ["bootstrap.workspace-build"],
+          "slots": 4,
+          "timeoutMs": 90000
+        },
+        {
+          "label": "50k-character runtime performance gate",
+          "command": "pnpm",
+          "args": ["electron:perf:ci"],
+          "id": "runtime.benchmark",
           "after": [
             "quality.contracts",
             "frontend.typecheck",
@@ -995,6 +1023,7 @@
             "frontend.architecture",
             "frontend.browser-contracts",
             "frontend.unit-shard-1",
+            "frontend.unit-shard-2",
             "frontend.unit",
             "frontend.web-build",
             "browser.tests",
@@ -1016,17 +1045,9 @@
             "rust.clippy",
             "rust.tests",
             "rust.runtime-authority",
-            "rust.license"
+            "rust.license",
+            "runtime.contracts"
           ],
-          "slots": 12,
-          "timeoutMs": 90000
-        },
-        {
-          "label": "50k-character runtime performance gate",
-          "command": "pnpm",
-          "args": ["electron:perf:ci"],
-          "id": "runtime.benchmark",
-          "after": ["runtime.contracts"],
           "slots": 12,
           "timeoutMs": 180000
         }
@@ -1064,7 +1085,7 @@
           "label": "Run product journey shard 1",
           "command": "xvfb-run",
           "args": [
-            "--auto-servernum",
+            "--auto-display",
             "--server-args=-screen 0 1920x1080x24",
             "node",
             "electron/scripts/product-journey-shards.mjs",
@@ -1082,7 +1103,7 @@
             "webgl.tests"
           ],
           "lane": "journey-shard-1",
-          "slots": 2,
+          "slots": 3,
           "timeoutMs": 240000,
           "obligations": []
         },
@@ -1090,7 +1111,7 @@
           "label": "Run product journey shard 2",
           "command": "xvfb-run",
           "args": [
-            "--auto-servernum",
+            "--auto-display",
             "--server-args=-screen 0 1920x1080x24",
             "node",
             "electron/scripts/product-journey-shards.mjs",
@@ -1108,7 +1129,7 @@
             "webgl.tests"
           ],
           "lane": "journey-shard-2",
-          "slots": 2,
+          "slots": 3,
           "timeoutMs": 240000,
           "obligations": []
         },

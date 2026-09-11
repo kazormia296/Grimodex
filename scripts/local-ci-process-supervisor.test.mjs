@@ -120,6 +120,7 @@ test("rejects a command that exits while a same-group survivor remains", async (
       logDirectory: ".logs",
       root,
       taskId: "survivor",
+      termGraceMs: 50,
     }),
     (error) => {
       assert.match(error.message, /process group survived command close/u);
@@ -128,6 +129,27 @@ test("rejects a command that exits while a same-group survivor remains", async (
       return true;
     },
   );
+});
+
+test("allows bounded process-group teardown after command close", async (t) => {
+  const root = await fixture(t);
+  const source = [
+    "const {spawn}=require('node:child_process');",
+    "spawn(process.execPath,['--input-type=commonjs','-e','setTimeout(()=>{},100)'],{stdio:'ignore'}).unref();",
+    "process.exit(0);",
+  ].join("");
+
+  const result = await runLocalCiCommand(nodeCommand(source), {
+    logDirectory: ".logs",
+    root,
+    taskId: "bounded-teardown",
+    termGraceMs: 500,
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.cleanup.complete, true);
+  assert.equal(result.cleanup.termSent, false);
+  assert.equal(result.cleanup.survivorDetected, undefined);
 });
 
 test("reports a missing executable without obscuring the spawn error", async (t) => {

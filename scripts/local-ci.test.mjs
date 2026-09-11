@@ -214,20 +214,20 @@ function fullStageBindingPlan({ productJourneySet = "not-c2zc" } = {}) {
     comparison: { base: "origin/master", head: "HEAD" },
     stages: [
       "bootstrap",
+      "migration-recovery-gate",
+      "electron-native",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
-      "electron-native",
-      "electron",
-      "frontend",
-      "webgl",
-      "electron-product-journeys",
-      "migration-recovery-gate",
-      "rust",
-      "browser",
-      "storybook",
       "quality",
+      "electron-product-journeys",
       "lfm-encoder-phase0",
       "security",
+      "frontend",
+      "rust",
+      "webgl",
+      "storybook",
+      "browser",
+      "electron",
       "electron-runtime-performance",
     ].map((id, index) => ({
       id,
@@ -2912,20 +2912,20 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     plan.stages.map(({ id }) => id),
     [
       "bootstrap",
+      "migration-recovery-gate",
+      "electron-native",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
-      "electron-native",
-      "electron",
-      "frontend",
-      "webgl",
-      "electron-product-journeys",
-      "migration-recovery-gate",
-      "rust",
-      "browser",
-      "storybook",
       "quality",
+      "electron-product-journeys",
       "lfm-encoder-phase0",
       "security",
+      "frontend",
+      "rust",
+      "webgl",
+      "storybook",
+      "browser",
+      "electron",
       "electron-runtime-performance",
     ],
   );
@@ -2950,6 +2950,7 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       .commands.map(({ id }) => id),
     [
       "frontend.unit-shard-1",
+      "frontend.unit-shard-2",
       "frontend.unit",
       "frontend.typecheck",
       "frontend.lint",
@@ -2998,15 +2999,17 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "journeys.run",
     ],
   );
-  assert.equal(plan.tasks.length, 58);
-  assert.equal(tasksById.size, 58);
+  assert.equal(plan.tasks.length, 59);
+  assert.equal(tasksById.size, 59);
   assert.equal(obligations.length, 52);
   assert.equal(new Set(obligations).size, 52);
   assert.equal(
     obligations.filter((obligation) => obligation === "frontend.unit").length,
     1,
   );
-  assert.equal(obligations.includes("frontend.unit-shard-1"), false);
+  for (const id of ["frontend.unit-shard-1", "frontend.unit-shard-2"]) {
+    assert.equal(obligations.includes(id), false);
+  }
   assert.deepEqual(tasksById.get("rust.supervisor-failpoints").obligations, [
     "rust.supervisor-failpoints",
     "migration.supervisor-failpoints",
@@ -3045,7 +3048,7 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     const task = tasksById.get(`journeys.shard-${shard}`);
     assert.equal(task.command.command, "xvfb-run");
     assert.deepEqual(task.command.args, [
-      "--auto-servernum",
+      "--auto-display",
       "--server-args=-screen 0 1920x1080x24",
       "node",
       "electron/scripts/product-journey-shards.mjs",
@@ -3059,7 +3062,7 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     assert.deepEqual(task.after, shardDependencies);
     assert.deepEqual(task.obligations, []);
     assert.equal(task.lane, `journey-shard-${shard}`);
-    assert.equal(task.slots, 2);
+    assert.equal(task.slots, 3);
     assert.equal(task.timeoutMs, 240_000);
   }
   const aggregate = tasksById.get("journeys.run");
@@ -3208,9 +3211,13 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
 
   assert.equal(registry.maxSlots, 12);
   assert.equal(plan.stages.at(-1).id, "electron-runtime-performance");
+  const runtimeContracts = tasksById.get("runtime.contracts");
+  const runtimeBenchmark = tasksById.get("runtime.benchmark");
   assert.equal(plan.tasks.at(-1).id, "runtime.benchmark");
-  assert.equal(plan.tasks.at(-1).slots, registry.maxSlots);
-  assert.ok(plan.tasks.at(-1).after.includes("runtime.contracts"));
+  assert.deepEqual(runtimeContracts.after, ["bootstrap.workspace-build"]);
+  assert.equal(runtimeContracts.slots, 4);
+  assert.equal(runtimeBenchmark.slots, registry.maxSlots);
+  assert.ok(runtimeBenchmark.after.includes("runtime.contracts"));
   const preRuntimeTasks = plan.tasks.filter(
     ({ id }) => !id.startsWith("runtime."),
   );
@@ -3222,8 +3229,8 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     .map(({ id }) => id)
     .sort();
   assert.deepEqual(
-    [...tasksById.get("runtime.contracts").after].sort(),
-    preRuntimeTerminals,
+    [...runtimeBenchmark.after].sort(),
+    [...preRuntimeTerminals, "runtime.contracts"].sort(),
   );
   const directRuntimeRustDependencies = [
     "rust.check",
@@ -3234,14 +3241,14 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
   ];
   for (const id of directRuntimeRustDependencies) {
     assert.ok(
-      tasksById.get("runtime.contracts").after.includes(id),
-      `${id} must directly gate runtime contracts`,
+      runtimeBenchmark.after.includes(id),
+      `${id} must directly gate runtime benchmark`,
     );
   }
   for (const id of ["browser.tests", "storybook.tests", "migration.ui"]) {
     assert.ok(
-      tasksById.get("runtime.contracts").after.includes(id),
-      `${id} must directly gate runtime contracts`,
+      runtimeBenchmark.after.includes(id),
+      `${id} must directly gate runtime benchmark`,
     );
   }
   const runtimeDependencies = new Set();
@@ -3252,11 +3259,10 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       visitRuntimeDependency(dependency);
     }
   };
-  visitRuntimeDependency("runtime.contracts");
+  visitRuntimeDependency("runtime.benchmark");
   for (const { id } of plan.stages.find(({ id }) => id === "rust").commands) {
-    assert.ok(runtimeDependencies.has(id), `${id} must gate runtime contracts`);
+    assert.ok(runtimeDependencies.has(id), `${id} must gate runtime benchmark`);
   }
-  assert.equal(tasksById.get("runtime.contracts").slots, registry.maxSlots);
   assert.match(
     plan.tasks
       .find(({ id }) => id === "frontend.web-build")
@@ -3296,8 +3302,9 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     "2",
   ];
   const frontendUnitShardExpectations = [
-    ["frontend.unit-shard-1", "1/2", []],
-    ["frontend.unit", "2/2", undefined],
+    ["frontend.unit-shard-1", "1/3", []],
+    ["frontend.unit-shard-2", "2/3", []],
+    ["frontend.unit", "3/3", undefined],
   ];
   for (const [id, shard, taskObligations] of frontendUnitShardExpectations) {
     const task = tasksById.get(id);
@@ -3320,8 +3327,8 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     assert.equal(task.lane, undefined);
     assert.deepEqual(task.obligations, taskObligations);
     assert.ok(
-      tasksById.get("runtime.contracts").after.includes(id),
-      `${id} must directly gate runtime contracts`,
+      runtimeBenchmark.after.includes(id),
+      `${id} must directly gate runtime benchmark`,
     );
   }
   const browserTask = plan.tasks.find(({ id }) => id === "browser.tests");

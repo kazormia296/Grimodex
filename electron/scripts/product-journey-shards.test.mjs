@@ -16,6 +16,11 @@ import {
 } from "./product-journey-shards.mjs";
 
 const catalogIds = PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id);
+const acceptanceJourneyIds = new Set(
+  PRODUCT_JOURNEY_CATALOG.filter(
+    (journey) => journey.acceptanceRole === "required",
+  ).map((journey) => journey.id),
+);
 
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -185,13 +190,25 @@ async function setupAggregateFixture(t) {
 test("fixed shards are disjoint and cover the current 27-entry catalog in order", () => {
   assert.deepEqual(
     FIXED_PRODUCT_JOURNEY_SHARDS.map((ids) => ids.length),
-    [12, 15],
+    [13, 14],
   );
   assert.equal(FIXED_PRODUCT_JOURNEY_SHARDS[0][0], "editor-persistence");
-  assert.equal(FIXED_PRODUCT_JOURNEY_SHARDS[0].at(-1), "map-native-roundtrip");
-  assert.equal(FIXED_PRODUCT_JOURNEY_SHARDS[1][0], "snapshot-native-roundtrip");
+  assert.equal(
+    FIXED_PRODUCT_JOURNEY_SHARDS[0].at(-1),
+    "snapshot-native-roundtrip",
+  );
+  assert.equal(
+    FIXED_PRODUCT_JOURNEY_SHARDS[1][0],
+    "chronicle-extract-review-apply-reopen",
+  );
   assert.deepEqual(FIXED_PRODUCT_JOURNEY_SHARDS.flat(), catalogIds);
   assert.equal(new Set(FIXED_PRODUCT_JOURNEY_SHARDS.flat()).size, 27);
+  assert.deepEqual(
+    FIXED_PRODUCT_JOURNEY_SHARDS.flatMap((ids, index) =>
+      ids.some((id) => acceptanceJourneyIds.has(id)) ? [index + 1] : [],
+    ),
+    [2],
+  );
 });
 
 test("fixed shard runner binds its partition and private artifact directory", async (t) => {

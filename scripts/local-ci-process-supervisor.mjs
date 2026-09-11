@@ -164,7 +164,9 @@ export async function runLocalCiCommand(
           killSent: false,
           termSent: false,
         };
-    const survivorDetected = groupExists(child.pid);
+    const survivorDetected = cleanupPromise
+      ? groupExists(child.pid)
+      : !(await waitForGroupExit(child.pid, termGraceMs));
     if (survivorDetected) {
       const survivorCleanup = await terminateProcessGroup(child.pid, {
         killGraceMs,
