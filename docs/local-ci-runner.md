@@ -36,6 +36,10 @@ The MCP journey dependency build reserves two scheduler admission slots and
 caps Cargo build jobs at two. Cargo may reuse compatible earlier debug-free
 artifacts when their feature, `cfg`, and fingerprint inputs match.
 
+The release-only native test gate uses two scheduler admission slots, two Cargo
+build jobs, and two Rust test threads. These calibrated resource settings keep
+the exact native feature gate unchanged and carry no timing guarantee.
+
 Migration and recovery Rust checks use the separate `cargo-recovery` lane. Its
 first failpoint task starts after dependency bootstrap, so it can overlap the
 shared-Rust lanes while the global slot bound still limits host load. The six

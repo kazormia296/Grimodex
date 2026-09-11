@@ -2985,6 +2985,24 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "native.mcp-tests",
     ],
   );
+  const nativeTestsTask = tasksById.get("native.tests");
+  assert.equal(nativeTestsTask.command.command, "cargo");
+  assert.deepEqual(nativeTestsTask.command.args, [
+    "test",
+    "--manifest-path",
+    "electron/native/grimodex-node/Cargo.toml",
+    "--features",
+    "licensing,legacy-keyring-migration",
+  ]);
+  assert.equal(nativeTestsTask.command.cwd, ".");
+  assert.deepEqual(nativeTestsTask.after, ["bootstrap.install"]);
+  assert.equal(nativeTestsTask.lane, "cargo-native");
+  assert.equal(nativeTestsTask.slots, 2);
+  assert.equal(nativeTestsTask.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
+  assert.equal(nativeTestsTask.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
+  assert.equal(nativeTestsTask.command.env.CARGO_BUILD_JOBS, "2");
+  assert.equal(nativeTestsTask.command.env.RUST_TEST_THREADS, "2");
+  assert.equal(nativeTestsTask.obligations, undefined);
   assert.deepEqual(
     plan.stages.find(({ id }) => id === "webgl").commands.map(({ id }) => id),
     ["webgl.zen", "webgl.tests"],

@@ -505,10 +505,10 @@
           "id": "native.tests",
           "after": ["bootstrap.install"],
           "lane": "cargo-native",
-          "slots": 4,
+          "slots": 2,
           "env": {
-            "CARGO_BUILD_JOBS": "4",
-            "RUST_TEST_THREADS": "4"
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
           }
         },
         {
