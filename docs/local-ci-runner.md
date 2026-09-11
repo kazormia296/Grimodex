@@ -25,12 +25,13 @@ original workspace selector with `--no-run`, which retains compile-only target
 coverage. Each execution uses Cargo's target, runner, and dynamic-library
 environment directly; there is no test-executable discovery or replay layer.
 
-Migration and recovery Rust checks use the separate `cargo-recovery` lane. Its
-first failpoint task starts after dependency bootstrap, so it can overlap the
-shared-Rust lanes while the global slot bound still limits host load. The six
-Cargo commands on that lane reserve two slots and cap both Cargo build jobs and
-Rust test threads at two; the IPC and renderer checks keep their existing
-limits.
+Migration and recovery Rust checks keep their dependency-ordered sequence. Five
+Cargo commands use the separate `cargo-recovery` lane. The large
+`migration.failpoints-lib` command instead shares `cargo-shared-db-lib` with the
+ordinary DB library tests and DB doctests, so those library suites cannot
+overlap. Its `after` dependencies preserve the recovery order. All six commands
+reserve two slots and cap both Cargo build jobs and Rust test threads at two;
+the IPC and renderer checks keep their existing limits.
 
 The DAG schedules individual commands. After the first failure it admits no
 new command and waits for commands that already started. A Full run has a
