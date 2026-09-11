@@ -7,15 +7,15 @@
       "bootstrap",
       "migration-recovery-gate",
       "rust",
+      "c2-zc-rust-acceptance-gate",
+      "c2-zc-restore-fixture-builder",
+      "frontend",
+      "electron-product-journeys",
+      "electron",
       "electron-native",
       "browser",
       "webgl",
       "storybook",
-      "c2-zc-rust-acceptance-gate",
-      "c2-zc-restore-fixture-builder",
-      "electron-product-journeys",
-      "electron",
-      "frontend",
       "quality",
       "lfm-encoder-phase0",
       "security",
@@ -83,6 +83,22 @@
       "label": "Frontend checks and production artifact",
       "commands": [
         {
+          "label": "Renderer unit tests",
+          "command": "pnpm",
+          "args": [
+            "exec",
+            "vitest",
+            "--config",
+            "vitest.config.ts",
+            "--run",
+            "--maxWorkers",
+            "4"
+          ],
+          "id": "frontend.unit",
+          "after": ["bootstrap.workspace-build"],
+          "slots": 4
+        },
+        {
           "label": "Renderer type-check",
           "command": "pnpm",
           "args": ["exec", "tsc", "--noEmit"],
@@ -110,22 +126,6 @@
           "id": "frontend.browser-contracts",
           "after": ["bootstrap.workspace-build"],
           "slots": 2
-        },
-        {
-          "label": "Renderer unit tests",
-          "command": "pnpm",
-          "args": [
-            "exec",
-            "vitest",
-            "--config",
-            "vitest.config.ts",
-            "--run",
-            "--maxWorkers",
-            "4"
-          ],
-          "id": "frontend.unit",
-          "after": ["bootstrap.workspace-build"],
-          "slots": 4
         },
         {
           "label": "Web Editor production artifact",
@@ -313,6 +313,28 @@
       "label": "Electron contracts, tests, and production build",
       "commands": [
         {
+          "label": "Electron type-check",
+          "command": "pnpm",
+          "args": ["exec", "tsc", "-p", "electron/tsconfig.json", "--noEmit"],
+          "id": "electron.typecheck",
+          "after": ["bootstrap.workspace-build"]
+        },
+        {
+          "label": "Electron production build",
+          "command": "pnpm",
+          "args": ["ci:build:desktop"],
+          "id": "electron.build",
+          "after": ["electron.typecheck"],
+          "slots": 2
+        },
+        {
+          "label": "Renderer performance budget",
+          "command": "pnpm",
+          "args": ["perf:budget"],
+          "id": "electron.budget",
+          "after": ["electron.build"]
+        },
+        {
           "label": "Release workflow and manifest contracts",
           "command": "node",
           "args": [
@@ -348,34 +370,12 @@
           "slots": 4
         },
         {
-          "label": "Electron type-check",
-          "command": "pnpm",
-          "args": ["exec", "tsc", "-p", "electron/tsconfig.json", "--noEmit"],
-          "id": "electron.typecheck",
-          "after": ["bootstrap.workspace-build"]
-        },
-        {
           "label": "Electron unit tests",
           "command": "pnpm",
           "args": ["test:electron", "--run", "--maxWorkers", "4"],
           "id": "electron.unit",
           "after": ["bootstrap.workspace-build"],
           "slots": 4
-        },
-        {
-          "label": "Electron production build",
-          "command": "pnpm",
-          "args": ["ci:build:desktop"],
-          "id": "electron.build",
-          "after": ["electron.typecheck"],
-          "slots": 2
-        },
-        {
-          "label": "Renderer performance budget",
-          "command": "pnpm",
-          "args": ["perf:budget"],
-          "id": "electron.budget",
-          "after": ["electron.build"]
         }
       ]
     },
@@ -528,6 +528,68 @@
           ]
         },
         {
+          "label": "Shared Rust DB integration and schema-contract tests",
+          "command": "cargo",
+          "args": [
+            "test",
+            "-p",
+            "grimodex-db",
+            "--test",
+            "*",
+            "--bin",
+            "schema-contract"
+          ],
+          "cwd": "src-tauri",
+          "id": "rust.tests-db-integrations",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared-db-integrations",
+          "slots": 2,
+          "env": {
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
+          },
+          "obligations": []
+        },
+        {
+          "label": "Shared Rust DB library tests",
+          "command": "cargo",
+          "args": ["test", "-p", "grimodex-db", "--lib"],
+          "cwd": "src-tauri",
+          "id": "rust.tests-db-lib",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared-db-lib",
+          "slots": 2,
+          "env": {
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
+          },
+          "obligations": []
+        },
+        {
+          "label": "Shared Rust non-DB workspace tests and doctests",
+          "command": "cargo",
+          "args": [
+            "test",
+            "--workspace",
+            "--exclude",
+            "grimodex",
+            "--exclude",
+            "grimodex-db",
+            "--features",
+            "grimodex-semantic/semantic-embedding"
+          ],
+          "cwd": "src-tauri",
+          "id": "rust.tests-other-workspace",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared-other-workspace",
+          "slots": 2,
+          "env": {
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
+          },
+          "obligations": []
+        },
+        {
           "label": "Shared Rust check",
           "command": "cargo",
           "args": [
@@ -570,68 +632,6 @@
           "env": {
             "CARGO_BUILD_JOBS": "4"
           }
-        },
-        {
-          "label": "Shared Rust DB library tests",
-          "command": "cargo",
-          "args": ["test", "-p", "grimodex-db", "--lib"],
-          "cwd": "src-tauri",
-          "id": "rust.tests-db-lib",
-          "after": ["bootstrap.install"],
-          "lane": "cargo-shared-db-lib",
-          "slots": 2,
-          "env": {
-            "CARGO_BUILD_JOBS": "2",
-            "RUST_TEST_THREADS": "2"
-          },
-          "obligations": []
-        },
-        {
-          "label": "Shared Rust DB integration and schema-contract tests",
-          "command": "cargo",
-          "args": [
-            "test",
-            "-p",
-            "grimodex-db",
-            "--test",
-            "*",
-            "--bin",
-            "schema-contract"
-          ],
-          "cwd": "src-tauri",
-          "id": "rust.tests-db-integrations",
-          "after": ["bootstrap.install"],
-          "lane": "cargo-shared-db-integrations",
-          "slots": 2,
-          "env": {
-            "CARGO_BUILD_JOBS": "2",
-            "RUST_TEST_THREADS": "2"
-          },
-          "obligations": []
-        },
-        {
-          "label": "Shared Rust non-DB workspace tests and doctests",
-          "command": "cargo",
-          "args": [
-            "test",
-            "--workspace",
-            "--exclude",
-            "grimodex",
-            "--exclude",
-            "grimodex-db",
-            "--features",
-            "grimodex-semantic/semantic-embedding"
-          ],
-          "cwd": "src-tauri",
-          "id": "rust.tests-other-workspace",
-          "after": ["bootstrap.install"],
-          "lane": "cargo-shared-other-workspace",
-          "slots": 2,
-          "env": {
-            "CARGO_BUILD_JOBS": "2",
-            "RUST_TEST_THREADS": "2"
-          },
-          "obligations": []
         },
         {
           "label": "Shared Rust DB doctests",

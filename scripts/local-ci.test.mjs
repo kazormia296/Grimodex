@@ -216,15 +216,15 @@ function fullStageBindingPlan({ productJourneySet = "not-c2zc" } = {}) {
       "bootstrap",
       "migration-recovery-gate",
       "rust",
+      "c2-zc-rust-acceptance-gate",
+      "c2-zc-restore-fixture-builder",
+      "frontend",
+      "electron-product-journeys",
+      "electron",
       "electron-native",
       "browser",
       "webgl",
       "storybook",
-      "c2-zc-rust-acceptance-gate",
-      "c2-zc-restore-fixture-builder",
-      "electron-product-journeys",
-      "electron",
-      "frontend",
       "quality",
       "lfm-encoder-phase0",
       "security",
@@ -2916,24 +2916,60 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "bootstrap",
       "migration-recovery-gate",
       "rust",
+      "c2-zc-rust-acceptance-gate",
+      "c2-zc-restore-fixture-builder",
+      "frontend",
+      "electron-product-journeys",
+      "electron",
       "electron-native",
       "browser",
       "webgl",
       "storybook",
-      "c2-zc-rust-acceptance-gate",
-      "c2-zc-restore-fixture-builder",
-      "electron-product-journeys",
-      "electron",
-      "frontend",
       "quality",
       "lfm-encoder-phase0",
       "security",
       "electron-runtime-performance",
     ],
   );
-  assert.equal(
-    plan.stages.find(({ id }) => id === "rust").commands[0].id,
-    "rust.supervisor-failpoints",
+  assert.deepEqual(
+    plan.stages.find(({ id }) => id === "rust").commands.map(({ id }) => id),
+    [
+      "rust.supervisor-failpoints",
+      "rust.tests-db-integrations",
+      "rust.tests-db-lib",
+      "rust.tests-other-workspace",
+      "rust.check",
+      "rust.clippy",
+      "rust.tests-db-doctests",
+      "rust.tests",
+      "rust.runtime-authority",
+      "rust.license",
+    ],
+  );
+  assert.deepEqual(
+    plan.stages
+      .find(({ id }) => id === "frontend")
+      .commands.map(({ id }) => id),
+    [
+      "frontend.unit",
+      "frontend.typecheck",
+      "frontend.lint",
+      "frontend.architecture",
+      "frontend.browser-contracts",
+      "frontend.web-build",
+    ],
+  );
+  assert.deepEqual(
+    plan.stages
+      .find(({ id }) => id === "electron")
+      .commands.map(({ id }) => id),
+    [
+      "electron.typecheck",
+      "electron.build",
+      "electron.budget",
+      "electron.contracts",
+      "electron.unit",
+    ],
   );
   assert.equal(plan.tasks.length, 57);
   assert.equal(tasksById.size, 57);
