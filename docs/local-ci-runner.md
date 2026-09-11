@@ -27,7 +27,10 @@ environment directly; there is no test-executable discovery or replay layer.
 
 Migration and recovery Rust checks use the separate `cargo-recovery` lane. Its
 first failpoint task starts after dependency bootstrap, so it can overlap the
-shared-Rust lanes while the global slot bound still limits host load.
+shared-Rust lanes while the global slot bound still limits host load. The six
+Cargo commands on that lane reserve two slots and cap both Cargo build jobs and
+Rust test threads at two; the IPC and renderer checks keep their existing
+limits.
 
 The DAG schedules individual commands. After the first failure it admits no
 new command and waits for commands that already started. A Full run has a
@@ -39,6 +42,12 @@ processes covering 12 and 15 catalog entries. Each process owns a separate
 Xvfb display and artifact directory; a final one-slot task rejects missing,
 duplicate, extra, failed, unclean, or differently bound results before writing
 the existing canonical v5 result and v1 manifest.
+
+Full's deterministic priority order places the candidate-bound C2-ZC receipt
+and fixture first, followed by the native and Electron artifact producers,
+adjacent renderer unit shards, and the WebGL gate needed by product journeys.
+Recovery, shared Rust, browser, and Storybook checks remain fail-closed through
+their dependency edges and the final runtime fan-in.
 
 The canonical plan retains `__LOCAL_CI_RUN_ID__` in run-owned paths. Command
 execution and post-run evidence collection bind the same validated run UUID

@@ -5,16 +5,16 @@
     "quick": ["impact"],
     "full": [
       "bootstrap",
-      "migration-recovery-gate",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
-      "rust",
-      "frontend",
-      "electron-product-journeys",
-      "electron",
       "electron-native",
-      "browser",
+      "electron",
+      "frontend",
       "webgl",
+      "electron-product-journeys",
+      "migration-recovery-gate",
+      "rust",
+      "browser",
       "storybook",
       "quality",
       "lfm-encoder-phase0",
@@ -538,10 +538,10 @@
           "id": "rust.supervisor-failpoints",
           "after": ["bootstrap.install"],
           "lane": "cargo-recovery",
-          "slots": 4,
+          "slots": 2,
           "env": {
-            "CARGO_BUILD_JOBS": "4",
-            "RUST_TEST_THREADS": "4"
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
           },
           "obligations": [
             "rust.supervisor-failpoints",
@@ -853,10 +853,10 @@
           "id": "migration.supervisor",
           "after": ["rust.supervisor-failpoints"],
           "lane": "cargo-recovery",
-          "slots": 4,
+          "slots": 2,
           "env": {
-            "CARGO_BUILD_JOBS": "4",
-            "RUST_TEST_THREADS": "4"
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
           }
         },
         {
@@ -874,10 +874,10 @@
           "id": "migration.failpoints-lib",
           "after": ["migration.supervisor"],
           "lane": "cargo-recovery",
-          "slots": 4,
+          "slots": 2,
           "env": {
-            "CARGO_BUILD_JOBS": "4",
-            "RUST_TEST_THREADS": "4"
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
           }
         },
         {
@@ -896,10 +896,10 @@
           "id": "migration.safe-mode",
           "after": ["migration.failpoints-lib"],
           "lane": "cargo-recovery",
-          "slots": 4,
+          "slots": 2,
           "env": {
-            "CARGO_BUILD_JOBS": "4",
-            "RUST_TEST_THREADS": "4"
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
           }
         },
         {
@@ -916,10 +916,10 @@
           "id": "migration.release-schema",
           "after": ["migration.safe-mode"],
           "lane": "cargo-recovery",
-          "slots": 4,
+          "slots": 2,
           "env": {
-            "CARGO_BUILD_JOBS": "4",
-            "RUST_TEST_THREADS": "4"
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
           }
         },
         {
@@ -940,10 +940,10 @@
           "id": "migration.crash",
           "after": ["migration.release-schema"],
           "lane": "cargo-recovery",
-          "slots": 4,
+          "slots": 2,
           "env": {
-            "CARGO_BUILD_JOBS": "4",
-            "RUST_TEST_THREADS": "4"
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
           }
         },
         {
@@ -997,6 +997,9 @@
             "frontend.unit-shard-1",
             "frontend.unit",
             "frontend.web-build",
+            "browser.tests",
+            "storybook.tests",
+            "migration.ui",
             "lfm.dataset",
             "security.pnpm-audit",
             "security.shared-rust-audit",
@@ -1049,7 +1052,7 @@
           "command": "pnpm",
           "args": ["mcp:build"],
           "id": "journeys.mcp-build",
-          "after": ["migration.ui", "electron.build", "native.build"],
+          "after": ["electron.build", "native.build"],
           "lane": "cargo-shared",
           "slots": 4,
           "timeoutMs": 180000,
@@ -1076,12 +1079,10 @@
             "journeys.mcp-build",
             "native.public-tests",
             "c2zc.fixture-verify",
-            "browser.tests",
-            "webgl.tests",
-            "storybook.tests"
+            "webgl.tests"
           ],
           "lane": "journey-shard-1",
-          "slots": 3,
+          "slots": 2,
           "timeoutMs": 240000,
           "obligations": []
         },
@@ -1104,12 +1105,10 @@
             "journeys.mcp-build",
             "native.public-tests",
             "c2zc.fixture-verify",
-            "browser.tests",
-            "webgl.tests",
-            "storybook.tests"
+            "webgl.tests"
           ],
           "lane": "journey-shard-2",
-          "slots": 3,
+          "slots": 2,
           "timeoutMs": 240000,
           "obligations": []
         },

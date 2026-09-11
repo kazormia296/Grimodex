@@ -214,16 +214,16 @@ function fullStageBindingPlan({ productJourneySet = "not-c2zc" } = {}) {
     comparison: { base: "origin/master", head: "HEAD" },
     stages: [
       "bootstrap",
-      "migration-recovery-gate",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
-      "rust",
-      "frontend",
-      "electron-product-journeys",
-      "electron",
       "electron-native",
-      "browser",
+      "electron",
+      "frontend",
       "webgl",
+      "electron-product-journeys",
+      "migration-recovery-gate",
+      "rust",
+      "browser",
       "storybook",
       "quality",
       "lfm-encoder-phase0",
@@ -475,24 +475,18 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
     base: "origin/master",
     head: "HEAD",
   });
-  const rustIndex = full.stages.findIndex(
+  const c2RustIndex = full.stages.findIndex(
     (stage) => stage.id === "c2-zc-rust-acceptance-gate",
   );
-  const sharedRustIndex = full.stages.findIndex((stage) => stage.id === "rust");
   const productIndex = full.stages.findIndex(
     (stage) => stage.id === "electron-product-journeys",
   );
-  assert.ok(rustIndex >= 0);
+  assert.ok(c2RustIndex >= 0);
   const fixtureIndex = full.stages.findIndex(
     (stage) => stage.id === "c2-zc-restore-fixture-builder",
   );
   assert.ok(fixtureIndex >= 0);
-  assert.ok(sharedRustIndex >= 0);
-  assert.ok(
-    rustIndex < fixtureIndex &&
-      fixtureIndex < sharedRustIndex &&
-      sharedRustIndex < productIndex,
-  );
+  assert.ok(c2RustIndex < fixtureIndex && fixtureIndex < productIndex);
 
   const temporaryRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-local-ci-c2zc-receipt-"),
@@ -514,7 +508,7 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
   const executed = [];
   const plan = {
     ...full,
-    stages: [full.stages[rustIndex], full.stages[productIndex]],
+    stages: [full.stages[c2RustIndex], full.stages[productIndex]],
   };
   const result = await runLocalCiPlan(plan, {
     candidate,
@@ -2918,16 +2912,16 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     plan.stages.map(({ id }) => id),
     [
       "bootstrap",
-      "migration-recovery-gate",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
-      "rust",
-      "frontend",
-      "electron-product-journeys",
-      "electron",
       "electron-native",
-      "browser",
+      "electron",
+      "frontend",
       "webgl",
+      "electron-product-journeys",
+      "migration-recovery-gate",
+      "rust",
+      "browser",
       "storybook",
       "quality",
       "lfm-encoder-phase0",
@@ -2976,6 +2970,34 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "electron.unit",
     ],
   );
+  assert.deepEqual(
+    plan.stages
+      .find(({ id }) => id === "electron-native")
+      .commands.map(({ id }) => id),
+    [
+      "native.build",
+      "native.public-tests",
+      "native.check",
+      "native.clippy",
+      "native.tests",
+      "native.mcp-tests",
+    ],
+  );
+  assert.deepEqual(
+    plan.stages.find(({ id }) => id === "webgl").commands.map(({ id }) => id),
+    ["webgl.zen", "webgl.tests"],
+  );
+  assert.deepEqual(
+    plan.stages
+      .find(({ id }) => id === "electron-product-journeys")
+      .commands.map(({ id }) => id),
+    [
+      "journeys.mcp-build",
+      "journeys.shard-1",
+      "journeys.shard-2",
+      "journeys.run",
+    ],
+  );
   assert.equal(plan.tasks.length, 58);
   assert.equal(tasksById.size, 58);
   assert.equal(obligations.length, 52);
@@ -3013,10 +3035,12 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     "journeys.mcp-build",
     "native.public-tests",
     "c2zc.fixture-verify",
-    "browser.tests",
     "webgl.tests",
-    "storybook.tests",
   ];
+  assert.deepEqual(tasksById.get("journeys.mcp-build").after, [
+    "electron.build",
+    "native.build",
+  ]);
   for (const shard of ["1", "2"]) {
     const task = tasksById.get(`journeys.shard-${shard}`);
     assert.equal(task.command.command, "xvfb-run");
@@ -3035,7 +3059,7 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     assert.deepEqual(task.after, shardDependencies);
     assert.deepEqual(task.obligations, []);
     assert.equal(task.lane, `journey-shard-${shard}`);
-    assert.equal(task.slots, 3);
+    assert.equal(task.slots, 2);
     assert.equal(task.timeoutMs, 240_000);
   }
   const aggregate = tasksById.get("journeys.run");
@@ -3166,14 +3190,21 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     "rust.supervisor-failpoints",
   ]);
   for (const id of [
+    "rust.supervisor-failpoints",
     "migration.supervisor",
     "migration.failpoints-lib",
     "migration.safe-mode",
     "migration.release-schema",
     "migration.crash",
   ]) {
-    assert.equal(tasksById.get(id).lane, "cargo-recovery");
+    const task = tasksById.get(id);
+    assert.equal(task.lane, "cargo-recovery");
+    assert.equal(task.slots, 2);
+    assert.equal(task.command.env.CARGO_BUILD_JOBS, "2");
+    assert.equal(task.command.env.RUST_TEST_THREADS, "2");
   }
+  assert.equal(tasksById.get("migration.ipc").slots, 2);
+  assert.equal(tasksById.get("migration.ui").slots, 4);
 
   assert.equal(registry.maxSlots, 12);
   assert.equal(plan.stages.at(-1).id, "electron-runtime-performance");
@@ -3202,6 +3233,12 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     "rust.license",
   ];
   for (const id of directRuntimeRustDependencies) {
+    assert.ok(
+      tasksById.get("runtime.contracts").after.includes(id),
+      `${id} must directly gate runtime contracts`,
+    );
+  }
+  for (const id of ["browser.tests", "storybook.tests", "migration.ui"]) {
     assert.ok(
       tasksById.get("runtime.contracts").after.includes(id),
       `${id} must directly gate runtime contracts`,
