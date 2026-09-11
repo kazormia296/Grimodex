@@ -213,11 +213,21 @@ function fullStageBindingPlan({ productJourneySet = "not-c2zc" } = {}) {
     profile: "full",
     comparison: { base: "origin/master", head: "HEAD" },
     stages: [
+      "bootstrap",
+      "migration-recovery-gate",
       "rust",
+      "electron-native",
+      "browser",
+      "webgl",
+      "storybook",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
-      "migration-recovery-gate",
       "electron-product-journeys",
+      "electron",
+      "frontend",
+      "quality",
+      "lfm-encoder-phase0",
+      "security",
       "electron-runtime-performance",
     ].map((id, index) => ({
       id,
@@ -2900,6 +2910,31 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     (task) => task.obligations ?? [task.id],
   );
 
+  assert.deepEqual(
+    plan.stages.map(({ id }) => id),
+    [
+      "bootstrap",
+      "migration-recovery-gate",
+      "rust",
+      "electron-native",
+      "browser",
+      "webgl",
+      "storybook",
+      "c2-zc-rust-acceptance-gate",
+      "c2-zc-restore-fixture-builder",
+      "electron-product-journeys",
+      "electron",
+      "frontend",
+      "quality",
+      "lfm-encoder-phase0",
+      "security",
+      "electron-runtime-performance",
+    ],
+  );
+  assert.equal(
+    plan.stages.find(({ id }) => id === "rust").commands[0].id,
+    "rust.supervisor-failpoints",
+  );
   assert.equal(plan.tasks.length, 57);
   assert.equal(tasksById.size, 57);
   assert.equal(obligations.length, 52);

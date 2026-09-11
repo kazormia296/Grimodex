@@ -1,7 +1,9 @@
 use super::{current_schema_memory, fresh_migrated_memory};
 use crate::{read_sqlite_source_revision, Database};
 
-fn schema(db: &Database) -> anyhow::Result<Vec<(String, String, String, Option<String>)>> {
+type SchemaRow = (String, String, String, Option<String>);
+
+fn schema(db: &Database) -> anyhow::Result<Vec<SchemaRow>> {
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
             "SELECT type, name, tbl_name, sql FROM main.sqlite_schema ORDER BY type, name",

@@ -77,11 +77,21 @@ const C2ZC_RESTORE_FIXTURE_EVIDENCE_DIR = path.join(
 const C2ZC_RESTORE_FIXTURE_RUN_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const C2ZC_FULL_STAGE_ORDER = Object.freeze([
+  "bootstrap",
+  "migration-recovery-gate",
   "rust",
+  "electron-native",
+  "browser",
+  "webgl",
+  "storybook",
   C2ZC_RUST_ACCEPTANCE_GATE_STAGE,
   C2ZC_RESTORE_FIXTURE_STAGE,
-  "migration-recovery-gate",
   "electron-product-journeys",
+  "electron",
+  "frontend",
+  "quality",
+  "lfm-encoder-phase0",
+  "security",
   "electron-runtime-performance",
 ]);
 const LOCAL_CI_FULL_DEADLINE_MS = 600_000;

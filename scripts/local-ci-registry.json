@@ -5,20 +5,20 @@
     "quick": ["impact"],
     "full": [
       "bootstrap",
-      "quality",
-      "frontend",
-      "lfm-encoder-phase0",
+      "migration-recovery-gate",
+      "rust",
+      "electron-native",
       "browser",
       "webgl",
       "storybook",
-      "security",
-      "electron",
-      "electron-native",
-      "rust",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
-      "migration-recovery-gate",
       "electron-product-journeys",
+      "electron",
+      "frontend",
+      "quality",
+      "lfm-encoder-phase0",
+      "security",
       "electron-runtime-performance"
     ]
   },
@@ -502,6 +502,32 @@
       },
       "commands": [
         {
+          "label": "Migration supervisor failpoints",
+          "command": "cargo",
+          "args": [
+            "test",
+            "-p",
+            "grimodex-db",
+            "--features",
+            "test-failpoints",
+            "--test",
+            "workspace_migration_supervisor"
+          ],
+          "cwd": "src-tauri",
+          "id": "rust.supervisor-failpoints",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-recovery",
+          "slots": 4,
+          "env": {
+            "CARGO_BUILD_JOBS": "4",
+            "RUST_TEST_THREADS": "4"
+          },
+          "obligations": [
+            "rust.supervisor-failpoints",
+            "migration.supervisor-failpoints"
+          ]
+        },
+        {
           "label": "Shared Rust check",
           "command": "cargo",
           "args": [
@@ -648,32 +674,6 @@
             "CARGO_BUILD_JOBS": "2"
           },
           "obligations": ["rust.tests"]
-        },
-        {
-          "label": "Migration supervisor failpoints",
-          "command": "cargo",
-          "args": [
-            "test",
-            "-p",
-            "grimodex-db",
-            "--features",
-            "test-failpoints",
-            "--test",
-            "workspace_migration_supervisor"
-          ],
-          "cwd": "src-tauri",
-          "id": "rust.supervisor-failpoints",
-          "after": ["bootstrap.install"],
-          "lane": "cargo-recovery",
-          "slots": 4,
-          "env": {
-            "CARGO_BUILD_JOBS": "4",
-            "RUST_TEST_THREADS": "4"
-          },
-          "obligations": [
-            "rust.supervisor-failpoints",
-            "migration.supervisor-failpoints"
-          ]
         },
         {
           "label": "Narrative runtime authority",
