@@ -364,9 +364,11 @@ type CiProcessExit = (code: number) => never | void;
  * committed the exact running lifecycle before returning the ACK; this
  * callback deliberately gives the product journey a bounded observation
  * window, then revalidates authorization and the live authority binding
- * before exiting.  Tests inject both the timer and exit function.
+ * before exiting.  Keep the owning scheduler cycle in flight through that
+ * window so a concurrent enqueue cannot mistake this process's live Run for
+ * startup recovery. Tests inject both the timer and exit function.
  */
-export function scheduleNarrativeMaintenanceProcessInterruption(
+export async function scheduleNarrativeMaintenanceProcessInterruption(
   backend: NarrativeMaintenanceBackendLike | null,
   ack: NarrativeMaintenanceCiProcessInterruptionAck,
   expectedBinding: NarrativeMaintenanceWorkspaceBinding,
@@ -375,7 +377,7 @@ export function scheduleNarrativeMaintenanceProcessInterruption(
     setTimeout(callback, NARRATIVE_MAINTENANCE_PROCESS_EXIT_DELAY_MS);
   },
   exit: CiProcessExit = (code) => process.exit(code),
-): boolean {
+): Promise<boolean> {
   if (
     ack.status !== "ci-process-interruption-pending" ||
     ack.fault !== "process-interruption" ||
@@ -414,13 +416,24 @@ export function scheduleNarrativeMaintenanceProcessInterruption(
   if (!isAuthorized() || !sameBinding(currentBinding(), expectedBinding)) {
     return false;
   }
-  const scheduled = schedule(() => {
-    if (!isAuthorized() || !sameBinding(currentBinding(), expectedBinding)) {
-      return;
-    }
-    exit(86);
+  return new Promise<boolean>((resolve, reject) => {
+    const scheduled = schedule(() => {
+      try {
+        if (
+          !isAuthorized() ||
+          !sameBinding(currentBinding(), expectedBinding)
+        ) {
+          resolve(false);
+          return;
+        }
+        exit(86);
+        resolve(true);
+      } catch (error) {
+        reject(error);
+      }
+    });
+    if (scheduled === false) resolve(false);
   });
-  return scheduled !== false;
 }
 
 const AUTOMATIC_RUN_KINDS = new Set<NarrativeMaintenanceRunKind>([

@@ -84,7 +84,7 @@ describe("narrative maintenance scheduler", () => {
     return { scheduler, warn };
   }
 
-  it("schedules interruption exit only for an authorized exact live binding", () => {
+  it("schedules interruption exit only for an authorized exact live binding", async () => {
     const expectedBinding = { authorityId: "authority-1", generation: 7 };
     let currentBinding = expectedBinding;
     const ack: Parameters<
@@ -102,7 +102,7 @@ describe("narrative maintenance scheduler", () => {
       getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
     };
 
-    expect(
+    await expect(
       scheduleNarrativeMaintenanceProcessInterruption(
         backend,
         ack,
@@ -113,25 +113,129 @@ describe("narrative maintenance scheduler", () => {
         },
         exit,
       ),
-    ).toBe(false);
+    ).resolves.toBe(false);
     expect(scheduled).toHaveLength(0);
 
-    expect(
-      scheduleNarrativeMaintenanceProcessInterruption(
-        backend,
-        ack,
-        expectedBinding,
-        () => true,
-        (callback) => {
-          scheduled.push(callback);
-        },
-        exit,
-      ),
-    ).toBe(true);
+    const invalidated = scheduleNarrativeMaintenanceProcessInterruption(
+      backend,
+      ack,
+      expectedBinding,
+      () => true,
+      (callback) => {
+        scheduled.push(callback);
+      },
+      exit,
+    );
     expect(scheduled).toHaveLength(1);
     currentBinding = { authorityId: "rotated", generation: 8 };
     scheduled[0]?.();
+    await expect(invalidated).resolves.toBe(false);
     expect(exit).not.toHaveBeenCalled();
+
+    currentBinding = expectedBinding;
+    const authorized = scheduleNarrativeMaintenanceProcessInterruption(
+      backend,
+      ack,
+      expectedBinding,
+      () => true,
+      (callback) => {
+        scheduled.push(callback);
+      },
+      exit,
+    );
+    expect(scheduled).toHaveLength(2);
+    scheduled[1]?.();
+    await expect(authorized).resolves.toBe(true);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(86);
+  });
+
+  it("keeps an interruption cycle in flight until the scheduled exit boundary", async () => {
+    const binding = { authorityId: "authority-1", generation: 7 };
+    const ack: NarrativeMaintenanceCycleResult = {
+      status: "ci-process-interruption-pending",
+      fault: "process-interruption",
+      runId: "run-1",
+      authorityId: binding.authorityId,
+      generation: binding.generation,
+    };
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce(ack)
+      .mockResolvedValue(acceptedCycle());
+    let exitBoundary: (() => void) | undefined;
+    const exit = vi.fn();
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+    };
+    const { scheduler } = createScheduler(backend, vi.fn(), {
+      onCiProcessInterruption: (cycleAck, expectedBinding) =>
+        scheduleNarrativeMaintenanceProcessInterruption(
+          backend,
+          cycleAck,
+          expectedBinding,
+          () => true,
+          (callback) => {
+            exitBoundary = callback;
+          },
+          exit,
+        ),
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(exitBoundary).toBeTypeOf("function");
+
+    scheduler.request(
+      work("project-1", "dependency-verify", "verify:v2", "freshness"),
+    );
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+    exitBoundary?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(exit).toHaveBeenCalledExactlyOnceWith(86);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+  });
+
+  it("rejects when timer-time authorization revalidation throws", async () => {
+    const binding = { authorityId: "authority-1", generation: 7 };
+    const ack: Parameters<
+      typeof scheduleNarrativeMaintenanceProcessInterruption
+    >[1] = {
+      status: "ci-process-interruption-pending",
+      fault: "process-interruption",
+      runId: "run-1",
+      authorityId: binding.authorityId,
+      generation: binding.generation,
+    };
+    let exitBoundary: (() => void) | undefined;
+    const isAuthorized = vi
+      .fn<() => boolean>()
+      .mockReturnValueOnce(true)
+      .mockImplementationOnce(() => {
+        throw new Error("authorization reader failed");
+      });
+
+    const pending = scheduleNarrativeMaintenanceProcessInterruption(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      },
+      ack,
+      binding,
+      isAuthorized,
+      (callback) => {
+        exitBoundary = callback;
+      },
+      vi.fn(),
+    );
+
+    exitBoundary?.();
+    await expect(pending).rejects.toThrow("authorization reader failed");
   });
 
   it.each([
