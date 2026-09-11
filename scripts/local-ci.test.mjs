@@ -15,6 +15,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -31,13 +32,19 @@ import {
   collectProductJourneyEvidence,
   createLocalCiPlanDescriptor,
   expectedC2ZcAcceptanceForPlan,
+  acquireCheckoutLock,
+  checkoutLockCleanupComplete,
+  finalizeCheckoutLock,
+  finalizeLocalCiExecution,
   parseLocalCiArgs,
   prepareLocalCiArtifacts,
+  recoverCheckoutLock,
   readC2ZcRestoreFixtureEvidence,
   resolveLocalCiCandidate,
   runLocalCiPlan,
   validateLocalCiCandidate,
   validateLocalCiRegistry,
+  verifyLocalCiFinalization,
   verifyLocalCiReceipt,
   verifyLocalCiTaskEvidence,
 } from "./local-ci.mjs";
@@ -1794,14 +1801,540 @@ test("local CI argument parsing supports comparison, resume, and dry-run", () =>
       list: false,
       profile: "full",
       report: "/tmp/local-ci.json",
+      recoverLock: false,
       verify: false,
     },
   );
   assert.equal(parseLocalCiArgs(["--verify", "full"]).verify, true);
+  assert.equal(parseLocalCiArgs(["--recover-lock"]).recoverLock, true);
   assert.throws(
     () => parseLocalCiArgs(["quick", "--unknown"]),
     /Unknown argument/,
   );
+});
+
+test("local CI retains a lock for incomplete process-group cleanup and supports explicit recovery", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-lock-recovery-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "22222222-2222-4222-8222-222222222222";
+  const lock = await acquireCheckoutLock(temporaryRoot, { runId });
+  const result = {
+    runId,
+    tasks: [
+      {
+        cleanup: { complete: false, groupAlive: true },
+        id: "worker",
+        pid: 99999999,
+        status: "failed",
+      },
+    ],
+  };
+  assert.equal(checkoutLockCleanupComplete(result), false);
+  const retained = await finalizeCheckoutLock(lock, {
+    result,
+    runId,
+    runStarted: true,
+  });
+  assert.equal(retained.retained, true);
+  const lockPath = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/checkout.lock",
+  );
+  const metadata = JSON.parse(await readFile(lockPath, "utf8"));
+  assert.equal(metadata.state, "cleanup-incomplete");
+  assert.equal(metadata.runId, runId);
+  assert.equal(metadata.tasks[0].pid, 99999999);
+  await assert.rejects(
+    acquireCheckoutLock(temporaryRoot, {
+      runId: "33333333-3333-4333-8333-333333333333",
+    }),
+    (error) => error?.code === "EEXIST",
+  );
+
+  const recovered = await recoverCheckoutLock(temporaryRoot);
+  assert.equal(recovered.runId, runId);
+  const nextLock = await acquireCheckoutLock(temporaryRoot, {
+    runId: "33333333-3333-4333-8333-333333333333",
+  });
+  await finalizeCheckoutLock(nextLock, { runStarted: false });
+});
+
+test("local CI releases a lock when cleanup proves no process group survived a pre-spawn failure", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-lock-pre-spawn-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const lock = await acquireCheckoutLock(temporaryRoot, {
+    runId: "77777777-7777-4777-8777-777777777777",
+  });
+  const result = {
+    tasks: [
+      {
+        cleanup: { complete: true, groupAlive: false },
+        id: "missing-tool",
+        pid: null,
+        status: "failed",
+      },
+    ],
+  };
+  assert.equal(checkoutLockCleanupComplete(result), true);
+  const finalized = await finalizeCheckoutLock(lock, {
+    result,
+    runStarted: true,
+  });
+  assert.equal(finalized.released, true);
+  await assert.rejects(
+    readFile(path.join(temporaryRoot, ".artifacts/local-ci/checkout.lock")),
+    /ENOENT/u,
+  );
+});
+
+test("local CI refuses recovery while a retained process group is unknown", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-lock-live-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const lock = await acquireCheckoutLock(temporaryRoot, {
+    runId: "44444444-4444-4444-8444-444444444444",
+  });
+  await finalizeCheckoutLock(lock, {
+    result: {
+      runId: "44444444-4444-4444-8444-444444444444",
+      tasks: [
+        {
+          cleanup: { complete: false, groupAlive: true },
+          id: "worker",
+          pid: null,
+          status: "failed",
+        },
+      ],
+    },
+    runStarted: true,
+  });
+  await assert.rejects(
+    recoverCheckoutLock(temporaryRoot),
+    /unknown process groups/u,
+  );
+});
+
+test("local CI refuses to recover an aggregate result with an unknown process group", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-lock-unknown-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "88888888-8888-4888-8888-888888888888";
+  const lock = await acquireCheckoutLock(temporaryRoot, { runId });
+  await finalizeCheckoutLock(lock, { runId, runStarted: true });
+  const lockPath = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/checkout.lock",
+  );
+  const metadata = JSON.parse(await readFile(lockPath, "utf8"));
+  assert.equal(metadata.state, "cleanup-unknown");
+  assert.equal(metadata.tasks.length, 1);
+  await assert.rejects(
+    recoverCheckoutLock(temporaryRoot),
+    /unknown process groups/u,
+  );
+});
+
+test("local CI serializes concurrent lock recovery and replacement acquisition", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-lock-serialization-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const oldRunId = "12121212-1212-4121-8121-121212121212";
+  const oldLock = await acquireCheckoutLock(temporaryRoot, {
+    runId: oldRunId,
+  });
+  await finalizeCheckoutLock(oldLock, {
+    result: {
+      runId: oldRunId,
+      tasks: [
+        {
+          cleanup: { complete: false, groupAlive: true },
+          id: "worker",
+          pid: 99999999,
+          status: "failed",
+        },
+      ],
+    },
+    runStarted: true,
+  });
+
+  const recoveries = await Promise.allSettled([
+    recoverCheckoutLock(temporaryRoot),
+    recoverCheckoutLock(temporaryRoot),
+  ]);
+  const successfulRecoveries = recoveries.filter(
+    ({ status }) => status === "fulfilled",
+  );
+  const failedRecoveries = recoveries.filter(
+    ({ status }) => status === "rejected",
+  );
+  assert.equal(successfulRecoveries.length, 1);
+  assert.equal(failedRecoveries.length, 1);
+  assert.equal(successfulRecoveries[0].value.runId, oldRunId);
+  const newRunId = "34343434-3434-4434-8434-343434343434";
+  const replacement = await acquireCheckoutLock(temporaryRoot, {
+    runId: newRunId,
+  });
+  const replacementMetadata = JSON.parse(
+    await readFile(
+      path.join(temporaryRoot, ".artifacts/local-ci/checkout.lock"),
+      "utf8",
+    ),
+  );
+  assert.equal(replacementMetadata.runId, newRunId);
+  await finalizeCheckoutLock(replacement, { runStarted: false });
+});
+
+test("local CI treats an existing operation marker as an advisory lock file", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-lock-operation-marker-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const operationPath = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/checkout.lock.operation",
+  );
+  await mkdir(path.dirname(operationPath), { recursive: true });
+  await writeFile(operationPath, "partial legacy marker\n");
+
+  const lock = await acquireCheckoutLock(temporaryRoot, {
+    runId: "56565656-5656-4565-8565-565656565656",
+  });
+  await finalizeCheckoutLock(lock, { runStarted: false });
+  assert.equal(
+    await readFile(operationPath, "utf8"),
+    "partial legacy marker\n",
+  );
+});
+
+function finalizationTestResult(runId) {
+  return {
+    coverage: { completeness: "complete", fromStage: null },
+    profile: "quick",
+    runId,
+    status: "passed",
+    tasks: [],
+    version: 3,
+  };
+}
+
+test("local CI final receipt measures external verification separately and retains its verified input", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "55555555-5555-4555-8555-555555555555";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const stagingPath = path.join(temporaryRoot, "reports", ".quick.staging");
+  const executionStarted = performance.now() - 7;
+  let observedStagingReceipt;
+  const finalized = await finalizeLocalCiExecution({
+    executionDurationMs: 7,
+    invocationStarted: executionStarted,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: stagingPath,
+    validateFinal: async (receipt) => {
+      assert.ok(receipt.finalization.verifiedReceipt);
+    },
+    verifyExternal: async ({ reportPath: inputPath }) => {
+      observedStagingReceipt = JSON.parse(await readFile(inputPath, "utf8"));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    },
+  });
+  assert.equal(finalized.success, true);
+  assert.equal(observedStagingReceipt.durationMs, 7);
+  assert.equal(finalized.result.executionDurationMs, 7);
+  assert.ok(finalized.result.verificationDurationMs >= 20);
+  assert.ok(
+    finalized.result.durationMs >= finalized.result.executionDurationMs,
+  );
+  assert.ok(
+    finalized.result.finalizationDurationMs >=
+      finalized.result.verificationDurationMs,
+  );
+  assert.equal(finalized.result.finalization.externalVerify.status, "passed");
+  assert.equal(
+    finalized.result.finalization.durationCutoff,
+    "before-canonical-receipt-persistence",
+  );
+  assert.equal(
+    finalized.result.finalization.receiptDurationMs,
+    finalized.result.durationMs,
+  );
+  assert.equal(
+    finalized.result.finalization.verifiedReceipt,
+    finalized.verifiedReceipt,
+  );
+  await access(reportPath);
+  await access(path.join(temporaryRoot, finalized.verifiedReceipt.path));
+  await verifyLocalCiFinalization(finalized.result, { root: temporaryRoot });
+  const tampered = structuredClone(finalized.result);
+  tampered.finalization.verifiedReceipt.sha256 = `sha256:${"0".repeat(64)}`;
+  await assert.rejects(
+    verifyLocalCiFinalization(tampered, { root: temporaryRoot }),
+    /identity changed/u,
+  );
+  await assert.rejects(readFile(stagingPath), /ENOENT/u);
+});
+
+test("local CI persists canonical publication time in the final receipt", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-duration-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  let nowCalls = 0;
+  const now = () => {
+    nowCalls += 1;
+    return nowCalls >= 10 ? 25 : 0;
+  };
+  const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const finalized = await finalizeLocalCiExecution({
+    deadlineMs: 1_000,
+    executionDurationMs: 0,
+    invocationStarted: 0,
+    now,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
+    timeoutMs: 1_000,
+    verifyExternal: async () => {},
+  });
+  assert.equal(finalized.success, true);
+  assert.ok(finalized.result.durationMs >= 25);
+  assert.equal(
+    finalized.result.finalization.receiptDurationMs,
+    finalized.result.durationMs,
+  );
+  const published = JSON.parse(await readFile(reportPath, "utf8"));
+  assert.equal(published.durationMs, finalized.result.durationMs);
+  assert.equal(
+    published.finalization.receiptDurationMs,
+    finalized.result.finalization.receiptDurationMs,
+  );
+});
+
+test("local CI accounts for a delayed canonical persistence rewrite", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-rewrite-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  let canonicalWrites = 0;
+  const invocationStarted = performance.now();
+  let nowCalls = 0;
+  const now = () => {
+    nowCalls += 1;
+    return nowCalls >= 6 ? performance.now() : invocationStarted;
+  };
+  const writeReceipt = async (receiptPath, receipt) => {
+    if (receiptPath.endsWith(".final.staging")) {
+      canonicalWrites += 1;
+      if (canonicalWrites === 2) {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+    }
+    await mkdir(path.dirname(receiptPath), { recursive: true });
+    await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`);
+  };
+  const runId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const finalized = await finalizeLocalCiExecution({
+    executionDurationMs: 1,
+    invocationStarted,
+    now,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
+    verifyExternal: async () => {},
+    writeReceipt,
+  });
+  assert.equal(finalized.success, true);
+  assert.ok(canonicalWrites >= 2);
+  const published = JSON.parse(await readFile(reportPath, "utf8"));
+  assert.equal(published.durationMs, finalized.result.durationMs);
+  assert.equal(
+    published.finalization.receiptDurationMs,
+    finalized.result.finalization.receiptDurationMs,
+  );
+  assert.ok(finalized.result.durationMs >= 35);
+});
+
+test("local CI does not invoke external verification after its deadline", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-expired-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  let verified = false;
+  const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const finalized = await finalizeLocalCiExecution({
+    deadlineMs: 0,
+    invocationStarted: 0,
+    now: () => 1,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
+    verifyExternal: async () => {
+      verified = true;
+    },
+  });
+  assert.equal(finalized.success, false);
+  assert.equal(verified, false);
+  assert.equal(finalized.result.finalization.externalVerify.status, "not-run");
+  assert.match(finalized.reportPath, /[\\/]failures[\\/]/u);
+  await assert.rejects(readFile(reportPath), /ENOENT/u);
+});
+
+test("local CI aborts finalization after external verification resolves", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-abort-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const controller = new AbortController();
+  const runId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const finalized = await finalizeLocalCiExecution({
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    signal: controller.signal,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
+    verifyExternal: async () => {
+      controller.abort(new Error("cancelled after verification"));
+    },
+  });
+  assert.equal(finalized.success, false);
+  assert.match(finalized.reportPath, /[\\/]failures[\\/]/u);
+  await assert.rejects(readFile(reportPath), /ENOENT/u);
+  const failedReceipt = JSON.parse(
+    await readFile(finalized.reportPath, "utf8"),
+  );
+  assert.equal(failedReceipt.status, "failed");
+  assert.equal(failedReceipt.finalization.externalVerify.status, "passed");
+  assert.ok(failedReceipt.finalization.verifiedReceipt);
+});
+
+test("local CI removes a canonical receipt when publication crosses the deadline", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-deadline-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  let nowCalls = 0;
+  const now = () => {
+    nowCalls += 1;
+    return nowCalls >= 13 ? 10 : 1;
+  };
+  const runId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const finalized = await finalizeLocalCiExecution({
+    deadlineMs: 5,
+    executionDurationMs: 1,
+    invocationStarted: 0,
+    now,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
+    timeoutMs: 5,
+    verifyExternal: async () => {},
+  });
+  assert.equal(finalized.success, false);
+  assert.match(finalized.reportPath, /[\\/]failures[\\/]/u);
+  await assert.rejects(readFile(reportPath), /ENOENT/u);
+  const failedReceipt = JSON.parse(
+    await readFile(finalized.reportPath, "utf8"),
+  );
+  assert.equal(failedReceipt.status, "failed");
+  assert.ok(failedReceipt.finalization.verifiedReceipt);
+  await access(
+    path.join(temporaryRoot, failedReceipt.finalization.verifiedReceipt.path),
+  );
+});
+
+test("local CI external verification failure writes run-specific failed evidence without publishing success", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-failure-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "66666666-6666-4666-8666-666666666666";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const finalized = await finalizeLocalCiExecution({
+    executionDurationMs: 11,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
+    verifyExternal: async () => {
+      const error = new Error("external verifier timed out");
+      error.code = null;
+      error.killed = true;
+      error.signal = "SIGTERM";
+      throw error;
+    },
+  });
+  assert.equal(finalized.success, false);
+  assert.match(finalized.reportPath, /[\\/]failures[\\/]/u);
+  await assert.rejects(readFile(reportPath), /ENOENT/u);
+  const failedReceipt = JSON.parse(
+    await readFile(finalized.reportPath, "utf8"),
+  );
+  assert.equal(failedReceipt.status, "failed");
+  assert.equal(failedReceipt.finalization.externalVerify.status, "timeout");
+  assert.equal(failedReceipt.receiptError.code, "ETIMEDOUT");
+  assert.ok(failedReceipt.finalization.verifiedReceipt);
+  await access(
+    path.join(temporaryRoot, failedReceipt.finalization.verifiedReceipt.path),
+  );
+});
+
+test("local CI never overwrites a run-specific verified receipt on finalization replay", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-collision-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "99999999-9999-4999-8999-999999999999";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const first = await finalizeLocalCiExecution({
+    executionDurationMs: 1,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".first.staging"),
+    verifyExternal: async () => {},
+  });
+  const verifiedPath = path.join(temporaryRoot, first.verifiedReceipt.path);
+  const firstBytes = await readFile(verifiedPath, "utf8");
+  const second = await finalizeLocalCiExecution({
+    executionDurationMs: 2,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".second.staging"),
+    verifyExternal: async () => {},
+  });
+  assert.equal(second.success, false);
+  assert.match(second.reportPath, /[\\/]failures[\\/]/u);
+  assert.equal(await readFile(verifiedPath, "utf8"), firstBytes);
 });
 
 test("local CI execution is fail-fast and records later stages as not run", async () => {

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import {
   copyFile,
+  link,
   mkdir,
   mkdtemp,
   open,
@@ -2459,7 +2460,7 @@ function assertExactTaskReceipt(receipt, plan, { required = false } = {}) {
 
 export async function verifyLocalCiTaskEvidence(
   receipt,
-  { root = repoRoot } = {},
+  { requireFinalization = false, root = repoRoot } = {},
 ) {
   if (!Array.isArray(receipt?.tasks)) {
     throw new Error("Local CI task evidence is required.");
@@ -2490,6 +2491,37 @@ export async function verifyLocalCiTaskEvidence(
         );
       }
     }
+  }
+  if (requireFinalization) await verifyLocalCiFinalization(receipt, { root });
+  return receipt;
+}
+
+export async function verifyLocalCiFinalization(
+  receipt,
+  { root = repoRoot } = {},
+) {
+  const expected = receipt?.finalization?.verifiedReceipt;
+  if (!expected) {
+    throw new Error("Local CI finalization evidence is required.");
+  }
+  assertC2ZcRestoreFixtureRunId(
+    receipt.runId,
+    "Local CI finalization evidence",
+  );
+  assertTaskLogIdentity(
+    expected,
+    "Local CI verified receipt",
+    path.posix.join(
+      ".artifacts",
+      "local-ci",
+      "runs",
+      receipt.runId,
+      LOCAL_CI_VERIFIED_RECEIPT_NAME,
+    ),
+  );
+  const current = await resolveArtifactEvidence(expected.path, { root });
+  if (current.size !== expected.size || current.sha256 !== expected.sha256) {
+    throw new Error("Local CI verified receipt identity changed.");
   }
   return receipt;
 }
@@ -2610,6 +2642,7 @@ export function parseLocalCiArgs(argv) {
     list: false,
     profile: null,
     report: null,
+    recoverLock: false,
     verify: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -2617,6 +2650,7 @@ export function parseLocalCiArgs(argv) {
     if (argument === "--") continue;
     if (argument === "--dry-run") result.dryRun = true;
     else if (argument === "--list") result.list = true;
+    else if (argument === "--recover-lock") result.recoverLock = true;
     else if (argument === "--verify") result.verify = true;
     else if (argument === "--base") {
       result.base = readOptionValue(argv, argument, index);
@@ -3407,36 +3441,349 @@ async function writeReport(reportPath, result) {
   }
 }
 
-async function acquireCheckoutLock(root) {
+function boundedError(error, limit = 512) {
+  return {
+    code:
+      typeof error?.code === "string" && error.code.length > 0
+        ? error.code
+        : undefined,
+    killed: error?.killed === true ? true : undefined,
+    message: (error instanceof Error ? error.message : String(error)).slice(
+      0,
+      limit,
+    ),
+    name: error instanceof Error ? error.name : "Error",
+    signal:
+      typeof error?.signal === "string" && error.signal.length > 0
+        ? error.signal
+        : undefined,
+  };
+}
+
+function relativeArtifactPath(root, filePath) {
+  return path.relative(root, filePath).split(path.sep).join(path.posix.sep);
+}
+
+async function localFileIdentity(root, filePath) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return {
+    path: relativeArtifactPath(root, filePath),
+    sha256: `sha256:${hash.digest("hex")}`,
+    size: (await stat(filePath)).size,
+  };
+}
+
+const LOCAL_CI_FAILURE_REPORT_DIRECTORY = "failures";
+const LOCAL_CI_VERIFIED_RECEIPT_NAME = "verified-receipt.json";
+
+function failureReportPath(reportPath, runId) {
+  const extension = path.extname(reportPath) || ".json";
+  const stem = path.basename(reportPath, path.extname(reportPath));
+  return path.join(
+    path.dirname(reportPath),
+    LOCAL_CI_FAILURE_REPORT_DIRECTORY,
+    `${stem}.${runId}${extension}`,
+  );
+}
+
+function verifiedReceiptPath(root, runId) {
+  return path.join(
+    root,
+    ".artifacts",
+    "local-ci",
+    "runs",
+    runId,
+    LOCAL_CI_VERIFIED_RECEIPT_NAME,
+  );
+}
+
+async function retainVerifiedReceipt(stagingPath, { root, runId }) {
+  const destination = verifiedReceiptPath(root, runId);
+  await mkdir(path.dirname(destination), { recursive: true });
+  const temporary = path.join(
+    path.dirname(destination),
+    `.${LOCAL_CI_VERIFIED_RECEIPT_NAME}.${randomUUID()}.tmp`,
+  );
+  try {
+    await copyFile(stagingPath, temporary, constants.COPYFILE_EXCL);
+    await link(temporary, destination);
+    await rm(temporary, { force: true });
+    await rm(stagingPath, { force: true });
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  return localFileIdentity(root, destination);
+}
+
+export function checkoutLockCleanupComplete(result) {
+  if (!result || !Array.isArray(result.tasks) || result.tasks.length === 0) {
+    return false;
+  }
+  return result.tasks.every((task) => {
+    if (task?.status === "not-run") return true;
+    return (
+      task?.cleanup?.complete === true && task.cleanup.groupAlive === false
+    );
+  });
+}
+
+function checkoutLockTaskCleanupComplete(task) {
+  return (
+    task?.status === "not-run" ||
+    (task?.cleanup?.complete === true && task.cleanup.groupAlive === false)
+  );
+}
+
+function checkoutLockTaskSummary(result) {
+  if (!Array.isArray(result?.tasks)) return [];
+  return result.tasks
+    .filter((task) => task?.status !== "not-run")
+    .map((task) => ({
+      cleanup: task.cleanup ?? null,
+      error:
+        task.error === undefined ? undefined : String(task.error).slice(0, 512),
+      id: task.id,
+      interrupted: task.interrupted === true,
+      pid: Number.isSafeInteger(task.pid) ? task.pid : null,
+      signal: task.signal ?? null,
+      started: task.started === true,
+      status: task.status ?? "unknown",
+      timedOut: task.timedOut === true,
+    }));
+}
+
+async function writeCheckoutLockMetadata(lock, metadata) {
+  const payload = Buffer.from(`${JSON.stringify(metadata)}\n`, "utf8");
+  await lock.handle.write(payload, 0, payload.length, 0);
+  await lock.handle.truncate(payload.length);
+  lock.metadata = metadata;
+}
+
+function checkoutLockOperationPath(root) {
+  return path.join(root, ".artifacts", "local-ci", "checkout.lock.operation");
+}
+
+async function releaseCheckoutLockOperation(lock) {
+  if (!lock || lock.closed) return;
+  lock.closed = true;
+  await lock.closePromise;
+  await lock.handle.close();
+}
+
+async function acquireCheckoutLockOperation(root) {
+  const operationPath = checkoutLockOperationPath(root);
+  await mkdir(path.dirname(operationPath), { recursive: true });
+  const lockCommand =
+    process.platform === "darwin"
+      ? { args: ["-s", "-t", "0", "3"], executable: "lockf", busyCodes: [75] }
+      : process.platform === "linux"
+        ? { args: ["-n", "3"], executable: "flock", busyCodes: [1] }
+        : null;
+  if (!lockCommand) {
+    throw new Error(
+      "local CI checkout lock operation requires Linux flock or macOS lockf",
+    );
+  }
+  // Pass an open descriptor to the one-shot locker. BSD/Linux advisory locks
+  // remain held by this process's descriptor after the helper exits, so the
+  // critical section cannot outlive the owner process that closes the fd.
+  const handle = await open(operationPath, "a+");
+  let child;
+  try {
+    child = spawn(lockCommand.executable, lockCommand.args, {
+      stdio: ["ignore", "ignore", "pipe", handle.fd],
+    });
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+  const closePromise = new Promise((resolve) => {
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  const acquisition = new Promise((resolve, reject) => {
+    let output = "";
+    child.once("error", reject);
+    child.stderr?.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      const error = new Error(
+        lockCommand.busyCodes.includes(code)
+          ? `Local CI checkout lock operation is already in progress; retry after it finishes: ${operationPath}`
+          : `Local CI checkout lock operation failed: ${operationPath}`,
+      );
+      error.code = lockCommand.busyCodes.includes(code) ? "EBUSY" : "ELOCK";
+      error.signal = signal ?? undefined;
+      if (output.length > 0) error.cause = output.slice(0, 512);
+      reject(error);
+    });
+  });
+  try {
+    await acquisition;
+  } catch (error) {
+    await closePromise;
+    await handle.close();
+    throw error;
+  }
+  return { child, closePromise, closed: false, handle, path: operationPath };
+}
+
+export async function acquireCheckoutLock(root, { runId = null } = {}) {
   const lockPath = path.join(root, ".artifacts", "local-ci", "checkout.lock");
-  await mkdir(path.dirname(lockPath), { recursive: true });
+  const operation = await acquireCheckoutLockOperation(root);
   let handle;
   try {
     handle = await open(lockPath, "wx");
+    const metadata = {
+      createdAt: new Date().toISOString(),
+      pid: process.pid,
+      runId,
+      state: "active",
+    };
+    const lock = { handle, metadata, path: lockPath, closed: false };
+    await writeCheckoutLockMetadata(lock, metadata);
+    return lock;
   } catch (error) {
     if (error?.code === "EEXIST") {
-      throw new Error(
+      const lockError = new Error(
         `Local CI checkout lock already exists; inspect and remove it manually if no run is active: ${lockPath}`,
       );
+      lockError.code = "EEXIST";
+      throw lockError;
+    }
+    if (handle) {
+      await handle.close();
+      await rm(lockPath, { force: true });
     }
     throw error;
+  } finally {
+    await releaseCheckoutLockOperation(operation);
   }
-  try {
-    await handle.writeFile(
-      `${JSON.stringify({ createdAt: new Date().toISOString(), pid: process.pid })}\n`,
-    );
-  } catch (error) {
-    await handle.close();
-    await rm(lockPath, { force: true });
-    throw error;
-  }
-  return { handle, path: lockPath };
 }
 
 async function releaseCheckoutLock(lock) {
   if (!lock) return;
+  if (lock.closed) return;
   await lock.handle.close();
-  await rm(lock.path);
+  lock.closed = true;
+  await rm(lock.path, { force: true });
+}
+
+export async function retainCheckoutLock(lock, metadata) {
+  if (!lock || lock.closed) return;
+  try {
+    await writeCheckoutLockMetadata(lock, metadata);
+  } finally {
+    await lock.handle.close();
+    lock.closed = true;
+  }
+}
+
+export async function finalizeCheckoutLock(
+  lock,
+  { result = null, runId = null, runStarted = false } = {},
+) {
+  if (!lock) return { released: false, retained: false };
+  if (!runStarted || checkoutLockCleanupComplete(result)) {
+    await releaseCheckoutLock(lock);
+    return { released: true, retained: false };
+  }
+  const taskSummary = checkoutLockTaskSummary(result);
+  const retainedMetadata = {
+    cleanupConfirmed: false,
+    createdAt: lock.metadata?.createdAt ?? new Date().toISOString(),
+    ownerPid: process.pid,
+    retainedAt: new Date().toISOString(),
+    runId: result?.runId ?? runId,
+    state: taskSummary.length > 0 ? "cleanup-incomplete" : "cleanup-unknown",
+    tasks:
+      taskSummary.length > 0
+        ? taskSummary
+        : [
+            {
+              cleanup: { complete: false, groupAlive: null },
+              id: "unknown-process-group",
+              interrupted: false,
+              pid: null,
+              signal: null,
+              started: true,
+              status: "unknown",
+              timedOut: false,
+            },
+          ],
+  };
+  await retainCheckoutLock(lock, retainedMetadata);
+  return { metadata: retainedMetadata, released: false, retained: true };
+}
+
+function processGroupState(processGroupId) {
+  if (!Number.isSafeInteger(processGroupId) || processGroupId <= 0) {
+    return "unknown";
+  }
+  try {
+    process.kill(-processGroupId, 0);
+    return "alive";
+  } catch (error) {
+    if (error?.code === "ESRCH") return "dead";
+    return "unknown";
+  }
+}
+
+export async function recoverCheckoutLock(root = repoRoot) {
+  const lockPath = path.join(root, ".artifacts", "local-ci", "checkout.lock");
+  const operation = await acquireCheckoutLockOperation(root);
+  try {
+    let metadata;
+    try {
+      metadata = JSON.parse(await readFile(lockPath, "utf8"));
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        throw new Error(`Local CI checkout lock does not exist: ${lockPath}`);
+      }
+      throw error;
+    }
+    if (
+      !["cleanup-incomplete", "cleanup-unknown"].includes(metadata?.state) ||
+      !Array.isArray(metadata.tasks) ||
+      metadata.tasks.length === 0
+    ) {
+      throw new Error(
+        `Local CI checkout lock is not a recoverable cleanup record: ${lockPath}`,
+      );
+    }
+    const unresolved = metadata.tasks.filter(
+      (task) => !checkoutLockTaskCleanupComplete(task),
+    );
+    const unknown = unresolved.filter(
+      (task) => !Number.isSafeInteger(task?.pid) || task.pid <= 0,
+    );
+    if (unknown.length > 0) {
+      throw new Error(
+        `Local CI checkout lock contains unknown process groups; inspect and stop them before removing the lock for run ${metadata.runId ?? "unknown"}: ${lockPath}`,
+      );
+    }
+    const unresolvedKnown = unresolved.filter(
+      (task) =>
+        Number.isSafeInteger(task?.pid) &&
+        task.pid > 0 &&
+        processGroupState(task.pid) !== "dead",
+    );
+    if (unresolvedKnown.length > 0) {
+      throw new Error(
+        `Local CI checkout lock still has live or unverifiable process groups; inspect run ${metadata.runId ?? "unknown"}: ${lockPath}`,
+      );
+    }
+    await rm(lockPath);
+    return metadata;
+  } finally {
+    await releaseCheckoutLockOperation(operation);
+  }
 }
 
 function remainingFullWallTime(profile, started) {
@@ -3473,9 +3820,316 @@ async function runExternalVerifier({ args, reportPath, signal, timeoutMs }) {
   if (stderr) process.stderr.write(stderr);
 }
 
+function externalVerificationStatus(error) {
+  if (
+    error?.code === "ETIMEDOUT" ||
+    (error?.killed === true && error?.signal === "SIGTERM")
+  ) {
+    return "timeout";
+  }
+  if (error?.name === "AbortError" || error?.code === "ABORT_ERR") {
+    return "aborted";
+  }
+  return "failed";
+}
+
+function elapsedMilliseconds(started, now) {
+  return Math.max(0, Math.round(now() - started));
+}
+
+export async function finalizeLocalCiExecution({
+  args = {},
+  deadlineMs = Number.POSITIVE_INFINITY,
+  executionDurationMs = null,
+  invocationStarted = performance.now(),
+  isoNow = () => new Date().toISOString(),
+  now = () => performance.now(),
+  reportPath,
+  result,
+  root = repoRoot,
+  runId = result?.runId,
+  signal = null,
+  stagingReceiptPath,
+  timeoutMs = Number.POSITIVE_INFINITY,
+  validateFinal = async () => {},
+  verifyExternal = runExternalVerifier,
+  writeReceipt = writeReport,
+} = {}) {
+  if (!isPlainObject(result) || typeof result.runId !== "string") {
+    throw new Error("Local CI finalization requires a run result.");
+  }
+  if (typeof reportPath !== "string" || reportPath.length === 0) {
+    throw new Error("Local CI finalization requires a report path.");
+  }
+  if (
+    typeof stagingReceiptPath !== "string" ||
+    stagingReceiptPath.length === 0
+  ) {
+    throw new Error("Local CI finalization requires a staging receipt path.");
+  }
+  if (typeof runId !== "string" || runId.length === 0) {
+    throw new Error("Local CI finalization requires a run id.");
+  }
+
+  const executionMs = Number.isSafeInteger(executionDurationMs)
+    ? executionDurationMs
+    : Number.isSafeInteger(result.executionDurationMs)
+      ? result.executionDurationMs
+      : Number.isSafeInteger(result.durationMs)
+        ? result.durationMs
+        : elapsedMilliseconds(invocationStarted, now);
+  const executionReceipt = {
+    ...result,
+    durationMs: executionMs,
+    executionDurationMs: executionMs,
+  };
+  let stagingPath = stagingReceiptPath;
+  let verifiedReceipt = null;
+  let stagingReceipt = null;
+  let canonicalStagingPath = null;
+  let canonicalPublished = false;
+  let retentionError = null;
+  let verificationDurationMs = 0;
+  let externalVerify = { status: "not-run" };
+  const finalizationStarted = now();
+  const remainingTimeout = () => {
+    const timeoutRemaining = Number.isFinite(timeoutMs)
+      ? timeoutMs - (now() - finalizationStarted)
+      : Number.POSITIVE_INFINITY;
+    const deadlineRemaining = Number.isFinite(deadlineMs)
+      ? deadlineMs - (now() - invocationStarted)
+      : Number.POSITIVE_INFINITY;
+    const remaining = Math.min(timeoutRemaining, deadlineRemaining);
+    if (!Number.isFinite(remaining)) return Number.POSITIVE_INFINITY;
+    if (remaining <= 0) {
+      throw new Error(
+        "Local CI external verification deadline expired before invocation.",
+      );
+    }
+    return Math.max(1, Math.floor(remaining));
+  };
+  const assertDeadline = () => {
+    if (
+      Number.isFinite(deadlineMs) &&
+      elapsedMilliseconds(invocationStarted, now) > deadlineMs
+    ) {
+      throw new Error(
+        `Local CI exceeded ${deadlineMs} ms during finalization.`,
+      );
+    }
+  };
+  const assertNotAborted = () => {
+    if (signal?.aborted) {
+      throw (
+        signal.reason ?? new Error("Local CI finalization was interrupted.")
+      );
+    }
+  };
+
+  try {
+    assertNotAborted();
+    await writeReceipt(stagingPath, executionReceipt);
+    assertDeadline();
+    assertNotAborted();
+    const verifierTimeoutMs = remainingTimeout();
+    const verificationStarted = now();
+    try {
+      await verifyExternal({
+        args,
+        reportPath: stagingPath,
+        signal,
+        timeoutMs: verifierTimeoutMs,
+      });
+      verificationDurationMs = elapsedMilliseconds(verificationStarted, now);
+      externalVerify = {
+        durationMs: verificationDurationMs,
+        status: "passed",
+      };
+    } catch (error) {
+      verificationDurationMs = elapsedMilliseconds(verificationStarted, now);
+      const status = externalVerificationStatus(error);
+      const errorDetails = boundedError(error);
+      if (status === "timeout" && errorDetails.code === undefined) {
+        errorDetails.code = "ETIMEDOUT";
+      }
+      externalVerify = {
+        durationMs: verificationDurationMs,
+        error: errorDetails,
+        status,
+      };
+      throw error;
+    }
+    assertNotAborted();
+
+    try {
+      verifiedReceipt = await retainVerifiedReceipt(stagingPath, {
+        root,
+        runId,
+      });
+      stagingPath = null;
+    } catch (error) {
+      retentionError = boundedError(error);
+      throw error;
+    }
+    assertNotAborted();
+
+    const preValidationTotal = elapsedMilliseconds(invocationStarted, now);
+    const preValidation = {
+      ...executionReceipt,
+      durationMs: preValidationTotal,
+      executionDurationMs: executionMs,
+      finalizationDurationMs: Math.max(0, preValidationTotal - executionMs),
+      verificationDurationMs,
+      finishedAt: isoNow(),
+      finalization: {
+        durationCutoff: "before-canonical-receipt-persistence",
+        externalVerify,
+        receiptDurationMs: preValidationTotal,
+        verifiedReceipt,
+      },
+    };
+    await validateFinal(preValidation);
+    assertDeadline();
+    assertNotAborted();
+
+    // The persisted duration is a measured cutoff immediately before the
+    // write that stores this receipt; publication remains deadline-checked.
+    const buildFinalResult = (receiptDurationMs) => ({
+      ...preValidation,
+      durationMs: receiptDurationMs,
+      finalizationDurationMs: Math.max(0, receiptDurationMs - executionMs),
+      finishedAt: isoNow(),
+      finalization: {
+        ...preValidation.finalization,
+        finalizedAt: isoNow(),
+        receiptDurationMs,
+      },
+    });
+    let finalResult = buildFinalResult(
+      elapsedMilliseconds(invocationStarted, now),
+    );
+    canonicalStagingPath = path.join(
+      path.dirname(reportPath),
+      `.${path.basename(reportPath)}.${runId}.final.staging`,
+    );
+    await writeReceipt(canonicalStagingPath, finalResult);
+    assertDeadline();
+    assertNotAborted();
+    const persistedTotalDurationMs = elapsedMilliseconds(
+      invocationStarted,
+      now,
+    );
+    if (
+      persistedTotalDurationMs !== finalResult.durationMs ||
+      persistedTotalDurationMs !== finalResult.finalization.receiptDurationMs
+    ) {
+      finalResult = buildFinalResult(persistedTotalDurationMs);
+      assertNotAborted();
+      await writeReceipt(canonicalStagingPath, finalResult);
+      assertDeadline();
+      assertNotAborted();
+      const finalPersistenceDurationMs = elapsedMilliseconds(
+        invocationStarted,
+        now,
+      );
+      if (
+        finalPersistenceDurationMs !== finalResult.durationMs ||
+        finalPersistenceDurationMs !==
+          finalResult.finalization.receiptDurationMs
+      ) {
+        finalResult = buildFinalResult(finalPersistenceDurationMs);
+        assertNotAborted();
+        await writeReceipt(canonicalStagingPath, finalResult);
+      }
+    }
+    assertDeadline();
+    assertNotAborted();
+    await rename(canonicalStagingPath, reportPath);
+    canonicalStagingPath = null;
+    canonicalPublished = true;
+    assertDeadline();
+    assertNotAborted();
+    return {
+      reportPath,
+      result: finalResult,
+      stagingReceiptPath: null,
+      success: true,
+      verifiedReceipt,
+    };
+  } catch (error) {
+    if (canonicalStagingPath) {
+      await rm(canonicalStagingPath, { force: true });
+    }
+    if (canonicalPublished) await rm(reportPath, { force: true });
+    if (stagingPath) {
+      try {
+        verifiedReceipt = await retainVerifiedReceipt(stagingPath, {
+          root,
+          runId,
+        });
+        stagingPath = null;
+      } catch (retentionFailure) {
+        retentionError ??= boundedError(retentionFailure);
+        try {
+          stagingReceipt = await localFileIdentity(root, stagingPath);
+        } catch {
+          stagingReceipt = null;
+        }
+      }
+    }
+    const totalDurationMs = elapsedMilliseconds(invocationStarted, now);
+    const failure = {
+      ...executionReceipt,
+      durationMs: totalDurationMs,
+      executionDurationMs: executionMs,
+      finalizationDurationMs: Math.max(0, totalDurationMs - executionMs),
+      finishedAt: isoNow(),
+      receiptError: externalVerify.error ?? boundedError(error),
+      status: "failed",
+      finalization: {
+        durationCutoff: "failure-evidence-persistence",
+        externalVerify,
+        finalizedAt: isoNow(),
+        ...(retentionError ? { retentionError } : {}),
+        ...(stagingReceipt ? { stagingReceipt } : {}),
+        receiptDurationMs: totalDurationMs,
+        verifiedReceipt,
+      },
+    };
+    const failedPath = failureReportPath(reportPath, runId);
+    await writeReport(failedPath, failure);
+    return {
+      reportPath: failedPath,
+      result: failure,
+      stagingReceiptPath: stagingPath,
+      success: false,
+      verifiedReceipt,
+    };
+  }
+}
+
 async function main() {
   const invocationStarted = performance.now();
   const args = parseLocalCiArgs(process.argv.slice(2));
+  if (args.recoverLock) {
+    if (
+      args.profile !== null ||
+      args.base !== null ||
+      args.head !== null ||
+      args.from !== null ||
+      args.report !== null ||
+      args.dryRun ||
+      args.list ||
+      args.verify
+    ) {
+      throw new Error("--recover-lock cannot be combined with other options");
+    }
+    const metadata = await recoverCheckoutLock(repoRoot);
+    process.stdout.write(
+      `[local-ci] recovered-lock run=${metadata.runId ?? "unknown"}\n`,
+    );
+    return;
+  }
   const registry = validateLocalCiRegistry(
     JSON.parse(await readFile(registryPath, "utf8")),
   );
@@ -3530,7 +4184,10 @@ async function main() {
         currentProductJourneyEvidence?.c2zcRestoreFixture ?? null,
       requireTaskEvidence: true,
     });
-    await verifyLocalCiTaskEvidence(receipt, { root: repoRoot });
+    await verifyLocalCiTaskEvidence(receipt, {
+      requireFinalization: receipt.finalization !== undefined,
+      root: repoRoot,
+    });
     process.stdout.write(`[local-ci] verified=${reportPath}\n`);
     return;
   }
@@ -3579,9 +4236,10 @@ async function main() {
   process.once("SIGTERM", onSigterm);
   let checkoutLock = null;
   let result = null;
-  let stagingReceiptPath = null;
+  const runId = randomUUID();
+  let runStarted = false;
   try {
-    checkoutLock = await acquireCheckoutLock(repoRoot);
+    checkoutLock = await acquireCheckoutLock(repoRoot, { runId });
     if (cliAbort.signal.aborted) throw cliAbort.signal.reason;
     const candidate = validateLocalCiCandidate(
       plan,
@@ -3597,21 +4255,37 @@ async function main() {
         "Full local CI exceeded 600000 ms before task admission.",
       );
     }
-    const runId = randomUUID();
-    result = await runLocalCiPlan(plan, {
-      candidate,
-      concurrent: true,
-      deadlineMs: remainingBeforeTasks,
-      notify,
-      root: repoRoot,
-      runId,
-      signal: cliAbort.signal,
-    });
+    runStarted = true;
+    try {
+      result = await runLocalCiPlan(plan, {
+        candidate,
+        concurrent: true,
+        deadlineMs: remainingBeforeTasks,
+        notify,
+        root: repoRoot,
+        runId,
+        signal: cliAbort.signal,
+      });
+    } catch (error) {
+      if (isPlainObject(error?.result)) {
+        result = {
+          ...error.result,
+          runId: error.result.runId ?? runId,
+          status: "failed",
+        };
+      }
+      throw error;
+    }
     const finishedCandidate = validateLocalCiCandidate(
       plan,
       await resolveLocalCiCandidate(plan),
     );
     result.candidateAfter = finishedCandidate;
+    const executionDurationMs = Math.round(
+      performance.now() - invocationStarted,
+    );
+    result.executionDurationMs = executionDurationMs;
+    result.durationMs = executionDurationMs;
     try {
       verifyCandidateBinding(result.candidate, finishedCandidate);
       if (plan.profile === "full" && result.status === "passed") {
@@ -3625,84 +4299,67 @@ async function main() {
         );
       }
       if (cliAbort.signal.aborted) throw cliAbort.signal.reason;
-      result.durationMs = Math.round(performance.now() - invocationStarted);
-      if (
-        plan.profile === "full" &&
-        result.durationMs > LOCAL_CI_FULL_DEADLINE_MS
-      ) {
-        throw new Error(
-          "Full local CI exceeded 600000 ms before verification.",
-        );
-      }
-      if (
-        result.status === "passed" &&
-        plan.coverage.completeness === "complete"
-      ) {
-        verifyLocalCiReceipt(result, {
-          profile: plan.profile,
-          candidate: finishedCandidate,
-          plan,
-          currentProductJourneyEvidence: result.productJourneyEvidence,
-          currentC2ZcRestoreFixtureEvidence:
-            result.productJourneyEvidence?.c2zcRestoreFixture ?? null,
-          requireTaskEvidence: true,
-        });
-        await verifyLocalCiTaskEvidence(result, { root: repoRoot });
-      }
     } catch (error) {
       result.status = "failed";
-      result.receiptError =
-        error instanceof Error ? error.message : String(error);
+      result.receiptError = boundedError(error);
     }
     if (
       result.status === "passed" &&
       plan.coverage.completeness === "complete"
     ) {
-      stagingReceiptPath = path.join(
+      const stagingReceiptPath = path.join(
         path.dirname(reportPath),
         `.${path.basename(reportPath)}.${result.runId}.staging`,
       );
-      await writeReport(stagingReceiptPath, result);
-      const remainingBeforeVerify = remainingFullWallTime(
-        plan.profile,
-        invocationStarted,
-      );
-      if (remainingBeforeVerify <= 0) {
-        throw new Error(
-          "Full local CI exceeded 600000 ms before verification.",
-        );
-      }
-      await runExternalVerifier({
+      const finalized = await finalizeLocalCiExecution({
         args,
-        reportPath: stagingReceiptPath,
+        deadlineMs:
+          plan.profile === "full"
+            ? LOCAL_CI_FULL_DEADLINE_MS
+            : Number.POSITIVE_INFINITY,
+        executionDurationMs,
+        invocationStarted,
+        reportPath,
+        result,
+        root: repoRoot,
+        runId: result.runId,
         signal: cliAbort.signal,
-        timeoutMs: remainingBeforeVerify,
+        stagingReceiptPath,
+        timeoutMs: remainingFullWallTime(plan.profile, invocationStarted),
+        validateFinal: async (finalResult) => {
+          verifyLocalCiReceipt(finalResult, {
+            profile: plan.profile,
+            candidate: finishedCandidate,
+            plan,
+            currentProductJourneyEvidence: finalResult.productJourneyEvidence,
+            currentC2ZcRestoreFixtureEvidence:
+              finalResult.productJourneyEvidence?.c2zcRestoreFixture ?? null,
+            requireTaskEvidence: true,
+          });
+          await verifyLocalCiTaskEvidence(finalResult, {
+            requireFinalization: true,
+            root: repoRoot,
+          });
+        },
       });
-      if (cliAbort.signal.aborted) throw cliAbort.signal.reason;
-      if (remainingFullWallTime(plan.profile, invocationStarted) < 0) {
-        throw new Error(
-          "Full local CI exceeded 600000 ms during verification.",
-        );
-      }
-      await mkdir(path.dirname(reportPath), { recursive: true });
-      await rename(stagingReceiptPath, reportPath);
-      stagingReceiptPath = null;
-      if (remainingFullWallTime(plan.profile, invocationStarted) < 0) {
-        await rm(reportPath, { force: true });
-        throw new Error(
-          "Full local CI exceeded 600000 ms while publishing verification.",
-        );
-      }
+      result = finalized.result;
+      process.stdout.write(`[local-ci] report=${finalized.reportPath}\n`);
     } else {
       await writeReport(reportPath, result);
+      process.stdout.write(`[local-ci] report=${reportPath}\n`);
     }
-    process.stdout.write(`[local-ci] report=${reportPath}\n`);
-  } catch (error) {
-    if (stagingReceiptPath) await rm(stagingReceiptPath, { force: true });
-    throw error;
   } finally {
     try {
-      await releaseCheckoutLock(checkoutLock);
+      const lockFinalization = await finalizeCheckoutLock(checkoutLock, {
+        result,
+        runId,
+        runStarted,
+      });
+      if (lockFinalization.retained) {
+        process.stderr.write(
+          `[local-ci] checkout lock retained for cleanup recovery: ${checkoutLock.path}\n`,
+        );
+      }
     } finally {
       process.removeListener("SIGINT", onSigint);
       process.removeListener("SIGTERM", onSigterm);
