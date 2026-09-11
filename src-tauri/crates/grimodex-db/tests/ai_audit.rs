@@ -1,3 +1,6 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::ai_audit::{
     redact_quoted_json_credentials, sanitize_diagnostic_credentials, AppendAiAuditEvent,
 };
@@ -23,8 +26,7 @@ fn event(event_id: &str, event_type: &str, timestamp: i64) -> AppendAiAuditEvent
 }
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         conn.execute(
             "INSERT INTO projects (id, title, created_at, updated_at)

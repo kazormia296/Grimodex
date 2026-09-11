@@ -4,6 +4,9 @@
 //! startup-only lifecycle recovery boundary. They do not invoke Verify/Rebuild
 //! side effects outside their durable lifecycle rows.
 
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     canonical_work_key, canonical_work_key_for_epoch, classify_failure, decide_execution,
     decide_run_recovery, decide_run_recovery_for_epoch, discover_durable_maintenance_work,
@@ -27,8 +30,7 @@ const EPOCH_ID: &str = "epoch-c2-5a";
 const OLD_EPOCH_ID: &str = "epoch-c2-5a-old";
 
 fn fixture_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         ensure_test_schema(conn)?;
         conn.execute(

@@ -400,8 +400,6 @@ pub fn restore_scene_revision(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     const PROJECT: &str = "default-project";
@@ -409,8 +407,7 @@ mod tests {
     const TARGET: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"restored"}]}]}"#;
 
     fn fixture() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open test db");
-        db.migrate().expect("migrate");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.with_conn(|conn| {
             conn.execute_batch(&format!(
                 "INSERT INTO tree_nodes

@@ -4,7 +4,8 @@
 //! They describe the shadow-only V2 contract: V1 remains the durable
 //! authority while a sealed D1 head is evaluated against the same Feed input.
 
-use std::path::Path;
+#[path = "../test-support/adapter.rs"]
+mod test_support;
 
 use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use grimodex_db::narrative_extraction::{
@@ -26,8 +27,7 @@ const SCENE_ID: &str = "nir0-d2-scene";
 const CREATED_AT: &str = "2026-08-24T00:00:00.000Z";
 
 fn fixture_db() -> Database {
-    let db = Database::new(Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         ensure_test_schema(conn)?;
         conn.execute(

@@ -1,3 +1,6 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_core::SCHEMA_VERSION;
 use grimodex_db::change_events::{append_change_events_in_tx, AppendChangeEvent};
 use grimodex_db::narrative_extraction::change_feed::{
@@ -13,8 +16,16 @@ const PROJECT_ONE: &str = "project-1";
 const PROJECT_TWO: &str = "project-2";
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
+    seed_projects(db)
+}
+
+fn fresh_migrated_db() -> Database {
+    let db = test_support::fresh_migrated_memory().expect("migrate database");
+    seed_projects(db)
+}
+
+fn seed_projects(db: Database) -> Database {
     db.with_conn(|conn| {
         conn.execute_batch(
             "INSERT INTO projects (id, title) VALUES
@@ -383,7 +394,7 @@ fn continuity_guard_rejects_a_delete_and_a_non_delete_for_one_object() {
 
 #[test]
 fn fresh_schema_22_contains_the_canonical_writer_origin_contract() {
-    let db = migrated_db();
+    let db = fresh_migrated_db();
     db.with_conn(|conn| {
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         // SCHEMA 22 introduced this contract; SCHEMA 23-35 (Gate C2/D1/C2A/NIR-1) migrate

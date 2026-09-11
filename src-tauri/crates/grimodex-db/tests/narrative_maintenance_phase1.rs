@@ -3,6 +3,9 @@
 //! These tests pin the Rust-owned coordinate, durable discovery, completion
 //! evidence, and same-Database phase dispatch boundary.
 
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     discover_durable_maintenance_work, plan_maintenance_trigger, run_system_work_cycle,
     AutomaticRunKind, MaintenanceCycleRequest, MaintenanceCycleStatus, MaintenanceTrigger,
@@ -22,8 +25,7 @@ const EPOCH_ID: &str = "epoch-c2-5b-phase1";
 const VERIFY_WORK_KEY: &str = "dependency-verify:epoch-c2-5b-phase1";
 
 fn fixture_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         ensure_test_schema(conn)?;
         conn.execute(

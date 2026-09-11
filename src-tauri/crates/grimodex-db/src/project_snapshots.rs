@@ -3082,16 +3082,13 @@ pub fn apply_project_snapshot_restore(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     use serde_json::json;
 
     use super::*;
 
     fn fixture() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES ('p1', 'One'), ('p2', 'Two')",

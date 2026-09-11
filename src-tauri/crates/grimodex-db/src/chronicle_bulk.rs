@@ -1873,14 +1873,10 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
-        db.migrate().expect("migrate");
-        db
+        crate::test_support::current_schema_memory().expect("current-schema fixture")
     }
 
     fn setup(db: &Database) -> (String, String, String, String, String) {

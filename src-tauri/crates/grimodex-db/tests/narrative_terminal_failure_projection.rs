@@ -5,6 +5,9 @@
 //! durable Finding history without creating Consumer Freshness, Edge, Domain,
 //! or Attention state.
 
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::narrative_extraction::ensure_test_schema;
 use grimodex_db::narrative_extraction::{
     build_maintenance_inbox, project_terminal_failure_for_run, resolve_terminal_failure_for_run,
@@ -21,8 +24,7 @@ const OTHER_EPOCH_ID: &str = "epoch-c2-5b-c-other";
 const WORK_KEY: &str = "legacy-dependency-backfill:v3";
 
 fn fixture_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         ensure_test_schema(conn)?;
         conn.execute(

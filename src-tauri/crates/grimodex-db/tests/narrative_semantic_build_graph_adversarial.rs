@@ -47,19 +47,19 @@
 //!
 //! # What this file does instead
 //!
-//! Every test below drives the *real, currently-migrated* SQLite schema
-//! (`Database::new` + `db.migrate()`, exactly like every other file in this
-//! directory) directly through `rusqlite`, using SQL **hand-copied
-//! verbatim** from the Lane source file it stands in for -- every helper
-//! below names the exact function and file it replicates, so a reviewer can
-//! diff the two side by side. This is a deliberate, disclosed compromise:
+//! Every test below drives a fresh copy of the *real, currently-migrated*
+//! SQLite schema (built once per test binary through `Database::migrate()` by
+//! the shared test-only fixture) directly through `rusqlite`, using SQL
+//! **hand-copied verbatim** from the Lane source file it stands in for -- every
+//! helper below names the exact function and file it replicates, so a reviewer
+//! can diff the two side by side. This is a deliberate, disclosed compromise:
 //!
 //! - It fully, faithfully exercises the **shared schema contract** (CHECK
 //!   constraints, foreign keys, primary/unique keys) those 13 Lanes are
 //!   physically built on -- which is exactly where a cross-Lane
 //!   compatibility bug would first show up as these Lanes evolve
-//!   independently, and it is real production code
-//!   (`grimodex-db::migrate`, reachable and public).
+//!   independently, and it is the real production schema emitted by
+//!   `grimodex-db::migrate`.
 //! - It does **not** exercise any Lane's own Rust control flow, branching,
 //!   or error handling -- each Lane's own `#[cfg(test)] mod tests` (already
 //!   extensive, verified while reading every module for this Lane) remains
@@ -75,18 +75,18 @@
 //!   (`publish_runtime::edge_finding_key` renamed to `consumer_finding_key`
 //!   and re-keyed to match `inbox_read_model`'s convention).
 
-use rusqlite::{params, Connection, OptionalExtension};
+#[path = "../test-support/adapter.rs"]
+mod test_support;
 
 use grimodex_db::Database;
+use rusqlite::{params, Connection, OptionalExtension};
 
 // ---------------------------------------------------------------------
 // Shared fixtures
 // ---------------------------------------------------------------------
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
-    db
+    test_support::current_schema_memory().expect("current-schema fixture")
 }
 
 fn seed_project(conn: &Connection, project_id: &str) {

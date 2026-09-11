@@ -1003,12 +1003,9 @@ pub fn prune(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
-        db.migrate().expect("migrate");
-        db
+        crate::test_support::current_schema_memory().expect("current-schema fixture")
     }
 
     /// trash_items.project_id は projects(id) への FK (foreign_keys=ON) なので

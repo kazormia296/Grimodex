@@ -807,13 +807,10 @@ pub fn seed_runtime_performance_fixture(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     fn database() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open test database");
-        db.migrate().expect("migrate test database");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.execute(
             "INSERT OR IGNORE INTO projects (id, title) VALUES ('default-project', 'Fixture')",
             &[],
