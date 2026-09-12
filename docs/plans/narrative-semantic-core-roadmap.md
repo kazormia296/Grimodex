@@ -3,8 +3,8 @@
 ## Status
 
 - **Lifecycle:** Active mutable roadmap
-- **Last updated:** 2026-09-05
-- **Current focus:** NIR-1 First Retrieval Vertical Slice; its C2-ZC start condition is satisfied and implementation is not yet started
+- **Last updated:** 2026-09-12
+- **Current focus:** NIR-1 First Retrieval Vertical Slice; L0〜L5 were merged in [PR #567](https://github.com/kazormia296/Grimodex/pull/567) and the search-performance Hold remains, while the L6〜L9 execution contract is documented but runtime implementation/activation for that range has not started and NIR-1 overall remains incomplete
 - **North star:** **本文に追従し、根拠を示し、人間の修正を覚える Living Story Bible**
 
 This document is the canonical **mutable implementation and product roadmap** for Narrative Semantic Core, AI-assisted extraction, incremental maintenance, and the Living Story Bible product surface.
@@ -41,29 +41,30 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 | ------------ | --------------------------------------------------------------------------------- |
 | **Complete** | Merged implementation satisfies the stated acceptance criteria.                   |
 | **Active**   | A concrete branch or pull request is currently implementing the item.             |
+| **Partial**  | Earlier lanes are complete, but later lanes or overall acceptance remain open.    |
 | **Planned**  | Ordered and scoped here, but implementation has not started.                      |
 | **Blocked**  | The item is defined but cannot start safely until a named dependency is complete. |
 | **Deferred** | Intentionally outside the current critical path.                                  |
 
 ## Current snapshot
 
-| Area                               | State        | Evidence / next condition                                                                                                                                                                                                                                                                                                                                                        |
-| ---------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gate B2, C0, C1, C1.5              | **Complete** | Writer authority, Change Feed, semantic contracts, and authority routes are ratified.                                                                                                                                                                                                                                                                                            |
-| Gate C2 foundation                 | **Complete** | [PR #534](https://github.com/kazormia296/Grimodex/pull/534) landed the shadow Semantic Build Graph, evaluator, publish runtime, maintenance ledger, Verify/Rebuild/Backfill/Repair primitives, and policy contracts.                                                                                                                                                             |
-| NIR-0 C2B / Chronicle add-only     | **Complete — NIR0-CERT** | [PR #559](https://github.com/kazormia296/Grimodex/pull/559) supplied the clean candidate-bound Quick/Full receipts and merged the tested tree for ScopeOverride atomic materialization, live Scope authority, Chronicle V2 coordinator/save, C2B Human writer, activation policy, restart durability, and the focused negative matrix. |
-| C2 identity normalization          | **Complete** | [PR #535](https://github.com/kazormia296/Grimodex/pull/535) canonicalized Dependency Edge and Application Contribution identities and repaired stored rows.                                                                                                                                                                                                                      |
-| Application Contribution ownership | **Complete** | [PR #536](https://github.com/kazormia296/Grimodex/pull/536) landed C2 item 4: Contribution provenance, canonical target identities with the SCHEMA rewrite migration, and one-way human ownership behind typed writers.                                                                                                                                                          |
-| C2-2 Consumer granularity          | **Complete** | Producers declare Edges per Proposal Revision, the canonical vocabulary is ratified in [`policies/narrative/narrative-consumer-contract.json`](../../policies/narrative/narrative-consumer-contract.json), SCHEMA 30 records each Edge's declaring Run, and existing Run-grained Edges are re-keyed from the durable per-Revision Source Basis.                                  |
-| C2-1 incremental Freshness runtime | **Complete** | [`incremental_freshness.rs`](../../src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs) owns the bounded Feed range, reverse lookup, evaluation, atomic multi-Consumer publication, replay/recovery, and single acknowledgement; [`narrativeFreshness.ts`](../../electron/main/narrativeFreshness.ts) supplies the main-only single-flight scheduler. |
-| C2-3 Finding identity              | **Complete** | SCHEMA 31, the versioned Rule Registry, three-layer Finding identity, lifecycle classification, fail-closed Attention re-homing, and later lifecycle hardening are merged through PR #556 and PR #559.                                                                                                                                                                               |
-| C2-5A lifecycle foundation         | **Complete** | Trigger planning, coalescing, per-project serialization, epoch-aware interrupted-run recovery, bounded retry, and execute-safe scheduling are merged and covered by the joined C2-5B suites.                                                                                                                                                                                     |
-| C2-5B contract-aware activation    | **Complete** | Durable Backfill/Verify/Rebuild lifecycle ownership, current-contract evidence, bounded recovery, live-authority dispatch, Maintenance Inbox routing, and product journeys are merged through PR #556 and PR #559.                                                                                                                                                               |
-| C2-ZA cutover preparation          | **Complete** | SELECT-only legacy/Generic parity measurement, fail-closed per-workspace readiness, and `application` re-key dry-run classification are merged without changing the canonical read authority.                                                                                                                                                                                    |
-| C2-ZB Application re-key migration | **Complete** | SCHEMA 32 performs the schema-owned, all-project preflighted Application re-key, Finding/Attention re-home, derived invalidation, migration Epoch, and final marker atomically. PR #559 closed the remaining ownership, restart, and compatibility findings.                                                                                                                        |
-| C2-ZC canonical cutover            | **Complete** | [PR #564](https://github.com/kazormia296/Grimodex/pull/564) merged the accepted candidate (`base 201f8968f324bef1341282c625aee3fb164ea401`, `head 2c1bc67c749eb90e4d441099bfa9bc7ea6ee950e`, `tree e7dff96286be3f111d9130cf89faf37929b88f17`, merge `0e62b40b622652f203690968d308b837e1481a33`). Quick/verify, Rust 17/17, Verify 13/13, Full run `cb03f6fb-b711-4377-bf7b-a5bd23c7ce79`, product journeys 26/26 allPassed/allClean, runtime performance, and Sol final all passed. |
-| First Retrieval Vertical Slice     | **Planned — Ready** | C2-ZC final acceptance is recorded, so NIR-1 may begin. Retrieval implementation and its approval of the reserved Semantic Index binding have not started; this state is not Active or Complete. |
-| Living Story Bible product Epics   | **Planned**  | Correction Memory, live Structure Health, Change Review, reports, graph exploration, and Map proposals are defined below.                                                                                                                                                                                                                                                        |
+| Area                               | State                    | Evidence / next condition                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gate B2, C0, C1, C1.5              | **Complete**             | Writer authority, Change Feed, semantic contracts, and authority routes are ratified.                                                                                                                                                                                                                                                                                                                                                                                               |
+| Gate C2 foundation                 | **Complete**             | [PR #534](https://github.com/kazormia296/Grimodex/pull/534) landed the shadow Semantic Build Graph, evaluator, publish runtime, maintenance ledger, Verify/Rebuild/Backfill/Repair primitives, and policy contracts.                                                                                                                                                                                                                                                                |
+| NIR-0 C2B / Chronicle add-only     | **Complete — NIR0-CERT** | [PR #559](https://github.com/kazormia296/Grimodex/pull/559) supplied the clean candidate-bound Quick/Full receipts and merged the tested tree for ScopeOverride atomic materialization, live Scope authority, Chronicle V2 coordinator/save, C2B Human writer, activation policy, restart durability, and the focused negative matrix.                                                                                                                                              |
+| C2 identity normalization          | **Complete**             | [PR #535](https://github.com/kazormia296/Grimodex/pull/535) canonicalized Dependency Edge and Application Contribution identities and repaired stored rows.                                                                                                                                                                                                                                                                                                                         |
+| Application Contribution ownership | **Complete**             | [PR #536](https://github.com/kazormia296/Grimodex/pull/536) landed C2 item 4: Contribution provenance, canonical target identities with the SCHEMA rewrite migration, and one-way human ownership behind typed writers.                                                                                                                                                                                                                                                             |
+| C2-2 Consumer granularity          | **Complete**             | Producers declare Edges per Proposal Revision, the canonical vocabulary is ratified in [`policies/narrative/narrative-consumer-contract.json`](../../policies/narrative/narrative-consumer-contract.json), SCHEMA 30 records each Edge's declaring Run, and existing Run-grained Edges are re-keyed from the durable per-Revision Source Basis.                                                                                                                                     |
+| C2-1 incremental Freshness runtime | **Complete**             | [`incremental_freshness.rs`](../../src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs) owns the bounded Feed range, reverse lookup, evaluation, atomic multi-Consumer publication, replay/recovery, and single acknowledgement; [`narrativeFreshness.ts`](../../electron/main/narrativeFreshness.ts) supplies the main-only single-flight scheduler.                                                                                                    |
+| C2-3 Finding identity              | **Complete**             | SCHEMA 31, the versioned Rule Registry, three-layer Finding identity, lifecycle classification, fail-closed Attention re-homing, and later lifecycle hardening are merged through PR #556 and PR #559.                                                                                                                                                                                                                                                                              |
+| C2-5A lifecycle foundation         | **Complete**             | Trigger planning, coalescing, per-project serialization, epoch-aware interrupted-run recovery, bounded retry, and execute-safe scheduling are merged and covered by the joined C2-5B suites.                                                                                                                                                                                                                                                                                        |
+| C2-5B contract-aware activation    | **Complete**             | Durable Backfill/Verify/Rebuild lifecycle ownership, current-contract evidence, bounded recovery, live-authority dispatch, Maintenance Inbox routing, and product journeys are merged through PR #556 and PR #559.                                                                                                                                                                                                                                                                  |
+| C2-ZA cutover preparation          | **Complete**             | SELECT-only legacy/Generic parity measurement, fail-closed per-workspace readiness, and `application` re-key dry-run classification are merged without changing the canonical read authority.                                                                                                                                                                                                                                                                                       |
+| C2-ZB Application re-key migration | **Complete**             | SCHEMA 32 performs the schema-owned, all-project preflighted Application re-key, Finding/Attention re-home, derived invalidation, migration Epoch, and final marker atomically. PR #559 closed the remaining ownership, restart, and compatibility findings.                                                                                                                                                                                                                        |
+| C2-ZC canonical cutover            | **Complete**             | [PR #564](https://github.com/kazormia296/Grimodex/pull/564) merged the accepted candidate (`base 201f8968f324bef1341282c625aee3fb164ea401`, `head 2c1bc67c749eb90e4d441099bfa9bc7ea6ee950e`, `tree e7dff96286be3f111d9130cf89faf37929b88f17`, merge `0e62b40b622652f203690968d308b837e1481a33`). Quick/verify, Rust 17/17, Verify 13/13, Full run `cb03f6fb-b711-4377-bf7b-a5bd23c7ce79`, product journeys 26/26 allPassed/allClean, runtime performance, and Sol final all passed. |
+| First Retrieval Vertical Slice     | **Partial**              | L0〜L5のRelated Scenes、Evidence navigation、失効・復旧は[PR #567](https://github.com/kazormia296/Grimodex/pull/567)でマージ済みで、検索性能Holdを保持する。L6〜L9の実行契約は文書化済みだが、当該範囲のruntime実装・activationは未着手であり、NIR-1全体の受入れは未完了。                                                                                                                                                                                                          |
+| Living Story Bible product Epics   | **Planned**              | Correction Memory, live Structure Health, Change Review, reports, graph exploration, and Map proposals are defined below.                                                                                                                                                                                                                                                                                                                                                           |
 
 ## Critical path
 
@@ -78,7 +79,9 @@ NIR-0: Chronicle `scene-event@1` add-only pilot ── certified
   ↓
 C2-ZC: Generic Consumer Freshness becomes canonical ── complete (PR #564)
   ↓
-First Retrieval Vertical Slice ── planned / ready to start
+NIR-1 L0〜L5: Related Scenes + Evidence navigation + invalidation/recovery ── complete (PR #567); search-performance Hold remains
+  ↓
+NIR-1 L6〜L9: execution contract documented ── runtime implementation/activation not started
   ↓
 Codex Entity / Relation projection migration
   ↓
@@ -91,7 +94,7 @@ Readable reports and graph exploration
 Map draft proposals and later visualization products
 ```
 
-The ordering after PR #536 remains intentional: **Consumer granularity → Finding identity → lifecycle activation → Application re-key → canonical cutover**. Those joins, including the C2-ZC authority switch, are complete. NIR-1 is now the next planned slice; its implementation must not reopen C2-ZC or smuggle another authority into NIR-0 certification.
+The ordering after PR #536 remains intentional: **Consumer granularity → Finding identity → lifecycle activation → Application re-key → canonical cutover**. Those joins, including the C2-ZC authority switch, are complete. NIR-1 L0〜L5 are merged in PR #567 and remain under a search-performance Hold; L6〜L9 are the next planned runtime lanes. Their execution contract is documented, but runtime implementation/activation for that range has not started. NIR-1 overall acceptance remains incomplete, and its implementation must not reopen C2-ZC or smuggle another authority into NIR-0 certification.
 
 ### Parallel branch ownership
 
@@ -386,8 +389,10 @@ met; future NIR-1 work must preserve them.
 
 ### Reserved Semantic Index status
 
-`semantic-index` is a reserved consumer and has no active Narrative dependency
-authority. C2-ZC acceptance requires an all-zero direct scan of exactly these
+The following is the C2-ZC acceptance-time snapshot; it remains historical and
+does not replace the current NIR-1 status above. At that time,
+`semantic-index` was a reserved consumer with no active Narrative dependency
+authority. C2-ZC acceptance required an all-zero direct scan of exactly these
 four project-scoped surfaces: all project rows in
 `narrative_semantic_index_metadata`, and rows with
 `consumer_kind = 'semantic-index'` in active sealed D1 declaration heads, V1
@@ -402,7 +407,7 @@ The dormant NIR-1 binding algorithm is only a future proposal:
 
 - `metadata.index_key = D1 consumer_key = freshness.consumer_key`;
 - `metadata.generation = active sealed D1 head consumer-scoped
-  producer_generation`;
+producer_generation`;
 - `metadata.dependency_set_digest = active sealed D1 set digest`.
 
 Fixed keys, producer registry, Source identities, writers, D1 declarations,
@@ -447,8 +452,8 @@ certified base/head/tree and the byte-identical integrated `master` tree.
   explicit fallback.
 - Activation is enabled for these entry points and remains bounded to this
   pilot. Disclosure admission, D2 full cutover, revise/retract/merge/split,
-  and NIR-1 retrieval remain outside the NIR-0 scope; NIR-1 is planned/ready
-  but not implemented.
+  and NIR-1 retrieval remain outside the NIR-0 scope; at the time of this
+  NIR-0 acceptance record, NIR-1 was planned/ready but not implemented.
 - Durable cold-start discovery, same-Run resume, typed blocked-Run discard,
   Workspace-authority binding, and sealed existing-event-catalog CAS prevent
   restart or authority replacement from fabricating a second execution.
@@ -465,21 +470,25 @@ evaluations remain explicitly deferred and were not counted as passing evidence.
 
 ## NIR-1: First Retrieval Vertical Slice
 
-**State:** Planned — Ready; C2-ZC final acceptance is complete and NIR-1 implementation has not started
+**State:** Partial — L0〜L5 are merged in [PR #567](https://github.com/kazormia296/Grimodex/pull/567) and the search-performance Hold remains. The L6〜L9 execution contract is documented, but runtime implementation/activation for that range has not started. NIR-1 overall acceptance is incomplete.
 
 Integrated execution and approval draft:
-[NIR-1 統合実装計画](narrative-ir-nir1-implementation-plan.md). It carries forward
-the completed membership, Adapter-fixture and diagnostic-policy evidence, and
-orders normal-operation reachability, Related Scenes, Graph and Context Packing
-without treating diagnostic approval as product activation.
+[NIR-1 統合実装計画](narrative-ir-nir1-implementation-plan.md) and the
+[L6〜L9実行計画](nir1-l6-l9-execution-plan.md). They carry forward
+the completed L0〜L5 implementation and the membership, Adapter-fixture and
+diagnostic-policy evidence, and defines normal-operation reachability, Related
+Scenes, Graph and Context Packing without treating diagnostic approval as
+product activation.
 
-NIR-1's start condition is satisfied by the recorded C2-ZC product journey,
+NIR-1's start condition was satisfied by the recorded C2-ZC product journey,
 clean Full CI with receipt verification, and Sol final, with the complete
 Verify set at production coverage 13/13 and the reserved Semantic Index
-four-surface scan at all zero. The first candidate is one shared producer; the
-producer/data-contract decisions listed in the C2-ZC reserved-boundary section
-remain unapproved until NIR-1. No retrieval implementation or activation is
-claimed by this readiness state.
+four-surface scan at all zero. That scan is the C2-ZC acceptance record; the
+reserved Semantic Index binding and the producer/data-contract decisions listed
+in the C2-ZC reserved-boundary section remain unapproved for L6〜L9. No L6〜L9
+runtime implementation or activation is claimed by this readiness state. The execution document adds D2a as the
+profile-wide local-only plaintext-publication prerequisite: Graph activation
+requires A3+B+D2a, and Packing activation requires C+D1+D2a+D2b.
 
 ### Canonical slice
 

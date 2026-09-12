@@ -13,6 +13,11 @@ Status: **条件反映済み・L0–L5 実行承認済み**。計画版 `nir1-pl
 性能予算、信頼境界は、その追加承認だけで変更済み・達成済みとは扱わない。
 L6–L9は全体計画に保持する。L6正例に必要なL7入力adapterの先行は許容するが、Graph検索利用の開示gateは省略しない。
 
+2026-09-12追記: 基点 master@96654340ddd2a0407f2fe8aea41a940c3aa516ce で、L6〜L9の実装順序・公開条件・送信境界・互換profile・受入れ区分を
+[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)へ分離して文書化した。L0〜L5はマージ済みで、L6〜L9のruntime実装とactivationは未実施である。
+本追記以降、L6〜L9の実行契約は新文書を参照する。従前の「今回の継続実装範囲はL0〜L5」という記述は、2026-09-08時点の承認範囲を示す履歴であり、現在のL6〜L9実行契約を制限しない。
+公開条件は、restricted plaintextを返すすべてのentrypointに対する先行送信基盤 D2a、Graphは A3＋B＋D2a、Packingは C＋D1＋D2a＋D2b とする。
+
 2026-09-08、`codex/nir1-material-replay` の clean HEAD
 `9bb942de7f58d869e9d5de52fb49d9adc49e965b`、tree
 `3a7e9acca9b093362fc2615ffab60feee620813e` を調査した。これは計画作成前のコード識別子であり、
@@ -380,6 +385,8 @@ EN/JAモデルは現行production仕様のversion/hashを固定し、不足す�
 B/Tの測定による数値化は承認した式の実行であり、再開確認を要しない。実装前に実験manifestへ記録する。
 条件未達はHoldとして、同じ契約内の実装修正・再検証を継続する。閾値・Gold・対応範囲を変えて通さない。
 アルゴリズムを変更した比較は新candidate/versionとして事前宣言し、元の固定casesで回帰を測る。
+
+Packingの改善gateでは、R0でbaseline、token budget、構造taskの事前指定情報、充足判定、比較手順を固定する。全比較ケースでbaselineと同じ充足結果にとどまる候補は、Packing改善gateのPASSにしない。
 新しい一般化主張には独立holdoutを追加する。小さな固定corpusのpassを一般的な小説検索品質の証明へ拡張しない。
 
 local model / 必須hostが不足すれば該当する技術・品質gateはblockedで、配線の成果だけを報告する。
@@ -453,7 +460,11 @@ NIR-1のcanonical deliverableを満たすことと、すべての抽出recipe・
 その指摘により、初期contextのtyped state、後続の全材料reading-history制約、GraphのRevision/Decisionと独立Index bindingを具体化した。
 再照合で計画reviewの残指摘は解消。新規計画のPrettier check、相対リンク実在確認、git diff --checkを実施した。
 既存ロードマップ全体にはHEAD時点から整形差があるため、その全面整形は行わず計画リンクの追記に留めた。
-今回は計画文書のみで、Quick / Full / runtime testsを実行したという主張はしない。
+初回文書化時点では計画文書のみで、Quick / Full / runtime testsを実行したという主張はしなかった。PR #571更新では計画文書差分に対するQuick / verifyを実施し、Full / runtime testsは未実施である。
 製品policy、runtime、DB、fixture、評価期待値の実データはまだ変更していない。
 2026-09-08の追加指示を本書へ反映し、L0の評価manifest固定・Raw baselineとL1/L2のbinding調査を開始した。
 L0–L5は内部reader/writer/fixture/診断ごとの再開承認を求めず、承認した意味を変更する必要がある場合だけ差分確認する。
+
+2026-09-12のL6〜L9文書化では、D2aをA1/A2の開発開始条件にせずrestricted plaintext公開のactivation前提として追加した。
+同一profileの全作品・全会話を再起動後もlocal-onlyとし、AIタイトル・要約・tool・Agent・CLI等は意図的に停止する。
+L9では必須機能、意図的に停止した補助機能、停止経路の必須拒否試験を分離して判定する。これらはruntime変更ではなく、実装前契約の文書化である。
