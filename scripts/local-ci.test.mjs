@@ -1806,6 +1806,10 @@ test("local CI argument parsing supports comparison, resume, and dry-run", () =>
     },
   );
   assert.equal(parseLocalCiArgs(["--verify", "full"]).verify, true);
+  assert.throws(
+    () => parseLocalCiArgs(["--verify", "--verify-staging", "full"]),
+    /Unknown argument: --verify-staging/u,
+  );
   assert.equal(parseLocalCiArgs(["--recover-lock"]).recoverLock, true);
   assert.throws(
     () => parseLocalCiArgs(["quick", "--unknown"]),
@@ -2083,6 +2087,15 @@ test("local CI final receipt measures external verification separately and retai
     verifyLocalCiFinalization(tampered, { root: temporaryRoot }),
     /identity changed/u,
   );
+  const impossibleDuration = structuredClone(finalized.result);
+  impossibleDuration.verificationDurationMs =
+    impossibleDuration.finalizationDurationMs + 1;
+  impossibleDuration.finalization.externalVerify.durationMs =
+    impossibleDuration.verificationDurationMs;
+  await assert.rejects(
+    verifyLocalCiFinalization(impossibleDuration, { root: temporaryRoot }),
+    /finalization evidence is inconsistent/u,
+  );
   await assert.rejects(readFile(stagingPath), /ENOENT/u);
 });
 
@@ -2266,6 +2279,27 @@ test("local CI removes a canonical receipt when publication crosses the deadline
   await access(
     path.join(temporaryRoot, failedReceipt.finalization.verifiedReceipt.path),
   );
+  const savedSource = JSON.parse(
+    await readFile(
+      path.join(temporaryRoot, failedReceipt.finalization.verifiedReceipt.path),
+      "utf8",
+    ),
+  );
+  assert.equal(savedSource.status, "passed");
+  assert.equal(savedSource.finalization, undefined);
+  await assert.doesNotReject(
+    verifyLocalCiTaskEvidence(savedSource, {
+      requireFinalization: false,
+      root: temporaryRoot,
+    }),
+  );
+  await assert.rejects(
+    verifyLocalCiTaskEvidence(savedSource, {
+      requireFinalization: true,
+      root: temporaryRoot,
+    }),
+    /finalization evidence is required/u,
+  );
 });
 
 test("local CI external verification failure writes run-specific failed evidence without publishing success", async (t) => {
@@ -2302,6 +2336,27 @@ test("local CI external verification failure writes run-specific failed evidence
   assert.ok(failedReceipt.finalization.verifiedReceipt);
   await access(
     path.join(temporaryRoot, failedReceipt.finalization.verifiedReceipt.path),
+  );
+  const savedSource = JSON.parse(
+    await readFile(
+      path.join(temporaryRoot, failedReceipt.finalization.verifiedReceipt.path),
+      "utf8",
+    ),
+  );
+  assert.equal(savedSource.status, "passed");
+  assert.equal(savedSource.finalization, undefined);
+  await assert.doesNotReject(
+    verifyLocalCiTaskEvidence(savedSource, {
+      requireFinalization: false,
+      root: temporaryRoot,
+    }),
+  );
+  await assert.rejects(
+    verifyLocalCiTaskEvidence(savedSource, {
+      requireFinalization: true,
+      root: temporaryRoot,
+    }),
+    /finalization evidence is required/u,
   );
 });
 

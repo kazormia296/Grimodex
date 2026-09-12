@@ -2460,7 +2460,11 @@ function assertExactTaskReceipt(receipt, plan, { required = false } = {}) {
 
 export async function verifyLocalCiTaskEvidence(
   receipt,
-  { requireFinalization = false, root = repoRoot } = {},
+  {
+    allowPrePublication = false,
+    requireFinalization = false,
+    root = repoRoot,
+  } = {},
 ) {
   if (!Array.isArray(receipt?.tasks)) {
     throw new Error("Local CI task evidence is required.");
@@ -2492,17 +2496,62 @@ export async function verifyLocalCiTaskEvidence(
       }
     }
   }
-  if (requireFinalization) await verifyLocalCiFinalization(receipt, { root });
+  if (requireFinalization) {
+    await verifyLocalCiFinalization(receipt, {
+      requirePublishedAt: !allowPrePublication,
+      root,
+    });
+  }
   return receipt;
+}
+
+function finalizationSourceProjection(receipt) {
+  const {
+    durationMs: _durationMs,
+    executionDurationMs: _executionDurationMs,
+    finishedAt: _finishedAt,
+    finalizationDurationMs: _finalizationDurationMs,
+    verificationDurationMs: _verificationDurationMs,
+    finalization: _finalization,
+    ...source
+  } = receipt;
+  return source;
 }
 
 export async function verifyLocalCiFinalization(
   receipt,
-  { root = repoRoot } = {},
+  { requirePublishedAt = true, root = repoRoot } = {},
 ) {
-  const expected = receipt?.finalization?.verifiedReceipt;
-  if (!expected) {
+  const finalization = receipt?.finalization;
+  const expected = finalization?.verifiedReceipt;
+  if (!isPlainObject(finalization) || !isPlainObject(expected)) {
     throw new Error("Local CI finalization evidence is required.");
+  }
+  if (
+    finalization.durationCutoff !== "before-canonical-receipt-persistence" ||
+    finalization.externalVerify?.status !== "passed" ||
+    !Number.isSafeInteger(finalization.externalVerify?.durationMs) ||
+    finalization.externalVerify.durationMs < 0 ||
+    !Number.isSafeInteger(finalization.receiptDurationMs) ||
+    finalization.receiptDurationMs < 0 ||
+    !Number.isSafeInteger(receipt.durationMs) ||
+    receipt.durationMs < 0 ||
+    finalization.receiptDurationMs !== receipt.durationMs ||
+    !Number.isSafeInteger(receipt.executionDurationMs) ||
+    receipt.executionDurationMs < 0 ||
+    receipt.durationMs < receipt.executionDurationMs ||
+    !Number.isSafeInteger(receipt.verificationDurationMs) ||
+    receipt.verificationDurationMs < 0 ||
+    receipt.verificationDurationMs !== finalization.externalVerify.durationMs ||
+    !Number.isSafeInteger(receipt.finalizationDurationMs) ||
+    receipt.finalizationDurationMs !==
+      receipt.durationMs - receipt.executionDurationMs ||
+    receipt.verificationDurationMs > receipt.finalizationDurationMs ||
+    (requirePublishedAt &&
+      (typeof finalization.finalizedAt !== "string" ||
+        finalization.finalizedAt.length === 0))
+  ) {
+    throw new Error("Local CI finalization evidence is inconsistent.");
   }
   assertC2ZcRestoreFixtureRunId(
     receipt.runId,
@@ -2522,6 +2571,30 @@ export async function verifyLocalCiFinalization(
   const current = await resolveArtifactEvidence(expected.path, { root });
   if (current.size !== expected.size || current.sha256 !== expected.sha256) {
     throw new Error("Local CI verified receipt identity changed.");
+  }
+  let source;
+  try {
+    source = JSON.parse(await readFile(current.realPath, "utf8"));
+  } catch (error) {
+    throw new Error("Local CI verified receipt source is not valid JSON.", {
+      cause: error,
+    });
+  }
+  if (
+    !isPlainObject(source) ||
+    source.runId !== receipt.runId ||
+    source.profile !== receipt.profile ||
+    source.status !== "passed" ||
+    source.version !== receipt.version ||
+    source.finalization !== undefined ||
+    source.durationMs !== receipt.executionDurationMs ||
+    source.executionDurationMs !== receipt.executionDurationMs ||
+    JSON.stringify(finalizationSourceProjection(source)) !==
+      JSON.stringify(finalizationSourceProjection(receipt))
+  ) {
+    throw new Error(
+      "Local CI final receipt is not bound to its verified source receipt.",
+    );
   }
   return receipt;
 }
@@ -3613,12 +3686,13 @@ async function acquireCheckoutLockOperation(root) {
         resolve();
         return;
       }
+      const busy = lockCommand.busyCodes.includes(code);
       const error = new Error(
-        lockCommand.busyCodes.includes(code)
+        busy
           ? `Local CI checkout lock operation is already in progress; retry after it finishes: ${operationPath}`
           : `Local CI checkout lock operation failed: ${operationPath}`,
       );
-      error.code = lockCommand.busyCodes.includes(code) ? "EBUSY" : "ELOCK";
+      error.code = busy ? "EBUSY" : "ELOCK";
       error.signal = signal ?? undefined;
       if (output.length > 0) error.cause = output.slice(0, 512);
       reject(error);
@@ -3793,9 +3867,8 @@ function remainingFullWallTime(profile, started) {
 
 async function runExternalVerifier({ args, reportPath, signal, timeoutMs }) {
   const verifierArgs = [
-    fileURLToPath(import.meta.url),
+    fileURLToPath(new URL("./local-ci-staging-verifier.mjs", import.meta.url)),
     args.profile,
-    "--verify",
     "--base",
     args.base,
     "--head",
@@ -4108,6 +4181,63 @@ export async function finalizeLocalCiExecution({
   }
 }
 
+async function verifyLocalCiReportAtPath({
+  allowPrePublication = false,
+  plan,
+  reportPath,
+  root = repoRoot,
+}) {
+  const candidate = validateLocalCiCandidate(
+    plan,
+    await resolveLocalCiCandidate(plan),
+  );
+  const receipt = JSON.parse(await readFile(reportPath, "utf8"));
+  const currentProductJourneyEvidence =
+    plan.profile === "full"
+      ? await collectProductJourneyEvidence(plan, {
+          candidate,
+          restoreFixtureEvidence: receipt.c2zcRestoreFixture,
+          runId: receipt.runId,
+        })
+      : null;
+  verifyLocalCiReceipt(receipt, {
+    profile: plan.profile,
+    candidate,
+    plan,
+    currentProductJourneyEvidence,
+    currentC2ZcRestoreFixtureEvidence:
+      currentProductJourneyEvidence?.c2zcRestoreFixture ?? null,
+    requireTaskEvidence: true,
+  });
+  await verifyLocalCiTaskEvidence(receipt, {
+    allowPrePublication,
+    requireFinalization: !allowPrePublication,
+    root,
+  });
+  return receipt;
+}
+
+export async function verifyLocalCiReport({
+  plan,
+  reportPath,
+  root = repoRoot,
+}) {
+  return verifyLocalCiReportAtPath({ plan, reportPath, root });
+}
+
+export async function verifyLocalCiStagingReport({
+  plan,
+  reportPath,
+  root = repoRoot,
+}) {
+  return verifyLocalCiReportAtPath({
+    allowPrePublication: true,
+    plan,
+    reportPath,
+    root,
+  });
+}
+
 async function main() {
   const invocationStarted = performance.now();
   const args = parseLocalCiArgs(process.argv.slice(2));
@@ -4162,32 +4292,7 @@ async function main() {
     if (args.dryRun) {
       throw new Error("--verify cannot be combined with --dry-run");
     }
-    const candidate = validateLocalCiCandidate(
-      plan,
-      await resolveLocalCiCandidate(plan),
-    );
-    const receipt = JSON.parse(await readFile(reportPath, "utf8"));
-    const currentProductJourneyEvidence =
-      plan.profile === "full"
-        ? await collectProductJourneyEvidence(plan, {
-            candidate,
-            restoreFixtureEvidence: receipt.c2zcRestoreFixture,
-            runId: receipt.runId,
-          })
-        : null;
-    verifyLocalCiReceipt(receipt, {
-      profile: plan.profile,
-      candidate,
-      plan,
-      currentProductJourneyEvidence,
-      currentC2ZcRestoreFixtureEvidence:
-        currentProductJourneyEvidence?.c2zcRestoreFixture ?? null,
-      requireTaskEvidence: true,
-    });
-    await verifyLocalCiTaskEvidence(receipt, {
-      requireFinalization: receipt.finalization !== undefined,
-      root: repoRoot,
-    });
+    await verifyLocalCiReport({ plan, reportPath, root: repoRoot });
     process.stdout.write(`[local-ci] verified=${reportPath}\n`);
     return;
   }
@@ -4337,6 +4442,7 @@ async function main() {
             requireTaskEvidence: true,
           });
           await verifyLocalCiTaskEvidence(finalResult, {
+            allowPrePublication: true,
             requireFinalization: true,
             root: repoRoot,
           });
