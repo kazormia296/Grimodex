@@ -403,7 +403,7 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
     assert.match(executionPlan, new RegExp(field));
   }
 
-  const draftRef = "nir1-l6-l9-contract-proposal/2";
+  const draftRef = "nir1-l6-l9-contract-proposal/3";
   const ledgerSection = executionPlan
     .split("### 契約別の確認台帳\n", 2)[1]
     ?.split("\n### R0 security contract proposal (draft)", 1)[0];
@@ -424,14 +424,15 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
     return row;
   });
   assert.equal(ledgerRows.length, 6);
-  assert.match(executionPlan, /`draftRef`[^\n]*nir1-l6-l9-contract-proposal\/2/);
+  assert.match(executionPlan, /`draftRef`[^\n]*nir1-l6-l9-contract-proposal\/3/);
   assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/1/);
+  assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/2/);
 
   const proposalSection = executionPlan
     .split("### R0 security contract proposal (draft)\n", 2)[1]
     ?.split("\n### lane開始判定と評価manifest", 1)[0];
   assert.ok(proposalSection, "R0 security contract proposal must be present");
-  assert.match(proposalSection, /draftRef[^\n]*nir1-l6-l9-contract-proposal\/2/);
+  assert.match(proposalSection, /draftRef[^\n]*nir1-l6-l9-contract-proposal\/3/);
   for (const confirmationRule of [
     /Confirmation protocol.*only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that row/is,
     /Plan agreement.*not a ratification/is,
@@ -547,14 +548,45 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
         /parseStatus/i,
         /responseDigest/i,
         /message version/i,
-        /raw text.*thinking/i,
-        /versioned stable chunk-order digest/i,
+        /raw text.*thinking.*分離/i,
+        /raw body／thinkingを重複保存せず/,
+        /既存body／artifactへの参照/,
+        /domain-separatedなtext／thinking digest/,
+        /versioned stable chunk-order digest.*chunk-boundary invariant.*order-sensitive/is,
+        /trim.*Unicode normalization.*行わない/is,
         /provider terminalなしのEOF/i,
         /length truncation/i,
-        /terminal receiptを発行せずreject/i,
+        /dispatch failure.*cancel path.*skip path/is,
+        /exactly one terminal receipt.*durably persist/is,
+        /successful generation qualification／publicationからのみreject/,
       ]) {
         assert.match(proposal, receiptRule);
       }
+      assert.doesNotMatch(proposal, /terminal receiptを発行せずreject/);
+      const mandatoryStart = proposal.indexOf("- Mandatory defenses:");
+      const acceptanceStart = proposal.indexOf("- Acceptance implications:");
+      assert.ok(
+        mandatoryStart < acceptanceStart,
+        "receipt mandatory defenses must precede acceptance implications",
+      );
+      const mandatory = proposal.slice(mandatoryStart, acceptanceStart);
+      const acceptance = proposal.slice(acceptanceStart);
+      assert.match(
+        mandatory,
+        /exactly one terminal receipt for every ineligible／EOF／length truncation／parse／dispatch／cancel／skip path/,
+      );
+      assert.match(
+        mandatory,
+        /rejection only from successful generation qualification／publication/,
+      );
+      assert.match(
+        acceptance,
+        /only `succeeded \+ parsed \+ required`.*qualifies for generation publication/is,
+      );
+      assert.match(
+        acceptance,
+        /各経路がexactly one `failed`／`cancelled`／`skipped` terminal receiptをmatrix通りにpersist/,
+      );
     }
     if (contractId === "history-reauthorization") {
       const negativeMatch = proposal.match(/Negative:(.*?)(?=Recovery:)/is);
@@ -591,6 +623,15 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
       assert.match(proposal, /全descendant exclusion/);
     }
   }
+  assert.match(
+    executionPlan,
+    /transport-observed raw textとthinkingはdigest前に分離.*versioned stable chunk-order digest.*chunk-boundary invariant.*order-sensitive/is,
+  );
+  assert.match(executionPlan, /trim、Unicode normalization、renderer加工はせず/);
+  assert.doesNotMatch(
+    executionPlan,
+    /Native解析後のtextをtrim、Unicode正規化、renderer加工せずhashする/,
+  );
   assert.match(proposalSection, /typed-revision-material[\s\S]*contract-delta-unresolved/);
 
   assert.match(
