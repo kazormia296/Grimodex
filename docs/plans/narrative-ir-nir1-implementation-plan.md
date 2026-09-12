@@ -385,6 +385,8 @@ EN/JAモデルは現行production仕様のversion/hashを固定し、不足す�
 B/Tの測定による数値化は承認した式の実行であり、再開確認を要しない。実装前に実験manifestへ記録する。
 条件未達はHoldとして、同じ契約内の実装修正・再検証を継続する。閾値・Gold・対応範囲を変えて通さない。
 アルゴリズムを変更した比較は新candidate/versionとして事前宣言し、元の固定casesで回帰を測る。
+
+Packingの改善gateでは、R0でbaseline、token budget、構造taskの事前指定情報、充足判定、比較手順を固定する。全比較ケースでbaselineと同じ充足結果にとどまる候補は、Packing改善gateのPASSにしない。
 新しい一般化主張には独立holdoutを追加する。小さな固定corpusのpassを一般的な小説検索品質の証明へ拡張しない。
 
 local model / 必須hostが不足すれば該当する技術・品質gateはblockedで、配線の成果だけを報告する。
@@ -458,7 +460,7 @@ NIR-1のcanonical deliverableを満たすことと、すべての抽出recipe・
 その指摘により、初期contextのtyped state、後続の全材料reading-history制約、GraphのRevision/Decisionと独立Index bindingを具体化した。
 再照合で計画reviewの残指摘は解消。新規計画のPrettier check、相対リンク実在確認、git diff --checkを実施した。
 既存ロードマップ全体にはHEAD時点から整形差があるため、その全面整形は行わず計画リンクの追記に留めた。
-今回は計画文書のみで、Quick / Full / runtime testsを実行したという主張はしない。
+初回文書化時点では計画文書のみで、Quick / Full / runtime testsを実行したという主張はしなかった。PR #571更新では計画文書差分に対するQuick / verifyを実施し、Full / runtime testsは未実施である。
 製品policy、runtime、DB、fixture、評価期待値の実データはまだ変更していない。
 2026-09-08の追加指示を本書へ反映し、L0の評価manifest固定・Raw baselineとL1/L2のbinding調査を開始した。
 L0–L5は内部reader/writer/fixture/診断ごとの再開承認を求めず、承認した意味を変更する必要がある場合だけ差分確認する。

@@ -4,7 +4,7 @@
 
 基点: master@96654340ddd2a0407f2fe8aea41a940c3aa516ce
 
-状態: 文書化済み。runtime 実装、activation、CI、commit、push、PR は未実施。
+状態: 文書化済み。runtime 実装とactivationは未実施。初回文書化時点ではCI、commit、push、PR未実施と記録したが、PR #571更新ではQuick／verifyを実施済みで、Full／runtime検証は未実施。
 
 ## 概要
 
@@ -55,6 +55,8 @@ D2aは先行実装できるが、A1/A2の保存・reader・評価の開発を妨
 - Packingの製品公開条件: C + D1 + D2a + D2b
 
 前提未完了の経路は制限対象平文を公開しない。Native内の保存・読取・合成fixtureによる検証は継続できる。依存図、lane表、activation表、受入れ台帳で同じAND条件を使う。
+
+R0でRaw、R+IR、R+IR+Graph、Packingのbaseline、token budget、構造taskの事前指定情報、充足判定、比較手順を固定する。全比較ケースでbaselineと同じ充足結果にとどまる候補は、Packing改善gateのPASSにしない。
 
 ## L6: Scope authorityと互換profile
 
@@ -180,7 +182,7 @@ request handleにはprofile/caller epoch、workspace authority、project/session
 - 既存24検索case、最低8 Graph case、最低12 Packing taskの固定条件比較。
 - 実ElectronからIPC、N-API、transport、loopback recorderまでの送信・製品journey。
 
-検索はR、R+IR、R+IR+Graphを同条件で比較し、macro非回帰、事前指定caseの改善1件以上、禁止寄与0、Evidence妥当性100%を要求する。Packingは同一token budgetで必須Raw/Evidence/label保持100%、禁止情報0、prose非回帰、構造taskの指定情報充足1件以上を要求する。
+検索はR、R+IR、R+IR+Graphを同条件で比較し、macro非回帰、事前指定caseの改善1件以上、禁止寄与0、Evidence妥当性100%を要求する。Packingは同一token budgetで必須Raw/Evidence/label保持100%、禁止情報0、prose非回帰を要求する。さらに、事前固定したbaselineに対し、構造taskの事前指定情報の充足を少なくとも1件改善することを要求する。
 
 ### 意図的停止と拒否試験
 
