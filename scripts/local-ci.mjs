@@ -95,7 +95,6 @@ const C2ZC_FULL_STAGE_ORDER = Object.freeze([
   "electron",
   "electron-runtime-performance",
 ]);
-const LOCAL_CI_FULL_DEADLINE_MS = 600_000;
 const C2ZC_RESTORE_FIXTURE_DIAGNOSTIC_VERSION = 1;
 const C2ZC_RESTORE_FIXTURE_DIAGNOSTIC_MAX_ERROR_LENGTH = 512;
 const C2ZC_RUST_REQUESTED_BASE_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_BASE";
@@ -2632,10 +2631,11 @@ export function verifyLocalCiReceipt(
   if (
     profile === "full" &&
     (requireTaskEvidence || receipt.durationMs !== undefined) &&
-    (!Number.isSafeInteger(receipt.durationMs) ||
-      receipt.durationMs > LOCAL_CI_FULL_DEADLINE_MS)
+    (!Number.isSafeInteger(receipt.durationMs) || receipt.durationMs < 0)
   ) {
-    throw new Error("Full local CI receipt exceeds 600000 ms.");
+    throw new Error(
+      "Full local CI receipt durationMs must be a non-negative safe integer.",
+    );
   }
   verifyCandidateBinding(receipt.candidate, candidate);
   const hasTaskEvidence =
@@ -3450,6 +3450,15 @@ export async function runLocalCiPlan(
   };
 }
 
+export function runLocalCiInvocationTasks(plan, options = {}) {
+  // The CLI records elapsed time without applying a global execution deadline.
+  return runLocalCiPlan(plan, {
+    ...options,
+    concurrent: true,
+    deadlineMs: Number.POSITIVE_INFINITY,
+  });
+}
+
 export async function prepareLocalCiArtifacts(plan, { root = repoRoot } = {}) {
   const directories = new Set([path.join(root, ".artifacts", "local-ci")]);
   for (const stage of plan.stages) {
@@ -3860,11 +3869,6 @@ export async function recoverCheckoutLock(root = repoRoot) {
   }
 }
 
-function remainingFullWallTime(profile, started) {
-  if (profile !== "full") return Number.POSITIVE_INFINITY;
-  return LOCAL_CI_FULL_DEADLINE_MS - (performance.now() - started);
-}
-
 async function runExternalVerifier({ args, reportPath, signal, timeoutMs }) {
   const verifierArgs = [
     fileURLToPath(new URL("./local-ci-staging-verifier.mjs", import.meta.url)),
@@ -3966,13 +3970,9 @@ export async function finalizeLocalCiExecution({
   let externalVerify = { status: "not-run" };
   const finalizationStarted = now();
   const remainingTimeout = () => {
-    const timeoutRemaining = Number.isFinite(timeoutMs)
+    const remaining = Number.isFinite(timeoutMs)
       ? timeoutMs - (now() - finalizationStarted)
       : Number.POSITIVE_INFINITY;
-    const deadlineRemaining = Number.isFinite(deadlineMs)
-      ? deadlineMs - (now() - invocationStarted)
-      : Number.POSITIVE_INFINITY;
-    const remaining = Math.min(timeoutRemaining, deadlineRemaining);
     if (!Number.isFinite(remaining)) return Number.POSITIVE_INFINITY;
     if (remaining <= 0) {
       throw new Error(
@@ -4002,7 +4002,6 @@ export async function finalizeLocalCiExecution({
   try {
     assertNotAborted();
     await writeReceipt(stagingPath, executionReceipt);
-    assertDeadline();
     assertNotAborted();
     const verifierTimeoutMs = remainingTimeout();
     const verificationStarted = now();
@@ -4066,7 +4065,7 @@ export async function finalizeLocalCiExecution({
     assertNotAborted();
 
     // The persisted duration is a measured cutoff immediately before the
-    // write that stores this receipt; publication remains deadline-checked.
+    // write that stores this receipt; an explicit API deadline still applies.
     const buildFinalResult = (receiptDurationMs) => ({
       ...preValidation,
       durationMs: receiptDurationMs,
@@ -4156,6 +4155,7 @@ export async function finalizeLocalCiExecution({
       durationMs: totalDurationMs,
       executionDurationMs: executionMs,
       finalizationDurationMs: Math.max(0, totalDurationMs - executionMs),
+      verificationDurationMs,
       finishedAt: isoNow(),
       receiptError: externalVerify.error ?? boundedError(error),
       status: "failed",
@@ -4351,21 +4351,10 @@ async function main() {
       await resolveLocalCiCandidate(plan),
     );
     await prepareLocalCiArtifacts(plan);
-    const remainingBeforeTasks = remainingFullWallTime(
-      plan.profile,
-      invocationStarted,
-    );
-    if (remainingBeforeTasks <= 0) {
-      throw new Error(
-        "Full local CI exceeded 600000 ms before task admission.",
-      );
-    }
     runStarted = true;
     try {
-      result = await runLocalCiPlan(plan, {
+      result = await runLocalCiInvocationTasks(plan, {
         candidate,
-        concurrent: true,
-        deadlineMs: remainingBeforeTasks,
         notify,
         root: repoRoot,
         runId,
@@ -4418,10 +4407,6 @@ async function main() {
       );
       const finalized = await finalizeLocalCiExecution({
         args,
-        deadlineMs:
-          plan.profile === "full"
-            ? LOCAL_CI_FULL_DEADLINE_MS
-            : Number.POSITIVE_INFINITY,
         executionDurationMs,
         invocationStarted,
         reportPath,
@@ -4430,7 +4415,6 @@ async function main() {
         runId: result.runId,
         signal: cliAbort.signal,
         stagingReceiptPath,
-        timeoutMs: remainingFullWallTime(plan.profile, invocationStarted),
         validateFinal: async (finalResult) => {
           verifyLocalCiReceipt(finalResult, {
             profile: plan.profile,

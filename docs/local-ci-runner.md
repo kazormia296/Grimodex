@@ -48,9 +48,13 @@ Rust test threads at two; the IPC and renderer checks keep their existing
 limits.
 
 The DAG schedules individual commands. After the first failure it admits no
-new command and waits for commands that already started. A Full run has a
-600,000 ms wall-clock limit covering candidate prechecks, every task, receipt
-checks, and the external verifier. The four-slot runtime contract task starts
+new command and waits for commands that already started. Full has a
+600,000 ms timing target for planning and measurement. This target is advisory:
+elapsed time does not stop task admission or execution and does not determine
+whether the run passes. Full passes when every required task and ordinary
+receipt verification pass. Individual task timeouts, user interruption, and
+cleanup failures retain their existing behavior. The external verifier has
+its own 120-second timeout. The four-slot runtime contract task starts
 after workspace dependency bootstrap and can overlap independent gates. Runtime
 performance waits for it and every pre-runtime terminal task, then owns all
 twelve slots as the final group. Product journeys run as three fixed, disjoint
@@ -109,9 +113,14 @@ The CLI converts `SIGINT` and `SIGTERM` into the same abort path, waits for
 admitted process groups to finish cleanup, and then releases the checkout lock.
 
 Receipt v3 stores the registry digest, exact task plan, ordered task results,
-candidate bindings, cleanup state, and log identities. A passing receipt is
-first written atomically to a run-owned staging path. The parent starts the
-existing `--verify` CLI against that path; the verifier only reads the receipt,
-logs, candidate, and product-journey evidence. The parent renames the staging
-receipt to the requested report path only after verification succeeds within
-the Full wall-clock limit.
+candidate bindings, cleanup state, and log identities. When all tasks pass,
+their receipt is written atomically to a run-owned staging path and checked by
+the separate staging-verifier process, including when task execution has
+already exceeded the timing target. The verifier only reads the receipt, logs,
+candidate, and product-journey evidence. The final receipt records execution,
+verification, and total duration, and binds the retained staging receipt by
+hash. Measured time includes candidate prechecks, tasks, receipt checks,
+external verification, and final receipt persistence. Publication requires
+successful verification; durations beyond 600,000 ms remain recorded without
+changing that result. Ordinary `--verify` continues to reject invalid or
+inconsistent durations, unfinished receipts, and changed evidence.

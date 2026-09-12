@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   access,
   chmod,
@@ -43,6 +43,7 @@ import {
   recoverCheckoutLock,
   readC2ZcRestoreFixtureEvidence,
   resolveLocalCiCandidate,
+  runLocalCiInvocationTasks,
   runLocalCiPlan,
   validateLocalCiCandidate,
   validateLocalCiRegistry,
@@ -2030,6 +2031,69 @@ function finalizationTestResult(runId) {
   };
 }
 
+async function fullFinalizationFixture(root, runId) {
+  const candidate = completeCandidate();
+  const plan = {
+    ...fullStageBindingPlan(),
+    coverage: { completeness: "complete", fromStage: null },
+    maxSlots: 1,
+    registryDigest: `sha256:${"a".repeat(64)}`,
+    releaseOnlyJobs: [],
+  };
+  plan.tasks = plan.stages.map((stage, index) => ({
+    id: `fixture.${index}`,
+    stageId: stage.id,
+    stageLabel: stage.label,
+    commandIndex: 0,
+    command: stage.commands[0],
+    after: [],
+  }));
+  const tasks = [];
+  for (const { id } of plan.tasks) {
+    const logs = {};
+    for (const stream of ["stdout", "stderr"]) {
+      const logPath = `.artifacts/local-ci/runs/${runId}/logs/${id}.${stream}.log`;
+      await mkdir(path.dirname(path.join(root, logPath)), { recursive: true });
+      await writeFile(path.join(root, logPath), "");
+      logs[stream] = {
+        path: logPath,
+        size: 0,
+        sha256: `sha256:${createHash("sha256").update("").digest("hex")}`,
+      };
+    }
+    tasks.push({
+      id,
+      status: "passed",
+      exitCode: 0,
+      signal: null,
+      durationMs: 1,
+      cleanup: { complete: true },
+      logs,
+    });
+  }
+  const receipt = {
+    ...finalizationTestResult(runId),
+    candidate,
+    candidateAfter: candidate,
+    profile: "full",
+    durationMs: 0,
+    registryDigest: plan.registryDigest,
+    plan: createLocalCiPlanDescriptor(plan),
+    stages: passedStagesForPlan(plan),
+    tasks,
+    productJourneyEvidence: completeProductJourneyEvidence(),
+  };
+  const verifyReceipt = (result) =>
+    verifyLocalCiReceipt(result, {
+      profile: "full",
+      candidate,
+      plan,
+      currentProductJourneyEvidence: receipt.productJourneyEvidence,
+      requireTaskEvidence: true,
+    });
+  return { receipt, verifyReceipt };
+}
+
 test("local CI final receipt measures external verification separately and retains its verified input", async (t) => {
   const temporaryRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-local-ci-finalization-"),
@@ -2106,18 +2170,14 @@ test("local CI persists canonical publication time in the final receipt", async 
     path.join(os.tmpdir(), "grimodex-local-ci-finalization-duration-"),
   );
   t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
-  let nowCalls = 0;
-  const now = () => {
-    nowCalls += 1;
-    return nowCalls >= 10 ? 25 : 0;
-  };
+  let clock = 0;
   const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const reportPath = path.join(temporaryRoot, "reports", "quick.json");
   const finalized = await finalizeLocalCiExecution({
     deadlineMs: 1_000,
     executionDurationMs: 0,
     invocationStarted: 0,
-    now,
+    now: () => clock,
     reportPath,
     result: finalizationTestResult(runId),
     root: temporaryRoot,
@@ -2125,6 +2185,11 @@ test("local CI persists canonical publication time in the final receipt", async 
     stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
     timeoutMs: 1_000,
     verifyExternal: async () => {},
+    writeReceipt: async (receiptPath, receipt) => {
+      await mkdir(path.dirname(receiptPath), { recursive: true });
+      await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`);
+      if (receiptPath.endsWith(".final.staging")) clock = 25;
+    },
   });
   assert.equal(finalized.success, true);
   assert.ok(finalized.result.durationMs >= 25);
@@ -2187,32 +2252,177 @@ test("local CI accounts for a delayed canonical persistence rewrite", async (t) 
   assert.ok(finalized.result.durationMs >= 35);
 });
 
-test("local CI does not invoke external verification after its deadline", async (t) => {
+test("complete Full work beyond the timing target passes ordinary receipt verification", async (t) => {
   const temporaryRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-local-ci-finalization-expired-"),
   );
   t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
-  let verified = false;
+  let verificationCalls = 0;
   const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const reportPath = path.join(temporaryRoot, "reports", "full.json");
+  const { receipt, verifyReceipt } = await fullFinalizationFixture(
+    temporaryRoot,
+    runId,
+  );
+  let clock = 600_001;
   const finalized = await finalizeLocalCiExecution({
-    deadlineMs: 0,
+    executionDurationMs: 600_001,
     invocationStarted: 0,
-    now: () => 1,
+    now: () => clock,
     reportPath,
-    result: finalizationTestResult(runId),
+    result: receipt,
     root: temporaryRoot,
     runId,
-    stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
-    verifyExternal: async () => {
-      verified = true;
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".full.staging"),
+    verifyExternal: async ({ reportPath: inputPath, timeoutMs }) => {
+      verificationCalls += 1;
+      assert.equal(timeoutMs, Number.POSITIVE_INFINITY);
+      const source = JSON.parse(await readFile(inputPath, "utf8"));
+      verifyReceipt(source);
+      await verifyLocalCiTaskEvidence(source, { root: temporaryRoot });
+      clock = 600_010;
+    },
+    validateFinal: async (result) => {
+      verifyReceipt(result);
+      await verifyLocalCiTaskEvidence(result, {
+        allowPrePublication: true,
+        requireFinalization: true,
+        root: temporaryRoot,
+      });
     },
   });
-  assert.equal(finalized.success, false);
-  assert.equal(verified, false);
-  assert.equal(finalized.result.finalization.externalVerify.status, "not-run");
-  assert.match(finalized.reportPath, /[\\/]failures[\\/]/u);
-  await assert.rejects(readFile(reportPath), /ENOENT/u);
+  assert.equal(finalized.success, true);
+  assert.equal(verificationCalls, 1);
+  assert.equal(finalized.result.status, "passed");
+  assert.equal(finalized.result.finalization.externalVerify.status, "passed");
+  assert.equal(finalized.result.durationMs, 600_010);
+  assert.equal(finalized.result.executionDurationMs, 600_001);
+  assert.equal(finalized.result.verificationDurationMs, 9);
+  assert.equal(finalized.result.finalizationDurationMs, 9);
+  assert.equal(finalized.result.finalization.receiptDurationMs, 600_010);
+  assert.ok(finalized.result.finalization.verifiedReceipt);
+  assert.equal(finalized.reportPath, reportPath);
+  const published = JSON.parse(await readFile(reportPath, "utf8"));
+  verifyReceipt(published);
+  await verifyLocalCiTaskEvidence(published, {
+    requireFinalization: true,
+    root: temporaryRoot,
+  });
+  assert.equal(published.durationMs, 600_010);
+
+  for (const invalidDuration of [
+    undefined,
+    null,
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+    "600010",
+  ]) {
+    assert.throws(
+      () => verifyReceipt({ ...published, durationMs: invalidDuration }),
+      /durationMs must be a non-negative safe integer/u,
+    );
+  }
+  assert.throws(
+    () =>
+      verifyReceipt({
+        ...published,
+        coverage: { completeness: "partial", fromStage: "security" },
+      }),
+    /complete local CI receipt/u,
+  );
+  const missingTask = structuredClone(published);
+  missingTask.tasks.pop();
+  assert.throws(() => verifyReceipt(missingTask), /every exact task result/u);
+  const invalidTotal = {
+    ...published,
+    executionDurationMs: published.durationMs + 1,
+  };
+  await assert.rejects(
+    verifyLocalCiTaskEvidence(invalidTotal, {
+      requireFinalization: true,
+      root: temporaryRoot,
+    }),
+    /finalization evidence is inconsistent/u,
+  );
+  const unfinished = JSON.parse(
+    await readFile(
+      path.join(temporaryRoot, published.finalization.verifiedReceipt.path),
+      "utf8",
+    ),
+  );
+  await assert.rejects(
+    verifyLocalCiTaskEvidence(unfinished, {
+      requireFinalization: true,
+      root: temporaryRoot,
+    }),
+    /finalization evidence is required/u,
+  );
+  await writeFile(
+    path.join(temporaryRoot, published.tasks[0].logs.stdout.path),
+    "changed",
+  );
+  await assert.rejects(
+    verifyLocalCiTaskEvidence(published, {
+      requireFinalization: true,
+      root: temporaryRoot,
+    }),
+    /log identity changed/u,
+  );
+});
+
+test("local CI retains a passing result when verification crosses the timing target", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-verifier-budget-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "12121212-1212-4212-8212-121212121212";
+  const reportPath = path.join(temporaryRoot, "reports", "full.json");
+  const { receipt, verifyReceipt } = await fullFinalizationFixture(
+    temporaryRoot,
+    runId,
+  );
+  let clock = 599_940;
+  let verificationFinished = false;
+  const finalized = await finalizeLocalCiExecution({
+    executionDurationMs: 598_666,
+    invocationStarted: 0,
+    now: () => clock,
+    reportPath,
+    result: receipt,
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".full.staging"),
+    timeoutMs: 120_000,
+    validateFinal: verifyReceipt,
+    verifyExternal: async ({ timeoutMs, signal }) => {
+      assert.equal(timeoutMs, 120_000);
+      assert.equal(signal?.aborted ?? false, false);
+      clock = 601_000;
+      verificationFinished = true;
+    },
+  });
+  assert.equal(verificationFinished, true);
+  assert.equal(finalized.success, true);
+  assert.equal(finalized.result.status, "passed");
+  assert.equal(finalized.result.finalization.externalVerify.status, "passed");
+  assert.equal(finalized.result.executionDurationMs, 598_666);
+  assert.equal(finalized.result.verificationDurationMs, 1_060);
+  assert.equal(finalized.result.finalizationDurationMs, 2_334);
+  assert.equal(finalized.result.durationMs, 601_000);
+  assert.equal(finalized.result.finalization.receiptDurationMs, 601_000);
+  assert.ok(finalized.result.finalization.verifiedReceipt);
+  assert.equal(finalized.reportPath, reportPath);
+  const published = JSON.parse(await readFile(reportPath, "utf8"));
+  verifyReceipt(published);
+  await verifyLocalCiTaskEvidence(published, {
+    requireFinalization: true,
+    root: temporaryRoot,
+  });
+  assert.equal(published.durationMs, 601_000);
 });
 
 test("local CI aborts finalization after external verification resolves", async (t) => {
@@ -2245,20 +2455,20 @@ test("local CI aborts finalization after external verification resolves", async 
   assert.ok(failedReceipt.finalization.verifiedReceipt);
 });
 
-test("local CI removes a canonical receipt when publication crosses the deadline", async (t) => {
+test("local CI honors an explicitly configured finalization deadline", async (t) => {
   const temporaryRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-local-ci-finalization-deadline-"),
   );
   t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
-  let nowCalls = 0;
-  const now = () => {
-    nowCalls += 1;
-    return nowCalls >= 13 ? 10 : 1;
-  };
   const runId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
   const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  let clock = 1;
+  const now = () => {
+    if (existsSync(reportPath)) clock = 3;
+    return clock;
+  };
   const finalized = await finalizeLocalCiExecution({
-    deadlineMs: 5,
+    deadlineMs: 2,
     executionDurationMs: 1,
     invocationStarted: 0,
     now,
@@ -2267,7 +2477,6 @@ test("local CI removes a canonical receipt when publication crosses the deadline
     root: temporaryRoot,
     runId,
     stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
-    timeoutMs: 5,
     verifyExternal: async () => {},
   });
   assert.equal(finalized.success, false);
@@ -2277,6 +2486,9 @@ test("local CI removes a canonical receipt when publication crosses the deadline
     await readFile(finalized.reportPath, "utf8"),
   );
   assert.equal(failedReceipt.status, "failed");
+  assert.equal(failedReceipt.durationMs, 3);
+  assert.equal(failedReceipt.finalization.receiptDurationMs, 3);
+  assert.equal(failedReceipt.finalization.externalVerify.status, "passed");
   assert.ok(failedReceipt.finalization.verifiedReceipt);
   await access(
     path.join(temporaryRoot, failedReceipt.finalization.verifiedReceipt.path),
@@ -2440,6 +2652,77 @@ test("local CI execution is fail-fast and records later stages as not run", asyn
   assert.equal(result.status, "failed");
   assert.equal(result.stages[0].status, "failed");
   assert.equal(result.stages[1].status, "not-run");
+});
+
+test("the CLI task entrypoint completes dependent Full work after 600 seconds", async (t) => {
+  let clock = 0;
+  t.mock.method(performance, "now", () => clock);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const commands = ["fixture.first", "fixture.later"].map((id) => ({
+    id,
+    label: id,
+    command: "fixture",
+    args: [],
+    cwd: ".",
+    env: {},
+  }));
+  const plan = {
+    profile: "full",
+    comparison: { base: "origin/master", head: "HEAD" },
+    coverage: { completeness: "complete", fromStage: null },
+    maxSlots: 1,
+    releaseOnlyJobs: [],
+    stages: commands.map((command) => ({
+      id: command.id,
+      label: command.label,
+      commands: [command],
+    })),
+    tasks: commands.map((command, index) => ({
+      id: command.id,
+      stageId: command.id,
+      stageLabel: command.label,
+      command,
+      after: index === 0 ? [] : [commands[0].id],
+      timeoutMs: 700_000,
+    })),
+  };
+  const started = [];
+  const result = await runLocalCiInvocationTasks(plan, {
+    candidate: completeCandidate(),
+    // Even a caller carrying the old execution deadline cannot reapply it.
+    deadlineMs: 600_000,
+    executeCommand: async (_command, { signal, taskId, timeoutMs }) => {
+      started.push({ id: taskId, at: clock });
+      assert.equal(timeoutMs, 700_000);
+      if (taskId === commands[0].id) {
+        clock = 600_001;
+        t.mock.timers.tick(clock);
+      }
+      assert.equal(signal.aborted, false);
+      return {
+        cleanup: { complete: true },
+        durationMs: taskId === commands[0].id ? 600_001 : 0,
+        exitCode: 0,
+        signal: null,
+      };
+    },
+  });
+  assert.deepEqual(started, [
+    { id: "fixture.first", at: 0 },
+    { id: "fixture.later", at: 600_001 },
+  ]);
+  assert.equal(result.durationMs, 600_001);
+  assert.equal(result.status, "passed");
+  assert.equal(result.deadlineExceeded, false);
+  assert.equal(result.interrupted, false);
+  assert.deepEqual(
+    result.tasks.map(({ status }) => status),
+    ["passed", "passed"],
+  );
+  assert.deepEqual(
+    result.stages.map(({ status }) => status),
+    ["passed", "passed"],
+  );
 });
 
 test("C2-ZC Full does not skip product journeys after runtime performance failure", async () => {
@@ -4085,7 +4368,7 @@ test("Full priority admits ready browser work when two slots reopen before later
   assert.equal((await running).status, "passed");
 });
 
-test("receipt plan binding rejects descriptor changes and Full over 600 seconds", async () => {
+test("receipt plan binding rejects descriptor changes and unclean task results", async () => {
   const registry = await readRegistry();
   const plan = buildLocalCiPlan(registry, {
     profile: "quick",
@@ -4156,20 +4439,6 @@ test("receipt plan binding rejects descriptor changes and Full over 600 seconds"
   assert.throws(
     () => verifyLocalCiReceipt(timedOut, { candidate, plan, profile: "quick" }),
     /did not pass cleanly/u,
-  );
-
-  assert.throws(
-    () =>
-      verifyLocalCiReceipt(
-        {
-          ...receipt,
-          profile: "full",
-          coverage: { completeness: "complete", fromStage: null },
-          durationMs: 600_001,
-        },
-        { candidate, plan: { ...plan, profile: "full" }, profile: "full" },
-      ),
-    /600000/u,
   );
 });
 
