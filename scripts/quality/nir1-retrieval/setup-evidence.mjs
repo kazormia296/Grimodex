@@ -1,5 +1,21 @@
 import assert from "node:assert/strict";
 
+export function assertSetupRevisionPayloads(item, rootRevision, childRevision) {
+  const initialProposal = item.initial?.proposals?.[0];
+  assert.ok(initialProposal, "setup initial review bundle contains a proposal");
+  assert.ok(item.approved, "setup approved review row exists");
+  assert.deepEqual(rootRevision.payloadJson, initialProposal.payloadJson);
+  assert.equal(
+    rootRevision.envelopeDigest,
+    initialProposal.reconciliationEnvelopeDigest,
+  );
+  assert.deepEqual(childRevision.payloadJson, item.approved.payloadJson);
+  assert.equal(
+    childRevision.envelopeDigest,
+    item.approved.reconciliationEnvelopeDigest,
+  );
+}
+
 export function assertCorpusInterpretation(bundle, revision, scene) {
   assert.equal(bundle.proposals.length, 1);
   const snapshots = bundle.artifacts.filter(

@@ -25,6 +25,7 @@ import { loadContract, sha256 } from "./nir1-retrieval/contract.mjs";
 import { loadRecoveryWorkload } from "./nir1-retrieval/recovery-workload.mjs";
 import {
   assertCorpusInterpretation,
+  assertSetupRevisionPayloads,
   assertSetupRoster,
   assertSetupReadingOrder,
 } from "./nir1-retrieval/setup-evidence.mjs";
@@ -495,22 +496,7 @@ try {
       );
       assert.ok(scene, `recovery scene ${item.sceneId}`);
       assertCorpusInterpretation(item.initial, rootRevision, scene);
-      assert.deepEqual(
-        rootRevision.payloadJson,
-        item.initial.proposals[0].payloadJson,
-      );
-      assert.equal(
-        rootRevision.envelopeDigest,
-        item.initial.proposals[0].reconciliationEnvelopeDigest,
-      );
-      assert.deepEqual(
-        childRevision.payloadJson,
-        item.approved.proposals[0].payloadJson,
-      );
-      assert.equal(
-        childRevision.envelopeDigest,
-        item.approved.proposals[0].reconciliationEnvelopeDigest,
-      );
+      assertSetupRevisionPayloads(item, rootRevision, childRevision);
       assertScopeOverrideLineage(rootRevision, childRevision);
       item.rootRevision = rootRevision;
       item.childRevision = childRevision;
