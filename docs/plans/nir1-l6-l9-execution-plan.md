@@ -5,7 +5,7 @@
 基点: master@68516b033f395f24f98c502c9fd2a715d7aec2af
 Tree: 04c491c29627ecc840112ebe379a5363e16892ff
 
-状態: #572のtyped基盤を引き継ぎ、PR-R0の文書・quality contract test・manifest traceを固定済み。runtime実装とactivationは未実施。R0のfocused test、`verify:quality`、Quick／verifyは実施済みで、merge gate MのFull／verifyは候補commit後に実施する。
+状態: #572でtyped基盤runtime（Scope／Entity／Relation／Evidence validation、Native所有のimmutable Revision writer／reader、request-local Graph／Packing primitives）は実装済み。PR-R0の文書・quality contract test・manifest traceを固定済み。残るproduction runtime integration、activation、L6〜L9受入れは未完了。R0のfocused test、`verify:quality`、Quick／verifyは実施済みで、merge gate MのFull／verifyは候補commit後に実施する。
 
 ## 概要
 
@@ -53,7 +53,7 @@ R0は、#572の現在地、後続laneの境界、契約ごとの開始可否、�
 
 | state | 意味 | 次へ進む条件 | R0時点 |
 | ----- | ---- | ------------ | ------- |
-| S0 | 既存L5と#572基盤。NIR-1 L6〜L9 runtime/activationなし | R0台帳が固定される | 現在地 |
+| S0 | 既存L5と#572のtyped基盤runtime。NIR-1 L6〜L9のproduction runtime integration／activationなし | R0台帳が固定される | 現在地 |
 | S1 | A1保存・incarnationと既存L5移行ガードの候補 | Scope authorityの詳細refとA1 focused受入れ | blocked |
 | S2 | D2a profile-wide local-only制限の成立処理中 | 全旧caller・入口拒否、永続化、起動時gate | blocked |
 | S3 | D2a成立後、D2b-2/P3前 | 旧localを含む旧送信拒否を維持し、新しい送信は公開しない | blocked |
@@ -67,12 +67,12 @@ R0の `ready` は文書・評価契約を次のlaneへ引き渡せるという�
 
 | contractId | confirmedRef | confirmedScope | remainingDelta | affectedLanes | startStatus | blockedReason | unblockingEvidence |
 | ---------- | ------------ | -------------- | -------------- | ------------- | ----------- | ------------- | ------------------ |
-| `scope-storage-authority` | #572のScope型と既存Scope authority、既存L6〜L9計画 | 型・既存authorityの再利用まで | 保存範囲、Source/token、incarnation marker、writerの詳細批准 | A1、A2、A3、B、D1 | blocked(ref-unverified) | ref-unverified: 詳細な保存・移行批准ref未確認 | 一次資料の批准ref、threat-model version/ref、writer／cold reopen受入れ |
-| `caller-profile-egress` | 既存の送信境界方針と本書のprofile-wide local-only案 | caller、旧localを含む拒否方針まで | caller発行、永続化、起動順、全出口分類、threat-model差分 | D2a、A2、C、D2b | blocked(ref-unverified) | ref-unverified: egress契約の詳細批准ref未確認 | 一次資料の批准ref、全caller／plaintext／egress台帳、拒否試験 |
-| `typed-revision-material` | #572 typed writer／reader、既存Proposal/Revision/DecisionとFreshness | typed保存と既存authority再利用まで | material family、Envelope/Source Basis/Dependency、closure、Freshness資格。contract-delta-unresolved | A2、A3、B、C、D1 | blocked(ref-unverified) | ref-unverified; contract-delta-unresolved: canonical材料・資格の批准ref未確認 | 材料契約の一次批准ref、全材料positive/negative/unavailable、変更失効試験 |
-| `graph-limited-binding` | 本書・既存計画のproducer/index/eligibility名 | 限定bindingを独立Indexにする方針まで | producerVersion、registryGeneration、Source identity、宣言契約 | B、C | blocked(ref-unverified) | ref-unverified: Graph bindingの詳細批准ref未確認 | bindingの一次批准ref、registry/Freshness/D1一致、Index停止・復旧試験 |
-| `native-generation-receipt` | 既存の版付きdigest・terminal・message version方針 | receiptをNative生成元に束縛する方針まで | 保存authority、transport観測位置、失敗・再開・handle、payload整合 | D2b-1、D2b-2 | blocked(ref-unverified) | ref-unverified: receipt契約の詳細批准ref未確認 | receipt schemaの一次批准ref、保存前後クラッシュ・retry・handle拒否試験 |
-| `history-reauthorization` | 既存のturn毎依存・Scope再認可方針 | 履歴継続を毎turnの資格で評価する方針まで | lineage保存範囲、入力用途／分類、Scene・holder・Worldline変更時の除外規則 | D2b-2、E | blocked(ref-unverified) | ref-unverified: 履歴再認可の詳細批准ref未確認 | lineageの一次批准ref、適格継続と変更失効の実製品journey |
+| `scope-storage-authority` | accepted ADR009（Scope／Relation contract）；`nir1-plan/1`（L0〜L5のみ） | Scope vocabulary、既存authority、L0〜L5 behaviorまで | L6〜L9の保存範囲、Source/token、incarnation marker、writer詳細: none — ref-unverified | A1、A2、A3、B、D1 | blocked(ref-unverified) | ref-unverified: L6〜L9保存・移行の批准ref未確認 | L6〜L9範囲を含む一次資料の批准ref、threat-model version/ref、writer／cold reopen受入れ |
+| `caller-profile-egress` | `nir1-product-tm/1`（L0〜L5 boundaryのみ） | L0〜L5の製品boundaryのみ。L6〜L9 profile-wide egressは未承認 | caller発行、永続化、起動順、全出口分類、threat-model差分: none — ref-unverified | D2a、A2、C、D2b | blocked(ref-unverified) | ref-unverified: L6〜L9 egress契約の批准ref未確認 | L6〜L9を含む一次批准ref、全caller／plaintext／egress台帳、拒否試験 |
+| `typed-revision-material` | accepted ADR011（Revision semantics）；既存 consumer policy（Generic Consumer Freshnessのみ） | shared immutable Revision／Freshness authorityまで。NIR-1 material closureは未承認 | material family、Envelope／Source Basis／Dependency、closure、L6〜L9 Freshness資格: none — ref-unverified; contract-delta-unresolved | A2、A3、B、C、D1 | blocked(ref-unverified) | ref-unverified; contract-delta-unresolved: NIR-1材料・資格の批准ref未確認 | 材料契約の一次批准ref、全材料positive／negative／unavailable、変更失効試験 |
+| `graph-limited-binding` | accepted ADR010（Dependency／Context Set vocabulary）；既存 consumer policy（宣言済みconsumer bindingのみ） | 既存dependency vocabularyとconsumer bindingまで。NIR-1 Graph producer／Indexは未承認 | producerVersion、registryGeneration、Source identity、宣言契約: none — ref-unverified | B、C | blocked(ref-unverified) | ref-unverified: NIR-1 Graph bindingの批准ref未確認 | bindingの一次批准ref、registry／Freshness／D1一致、Index停止・復旧試験 |
+| `native-generation-receipt` | `nir1-product-tm/1`（L0〜L5 boundaryのみ） | L0〜L5 boundaryまで。L6〜L9 Native receiptは未承認 | 保存authority、transport観測位置、失敗・再開・handle、payload整合: none — ref-unverified | D2b-1、D2b-2 | blocked(ref-unverified) | ref-unverified: L6〜L9 receipt契約の批准ref未確認 | receipt schemaの一次批准ref、保存前後クラッシュ・retry・handle拒否試験 |
+| `history-reauthorization` | accepted ADR009（Scope／Relation）；accepted ADR011（Revision semantics）；`nir1-product-tm/1`（L0〜L5のみ） | 既存Scope／Revision semanticsまで。L6〜L9 lineage再認可は未承認 | lineage保存範囲、入力用途／分類、Scene・holder・Worldline変更時の除外規則: none — ref-unverified | D2b-2、E | blocked(ref-unverified) | ref-unverified: L6〜L9履歴再認可の批准ref未確認 | lineageの一次批准ref、適格継続と変更失効の実製品journey |
 
 ### lane開始判定と評価manifest
 
@@ -146,7 +146,7 @@ retrievalの比較armは `R / R+IR / R+IR+Graph` とし、Graph改善は `R+IR` 
 
 ### 全PR共通 merge gate M
 
-全PR（R0、途中の機能PR、E、Pを含む）のmergeには、最新 `origin/master` を取り込んだcleanなcommit済みcandidate、Full、直後のverifyを要求する。baseまたはHEADが変わった場合はFullをstage 1から再実行し、古いreceiptを再利用しない。R0の機能受入れは文書・品質契約に限定するが、R0もmerge gate Mの対象であり、merge前にはFull＋verifyを実行する。R0ではruntime journeyとactivationを実行しない。
+全PR（R0、途中の機能PR、E、Pを含む）のmergeには、最新 `origin/master` を取り込んだcleanなcommit済みcandidate、Full、直後のverifyを要求する。baseまたはHEADが変わった場合はFullをstage 1から再実行し、古いreceiptを再利用しない。R0の機能受入れは文書・品質契約に限定するが、R0もmerge gate Mの対象であり、merge前にはFull＋verifyを実行する。R0の機能受入れではruntime journeyとactivationを実行しない。
 
 完成commit前のcanonical commandは次のとおりで、R0のfocused test後に実行する。
 
@@ -181,7 +181,7 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | 選択済み                  | 最小Scope保存・編集UI、レビュー会話分離、安全な執筆履歴継続、profile全体の永続local-only、scene incarnation単位のlegacy互換 |
 | 実装前に明示確認するdraft | 保存authority、呼出主体と送信入口、Native生成元receipt、履歴再認可、profile egress境界の脅威モデル差分                      |
-| R0で実施しない            | runtime実装、activation、外部送信、Full／runtime journey、push、PR、M2全体移行、全抽出recipe対応、作者価値の測定 |
+| R0の文書更新時点で未実施  | 新たなproduction runtime integration、activation、外部送信、runtime journey、merge gate MのFull／verify（候補commit後に必須）、push、PR、M2全体移行、全抽出recipe対応、作者価値の測定 |
 
 ## 実装順序と公開条件
 
@@ -189,7 +189,7 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 | ---- | ---------- | -------- | ------------ |
 | R0 | 基点、証跡、profile表、writer・呼出主体・送信経路の影響表、評価契約を固定 | #572 | 後付けの合格条件変更を禁止 |
 | D2a | profile/caller制限、外部dispatch停止、制限の永続化、起動時gate、平文公開gate | R0のcaller/profile egress | restricted plaintextを返す全entrypointの前提 |
-| A1: L6-A | Scope registry、scene設定、incarnation、互換marker、通常UI/API、Source登録 | R0のScope保存authority | A1/A2の保存・reader開発を始める条件にはしない |
+| A1: L6-A | Scope registry、scene設定、incarnation、互換marker、通常UI/API、Source登録 | R0のScope保存authority | Scope設定の永続化と既存L5移行ガードを同一PRで受入れ。restricted plaintext公開はD2aまで閉じる |
 | A2: L7-A | Entity/Relation typed入力、immutable Revision、明示承認、cold reopen | A1＋R0のtyped Revision材料 | D2a完了後にレビュー結果を製品公開 |
 | A3: L6-B | 全材料の開示判定、各Scope軸のpositive/negative/unavailable | A1＋A2 | Graph公開の前提 |
 | B: L7-B | 独立Graph Index、writer失効、条件付き公開、復旧 | A1＋A2＋R0のGraph binding | Graph公開の前提 |
@@ -394,7 +394,7 @@ L9受入れ・merge前:
     pnpm ci:local:full -- --base origin/master --head HEAD
     pnpm ci:local:verify -- full --base origin/master --head HEAD
 
-baseまたはHEADが変わった場合、古いreceiptを流用せずFullをstage 1から再実行する。今回の文書化作業ではこれらのruntime検証とCIを実行しない。
+baseまたはHEADが変わった場合、古いreceiptを流用せずFullをstage 1から再実行する。R0の文書更新時点ではruntime journey・activation・merge gate MのFull／verifyを実行していない。現在候補では `verify:quality`、Quick、直後のQuick verifyを実施済みであり、候補commit後のmerge gate Mとしてclean HEADのFull＋verifyをrootが実施する。
 
 ## 非目標と再確認条件
 

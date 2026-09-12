@@ -361,8 +361,11 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
     executionPlan,
     /Tree:\s*04c491c29627ecc840112ebe379a5363e16892ff/,
   );
-  assert.match(executionPlan, /#572.*実装済み/is);
-  assert.match(executionPlan, /runtime.*activation.*未実施/is);
+  assert.match(executionPlan, /#572でtyped基盤runtime.*実装済み/is);
+  assert.match(
+    executionPlan,
+    /production runtime integration.*activation.*L6〜L9.*未完了/is,
+  );
 
   for (const contractId of [
     "scope-storage-authority",
@@ -380,6 +383,13 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
     "all six unconfirmed contracts must remain blocked",
   );
   assert.match(executionPlan, /contract-delta-unresolved/);
+  assert.match(executionPlan, /accepted ADR009/);
+  assert.match(executionPlan, /accepted ADR010/);
+  assert.match(executionPlan, /accepted ADR011/);
+  assert.match(executionPlan, /nir1-plan\/1.*L0〜L5/);
+  assert.match(executionPlan, /nir1-product-tm\/1.*L0〜L5/);
+  assert.match(executionPlan, /none — ref-unverified/);
+  assert.doesNotMatch(executionPlan, /本書・既存計画のproducer/);
   for (const field of [
     "confirmedRef",
     "confirmedScope",
@@ -419,6 +429,18 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
   assert.match(executionPlan, /ja\/en各12件/);
   assert.match(executionPlan, /G-07.*pre-S2.*at\/after-S2/is);
   assert.match(executionPlan, /事前指定改善.*G-01.*P-12/is);
+  assert.match(
+    executionPlan,
+    /Scope設定の永続化.*既存L5移行ガード.*同一PR.*restricted plaintext.*D2a/is,
+  );
+  assert.match(
+    executionPlan,
+    /R0の文書更新時点ではruntime journey.*Full／verify.*実行していない/is,
+  );
+  assert.match(
+    executionPlan,
+    /現在候補では.*verify:quality.*Quick.*Quick verifyを実施済み/is,
+  );
   for (const caseId of [
     "G-01",
     "G-02",
