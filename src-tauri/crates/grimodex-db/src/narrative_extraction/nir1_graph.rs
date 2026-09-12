@@ -2,9 +2,10 @@
 //!
 //! The existing Codex catalog and relation tables are used only as a source
 //! snapshot.  They are never treated as an immutable NIR revision and the
-//! returned graph is never persisted.  This keeps the first L6--L8 slice
-//! fail-closed while the dedicated revision writer is still outside this
-//! lane.
+//! returned graph is never persisted.  This keeps the request-local graph
+//! projection fail-closed alongside the dedicated typed Revision writer.
+//! The renderer IPC route is intentionally disabled until A3+B+D2a provide
+//! the required revision, disclosure, and resource gates.
 
 use grimodex_core::narrative_nir1::{
     bounded_graph, BoundedGraph, EntityInput, EntityRelationBundle, EvidenceInput, GraphEdgeInput,
@@ -122,9 +123,11 @@ pub fn read_nir1_graph(
               JOIN codex_entries from_entry
                 ON from_entry.id = relation.from_codex_id
                AND from_entry.project_id = relation.project_id
+               AND from_entry.context_mode NOT IN ('hidden', 'suppress')
               JOIN codex_entries to_entry
                 ON to_entry.id = relation.to_codex_id
                AND to_entry.project_id = relation.project_id
+               AND to_entry.context_mode NOT IN ('hidden', 'suppress')
               WHERE relation.project_id = ?1
               ORDER BY relation.id ASC
               LIMIT ?2",
@@ -320,6 +323,60 @@ mod tests {
             .expect_err("autocommit must be rejected")
             .to_string()
             .contains("NIR1_GRAPH_REQUIRES_READ_TRANSACTION"));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_reader_drops_relations_to_hidden_or_suppressed_entities() -> anyhow::Result<()> {
+        for context_mode in ["hidden", "suppress"] {
+            let db = fresh_migrated_memory()?;
+            seed_graph(&db)?;
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO codex_entries (id, project_id, type, name, summary)
+                     VALUES ('nir1-unrelated-from', 'default-project', 'character',
+                             'Unrelated from', 'Unrelated from')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO codex_entries (id, project_id, type, name, summary)
+                     VALUES ('nir1-unrelated-to', 'default-project', 'character',
+                             'Unrelated to', 'Unrelated to')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO codex_relations
+                        (id, project_id, from_codex_id, to_codex_id, relation_type,
+                         directionality, updated_at)
+                     VALUES ('nir1-unrelated-edge', 'default-project',
+                             'nir1-unrelated-from', 'nir1-unrelated-to',
+                             'knows', 'directed', '2026-09-12T00:00:00Z')",
+                    [],
+                )?;
+                conn.execute(
+                    "UPDATE codex_entries SET context_mode = ?1
+                       WHERE id = 'nir1-unrelated-to'",
+                    [context_mode],
+                )?;
+                Ok(())
+            })?;
+
+            let response = db.with_read_transaction(|conn| {
+                read_nir1_graph(
+                    conn,
+                    &Nir1GraphRequest {
+                        project_id: "default-project".into(),
+                        query_scene_id: "nir1-scene".into(),
+                        seed_entity_id: "nir1-alice".into(),
+                    },
+                )
+            })?;
+            assert_eq!(response.status, "available", "context mode: {context_mode}");
+            let graph = response.graph.expect("seed graph remains available");
+            assert_eq!(graph.nodes.len(), 2, "context mode: {context_mode}");
+            assert_eq!(graph.edges.len(), 1, "context mode: {context_mode}");
+            assert_eq!(graph.edges[0].edge_id, "nir1-edge");
+        }
         Ok(())
     }
 }

@@ -6016,6 +6016,58 @@ impl Backend {
         .await
     }
 
+    /// Persist one Native-bound NIR-1 Entity/Relation Revision as an
+    /// unreviewed Proposal. The existing human decision endpoint is the only
+    /// path that can make it eligible for a later cold read.
+    #[napi]
+    pub async fn nir1_entity_relation_revision_create(
+        &self,
+        payload: serde_json::Value,
+        workspace_binding: serde_json::Value,
+    ) -> Result<String> {
+        narrative_extraction_bound_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            workspace_binding,
+            narrative_extraction::narrative_extraction_create_nir1_entity_relation_revision,
+        )
+        .await
+    }
+
+    /// Re-open one typed NIR-1 Revision from the currently pinned workspace.
+    /// The workspace path is an authority check only; the project and
+    /// Revision identities are rechecked inside the same read transaction.
+    #[napi]
+    pub async fn nir1_entity_relation_revision_read(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            project_id: String,
+            revision_id: String,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let response = workspace.authority.db().with_read_transaction(|conn| {
+                narrative_extraction::read_nir1_entity_relation_revision(
+                    conn,
+                    &request.project_id,
+                    &request.revision_id,
+                )
+            })?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     // ─────────────────────── semantic Phase 3 Batch 4 ───────────────────
     // 全DB commandはrun_semantic_wireがinvoke開始時のDB Arc + 4cache epochを
     // 一貫pinする。各closureは共有runtimeだけを呼び、workspaceを再解決しない。

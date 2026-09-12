@@ -4,18 +4,8 @@ import { dispatchInvoke } from "./ipcContract.js";
 import type { NapiBackendLike } from "./ipcContract.js";
 
 describe("NIR-1 bounded graph IPC contract", () => {
-  it("validates and forwards the four native-bound fields", async () => {
-    const graph = {
-      status: "unavailable",
-      projectId: "project-1",
-      querySceneId: "scene-1",
-      scopeRevision: null,
-      graph: null,
-      reason: "query-context:UnsupportedQueryAxis",
-    };
-    const nir1GraphQuery = vi
-      .fn()
-      .mockResolvedValue(JSON.stringify(graph));
+  it("keeps the unactivated graph scaffold out of renderer IPC", async () => {
+    const nir1GraphQuery = vi.fn();
     const backend = { nir1GraphQuery } as unknown as NapiBackendLike;
 
     const result = await dispatchInvoke(
@@ -25,21 +15,18 @@ describe("NIR-1 bounded graph IPC contract", () => {
         projectId: "project-1",
         querySceneId: "scene-1",
         seedEntityId: "entry-1",
-        privateScope: "renderer-data-must-not-be-forwarded",
       },
       { backend, shell: {} as never },
     );
 
-    expect(result).toEqual({ ok: true, value: graph });
-    expect(nir1GraphQuery).toHaveBeenCalledExactlyOnceWith({
-      expectedWorkspacePath: "/workspace",
-      projectId: "project-1",
-      querySceneId: "scene-1",
-      seedEntityId: "entry-1",
-    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("IPC_UNIMPLEMENTED: nir1_graph_query");
+    }
+    expect(nir1GraphQuery).not.toHaveBeenCalled();
   });
 
-  it("fails closed before native dispatch when the explicit seed is absent", async () => {
+  it("stays unavailable even when a renderer supplies a complete request", async () => {
     const nir1GraphQuery = vi.fn();
     const result = await dispatchInvoke(
       "nir1_graph_query",
@@ -47,6 +34,7 @@ describe("NIR-1 bounded graph IPC contract", () => {
         expectedWorkspacePath: "/workspace",
         projectId: "project-1",
         querySceneId: "scene-1",
+        seedEntityId: "entry-1",
       },
       {
         backend: { nir1GraphQuery } as unknown as NapiBackendLike,

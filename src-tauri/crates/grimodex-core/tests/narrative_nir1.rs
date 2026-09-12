@@ -3,6 +3,7 @@ use grimodex_core::narrative_nir1::{
     EntityRelationBundle, EvidenceInput, GraphEdgeInput, GraphLimits, PackingRequest, ScopeBinding,
     ScopeValue,
 };
+use serde_json::json;
 
 fn scope() -> ScopeBinding {
     ScopeBinding {
@@ -133,6 +134,34 @@ fn packing_keeps_evidence_units_atomic_and_raw_required() {
     assert_eq!(result.used_tokens, 7);
     assert_eq!(result.selected_ids, vec!["raw:query", "ir:1", "evidence:1"]);
     assert_eq!(result.omitted_ids, vec!["author:1"]);
+}
+
+#[test]
+fn packing_accepts_typescript_camel_case_atomic_group_wire() {
+    for (kind, id) in [
+        ("acceptedIr", "ir:1"),
+        ("graphEvidence", "evidence:1"),
+        ("authorDeclared", "author:1"),
+        ("unreviewedForReview", "review:1"),
+    ] {
+        let request: PackingRequest = serde_json::from_value(json!({
+            "budgetTokens": 8,
+            "items": [
+                {"kind": "raw", "id": "raw:query", "text": "query", "tokens": 2},
+                {
+                    "kind": kind,
+                    "id": id,
+                    "text": "derived",
+                    "tokens": 2,
+                    "atomicGroup": "unit:1"
+                }
+            ]
+        }))
+        .expect("TypeScript camelCase Packing wire parses");
+
+        let packed = pack_context(request).expect("camelCase Packing wire is usable");
+        assert_eq!(packed.selected_ids, vec!["raw:query", id]);
+    }
 }
 
 #[test]

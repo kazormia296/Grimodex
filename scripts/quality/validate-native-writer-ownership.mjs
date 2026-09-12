@@ -67,6 +67,9 @@ const WRITER_TO_MODULES = {
     // C2A's dormant Native Human writer appends immutable proposal revisions
     // and their source-basis rows under the same authority boundary.
     "src-tauri/crates/grimodex-db/src/narrative_extraction/human_derivation.rs",
+    // NIR-1's typed Entity/Relation adapter persists only Native-generated,
+    // explicitly reviewable Proposal/Revision rows under this same boundary.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
     // Gate C2 item 4: narrative_application_contributions carries

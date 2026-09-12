@@ -26,6 +26,9 @@ use super::dependency_edges::{
 };
 use super::execution_state::{next_run_lifecycle_timestamp_in_tx, parse_run_lifecycle_instant};
 use super::human_material_basis::{project_d1_declaration_set, D1ParentAuthority, MaterialBasis};
+use super::nir1_entity_relation::{
+    NIR1_ENTITY_RELATION_REVISION_ORIGIN, NIR1_ENTITY_RELATION_SET_KIND,
+};
 use super::publish_runtime::publish_complete_runless_freshness_in_tx;
 use super::restore_rebuild::evaluate_edge_from_db;
 use super::semantic_epoch::get_current_epoch;
@@ -4487,6 +4490,10 @@ fn save_proposal_set_atomic(
     db: &Database,
     payload: SaveProposalSetPayload,
 ) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        payload.set_kind != NIR1_ENTITY_RELATION_SET_KIND,
+        "NIR1_ENTITY_RELATION_TYPED_ADAPTER_REQUIRED: use the Native typed Entity/Relation adapter"
+    );
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
@@ -4507,6 +4514,10 @@ fn save_proposal_set_in_tx(
     conn: &Connection,
     payload: &SaveProposalSetPayload,
 ) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        payload.set_kind != NIR1_ENTITY_RELATION_SET_KIND,
+        "NIR1_ENTITY_RELATION_TYPED_ADAPTER_REQUIRED: use the Native typed Entity/Relation adapter"
+    );
     let proposal_set_id = payload
         .proposal_set_id
         .clone()
@@ -5027,6 +5038,10 @@ fn append_revision_on_conn(
             .and_then(|json| serde_json::from_str::<Value>(json).ok())
             .and_then(|envelope| envelope_schema_version(&envelope))
             == Some(2);
+    anyhow::ensure!(
+        current_origin_kind != NIR1_ENTITY_RELATION_REVISION_ORIGIN,
+        "NIR1_ENTITY_RELATION_REVISION_IMMUTABLE: typed Entity/Relation Revision cannot be replaced by generic append"
+    );
     if current_is_v2 {
         let child_is_v2 = payload
             .reconciliation_envelope

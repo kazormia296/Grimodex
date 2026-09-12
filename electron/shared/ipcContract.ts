@@ -655,10 +655,17 @@ export interface NapiBackendLike {
   relatedScenesContinue?(ownerKey: string, operationTicket: string): Promise<string>;
   relatedScenesRelease?(ownerKey: string, operationTicket: string): Promise<string>;
   nir1EvidenceQualify?(ownerKey: string, navigationIdentity: string): Promise<string>;
-  /** Request-local bounded NIR-1 Entity/Relation graph read. */
+  /** Native-only NIR-1 graph scaffold; deliberately absent from renderer IPC. */
   nir1GraphQuery?(payload: unknown): Promise<string>;
   /** Native-only atomic Raw/IR/Graph context packing. */
   nir1PackContext?(payload: unknown): Promise<string>;
+  /** Native-bound typed Entity/Relation Revision proposal writer. */
+  nir1EntityRelationRevisionCreate?(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  /** Cold reader for an explicitly human-approved typed Revision. */
+  nir1EntityRelationRevisionRead?(payload: unknown): Promise<string>;
   /** Main lifecycle only; deliberately absent from the renderer command map. */
   relatedScenesReleaseOwner?(ownerKey: string): Promise<string>;
   /** Main observer only; never a renderer command. */
@@ -6335,8 +6342,51 @@ function requireRelatedScenesBeginRequest(args: CommandArgs) {
   };
 }
 
-function requireNir1GraphQueryRequest(args: CommandArgs): CommandArgs {
-  const command = "nir1_graph_query";
+function requireNir1EntityRelationRevisionCreateRequest(
+  args: CommandArgs,
+): readonly [CommandArgs, CommandArgs] {
+  const command = "nir1_entity_relation_revision_create";
+  const [rawPayload, workspaceBinding] = requireNarrativeExtractionBoundMutation(
+    args,
+    command,
+  );
+  const payload = requireRecord({ payload: rawPayload }, "payload", command);
+  const allowedKeys = new Set(["runId", "projectId", "proposalKey", "bundle"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of ["runId", "projectId", "proposalKey"] as const) {
+    const value = requireNonEmptyString(payload, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact string`,
+      );
+    }
+  }
+  const bundle = requireRecord(payload, "bundle", command);
+  for (const key of ["projectId", "revisionId", "producer", "entities", "relations"]) {
+    requirePresent(bundle, key, command);
+  }
+  return [payload, workspaceBinding];
+}
+
+function requireNir1EntityRelationRevisionReadRequest(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "nir1_entity_relation_revision_read";
+  const allowedKeys = new Set(["expectedWorkspacePath", "projectId", "revisionId"]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exact workspace, project, and revision fields`,
+    );
+  }
   return {
     expectedWorkspacePath: requireNonEmptyString(
       args,
@@ -6344,8 +6394,7 @@ function requireNir1GraphQueryRequest(args: CommandArgs): CommandArgs {
       command,
     ),
     projectId: requireNonEmptyString(args, "projectId", command),
-    querySceneId: requireNonEmptyString(args, "querySceneId", command),
-    seedEntityId: requireNonEmptyString(args, "seedEntityId", command),
+    revisionId: requireNonEmptyString(args, "revisionId", command),
   };
 }
 
@@ -7472,20 +7521,35 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
     ),
   },
-  nir1_graph_query: {
-    run: async (b, a) =>
-      parseWire(
-        await requireNapiMethod(b, b.nir1GraphQuery, "nir1GraphQuery")(
-          requireNir1GraphQueryRequest(a),
-        ),
-      ),
-  },
   nir1_pack_context: {
     run: async (b, a) =>
       parseWire(
         await requireNapiMethod(b, b.nir1PackContext, "nir1PackContext")(
           requireNir1PackingRequest(a),
         ),
+      ),
+  },
+  nir1_entity_relation_revision_create: {
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNir1EntityRelationRevisionCreateRequest(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EntityRelationRevisionCreate,
+          "nir1EntityRelationRevisionCreate",
+        )(payload, workspaceBinding),
+      );
+    },
+  },
+  nir1_entity_relation_revision_read: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EntityRelationRevisionRead,
+          "nir1EntityRelationRevisionRead",
+        )(requireNir1EntityRelationRevisionReadRequest(a)),
       ),
   },
   semantic_reranker_shadow_score: {
