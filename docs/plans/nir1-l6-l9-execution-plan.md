@@ -5,7 +5,7 @@
 基点: master@68516b033f395f24f98c502c9fd2a715d7aec2af
 Tree: 04c491c29627ecc840112ebe379a5363e16892ff
 
-状態: #572でtyped基盤runtime（Scope／Entity／Relation／Evidence validation、Native所有のimmutable Revision writer／reader、request-local Graph／Packing primitives）は実装済み。PR-R0の文書・quality contract test・manifest traceを固定済み。残るproduction runtime integration、activation、L6〜L9受入れは未完了。R0のfocused test、`verify:quality`、Quick／verifyは実施済みで、merge gate MのFull／verifyは候補commit後に実施する。
+状態: #572でtyped基盤runtime（Scope／Entity／Relation／Evidence validation、Native所有のimmutable Revision writer／reader、request-local Graph／Packing primitives）は実装済み。PR-R0の文書・quality contract test・manifest traceを固定済み。残るproduction runtime integration、activation、L6〜L9受入れは未完了。本版は `nir1-l6-l9-contract-proposal/1` を追加してR0候補を再開し、旧R0候補の受入れ・Quick証跡を無効化する。focused test、`verify:quality`、Quick／verifyを再実施し、merge gate MのFull／verifyは実施しない。
 
 ## 概要
 
@@ -23,7 +23,7 @@ R0は、#572の現在地、後続laneの境界、契約ごとの開始可否、�
 | Tree | `04c491c29627ecc840112ebe379a5363e16892ff` |
 | candidateBranch | `codex/nir1-r0-contract-ledger` |
 | plan / policy / threat refs | 本書、統合計画、ロードマップ、既存 quality manifest / impact map。下流 threat model は draft のまま |
-| receipt boundary | R0 focused test、`verify:quality`、Quick＋直後のverify。Full＋verifyは全PRのmerge gate Mで再実行 |
+| receipt boundary | 旧R0候補のfocused test／`verify:quality`／Quick＋verifyは無効。再開候補で同じ検証を再実施し、Full＋verifyは実施しない |
 
 ### #572の実装済み／未完了
 
@@ -63,16 +63,87 @@ R0の `ready` は文書・評価契約を次のlaneへ引き渡せるという�
 
 ### 契約別の確認台帳
 
-確認できる範囲だけを `confirmedRef` に記録し、今回の計画への同意やR0実装を批准refへ読み替えない。6行すべての `startStatus` は、未確認refを理由とするblocked状態とする。typed Revisionだけは残る差分に `contract-delta-unresolved` を併記する。
+`draftRef` はレビュー対象の提案版、`confirmedRef` は明示確認済みの批准refであり、同じ値や提案の存在を確認と読み替えない。6行すべての `confirmedRef` は `none — ref-unverified`、`startStatus` は未確認refを理由とするblocked状態とする。typed Revisionだけは残る差分に `contract-delta-unresolved` を併記する。
 
-| contractId | confirmedRef | confirmedScope | remainingDelta | affectedLanes | startStatus | blockedReason | unblockingEvidence |
-| ---------- | ------------ | -------------- | -------------- | ------------- | ----------- | ------------- | ------------------ |
-| `scope-storage-authority` | accepted ADR009（Scope／Relation contract）；`nir1-plan/1`（L0〜L5のみ） | Scope vocabulary、既存authority、L0〜L5 behaviorまで | L6〜L9の保存範囲、Source/token、incarnation marker、writer詳細: none — ref-unverified | A1、A2、A3、B、D1 | blocked(ref-unverified) | ref-unverified: L6〜L9保存・移行の批准ref未確認 | L6〜L9範囲を含む一次資料の批准ref、threat-model version/ref、writer／cold reopen受入れ |
-| `caller-profile-egress` | `nir1-product-tm/1`（L0〜L5 boundaryのみ） | L0〜L5の製品boundaryのみ。L6〜L9 profile-wide egressは未承認 | caller発行、永続化、起動順、全出口分類、threat-model差分: none — ref-unverified | D2a、A2、C、D2b | blocked(ref-unverified) | ref-unverified: L6〜L9 egress契約の批准ref未確認 | L6〜L9を含む一次批准ref、全caller／plaintext／egress台帳、拒否試験 |
-| `typed-revision-material` | accepted ADR011（Revision semantics）；既存 consumer policy（Generic Consumer Freshnessのみ） | shared immutable Revision／Freshness authorityまで。NIR-1 material closureは未承認 | material family、Envelope／Source Basis／Dependency、closure、L6〜L9 Freshness資格: none — ref-unverified; contract-delta-unresolved | A2、A3、B、C、D1 | blocked(ref-unverified) | ref-unverified; contract-delta-unresolved: NIR-1材料・資格の批准ref未確認 | 材料契約の一次批准ref、全材料positive／negative／unavailable、変更失効試験 |
-| `graph-limited-binding` | accepted ADR010（Dependency／Context Set vocabulary）；既存 consumer policy（宣言済みconsumer bindingのみ） | 既存dependency vocabularyとconsumer bindingまで。NIR-1 Graph producer／Indexは未承認 | producerVersion、registryGeneration、Source identity、宣言契約: none — ref-unverified | B、C | blocked(ref-unverified) | ref-unverified: NIR-1 Graph bindingの批准ref未確認 | bindingの一次批准ref、registry／Freshness／D1一致、Index停止・復旧試験 |
-| `native-generation-receipt` | `nir1-product-tm/1`（L0〜L5 boundaryのみ） | L0〜L5 boundaryまで。L6〜L9 Native receiptは未承認 | 保存authority、transport観測位置、失敗・再開・handle、payload整合: none — ref-unverified | D2b-1、D2b-2 | blocked(ref-unverified) | ref-unverified: L6〜L9 receipt契約の批准ref未確認 | receipt schemaの一次批准ref、保存前後クラッシュ・retry・handle拒否試験 |
-| `history-reauthorization` | accepted ADR009（Scope／Relation）；accepted ADR011（Revision semantics）；`nir1-product-tm/1`（L0〜L5のみ） | 既存Scope／Revision semanticsまで。L6〜L9 lineage再認可は未承認 | lineage保存範囲、入力用途／分類、Scene・holder・Worldline変更時の除外規則: none — ref-unverified | D2b-2、E | blocked(ref-unverified) | ref-unverified: L6〜L9履歴再認可の批准ref未確認 | lineageの一次批准ref、適格継続と変更失効の実製品journey |
+| contractId | draftRef | confirmedRef | confirmedScope | remainingDelta | affectedLanes | startStatus | blockedReason | unblockingEvidence |
+| ---------- | -------- | ------------ | -------------- | -------------- | ------------- | ----------- | ------------- | ------------------ |
+| `scope-storage-authority` | `nir1-l6-l9-contract-proposal/1` | none — ref-unverified | L0〜L5の `nir1-product-tm/1` と既存Scope vocabularyだけ | L6〜L9の保存範囲、Source/token、incarnation marker、writer詳細: none — ref-unverified | A1、A2、A3、B、D1 | blocked(ref-unverified) | ref-unverified: L6〜L9保存・移行の批准ref未確認 | L6〜L9範囲を含む一次資料の批准ref、threat-model version/ref、writer／cold reopen受入れ |
+| `caller-profile-egress` | `nir1-l6-l9-contract-proposal/1` | none — ref-unverified | L0〜L5の `nir1-product-tm/1` boundaryだけ | L6〜L9 egressのcaller発行、永続化、起動順、全出口分類、threat-model差分: none — ref-unverified | D2a、A2、C、D2b | blocked(ref-unverified) | ref-unverified: L6〜L9 egress契約の批准ref未確認 | L6〜L9を含む一次批准ref、全caller／plaintext／egress台帳、拒否試験 |
+| `typed-revision-material` | `nir1-l6-l9-contract-proposal/1` | none — ref-unverified | L0〜L5の `nir1-product-tm/1` と既存Revision/Freshness vocabularyだけ | material family、Envelope／Source Basis／Dependency、closure、L6〜L9 Freshness資格: none — ref-unverified; contract-delta-unresolved | A2、A3、B、C、D1 | blocked(ref-unverified) | ref-unverified; contract-delta-unresolved: NIR-1材料・資格の批准ref未確認 | 材料契約の一次批准ref、全材料positive／negative／unavailable、変更失効試験 |
+| `graph-limited-binding` | `nir1-l6-l9-contract-proposal/1` | none — ref-unverified | L0〜L5の `nir1-product-tm/1` と既存dependency vocabularyだけ | producerVersion、registryGeneration、Source identity、宣言契約: none — ref-unverified | B、C | blocked(ref-unverified) | ref-unverified: NIR-1 Graph bindingの批准ref未確認 | bindingの一次批准ref、registry／Freshness／D1一致、Index停止・復旧試験 |
+| `native-generation-receipt` | `nir1-l6-l9-contract-proposal/1` | none — ref-unverified | L0〜L5の `nir1-product-tm/1` boundaryだけ | 保存authority、transport観測位置、失敗・再開・handle、payload整合: none — ref-unverified | D2b-1、D2b-2 | blocked(ref-unverified) | ref-unverified: L6〜L9 receipt契約の批准ref未確認 | receipt schemaの一次批准ref、保存前後クラッシュ・retry・handle拒否試験 |
+| `history-reauthorization` | `nir1-l6-l9-contract-proposal/1` | none — ref-unverified | L0〜L5の `nir1-product-tm/1` と既存Scope／Revision vocabularyだけ | lineage保存範囲、入力用途／分類、Scene・holder・Worldline変更時の除外規則: none — ref-unverified | D2b-2、E | blocked(ref-unverified) | ref-unverified: L6〜L9履歴再認可の批准ref未確認 | lineageの一次批准ref、適格継続と変更失効の実製品journey |
+
+### R0 security contract proposal (draft)
+
+`draftRef`: `nir1-l6-l9-contract-proposal/1`。これはレビューとユーザー確認のための提案であり、新しいauthority、保存表、IPC、policy、runtime、activationを追加しない。L0〜L5の `nir1-product-tm/1` の範囲は変更しない。trusted／untrusted actor、攻撃範囲、防御、保存・保持、データ分類、endpoint、acceptance conditionのmaterial changeは再確認を要する。以下の「確認後に開くlane」は実装着手を意味せず、runtime activationは別途未完了のままとする。
+
+#### scope-storage-authority
+
+- Baseline (approved; limited): accepted ADR009 はScope／Relation vocabularyと既存のproject Scope authorityだけ、`nir1-plan/1` と `nir1-product-tm/1` はL0〜L5だけを承認済みとする。L6〜L9の保存・移行は未承認。
+- Delta (L6-L9 data / shape / ownership / lifecycle): Native-owned project registryとsceneごとのclosed bindingに、既存 `ScopeBinding` の `reading`／`story`／`auto`／`phase`／`reveal`／`pov`／`authorityRevision` を使い、ADR009の `timeline`／`worldline`／`narrativeLayer`／`knowledgeHolder`／`audience` を対応づける。query identityとmaterial disclosure constraintも同じbindingに含める。`sceneIncarnationId` は `legacy-absent | explicit | unknown` のmarkerだけ（本文やfull closureを複製しない）。既存sceneの移行はlegacy markerに限定し、通常編集は既存IDとSource tokenを保つ。明示設定変更、new／duplicate／import、delete後のID再利用は新しいincarnationまたはunknownとし、clear／undoは旧資格へ戻さず、journal-proven restoreだけを対象にする。registry／setting／incarnation mutationは同一transactionで依存Revision／Index／query／result／Evidenceをinvalidateする。authorityは既存project Scope authorityを再利用し、第二のauthorityを作らない。
+- Trusted actors: Native backend、既存project Scope authority、同一transactionのjournal／invalidation。
+- Untrusted actors: rendererのScope／profile／incarnation申告、model output、stale UI／cache／restore-derived data。
+- In-scope attacks: cross-project binding、偽造・stale authority token、unknownからanyへのfallback、ID reuse／restore混入、mutation後のstale result／Evidence／cache。
+- Out-of-scope attacks: OS／backend／admin takeover、authorのsecret privilege、Raw search security redesign、external send。
+- Mandatory defenses: Nativeが同一snapshotでauthorityとclosed typed fieldsを検証し、exact project／refを要求する。rendererを認可根拠にせず、unknown／unresolvedはfail closedにする。authority tokenをquery／material／Index／D1／publish／return／click／historyへ渡し、mutationとinvalidationを同一transactionにする。
+- Acceptance implications: Positive: legacy移行の限定互換、explicit save／cold reopen、通常編集のincarnation continuity。Negative: cross-project、stale／unknown、ID reuse、future、偽造refを拒否する。Recovery: rollback後に旧generationを残さず、Native authorityから再buildし、unknown restoreをunavailableにする。Lane unlocked if confirmed: A1（依存するA2／A3／B／D1は各契約確認後のみ）。
+
+#### caller-profile-egress
+
+- Baseline (approved; limited): `nir1-plan/1` と `nir1-product-tm/1` のL0〜L5製品boundaryだけを承認済みとし、L6〜L9 profile-wide egress approvalはない。
+- Delta (L6-L9 data / shape / ownership / lifecycle): Electron mainが発行するcaller identityをprofile／workspace／session／caller epochへbindし、Native-owned profile-wide local-only gateとpersistent stateを持つ。chat stream／single-shot、CLI／Codex App Server／background、HTTP／MCP／proxy／redirect／connection-test、DB／review／eventのplaintextを一つの分類ledgerで列挙する。startup gateはworkspace／renderer／event dispatchより先に評価し、D2aで旧external／旧local pathを閉じ、in-flight handleをinvalidateする。確認後もprovider名だけでは解除せず、D2b-2は別の明示確認があるまで新transportを公開しない。
+- Trusted actors: Electron main sender、Native policy gate、profile state store、current workspace authority。
+- Untrusted actors: rendererのsession／owner／route／category、stale handle、model／provider output、env／config／proxy／redirect。
+- In-scope attacks: forged caller／project／session、cross-window／workspace／session、旧local／external fallback、proxy／redirect、retry replay、startup race、DB／review／event／CLI／background plaintext leak。
+- Out-of-scope attacks: OS／main／backend compromise、admin reseal、model quality、secret privilege、既存Raw redesign、networkを使わないlocal processing。
+- Mandatory defenses: main-issued identity、profile-wide deny-by-default、unknown／unclassified egressのdeny、plaintext dispatch前の停止とactive handle invalidation、startup ordering／persistent state／restart testを必須にする。将来のlocal transportもexact endpoint、proxy／redirect禁止、独立handle確認を要し、exception／unlockを作らない。external sendは行わない。
+- Acceptance implications: Positive: reload／workspace切替／別窓／restart後もgateが維持され、非model Native saveが継続すること。Negative: 偽造、未分類、local名だけ、proxy pathがdispatch zeroになること。Recovery: failure／partial stop後もplaintext denyと旧handle拒否を保つこと。Lane unlocked if confirmed: D2aのみ（A2／C／D2bは各行の確認が必要）。
+
+#### typed-revision-material
+
+- Baseline (approved; limited): `ADR011` のimmutable proposal-revision semantics、`ADR010` のMaterial Basis／Dependency／Context vocabulary、`narrative-consumer-contract` のproposal-revision keyとcanonical `narrative_consumer_freshness` だけを再利用し、`nir1-product-tm/1` はL0〜L5だけとする。`narrative-ir-revision` は既存policyでもnot-yet-modelledである。
+- Delta (L6-L9 data / shape / ownership / lifecycle): 現行 #572 のtyped shapeは `EntityRelationBundle { projectId, revisionId, producer, entities[{ entityId, entityType, label, sourceToken, scope{ reading, story, auto, phase, reveal, pov, authorityRevision }, evidence[{ evidenceId, sourceRef, quote, startUtf16, endUtf16 }] }], relations[{ edgeId, fromEntityId, toEntityId, relationType, directionality, sourceToken, evidenceIds }] }` である。Native writerはUUID `revisionId`を発行し、同一projectのvisible `codex_entries`／`codex_relations`、summaryまたはname由来のUTF-16 Evidence、current Scope tokenを検証し、`nir1.entity-relation@1` payloadをimmutable proposal-revisionへ保存する。現行readerのexact current revision＋`approved`／`human`／`electron:human-review` decisionとlive source検証は保持するが、現状の`reconciliation_envelope` NULLは資格を示さない。提案では既存Envelope V2の `effectiveMaterialBasis.sourceBasis`／`evidenceSet`／`dependencySet`（各digestを含む）と `revisionBasis.contextSet`／`derivationContextSet` を既存参照、必要なEvidence quote、digestだけで埋める（full closure本文は複製しない）。Nativeがidentity／digestを所有し、Human decisionは独立に残し、source／edge／Freshness mutationは同一transactionで失効させる。旧NULL rowは後から適格化せず、新immutable revisionを作る。
+- Supported material boundary / smallest unresolved choice: 現在のwriter／readerが具体的に支持するのは同一projectのvisible Codex entity／relationとそのsummary／name Evidenceだけであり、scene／Chronicle／artifact／import／author-declaredや推測によるfull closureを追加しない。policyの既存assertion familyは `scene-event@1` だが、現行payloadは `nir1.entity-relation@1` で対応づけがない。ユーザーは「このbundleを既存 `scene-event@1` の `typedSemanticPayload` に写像する」か「Entity／Relation familyを別途批准する」かを明示的に選ぶ必要がある。familyとclosure mappingが確認されるまで `contract-delta-unresolved` を維持し、行はblockedのままとする。
+- Trusted actors: Native writer／reader、proposal-revision row、Human Decision ledger、registered source／D1／canonical Freshness。
+- Untrusted actors: renderer bundle／ID／digest／Scope、model output、mutable catalog／cache／Graph／Index、stale IPC。
+- In-scope attacks: forged ID／token／digest、cross-project／revision、stale／deleted source／Evidence、missing／partial closure、fresh-self-claim、NULL-envelope promotion、unsupported familyのGraph／Packing流入、second Freshness／Consumer。
+- Out-of-scope attacks: semantic truth／model quality、別familyの承認そのもの、full closure storage／export、external send、secret privilege、Graph／Index activation。
+- Mandatory defenses: current exact validators、Native UUID／UTF-16／live-source checks、approved family限定、complete Material Basis／Context／Dependency／Source refsとNative digest、current pointer＋exact human decision＋canonical evaluator／Freshnessを必須にする。unknown／unresolvedはfail closed、source／edge／Freshness publicationとinvalidationは同一transaction、direct DML／旧row rewrite／新authorityを禁止する。
+- Acceptance implications: Positive: current Codex bundle、exact Evidence、complete basis、明示Human approval、canonical Freshness、cold reopenがA3／B／D1で同じ結果になること。Negative: NULL／missing／unsupported／unresolved／stale／forgedを拒否しGraph／Packingへ流さないこと。Recovery: mutationでstale化し、新immutable revisionと再承認を要求し、rollback／restoreがfreshnessを自動回復しないこと。Lane unlocked if confirmed: A2（A3／B／D1は続く契約確認後のみ）。上記のfamily mappingが本行の最小 unresolved choiceである。
+
+#### graph-limited-binding
+
+- Baseline (approved; limited): accepted ADR010 のDependency／Context vocabularyと `narrative-consumer-contract` の宣言済みconsumer bindingだけを承認済みとし、`nir1-product-tm/1` はL0〜L5に限る。NIR-1 Graph producer／Index bindingは未承認。
+- Delta (L6-L9 data / shape / ownership / lifecycle): 既存の `nir1-reviewed-entity-relation-v1` producer、`nir1-reviewed-entity-relation:v1` index key、`nir1-entity-relation-eligibility-set` source kindをtupleとして再利用する。Graph requestはexplicit `projectId`／`querySceneId`／`seedEntityId`、出力は既存 `BoundedGraph`（最大2 hop、12 nodes、144 edges、8 scenes、512 records、2 MiB input）に限定する。Derived IndexはNative／DBがrebuildし、sealed D1 head、既存registryのgeneration／source digest／dependency digest／dirty stateだけをbinding metadataにする。Revision／A3 authorityとは別の資格を持たせず、qualified current materialのpublishとinvalidateを同一transactionにする。request-local catalog readerをcanonical Indexへ昇格させない。
+- Trusted actors: Native／DB builder、既存producer／source registry、A1／A2のauthority、sealed D1 head。
+- Untrusted actors: renderer query／seed、catalog／Graph cache、model output、stale generation／dependency digest、index restore。
+- In-scope attacks: cross-project／wrong seed、unbounded hop／node／edge、stale or mixed generation、unqualified／missing-Evidence edge、dirty Index publish、request-local readerのauthority昇格、partial Graph fallback。
+- Out-of-scope attacks: OS／backend compromise、semantic quality、Raw search redesign、external send、new producer or new material family。
+- Mandatory defenses: explicit seed／project binding、bounded output、current A1／A2／Freshness／D1 tuple、atomic sealed publish／invalidate、dirty／unknown／digest mismatchはwhole-Graph unavailable、no mixed generation／partial Graph、Evidence path保持、rendererをauthorityにしない。
+- Acceptance implications: Positive: qualified current seedからbounded pathとEvidenceが再build／cold reopen後も一致すること。Negative: wrong／unknown seed、3 hop、limit超過、stale／dirty／unqualified edgeをGraph寄与0にすること。Recovery: Indexを全停止してsealed headから再buildし、旧generationを混ぜずR+IRまたはexact Rへ戻すこと。Lane unlocked if confirmed: B（A1／A2確認後のみ、CはさらにA3／D2aが必要）。
+
+#### native-generation-receipt
+
+- Baseline (approved; limited): accepted ADR011 のstage modelとterminal receipt metadata、`nir1-product-tm/1` のL0〜L5 boundaryだけを承認済みとし、L6〜L9 Native receiptは未承認。
+- Delta (L6-L9 data / shape / ownership / lifecycle): Native-owned immutable generation handleは `projectId`／profile／caller epoch、request／revision／material／Scope／D1 generation binding、opaque handle、creation／expiryを持つ。terminal receiptは既存の `queued | running | succeeded | failed | cancelled` と `generationId`、request／revision／material digest、transport class／endpoint identity（credential／raw URLなし）、observedAt、failure／retry classification、response digest／stored artifact refだけを返す。本文／provider responseをreceiptに二重保存せず、既存body／artifact storeを正本にする。dispatch前にhandle／epoch／current tupleを再検証し、cancel／timeout／failure／restartで失効させ、retryは新handleと新receiptにする。
+- Trusted actors: Native generation coordinator、existing body／artifact store、D2a profile gate、current Revision／Scope／D1 authorities。
+- Untrusted actors: renderer request／handle／receipt、provider／model response、stale retry、proxy／transport metadata、restored UI state。
+- In-scope attacks: handle／generation replay、cross-project／epoch、receipt forgery／partial success、secret／raw endpoint leakage、retry after cancellation、crash／restart mismatch、stale artifact display。
+- Out-of-scope attacks: OS／backend compromise、model quality、external-send authorization、full provider transport redesign、secret privilege。
+- Mandatory defenses: Native validation at create／dispatch／return, opaque non-authorizing handle, exact current tuple／expiry／epoch, no credential/raw URL in receipt, atomic durable terminal state, idempotent cancellation without success promotion, retry isolation, return／click revalidation, failure-safe unavailable result。
+- Acceptance implications: Positive: approved local requestのhandle→terminal receipt→stored artifactが同一generationにbindすること。Negative: forged／expired／cross-project handle、partial／secret-bearing receipt、cancelled retryをdispatch／successにしないこと。Recovery: crash／restart後に未確定をfailed／unavailableとして再認可し、旧handleを拒否すること。Lane unlocked if confirmed: D2b-1（D2b-2はhistory再認可と最終requestの確認後）。
+
+#### history-reauthorization
+
+- Baseline (approved; limited): `ADR009` のScope／Relation、`ADR011` のproposal-revision semantics、`nir1-product-tm/1` のL0〜L5だけを再利用する。L6〜L9 lineage reauthorizationは未承認。
+- Delta (L6-L9 data / shape / ownership / lifecycle): Native-owned reusable-history eligibilityは既存 message／session／artifact identifiersへの参照として `projectId`／revisionId／Envelope／material／Scope／D1 digests、parent artifact／generation receipt、source／decision／purpose／category／dependency refs、created／expiresを記録する。会話本文やfull closureを複製せず、turnごとにcurrent Scope／authority／decision／Freshness／caller epochを再認可する。scene／knowledgeHolder／worldline等のclosed binding、material、decision、receiptが変わればchild eligibilityをinvalidateし、displayだけではNarrative Assertionを自動生成しない。restore／undoは旧eligibilityを復活させない。
+- Trusted actors: Native history gate、existing message／artifact store、current Scope／Revision／Decision／Freshness／receipt authorities。
+- Untrusted actors: renderer history selection／purpose、stale conversation／artifact cache、model output、restored／imported IDs、caller／session claims。
+- In-scope attacks: cross-project／scene、stale approval／material／receipt、purpose／category escalation、ID reuse／restore replay、child lineage after Scope／holder／worldline change、display-to-assertion confusion。
+- Out-of-scope attacks: OS／backend compromise、semantic truth、full history storage redesign、external send、secret privilege。
+- Mandatory defenses: Native per-turn reauthorization against exact current tuple, opaque reference-only lineage, allowlisted purpose／category／dependency roles, expiry／epoch checks, mutation invalidation in same transaction, no auto-approval／auto-assertion, fail closed on unknown／unavailable。
+- Acceptance implications: Positive: 同一projectのcurrent approved materialを明示目的で再利用し、cold reopen後も同じ eligibilityとEvidence refsになること。Negative: cross-project、purpose escalation、stale／restored／ID-reused child、Scope change後の継続を拒否すること。Recovery: 新immutable childと再承認を作り、旧lineageを再利用せず、failure時はdisplay-onlyへ戻すこと。Lane unlocked if confirmed: D2b-2（Eは他全laneとPの独立受入れ後）。
 
 ### lane開始判定と評価manifest
 
@@ -394,7 +465,7 @@ L9受入れ・merge前:
     pnpm ci:local:full -- --base origin/master --head HEAD
     pnpm ci:local:verify -- full --base origin/master --head HEAD
 
-baseまたはHEADが変わった場合、古いreceiptを流用せずFullをstage 1から再実行する。R0の文書更新時点ではruntime journey・activation・merge gate MのFull／verifyを実行していない。現在候補では `verify:quality`、Quick、直後のQuick verifyを実施済みであり、候補commit後のmerge gate Mとしてclean HEADのFull＋verifyをrootが実施する。
+baseまたはHEADが変わった場合、古いreceiptを流用せずFullをstage 1から再実行する。R0の文書更新時点ではruntime journey・activation・merge gate MのFull／verifyを実行していない。旧R0候補で実施済みだった `verify:quality`、Quick、直後のQuick verifyは本版で無効化した。再開候補では同じ3検証を再実施するが、Full＋verifyは実施しない。
 
 ## 非目標と再確認条件
 

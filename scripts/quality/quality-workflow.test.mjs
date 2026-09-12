@@ -367,14 +367,15 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
     /production runtime integration.*activation.*L6〜L9.*未完了/is,
   );
 
-  for (const contractId of [
+  const contractIds = [
     "scope-storage-authority",
     "caller-profile-egress",
     "typed-revision-material",
     "graph-limited-binding",
     "native-generation-receipt",
     "history-reauthorization",
-  ]) {
+  ];
+  for (const contractId of contractIds) {
     assert.match(executionPlan, new RegExp(contractId));
   }
   assert.equal(
@@ -401,6 +402,81 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
   ]) {
     assert.match(executionPlan, new RegExp(field));
   }
+
+  const draftRef = "nir1-l6-l9-contract-proposal/1";
+  const ledgerSection = executionPlan
+    .split("### 契約別の確認台帳\n", 2)[1]
+    ?.split("\n### R0 security contract proposal (draft)", 1)[0];
+  assert.ok(ledgerSection, "R0 contract ledger must be present");
+  const ledgerRows = contractIds.map((contractId) => {
+    const row = ledgerSection
+      .split("\n")
+      .find((line) => line.startsWith(`| \`${contractId}\` |`));
+    assert.ok(row, `${contractId} must have a ledger row`);
+    const cells = row
+      .split("|")
+      .slice(1, -1)
+      .map((cell) => cell.trim());
+    assert.equal(cells.length, 9, `${contractId} ledger shape`);
+    assert.equal(cells[1].replaceAll("`", ""), draftRef);
+    assert.equal(cells[2], "none — ref-unverified");
+    assert.equal(cells[6], "blocked(ref-unverified)");
+    return row;
+  });
+  assert.equal(ledgerRows.length, 6);
+  assert.match(executionPlan, /`draftRef`[^\n]*nir1-l6-l9-contract-proposal\/1/);
+
+  const proposalSection = executionPlan
+    .split("### R0 security contract proposal (draft)\n", 2)[1]
+    ?.split("\n### lane開始判定と評価manifest", 1)[0];
+  assert.ok(proposalSection, "R0 security contract proposal must be present");
+  assert.match(proposalSection, /draftRef[^\n]*nir1-l6-l9-contract-proposal\/1/);
+  assert.match(
+    proposalSection,
+    /runtime activation[^\n]*(?:追加しない|未完了)/i,
+  );
+  assert.doesNotMatch(
+    proposalSection,
+    /activation\s*[:：]\s*(?:enabled|active|on|有効)/i,
+  );
+  for (const contractId of contractIds) {
+    const heading = `#### ${contractId}\n`;
+    const headingOffset = proposalSection.indexOf(heading);
+    assert.notEqual(headingOffset, -1, `${contractId} proposal must be present`);
+    const bodyStart = headingOffset + heading.length;
+    const nextHeadingOffset = proposalSection.indexOf("\n#### ", bodyStart);
+    const proposal = proposalSection.slice(
+      bodyStart,
+      nextHeadingOffset === -1 ? proposalSection.length : nextHeadingOffset,
+    );
+    for (const category of [
+      "Trusted actors",
+      "Untrusted actors",
+      "In-scope attacks",
+      "Out-of-scope attacks",
+      "Mandatory defenses",
+    ]) {
+      assert.match(
+        proposal,
+        new RegExp(`^- ${escapeRegExp(category)}:`, "m"),
+        `${contractId} must define ${category}`,
+      );
+    }
+    for (const acceptanceField of [
+      "Acceptance implications",
+      "Positive",
+      "Negative",
+      "Recovery",
+      "Lane unlocked if confirmed",
+    ]) {
+      assert.match(
+        proposal,
+        new RegExp(`${escapeRegExp(acceptanceField)}:`, "i"),
+        `${contractId} must define ${acceptanceField}`,
+      );
+    }
+  }
+  assert.match(proposalSection, /typed-revision-material[\s\S]*contract-delta-unresolved/);
 
   assert.match(
     executionPlan,
@@ -439,7 +515,7 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
   );
   assert.match(
     executionPlan,
-    /現在候補では.*verify:quality.*Quick.*Quick verifyを実施済み/is,
+    /旧R0候補で実施済みだった.*verify:quality.*無効化した.*再開候補では.*再実施/is,
   );
   for (const caseId of [
     "G-01",
