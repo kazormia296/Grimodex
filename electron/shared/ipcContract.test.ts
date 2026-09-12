@@ -5595,7 +5595,6 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_runtime_policy_get",
       "narrative_runtime_policy_set",
       "nir1_entity_relation_revision_create",
-      "nir1_entity_relation_revision_read",
       "nir1_evidence_qualify",
       "nir1_pack_context",
       "open_workspace",

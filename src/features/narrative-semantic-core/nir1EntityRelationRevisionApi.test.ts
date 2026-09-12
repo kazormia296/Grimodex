@@ -3,10 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@/lib/tauri", () => ({ invoke: h.invoke }));
 
-import {
-  createNir1EntityRelationRevision,
-  readNir1EntityRelationRevision,
-} from "./nir1EntityRelationRevisionApi";
+import { createNir1EntityRelationRevision } from "./nir1EntityRelationRevisionApi";
 
 describe("NIR-1 typed Entity/Relation Revision renderer API", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -46,28 +43,6 @@ describe("NIR-1 typed Entity/Relation Revision renderer API", () => {
     expect(h.invoke).toHaveBeenCalledExactlyOnceWith(
       "nir1_entity_relation_revision_create",
       { payload: request, workspaceBinding: binding },
-    );
-  });
-
-  it("reads by the exact workspace path and immutable Revision ID", async () => {
-    h.invoke.mockResolvedValueOnce({
-      status: "unavailable",
-      result: { reason: "revision-not-human-approved" },
-    });
-
-    await readNir1EntityRelationRevision(
-      "/workspace",
-      "project-1",
-      "revision-1",
-    );
-
-    expect(h.invoke).toHaveBeenCalledExactlyOnceWith(
-      "nir1_entity_relation_revision_read",
-      {
-        expectedWorkspacePath: "/workspace",
-        projectId: "project-1",
-        revisionId: "revision-1",
-      },
     );
   });
 });

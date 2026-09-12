@@ -4058,6 +4058,16 @@ pub fn get_run_review_bundle(
         ensure_run_project(conn, &run_id, &project_id)?;
         let current_chronicle_spec =
             current_chronicle_run_spec_for_run(conn, &project_id, &run_id)?;
+        let typed_relation_set_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_proposal_sets
+              WHERE run_id = ?1 AND project_id = ?2 AND set_kind = ?3",
+            params![run_id, project_id, NIR1_ENTITY_RELATION_SET_KIND],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            typed_relation_set_count == 0,
+            "NIR1_ENTITY_RELATION_REVIEW_BUNDLE_UNAVAILABLE: typed Entity/Relation Evidence is not published through the generic review bundle"
+        );
 
         // A generic review bundle remains useful for historical/other
         // surfaces, but Chronicle's coordinator treats this read as its

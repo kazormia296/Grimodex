@@ -65,9 +65,9 @@ describe("NIR-1 typed Entity/Relation revision IPC contract", () => {
     );
   });
 
-  it("reads through an explicit workspace path and revision identity", async () => {
+  it("keeps the unactivated Evidence reader out of renderer IPC", async () => {
     const read = vi.fn().mockResolvedValue(
-      JSON.stringify({ status: "unavailable", result: { reason: "revision-not-current" } }),
+      JSON.stringify({ status: "available", result: { bundle } }),
     );
     const backend = {
       nir1EntityRelationRevisionRead: read,
@@ -84,17 +84,16 @@ describe("NIR-1 typed Entity/Relation revision IPC contract", () => {
     );
 
     expect(result).toEqual({
-      ok: true,
-      value: {
-        status: "unavailable",
-        result: { reason: "revision-not-current" },
+      ok: false,
+      error: "IPC_UNIMPLEMENTED: nir1_entity_relation_revision_read",
+      errorInfo: {
+        code: "IPC_UNIMPLEMENTED",
+        message: "IPC_UNIMPLEMENTED: nir1_entity_relation_revision_read",
+        outcome: "failed",
+        retryable: false,
       },
     });
-    expect(read).toHaveBeenCalledExactlyOnceWith({
-      expectedWorkspacePath: "/workspace",
-      projectId: "project-1",
-      revisionId: "revision-1",
-    });
+    expect(read).not.toHaveBeenCalled();
   });
 
   it("rejects a missing typed bundle before creating a revision", async () => {

@@ -6374,30 +6374,6 @@ function requireNir1EntityRelationRevisionCreateRequest(
   return [payload, workspaceBinding];
 }
 
-function requireNir1EntityRelationRevisionReadRequest(
-  args: CommandArgs,
-): CommandArgs {
-  const command = "nir1_entity_relation_revision_read";
-  const allowedKeys = new Set(["expectedWorkspacePath", "projectId", "revisionId"]);
-  if (
-    Object.keys(args).length !== allowedKeys.size ||
-    Object.keys(args).some((key) => !allowedKeys.has(key))
-  ) {
-    throw new Error(
-      `invalid args for command \`${command}\`: expected exact workspace, project, and revision fields`,
-    );
-  }
-  return {
-    expectedWorkspacePath: requireNonEmptyString(
-      args,
-      "expectedWorkspacePath",
-      command,
-    ),
-    projectId: requireNonEmptyString(args, "projectId", command),
-    revisionId: requireNonEmptyString(args, "revisionId", command),
-  };
-}
-
 function requireNir1PackingRequest(args: CommandArgs): CommandArgs {
   const command = "nir1_pack_context";
   const payload = requireRecord(args, "payload", command);
@@ -7542,16 +7518,8 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       );
     },
   },
-  nir1_entity_relation_revision_read: {
-    run: async (b, a) =>
-      parseWire(
-        await requireNapiMethod(
-          b,
-          b.nir1EntityRelationRevisionRead,
-          "nir1EntityRelationRevisionRead",
-        )(requireNir1EntityRelationRevisionReadRequest(a)),
-      ),
-  },
+  // The typed Revision reader returns Evidence plaintext and therefore stays
+  // out of renderer IPC until the Native-owned D2a publication gate exists.
   semantic_reranker_shadow_score: {
     run: async (b, a) =>
       parseWire(

@@ -72,28 +72,6 @@ export interface Nir1EntityRelationRevisionCreateResult {
   readonly status: "unreviewed";
 }
 
-export interface Nir1EntityRelationRevisionResult {
-  readonly projectId: string;
-  readonly runId: string;
-  readonly proposalSetId: string;
-  readonly proposalId: string;
-  readonly revisionId: string;
-  readonly bundleDigest: string;
-  readonly eligibilitySource: "nir1-entity-relation-eligibility-set";
-  readonly indexKey: "nir1-reviewed-entity-relation:v1";
-  readonly bundle: Nir1EntityRelationBundle;
-}
-
-export type Nir1EntityRelationRevisionRead =
-  | {
-      readonly status: "available";
-      readonly result: Nir1EntityRelationRevisionResult;
-    }
-  | {
-      readonly status: "unavailable";
-      readonly result: { readonly reason: string };
-    };
-
 /**
  * Stores one unreviewed, Native-bound typed Entity/Relation Revision. The
  * caller must use the existing Native workspace binding; this API does not
@@ -111,18 +89,5 @@ export function createNir1EntityRelationRevision(
       bundle: request.bundle,
     },
     workspaceBinding,
-  });
-}
-
-/** Reads a reviewed typed Revision from the current Native workspace snapshot. */
-export function readNir1EntityRelationRevision(
-  expectedWorkspacePath: string,
-  projectId: string,
-  revisionId: string,
-): Promise<Nir1EntityRelationRevisionRead> {
-  return invoke("nir1_entity_relation_revision_read", {
-    expectedWorkspacePath,
-    projectId,
-    revisionId,
   });
 }
