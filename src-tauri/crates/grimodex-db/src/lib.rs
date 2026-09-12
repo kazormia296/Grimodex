@@ -628,7 +628,9 @@ pub mod workspace_lease;
 // (src-tauri の互換シム `pub(crate) use grimodex_db::{…}` と napi 側の両方が
 // フラットに import できるように)。
 pub use error::{AppError, AppResult, QueryResult};
-pub use execute::{SqlOrigin, RENDERER_SQL_SECURITY_ERROR};
+pub use execute::{
+    SqlOrigin, RENDERER_SQL_SECURITY_ERROR, RENDERER_TYPED_PAYLOAD_ERROR,
+};
 pub use integrity::{RepairIntegrityPayload, RepairIntegrityReport};
 pub use narrative_runtime_policy::{
     ensure_narrative_runtime_policy_row, load_narrative_runtime_policy,

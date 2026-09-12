@@ -17,10 +17,15 @@ import {
   assertScopeOverrideLineage,
   assertColdReviewBundle,
 } from "../../electron/scripts/nir1-reviewed-child-evidence.mjs";
+import {
+  findClosedRevision,
+  readClosedRevisionSnapshot,
+} from "../../electron/scripts/nir1-reviewed-child-db.mjs";
 import { loadContract, sha256 } from "./nir1-retrieval/contract.mjs";
 import { loadRecoveryWorkload } from "./nir1-retrieval/recovery-workload.mjs";
 import {
   assertCorpusInterpretation,
+  assertSetupRevisionPayloads,
   assertSetupRoster,
   assertSetupReadingOrder,
 } from "./nir1-retrieval/setup-evidence.mjs";
@@ -125,6 +130,7 @@ const ownPaths = [
   "electron/scripts/product-journey-harness.mjs",
   "electron/scripts/chronicle-extraction-product-journey.mjs",
   "electron/scripts/nir1-reviewed-child-evidence.mjs",
+  "electron/scripts/nir1-reviewed-child-db.mjs",
 ];
 const sourceDigests = Object.fromEntries(
   await Promise.all(
@@ -178,20 +184,6 @@ const bundle = (page, identity) =>
   harness.invokeOk(page, "narrative_extraction_get_run_review_bundle", {
     payload: identity,
   });
-async function revision(page, id) {
-  const result = await rows(
-    page,
-    "SELECT id AS revisionId, proposal_id AS proposalId, reconciliation_envelope_json AS envelopeJson, reconciliation_envelope_digest AS envelopeDigest, payload_json AS payloadJson FROM narrative_proposal_revisions WHERE id = ?",
-    [id],
-  );
-  assert.equal(result.length, 1);
-  const { envelopeJson, payloadJson, ...rest } = result[0];
-  return {
-    ...rest,
-    envelope: JSON.parse(envelopeJson),
-    payloadJson: JSON.parse(payloadJson),
-  };
-}
 async function analyze(
   page,
   dialog,
@@ -394,11 +386,6 @@ try {
         const initial = await bundle(reviewed.page, identity);
         assertInitialProposals(initial.proposals, 1);
         const parent = initial.proposals[0];
-        const rootRevision = await revision(
-          reviewed.page,
-          parent.currentRevisionId,
-        );
-        assertCorpusInterpretation(initial, rootRevision, scene);
         await writeFile(
           path.join(caseDirectory, `${scene.id}-initial.json`),
           JSON.stringify(initial, null, 2) + "\n",
@@ -423,11 +410,6 @@ try {
           "nonsecret checkbox settled",
         );
         assertUnreviewedChild(parent, child);
-        const childRevision = await revision(
-          reviewed.page,
-          child.currentRevisionId,
-        );
-        assertScopeOverrideLineage(rootRevision, childRevision);
         await card.getByRole("button", { name: "承認", exact: true }).click();
         const approved = await harness.waitUntil(async () => {
           const row = (await bundle(reviewed.page, identity)).proposals[0];
@@ -437,23 +419,12 @@ try {
         const after = await bundle(reviewed.page, identity);
         assert.deepEqual(after.artifacts, initial.artifacts);
         assert.deepEqual(after.stageReceipts, initial.stageReceipts);
-        assert.deepEqual(
-          await revision(reviewed.page, rootRevision.revisionId),
-          rootRevision,
-        );
-        await writeFile(
-          path.join(caseDirectory, `${scene.id}-approved.json`),
-          JSON.stringify(
-            { bundle: after, rootRevision, childRevision },
-            null,
-            2,
-          ) + "\n",
-        );
         generated.push({
           sceneId: scene.id,
           identity,
-          rootRevision,
-          childRevision,
+          initial,
+          rootRevisionId: parent.currentRevisionId,
+          childRevisionId: child.currentRevisionId,
           approved,
           bundle: after,
         });
@@ -508,6 +479,40 @@ try {
       errorOnExist: true,
       force: false,
     });
+    const closedRevisions = await readClosedRevisionSnapshot(
+      path.join(caseDirectory, "cold-workspace", "grimodex.db"),
+    );
+    for (const item of generated) {
+      const rootRevision = findClosedRevision(
+        closedRevisions,
+        item.rootRevisionId,
+      );
+      const childRevision = findClosedRevision(
+        closedRevisions,
+        item.childRevisionId,
+      );
+      const scene = workload.scenes.find(
+        (candidate) => candidate.id === item.sceneId,
+      );
+      assert.ok(scene, `recovery scene ${item.sceneId}`);
+      assertCorpusInterpretation(item.initial, rootRevision, scene);
+      assertSetupRevisionPayloads(item, rootRevision, childRevision);
+      assertScopeOverrideLineage(rootRevision, childRevision);
+      item.rootRevision = rootRevision;
+      item.childRevision = childRevision;
+      await writeFile(
+        path.join(caseDirectory, `${item.sceneId}-approved.json`),
+        JSON.stringify(
+          {
+            bundle: item.bundle,
+            rootRevision,
+            childRevision,
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+    }
     assert.equal(generated.length, workload.currentRevisionCount);
     assert.equal(
       new Set(generated.map((item) => item.childRevision.revisionId)).size,

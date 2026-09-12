@@ -7,6 +7,11 @@ import {
   assertColdReviewBundle,
   assertScopeOverrideLineage,
 } from "../electron/scripts/nir1-reviewed-child-evidence.mjs";
+import {
+  findClosedRevision,
+  parseClosedRevisionRows,
+} from "../electron/scripts/nir1-reviewed-child-db.mjs";
+import { assertSetupRevisionPayloads } from "./quality/nir1-retrieval/setup-evidence.mjs";
 
 const digest = (letter) => `sha256:${letter.repeat(64)}`;
 function proposal() {
@@ -111,6 +116,107 @@ test("cold reopen preserves exact decisions, artifacts and model receipts", () =
       assertColdReviewBundle(bundle, { ...bundle, [key]: [] }),
     );
   }
+});
+
+test("closed fixture snapshot parses full history without renderer SQL", () => {
+  const rows = parseClosedRevisionRows([
+    {
+      revisionId: "root-1",
+      proposalId: "proposal-1",
+      revisionNumber: 1,
+      payloadJson: '{"disclosure":{"secret":true}}',
+      originKind: "enveloped",
+      envelopeJson: '{"revisionBasis":{"kind":"interpretation"}}',
+      envelopeDigest: digest("a"),
+      createdAt: "2026-09-13T00:00:00.000Z",
+      createdBy: "ai",
+    },
+    {
+      revisionId: "child-1",
+      proposalId: "proposal-1",
+      revisionNumber: 2,
+      payloadJson: '{"disclosure":{"secret":false}}',
+      originKind: "enveloped",
+      envelopeJson: '{"revisionBasis":{"kind":"human-derived"}}',
+      envelopeDigest: digest("b"),
+      createdAt: "2026-09-13T00:00:01.000Z",
+      createdBy: "human",
+    },
+  ]);
+  assert.equal(rows.length, 2);
+  assert.equal(
+    findClosedRevision(rows, "root-1").payloadJson.disclosure.secret,
+    true,
+  );
+  assert.equal(
+    findClosedRevision(rows, "child-1").envelope.revisionBasis.kind,
+    "human-derived",
+  );
+  assert.throws(
+    () => findClosedRevision(rows, "missing"),
+    /missing requested revision/,
+  );
+  assert.throws(
+    () =>
+      parseClosedRevisionRows([
+        {
+          revisionId: "root-1",
+          proposalId: "proposal-1",
+          revisionNumber: 1,
+          payloadJson: "not-json",
+          originKind: "enveloped",
+          envelopeJson: "{}",
+          envelopeDigest: digest("a"),
+          createdAt: "2026-09-13T00:00:00.000Z",
+          createdBy: "ai",
+        },
+      ]),
+    /malformed payloadJson/,
+  );
+});
+
+test("closed setup verification keeps approved as a proposal row", () => {
+  const initial = {
+    runId: "run-1",
+    projectId: "project-1",
+    proposals: [proposal()],
+    stageReceipts: [{ id: "receipt-1" }],
+    artifacts: [{ id: "artifact-1" }],
+  };
+  const approved = approve(child());
+  const after = { ...initial, proposals: [approved] };
+  const item = { initial, approved, bundle: after };
+  const closed = parseClosedRevisionRows([
+    {
+      revisionId: "root-1",
+      proposalId: "proposal-1",
+      revisionNumber: 1,
+      payloadJson: JSON.stringify(initial.proposals[0].payloadJson),
+      originKind: "enveloped",
+      envelopeJson: "{}",
+      envelopeDigest: initial.proposals[0].reconciliationEnvelopeDigest,
+      createdAt: "2026-09-13T00:00:00.000Z",
+      createdBy: "ai",
+    },
+    {
+      revisionId: "child-1",
+      proposalId: "proposal-1",
+      revisionNumber: 2,
+      payloadJson: JSON.stringify(approved.payloadJson),
+      originKind: "enveloped",
+      envelopeJson: "{}",
+      envelopeDigest: approved.reconciliationEnvelopeDigest,
+      createdAt: "2026-09-13T00:00:01.000Z",
+      createdBy: "human",
+    },
+  ]);
+  assertSetupRevisionPayloads(
+    item,
+    findClosedRevision(closed, "root-1"),
+    findClosedRevision(closed, "child-1"),
+  );
+  assert.deepEqual(item.bundle.proposals[0], approved);
+  assert.equal(item.approved.proposals, undefined);
 });
 
 test("scope child binds immutable root and unchanged semantic core and Evidence", () => {

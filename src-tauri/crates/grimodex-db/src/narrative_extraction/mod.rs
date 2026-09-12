@@ -35,6 +35,8 @@ pub mod maintenance_route_registry;
 pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
 pub mod nir1_chronicle_index;
+mod nir1_entity_relation;
+pub mod nir1_graph;
 pub use declaration_storage::{
     read_active_dependency_declaration_set, verify_dependency_declaration_storage,
     write_dependency_declaration_set, write_dependency_declaration_set_in_tx,
@@ -52,6 +54,11 @@ pub use maintenance_skip_evidence::{
     CompletedRunSkipReason, COMPLETED_RUN_SKIP_EVIDENCE_FIELD, REBUILD_RUN_KIND_CONTRACT_VERSION,
     VERIFY_RUN_KIND_CONTRACT_VERSION,
 };
+pub use nir1_entity_relation::{
+    read_nir1_entity_relation_revision, Nir1EntityRelationRevision,
+    Nir1EntityRelationRevisionRead, Nir1EntityRelationRevisionRequest,
+};
+pub use nir1_graph::{read_nir1_graph, Nir1GraphRequest, Nir1GraphResponse};
 pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 mod human_derivation;
@@ -485,6 +492,13 @@ pub fn narrative_extraction_save_proposal_set(
     payload: SaveProposalSetPayload,
 ) -> anyhow::Result<Value> {
     repository::save_proposal_set(db, payload)
+}
+
+pub fn narrative_extraction_create_nir1_entity_relation_revision(
+    db: &Database,
+    request: Nir1EntityRelationRevisionRequest,
+) -> anyhow::Result<Value> {
+    nir1_entity_relation::create_nir1_entity_relation_revision(db, request)
 }
 
 pub fn narrative_extraction_get_run_review_bundle(

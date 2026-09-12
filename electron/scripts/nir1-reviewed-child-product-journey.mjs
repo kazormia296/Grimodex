@@ -19,6 +19,10 @@ import {
   assertColdReviewBundle,
   assertScopeOverrideLineage,
 } from "./nir1-reviewed-child-evidence.mjs";
+import {
+  findClosedRevision,
+  readClosedRevisionSnapshot,
+} from "./nir1-reviewed-child-db.mjs";
 
 const root = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const [seedDirectory, output, buildReceiptPath] = process.argv.slice(2);
@@ -69,6 +73,7 @@ await verifyProducer();
 const runnerPaths = [
   "electron/scripts/nir1-reviewed-child-product-journey.mjs",
   "electron/scripts/nir1-reviewed-child-evidence.mjs",
+  "electron/scripts/nir1-reviewed-child-db.mjs",
   "scripts/nir1-reviewed-child-product-journey.test.mjs",
 ];
 const runnerDigests = Object.fromEntries(
@@ -103,20 +108,6 @@ const bundle = (page) =>
   harness.invokeOk(page, "narrative_extraction_get_run_review_bundle", {
     payload: identity,
   });
-async function revision(page, revisionId) {
-  const { rows } = await harness.invokeOk(page, "db_execute", {
-    sql: "SELECT id AS revisionId, proposal_id AS proposalId, revision_number AS revisionNumber, payload_json AS payloadJson, origin_kind AS originKind, reconciliation_envelope_json AS envelopeJson, reconciliation_envelope_digest AS envelopeDigest, created_at AS createdAt, created_by AS createdBy FROM narrative_proposal_revisions WHERE id = ?",
-    params: [revisionId],
-    method: "all",
-  });
-  assert.equal(rows.length, 1);
-  const { envelopeJson, payloadJson, ...row } = rows[0];
-  return {
-    ...row,
-    envelope: JSON.parse(envelopeJson),
-    payloadJson: JSON.parse(payloadJson),
-  };
-}
 try {
   await cp(path.join(seedDirectory, "cold-seed-workspace"), workspace, {
     recursive: true,
@@ -167,15 +158,6 @@ try {
       false,
     );
     for (const parent of initial.proposals) {
-      const rootRevision = await revision(
-        launched.page,
-        parent.currentRevisionId,
-      );
-      assert.equal(rootRevision.envelope.revisionBasis.kind, "interpretation");
-      assert.deepEqual(rootRevision.envelope.assertion.scope.scene, {
-        kind: "exact",
-        ref: `scene:${seed.s1}`,
-      });
       const card = dialog.getByTestId(
         `chronicle-proposal-card-${parent.proposalId}`,
       );
@@ -206,16 +188,10 @@ try {
       );
       await save(`child-${parent.proposalId}.json`, child);
       assertUnreviewedChild(parent, child);
-      const childRevision = await revision(
-        launched.page,
-        child.currentRevisionId,
-      );
-      assertScopeOverrideLineage(rootRevision, childRevision);
-      assert.deepEqual(
-        await revision(launched.page, parent.currentRevisionId),
-        rootRevision,
-      );
-      lineage.push({ root: rootRevision, child: childRevision });
+      lineage.push({
+        rootRevisionId: parent.currentRevisionId,
+        childRevisionId: child.currentRevisionId,
+      });
       await action({
         action: "approve-current-child",
         proposalId: child.proposalId,
@@ -234,7 +210,6 @@ try {
     assert.deepEqual(approved.stageReceipts, initial.stageReceipts);
     assert.deepEqual(approved.artifacts, initial.artifacts);
     await save("approved.json", approved);
-    await save("lineage.json", lineage);
     await dialog.screenshot({ path: path.join(output, "approved-review.png") });
   } finally {
     await harness.close(launched.app, launched.page, name);
@@ -247,16 +222,6 @@ try {
     });
     const cold = await bundle(reopened.page);
     assertColdReviewBundle(approved, cold);
-    for (const pair of lineage) {
-      assert.deepEqual(
-        await revision(reopened.page, pair.root.revisionId),
-        pair.root,
-      );
-      assert.deepEqual(
-        await revision(reopened.page, pair.child.revisionId),
-        pair.child,
-      );
-    }
     await save("reopened.json", cold);
     await action({ action: "cold-reopen-verified", ...identity });
   } finally {
@@ -267,6 +232,45 @@ try {
     force: false,
     errorOnExist: true,
   });
+  const closedRevisions = await readClosedRevisionSnapshot(
+    path.join(output, "cold-workspace", "grimodex.db"),
+  );
+  const verifiedLineage = lineage.map(({ rootRevisionId, childRevisionId }) => {
+    const rootRevision = findClosedRevision(closedRevisions, rootRevisionId);
+    const childRevision = findClosedRevision(closedRevisions, childRevisionId);
+    const initialProposal = initial.proposals.find(
+      (row) => row.currentRevisionId === rootRevisionId,
+    );
+    const approvedProposal = approved.proposals.find(
+      (row) => row.currentRevisionId === childRevisionId,
+    );
+    assert.ok(
+      initialProposal,
+      `initial review bundle contains ${rootRevisionId}`,
+    );
+    assert.ok(
+      approvedProposal,
+      `approved review bundle contains ${childRevisionId}`,
+    );
+    assert.equal(rootRevision.envelope.revisionBasis.kind, "interpretation");
+    assert.deepEqual(rootRevision.envelope.assertion.scope.scene, {
+      kind: "exact",
+      ref: `scene:${seed.s1}`,
+    });
+    assert.deepEqual(rootRevision.payloadJson, initialProposal.payloadJson);
+    assert.equal(
+      rootRevision.envelopeDigest,
+      initialProposal.reconciliationEnvelopeDigest,
+    );
+    assert.deepEqual(childRevision.payloadJson, approvedProposal.payloadJson);
+    assert.equal(
+      childRevision.envelopeDigest,
+      approvedProposal.reconciliationEnvelopeDigest,
+    );
+    assertScopeOverrideLineage(rootRevision, childRevision);
+    return { root: rootRevision, child: childRevision };
+  });
+  await save("lineage.json", verifiedLineage);
   assert.equal(await sha(seedDb), seedDigest);
   await verifyProducer();
   for (const [file, expected] of Object.entries(runnerDigests))
@@ -285,7 +289,7 @@ try {
     folderId: seed.folderId,
     seedDatabaseDigest: seedDigest,
     databaseDigest: await sha(path.join(output, "cold-workspace/grimodex.db")),
-    rootRevisionIds: lineage.map((pair) => pair.root.revisionId),
+    rootRevisionIds: verifiedLineage.map((pair) => pair.root.revisionId),
     revisionIds: approved.proposals.map((row) => row.currentRevisionId),
     buildReceiptPath,
     buildReceiptSha256: await sha(buildReceiptPath),

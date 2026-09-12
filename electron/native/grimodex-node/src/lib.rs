@@ -5968,6 +5968,106 @@ impl Backend {
         .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))
     }
 
+    /// Read a bounded, request-local NIR-1 Entity/Relation graph.  The
+    /// workspace path is checked against the pinned Native authority before
+    /// the read transaction begins; the renderer cannot choose a different
+    /// DB by changing the project or seed fields.
+    #[napi]
+    pub async fn nir1_graph_query(&self, payload: serde_json::Value) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            project_id: String,
+            query_scene_id: String,
+            seed_entity_id: String,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let graph_request = narrative_extraction::Nir1GraphRequest {
+                project_id: request.project_id,
+                query_scene_id: request.query_scene_id,
+                seed_entity_id: request.seed_entity_id,
+            };
+            let response = workspace.authority.db().with_read_transaction(|conn| {
+                narrative_extraction::read_nir1_graph(conn, &graph_request)
+            })?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Pack typed NIR-1 context units without persisting or forwarding them.
+    /// The request is deliberately a pure Native operation so renderer-side
+    /// selection cannot bypass the Raw/Evidence atomicity rules.
+    #[napi]
+    pub async fn nir1_pack_context(&self, payload: serde_json::Value) -> Result<String> {
+        run_blocking(move || {
+            let request: grimodex_core::narrative_nir1::PackingRequest =
+                from_wire("payload", payload)?;
+            let packed = grimodex_core::narrative_nir1::pack_context(request)
+                .map_err(anyhow::Error::from)?;
+            Ok(serde_json::to_string(&packed).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Persist one Native-bound NIR-1 Entity/Relation Revision as an
+    /// unreviewed Proposal. The existing human decision endpoint is the only
+    /// path that can make it eligible for a later cold read.
+    #[napi]
+    pub async fn nir1_entity_relation_revision_create(
+        &self,
+        payload: serde_json::Value,
+        workspace_binding: serde_json::Value,
+    ) -> Result<String> {
+        narrative_extraction_bound_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            workspace_binding,
+            narrative_extraction::narrative_extraction_create_nir1_entity_relation_revision,
+        )
+        .await
+    }
+
+    /// Re-open one typed NIR-1 Revision from the currently pinned workspace.
+    /// The workspace path is an authority check only; the project and
+    /// Revision identities are rechecked inside the same read transaction.
+    #[napi]
+    pub async fn nir1_entity_relation_revision_read(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            project_id: String,
+            revision_id: String,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let response = workspace.authority.db().with_read_transaction(|conn| {
+                narrative_extraction::read_nir1_entity_relation_revision(
+                    conn,
+                    &request.project_id,
+                    &request.revision_id,
+                )
+            })?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     // ─────────────────────── semantic Phase 3 Batch 4 ───────────────────
     // 全DB commandはrun_semantic_wireがinvoke開始時のDB Arc + 4cache epochを
     // 一貫pinする。各closureは共有runtimeだけを呼び、workspaceを再解決しない。
