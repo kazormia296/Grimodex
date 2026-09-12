@@ -5782,7 +5782,6 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
 
     use crate::narrative_extraction::{discover_durable_maintenance_work, AutomaticRunKind};
 
@@ -5858,8 +5857,7 @@ mod tests {
     }
 
     fn fixture() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
+        let db = crate::test_support::current_schema_memory().expect("current schema fixture");
         db.with_conn(|conn| {
             conn.execute_batch(
                 "INSERT INTO projects (id, title) VALUES ('p1', 'One'), ('p2', 'Two');

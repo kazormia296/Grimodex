@@ -3636,8 +3636,7 @@ mod tests {
     use super::*;
 
     fn db() -> Database {
-        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
-        db.migrate().unwrap();
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.execute("INSERT INTO projects (id) VALUES ('p1')", &[], "run")
             .unwrap();
         db

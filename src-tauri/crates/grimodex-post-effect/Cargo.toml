@@ -23,4 +23,5 @@ grimodex-db = { path = "../grimodex-db" }
 grimodex-lint = { path = "../grimodex-lint" }
 
 [dev-dependencies]
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

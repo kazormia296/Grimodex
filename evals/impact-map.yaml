@@ -41,6 +41,11 @@ rules:
       - scripts/local-ci.mjs
       - scripts/local-ci-registry.json
       - scripts/local-ci.test.mjs
+      - scripts/local-ci-runner.mjs
+      - scripts/local-ci-runner.test.mjs
+      - scripts/local-ci-process-supervisor.mjs
+      - scripts/local-ci-process-supervisor.test.mjs
+      - docs/local-ci-runner.md
       - scripts/ci-pause.test.mjs
     requirements:
       - GDX-TRACE-001
@@ -334,6 +339,8 @@ rules:
       - electron/scripts/c2zc-canonical-product-journey.mjs
       - electron/scripts/c2zc-renderer-mcp-dml-denial-product-journey.mjs
       - electron/scripts/product-journeys.mjs
+      - electron/scripts/product-journey-shards.mjs
+      - electron/scripts/product-journey-shards.test.mjs
       - electron/main/narrativeFreshness.ts
       - electron/main/narrativeFreshness.test.ts
       - electron/native/grimodex-node/**

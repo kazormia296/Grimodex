@@ -247,6 +247,7 @@ requirements:
       - electron/scripts/narrative-maintenance-product-journeys.mjs
       - electron/scripts/c2zc-canonical-product-journey.mjs
       - electron/scripts/product-journeys.mjs
+      - electron/scripts/product-journey-shards.mjs
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/validate-run-kind-policy.test.mjs
@@ -260,6 +261,7 @@ requirements:
       - scripts/product-journey-phase1.test.mjs
       - scripts/c2-5b-product-journeys.test.mjs
       - scripts/c2zc-product-journeys.test.mjs
+      - electron/scripts/product-journey-shards.test.mjs
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:
@@ -903,6 +905,8 @@ requirements:
       - .agents/skills/bump-version/SKILL.md
       - scripts/local-ci.mjs
       - scripts/local-ci-registry.json
+      - scripts/local-ci-runner.mjs
+      - scripts/local-ci-process-supervisor.mjs
       - scripts/quality/impact-map.mjs
       - scripts/quality/certify-gate-b2.mjs
       - scripts/quality/quality-evaluation-runtime.mjs
@@ -913,6 +917,7 @@ requirements:
       - evals/impact-map.yaml
       - electron/scripts/narrative-maintenance-product-journeys.mjs
       - electron/scripts/product-journeys.mjs
+      - electron/scripts/product-journey-shards.mjs
       - src/features/ai-verification/aiPathRegistry.ts
       - docs/Grimodex_Semantic_Reranker_Shadow_Impact_Matrix.md
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE2_RESULTS.md
@@ -928,6 +933,8 @@ requirements:
       - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
       - scripts/local-ci.test.mjs
+      - scripts/local-ci-runner.test.mjs
+      - scripts/local-ci-process-supervisor.test.mjs
       - scripts/ci-pause.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/impact-map.test.mjs
@@ -937,6 +944,7 @@ requirements:
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
       - scripts/product-journey-phase1.test.mjs
       - scripts/c2-5b-product-journeys.test.mjs
+      - electron/scripts/product-journey-shards.test.mjs
       - scripts/semantic-reranker-release.test.mjs
       - scripts/quality/validate-narrative-writers.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py

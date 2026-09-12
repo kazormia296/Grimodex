@@ -1400,7 +1400,6 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Barrier,
@@ -1415,8 +1414,7 @@ mod tests {
     use super::*;
 
     fn database() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("database");
-        db.migrate().expect("schema");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         seed(&db);
         db
     }

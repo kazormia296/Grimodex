@@ -1077,6 +1077,15 @@ mod tests {
     fn test_db() -> Database {
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
         db.migrate().expect("migrate");
+        seed_test_db(db)
+    }
+
+    fn current_schema_test_db() -> Database {
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
+        seed_test_db(db)
+    }
+
+    fn seed_test_db(db: Database) -> Database {
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
@@ -1231,7 +1240,7 @@ mod tests {
 
     #[test]
     fn complete_runless_publication_rejects_inexact_sets_before_any_state_write() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
             let epoch = seed_epoch(&tx, "project-1");
@@ -1396,7 +1405,7 @@ mod tests {
     #[test]
     fn production_publish_preserves_attention_on_harmless_epoch_rerun_and_tracks_material_changes()
     {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let consumer_id = "consumer-finding-identity";
             let consumer_key = "proposal-finding-identity";
@@ -1608,7 +1617,7 @@ mod tests {
 
     #[test]
     fn single_fresh_edge_publishes_state_and_freshness_without_a_finding_observation() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -1677,7 +1686,7 @@ mod tests {
 
     #[test]
     fn single_stale_edge_creates_a_finding_observation() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -1731,7 +1740,7 @@ mod tests {
 
     #[test]
     fn worst_freshness_across_edges_wins_the_consumer_freshness_row() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -1862,7 +1871,7 @@ mod tests {
 
     #[test]
     fn empty_edges_list_fails_closed_before_any_write() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -1917,7 +1926,7 @@ mod tests {
     /// per-Edge diagnostic it is a rollup of -- and nothing errored.
     #[test]
     fn a_partial_republish_does_not_roll_consumer_freshness_backwards() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -2066,7 +2075,7 @@ mod tests {
     /// covers has never been evaluated in this Epoch.
     #[test]
     fn a_consumer_is_not_fresh_while_one_of_its_edges_is_unevaluated() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -2125,7 +2134,7 @@ mod tests {
     /// content: adding an Edge changes it even when every Edge is Fresh.
     #[test]
     fn publishing_records_the_consumers_dependency_set_digest() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -2224,7 +2233,7 @@ mod tests {
 
     #[test]
     fn write_edge_state_fails_closed_when_edge_belongs_to_a_different_project() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             let edge_id = seed_edge(
@@ -2257,7 +2266,7 @@ mod tests {
     /// disagree about what a Consumer even is.
     #[test]
     fn write_consumer_freshness_refuses_a_kind_carrying_the_finding_key_separator() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             let error = write_consumer_freshness_in_tx(
@@ -2283,7 +2292,7 @@ mod tests {
 
     #[test]
     fn write_consumer_freshness_fails_closed_when_epoch_belongs_to_a_different_project() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let other_epoch_id = seed_epoch(conn, "project-2");
 

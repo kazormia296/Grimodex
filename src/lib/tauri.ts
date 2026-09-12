@@ -186,6 +186,8 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["list_system_fonts", IPC_TIMEOUT_MS],
   ["foreshadow_load_anchors_for_scene", IPC_TIMEOUT_MS],
   ["list_annotations_for_scene", IPC_TIMEOUT_MS],
+  ["fts_search", IPC_TIMEOUT_MS],
+  ["nir1_evidence_qualify", IPC_TIMEOUT_MS],
   // These reads can legitimately include process/network startup or a model
   // cold-load, so retain the existing five-minute caller budget.
   ["detect_cli_binary", AI_IPC_TIMEOUT_MS],
@@ -218,6 +220,8 @@ const DERIVED_INDEX_COMMANDS = new Set([
   "events_reindex_all",
   "chat_index_message",
   "chat_reindex_all",
+  "related_scenes_begin",
+  "related_scenes_continue",
 ]);
 
 const AUDIT_EXPORT_READ_COMMANDS = new Set([
@@ -317,6 +321,62 @@ function ipcCategoryForCommand(
   if (DERIVED_INDEX_COMMANDS.has(command)) return "derived";
   if (AUDIT_EXPORT_READ_COMMANDS.has(command)) return "read";
   return callerTimeoutForCommand(command, args) === null ? "mutation" : "read";
+}
+
+function relatedScenesPendingTicket(value: unknown): string | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const ir = (value as { readonly ir?: unknown }).ir;
+  if (ir === null || typeof ir !== "object" || Array.isArray(ir)) return null;
+  const pending = ir as {
+    readonly status?: unknown;
+    readonly operationTicket?: unknown;
+  };
+  return pending.status === "pending" &&
+    typeof pending.operationTicket === "string" &&
+    pending.operationTicket.trim().length > 0
+    ? pending.operationTicket
+    : null;
+}
+
+/**
+ * A lifecycle can detach the renderer caller while Native finishes a begin
+ * against its pinned scope. If that late result allocated a ticket, release it
+ * through the normal mutation path because no feature session can bind it.
+ */
+function createRelatedScenesBeginLateResultCleanup() {
+  const unset = Symbol("related-scenes-begin-result-unset");
+  let result: unknown | typeof unset = unset;
+  let lifecycleCancelled = false;
+  let releaseStarted = false;
+
+  const releaseIfOrphaned = () => {
+    if (!lifecycleCancelled || result === unset || releaseStarted) return;
+    const operationTicket = relatedScenesPendingTicket(result);
+    if (operationTicket === null) return;
+    releaseStarted = true;
+    void invoke("related_scenes_release", { operationTicket }).catch(
+      (error: unknown) => {
+        console.warn(
+          "[tauri] Late Related Scenes ticket release failed",
+          error,
+        );
+      },
+    );
+  };
+
+  return {
+    observeResult(value: unknown): void {
+      result = value;
+      releaseIfOrphaned();
+    },
+    observeCallerFailure(error: unknown): void {
+      if (!isIpcLifecycleCancellation(error)) return;
+      lifecycleCancelled = true;
+      releaseIfOrphaned();
+    },
+  };
 }
 
 let browserMock: BrowserMock | null = null;
@@ -421,6 +481,10 @@ export async function invoke<T = unknown>(
     console.debug(`[tauri] invoke: ${cmd} (electron)`);
     const bridge = electronBridge();
     const ms = callerTimeoutForCommand(cmd, args);
+    const lateBeginCleanup =
+      cmd === "related_scenes_begin"
+        ? createRelatedScenesBeginLateResultCleanup()
+        : null;
     try {
       return await enqueueIpc(
         cmd,
@@ -446,13 +510,16 @@ export async function invoke<T = unknown>(
               : classifyLegacyIpcError(envelope.error);
             throw new IpcInvokeError(cmd, info);
           }
+          lateBeginCleanup?.observeResult(envelope.value);
           return envelope.value;
         },
         ms,
         ipcCategoryForCommand(cmd, args),
       );
     } catch (error) {
-      throw normalizeIpcFailure(cmd, error);
+      const normalized = normalizeIpcFailure(cmd, error);
+      lateBeginCleanup?.observeCallerFailure(normalized);
+      throw normalized;
     }
   }
   const ms = callerTimeoutForCommand(cmd, args);

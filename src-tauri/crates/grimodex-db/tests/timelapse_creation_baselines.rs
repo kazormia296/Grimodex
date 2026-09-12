@@ -1,4 +1,6 @@
-use std::path::Path;
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -79,8 +81,10 @@ impl BodyKind {
 }
 
 fn database() -> Database {
-    let db = Database::new(Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    seed_database(test_support::current_schema_memory().expect("current-schema fixture"))
+}
+
+fn seed_database(db: Database) -> Database {
     db.with_conn(|conn| {
         conn.execute(
             "INSERT INTO projects (id, title, language) VALUES (?1, 'Timelapse', 'ja')",
@@ -3004,7 +3008,7 @@ fn unrelated_update_feed_does_not_create_a_body_baseline() {
 
 #[test]
 fn current_schema_open_repairs_missing_and_stale_creation_baseline_triggers() {
-    let db = database();
+    let db = seed_database(test_support::fresh_migrated_memory().expect("real migration fixture"));
     db.with_conn(|conn| {
         conn.execute_batch(
             "DROP TRIGGER timelapse_scene_creation_baseline;

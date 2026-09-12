@@ -910,7 +910,6 @@ fn contribution_from_row(row: ContributionRow) -> anyhow::Result<ApplicationCont
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
 
     use super::*;
     use crate::Database;
@@ -1105,9 +1104,7 @@ mod tests {
     }
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
-        db
+        crate::test_support::current_schema_memory().expect("current-schema fixture")
     }
 
     /// The Application lifecycle side of the pair. `test_provenance` names

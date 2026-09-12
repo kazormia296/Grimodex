@@ -4,7 +4,8 @@
 //! `grimodex_db::narrative_extraction` surface.  They are the RED contract for
 //! SCHEMA 33: the SCHEMA 32 parent has no declaration-set storage yet.
 
-use std::path::Path;
+#[path = "../test-support/adapter.rs"]
+mod test_support;
 
 use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use grimodex_db::narrative_extraction::{
@@ -21,8 +22,16 @@ const CONSUMER_KEY: &str = "revision-1";
 const CREATED_AT: &str = "2026-08-24T00:00:00.000Z";
 
 fn migrated_db() -> Database {
-    let db = Database::new(Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
+    seed_project(db)
+}
+
+fn fresh_migrated_db() -> Database {
+    let db = test_support::fresh_migrated_memory().expect("migrate database");
+    seed_project(db)
+}
+
+fn seed_project(db: Database) -> Database {
     db.with_conn(|conn| {
         conn.execute(
             "INSERT INTO projects (id, title) VALUES (?1, 'D1 fixture')",
@@ -76,7 +85,7 @@ fn text_range_declaration(source: &str, from: u64, to: u64) -> DependencyDeclara
 
 #[test]
 fn migration_adds_schema_33_sealed_declaration_storage() {
-    let db = migrated_db();
+    let db = fresh_migrated_db();
     let (version, tables): (i32, Vec<String>) = db
         .with_conn(|conn| {
             let version = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -358,7 +367,7 @@ fn incomplete_or_corrupt_v2_storage_fails_closed_without_hiding_v1() {
 
 #[test]
 fn rewinding_the_marker_and_removing_d1_objects_replays_migration() {
-    let db = migrated_db();
+    let db = fresh_migrated_db();
     db.with_conn(|conn| {
         conn.execute_batch(
             "DROP TABLE narrative_dependency_declaration_heads;

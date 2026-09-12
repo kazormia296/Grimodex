@@ -2,11 +2,13 @@
 
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import {
   copyFile,
+  link,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rename,
@@ -45,6 +47,9 @@ import {
   C2ZC_RUST_ACCEPTANCE_RECEIPT_PATH,
   verifyC2ZcRustAcceptanceReceipt,
 } from "./c2zc-rust-acceptance-receipt.mjs";
+import { validateWebEditorArtifact } from "./validate-web-editor-artifact.mjs";
+import { runLocalCiTasks, validateLocalCiTasks } from "./local-ci-runner.mjs";
+import { runLocalCiCommand } from "./local-ci-process-supervisor.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -73,12 +78,22 @@ const C2ZC_RESTORE_FIXTURE_EVIDENCE_DIR = path.join(
 const C2ZC_RESTORE_FIXTURE_RUN_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const C2ZC_FULL_STAGE_ORDER = Object.freeze([
-  "rust",
+  "bootstrap",
+  "migration-recovery-gate",
+  "security",
+  "frontend",
+  "browser",
+  "electron-native",
   C2ZC_RUST_ACCEPTANCE_GATE_STAGE,
   C2ZC_RESTORE_FIXTURE_STAGE,
-  "migration-recovery-gate",
-  "electron-runtime-performance",
+  "quality",
   "electron-product-journeys",
+  "lfm-encoder-phase0",
+  "rust",
+  "webgl",
+  "storybook",
+  "electron",
+  "electron-runtime-performance",
 ]);
 const C2ZC_RESTORE_FIXTURE_DIAGNOSTIC_VERSION = 1;
 const C2ZC_RESTORE_FIXTURE_DIAGNOSTIC_MAX_ERROR_LENGTH = 512;
@@ -256,6 +271,9 @@ export function validateLocalCiRegistry(registry) {
     throw new Error("local CI registry version must be 1");
   }
   requireString(registry.defaultBase, "local CI defaultBase");
+  if (!Number.isSafeInteger(registry.maxSlots) || registry.maxSlots < 1) {
+    throw new Error("local CI maxSlots must be a positive integer");
+  }
   if (!isPlainObject(registry.profiles)) {
     throw new Error("local CI profiles must be an object");
   }
@@ -283,6 +301,31 @@ export function validateLocalCiRegistry(registry) {
       requireString(command.label, `${label} label`);
       requireString(command.command, `${label} command`);
       requireStringArray(command.args, `${label} args`);
+      requireString(command.id, `${label} id`);
+      requireStringArray(command.after ?? [], `${label} after`);
+      assertUnique(command.after ?? [], `${label} after`);
+      if (
+        command.lane !== undefined &&
+        (typeof command.lane !== "string" || command.lane.length === 0)
+      ) {
+        throw new Error(`${label} lane must be a non-empty string`);
+      }
+      if (
+        command.slots !== undefined &&
+        (!Number.isSafeInteger(command.slots) || command.slots < 1)
+      ) {
+        throw new Error(`${label} slots must be a positive integer`);
+      }
+      if (
+        command.timeoutMs !== undefined &&
+        (!Number.isSafeInteger(command.timeoutMs) || command.timeoutMs < 1)
+      ) {
+        throw new Error(`${label} timeoutMs must be a positive integer`);
+      }
+      if (command.obligations !== undefined) {
+        requireStringArray(command.obligations, `${label} obligations`);
+        assertUnique(command.obligations, `${label} obligations`);
+      }
       validateWorkingDirectory(command.cwd, `${label} cwd`);
       validateEnvironment(command.env, `${label} env`);
       if (
@@ -318,6 +361,20 @@ export function validateLocalCiRegistry(registry) {
     registry.profiles.full,
     "local CI full profile C2-ZC stages",
   );
+
+  const allCommands = Object.values(registry.stages).flatMap(
+    (stage) => stage.commands,
+  );
+  validateLocalCiTasks(allCommands, { maxSlots: registry.maxSlots });
+  const fullCommands = registry.profiles.full.flatMap(
+    (stageId) => registry.stages[stageId].commands,
+  );
+  const obligations = fullCommands.flatMap(
+    (command) => command.obligations ?? [command.id],
+  );
+  if (obligations.length !== 52 || new Set(obligations).size !== 52) {
+    throw new Error("local CI Full must map exactly 52 unique obligations");
+  }
 
   for (const [jobId, coverage] of Object.entries(registry.hostedJobs)) {
     requireString(jobId, "hosted CI job id");
@@ -367,11 +424,43 @@ function resolveCommand(command, stage, comparison) {
     );
   }
   return {
+    id: command.id,
     label: command.label,
     command: command.command,
     args,
     cwd: command.cwd ?? ".",
     env: { ...(stage.env ?? {}), ...(command.env ?? {}) },
+    ...(command.after === undefined ? {} : { after: [...command.after] }),
+    ...(command.lane === undefined ? {} : { lane: command.lane }),
+    ...(command.slots === undefined ? {} : { slots: command.slots }),
+    ...(command.timeoutMs === undefined
+      ? {}
+      : { timeoutMs: command.timeoutMs }),
+    ...(command.obligations === undefined
+      ? {}
+      : { obligations: [...command.obligations] }),
+  };
+}
+
+function taskCommandDescriptor(command) {
+  return {
+    label: command.label,
+    command: command.command,
+    args: [...command.args],
+    cwd: command.cwd,
+    env: { ...command.env },
+  };
+}
+
+export function createLocalCiPlanDescriptor(plan) {
+  return {
+    profile: plan.profile,
+    comparison: plan.comparison,
+    coverage: plan.coverage,
+    registryDigest: plan.registryDigest,
+    maxSlots: plan.maxSlots,
+    releaseOnlyJobs: plan.releaseOnlyJobs,
+    tasks: plan.tasks,
   };
 }
 
@@ -411,6 +500,27 @@ export function buildLocalCiPlan(
           .filter(([, coverage]) => coverage.releaseOnly)
           .map(([id, coverage]) => ({ id, reason: coverage.reason }))
       : [];
+  const includedTaskIds = new Set(
+    stages.flatMap((stage) => stage.commands.map((command) => command.id)),
+  );
+  const tasks = stages.flatMap((stage) =>
+    stage.commands.map((command, commandIndex) => ({
+      id: command.id,
+      stageId: stage.id,
+      stageLabel: stage.label,
+      commandIndex,
+      command: taskCommandDescriptor(command),
+      after: (command.after ?? []).filter((id) => includedTaskIds.has(id)),
+      ...(command.lane === undefined ? {} : { lane: command.lane }),
+      ...(command.slots === undefined ? {} : { slots: command.slots }),
+      ...(command.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: command.timeoutMs }),
+      ...(command.obligations === undefined
+        ? {}
+        : { obligations: [...command.obligations] }),
+    })),
+  );
   return {
     comparison,
     coverage: {
@@ -418,8 +528,11 @@ export function buildLocalCiPlan(
       fromStage: from,
     },
     profile,
+    maxSlots: registry.maxSlots,
+    registryDigest: digestJson(registry),
     releaseOnlyJobs,
     stages,
+    tasks,
   };
 }
 
@@ -607,7 +720,7 @@ async function collectArtifactFiles(directory, { root }) {
 
 function resolveProductJourneyArtifactDirectory(
   plan,
-  { root = repoRoot } = {},
+  { root = repoRoot, runId = null } = {},
 ) {
   const stage = plan.stages.find(
     (candidate) => candidate.id === "electron-product-journeys",
@@ -615,7 +728,15 @@ function resolveProductJourneyArtifactDirectory(
   const configured = stage?.commands
     .map((command) => command.env?.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR)
     .find((value) => value !== undefined && value !== "");
-  return path.resolve(root, configured ?? PRODUCT_JOURNEY_ARTIFACT_DIR);
+  const artifactDirectory = configured ?? PRODUCT_JOURNEY_ARTIFACT_DIR;
+  if (!artifactDirectory.includes("__LOCAL_CI_RUN_ID__")) {
+    return path.resolve(root, artifactDirectory);
+  }
+  assertC2ZcRestoreFixtureRunId(runId, "Product journey evidence run");
+  return path.resolve(
+    root,
+    artifactDirectory.replaceAll("__LOCAL_CI_RUN_ID__", runId),
+  );
 }
 
 function resolveC2ZcRustAcceptanceReceiptPath(plan, { root = repoRoot } = {}) {
@@ -1562,9 +1683,17 @@ function productJourneySelectionForPlan(plan, report) {
 /** Collect and validate the immutable product-journey evidence for a Full receipt. */
 export async function collectProductJourneyEvidence(
   plan,
-  { candidate = null, root = repoRoot, restoreFixtureEvidence = null } = {},
+  {
+    candidate = null,
+    root = repoRoot,
+    restoreFixtureEvidence = null,
+    runId = null,
+  } = {},
 ) {
-  const artifactRoot = resolveProductJourneyArtifactDirectory(plan, { root });
+  const artifactRoot = resolveProductJourneyArtifactDirectory(plan, {
+    root,
+    runId,
+  });
   const resultsPath = path.join(artifactRoot, "results.json");
   const manifestPath = path.join(artifactRoot, "manifest.json");
   const files = await collectArtifactFiles(artifactRoot, { root });
@@ -1984,7 +2113,7 @@ function verifyProductJourneyEvidence(
 function assertFullReceiptCommandArgs(
   receiptArgs,
   plannedArgs,
-  { stageId, plan, candidate, label },
+  { stageId, plan, candidate, label, runId },
 ) {
   if (!Array.isArray(receiptArgs) || !Array.isArray(plannedArgs)) {
     throw new Error(`${label} args must match the planned command.`);
@@ -1995,6 +2124,21 @@ function assertFullReceiptCommandArgs(
   for (const [index, plannedArg] of plannedArgs.entries()) {
     const option = index > 0 ? plannedArgs[index - 1] : null;
     const receiptArg = receiptArgs[index];
+    if (
+      typeof plannedArg === "string" &&
+      plannedArg.includes("__LOCAL_CI_RUN_ID__")
+    ) {
+      const expectedArg =
+        typeof runId === "string"
+          ? plannedArg.replaceAll("__LOCAL_CI_RUN_ID__", runId)
+          : plannedArg;
+      if (receiptArg !== expectedArg) {
+        throw new Error(
+          `${label} run-specific path does not match the receipt.`,
+        );
+      }
+      continue;
+    }
     if (stageId === C2ZC_RESTORE_FIXTURE_STAGE) {
       if (
         option === "--repo-root" ||
@@ -2038,10 +2182,22 @@ function assertFullReceiptCommandArgs(
 function assertFullReceiptCommandEnvironment(
   receiptEnv,
   plannedEnv,
-  { stageId, plan, candidate, label },
+  { stageId, plan, candidate, label, runId },
 ) {
   const actual = isPlainObject(receiptEnv) ? receiptEnv : {};
   const expected = isPlainObject(plannedEnv) ? { ...plannedEnv } : {};
+  const runSpecificKeys = Object.entries(expected)
+    .filter(
+      ([, value]) =>
+        typeof value === "string" && value.includes("__LOCAL_CI_RUN_ID__"),
+    )
+    .map(([key]) => key);
+  if (runSpecificKeys.length > 0) {
+    assertC2ZcRestoreFixtureRunId(runId, `${label} run`);
+    for (const key of runSpecificKeys) {
+      expected[key] = expected[key].replaceAll("__LOCAL_CI_RUN_ID__", runId);
+    }
+  }
   const isDynamicallyBoundStage =
     stageId === C2ZC_RUST_ACCEPTANCE_GATE_STAGE ||
     stageId === "electron-product-journeys";
@@ -2121,7 +2277,7 @@ function assertC2ZcFixtureReceiptPathCoherence(receiptStage, plannedStage) {
   }
 }
 
-function assertFullReceiptStageBinding(receiptStages, plan, candidate) {
+function assertFullReceiptStageBinding(receiptStages, plan, candidate, runId) {
   if (
     !isPlainObject(plan) ||
     plan.profile !== "full" ||
@@ -2205,6 +2361,7 @@ function assertFullReceiptStageBinding(receiptStages, plan, candidate) {
         plan,
         candidate,
         label: commandLabel,
+        runId,
       });
       if (receiptCommand.cwd !== plannedCommand.cwd) {
         throw new Error(
@@ -2219,6 +2376,7 @@ function assertFullReceiptStageBinding(receiptStages, plan, candidate) {
           plan,
           candidate,
           label: commandLabel,
+          runId,
         },
       );
     }
@@ -2226,6 +2384,218 @@ function assertFullReceiptStageBinding(receiptStages, plan, candidate) {
       assertC2ZcFixtureReceiptPathCoherence(receiptStage, plannedStage);
     }
   }
+}
+
+function assertTaskLogIdentity(log, label, expectedPath = null) {
+  if (
+    !isPlainObject(log) ||
+    typeof log.path !== "string" ||
+    log.path.length === 0 ||
+    path.isAbsolute(log.path) ||
+    log.path.split(/[\\/]/u).includes("..") ||
+    !Number.isSafeInteger(log.size) ||
+    log.size < 0 ||
+    !/^sha256:[0-9a-f]{64}$/u.test(log.sha256 ?? "")
+  ) {
+    throw new Error(`${label} is invalid`);
+  }
+  if (expectedPath !== null && log.path !== expectedPath) {
+    throw new Error(`${label} does not match its run-specific path`);
+  }
+}
+
+function assertExactTaskReceipt(receipt, plan, { required = false } = {}) {
+  const hasTaskEvidence =
+    receipt.tasks !== undefined || receipt.plan !== undefined;
+  if (!required && !hasTaskEvidence) return;
+  if (!Array.isArray(plan?.tasks)) {
+    throw new Error("Local CI task receipt requires an exact task plan.");
+  }
+  assertC2ZcRestoreFixtureRunId(receipt.runId, "Local CI task receipt");
+  if (
+    receipt.registryDigest !== plan.registryDigest ||
+    JSON.stringify(receipt.plan) !==
+      JSON.stringify(createLocalCiPlanDescriptor(plan))
+  ) {
+    throw new Error("Local CI receipt does not match the exact task plan.");
+  }
+  if (
+    !Array.isArray(receipt.tasks) ||
+    receipt.tasks.length !== plan.tasks.length
+  ) {
+    throw new Error("Local CI receipt must contain every exact task result.");
+  }
+  for (const [index, task] of plan.tasks.entries()) {
+    const result = receipt.tasks[index];
+    if (
+      !isPlainObject(result) ||
+      result.id !== task.id ||
+      result.status !== "passed" ||
+      result.exitCode !== 0 ||
+      result.signal !== null ||
+      result.cleanup?.complete !== true ||
+      result.interrupted === true ||
+      result.timedOut === true ||
+      result.error !== undefined
+    ) {
+      throw new Error(`Local CI task ${task.id} did not pass cleanly.`);
+    }
+    for (const stream of ["stdout", "stderr"]) {
+      assertTaskLogIdentity(
+        result.logs?.[stream],
+        `Local CI task ${task.id} ${stream} log`,
+        path.posix.join(
+          ".artifacts",
+          "local-ci",
+          "runs",
+          receipt.runId,
+          "logs",
+          `${task.id}.${stream}.log`,
+        ),
+      );
+    }
+  }
+}
+
+export async function verifyLocalCiTaskEvidence(
+  receipt,
+  {
+    allowPrePublication = false,
+    requireFinalization = false,
+    root = repoRoot,
+  } = {},
+) {
+  if (!Array.isArray(receipt?.tasks)) {
+    throw new Error("Local CI task evidence is required.");
+  }
+  assertC2ZcRestoreFixtureRunId(receipt.runId, "Local CI task evidence");
+  for (const task of receipt.tasks) {
+    for (const stream of ["stdout", "stderr"]) {
+      const expected = task.logs?.[stream];
+      assertTaskLogIdentity(
+        expected,
+        `Local CI task ${task.id} ${stream} log`,
+        path.posix.join(
+          ".artifacts",
+          "local-ci",
+          "runs",
+          receipt.runId,
+          "logs",
+          `${task.id}.${stream}.log`,
+        ),
+      );
+      const current = await resolveArtifactEvidence(expected.path, { root });
+      if (
+        current.size !== expected.size ||
+        current.sha256 !== expected.sha256
+      ) {
+        throw new Error(
+          `Local CI task ${task.id} ${stream} log identity changed.`,
+        );
+      }
+    }
+  }
+  if (requireFinalization) {
+    await verifyLocalCiFinalization(receipt, {
+      requirePublishedAt: !allowPrePublication,
+      root,
+    });
+  }
+  return receipt;
+}
+
+function finalizationSourceProjection(receipt) {
+  const {
+    durationMs: _durationMs,
+    executionDurationMs: _executionDurationMs,
+    finishedAt: _finishedAt,
+    finalizationDurationMs: _finalizationDurationMs,
+    verificationDurationMs: _verificationDurationMs,
+    finalization: _finalization,
+    ...source
+  } = receipt;
+  return source;
+}
+
+export async function verifyLocalCiFinalization(
+  receipt,
+  { requirePublishedAt = true, root = repoRoot } = {},
+) {
+  const finalization = receipt?.finalization;
+  const expected = finalization?.verifiedReceipt;
+  if (!isPlainObject(finalization) || !isPlainObject(expected)) {
+    throw new Error("Local CI finalization evidence is required.");
+  }
+  if (
+    finalization.durationCutoff !== "before-canonical-receipt-persistence" ||
+    finalization.externalVerify?.status !== "passed" ||
+    !Number.isSafeInteger(finalization.externalVerify?.durationMs) ||
+    finalization.externalVerify.durationMs < 0 ||
+    !Number.isSafeInteger(finalization.receiptDurationMs) ||
+    finalization.receiptDurationMs < 0 ||
+    !Number.isSafeInteger(receipt.durationMs) ||
+    receipt.durationMs < 0 ||
+    finalization.receiptDurationMs !== receipt.durationMs ||
+    !Number.isSafeInteger(receipt.executionDurationMs) ||
+    receipt.executionDurationMs < 0 ||
+    receipt.durationMs < receipt.executionDurationMs ||
+    !Number.isSafeInteger(receipt.verificationDurationMs) ||
+    receipt.verificationDurationMs < 0 ||
+    receipt.verificationDurationMs !== finalization.externalVerify.durationMs ||
+    !Number.isSafeInteger(receipt.finalizationDurationMs) ||
+    receipt.finalizationDurationMs !==
+      receipt.durationMs - receipt.executionDurationMs ||
+    receipt.verificationDurationMs > receipt.finalizationDurationMs ||
+    (requirePublishedAt &&
+      (typeof finalization.finalizedAt !== "string" ||
+        finalization.finalizedAt.length === 0))
+  ) {
+    throw new Error("Local CI finalization evidence is inconsistent.");
+  }
+  assertC2ZcRestoreFixtureRunId(
+    receipt.runId,
+    "Local CI finalization evidence",
+  );
+  assertTaskLogIdentity(
+    expected,
+    "Local CI verified receipt",
+    path.posix.join(
+      ".artifacts",
+      "local-ci",
+      "runs",
+      receipt.runId,
+      LOCAL_CI_VERIFIED_RECEIPT_NAME,
+    ),
+  );
+  const current = await resolveArtifactEvidence(expected.path, { root });
+  if (current.size !== expected.size || current.sha256 !== expected.sha256) {
+    throw new Error("Local CI verified receipt identity changed.");
+  }
+  let source;
+  try {
+    source = JSON.parse(await readFile(current.realPath, "utf8"));
+  } catch (error) {
+    throw new Error("Local CI verified receipt source is not valid JSON.", {
+      cause: error,
+    });
+  }
+  if (
+    !isPlainObject(source) ||
+    source.runId !== receipt.runId ||
+    source.profile !== receipt.profile ||
+    source.status !== "passed" ||
+    source.version !== receipt.version ||
+    source.finalization !== undefined ||
+    source.durationMs !== receipt.executionDurationMs ||
+    source.executionDurationMs !== receipt.executionDurationMs ||
+    JSON.stringify(finalizationSourceProjection(source)) !==
+      JSON.stringify(finalizationSourceProjection(receipt))
+  ) {
+    throw new Error(
+      "Local CI final receipt is not bound to its verified source receipt.",
+    );
+  }
+  return receipt;
 }
 
 export function verifyLocalCiReceipt(
@@ -2236,6 +2606,7 @@ export function verifyLocalCiReceipt(
     currentProductJourneyEvidence = null,
     currentC2ZcRestoreFixtureEvidence = null,
     plan = null,
+    requireTaskEvidence = false,
   },
 ) {
   if (!isPlainObject(receipt) || receipt.version !== LOCAL_CI_RECEIPT_VERSION) {
@@ -2257,9 +2628,41 @@ export function verifyLocalCiReceipt(
   if (profile === "full" && receipt.candidate?.worktreeClean !== true) {
     throw new Error("A clean-worktree Full local CI receipt is required.");
   }
+  if (
+    profile === "full" &&
+    (requireTaskEvidence || receipt.durationMs !== undefined) &&
+    (!Number.isSafeInteger(receipt.durationMs) || receipt.durationMs < 0)
+  ) {
+    throw new Error(
+      "Full local CI receipt durationMs must be a non-negative safe integer.",
+    );
+  }
   verifyCandidateBinding(receipt.candidate, candidate);
+  const hasTaskEvidence =
+    receipt.tasks !== undefined || receipt.plan !== undefined;
+  if (
+    (requireTaskEvidence || hasTaskEvidence) &&
+    receipt.candidateAfter === undefined
+  ) {
+    throw new Error(
+      "Local CI task receipt requires the post-run candidate binding.",
+    );
+  }
+  if (receipt.candidateAfter !== undefined) {
+    verifyCandidateBinding(receipt.candidateAfter, candidate);
+    verifyCandidateBinding(receipt.candidate, receipt.candidateAfter);
+  }
+  if (receipt.deadlineExceeded === true) {
+    throw new Error("Local CI receipt exceeded its execution deadline.");
+  }
+  assertExactTaskReceipt(receipt, plan, { required: requireTaskEvidence });
   if (profile === "full") {
-    assertFullReceiptStageBinding(receipt.stages, plan, candidate);
+    assertFullReceiptStageBinding(
+      receipt.stages,
+      plan,
+      candidate,
+      receipt.runId,
+    );
     const expectedC2ZcAcceptance =
       plan?.profile === "full" ? expectedC2ZcAcceptanceForPlan(plan) : null;
     if (
@@ -2312,6 +2715,7 @@ export function parseLocalCiArgs(argv) {
     list: false,
     profile: null,
     report: null,
+    recoverLock: false,
     verify: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -2319,6 +2723,7 @@ export function parseLocalCiArgs(argv) {
     if (argument === "--") continue;
     if (argument === "--dry-run") result.dryRun = true;
     else if (argument === "--list") result.list = true;
+    else if (argument === "--recover-lock") result.recoverLock = true;
     else if (argument === "--verify") result.verify = true;
     else if (argument === "--base") {
       result.base = readOptionValue(argv, argument, index);
@@ -2340,34 +2745,22 @@ export function parseLocalCiArgs(argv) {
   return result;
 }
 
-function executeCommand(entry, { root = repoRoot } = {}) {
-  return new Promise((resolve) => {
-    const started = performance.now();
-    const executable =
-      process.platform === "win32" && entry.command === "pnpm"
-        ? "pnpm.cmd"
-        : entry.command;
-    const child = spawn(executable, entry.args, {
-      cwd: path.resolve(root, entry.cwd),
-      env: { ...process.env, ...entry.env },
-      shell: false,
-      stdio: "inherit",
-    });
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      resolve({
-        durationMs: Math.round(performance.now() - started),
-        ...result,
-      });
-    };
-    child.once("error", (error) =>
-      finish({ error: error.message, exitCode: null, signal: null }),
-    );
-    child.once("exit", (exitCode, signal) =>
-      finish({ exitCode, signal: signal ?? null }),
-    );
+function executeCommand(
+  entry,
+  {
+    logDirectory = ".artifacts/local-ci/logs",
+    root = repoRoot,
+    signal = null,
+    taskId = entry.id ?? `command-${randomUUID()}`,
+    timeoutMs = entry.timeoutMs,
+  } = {},
+) {
+  return runLocalCiCommand(entry, {
+    logDirectory,
+    root,
+    signal,
+    taskId,
+    timeoutMs,
   });
 }
 
@@ -2569,22 +2962,302 @@ async function bindC2ZcProductJourneyCommand(
   };
 }
 
+function bindRunId(command, runId) {
+  const replace = (value) => value.replaceAll("__LOCAL_CI_RUN_ID__", runId);
+  return {
+    ...command,
+    args: command.args.map(replace),
+    env: Object.fromEntries(
+      Object.entries(command.env ?? {}).map(([key, value]) => [
+        key,
+        replace(value),
+      ]),
+    ),
+  };
+}
+
+function executionPassed(execution) {
+  return (
+    execution.exitCode === 0 &&
+    execution.signal == null &&
+    execution.cleanup?.complete === true &&
+    execution.interrupted !== true &&
+    execution.timedOut !== true &&
+    execution.error === undefined
+  );
+}
+
+async function validateRunSpecificWebArtifact(command, { root, runId }) {
+  const outputIndex = command.args.indexOf("--outDir");
+  const expected = path.join(
+    ".artifacts",
+    "local-ci",
+    "runs",
+    runId,
+    "web-editor",
+  );
+  if (outputIndex === -1 || command.args[outputIndex + 1] !== expected) {
+    throw new Error(
+      "Web Editor build must use its exact run-specific output path",
+    );
+  }
+  await validateWebEditorArtifact(path.resolve(root, expected));
+}
+
+async function runConcurrentLocalCiPlan(
+  plan,
+  {
+    candidate,
+    deadlineMs,
+    execute,
+    logDirectory,
+    notify,
+    productJourneyEvidence,
+    root,
+    runId,
+    signal,
+  },
+) {
+  const startedAt = new Date().toISOString();
+  const started = performance.now();
+  const completed = new Map();
+  const commandRecords = new Map();
+  let c2zcRestoreFixtureContext = null;
+  let c2zcRestoreFixtureDiagnostic = null;
+  let c2zcRestoreFixtureEvidenceOwned = false;
+
+  const scheduled = await runLocalCiTasks(plan.tasks, {
+    deadlineMs,
+    maxSlots: plan.maxSlots,
+    signal,
+    notify(event) {
+      if (event.type === "task-start") {
+        notify({
+          command: event.task.command,
+          stage: { id: event.task.stageId, label: event.task.stageLabel },
+          type: "command-start",
+        });
+      }
+    },
+    async executeTask(task, { signal }) {
+      let command = task.command;
+      const fixtureBinding = await bindC2ZcRestoreFixtureCommand(
+        command,
+        task.stageId,
+        {
+          root,
+          plan,
+          candidate,
+          context: c2zcRestoreFixtureContext,
+        },
+      );
+      c2zcRestoreFixtureContext = fixtureBinding.context;
+      command = bindC2ZcRustGateCommand(command, task.stageId, {
+        plan,
+        candidate,
+      });
+      command = await bindC2ZcProductJourneyCommand(
+        {
+          ...command,
+          ...(fixtureBinding.command === task.command
+            ? {}
+            : { args: fixtureBinding.command.args }),
+        },
+        task.stageId,
+        {
+          root,
+          plan,
+          candidate,
+          restoreFixtureEvidence: c2zcRestoreFixtureContext?.evidence,
+          buildStagePassed:
+            completed.get("journeys.mcp-build")?.status === "passed",
+        },
+      );
+      command = bindRunId(command, runId);
+
+      let execution;
+      try {
+        execution = await execute(command, {
+          logDirectory,
+          root,
+          signal,
+          taskId: task.id,
+          timeoutMs: task.timeoutMs,
+        });
+      } catch (error) {
+        execution = {
+          ...(isPlainObject(error?.result) ? error.result : {}),
+          cleanup: error?.result?.cleanup ?? { complete: false },
+          durationMs: error?.result?.durationMs ?? 0,
+          error: error instanceof Error ? error.message : String(error),
+          exitCode: error?.result?.exitCode ?? null,
+          signal: error?.result?.signal ?? null,
+        };
+      }
+      execution = {
+        ...execution,
+        cleanup: execution.cleanup ?? { complete: true },
+      };
+
+      if (executionPassed(execution) && task.id === "frontend.web-build") {
+        try {
+          await validateRunSpecificWebArtifact(command, { root, runId });
+        } catch (error) {
+          execution = {
+            ...execution,
+            error: error instanceof Error ? error.message : String(error),
+            exitCode: 1,
+          };
+        }
+      }
+
+      if (
+        executionPassed(execution) &&
+        task.stageId === C2ZC_RESTORE_FIXTURE_STAGE
+      ) {
+        try {
+          const operation = fixtureCommandOperation(command);
+          await validateC2ZcRestoreFixtureContext(c2zcRestoreFixtureContext);
+          if (operation === "verify") {
+            c2zcRestoreFixtureContext.evidence =
+              await captureC2ZcRestoreFixtureEvidence(
+                c2zcRestoreFixtureContext,
+                root,
+                { runId },
+              );
+            c2zcRestoreFixtureEvidenceOwned = true;
+          }
+        } catch (error) {
+          execution = {
+            ...execution,
+            error: error instanceof Error ? error.message : String(error),
+            exitCode: 1,
+          };
+        }
+      }
+      const status = executionPassed(execution) ? "passed" : "failed";
+      if (task.stageId === C2ZC_RESTORE_FIXTURE_STAGE && status === "failed") {
+        if (c2zcRestoreFixtureEvidenceOwned) {
+          await removeCopiedC2ZcRestoreFixture(root, runId);
+          c2zcRestoreFixtureEvidenceOwned = false;
+        }
+        c2zcRestoreFixtureDiagnostic = c2zcFixtureDiagnostic({
+          runId,
+          stage: task.stageId,
+          command,
+          operation: fixtureCommandOperation(command),
+          candidate,
+          error: execution.error ?? "C2-ZC fixture command failed",
+        });
+      }
+      completed.set(task.id, { status });
+      commandRecords.set(task.id, { command, execution });
+      notify({
+        command,
+        execution,
+        stage: { id: task.stageId, label: task.stageLabel },
+        status,
+        type: "command-end",
+      });
+      return execution;
+    },
+  });
+
+  if (c2zcRestoreFixtureContext?.outputDir) {
+    await rm(c2zcRestoreFixtureContext.outputDir, {
+      recursive: true,
+      force: true,
+    });
+    c2zcRestoreFixtureContext.outputDir = null;
+  }
+
+  const taskResults = new Map(
+    scheduled.tasks.map((result) => [result.id, result]),
+  );
+  const stages = plan.stages.map((stage) => {
+    const commands = stage.commands.map((planned) => {
+      const result = taskResults.get(planned.id);
+      const record = commandRecords.get(planned.id);
+      return {
+        ...(record?.command ?? planned),
+        ...result,
+      };
+    });
+    const status = commands.some((command) => command.status === "failed")
+      ? "failed"
+      : commands.every((command) => command.status === "passed")
+        ? "passed"
+        : "not-run";
+    return {
+      id: stage.id,
+      label: stage.label,
+      status,
+      durationMs: commands.reduce(
+        (total, command) => total + (command.durationMs ?? 0),
+        0,
+      ),
+      commands,
+    };
+  });
+
+  return {
+    version: LOCAL_CI_RECEIPT_VERSION,
+    profile: plan.profile,
+    comparison: plan.comparison,
+    coverage: plan.coverage,
+    candidate,
+    runId,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    durationMs: Math.round(performance.now() - started),
+    status: scheduled.status,
+    deadlineExceeded: scheduled.deadlineExceeded,
+    interrupted: scheduled.interrupted,
+    registryDigest: plan.registryDigest,
+    plan: createLocalCiPlanDescriptor(plan),
+    tasks: scheduled.tasks,
+    c2zcRestoreFixture: c2zcRestoreFixtureContext?.evidence ?? null,
+    c2zcRestoreFixtureDiagnostic,
+    productJourneyEvidence,
+    releaseOnlyJobs: plan.releaseOnlyJobs,
+    stages,
+  };
+}
+
 export async function runLocalCiPlan(
   plan,
   {
     candidate = null,
     dryRun = false,
-    executeCommand: execute = (entry) => executeCommand(entry),
+    executeCommand: execute = (entry, options) =>
+      executeCommand(entry, options),
     notify = () => {},
     productJourneyEvidence = null,
     root = repoRoot,
     runId: requestedRunId = null,
+    concurrent = false,
+    deadlineMs = Number.POSITIVE_INFINITY,
+    logDirectory = null,
+    signal = null,
   } = {},
 ) {
   const startedAt = new Date().toISOString();
   const started = performance.now();
   const runId = requestedRunId ?? randomUUID();
   assertC2ZcRestoreFixtureRunId(runId, "Local CI run");
+  if (concurrent && !dryRun) {
+    return runConcurrentLocalCiPlan(plan, {
+      candidate,
+      deadlineMs,
+      execute,
+      logDirectory: logDirectory ?? `.artifacts/local-ci/runs/${runId}/logs`,
+      notify,
+      productJourneyEvidence,
+      root,
+      runId,
+      signal,
+    });
+  }
   const stages = [];
   let failedStage = null;
   let c2zcRestoreFixtureContext = null;
@@ -2777,12 +3450,25 @@ export async function runLocalCiPlan(
   };
 }
 
+export function runLocalCiInvocationTasks(plan, options = {}) {
+  // The CLI records elapsed time without applying a global execution deadline.
+  return runLocalCiPlan(plan, {
+    ...options,
+    concurrent: true,
+    deadlineMs: Number.POSITIVE_INFINITY,
+  });
+}
+
 export async function prepareLocalCiArtifacts(plan, { root = repoRoot } = {}) {
   const directories = new Set([path.join(root, ".artifacts", "local-ci")]);
   for (const stage of plan.stages) {
     for (const command of stage.commands) {
       for (let index = 0; index < command.args.length - 1; index += 1) {
-        if (!["--output", "--report"].includes(command.args[index])) continue;
+        if (
+          !["--outDir", "--output", "--report"].includes(command.args[index])
+        ) {
+          continue;
+        }
         directories.add(
           path.dirname(
             path.resolve(root, command.cwd, command.args[index + 1]),
@@ -2822,11 +3508,758 @@ function printRegistry(registry) {
 
 async function writeReport(reportPath, result) {
   await mkdir(path.dirname(reportPath), { recursive: true });
-  await writeFile(reportPath, `${JSON.stringify(result, null, 2)}\n`);
+  const temporaryPath = path.join(
+    path.dirname(reportPath),
+    `.${path.basename(reportPath)}.${randomUUID()}.tmp`,
+  );
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(result, null, 2)}\n`, {
+      flag: "wx",
+    });
+    await rename(temporaryPath, reportPath);
+  } catch (error) {
+    await rm(temporaryPath, { force: true });
+    throw error;
+  }
+}
+
+function boundedError(error, limit = 512) {
+  return {
+    code:
+      typeof error?.code === "string" && error.code.length > 0
+        ? error.code
+        : undefined,
+    killed: error?.killed === true ? true : undefined,
+    message: (error instanceof Error ? error.message : String(error)).slice(
+      0,
+      limit,
+    ),
+    name: error instanceof Error ? error.name : "Error",
+    signal:
+      typeof error?.signal === "string" && error.signal.length > 0
+        ? error.signal
+        : undefined,
+  };
+}
+
+function relativeArtifactPath(root, filePath) {
+  return path.relative(root, filePath).split(path.sep).join(path.posix.sep);
+}
+
+async function localFileIdentity(root, filePath) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return {
+    path: relativeArtifactPath(root, filePath),
+    sha256: `sha256:${hash.digest("hex")}`,
+    size: (await stat(filePath)).size,
+  };
+}
+
+const LOCAL_CI_FAILURE_REPORT_DIRECTORY = "failures";
+const LOCAL_CI_VERIFIED_RECEIPT_NAME = "verified-receipt.json";
+
+function failureReportPath(reportPath, runId) {
+  const extension = path.extname(reportPath) || ".json";
+  const stem = path.basename(reportPath, path.extname(reportPath));
+  return path.join(
+    path.dirname(reportPath),
+    LOCAL_CI_FAILURE_REPORT_DIRECTORY,
+    `${stem}.${runId}${extension}`,
+  );
+}
+
+function verifiedReceiptPath(root, runId) {
+  return path.join(
+    root,
+    ".artifacts",
+    "local-ci",
+    "runs",
+    runId,
+    LOCAL_CI_VERIFIED_RECEIPT_NAME,
+  );
+}
+
+async function retainVerifiedReceipt(stagingPath, { root, runId }) {
+  const destination = verifiedReceiptPath(root, runId);
+  await mkdir(path.dirname(destination), { recursive: true });
+  const temporary = path.join(
+    path.dirname(destination),
+    `.${LOCAL_CI_VERIFIED_RECEIPT_NAME}.${randomUUID()}.tmp`,
+  );
+  try {
+    await copyFile(stagingPath, temporary, constants.COPYFILE_EXCL);
+    await link(temporary, destination);
+    await rm(temporary, { force: true });
+    await rm(stagingPath, { force: true });
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  return localFileIdentity(root, destination);
+}
+
+export function checkoutLockCleanupComplete(result) {
+  if (!result || !Array.isArray(result.tasks) || result.tasks.length === 0) {
+    return false;
+  }
+  return result.tasks.every((task) => {
+    if (task?.status === "not-run") return true;
+    return (
+      task?.cleanup?.complete === true && task.cleanup.groupAlive === false
+    );
+  });
+}
+
+function checkoutLockTaskCleanupComplete(task) {
+  return (
+    task?.status === "not-run" ||
+    (task?.cleanup?.complete === true && task.cleanup.groupAlive === false)
+  );
+}
+
+function checkoutLockTaskSummary(result) {
+  if (!Array.isArray(result?.tasks)) return [];
+  return result.tasks
+    .filter((task) => task?.status !== "not-run")
+    .map((task) => ({
+      cleanup: task.cleanup ?? null,
+      error:
+        task.error === undefined ? undefined : String(task.error).slice(0, 512),
+      id: task.id,
+      interrupted: task.interrupted === true,
+      pid: Number.isSafeInteger(task.pid) ? task.pid : null,
+      signal: task.signal ?? null,
+      started: task.started === true,
+      status: task.status ?? "unknown",
+      timedOut: task.timedOut === true,
+    }));
+}
+
+async function writeCheckoutLockMetadata(lock, metadata) {
+  const payload = Buffer.from(`${JSON.stringify(metadata)}\n`, "utf8");
+  await lock.handle.write(payload, 0, payload.length, 0);
+  await lock.handle.truncate(payload.length);
+  lock.metadata = metadata;
+}
+
+function checkoutLockOperationPath(root) {
+  return path.join(root, ".artifacts", "local-ci", "checkout.lock.operation");
+}
+
+async function releaseCheckoutLockOperation(lock) {
+  if (!lock || lock.closed) return;
+  lock.closed = true;
+  await lock.closePromise;
+  await lock.handle.close();
+}
+
+async function acquireCheckoutLockOperation(root) {
+  const operationPath = checkoutLockOperationPath(root);
+  await mkdir(path.dirname(operationPath), { recursive: true });
+  const lockCommand =
+    process.platform === "darwin"
+      ? { args: ["-s", "-t", "0", "3"], executable: "lockf", busyCodes: [75] }
+      : process.platform === "linux"
+        ? { args: ["-n", "3"], executable: "flock", busyCodes: [1] }
+        : null;
+  if (!lockCommand) {
+    throw new Error(
+      "local CI checkout lock operation requires Linux flock or macOS lockf",
+    );
+  }
+  // Pass an open descriptor to the one-shot locker. BSD/Linux advisory locks
+  // remain held by this process's descriptor after the helper exits, so the
+  // critical section cannot outlive the owner process that closes the fd.
+  const handle = await open(operationPath, "a+");
+  let child;
+  try {
+    child = spawn(lockCommand.executable, lockCommand.args, {
+      stdio: ["ignore", "ignore", "pipe", handle.fd],
+    });
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+  const closePromise = new Promise((resolve) => {
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  const acquisition = new Promise((resolve, reject) => {
+    let output = "";
+    child.once("error", reject);
+    child.stderr?.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      const busy = lockCommand.busyCodes.includes(code);
+      const error = new Error(
+        busy
+          ? `Local CI checkout lock operation is already in progress; retry after it finishes: ${operationPath}`
+          : `Local CI checkout lock operation failed: ${operationPath}`,
+      );
+      error.code = busy ? "EBUSY" : "ELOCK";
+      error.signal = signal ?? undefined;
+      if (output.length > 0) error.cause = output.slice(0, 512);
+      reject(error);
+    });
+  });
+  try {
+    await acquisition;
+  } catch (error) {
+    await closePromise;
+    await handle.close();
+    throw error;
+  }
+  return { child, closePromise, closed: false, handle, path: operationPath };
+}
+
+export async function acquireCheckoutLock(root, { runId = null } = {}) {
+  const lockPath = path.join(root, ".artifacts", "local-ci", "checkout.lock");
+  const operation = await acquireCheckoutLockOperation(root);
+  let handle;
+  try {
+    handle = await open(lockPath, "wx");
+    const metadata = {
+      createdAt: new Date().toISOString(),
+      pid: process.pid,
+      runId,
+      state: "active",
+    };
+    const lock = { handle, metadata, path: lockPath, closed: false };
+    await writeCheckoutLockMetadata(lock, metadata);
+    return lock;
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      const lockError = new Error(
+        `Local CI checkout lock already exists; inspect and remove it manually if no run is active: ${lockPath}`,
+      );
+      lockError.code = "EEXIST";
+      throw lockError;
+    }
+    if (handle) {
+      await handle.close();
+      await rm(lockPath, { force: true });
+    }
+    throw error;
+  } finally {
+    await releaseCheckoutLockOperation(operation);
+  }
+}
+
+async function releaseCheckoutLock(lock) {
+  if (!lock) return;
+  if (lock.closed) return;
+  await lock.handle.close();
+  lock.closed = true;
+  await rm(lock.path, { force: true });
+}
+
+export async function retainCheckoutLock(lock, metadata) {
+  if (!lock || lock.closed) return;
+  try {
+    await writeCheckoutLockMetadata(lock, metadata);
+  } finally {
+    await lock.handle.close();
+    lock.closed = true;
+  }
+}
+
+export async function finalizeCheckoutLock(
+  lock,
+  { result = null, runId = null, runStarted = false } = {},
+) {
+  if (!lock) return { released: false, retained: false };
+  if (!runStarted || checkoutLockCleanupComplete(result)) {
+    await releaseCheckoutLock(lock);
+    return { released: true, retained: false };
+  }
+  const taskSummary = checkoutLockTaskSummary(result);
+  const retainedMetadata = {
+    cleanupConfirmed: false,
+    createdAt: lock.metadata?.createdAt ?? new Date().toISOString(),
+    ownerPid: process.pid,
+    retainedAt: new Date().toISOString(),
+    runId: result?.runId ?? runId,
+    state: taskSummary.length > 0 ? "cleanup-incomplete" : "cleanup-unknown",
+    tasks:
+      taskSummary.length > 0
+        ? taskSummary
+        : [
+            {
+              cleanup: { complete: false, groupAlive: null },
+              id: "unknown-process-group",
+              interrupted: false,
+              pid: null,
+              signal: null,
+              started: true,
+              status: "unknown",
+              timedOut: false,
+            },
+          ],
+  };
+  await retainCheckoutLock(lock, retainedMetadata);
+  return { metadata: retainedMetadata, released: false, retained: true };
+}
+
+function processGroupState(processGroupId) {
+  if (!Number.isSafeInteger(processGroupId) || processGroupId <= 0) {
+    return "unknown";
+  }
+  try {
+    process.kill(-processGroupId, 0);
+    return "alive";
+  } catch (error) {
+    if (error?.code === "ESRCH") return "dead";
+    return "unknown";
+  }
+}
+
+export async function recoverCheckoutLock(root = repoRoot) {
+  const lockPath = path.join(root, ".artifacts", "local-ci", "checkout.lock");
+  const operation = await acquireCheckoutLockOperation(root);
+  try {
+    let metadata;
+    try {
+      metadata = JSON.parse(await readFile(lockPath, "utf8"));
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        throw new Error(`Local CI checkout lock does not exist: ${lockPath}`);
+      }
+      throw error;
+    }
+    if (
+      !["cleanup-incomplete", "cleanup-unknown"].includes(metadata?.state) ||
+      !Array.isArray(metadata.tasks) ||
+      metadata.tasks.length === 0
+    ) {
+      throw new Error(
+        `Local CI checkout lock is not a recoverable cleanup record: ${lockPath}`,
+      );
+    }
+    const unresolved = metadata.tasks.filter(
+      (task) => !checkoutLockTaskCleanupComplete(task),
+    );
+    const unknown = unresolved.filter(
+      (task) => !Number.isSafeInteger(task?.pid) || task.pid <= 0,
+    );
+    if (unknown.length > 0) {
+      throw new Error(
+        `Local CI checkout lock contains unknown process groups; inspect and stop them before removing the lock for run ${metadata.runId ?? "unknown"}: ${lockPath}`,
+      );
+    }
+    const unresolvedKnown = unresolved.filter(
+      (task) =>
+        Number.isSafeInteger(task?.pid) &&
+        task.pid > 0 &&
+        processGroupState(task.pid) !== "dead",
+    );
+    if (unresolvedKnown.length > 0) {
+      throw new Error(
+        `Local CI checkout lock still has live or unverifiable process groups; inspect run ${metadata.runId ?? "unknown"}: ${lockPath}`,
+      );
+    }
+    await rm(lockPath);
+    return metadata;
+  } finally {
+    await releaseCheckoutLockOperation(operation);
+  }
+}
+
+async function runExternalVerifier({ args, reportPath, signal, timeoutMs }) {
+  const verifierArgs = [
+    fileURLToPath(new URL("./local-ci-staging-verifier.mjs", import.meta.url)),
+    args.profile,
+    "--base",
+    args.base,
+    "--head",
+    args.head,
+    "--report",
+    reportPath,
+  ];
+  const { stdout, stderr } = await execFileAsync(
+    process.execPath,
+    verifierArgs,
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 10 * 1024 * 1024,
+      signal,
+      timeout: Number.isFinite(timeoutMs)
+        ? Math.max(1, Math.floor(timeoutMs))
+        : 120_000,
+    },
+  );
+  if (stdout) process.stdout.write(stdout);
+  if (stderr) process.stderr.write(stderr);
+}
+
+function externalVerificationStatus(error) {
+  if (
+    error?.code === "ETIMEDOUT" ||
+    (error?.killed === true && error?.signal === "SIGTERM")
+  ) {
+    return "timeout";
+  }
+  if (error?.name === "AbortError" || error?.code === "ABORT_ERR") {
+    return "aborted";
+  }
+  return "failed";
+}
+
+function elapsedMilliseconds(started, now) {
+  return Math.max(0, Math.round(now() - started));
+}
+
+export async function finalizeLocalCiExecution({
+  args = {},
+  deadlineMs = Number.POSITIVE_INFINITY,
+  executionDurationMs = null,
+  invocationStarted = performance.now(),
+  isoNow = () => new Date().toISOString(),
+  now = () => performance.now(),
+  reportPath,
+  result,
+  root = repoRoot,
+  runId = result?.runId,
+  signal = null,
+  stagingReceiptPath,
+  timeoutMs = Number.POSITIVE_INFINITY,
+  validateFinal = async () => {},
+  verifyExternal = runExternalVerifier,
+  writeReceipt = writeReport,
+} = {}) {
+  if (!isPlainObject(result) || typeof result.runId !== "string") {
+    throw new Error("Local CI finalization requires a run result.");
+  }
+  if (typeof reportPath !== "string" || reportPath.length === 0) {
+    throw new Error("Local CI finalization requires a report path.");
+  }
+  if (
+    typeof stagingReceiptPath !== "string" ||
+    stagingReceiptPath.length === 0
+  ) {
+    throw new Error("Local CI finalization requires a staging receipt path.");
+  }
+  if (typeof runId !== "string" || runId.length === 0) {
+    throw new Error("Local CI finalization requires a run id.");
+  }
+
+  const executionMs = Number.isSafeInteger(executionDurationMs)
+    ? executionDurationMs
+    : Number.isSafeInteger(result.executionDurationMs)
+      ? result.executionDurationMs
+      : Number.isSafeInteger(result.durationMs)
+        ? result.durationMs
+        : elapsedMilliseconds(invocationStarted, now);
+  const executionReceipt = {
+    ...result,
+    durationMs: executionMs,
+    executionDurationMs: executionMs,
+  };
+  let stagingPath = stagingReceiptPath;
+  let verifiedReceipt = null;
+  let stagingReceipt = null;
+  let canonicalStagingPath = null;
+  let canonicalPublished = false;
+  let retentionError = null;
+  let verificationDurationMs = 0;
+  let externalVerify = { status: "not-run" };
+  const finalizationStarted = now();
+  const remainingTimeout = () => {
+    const remaining = Number.isFinite(timeoutMs)
+      ? timeoutMs - (now() - finalizationStarted)
+      : Number.POSITIVE_INFINITY;
+    if (!Number.isFinite(remaining)) return Number.POSITIVE_INFINITY;
+    if (remaining <= 0) {
+      throw new Error(
+        "Local CI external verification deadline expired before invocation.",
+      );
+    }
+    return Math.max(1, Math.floor(remaining));
+  };
+  const assertDeadline = () => {
+    if (
+      Number.isFinite(deadlineMs) &&
+      elapsedMilliseconds(invocationStarted, now) > deadlineMs
+    ) {
+      throw new Error(
+        `Local CI exceeded ${deadlineMs} ms during finalization.`,
+      );
+    }
+  };
+  const assertNotAborted = () => {
+    if (signal?.aborted) {
+      throw (
+        signal.reason ?? new Error("Local CI finalization was interrupted.")
+      );
+    }
+  };
+
+  try {
+    assertNotAborted();
+    await writeReceipt(stagingPath, executionReceipt);
+    assertNotAborted();
+    const verifierTimeoutMs = remainingTimeout();
+    const verificationStarted = now();
+    try {
+      await verifyExternal({
+        args,
+        reportPath: stagingPath,
+        signal,
+        timeoutMs: verifierTimeoutMs,
+      });
+      verificationDurationMs = elapsedMilliseconds(verificationStarted, now);
+      externalVerify = {
+        durationMs: verificationDurationMs,
+        status: "passed",
+      };
+    } catch (error) {
+      verificationDurationMs = elapsedMilliseconds(verificationStarted, now);
+      const status = externalVerificationStatus(error);
+      const errorDetails = boundedError(error);
+      if (status === "timeout" && errorDetails.code === undefined) {
+        errorDetails.code = "ETIMEDOUT";
+      }
+      externalVerify = {
+        durationMs: verificationDurationMs,
+        error: errorDetails,
+        status,
+      };
+      throw error;
+    }
+    assertNotAborted();
+
+    try {
+      verifiedReceipt = await retainVerifiedReceipt(stagingPath, {
+        root,
+        runId,
+      });
+      stagingPath = null;
+    } catch (error) {
+      retentionError = boundedError(error);
+      throw error;
+    }
+    assertNotAborted();
+
+    const preValidationTotal = elapsedMilliseconds(invocationStarted, now);
+    const preValidation = {
+      ...executionReceipt,
+      durationMs: preValidationTotal,
+      executionDurationMs: executionMs,
+      finalizationDurationMs: Math.max(0, preValidationTotal - executionMs),
+      verificationDurationMs,
+      finishedAt: isoNow(),
+      finalization: {
+        durationCutoff: "before-canonical-receipt-persistence",
+        externalVerify,
+        receiptDurationMs: preValidationTotal,
+        verifiedReceipt,
+      },
+    };
+    await validateFinal(preValidation);
+    assertDeadline();
+    assertNotAborted();
+
+    // The persisted duration is a measured cutoff immediately before the
+    // write that stores this receipt; an explicit API deadline still applies.
+    const buildFinalResult = (receiptDurationMs) => ({
+      ...preValidation,
+      durationMs: receiptDurationMs,
+      finalizationDurationMs: Math.max(0, receiptDurationMs - executionMs),
+      finishedAt: isoNow(),
+      finalization: {
+        ...preValidation.finalization,
+        finalizedAt: isoNow(),
+        receiptDurationMs,
+      },
+    });
+    let finalResult = buildFinalResult(
+      elapsedMilliseconds(invocationStarted, now),
+    );
+    canonicalStagingPath = path.join(
+      path.dirname(reportPath),
+      `.${path.basename(reportPath)}.${runId}.final.staging`,
+    );
+    await writeReceipt(canonicalStagingPath, finalResult);
+    assertDeadline();
+    assertNotAborted();
+    const persistedTotalDurationMs = elapsedMilliseconds(
+      invocationStarted,
+      now,
+    );
+    if (
+      persistedTotalDurationMs !== finalResult.durationMs ||
+      persistedTotalDurationMs !== finalResult.finalization.receiptDurationMs
+    ) {
+      finalResult = buildFinalResult(persistedTotalDurationMs);
+      assertNotAborted();
+      await writeReceipt(canonicalStagingPath, finalResult);
+      assertDeadline();
+      assertNotAborted();
+      const finalPersistenceDurationMs = elapsedMilliseconds(
+        invocationStarted,
+        now,
+      );
+      if (
+        finalPersistenceDurationMs !== finalResult.durationMs ||
+        finalPersistenceDurationMs !==
+          finalResult.finalization.receiptDurationMs
+      ) {
+        finalResult = buildFinalResult(finalPersistenceDurationMs);
+        assertNotAborted();
+        await writeReceipt(canonicalStagingPath, finalResult);
+      }
+    }
+    assertDeadline();
+    assertNotAborted();
+    await rename(canonicalStagingPath, reportPath);
+    canonicalStagingPath = null;
+    canonicalPublished = true;
+    assertDeadline();
+    assertNotAborted();
+    return {
+      reportPath,
+      result: finalResult,
+      stagingReceiptPath: null,
+      success: true,
+      verifiedReceipt,
+    };
+  } catch (error) {
+    if (canonicalStagingPath) {
+      await rm(canonicalStagingPath, { force: true });
+    }
+    if (canonicalPublished) await rm(reportPath, { force: true });
+    if (stagingPath) {
+      try {
+        verifiedReceipt = await retainVerifiedReceipt(stagingPath, {
+          root,
+          runId,
+        });
+        stagingPath = null;
+      } catch (retentionFailure) {
+        retentionError ??= boundedError(retentionFailure);
+        try {
+          stagingReceipt = await localFileIdentity(root, stagingPath);
+        } catch {
+          stagingReceipt = null;
+        }
+      }
+    }
+    const totalDurationMs = elapsedMilliseconds(invocationStarted, now);
+    const failure = {
+      ...executionReceipt,
+      durationMs: totalDurationMs,
+      executionDurationMs: executionMs,
+      finalizationDurationMs: Math.max(0, totalDurationMs - executionMs),
+      verificationDurationMs,
+      finishedAt: isoNow(),
+      receiptError: externalVerify.error ?? boundedError(error),
+      status: "failed",
+      finalization: {
+        durationCutoff: "failure-evidence-persistence",
+        externalVerify,
+        finalizedAt: isoNow(),
+        ...(retentionError ? { retentionError } : {}),
+        ...(stagingReceipt ? { stagingReceipt } : {}),
+        receiptDurationMs: totalDurationMs,
+        verifiedReceipt,
+      },
+    };
+    const failedPath = failureReportPath(reportPath, runId);
+    await writeReport(failedPath, failure);
+    return {
+      reportPath: failedPath,
+      result: failure,
+      stagingReceiptPath: stagingPath,
+      success: false,
+      verifiedReceipt,
+    };
+  }
+}
+
+async function verifyLocalCiReportAtPath({
+  allowPrePublication = false,
+  plan,
+  reportPath,
+  root = repoRoot,
+}) {
+  const candidate = validateLocalCiCandidate(
+    plan,
+    await resolveLocalCiCandidate(plan),
+  );
+  const receipt = JSON.parse(await readFile(reportPath, "utf8"));
+  const currentProductJourneyEvidence =
+    plan.profile === "full"
+      ? await collectProductJourneyEvidence(plan, {
+          candidate,
+          restoreFixtureEvidence: receipt.c2zcRestoreFixture,
+          runId: receipt.runId,
+        })
+      : null;
+  verifyLocalCiReceipt(receipt, {
+    profile: plan.profile,
+    candidate,
+    plan,
+    currentProductJourneyEvidence,
+    currentC2ZcRestoreFixtureEvidence:
+      currentProductJourneyEvidence?.c2zcRestoreFixture ?? null,
+    requireTaskEvidence: true,
+  });
+  await verifyLocalCiTaskEvidence(receipt, {
+    allowPrePublication,
+    requireFinalization: !allowPrePublication,
+    root,
+  });
+  return receipt;
+}
+
+export async function verifyLocalCiReport({
+  plan,
+  reportPath,
+  root = repoRoot,
+}) {
+  return verifyLocalCiReportAtPath({ plan, reportPath, root });
+}
+
+export async function verifyLocalCiStagingReport({
+  plan,
+  reportPath,
+  root = repoRoot,
+}) {
+  return verifyLocalCiReportAtPath({
+    allowPrePublication: true,
+    plan,
+    reportPath,
+    root,
+  });
 }
 
 async function main() {
+  const invocationStarted = performance.now();
   const args = parseLocalCiArgs(process.argv.slice(2));
+  if (args.recoverLock) {
+    if (
+      args.profile !== null ||
+      args.base !== null ||
+      args.head !== null ||
+      args.from !== null ||
+      args.report !== null ||
+      args.dryRun ||
+      args.list ||
+      args.verify
+    ) {
+      throw new Error("--recover-lock cannot be combined with other options");
+    }
+    const metadata = await recoverCheckoutLock(repoRoot);
+    process.stdout.write(
+      `[local-ci] recovered-lock run=${metadata.runId ?? "unknown"}\n`,
+    );
+    return;
+  }
   const registry = validateLocalCiRegistry(
     JSON.parse(await readFile(registryPath, "utf8")),
   );
@@ -2837,10 +4270,12 @@ async function main() {
   if (args.profile === null) {
     throw new Error("Usage: local-ci.mjs <quick|full> [options]");
   }
+  args.base ??= registry.defaultBase;
+  args.head ??= "HEAD";
   const plan = buildLocalCiPlan(registry, {
     profile: args.profile,
-    base: args.base ?? registry.defaultBase,
-    head: args.head ?? "HEAD",
+    base: args.base,
+    head: args.head,
     from: args.from,
   });
   process.stdout.write(
@@ -2848,13 +4283,6 @@ async function main() {
   );
   for (const job of plan.releaseOnlyJobs) {
     process.stdout.write(`[local-ci] release-only ${job.id}: ${job.reason}\n`);
-  }
-  let candidate = null;
-  if (!args.dryRun) {
-    candidate = validateLocalCiCandidate(
-      plan,
-      await resolveLocalCiCandidate(plan),
-    );
   }
   const reportPath = path.resolve(
     repoRoot,
@@ -2864,49 +4292,94 @@ async function main() {
     if (args.dryRun) {
       throw new Error("--verify cannot be combined with --dry-run");
     }
-    const receipt = JSON.parse(await readFile(reportPath, "utf8"));
-    const currentProductJourneyEvidence =
-      plan.profile === "full"
-        ? await collectProductJourneyEvidence(plan, {
-            candidate,
-            restoreFixtureEvidence: receipt.c2zcRestoreFixture,
-          })
-        : null;
-    verifyLocalCiReceipt(receipt, {
-      profile: plan.profile,
-      candidate,
-      plan,
-      currentProductJourneyEvidence,
-      currentC2ZcRestoreFixtureEvidence:
-        currentProductJourneyEvidence?.c2zcRestoreFixture ?? null,
-    });
+    await verifyLocalCiReport({ plan, reportPath, root: repoRoot });
     process.stdout.write(`[local-ci] verified=${reportPath}\n`);
     return;
   }
-  if (!args.dryRun) await prepareLocalCiArtifacts(plan);
-  const result = await runLocalCiPlan(plan, {
-    candidate,
-    dryRun: args.dryRun,
-    root: repoRoot,
-    notify(event) {
-      if (event.type === "stage-start") {
-        process.stdout.write(
-          `\n[local-ci] ${event.stage.id}: ${event.stage.label}\n`,
-        );
-      } else if (event.type === "command-start") {
-        process.stdout.write(`[local-ci] $ ${formatCommand(event.command)}\n`);
-      } else if (event.type === "command-end") {
-        process.stdout.write(
-          `[local-ci] ${event.status.toUpperCase()} ${event.command.label}\n`,
-        );
+  const notify = (event) => {
+    if (event.type === "stage-start") {
+      process.stdout.write(
+        `\n[local-ci] ${event.stage.id}: ${event.stage.label}\n`,
+      );
+    } else if (event.type === "command-start") {
+      process.stdout.write(`[local-ci] $ ${formatCommand(event.command)}\n`);
+    } else if (event.type === "command-end") {
+      process.stdout.write(
+        `[local-ci] ${event.status.toUpperCase()} ${event.command.label}\n`,
+      );
+      if (event.status === "failed") {
+        if (event.execution?.error) {
+          process.stderr.write(`[local-ci] error=${event.execution.error}\n`);
+        }
+        for (const stream of ["stderr", "stdout"]) {
+          const logPath = event.execution?.logs?.[stream]?.path;
+          if (logPath)
+            process.stderr.write(`[local-ci] ${stream}=${logPath}\n`);
+        }
       }
-    },
-  });
-  if (!args.dryRun) {
+    }
+  };
+  if (args.dryRun) {
+    const result = await runLocalCiPlan(plan, {
+      dryRun: true,
+      notify,
+      root: repoRoot,
+    });
+    process.stdout.write(`[local-ci] status=${result.status}\n`);
+    return;
+  }
+
+  const cliAbort = new AbortController();
+  const interrupt = (signalName) => {
+    if (!cliAbort.signal.aborted) {
+      cliAbort.abort(new Error(`Local CI interrupted by ${signalName}.`));
+    }
+  };
+  const onSigint = () => interrupt("SIGINT");
+  const onSigterm = () => interrupt("SIGTERM");
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  let checkoutLock = null;
+  let result = null;
+  const runId = randomUUID();
+  let runStarted = false;
+  try {
+    checkoutLock = await acquireCheckoutLock(repoRoot, { runId });
+    if (cliAbort.signal.aborted) throw cliAbort.signal.reason;
+    const candidate = validateLocalCiCandidate(
+      plan,
+      await resolveLocalCiCandidate(plan),
+    );
+    await prepareLocalCiArtifacts(plan);
+    runStarted = true;
+    try {
+      result = await runLocalCiInvocationTasks(plan, {
+        candidate,
+        notify,
+        root: repoRoot,
+        runId,
+        signal: cliAbort.signal,
+      });
+    } catch (error) {
+      if (isPlainObject(error?.result)) {
+        result = {
+          ...error.result,
+          runId: error.result.runId ?? runId,
+          status: "failed",
+        };
+      }
+      throw error;
+    }
     const finishedCandidate = validateLocalCiCandidate(
       plan,
       await resolveLocalCiCandidate(plan),
     );
+    result.candidateAfter = finishedCandidate;
+    const executionDurationMs = Math.round(
+      performance.now() - invocationStarted,
+    );
+    result.executionDurationMs = executionDurationMs;
+    result.durationMs = executionDurationMs;
     try {
       verifyCandidateBinding(result.candidate, finishedCandidate);
       if (plan.profile === "full" && result.status === "passed") {
@@ -2915,27 +4388,75 @@ async function main() {
           {
             candidate: finishedCandidate,
             restoreFixtureEvidence: result.c2zcRestoreFixture,
+            runId: result.runId,
           },
         );
-        verifyLocalCiReceipt(result, {
-          profile: plan.profile,
-          candidate: finishedCandidate,
-          plan,
-          currentProductJourneyEvidence: result.productJourneyEvidence,
-          currentC2ZcRestoreFixtureEvidence:
-            result.productJourneyEvidence?.c2zcRestoreFixture ?? null,
-        });
       }
+      if (cliAbort.signal.aborted) throw cliAbort.signal.reason;
     } catch (error) {
       result.status = "failed";
-      result.receiptError =
-        error instanceof Error ? error.message : String(error);
+      result.receiptError = boundedError(error);
     }
-    await writeReport(reportPath, result);
-    process.stdout.write(`[local-ci] report=${reportPath}\n`);
+    if (
+      result.status === "passed" &&
+      plan.coverage.completeness === "complete"
+    ) {
+      const stagingReceiptPath = path.join(
+        path.dirname(reportPath),
+        `.${path.basename(reportPath)}.${result.runId}.staging`,
+      );
+      const finalized = await finalizeLocalCiExecution({
+        args,
+        executionDurationMs,
+        invocationStarted,
+        reportPath,
+        result,
+        root: repoRoot,
+        runId: result.runId,
+        signal: cliAbort.signal,
+        stagingReceiptPath,
+        validateFinal: async (finalResult) => {
+          verifyLocalCiReceipt(finalResult, {
+            profile: plan.profile,
+            candidate: finishedCandidate,
+            plan,
+            currentProductJourneyEvidence: finalResult.productJourneyEvidence,
+            currentC2ZcRestoreFixtureEvidence:
+              finalResult.productJourneyEvidence?.c2zcRestoreFixture ?? null,
+            requireTaskEvidence: true,
+          });
+          await verifyLocalCiTaskEvidence(finalResult, {
+            allowPrePublication: true,
+            requireFinalization: true,
+            root: repoRoot,
+          });
+        },
+      });
+      result = finalized.result;
+      process.stdout.write(`[local-ci] report=${finalized.reportPath}\n`);
+    } else {
+      await writeReport(reportPath, result);
+      process.stdout.write(`[local-ci] report=${reportPath}\n`);
+    }
+  } finally {
+    try {
+      const lockFinalization = await finalizeCheckoutLock(checkoutLock, {
+        result,
+        runId,
+        runStarted,
+      });
+      if (lockFinalization.retained) {
+        process.stderr.write(
+          `[local-ci] checkout lock retained for cleanup recovery: ${checkoutLock.path}\n`,
+        );
+      }
+    } finally {
+      process.removeListener("SIGINT", onSigint);
+      process.removeListener("SIGTERM", onSigterm);
+    }
   }
-  process.stdout.write(`[local-ci] status=${result.status}\n`);
-  if (result.status === "failed") process.exitCode = 1;
+  process.stdout.write(`[local-ci] status=${result?.status ?? "failed"}\n`);
+  if (result?.status !== "passed") process.exitCode = 1;
 }
 
 if (

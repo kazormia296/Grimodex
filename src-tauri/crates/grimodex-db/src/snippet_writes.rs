@@ -815,13 +815,10 @@ pub fn delete(db: &Database, payload: SnippetDeletePayload) -> anyhow::Result<Va
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     fn database() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("database");
-        db.migrate().expect("schema");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title, language) VALUES ('p1', 'Project', 'ja')",

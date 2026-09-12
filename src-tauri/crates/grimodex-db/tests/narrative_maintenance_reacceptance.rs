@@ -1,5 +1,8 @@
 //! Regression contracts for the C2-5B-A acceptance re-review.
 
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::narrative_extraction::ensure_test_schema;
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     discover_durable_maintenance_work, run_system_work_cycle, AutomaticRunKind,
@@ -12,8 +15,7 @@ const PROJECT_ID: &str = "project-c2-5b-reacceptance";
 const EPOCH_ID: &str = "epoch-c2-5b-reacceptance";
 
 fn fixture_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         ensure_test_schema(conn)?;
         conn.execute(

@@ -11,6 +11,9 @@
 //! function boundary; actor is fixed to the Native Human writer; all
 //! derivation metadata and child declarations are Native-owned.
 
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use anyhow::Result;
 use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use grimodex_core::narrative_ir::derive_chronicle_scene_event_scope;
@@ -345,8 +348,7 @@ fn fixture_db_for_payload_kind_with_source_token(
     // base, so this setup is reached only after D1 publishes the contract.
     // Keeping the fixture executable (rather than ignored) makes that missing
     // seam a direct compile RED while still seeding a real parent on landing.
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open fixture database");
-    db.migrate().expect("migrate fixture database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         conn.execute(
             "INSERT INTO projects (id, title) VALUES (?1, ?2)",

@@ -268,12 +268,9 @@ mod tests {
     };
     use crate::narrative_extraction::task_leases::with_immediate_transaction;
     use crate::Database;
-    use std::path::Path;
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
-        db
+        crate::test_support::current_schema_memory().expect("current-schema fixture")
     }
 
     /// A commit and one Contribution on `scene:s1` / `/title`, at the given

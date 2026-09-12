@@ -1,3 +1,6 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::agent_writes::{agent_undo_journal_impl, AgentUndoJournalPayload};
 use grimodex_db::snippet_writes::{
     create, delete, update, SnippetCreatePayload, SnippetDeletePayload, SnippetUpdatePayload,
@@ -6,8 +9,7 @@ use grimodex_db::Database;
 use serde_json::{json, Value};
 
 fn fixture() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         conn.execute_batch(
             "INSERT INTO projects (id, title) VALUES ('p1', 'One'), ('p2', 'Two');

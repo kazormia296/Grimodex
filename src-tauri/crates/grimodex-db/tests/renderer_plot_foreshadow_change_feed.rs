@@ -1,9 +1,11 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::{foreshadow, plot_threads, Database};
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         conn.execute_batch(
             "INSERT INTO projects (id, title) VALUES

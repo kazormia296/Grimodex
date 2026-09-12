@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   access,
   chmod,
@@ -15,10 +15,13 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
+
+import { runLocalCiTasks } from "./local-ci-runner.mjs";
 
 import {
   PRODUCT_JOURNEY_CATALOG,
@@ -29,15 +32,24 @@ import {
   buildLocalCiPlan,
   captureC2ZcRestoreFixtureEvidence,
   collectProductJourneyEvidence,
+  createLocalCiPlanDescriptor,
   expectedC2ZcAcceptanceForPlan,
+  acquireCheckoutLock,
+  checkoutLockCleanupComplete,
+  finalizeCheckoutLock,
+  finalizeLocalCiExecution,
   parseLocalCiArgs,
   prepareLocalCiArtifacts,
+  recoverCheckoutLock,
   readC2ZcRestoreFixtureEvidence,
   resolveLocalCiCandidate,
+  runLocalCiInvocationTasks,
   runLocalCiPlan,
   validateLocalCiCandidate,
   validateLocalCiRegistry,
+  verifyLocalCiFinalization,
   verifyLocalCiReceipt,
+  verifyLocalCiTaskEvidence,
 } from "./local-ci.mjs";
 import {
   C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
@@ -63,6 +75,15 @@ async function read(relativePath) {
 
 async function readRegistry() {
   return JSON.parse(await read("scripts/local-ci-registry.json"));
+}
+
+function productFixtureCommands(registry) {
+  const commands = registry.stages["electron-product-journeys"].commands;
+  const mcpBuild = commands.find(({ id }) => id === "journeys.mcp-build");
+  const aggregate = commands.find(({ id }) => id === "journeys.run");
+  assert.ok(mcpBuild, "product fixture requires journeys.mcp-build");
+  assert.ok(aggregate, "product fixture requires journeys.run");
+  return { aggregate, mcpBuild };
 }
 
 function completeCandidate(overrides = {}) {
@@ -202,12 +223,22 @@ function fullStageBindingPlan({ productJourneySet = "not-c2zc" } = {}) {
     profile: "full",
     comparison: { base: "origin/master", head: "HEAD" },
     stages: [
-      "rust",
+      "bootstrap",
+      "migration-recovery-gate",
+      "security",
+      "frontend",
+      "browser",
+      "electron-native",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
-      "migration-recovery-gate",
-      "electron-runtime-performance",
+      "quality",
       "electron-product-journeys",
+      "lfm-encoder-phase0",
+      "rust",
+      "webgl",
+      "storybook",
+      "electron",
+      "electron-runtime-performance",
     ].map((id, index) => ({
       id,
       label: `stage-${index}`,
@@ -369,7 +400,7 @@ test("quick and full profiles resolve deterministic command plans", async () => 
       "--runs",
       "1",
       "--max-workers",
-      "4",
+      "2",
       "--output",
       ".artifacts/browser-ci/browser.json",
     ],
@@ -454,20 +485,18 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
     base: "origin/master",
     head: "HEAD",
   });
-  const rustIndex = full.stages.findIndex(
+  const c2RustIndex = full.stages.findIndex(
     (stage) => stage.id === "c2-zc-rust-acceptance-gate",
   );
-  const sharedRustIndex = full.stages.findIndex((stage) => stage.id === "rust");
   const productIndex = full.stages.findIndex(
     (stage) => stage.id === "electron-product-journeys",
   );
-  assert.ok(rustIndex >= 0);
-  assert.ok(sharedRustIndex >= 0 && sharedRustIndex < rustIndex);
+  assert.ok(c2RustIndex >= 0);
   const fixtureIndex = full.stages.findIndex(
     (stage) => stage.id === "c2-zc-restore-fixture-builder",
   );
   assert.ok(fixtureIndex >= 0);
-  assert.ok(rustIndex < fixtureIndex && fixtureIndex < productIndex);
+  assert.ok(c2RustIndex < fixtureIndex && fixtureIndex < productIndex);
 
   const temporaryRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-local-ci-c2zc-receipt-"),
@@ -489,7 +518,7 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
   const executed = [];
   const plan = {
     ...full,
-    stages: [full.stages[rustIndex], full.stages[productIndex]],
+    stages: [full.stages[c2RustIndex], full.stages[productIndex]],
   };
   const result = await runLocalCiPlan(plan, {
     candidate,
@@ -501,7 +530,7 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
   });
 
   assert.equal(result.status, "passed");
-  assert.equal(executed.length, 3);
+  assert.equal(executed.length, 6);
   const rustCommand = executed.find(
     (command) =>
       command.command === "node" &&
@@ -517,13 +546,25 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
     "origin/master",
   );
   assert.equal(rustCommand.env.GRIMODEX_C2ZC_RUST_REQUESTED_HEAD, "HEAD");
-  const productCommand = executed.find(
-    (command) => command.label === "Run every product journey",
+  const productCommands = executed.filter(({ id }) =>
+    id?.startsWith("journeys."),
   );
-  assert.equal(
-    productCommand.env.GRIMODEX_C2ZC_RUST_RECEIPT_SHA256,
-    receipt.receiptSha256,
+  assert.deepEqual(
+    productCommands.map(({ id }) => id),
+    [
+      "journeys.mcp-build",
+      "journeys.shard-1",
+      "journeys.shard-2",
+      "journeys.shard-3",
+      "journeys.run",
+    ],
   );
+  for (const command of productCommands.slice(1)) {
+    assert.equal(
+      command.env.GRIMODEX_C2ZC_RUST_RECEIPT_SHA256,
+      receipt.receiptSha256,
+    );
+  }
   assert.equal(C2ZC_RUST_ACCEPTANCE_GATES.length, 17);
   assert.equal(C2ZC_RUST_ACCEPTANCE_GATES[0].argv.command, "cargo");
   assert.match(
@@ -580,6 +621,7 @@ test("local Full builds and verifies an external C2-ZC fixture before passing it
   ]);
 
   const registry = await readRegistry();
+  const { aggregate, mcpBuild } = productFixtureCommands(registry);
   registry.stages["electron-product-journeys"] = {
     label: "C2-ZC product journeys",
     env: {
@@ -589,14 +631,17 @@ test("local Full builds and verifies an external C2-ZC fixture before passing it
     },
     commands: [
       {
+        ...mcpBuild,
         label: "Build MCP journey dependency",
         command: "pnpm",
         args: ["mcp:build"],
       },
       {
+        ...aggregate,
         label: "Run every product journey",
         command: "pnpm",
         args: ["electron:product-journeys"],
+        after: ["journeys.mcp-build"],
       },
     ],
   };
@@ -1321,6 +1366,7 @@ test("local Full passes the verified copied fixture to product journeys, never t
     writeFile(rendererPath, "renderer"),
   ]);
   const registry = await readRegistry();
+  const { aggregate, mcpBuild } = productFixtureCommands(registry);
   registry.stages["electron-product-journeys"] = {
     label: "C2-ZC product journeys",
     env: {
@@ -1329,8 +1375,21 @@ test("local Full passes the verified copied fixture to product journeys, never t
       GRIMODEX_NODE_PATH: nativePath,
     },
     commands: [
-      { label: "build", command: "build", args: [], cwd: "." },
-      { label: "journeys", command: "journeys", args: [], cwd: "." },
+      {
+        ...mcpBuild,
+        label: "build",
+        command: "build",
+        args: [],
+        cwd: ".",
+      },
+      {
+        ...aggregate,
+        label: "journeys",
+        command: "journeys",
+        args: [],
+        cwd: ".",
+        after: ["journeys.mcp-build"],
+      },
     ],
   };
   const full = buildLocalCiPlan(registry, {
@@ -1515,6 +1574,7 @@ test("local CI records the selected C2-ZC build artifact identities in the produ
     writeFile(nativePath, "native"),
   ]);
   const registry = await readRegistry();
+  const { aggregate, mcpBuild } = productFixtureCommands(registry);
   registry.stages["electron-product-journeys"] = {
     label: "C2-ZC product journeys",
     env: {
@@ -1523,8 +1583,21 @@ test("local CI records the selected C2-ZC build artifact identities in the produ
       GRIMODEX_NODE_PATH: nativePath,
     },
     commands: [
-      { label: "build", command: "build", args: [], cwd: "." },
-      { label: "journeys", command: "journeys", args: [], cwd: "." },
+      {
+        ...mcpBuild,
+        label: "build",
+        command: "build",
+        args: [],
+        cwd: ".",
+      },
+      {
+        ...aggregate,
+        label: "journeys",
+        command: "journeys",
+        args: [],
+        cwd: ".",
+        after: ["journeys.mcp-build"],
+      },
     ],
   };
   const full = buildLocalCiPlan(registry, {
@@ -1589,6 +1662,7 @@ test("local CI does not self-attest a product build receipt before the build com
     writeFile(nativePath, "native"),
   ]);
   const registry = await readRegistry();
+  const { aggregate, mcpBuild } = productFixtureCommands(registry);
   registry.stages["electron-product-journeys"] = {
     label: "C2-ZC product journeys",
     env: {
@@ -1597,8 +1671,21 @@ test("local CI does not self-attest a product build receipt before the build com
       GRIMODEX_NODE_PATH: nativePath,
     },
     commands: [
-      { label: "build", command: "build", args: [], cwd: "." },
-      { label: "journeys", command: "journeys", args: [], cwd: "." },
+      {
+        ...mcpBuild,
+        label: "build",
+        command: "build",
+        args: [],
+        cwd: ".",
+      },
+      {
+        ...aggregate,
+        label: "journeys",
+        command: "journeys",
+        args: [],
+        cwd: ".",
+        after: ["journeys.mcp-build"],
+      },
     ],
   };
   const full = buildLocalCiPlan(registry, {
@@ -1717,14 +1804,806 @@ test("local CI argument parsing supports comparison, resume, and dry-run", () =>
       list: false,
       profile: "full",
       report: "/tmp/local-ci.json",
+      recoverLock: false,
       verify: false,
     },
   );
   assert.equal(parseLocalCiArgs(["--verify", "full"]).verify, true);
   assert.throws(
+    () => parseLocalCiArgs(["--verify", "--verify-staging", "full"]),
+    /Unknown argument: --verify-staging/u,
+  );
+  assert.equal(parseLocalCiArgs(["--recover-lock"]).recoverLock, true);
+  assert.throws(
     () => parseLocalCiArgs(["quick", "--unknown"]),
     /Unknown argument/,
   );
+});
+
+test("local CI retains a lock for incomplete process-group cleanup and supports explicit recovery", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-lock-recovery-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "22222222-2222-4222-8222-222222222222";
+  const lock = await acquireCheckoutLock(temporaryRoot, { runId });
+  const result = {
+    runId,
+    tasks: [
+      {
+        cleanup: { complete: false, groupAlive: true },
+        id: "worker",
+        pid: 99999999,
+        status: "failed",
+      },
+    ],
+  };
+  assert.equal(checkoutLockCleanupComplete(result), false);
+  const retained = await finalizeCheckoutLock(lock, {
+    result,
+    runId,
+    runStarted: true,
+  });
+  assert.equal(retained.retained, true);
+  const lockPath = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/checkout.lock",
+  );
+  const metadata = JSON.parse(await readFile(lockPath, "utf8"));
+  assert.equal(metadata.state, "cleanup-incomplete");
+  assert.equal(metadata.runId, runId);
+  assert.equal(metadata.tasks[0].pid, 99999999);
+  await assert.rejects(
+    acquireCheckoutLock(temporaryRoot, {
+      runId: "33333333-3333-4333-8333-333333333333",
+    }),
+    (error) => error?.code === "EEXIST",
+  );
+
+  const recovered = await recoverCheckoutLock(temporaryRoot);
+  assert.equal(recovered.runId, runId);
+  const nextLock = await acquireCheckoutLock(temporaryRoot, {
+    runId: "33333333-3333-4333-8333-333333333333",
+  });
+  await finalizeCheckoutLock(nextLock, { runStarted: false });
+});
+
+test("local CI releases a lock when cleanup proves no process group survived a pre-spawn failure", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-lock-pre-spawn-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const lock = await acquireCheckoutLock(temporaryRoot, {
+    runId: "77777777-7777-4777-8777-777777777777",
+  });
+  const result = {
+    tasks: [
+      {
+        cleanup: { complete: true, groupAlive: false },
+        id: "missing-tool",
+        pid: null,
+        status: "failed",
+      },
+    ],
+  };
+  assert.equal(checkoutLockCleanupComplete(result), true);
+  const finalized = await finalizeCheckoutLock(lock, {
+    result,
+    runStarted: true,
+  });
+  assert.equal(finalized.released, true);
+  await assert.rejects(
+    readFile(path.join(temporaryRoot, ".artifacts/local-ci/checkout.lock")),
+    /ENOENT/u,
+  );
+});
+
+test("local CI refuses recovery while a retained process group is unknown", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-lock-live-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const lock = await acquireCheckoutLock(temporaryRoot, {
+    runId: "44444444-4444-4444-8444-444444444444",
+  });
+  await finalizeCheckoutLock(lock, {
+    result: {
+      runId: "44444444-4444-4444-8444-444444444444",
+      tasks: [
+        {
+          cleanup: { complete: false, groupAlive: true },
+          id: "worker",
+          pid: null,
+          status: "failed",
+        },
+      ],
+    },
+    runStarted: true,
+  });
+  await assert.rejects(
+    recoverCheckoutLock(temporaryRoot),
+    /unknown process groups/u,
+  );
+});
+
+test("local CI refuses to recover an aggregate result with an unknown process group", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-lock-unknown-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "88888888-8888-4888-8888-888888888888";
+  const lock = await acquireCheckoutLock(temporaryRoot, { runId });
+  await finalizeCheckoutLock(lock, { runId, runStarted: true });
+  const lockPath = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/checkout.lock",
+  );
+  const metadata = JSON.parse(await readFile(lockPath, "utf8"));
+  assert.equal(metadata.state, "cleanup-unknown");
+  assert.equal(metadata.tasks.length, 1);
+  await assert.rejects(
+    recoverCheckoutLock(temporaryRoot),
+    /unknown process groups/u,
+  );
+});
+
+test("local CI serializes concurrent lock recovery and replacement acquisition", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-lock-serialization-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const oldRunId = "12121212-1212-4121-8121-121212121212";
+  const oldLock = await acquireCheckoutLock(temporaryRoot, {
+    runId: oldRunId,
+  });
+  await finalizeCheckoutLock(oldLock, {
+    result: {
+      runId: oldRunId,
+      tasks: [
+        {
+          cleanup: { complete: false, groupAlive: true },
+          id: "worker",
+          pid: 99999999,
+          status: "failed",
+        },
+      ],
+    },
+    runStarted: true,
+  });
+
+  const recoveries = await Promise.allSettled([
+    recoverCheckoutLock(temporaryRoot),
+    recoverCheckoutLock(temporaryRoot),
+  ]);
+  const successfulRecoveries = recoveries.filter(
+    ({ status }) => status === "fulfilled",
+  );
+  const failedRecoveries = recoveries.filter(
+    ({ status }) => status === "rejected",
+  );
+  assert.equal(successfulRecoveries.length, 1);
+  assert.equal(failedRecoveries.length, 1);
+  assert.equal(successfulRecoveries[0].value.runId, oldRunId);
+  const newRunId = "34343434-3434-4434-8434-343434343434";
+  const replacement = await acquireCheckoutLock(temporaryRoot, {
+    runId: newRunId,
+  });
+  const replacementMetadata = JSON.parse(
+    await readFile(
+      path.join(temporaryRoot, ".artifacts/local-ci/checkout.lock"),
+      "utf8",
+    ),
+  );
+  assert.equal(replacementMetadata.runId, newRunId);
+  await finalizeCheckoutLock(replacement, { runStarted: false });
+});
+
+test("local CI treats an existing operation marker as an advisory lock file", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-lock-operation-marker-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const operationPath = path.join(
+    temporaryRoot,
+    ".artifacts/local-ci/checkout.lock.operation",
+  );
+  await mkdir(path.dirname(operationPath), { recursive: true });
+  await writeFile(operationPath, "partial legacy marker\n");
+
+  const lock = await acquireCheckoutLock(temporaryRoot, {
+    runId: "56565656-5656-4565-8565-565656565656",
+  });
+  await finalizeCheckoutLock(lock, { runStarted: false });
+  assert.equal(
+    await readFile(operationPath, "utf8"),
+    "partial legacy marker\n",
+  );
+});
+
+function finalizationTestResult(runId) {
+  return {
+    coverage: { completeness: "complete", fromStage: null },
+    profile: "quick",
+    runId,
+    status: "passed",
+    tasks: [],
+    version: 3,
+  };
+}
+
+async function fullFinalizationFixture(root, runId) {
+  const candidate = completeCandidate();
+  const plan = {
+    ...fullStageBindingPlan(),
+    coverage: { completeness: "complete", fromStage: null },
+    maxSlots: 1,
+    registryDigest: `sha256:${"a".repeat(64)}`,
+    releaseOnlyJobs: [],
+  };
+  plan.tasks = plan.stages.map((stage, index) => ({
+    id: `fixture.${index}`,
+    stageId: stage.id,
+    stageLabel: stage.label,
+    commandIndex: 0,
+    command: stage.commands[0],
+    after: [],
+  }));
+  const tasks = [];
+  for (const { id } of plan.tasks) {
+    const logs = {};
+    for (const stream of ["stdout", "stderr"]) {
+      const logPath = `.artifacts/local-ci/runs/${runId}/logs/${id}.${stream}.log`;
+      await mkdir(path.dirname(path.join(root, logPath)), { recursive: true });
+      await writeFile(path.join(root, logPath), "");
+      logs[stream] = {
+        path: logPath,
+        size: 0,
+        sha256: `sha256:${createHash("sha256").update("").digest("hex")}`,
+      };
+    }
+    tasks.push({
+      id,
+      status: "passed",
+      exitCode: 0,
+      signal: null,
+      durationMs: 1,
+      cleanup: { complete: true },
+      logs,
+    });
+  }
+  const receipt = {
+    ...finalizationTestResult(runId),
+    candidate,
+    candidateAfter: candidate,
+    profile: "full",
+    durationMs: 0,
+    registryDigest: plan.registryDigest,
+    plan: createLocalCiPlanDescriptor(plan),
+    stages: passedStagesForPlan(plan),
+    tasks,
+    productJourneyEvidence: completeProductJourneyEvidence(),
+  };
+  const verifyReceipt = (result) =>
+    verifyLocalCiReceipt(result, {
+      profile: "full",
+      candidate,
+      plan,
+      currentProductJourneyEvidence: receipt.productJourneyEvidence,
+      requireTaskEvidence: true,
+    });
+  return { receipt, verifyReceipt };
+}
+
+test("local CI final receipt measures external verification separately and retains its verified input", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "55555555-5555-4555-8555-555555555555";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const stagingPath = path.join(temporaryRoot, "reports", ".quick.staging");
+  const executionStarted = performance.now() - 7;
+  let observedStagingReceipt;
+  const finalized = await finalizeLocalCiExecution({
+    executionDurationMs: 7,
+    invocationStarted: executionStarted,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: stagingPath,
+    validateFinal: async (receipt) => {
+      assert.ok(receipt.finalization.verifiedReceipt);
+    },
+    verifyExternal: async ({ reportPath: inputPath }) => {
+      observedStagingReceipt = JSON.parse(await readFile(inputPath, "utf8"));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    },
+  });
+  assert.equal(finalized.success, true);
+  assert.equal(observedStagingReceipt.durationMs, 7);
+  assert.equal(finalized.result.executionDurationMs, 7);
+  assert.ok(finalized.result.verificationDurationMs >= 20);
+  assert.ok(
+    finalized.result.durationMs >= finalized.result.executionDurationMs,
+  );
+  assert.ok(
+    finalized.result.finalizationDurationMs >=
+      finalized.result.verificationDurationMs,
+  );
+  assert.equal(finalized.result.finalization.externalVerify.status, "passed");
+  assert.equal(
+    finalized.result.finalization.durationCutoff,
+    "before-canonical-receipt-persistence",
+  );
+  assert.equal(
+    finalized.result.finalization.receiptDurationMs,
+    finalized.result.durationMs,
+  );
+  assert.equal(
+    finalized.result.finalization.verifiedReceipt,
+    finalized.verifiedReceipt,
+  );
+  await access(reportPath);
+  await access(path.join(temporaryRoot, finalized.verifiedReceipt.path));
+  await verifyLocalCiFinalization(finalized.result, { root: temporaryRoot });
+  const tampered = structuredClone(finalized.result);
+  tampered.finalization.verifiedReceipt.sha256 = `sha256:${"0".repeat(64)}`;
+  await assert.rejects(
+    verifyLocalCiFinalization(tampered, { root: temporaryRoot }),
+    /identity changed/u,
+  );
+  const impossibleDuration = structuredClone(finalized.result);
+  impossibleDuration.verificationDurationMs =
+    impossibleDuration.finalizationDurationMs + 1;
+  impossibleDuration.finalization.externalVerify.durationMs =
+    impossibleDuration.verificationDurationMs;
+  await assert.rejects(
+    verifyLocalCiFinalization(impossibleDuration, { root: temporaryRoot }),
+    /finalization evidence is inconsistent/u,
+  );
+  await assert.rejects(readFile(stagingPath), /ENOENT/u);
+});
+
+test("local CI persists canonical publication time in the final receipt", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-duration-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  let clock = 0;
+  const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const finalized = await finalizeLocalCiExecution({
+    deadlineMs: 1_000,
+    executionDurationMs: 0,
+    invocationStarted: 0,
+    now: () => clock,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
+    timeoutMs: 1_000,
+    verifyExternal: async () => {},
+    writeReceipt: async (receiptPath, receipt) => {
+      await mkdir(path.dirname(receiptPath), { recursive: true });
+      await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`);
+      if (receiptPath.endsWith(".final.staging")) clock = 25;
+    },
+  });
+  assert.equal(finalized.success, true);
+  assert.ok(finalized.result.durationMs >= 25);
+  assert.equal(
+    finalized.result.finalization.receiptDurationMs,
+    finalized.result.durationMs,
+  );
+  const published = JSON.parse(await readFile(reportPath, "utf8"));
+  assert.equal(published.durationMs, finalized.result.durationMs);
+  assert.equal(
+    published.finalization.receiptDurationMs,
+    finalized.result.finalization.receiptDurationMs,
+  );
+});
+
+test("local CI accounts for a delayed canonical persistence rewrite", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-rewrite-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  let canonicalWrites = 0;
+  const invocationStarted = performance.now();
+  let nowCalls = 0;
+  const now = () => {
+    nowCalls += 1;
+    return nowCalls >= 6 ? performance.now() : invocationStarted;
+  };
+  const writeReceipt = async (receiptPath, receipt) => {
+    if (receiptPath.endsWith(".final.staging")) {
+      canonicalWrites += 1;
+      if (canonicalWrites === 2) {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+    }
+    await mkdir(path.dirname(receiptPath), { recursive: true });
+    await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`);
+  };
+  const runId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const finalized = await finalizeLocalCiExecution({
+    executionDurationMs: 1,
+    invocationStarted,
+    now,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
+    verifyExternal: async () => {},
+    writeReceipt,
+  });
+  assert.equal(finalized.success, true);
+  assert.ok(canonicalWrites >= 2);
+  const published = JSON.parse(await readFile(reportPath, "utf8"));
+  assert.equal(published.durationMs, finalized.result.durationMs);
+  assert.equal(
+    published.finalization.receiptDurationMs,
+    finalized.result.finalization.receiptDurationMs,
+  );
+  assert.ok(finalized.result.durationMs >= 35);
+});
+
+test("complete Full work beyond the timing target passes ordinary receipt verification", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-expired-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  let verificationCalls = 0;
+  const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const reportPath = path.join(temporaryRoot, "reports", "full.json");
+  const { receipt, verifyReceipt } = await fullFinalizationFixture(
+    temporaryRoot,
+    runId,
+  );
+  let clock = 600_001;
+  const finalized = await finalizeLocalCiExecution({
+    executionDurationMs: 600_001,
+    invocationStarted: 0,
+    now: () => clock,
+    reportPath,
+    result: receipt,
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".full.staging"),
+    verifyExternal: async ({ reportPath: inputPath, timeoutMs }) => {
+      verificationCalls += 1;
+      assert.equal(timeoutMs, Number.POSITIVE_INFINITY);
+      const source = JSON.parse(await readFile(inputPath, "utf8"));
+      verifyReceipt(source);
+      await verifyLocalCiTaskEvidence(source, { root: temporaryRoot });
+      clock = 600_010;
+    },
+    validateFinal: async (result) => {
+      verifyReceipt(result);
+      await verifyLocalCiTaskEvidence(result, {
+        allowPrePublication: true,
+        requireFinalization: true,
+        root: temporaryRoot,
+      });
+    },
+  });
+  assert.equal(finalized.success, true);
+  assert.equal(verificationCalls, 1);
+  assert.equal(finalized.result.status, "passed");
+  assert.equal(finalized.result.finalization.externalVerify.status, "passed");
+  assert.equal(finalized.result.durationMs, 600_010);
+  assert.equal(finalized.result.executionDurationMs, 600_001);
+  assert.equal(finalized.result.verificationDurationMs, 9);
+  assert.equal(finalized.result.finalizationDurationMs, 9);
+  assert.equal(finalized.result.finalization.receiptDurationMs, 600_010);
+  assert.ok(finalized.result.finalization.verifiedReceipt);
+  assert.equal(finalized.reportPath, reportPath);
+  const published = JSON.parse(await readFile(reportPath, "utf8"));
+  verifyReceipt(published);
+  await verifyLocalCiTaskEvidence(published, {
+    requireFinalization: true,
+    root: temporaryRoot,
+  });
+  assert.equal(published.durationMs, 600_010);
+
+  for (const invalidDuration of [
+    undefined,
+    null,
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+    "600010",
+  ]) {
+    assert.throws(
+      () => verifyReceipt({ ...published, durationMs: invalidDuration }),
+      /durationMs must be a non-negative safe integer/u,
+    );
+  }
+  assert.throws(
+    () =>
+      verifyReceipt({
+        ...published,
+        coverage: { completeness: "partial", fromStage: "security" },
+      }),
+    /complete local CI receipt/u,
+  );
+  const missingTask = structuredClone(published);
+  missingTask.tasks.pop();
+  assert.throws(() => verifyReceipt(missingTask), /every exact task result/u);
+  const invalidTotal = {
+    ...published,
+    executionDurationMs: published.durationMs + 1,
+  };
+  await assert.rejects(
+    verifyLocalCiTaskEvidence(invalidTotal, {
+      requireFinalization: true,
+      root: temporaryRoot,
+    }),
+    /finalization evidence is inconsistent/u,
+  );
+  const unfinished = JSON.parse(
+    await readFile(
+      path.join(temporaryRoot, published.finalization.verifiedReceipt.path),
+      "utf8",
+    ),
+  );
+  await assert.rejects(
+    verifyLocalCiTaskEvidence(unfinished, {
+      requireFinalization: true,
+      root: temporaryRoot,
+    }),
+    /finalization evidence is required/u,
+  );
+  await writeFile(
+    path.join(temporaryRoot, published.tasks[0].logs.stdout.path),
+    "changed",
+  );
+  await assert.rejects(
+    verifyLocalCiTaskEvidence(published, {
+      requireFinalization: true,
+      root: temporaryRoot,
+    }),
+    /log identity changed/u,
+  );
+});
+
+test("local CI retains a passing result when verification crosses the timing target", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-verifier-budget-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "12121212-1212-4212-8212-121212121212";
+  const reportPath = path.join(temporaryRoot, "reports", "full.json");
+  const { receipt, verifyReceipt } = await fullFinalizationFixture(
+    temporaryRoot,
+    runId,
+  );
+  let clock = 599_940;
+  let verificationFinished = false;
+  const finalized = await finalizeLocalCiExecution({
+    executionDurationMs: 598_666,
+    invocationStarted: 0,
+    now: () => clock,
+    reportPath,
+    result: receipt,
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".full.staging"),
+    timeoutMs: 120_000,
+    validateFinal: verifyReceipt,
+    verifyExternal: async ({ timeoutMs, signal }) => {
+      assert.equal(timeoutMs, 120_000);
+      assert.equal(signal?.aborted ?? false, false);
+      clock = 601_000;
+      verificationFinished = true;
+    },
+  });
+  assert.equal(verificationFinished, true);
+  assert.equal(finalized.success, true);
+  assert.equal(finalized.result.status, "passed");
+  assert.equal(finalized.result.finalization.externalVerify.status, "passed");
+  assert.equal(finalized.result.executionDurationMs, 598_666);
+  assert.equal(finalized.result.verificationDurationMs, 1_060);
+  assert.equal(finalized.result.finalizationDurationMs, 2_334);
+  assert.equal(finalized.result.durationMs, 601_000);
+  assert.equal(finalized.result.finalization.receiptDurationMs, 601_000);
+  assert.ok(finalized.result.finalization.verifiedReceipt);
+  assert.equal(finalized.reportPath, reportPath);
+  const published = JSON.parse(await readFile(reportPath, "utf8"));
+  verifyReceipt(published);
+  await verifyLocalCiTaskEvidence(published, {
+    requireFinalization: true,
+    root: temporaryRoot,
+  });
+  assert.equal(published.durationMs, 601_000);
+});
+
+test("local CI aborts finalization after external verification resolves", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-abort-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const controller = new AbortController();
+  const runId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const finalized = await finalizeLocalCiExecution({
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    signal: controller.signal,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
+    verifyExternal: async () => {
+      controller.abort(new Error("cancelled after verification"));
+    },
+  });
+  assert.equal(finalized.success, false);
+  assert.match(finalized.reportPath, /[\\/]failures[\\/]/u);
+  await assert.rejects(readFile(reportPath), /ENOENT/u);
+  const failedReceipt = JSON.parse(
+    await readFile(finalized.reportPath, "utf8"),
+  );
+  assert.equal(failedReceipt.status, "failed");
+  assert.equal(failedReceipt.finalization.externalVerify.status, "passed");
+  assert.ok(failedReceipt.finalization.verifiedReceipt);
+});
+
+test("local CI honors an explicitly configured finalization deadline", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-deadline-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  let clock = 1;
+  const now = () => {
+    if (existsSync(reportPath)) clock = 3;
+    return clock;
+  };
+  const finalized = await finalizeLocalCiExecution({
+    deadlineMs: 2,
+    executionDurationMs: 1,
+    invocationStarted: 0,
+    now,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
+    verifyExternal: async () => {},
+  });
+  assert.equal(finalized.success, false);
+  assert.match(finalized.reportPath, /[\\/]failures[\\/]/u);
+  await assert.rejects(readFile(reportPath), /ENOENT/u);
+  const failedReceipt = JSON.parse(
+    await readFile(finalized.reportPath, "utf8"),
+  );
+  assert.equal(failedReceipt.status, "failed");
+  assert.equal(failedReceipt.durationMs, 3);
+  assert.equal(failedReceipt.finalization.receiptDurationMs, 3);
+  assert.equal(failedReceipt.finalization.externalVerify.status, "passed");
+  assert.ok(failedReceipt.finalization.verifiedReceipt);
+  await access(
+    path.join(temporaryRoot, failedReceipt.finalization.verifiedReceipt.path),
+  );
+  const savedSource = JSON.parse(
+    await readFile(
+      path.join(temporaryRoot, failedReceipt.finalization.verifiedReceipt.path),
+      "utf8",
+    ),
+  );
+  assert.equal(savedSource.status, "passed");
+  assert.equal(savedSource.finalization, undefined);
+  await assert.doesNotReject(
+    verifyLocalCiTaskEvidence(savedSource, {
+      requireFinalization: false,
+      root: temporaryRoot,
+    }),
+  );
+  await assert.rejects(
+    verifyLocalCiTaskEvidence(savedSource, {
+      requireFinalization: true,
+      root: temporaryRoot,
+    }),
+    /finalization evidence is required/u,
+  );
+});
+
+test("local CI external verification failure writes run-specific failed evidence without publishing success", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-failure-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "66666666-6666-4666-8666-666666666666";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const finalized = await finalizeLocalCiExecution({
+    executionDurationMs: 11,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".quick.staging"),
+    verifyExternal: async () => {
+      const error = new Error("external verifier timed out");
+      error.code = null;
+      error.killed = true;
+      error.signal = "SIGTERM";
+      throw error;
+    },
+  });
+  assert.equal(finalized.success, false);
+  assert.match(finalized.reportPath, /[\\/]failures[\\/]/u);
+  await assert.rejects(readFile(reportPath), /ENOENT/u);
+  const failedReceipt = JSON.parse(
+    await readFile(finalized.reportPath, "utf8"),
+  );
+  assert.equal(failedReceipt.status, "failed");
+  assert.equal(failedReceipt.finalization.externalVerify.status, "timeout");
+  assert.equal(failedReceipt.receiptError.code, "ETIMEDOUT");
+  assert.ok(failedReceipt.finalization.verifiedReceipt);
+  await access(
+    path.join(temporaryRoot, failedReceipt.finalization.verifiedReceipt.path),
+  );
+  const savedSource = JSON.parse(
+    await readFile(
+      path.join(temporaryRoot, failedReceipt.finalization.verifiedReceipt.path),
+      "utf8",
+    ),
+  );
+  assert.equal(savedSource.status, "passed");
+  assert.equal(savedSource.finalization, undefined);
+  await assert.doesNotReject(
+    verifyLocalCiTaskEvidence(savedSource, {
+      requireFinalization: false,
+      root: temporaryRoot,
+    }),
+  );
+  await assert.rejects(
+    verifyLocalCiTaskEvidence(savedSource, {
+      requireFinalization: true,
+      root: temporaryRoot,
+    }),
+    /finalization evidence is required/u,
+  );
+});
+
+test("local CI never overwrites a run-specific verified receipt on finalization replay", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-local-ci-finalization-collision-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = "99999999-9999-4999-8999-999999999999";
+  const reportPath = path.join(temporaryRoot, "reports", "quick.json");
+  const first = await finalizeLocalCiExecution({
+    executionDurationMs: 1,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".first.staging"),
+    verifyExternal: async () => {},
+  });
+  const verifiedPath = path.join(temporaryRoot, first.verifiedReceipt.path);
+  const firstBytes = await readFile(verifiedPath, "utf8");
+  const second = await finalizeLocalCiExecution({
+    executionDurationMs: 2,
+    reportPath,
+    result: finalizationTestResult(runId),
+    root: temporaryRoot,
+    runId,
+    stagingReceiptPath: path.join(temporaryRoot, "reports", ".second.staging"),
+    verifyExternal: async () => {},
+  });
+  assert.equal(second.success, false);
+  assert.match(second.reportPath, /[\\/]failures[\\/]/u);
+  assert.equal(await readFile(verifiedPath, "utf8"), firstBytes);
 });
 
 test("local CI execution is fail-fast and records later stages as not run", async () => {
@@ -1773,6 +2652,77 @@ test("local CI execution is fail-fast and records later stages as not run", asyn
   assert.equal(result.status, "failed");
   assert.equal(result.stages[0].status, "failed");
   assert.equal(result.stages[1].status, "not-run");
+});
+
+test("the CLI task entrypoint completes dependent Full work after 600 seconds", async (t) => {
+  let clock = 0;
+  t.mock.method(performance, "now", () => clock);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const commands = ["fixture.first", "fixture.later"].map((id) => ({
+    id,
+    label: id,
+    command: "fixture",
+    args: [],
+    cwd: ".",
+    env: {},
+  }));
+  const plan = {
+    profile: "full",
+    comparison: { base: "origin/master", head: "HEAD" },
+    coverage: { completeness: "complete", fromStage: null },
+    maxSlots: 1,
+    releaseOnlyJobs: [],
+    stages: commands.map((command) => ({
+      id: command.id,
+      label: command.label,
+      commands: [command],
+    })),
+    tasks: commands.map((command, index) => ({
+      id: command.id,
+      stageId: command.id,
+      stageLabel: command.label,
+      command,
+      after: index === 0 ? [] : [commands[0].id],
+      timeoutMs: 700_000,
+    })),
+  };
+  const started = [];
+  const result = await runLocalCiInvocationTasks(plan, {
+    candidate: completeCandidate(),
+    // Even a caller carrying the old execution deadline cannot reapply it.
+    deadlineMs: 600_000,
+    executeCommand: async (_command, { signal, taskId, timeoutMs }) => {
+      started.push({ id: taskId, at: clock });
+      assert.equal(timeoutMs, 700_000);
+      if (taskId === commands[0].id) {
+        clock = 600_001;
+        t.mock.timers.tick(clock);
+      }
+      assert.equal(signal.aborted, false);
+      return {
+        cleanup: { complete: true },
+        durationMs: taskId === commands[0].id ? 600_001 : 0,
+        exitCode: 0,
+        signal: null,
+      };
+    },
+  });
+  assert.deepEqual(started, [
+    { id: "fixture.first", at: 0 },
+    { id: "fixture.later", at: 600_001 },
+  ]);
+  assert.equal(result.durationMs, 600_001);
+  assert.equal(result.status, "passed");
+  assert.equal(result.deadlineExceeded, false);
+  assert.equal(result.interrupted, false);
+  assert.deepEqual(
+    result.tasks.map(({ status }) => status),
+    ["passed", "passed"],
+  );
+  assert.deepEqual(
+    result.stages.map(({ status }) => status),
+    ["passed", "passed"],
+  );
 });
 
 test("C2-ZC Full does not skip product journeys after runtime performance failure", async () => {
@@ -1983,6 +2933,74 @@ test("Full receipt verification binds every planned stage and command", () => {
     verifyLocalCiReceipt(receipt, { profile: "full", candidate, plan }),
   );
 
+  const runOwnedPlan = fullStageBindingPlan();
+  const artifactDirectory =
+    ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys";
+  const runOwnedPlanCommand = runOwnedPlan.stages.find(
+    ({ id }) => id === "electron-product-journeys",
+  ).commands[0];
+  runOwnedPlanCommand.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR =
+    artifactDirectory;
+  const runOwnedReceipt = {
+    ...receipt,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    stages: passedStagesForPlan(runOwnedPlan),
+  };
+  const runOwnedReceiptCommand = runOwnedReceipt.stages.find(
+    ({ id }) => id === "electron-product-journeys",
+  ).commands[0];
+  runOwnedReceiptCommand.env = {
+    ...runOwnedReceiptCommand.env,
+    GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: artifactDirectory.replaceAll(
+      "__LOCAL_CI_RUN_ID__",
+      LOCAL_CI_TEST_RUN_ID,
+    ),
+  };
+  assert.doesNotThrow(() =>
+    verifyLocalCiReceipt(runOwnedReceipt, {
+      profile: "full",
+      candidate,
+      plan: runOwnedPlan,
+    }),
+  );
+  assert.equal(
+    runOwnedPlanCommand.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR,
+    artifactDirectory,
+  );
+
+  const wrongRunReceipt = structuredClone(runOwnedReceipt);
+  wrongRunReceipt.stages.find(
+    ({ id }) => id === "electron-product-journeys",
+  ).commands[0].env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR =
+    artifactDirectory.replaceAll(
+      "__LOCAL_CI_RUN_ID__",
+      "88888888-8888-4888-8888-888888888888",
+    );
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(wrongRunReceipt, {
+        profile: "full",
+        candidate,
+        plan: runOwnedPlan,
+      }),
+    /env does not match the planned command/u,
+  );
+
+  for (const runId of [undefined, "../wrong-run"]) {
+    const invalidRunReceipt = structuredClone(runOwnedReceipt);
+    if (runId === undefined) delete invalidRunReceipt.runId;
+    else invalidRunReceipt.runId = runId;
+    assert.throws(
+      () =>
+        verifyLocalCiReceipt(invalidRunReceipt, {
+          profile: "full",
+          candidate,
+          plan: runOwnedPlan,
+        }),
+      /run must be a UUIDv4/u,
+    );
+  }
+
   for (const [label, mutate] of [
     ["missing stage", (mutated) => mutated.stages.pop()],
     ["reordered stage", (mutated) => mutated.stages.reverse()],
@@ -2100,8 +3118,8 @@ test("Full receipt verification binds every planned stage and command", () => {
       plan: customPlan,
     }),
   );
-  customReceipt.stages.at(
-    -1,
+  customReceipt.stages.find(
+    ({ id }) => id === "electron-product-journeys",
   ).commands[0].env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE = "origin/master";
   assert.throws(
     () =>
@@ -2253,6 +3271,9 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   const artifactRoot = path.join(
     temporaryRoot,
     ".artifacts",
+    "local-ci",
+    "runs",
+    LOCAL_CI_TEST_RUN_ID,
     "product-journeys",
   );
   const resultsPath = path.join(artifactRoot, "results.json");
@@ -2351,7 +3372,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
           {
             env: {
               GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR:
-                ".artifacts/product-journeys",
+                ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys",
               GRIMODEX_NODE_PATH: nativePath,
               GRIMODEX_MCP_PATH: mcpRequestedPath,
             },
@@ -2360,15 +3381,27 @@ test("Full product journey evidence binds result and manifest bytes to the recei
       },
     ],
   };
-  const evidence = await collectProductJourneyEvidence(plan, {
-    root: temporaryRoot,
-  });
+  const collectEvidence = (options = {}) =>
+    collectProductJourneyEvidence(plan, {
+      root: temporaryRoot,
+      runId: LOCAL_CI_TEST_RUN_ID,
+      ...options,
+    });
+  await assert.rejects(
+    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    /Product journey evidence run must be a UUIDv4/u,
+  );
+  const evidence = await collectEvidence();
+  assert.equal(
+    plan.stages[0].commands[0].env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR,
+    ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys",
+  );
   assert.deepEqual(evidence.journeyIds, journeyIds);
   assert.equal(evidence.results.sha256, resultsSha256);
   assert.equal(evidence.artifacts.length, 6);
   assert.equal(
     evidence.manifest.path,
-    ".artifacts/product-journeys/manifest.json",
+    `.artifacts/local-ci/runs/${LOCAL_CI_TEST_RUN_ID}/product-journeys/manifest.json`,
   );
   assert.match(evidence.artifactDigest, /^sha256:[0-9a-f]{64}$/);
 
@@ -2399,10 +3432,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     `${JSON.stringify(missingManifestArtifact, null, 2)}\n`,
     "utf8",
   );
-  await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
-    /exactly .*build artifacts|missing/i,
-  );
+  await assert.rejects(collectEvidence(), /exactly .*build artifacts|missing/i);
   await writeFile(manifestPath, manifestText, "utf8");
 
   const reorderedManifest = JSON.parse(manifestText);
@@ -2413,7 +3443,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     "utf8",
   );
   await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    collectEvidence(),
     /exactly|order|artifact/i,
     "manifest artifact order mutation must be rejected",
   );
@@ -2427,7 +3457,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     "utf8",
   );
   await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    collectEvidence(),
     /size|artifact/i,
     "manifest artifact size mutation must be rejected",
   );
@@ -2464,14 +3494,14 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     "utf8",
   );
   await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    collectEvidence(),
     /changed after preflight|artifact.*mismatch/i,
   );
   await writeFile(manifestPath, manifestText, "utf8");
 
   await writeFile(mainPath, "electron main tampered", "utf8");
   await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    collectEvidence(),
     /changed after preflight|artifact.*mismatch/i,
   );
   await writeFile(mainPath, "electron main", "utf8");
@@ -2479,17 +3509,14 @@ test("Full product journey evidence binds result and manifest bytes to the recei
   await rm(mcpRequestedPath);
   await symlink(path.basename(mcpTargetB), mcpRequestedPath);
   await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
+    collectEvidence(),
     /changed after preflight|artifact.*mismatch/i,
   );
   await rm(mcpRequestedPath);
   await symlink(path.basename(mcpTargetA), mcpRequestedPath);
 
   await rm(nativePath);
-  await assert.rejects(
-    collectProductJourneyEvidence(plan, { root: temporaryRoot }),
-    /ENOENT|regular file|artifact/i,
-  );
+  await assert.rejects(collectEvidence(), /ENOENT|regular file|artifact/i);
 
   await writeFile(nativePath, "native module", "utf8");
   const rustReceipt = await createC2ZcRustAcceptanceReceipt({
@@ -2556,10 +3583,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     `${JSON.stringify(acceptedManifest, null, 2)}\n`,
     "utf8",
   );
-  const acceptedEvidence = await collectProductJourneyEvidence(plan, {
-    candidate,
-    root: temporaryRoot,
-  });
+  const acceptedEvidence = await collectEvidence({ candidate });
   assert.equal(acceptedEvidence.acceptanceRequired, true);
   assert.equal(acceptedEvidence.acceptanceComplete, true);
   assert.equal(
@@ -2660,7 +3684,7 @@ test("Full product journey evidence binds result and manifest bytes to the recei
     "utf8",
   );
   await assert.rejects(
-    collectProductJourneyEvidence(plan, { candidate, root: temporaryRoot }),
+    collectEvidence({ candidate }),
     /does not bind|match|receipt/i,
   );
 });
@@ -2701,8 +3725,952 @@ test("package scripts expose canonical local CI entrypoints", async () => {
     packageJson.scripts["ci:local:verify"],
     "node scripts/local-ci.mjs --verify",
   );
+  assert.equal(
+    packageJson.scripts["ci:build:desktop"],
+    "node electron/scripts/build.mjs && pnpm exec vite build",
+  );
+  assert.equal(
+    packageJson.scripts["ci:verify:quality"],
+    packageJson.scripts["verify:quality"].replace(
+      "pnpm eval:narrative",
+      "pnpm ci:eval:narrative",
+    ),
+  );
+  assert.equal(
+    packageJson.scripts["ci:eval:narrative"]
+      .replace(/^vitest --config vitest\.config\.ts /u, "")
+      .replace(/ --maxWorkers 4$/u, ""),
+    packageJson.scripts["eval:narrative"].replace(/^pnpm test:node /u, ""),
+  );
+  assert.doesNotMatch(
+    packageJson.scripts["ci:eval:narrative"],
+    /build:workspace:dependencies/u,
+  );
   assert.match(packageJson.scripts["test:quality"], /local-ci\.test\.mjs/);
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /^node --test --test-concurrency=4 /u,
+  );
+  assert.match(
+    packageJson.scripts["test:browser-ci"],
+    /^node --test --test-concurrency=2 /u,
+  );
+  assert.match(
+    packageJson.scripts["test:product-journey-contracts"],
+    /electron\/scripts\/product-journey-shards\.test\.mjs/u,
+  );
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /local-ci-runner\.test\.mjs/,
+  );
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /local-ci-process-supervisor\.test\.mjs/,
+  );
   assert.match(packageJson.scripts["test:quality"], /ci-pause\.test\.mjs/);
+});
+
+test("Full task plan preserves obligations across Cargo-native Rust shards", async () => {
+  const registry = await readRegistry();
+  const plan = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const tasksById = new Map(plan.tasks.map((task) => [task.id, task]));
+  const obligations = plan.tasks.flatMap(
+    (task) => task.obligations ?? [task.id],
+  );
+
+  assert.deepEqual(
+    plan.stages.map(({ id }) => id),
+    [
+      "bootstrap",
+      "migration-recovery-gate",
+      "security",
+      "frontend",
+      "browser",
+      "electron-native",
+      "c2-zc-rust-acceptance-gate",
+      "c2-zc-restore-fixture-builder",
+      "quality",
+      "electron-product-journeys",
+      "lfm-encoder-phase0",
+      "rust",
+      "webgl",
+      "storybook",
+      "electron",
+      "electron-runtime-performance",
+    ],
+  );
+  assert.deepEqual(
+    plan.stages.find(({ id }) => id === "rust").commands.map(({ id }) => id),
+    [
+      "rust.supervisor-failpoints",
+      "rust.tests-db-integrations",
+      "rust.tests-db-lib",
+      "rust.tests-other-workspace",
+      "rust.check",
+      "rust.clippy",
+      "rust.tests-db-doctests",
+      "rust.tests",
+      "rust.runtime-authority",
+      "rust.license",
+    ],
+  );
+  assert.deepEqual(
+    plan.stages
+      .find(({ id }) => id === "frontend")
+      .commands.map(({ id }) => id),
+    [
+      "frontend.unit-shard-1",
+      "frontend.unit-shard-2",
+      "frontend.unit",
+      "frontend.typecheck",
+      "frontend.lint",
+      "frontend.architecture",
+      "frontend.browser-contracts",
+      "frontend.web-build",
+    ],
+  );
+  assert.deepEqual(
+    plan.stages
+      .find(({ id }) => id === "electron")
+      .commands.map(({ id }) => id),
+    [
+      "electron.typecheck",
+      "electron.build",
+      "electron.budget",
+      "electron.contracts",
+      "electron.unit",
+    ],
+  );
+  assert.deepEqual(
+    plan.stages
+      .find(({ id }) => id === "electron-native")
+      .commands.map(({ id }) => id),
+    [
+      "native.build",
+      "native.public-tests",
+      "native.check",
+      "native.clippy",
+      "native.tests",
+      "native.mcp-tests",
+    ],
+  );
+  const nativeTestsTask = tasksById.get("native.tests");
+  assert.equal(nativeTestsTask.command.command, "cargo");
+  assert.deepEqual(nativeTestsTask.command.args, [
+    "test",
+    "--manifest-path",
+    "electron/native/grimodex-node/Cargo.toml",
+    "--features",
+    "licensing,legacy-keyring-migration",
+  ]);
+  assert.equal(nativeTestsTask.command.cwd, ".");
+  assert.deepEqual(nativeTestsTask.after, ["bootstrap.install"]);
+  assert.equal(nativeTestsTask.lane, "cargo-native");
+  assert.equal(nativeTestsTask.slots, 2);
+  assert.equal(nativeTestsTask.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
+  assert.equal(nativeTestsTask.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
+  assert.equal(nativeTestsTask.command.env.CARGO_BUILD_JOBS, "2");
+  assert.equal(nativeTestsTask.command.env.RUST_TEST_THREADS, "2");
+  assert.equal(nativeTestsTask.obligations, undefined);
+  assert.deepEqual(
+    plan.stages.find(({ id }) => id === "webgl").commands.map(({ id }) => id),
+    ["webgl.zen", "webgl.tests"],
+  );
+  assert.deepEqual(
+    plan.stages
+      .find(({ id }) => id === "electron-product-journeys")
+      .commands.map(({ id }) => id),
+    [
+      "journeys.mcp-build",
+      "journeys.shard-1",
+      "journeys.shard-2",
+      "journeys.shard-3",
+      "journeys.run",
+    ],
+  );
+  assert.equal(plan.tasks.length, 60);
+  assert.equal(tasksById.size, 60);
+  assert.equal(obligations.length, 52);
+  assert.equal(new Set(obligations).size, 52);
+  assert.equal(
+    obligations.filter((obligation) => obligation === "frontend.unit").length,
+    1,
+  );
+  for (const id of ["frontend.unit-shard-1", "frontend.unit-shard-2"]) {
+    assert.equal(obligations.includes(id), false);
+  }
+  assert.deepEqual(tasksById.get("rust.supervisor-failpoints").obligations, [
+    "rust.supervisor-failpoints",
+    "migration.supervisor-failpoints",
+  ]);
+  assert.equal(
+    obligations.filter((obligation) => obligation === "rust.tests").length,
+    1,
+  );
+
+  const journeyArtifactDir =
+    ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys";
+  const journeyEnv = {
+    CI: "true",
+    CARGO_PROFILE_DEV_DEBUG: "0",
+    CARGO_PROFILE_TEST_DEBUG: "0",
+    GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: journeyArtifactDir,
+    GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL: "true",
+    GRIMODEX_PRODUCT_JOURNEY_IDS: "",
+    GRIMODEX_PRODUCT_JOURNEY_SET: "",
+    GRIMODEX_C2ZC_RUST_RECEIPT_PATH:
+      ".artifacts/local-ci/c2-zc-rust-acceptance.json",
+    GRIMODEX_C2ZC_RUST_REQUESTED_BASE: "origin/master",
+    GRIMODEX_C2ZC_RUST_REQUESTED_HEAD: "HEAD",
+  };
+  const shardDependencies = [
+    "journeys.mcp-build",
+    "native.public-tests",
+    "c2zc.fixture-verify",
+    "webgl.tests",
+  ];
+  const mcpBuildTask = tasksById.get("journeys.mcp-build");
+  assert.equal(mcpBuildTask.command.command, "pnpm");
+  assert.deepEqual(mcpBuildTask.command.args, ["mcp:build"]);
+  assert.deepEqual(mcpBuildTask.after, ["electron.build", "native.build"]);
+  assert.equal(mcpBuildTask.lane, "cargo-shared");
+  assert.equal(mcpBuildTask.slots, 2);
+  assert.equal(mcpBuildTask.timeoutMs, 180_000);
+  assert.equal(mcpBuildTask.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
+  assert.equal(mcpBuildTask.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
+  assert.equal(mcpBuildTask.command.env.CARGO_BUILD_JOBS, "2");
+  for (const shard of ["1", "2", "3"]) {
+    const task = tasksById.get(`journeys.shard-${shard}`);
+    assert.equal(task.command.command, "xvfb-run");
+    assert.deepEqual(task.command.args, [
+      "--auto-display",
+      "--server-args=-screen 0 1920x1080x24",
+      "node",
+      "electron/scripts/product-journey-shards.mjs",
+      "run",
+      "--shard",
+      shard,
+      "--output-dir",
+      journeyArtifactDir,
+    ]);
+    assert.deepEqual(task.command.env, journeyEnv);
+    assert.deepEqual(task.after, shardDependencies);
+    assert.deepEqual(task.obligations, []);
+    assert.equal(task.lane, `journey-shard-${shard}`);
+    assert.equal(task.slots, 2);
+    assert.equal(task.timeoutMs, 240_000);
+  }
+  const calibratedJourneyCoLoad = [
+    ...["1", "2", "3"].map((shard) => tasksById.get(`journeys.shard-${shard}`)),
+    tasksById.get("quality.contracts"),
+    tasksById.get("browser.tests"),
+  ];
+  assert.deepEqual(
+    calibratedJourneyCoLoad.map(({ id, slots }) => [id, slots]),
+    [
+      ["journeys.shard-1", 2],
+      ["journeys.shard-2", 2],
+      ["journeys.shard-3", 2],
+      ["quality.contracts", 4],
+      ["browser.tests", 2],
+    ],
+  );
+  assert.equal(
+    calibratedJourneyCoLoad.reduce(
+      (usedSlots, task) => usedSlots + task.slots,
+      0,
+    ),
+    registry.maxSlots,
+  );
+  const aggregate = tasksById.get("journeys.run");
+  assert.equal(aggregate.command.command, "node");
+  assert.deepEqual(aggregate.command.args, [
+    "electron/scripts/product-journey-shards.mjs",
+    "aggregate",
+    "--output-dir",
+    journeyArtifactDir,
+  ]);
+  assert.deepEqual(aggregate.command.env, journeyEnv);
+  assert.deepEqual(aggregate.after, [
+    "journeys.shard-1",
+    "journeys.shard-2",
+    "journeys.shard-3",
+  ]);
+  assert.equal(aggregate.obligations, undefined);
+  assert.equal(
+    obligations.filter((obligation) => obligation === "journeys.run").length,
+    1,
+  );
+
+  const cargoShardExpectations = new Map([
+    ["rust.tests-db-lib", ["test", "-p", "grimodex-db", "--lib"]],
+    [
+      "rust.tests-db-integrations",
+      ["test", "-p", "grimodex-db", "--test", "*", "--bin", "schema-contract"],
+    ],
+    [
+      "rust.tests-other-workspace",
+      [
+        "test",
+        "--workspace",
+        "--exclude",
+        "grimodex",
+        "--exclude",
+        "grimodex-db",
+        "--features",
+        "grimodex-semantic/semantic-embedding",
+      ],
+    ],
+  ]);
+  const shardLanes = new Set();
+  for (const [id, args] of cargoShardExpectations) {
+    const task = tasksById.get(id);
+    assert.equal(task.command.command, "cargo");
+    assert.deepEqual(task.command.args, args);
+    assert.equal(task.command.cwd, "src-tauri");
+    assert.equal(task.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
+    assert.equal(task.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
+    assert.equal(task.command.env.CARGO_BUILD_JOBS, "2");
+    assert.equal(task.command.env.RUST_TEST_THREADS, "2");
+    assert.equal(task.slots, 2);
+    assert.deepEqual(task.obligations, []);
+    shardLanes.add(task.lane);
+  }
+  assert.equal(shardLanes.size, cargoShardExpectations.size);
+
+  assert.deepEqual(tasksById.get("rust.tests-db-doctests").command.args, [
+    "test",
+    "-p",
+    "grimodex-db",
+    "--doc",
+  ]);
+  assert.deepEqual(tasksById.get("rust.tests-db-doctests").after, [
+    "rust.tests-db-lib",
+  ]);
+  assert.deepEqual(tasksById.get("rust.tests").command.args, [
+    "test",
+    "--workspace",
+    "--exclude",
+    "grimodex",
+    "--features",
+    "grimodex-semantic/semantic-embedding",
+    "--no-run",
+  ]);
+  const rustTestsTask = tasksById.get("rust.tests");
+  assert.equal(rustTestsTask.lane, "cargo-shared");
+  assert.equal(rustTestsTask.slots, 2);
+  assert.deepEqual(rustTestsTask.after, [
+    "rust.tests-db-lib",
+    "rust.tests-db-integrations",
+    "rust.tests-other-workspace",
+    "rust.tests-db-doctests",
+  ]);
+  assert.deepEqual(rustTestsTask.obligations, ["rust.tests"]);
+  const c2Task = tasksById.get("c2zc.rust-acceptance");
+  assert.equal(rustTestsTask.lane, c2Task.lane);
+  assert.deepEqual(c2Task.after, ["rust.supervisor-failpoints"]);
+  assert.equal(c2Task.slots, 2);
+  assert.equal(c2Task.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
+  assert.equal(c2Task.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
+  assert.equal(c2Task.command.env.CARGO_BUILD_JOBS, "2");
+  assert.equal(c2Task.command.env.RUST_TEST_THREADS, "2");
+  const c2Dependencies = new Set();
+  const visitC2Dependency = (id) => {
+    for (const dependency of tasksById.get(id).after) {
+      if (c2Dependencies.has(dependency)) continue;
+      c2Dependencies.add(dependency);
+      visitC2Dependency(dependency);
+    }
+  };
+  visitC2Dependency("c2zc.rust-acceptance");
+  assert.deepEqual([...c2Dependencies].sort(), [
+    "bootstrap.install",
+    "rust.supervisor-failpoints",
+  ]);
+  for (const id of [
+    ...cargoShardExpectations.keys(),
+    "rust.tests-db-doctests",
+    "rust.tests",
+    "rust.check",
+    "rust.clippy",
+    "rust.runtime-authority",
+    "rust.license",
+  ]) {
+    assert.equal(
+      c2Dependencies.has(id),
+      false,
+      `${id} must not gate C2-ZC Rust acceptance`,
+    );
+  }
+
+  for (const id of ["c2zc.fixture-build", "c2zc.fixture-verify"]) {
+    const task = tasksById.get(id);
+    assert.equal(task.slots, 2);
+    assert.equal(task.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
+    assert.equal(task.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
+    assert.equal(task.command.env.CARGO_BUILD_JOBS, "2");
+  }
+
+  assert.equal(
+    tasksById.get("rust.supervisor-failpoints").lane,
+    "cargo-recovery",
+  );
+  assert.deepEqual(tasksById.get("rust.supervisor-failpoints").after, [
+    "bootstrap.install",
+  ]);
+  assert.deepEqual(tasksById.get("migration.supervisor").after, [
+    "rust.supervisor-failpoints",
+  ]);
+  for (const id of [
+    "rust.supervisor-failpoints",
+    "migration.supervisor",
+    "migration.failpoints-lib",
+    "migration.safe-mode",
+    "migration.release-schema",
+    "migration.crash",
+  ]) {
+    const task = tasksById.get(id);
+    assert.equal(task.lane, "cargo-recovery");
+    assert.equal(task.slots, 2);
+    assert.equal(task.command.env.CARGO_BUILD_JOBS, "2");
+    assert.equal(task.command.env.RUST_TEST_THREADS, "2");
+  }
+  assert.equal(tasksById.get("migration.ipc").slots, 2);
+  assert.equal(tasksById.get("migration.ui").slots, 4);
+
+  assert.equal(registry.maxSlots, 12);
+  assert.equal(plan.stages.at(-1).id, "electron-runtime-performance");
+  const runtimeContracts = tasksById.get("runtime.contracts");
+  const runtimeBenchmark = tasksById.get("runtime.benchmark");
+  assert.equal(plan.tasks.at(-1).id, "runtime.benchmark");
+  assert.deepEqual(runtimeContracts.after, ["bootstrap.workspace-build"]);
+  assert.equal(runtimeContracts.slots, 4);
+  assert.equal(runtimeBenchmark.slots, registry.maxSlots);
+  assert.ok(runtimeBenchmark.after.includes("runtime.contracts"));
+  const preRuntimeTasks = plan.tasks.filter(
+    ({ id }) => !id.startsWith("runtime."),
+  );
+  const dependedOnBeforeRuntime = new Set(
+    preRuntimeTasks.flatMap(({ after }) => after),
+  );
+  const preRuntimeTerminals = preRuntimeTasks
+    .filter(({ id }) => !dependedOnBeforeRuntime.has(id))
+    .map(({ id }) => id)
+    .sort();
+  assert.deepEqual(
+    [...runtimeBenchmark.after].sort(),
+    [...preRuntimeTerminals, "runtime.contracts"].sort(),
+  );
+  const directRuntimeRustDependencies = [
+    "rust.check",
+    "rust.clippy",
+    "rust.tests",
+    "rust.runtime-authority",
+    "rust.license",
+  ];
+  for (const id of directRuntimeRustDependencies) {
+    assert.ok(
+      runtimeBenchmark.after.includes(id),
+      `${id} must directly gate runtime benchmark`,
+    );
+  }
+  for (const id of ["browser.tests", "storybook.tests", "migration.ui"]) {
+    assert.ok(
+      runtimeBenchmark.after.includes(id),
+      `${id} must directly gate runtime benchmark`,
+    );
+  }
+  const runtimeDependencies = new Set();
+  const visitRuntimeDependency = (id) => {
+    for (const dependency of tasksById.get(id).after) {
+      if (runtimeDependencies.has(dependency)) continue;
+      runtimeDependencies.add(dependency);
+      visitRuntimeDependency(dependency);
+    }
+  };
+  visitRuntimeDependency("runtime.benchmark");
+  for (const { id } of plan.stages.find(({ id }) => id === "rust").commands) {
+    assert.ok(runtimeDependencies.has(id), `${id} must gate runtime benchmark`);
+  }
+  assert.match(
+    plan.tasks
+      .find(({ id }) => id === "frontend.web-build")
+      .command.args.join(" "),
+    /__LOCAL_CI_RUN_ID__\/web-editor/u,
+  );
+  assert.deepEqual(
+    plan.tasks.find(({ id }) => id === "electron.build").command.args,
+    ["ci:build:desktop"],
+  );
+  assert.deepEqual(plan.tasks.find(({ id }) => id === "electron.build").after, [
+    "electron.typecheck",
+  ]);
+  assert.equal(
+    plan.tasks.find(({ id }) => id === "electron.build").lane,
+    undefined,
+  );
+  assert.equal(
+    plan.tasks.find(({ id }) => id === "frontend.web-build").lane,
+    undefined,
+  );
+  assert.deepEqual(
+    plan.tasks.find(({ id }) => id === "quality.contracts").command.args,
+    ["ci:verify:quality"],
+  );
+  assert.equal(
+    plan.tasks.find(({ id }) => id === "frontend.browser-contracts").slots,
+    2,
+  );
+  const frontendUnitArgs = [
+    "exec",
+    "vitest",
+    "--config",
+    "vitest.config.ts",
+    "--run",
+    "--maxWorkers",
+    "2",
+  ];
+  const frontendUnitShardExpectations = [
+    ["frontend.unit-shard-1", "1/3", []],
+    ["frontend.unit-shard-2", "2/3", []],
+    ["frontend.unit", "3/3", undefined],
+  ];
+  for (const [id, shard, taskObligations] of frontendUnitShardExpectations) {
+    const task = tasksById.get(id);
+    assert.equal(task.command.command, "pnpm");
+    assert.deepEqual(task.command.args, [
+      ...frontendUnitArgs,
+      "--shard",
+      shard,
+    ]);
+    assert.equal(
+      task.command.args[task.command.args.indexOf("--maxWorkers") + 1],
+      "2",
+    );
+    assert.equal(
+      task.command.args[task.command.args.indexOf("--shard") + 1],
+      shard,
+    );
+    assert.deepEqual(task.after, ["bootstrap.workspace-build"]);
+    assert.equal(task.slots, 2);
+    assert.equal(task.lane, undefined);
+    assert.deepEqual(task.obligations, taskObligations);
+    assert.ok(
+      runtimeBenchmark.after.includes(id),
+      `${id} must directly gate runtime benchmark`,
+    );
+  }
+  const browserTask = plan.tasks.find(({ id }) => id === "browser.tests");
+  const browserWorkerIndex = browserTask.command.args.indexOf("--max-workers");
+  assert.equal(browserTask.command.args[browserWorkerIndex + 1], "2");
+  assert.equal(browserTask.slots, 2);
+  assert.ok(
+    plan.tasks
+      .find(({ id }) => id === "electron.contracts")
+      .command.args.includes("--test-concurrency=4"),
+  );
+  assert.deepEqual(
+    plan.tasks.find(({ id }) => id === "electron.unit").command.args.slice(-2),
+    ["--maxWorkers", "4"],
+  );
+  assert.deepEqual(
+    plan.tasks.find(({ id }) => id === "migration.ui").command.args.slice(0, 5),
+    ["exec", "vitest", "--run", "--maxWorkers", "4"],
+  );
+  assert.equal(
+    plan.tasks.find(({ id }) => id === "journeys.run").command.env
+      .GRIMODEX_PRODUCT_JOURNEY_WORKERS,
+    undefined,
+  );
+});
+
+test("Full priority admits ready browser work when two slots reopen before later bulk tasks", async () => {
+  const registry = await readRegistry();
+  const plan = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const selectedIds = new Set([
+    "browser.tests",
+    "native.tests",
+    "lfm.dataset",
+    "runtime.benchmark",
+  ]);
+  // Keep real priority, lanes, and slot weights; other prerequisites have passed.
+  const readyTasks = plan.tasks
+    .filter(({ id }) => selectedIds.has(id))
+    .map((task) => ({
+      ...task,
+      after: task.after.filter((id) => selectedIds.has(id)),
+    }));
+  const tasks = [
+    { id: "fixture.capacity-holder", slots: 10 },
+    { id: "fixture.release-two-slots", slots: 2 },
+    ...readyTasks,
+  ];
+  const started = [];
+  const completed = new Set();
+  const release = new Map();
+  const settleAdmissions = () =>
+    new Promise((resolve) => setImmediate(resolve));
+  const running = runLocalCiTasks(tasks, {
+    maxSlots: registry.maxSlots,
+    executeTask(task) {
+      started.push(task.id);
+      return new Promise((resolve) => {
+        release.set(task.id, () => {
+          completed.add(task.id);
+          resolve({ cleanup: { complete: true }, exitCode: 0, signal: null });
+        });
+      });
+    },
+  });
+
+  await settleAdmissions();
+  assert.deepEqual(started, [
+    "fixture.capacity-holder",
+    "fixture.release-two-slots",
+  ]);
+  release.get("fixture.release-two-slots")();
+  await settleAdmissions();
+  assert.equal(started.at(-1), "browser.tests");
+  assert.equal(started.includes("native.tests"), false);
+  assert.equal(started.includes("lfm.dataset"), false);
+
+  for (const [finished, next] of [
+    ["browser.tests", "native.tests"],
+    ["native.tests", "lfm.dataset"],
+  ]) {
+    release.get(finished)();
+    await settleAdmissions();
+    assert.equal(started.at(-1), next);
+    assert.equal(started.includes("runtime.benchmark"), false);
+  }
+  release.get("fixture.capacity-holder")();
+  await settleAdmissions();
+  assert.equal(started.includes("runtime.benchmark"), false);
+  release.get("lfm.dataset")();
+  await settleAdmissions();
+  assert.equal(started.at(-1), "runtime.benchmark");
+  assert.deepEqual(
+    [...completed].sort(),
+    tasks
+      .filter(({ id }) => id !== "runtime.benchmark")
+      .map(({ id }) => id)
+      .sort(),
+  );
+  release.get("runtime.benchmark")();
+  assert.equal((await running).status, "passed");
+});
+
+test("receipt plan binding rejects descriptor changes and unclean task results", async () => {
+  const registry = await readRegistry();
+  const plan = buildLocalCiPlan(registry, {
+    profile: "quick",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const candidate = completeCandidate();
+  const receipt = {
+    version: 3,
+    profile: "quick",
+    status: "passed",
+    coverage: plan.coverage,
+    candidate,
+    candidateAfter: candidate,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    durationMs: 10,
+    registryDigest: plan.registryDigest,
+    plan: createLocalCiPlanDescriptor(plan),
+    tasks: [
+      {
+        id: "impact.select",
+        status: "passed",
+        exitCode: 0,
+        signal: null,
+        cleanup: { complete: true },
+        durationMs: 1,
+        logs: {
+          stdout: {
+            path: `.artifacts/local-ci/runs/${LOCAL_CI_TEST_RUN_ID}/logs/impact.select.stdout.log`,
+            size: 0,
+            sha256: `sha256:${"0".repeat(64)}`,
+          },
+          stderr: {
+            path: `.artifacts/local-ci/runs/${LOCAL_CI_TEST_RUN_ID}/logs/impact.select.stderr.log`,
+            size: 0,
+            sha256: `sha256:${"0".repeat(64)}`,
+          },
+        },
+      },
+    ],
+  };
+  assert.equal(
+    verifyLocalCiReceipt(receipt, { candidate, plan, profile: "quick" }),
+    receipt,
+  );
+
+  const tampered = structuredClone(receipt);
+  tampered.plan.tasks[0].command.args.push("--changed");
+  assert.throws(
+    () => verifyLocalCiReceipt(tampered, { candidate, plan, profile: "quick" }),
+    /exact task plan/u,
+  );
+
+  const missingCandidateAfter = structuredClone(receipt);
+  delete missingCandidateAfter.candidateAfter;
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(missingCandidateAfter, {
+        candidate,
+        plan,
+        profile: "quick",
+      }),
+    /post-run candidate binding/u,
+  );
+
+  const timedOut = structuredClone(receipt);
+  timedOut.tasks[0].timedOut = true;
+  assert.throws(
+    () => verifyLocalCiReceipt(timedOut, { candidate, plan, profile: "quick" }),
+    /did not pass cleanly/u,
+  );
+});
+
+test("task log verification detects tampering and does not rewrite evidence", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-ci-log-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const relativeLogRoot = `.artifacts/local-ci/runs/${LOCAL_CI_TEST_RUN_ID}/logs`;
+  const stdoutPath = path.join(
+    temporaryRoot,
+    relativeLogRoot,
+    "task.stdout.log",
+  );
+  const stderrPath = path.join(
+    temporaryRoot,
+    relativeLogRoot,
+    "task.stderr.log",
+  );
+  await mkdir(path.dirname(stdoutPath), { recursive: true });
+  await Promise.all([
+    writeFile(stdoutPath, "original"),
+    writeFile(stderrPath, "original"),
+  ]);
+  const identity = (stream) => ({
+    path: `${relativeLogRoot}/task.${stream}.log`,
+    size: 8,
+    sha256: `sha256:${createHash("sha256").update("original").digest("hex")}`,
+  });
+  const receipt = {
+    runId: LOCAL_CI_TEST_RUN_ID,
+    tasks: [
+      {
+        id: "task",
+        status: "passed",
+        exitCode: 0,
+        signal: null,
+        cleanup: { complete: true },
+        logs: { stdout: identity("stdout"), stderr: identity("stderr") },
+      },
+    ],
+  };
+  const before = JSON.stringify(receipt);
+  await verifyLocalCiTaskEvidence(receipt, { root: temporaryRoot });
+  assert.equal(JSON.stringify(receipt), before);
+
+  await writeFile(stdoutPath, "tampered");
+  await assert.rejects(
+    verifyLocalCiTaskEvidence(receipt, { root: temporaryRoot }),
+    /log identity changed/u,
+  );
+});
+
+test("concurrent plan execution preserves dependency and receipt ordering", async () => {
+  const runId = LOCAL_CI_TEST_RUN_ID;
+  const command = (id, argument) => ({
+    id,
+    label: id,
+    command: "test-command",
+    args: [argument],
+    cwd: ".",
+    env: {},
+  });
+  const prepare = command("prepare", "__LOCAL_CI_RUN_ID__");
+  const fails = command("fails", "fails");
+  const later = command("later", "later");
+  const task = (entry, stageId, commandIndex, after = []) => ({
+    id: entry.id,
+    stageId,
+    stageLabel: stageId,
+    commandIndex,
+    command: {
+      label: entry.label,
+      command: entry.command,
+      args: entry.args,
+      cwd: entry.cwd,
+      env: entry.env,
+    },
+    after,
+  });
+  const plan = {
+    profile: "quick",
+    comparison: { base: "origin/master", head: "HEAD" },
+    coverage: { completeness: "complete", fromStage: null },
+    maxSlots: 2,
+    registryDigest: `sha256:${"a".repeat(64)}`,
+    releaseOnlyJobs: [],
+    stages: [
+      { id: "first", label: "first", commands: [prepare] },
+      { id: "second", label: "second", commands: [fails, later] },
+    ],
+    tasks: [
+      task(prepare, "first", 0),
+      task(fails, "second", 0, ["prepare"]),
+      task(later, "second", 1, ["fails"]),
+    ],
+  };
+  const executed = [];
+  const result = await runLocalCiPlan(plan, {
+    candidate: completeCandidate(),
+    concurrent: true,
+    runId,
+    async executeCommand(entry, { taskId }) {
+      executed.push({ id: taskId, args: entry.args });
+      const logs = Object.fromEntries(
+        ["stdout", "stderr"].map((stream) => [
+          stream,
+          {
+            path: `.artifacts/local-ci/runs/${runId}/logs/${taskId}.${stream}.log`,
+            size: 0,
+            sha256: `sha256:${"0".repeat(64)}`,
+          },
+        ]),
+      );
+      return {
+        cleanup: { complete: true },
+        durationMs: 1,
+        exitCode: taskId === "fails" ? 1 : 0,
+        logs,
+        signal: null,
+      };
+    },
+  });
+
+  assert.deepEqual(executed, [
+    { id: "prepare", args: [runId] },
+    { id: "fails", args: ["fails"] },
+  ]);
+  assert.deepEqual(
+    result.tasks.map(({ id, status }) => [id, status]),
+    [
+      ["prepare", "passed"],
+      ["fails", "failed"],
+      ["later", "not-run"],
+    ],
+  );
+  assert.deepEqual(
+    result.stages.map((stage) => [
+      stage.id,
+      stage.status,
+      stage.commands.map(({ id }) => id),
+    ]),
+    [
+      ["first", "passed", ["prepare"]],
+      ["second", "failed", ["fails", "later"]],
+    ],
+  );
+  assert.equal(result.stages[0].commands[0].args[0], runId);
+  assert.equal(result.tasks[0].cleanup.complete, true);
+});
+
+test("concurrent plan forwards run scope and external abort to the supervisor", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-ci-run-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const runId = LOCAL_CI_TEST_RUN_ID;
+  const ready = path.join(temporaryRoot, "ready");
+  const command = {
+    id: "node-command",
+    label: "node command",
+    command: process.execPath,
+    args: [
+      "--input-type=commonjs",
+      "-e",
+      `process.stdout.write('scoped');require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000)`,
+    ],
+    cwd: ".",
+    env: {},
+  };
+  const plan = {
+    profile: "quick",
+    comparison: { base: "origin/master", head: "HEAD" },
+    coverage: { completeness: "complete", fromStage: null },
+    maxSlots: 1,
+    registryDigest: `sha256:${"a".repeat(64)}`,
+    releaseOnlyJobs: [],
+    stages: [{ id: "only", label: "only", commands: [command] }],
+    tasks: [
+      {
+        id: command.id,
+        stageId: "only",
+        stageLabel: "only",
+        commandIndex: 0,
+        command: {
+          label: command.label,
+          command: command.command,
+          args: command.args,
+          cwd: command.cwd,
+          env: command.env,
+        },
+        after: [],
+      },
+    ],
+  };
+
+  const controller = new AbortController();
+  const running = runLocalCiPlan(plan, {
+    candidate: completeCandidate(),
+    concurrent: true,
+    root: temporaryRoot,
+    runId,
+    signal: controller.signal,
+  });
+  while (true) {
+    try {
+      await readFile(ready);
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  controller.abort(new Error("test interrupt"));
+  const result = await running;
+
+  const task = result.tasks[0];
+  assert.equal(result.status, "failed");
+  assert.equal(result.interrupted, true);
+  assert.equal(task.interrupted, true);
+  assert.equal(task.cleanup.complete, true);
+  assert.equal(
+    task.logs.stdout.path,
+    `.artifacts/local-ci/runs/${runId}/logs/node-command.stdout.log`,
+  );
+  assert.equal(
+    await readFile(path.join(temporaryRoot, task.logs.stdout.path), "utf8"),
+    "scoped",
+  );
+  assert.throws(
+    () => process.kill(-task.pid, 0),
+    (error) => error?.code === "ESRCH",
+  );
 });
 
 test("AI workflow authorities require local Quick and complete Full evidence", async () => {

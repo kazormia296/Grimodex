@@ -1,3 +1,6 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::import::{
     apply_commit, create_session, save_source_package, ImportApplyCommitPayload,
     ImportSessionCreatePayload, SaveImportSourcePackagePayload,
@@ -14,9 +17,11 @@ use rusqlite::OptionalExtension;
 use serde_json::json;
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
-    db
+    test_support::current_schema_memory().expect("current-schema fixture")
+}
+
+fn fresh_migrated_db() -> Database {
+    test_support::fresh_migrated_memory().expect("migrate database")
 }
 
 fn enable_generic_import_apply(db: &Database) {
@@ -76,7 +81,7 @@ fn apply_payload(session_id: &str, request_id: &str, project_id: &str) -> Import
 
 #[test]
 fn apply_creates_project_and_commits_session() {
-    let db = migrated_db();
+    let db = fresh_migrated_db();
     create_ready_session(&db, "session-1", "imported-project");
 
     let receipt = apply_commit(
@@ -175,7 +180,7 @@ fn apply_creates_project_and_commits_session() {
 
 #[test]
 fn post_marker_import_binds_one_initial_epoch_to_the_import_apply_event() {
-    let db = migrated_db();
+    let db = fresh_migrated_db();
     create_ready_session(&db, "session-c2zc-birth", "imported-c2zc-project");
     db.with_conn(|conn| {
         conn.execute(
@@ -239,7 +244,7 @@ fn post_marker_import_binds_one_initial_epoch_to_the_import_apply_event() {
 
 #[test]
 fn import_fails_atomically_for_an_unsupported_c2zc_marker() {
-    let db = migrated_db();
+    let db = fresh_migrated_db();
     create_ready_session(&db, "session-c2zc-unsupported", "imported-c2zc-unsupported");
     db.with_conn(|conn| {
         conn.execute(

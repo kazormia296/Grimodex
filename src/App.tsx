@@ -1,22 +1,13 @@
-import { lazy, Suspense, useCallback, useState } from "react";
+import { useCallback, useState } from "react";
 import { Toaster } from "sonner";
 
-import { WorkspaceTrustDialog } from "@/features/workspace/WorkspaceTrustDialog";
 import { WorkspaceViewHost } from "@/features/workspace/WorkspaceViewHost";
-import { EulaConsentDialog } from "@/features/legal/EulaConsentDialog";
-import { ReleaseNotesDialog } from "@/features/release-notes/ReleaseNotesDialog";
-import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { LiveRegion } from "@/components/a11y/LiveRegion";
 import { CloseSaveFailureDialog } from "@/components/CloseSaveFailureDialog";
+import { ApplicationDialogs } from "@/components/ApplicationDialogs";
 import { LifecycleStatus } from "@/application/lifecycle/LifecycleStatus";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { ApplicationBootstrapHost } from "@/application/bootstrap/ApplicationBootstrapHost";
-
-const WebEditorWorkspaceImportDialog = lazy(() =>
-  import("@/features/import/WebEditorWorkspaceImportDialog").then((m) => ({
-    default: m.WebEditorWorkspaceImportDialog,
-  })),
-);
 
 // Root composition remains deliberately thin.
 function App() {
@@ -40,18 +31,11 @@ function App() {
       <LiveRegion />
       <LifecycleStatus />
       <WorkspaceViewHost />
-      <WorkspaceTrustDialog />
-      <EulaConsentDialog />
-      <ReleaseNotesDialog />
-      {runtimeCapabilities.genericProjectTransfer && showWebEditorImport && (
-        <Suspense fallback={null}>
-          <WebEditorWorkspaceImportDialog
-            open
-            onClose={() => setShowWebEditorImport(false)}
-          />
-        </Suspense>
-      )}
-      <DebugLogViewer />
+      <ApplicationDialogs
+        onCloseWebEditorImport={() => setShowWebEditorImport(false)}
+        runtimeCapabilities={runtimeCapabilities}
+        showWebEditorImport={showWebEditorImport}
+      />
     </>
   );
 }

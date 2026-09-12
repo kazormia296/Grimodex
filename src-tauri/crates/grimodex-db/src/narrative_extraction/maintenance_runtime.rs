@@ -4431,8 +4431,7 @@ mod tests {
 
     #[test]
     fn graph_repair_finding_resolves_from_sealed_verify_outcome_after_defect_removed() {
-        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         seed_graph_repair_verify_fixture(&db);
 
         let first = run_dependency_verify_for_project(&db, "project-1")
@@ -4527,8 +4526,7 @@ mod tests {
 
     #[test]
     fn corrupt_graph_repair_verify_anchor_stays_fail_closed_on_clean_confirmation() {
-        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         seed_graph_repair_verify_fixture(&db);
         let first = run_dependency_verify_for_project(&db, "project-1")
             .expect("defective Verify should complete");
@@ -4583,8 +4581,7 @@ mod tests {
 
     #[test]
     fn non_rebuildable_verify_issue_still_projects_manual_finding() {
-        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         seed_graph_repair_verify_fixture(&db);
 
         let report = run_dependency_verify_for_project(&db, "project-1")

@@ -3975,6 +3975,15 @@ mod tests {
     fn fixture_db() -> Database {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open test database");
         db.migrate().expect("migrate test database");
+        seed_fixture_db(db)
+    }
+
+    fn current_schema_fixture_db() -> Database {
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
+        seed_fixture_db(db)
+    }
+
+    fn seed_fixture_db(db: Database) -> Database {
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES (?1, 'C2-1 phase CAS')",
@@ -5891,7 +5900,7 @@ mod tests {
 
     #[test]
     fn publish_rejects_a_scene_source_token_changed_after_evaluation() {
-        let db = fixture_db();
+        let db = current_schema_fixture_db();
         let (batch, plan) = reserve_and_evaluate(&db);
 
         db.with_conn(|conn| {
@@ -6139,7 +6148,7 @@ mod tests {
 
     #[test]
     fn evaluation_deduplicates_source_state_guards_for_shared_proposal_revisions() {
-        let db = fixture_db();
+        let db = current_schema_fixture_db();
         db.with_conn(|conn| {
             use super::super::dependency_edges::{
                 record_dependency_edge_in_tx, PROPOSAL_REVISION_CONSUMER_KIND,
@@ -6179,7 +6188,7 @@ mod tests {
 
     #[test]
     fn publish_rejects_an_edge_redeclared_after_evaluation() {
-        let db = fixture_db();
+        let db = current_schema_fixture_db();
         let (batch, plan) = reserve_and_evaluate(&db);
 
         db.with_conn(|conn| {
@@ -6210,7 +6219,7 @@ mod tests {
 
     #[test]
     fn publish_rejects_an_unknown_consumer_edge_redeclared_after_evaluation() {
-        let db = fixture_db();
+        let db = current_schema_fixture_db();
         db.with_conn(|conn| {
             conn.execute(
                 "UPDATE narrative_dependency_edges
@@ -6250,7 +6259,7 @@ mod tests {
 
     #[test]
     fn publish_commits_v1_and_discards_shadow_when_a_new_affected_v2_head_appears() {
-        let db = fixture_db();
+        let db = current_schema_fixture_db();
         let (batch, plan) = reserve_and_evaluate(&db);
         seed_shadow_head(
             &db,
@@ -6286,7 +6295,7 @@ mod tests {
 
     #[test]
     fn publish_commits_v1_and_discards_shadow_when_an_affected_v2_head_changes() {
-        let db = fixture_db();
+        let db = current_schema_fixture_db();
         seed_shadow_head(
             &db,
             CONSUMER_RUN_ID,
@@ -6329,7 +6338,7 @@ mod tests {
 
     #[test]
     fn publish_commits_v1_and_discards_shadow_on_new_project_wide_v2_head() {
-        let db = fixture_db();
+        let db = current_schema_fixture_db();
         mark_component_schema_change(&db);
         let (batch, plan) = reserve_and_evaluate(&db);
         assert_eq!(
@@ -6364,7 +6373,7 @@ mod tests {
 
     #[test]
     fn publish_commits_v1_and_discards_shadow_on_changed_project_wide_v2_head() {
-        let db = fixture_db();
+        let db = current_schema_fixture_db();
         mark_component_schema_change(&db);
         seed_component_shadow_head(&db, PROJECT_ID, CONSUMER_RUN_ID, 0, 1);
         let (batch, plan) = reserve_and_evaluate(&db);
@@ -6396,7 +6405,7 @@ mod tests {
 
     #[test]
     fn unrelated_project_v2_head_drift_does_not_block_component_schema_publication() {
-        let db = fixture_db();
+        let db = current_schema_fixture_db();
         mark_component_schema_change(&db);
         db.with_conn(|conn| {
             conn.execute(
@@ -6432,7 +6441,7 @@ mod tests {
 
     #[test]
     fn unrelated_v2_head_change_does_not_block_v1_publication() {
-        let db = fixture_db();
+        let db = current_schema_fixture_db();
         let (batch, plan) = reserve_and_evaluate(&db);
         seed_shadow_head(
             &db,

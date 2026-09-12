@@ -16,6 +16,16 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias },
   server: {
+    watch: {
+      // Keep source watching while avoiding generated CI and Cargo trees.
+      // Vite appends these patterns to its node_modules/cache exclusions.
+      ignored: [
+        path.resolve(__dirname, ".artifacts/**"),
+        path.resolve(__dirname, "src-tauri/target/**"),
+        path.resolve(__dirname, "electron/native/**/target/**"),
+        path.resolve(__dirname, "target/**"),
+      ],
+    },
     fs: {
       // Worktrees may reuse a dependency tree through a node_modules symlink.
       // Fontsource URLs resolve to its real path during browser tests.

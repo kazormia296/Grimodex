@@ -2872,7 +2872,7 @@ function assertProductJourneyBuildReceiptArtifacts(
   });
 }
 
-async function readC2ZcRustAcceptanceEvidence({
+export async function readC2ZcRustAcceptanceEvidence({
   required,
   root = rootDir,
   environment = process.env,
@@ -3057,6 +3057,8 @@ export async function runProductJourneys({
   createHarness,
   journeys = PRODUCT_JOURNEYS,
   catalog = PRODUCT_JOURNEY_CATALOG,
+  artifactJourneys = journeys,
+  requiredJourneyIds = null,
   assertArtifacts = null,
   clock = () => performance.now(),
   expectedCatalogDigest = process.env.GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST,
@@ -3073,18 +3075,42 @@ export async function runProductJourneys({
     catalog === PRODUCT_JOURNEY_CATALOG
       ? PRODUCT_JOURNEY_CATALOG_DIGEST
       : digestProductJourneyCatalog(catalog);
+  const selectedRequiredJourneyIds = journeys
+    .filter((journey) => {
+      const catalogEntry = catalog.find((entry) => entry.id === journey.id);
+      return (
+        (journey.required ?? catalogEntry?.required ?? true) !== false &&
+        (journey.acceptanceRole ?? catalogEntry?.acceptanceRole) !==
+          "diagnostic"
+      );
+    })
+    .map((journey) => journey.id);
+  const reportRequiredJourneyIds =
+    requiredJourneyIds === null
+      ? catalog
+          .filter(
+            (journey) =>
+              journey.required !== false &&
+              journey.acceptanceRole !== "diagnostic",
+          )
+          .map((journey) => journey.id)
+      : [...requiredJourneyIds];
+  if (
+    requiredJourneyIds !== null &&
+    JSON.stringify(reportRequiredJourneyIds) !==
+      JSON.stringify(selectedRequiredJourneyIds)
+  ) {
+    throw new Error(
+      "explicit product journey required IDs must match the selected required journeys in order",
+    );
+  }
   const report = {
     version: PRODUCT_JOURNEY_RESULTS_VERSION,
     status: "passed",
     catalogDigest,
     catalogJourneyIds: catalog.map((journey) => journey.id),
     journeyIds: journeys.map((journey) => journey.id),
-    requiredJourneyIds: catalog
-      .filter(
-        (journey) =>
-          journey.required !== false && journey.acceptanceRole !== "diagnostic",
-      )
-      .map((journey) => journey.id),
+    requiredJourneyIds: reportRequiredJourneyIds,
     acceptanceRequired: requiresC2ZcRustAcceptance({
       journeys,
       selectionName,
@@ -3154,9 +3180,9 @@ export async function runProductJourneys({
           root,
           env: environment,
         }));
-    artifactEvidence = await preflight(journeys);
+    artifactEvidence = await preflight(artifactJourneys);
     const resolvedArtifacts = await resolveAndVerifyProductJourneyArtifacts(
-      journeys,
+      artifactJourneys,
       {
         catalog,
         root,
@@ -3197,6 +3223,7 @@ export async function runProductJourneys({
     (() =>
       createProductJourneyHarness({
         mainCjs: path.join(root, "dist-electron", "main.cjs"),
+        artifactRoot: environment.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ?? null,
       }));
   const continueAfterJourneyFailure = selectionName === "c2-zc";
   let firstJourneyFailure = null;
@@ -3328,12 +3355,15 @@ export async function runProductJourneys({
     // Re-read every configured artifact after the last lane.  This closes the
     // window in which a build output could be replaced while journeys were
     // running, before any acceptance bit or audit manifest is emitted.
-    artifactEvidence = await resolveAndVerifyProductJourneyArtifacts(journeys, {
-      catalog,
-      root,
-      env: environment,
-      preflightArtifacts: artifactEvidence,
-    });
+    artifactEvidence = await resolveAndVerifyProductJourneyArtifacts(
+      artifactJourneys,
+      {
+        catalog,
+        root,
+        env: environment,
+        preflightArtifacts: artifactEvidence,
+      },
+    );
     if (report.acceptanceRequired === true) {
       assertProductJourneyBuildReceiptArtifacts(
         report.buildReceipt,

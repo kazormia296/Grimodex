@@ -1,4 +1,5 @@
-use std::path::Path;
+#[path = "../test-support/adapter.rs"]
+mod test_support;
 
 use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::narrative_extraction::{temporal_scene_patch, TemporalScenePatchPayload};
@@ -6,8 +7,7 @@ use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload
 use grimodex_db::Database;
 
 fn fixture() -> Database {
-    let db = Database::new(Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         conn.execute_batch(
             "INSERT INTO projects (id, title) VALUES ('p1', 'One'), ('p2', 'Two');

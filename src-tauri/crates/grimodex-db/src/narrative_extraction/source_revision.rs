@@ -781,7 +781,6 @@ fn canonical_json_value(value: &Value) -> Value {
 mod tests {
     use super::*;
     use crate::Database;
-    use std::path::Path;
 
     /// A single-paragraph ProseMirror doc whose canonical text is exactly
     /// `text` -- lets tests assert on `load_canonical_text_for_revalidation`
@@ -798,8 +797,7 @@ mod tests {
     }
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open test db");
-        db.migrate().expect("migrate");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.execute(
             "INSERT INTO projects (id, title) VALUES (?, 'Project')",
             &[Value::String("p1".into())],

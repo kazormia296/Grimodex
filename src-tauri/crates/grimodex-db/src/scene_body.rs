@@ -945,11 +945,9 @@ pub fn save_scene_body_bundle(
 mod tests {
     use super::*;
     use serde_json::Value;
-    use std::path::Path;
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open test db");
-        db.migrate().expect("migrate");
+        let db = crate::test_support::current_schema_memory().expect("current schema fixture");
         db.execute(
             "INSERT INTO projects (id, title) VALUES (?, 'Project')",
             &[Value::String("p1".into())],

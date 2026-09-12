@@ -1,3 +1,6 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use grimodex_db::narrative_extraction::{
     self, run_incremental_freshness_cycle, write_dependency_declaration_set, AppendDecisionPayload,
@@ -12,8 +15,7 @@ use grimodex_db::{
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.execute(
         "INSERT INTO projects (id, title) VALUES (?, 'Project')",
         &[Value::String("project-1".to_string())],

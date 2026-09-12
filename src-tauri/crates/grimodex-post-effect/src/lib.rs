@@ -6701,11 +6701,24 @@ mod runtime_contract_tests {
         }
     }
 
+    fn current_schema_runtime() -> FakeRuntime {
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
+        FakeRuntime {
+            db: seed_and_pin_database(db),
+            events: Arc::new(Mutex::new(Vec::new())),
+            aborts: PostEffectAbortRegistry::new(),
+        }
+    }
+
     fn seeded_db() -> PinnedWorkspaceDb {
-        let path =
-            std::env::temp_dir().join(format!("grimodex-post-effect-{}", uuid::Uuid::new_v4()));
         let db = Database::new(Path::new(":memory:")).expect("in-memory db");
         db.migrate().expect("migrate");
+        seed_and_pin_database(db)
+    }
+
+    fn seed_and_pin_database(db: Database) -> PinnedWorkspaceDb {
+        let path =
+            std::env::temp_dir().join(format!("grimodex-post-effect-{}", uuid::Uuid::new_v4()));
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title, language, created_at, updated_at)
@@ -6935,7 +6948,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn single_cross_project_target_rejects_before_insert_or_ai() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         let error = start_post_effect_run(
             runtime.clone(),
@@ -6952,7 +6965,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn live_pseudo_comment_is_persisted_with_live_metadata_before_partial() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let prov = RoleProviderOverride::default();
         runtime
             .with_db(|db| {
@@ -7019,7 +7032,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn single_impact_run_is_rejected_without_the_guarded_multi_contract() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         let mut args = single_args("scene-own", "impact-single");
         args.effect_type = "impact_review".to_string();
@@ -7038,7 +7051,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn multi_cross_project_scene_rejects_before_insert_or_ai() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         let error =
             start_post_effect_run_multi(runtime.clone(), ai.clone(), multi_args("scene-other"))
@@ -7052,7 +7065,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn source_guard_is_rejected_for_non_impact_multi_run() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         let mut args = multi_args("scene-own");
         args.source_guard = Some(source_guard(runtime.db.db()));
@@ -7070,7 +7083,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn source_guard_is_required_for_impact_multi_run() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         let mut args = multi_args("scene-own");
         args.effect_type = "impact_review".to_string();
@@ -7089,7 +7102,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn completed_cache_hit_does_not_call_ai_or_emit() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         insert_run(&runtime, "cached", "completed", "cache-hash");
         let result = start_post_effect_run(
@@ -7127,7 +7140,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn empty_multi_scene_is_audited_as_skipped_without_dispatch() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         let mut args = multi_args("scene-own");
         args.scenes[0].scene_text = "  \n".to_string();
@@ -7485,7 +7498,7 @@ mod runtime_contract_tests {
 
     #[test]
     fn finish_success_missing_run_emits_persistence_error_not_done() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         finish_success(&runtime, "missing", 2, None);
         let events = runtime.events.lock().expect("events");
         assert_eq!(events.len(), 1);
@@ -7498,7 +7511,7 @@ mod runtime_contract_tests {
 
     #[test]
     fn finish_partial_already_terminal_emits_persistence_error_not_done() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         insert_run(&runtime, "already", "completed", "already-hash");
         finish_partial(&runtime, "already", 1, "partial".to_string());
         let events = runtime.events.lock().expect("events");
@@ -7564,3 +7577,7 @@ mod runtime_contract_tests {
         assert_eq!(event_channels(&runtime), vec!["post_effect:done"]);
     }
 }
+
+#[cfg(test)]
+#[path = "../../grimodex-db/test-support/adapter.rs"]
+mod test_support;

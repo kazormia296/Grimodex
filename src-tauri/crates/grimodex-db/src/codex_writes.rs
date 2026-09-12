@@ -1665,13 +1665,10 @@ fn agent_codex_mutate_internal(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
+        let db = crate::test_support::current_schema_memory().expect("current schema fixture");
         db.with_conn(|conn| {
             conn.execute_batch(
                 "INSERT INTO projects (id, title) VALUES ('p1', 'One'), ('p2', 'Two');

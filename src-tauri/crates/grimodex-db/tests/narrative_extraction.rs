@@ -1,3 +1,6 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use chrono::{Duration, Utc};
 use grimodex_db::narrative_extraction::{
     self, ensure_test_schema, AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload,
@@ -157,8 +160,7 @@ fn test_db() -> Database {
 }
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.execute(
         "INSERT INTO projects (id, title) VALUES (?, 'Project')",
         &[Value::String("project-1".to_string())],
