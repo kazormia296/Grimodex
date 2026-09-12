@@ -21,6 +21,8 @@ import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
 
+import { runLocalCiTasks } from "./local-ci-runner.mjs";
+
 import {
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG_DIGEST,
@@ -224,6 +226,7 @@ function fullStageBindingPlan({ productJourneySet = "not-c2zc" } = {}) {
       "migration-recovery-gate",
       "security",
       "frontend",
+      "browser",
       "electron-native",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
@@ -233,7 +236,6 @@ function fullStageBindingPlan({ productJourneySet = "not-c2zc" } = {}) {
       "rust",
       "webgl",
       "storybook",
-      "browser",
       "electron",
       "electron-runtime-performance",
     ].map((id, index) => ({
@@ -3504,6 +3506,7 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "migration-recovery-gate",
       "security",
       "frontend",
+      "browser",
       "electron-native",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
@@ -3513,7 +3516,6 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "rust",
       "webgl",
       "storybook",
-      "browser",
       "electron",
       "electron-runtime-performance",
     ],
@@ -4001,6 +4003,86 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       .GRIMODEX_PRODUCT_JOURNEY_WORKERS,
     undefined,
   );
+});
+
+test("Full priority admits ready browser work when two slots reopen before later bulk tasks", async () => {
+  const registry = await readRegistry();
+  const plan = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+  });
+  const selectedIds = new Set([
+    "browser.tests",
+    "native.tests",
+    "lfm.dataset",
+    "runtime.benchmark",
+  ]);
+  // Keep real priority, lanes, and slot weights; other prerequisites have passed.
+  const readyTasks = plan.tasks
+    .filter(({ id }) => selectedIds.has(id))
+    .map((task) => ({
+      ...task,
+      after: task.after.filter((id) => selectedIds.has(id)),
+    }));
+  const tasks = [
+    { id: "fixture.capacity-holder", slots: 10 },
+    { id: "fixture.release-two-slots", slots: 2 },
+    ...readyTasks,
+  ];
+  const started = [];
+  const completed = new Set();
+  const release = new Map();
+  const settleAdmissions = () =>
+    new Promise((resolve) => setImmediate(resolve));
+  const running = runLocalCiTasks(tasks, {
+    maxSlots: registry.maxSlots,
+    executeTask(task) {
+      started.push(task.id);
+      return new Promise((resolve) => {
+        release.set(task.id, () => {
+          completed.add(task.id);
+          resolve({ cleanup: { complete: true }, exitCode: 0, signal: null });
+        });
+      });
+    },
+  });
+
+  await settleAdmissions();
+  assert.deepEqual(started, [
+    "fixture.capacity-holder",
+    "fixture.release-two-slots",
+  ]);
+  release.get("fixture.release-two-slots")();
+  await settleAdmissions();
+  assert.equal(started.at(-1), "browser.tests");
+  assert.equal(started.includes("native.tests"), false);
+  assert.equal(started.includes("lfm.dataset"), false);
+
+  for (const [finished, next] of [
+    ["browser.tests", "native.tests"],
+    ["native.tests", "lfm.dataset"],
+  ]) {
+    release.get(finished)();
+    await settleAdmissions();
+    assert.equal(started.at(-1), next);
+    assert.equal(started.includes("runtime.benchmark"), false);
+  }
+  release.get("fixture.capacity-holder")();
+  await settleAdmissions();
+  assert.equal(started.includes("runtime.benchmark"), false);
+  release.get("lfm.dataset")();
+  await settleAdmissions();
+  assert.equal(started.at(-1), "runtime.benchmark");
+  assert.deepEqual(
+    [...completed].sort(),
+    tasks
+      .filter(({ id }) => id !== "runtime.benchmark")
+      .map(({ id }) => id)
+      .sort(),
+  );
+  release.get("runtime.benchmark")();
+  assert.equal((await running).status, "passed");
 });
 
 test("receipt plan binding rejects descriptor changes and Full over 600 seconds", async () => {

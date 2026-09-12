@@ -66,12 +66,14 @@ final one-slot task rejects missing, duplicate, extra, failed, unclean, or
 differently bound results before writing the existing canonical v5 result and
 v1 manifest.
 
-Full's deterministic priority order starts bootstrap and recovery work, then
-admits security and renderer checks early enough to avoid resource contention.
-It keeps the candidate-bound C2-ZC receipt and fixture adjacent before quality,
-product journeys, LFM, Rust, WebGL, Storybook, browser, and Electron work.
-Dependency edges still control actual eligibility, and the runtime benchmark
-remains the final fan-in.
+Full's deterministic priority order starts with bootstrap, recovery, security,
+and renderer checks, then browser tests before native work. This lets ready
+browser tests take available slots ahead of later bulk tasks instead of waiting
+at the tail of the run. It keeps the candidate-bound C2-ZC receipt and fixture
+adjacent before quality, product journeys, LFM, Rust, WebGL, Storybook, and
+Electron work. Dependency edges and exclusive lanes still control actual
+eligibility, and the runtime benchmark remains the final fan-in. Earlier
+admission changes co-load and carries no timing guarantee.
 
 The canonical plan retains `__LOCAL_CI_RUN_ID__` in run-owned paths. Command
 execution and post-run evidence collection bind the same validated run UUID

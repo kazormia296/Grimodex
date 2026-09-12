@@ -8,6 +8,7 @@
       "migration-recovery-gate",
       "security",
       "frontend",
+      "browser",
       "electron-native",
       "c2-zc-rust-acceptance-gate",
       "c2-zc-restore-fixture-builder",
@@ -17,7 +18,6 @@
       "rust",
       "webgl",
       "storybook",
-      "browser",
       "electron",
       "electron-runtime-performance"
     ]

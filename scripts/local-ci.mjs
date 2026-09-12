@@ -82,6 +82,7 @@ const C2ZC_FULL_STAGE_ORDER = Object.freeze([
   "migration-recovery-gate",
   "security",
   "frontend",
+  "browser",
   "electron-native",
   C2ZC_RUST_ACCEPTANCE_GATE_STAGE,
   C2ZC_RESTORE_FIXTURE_STAGE,
@@ -91,7 +92,6 @@ const C2ZC_FULL_STAGE_ORDER = Object.freeze([
   "rust",
   "webgl",
   "storybook",
-  "browser",
   "electron",
   "electron-runtime-performance",
 ]);
