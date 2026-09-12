@@ -35,6 +35,8 @@ pub mod maintenance_route_registry;
 pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
 pub mod nir1_chronicle_index;
+pub mod nir1_graph;
+pub use nir1_graph::{read_nir1_graph, Nir1GraphRequest, Nir1GraphResponse};
 pub use declaration_storage::{
     read_active_dependency_declaration_set, verify_dependency_declaration_storage,
     write_dependency_declaration_set, write_dependency_declaration_set_in_tx,

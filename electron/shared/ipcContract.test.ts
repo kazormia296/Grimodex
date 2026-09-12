@@ -5595,6 +5595,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_runtime_policy_get",
       "narrative_runtime_policy_set",
       "nir1_evidence_qualify",
+      "nir1_graph_query",
+      "nir1_pack_context",
       "open_workspace",
       "plot_thread_branch_create",
       "plot_thread_branch_delete",

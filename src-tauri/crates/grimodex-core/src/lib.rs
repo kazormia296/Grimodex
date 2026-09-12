@@ -39,6 +39,7 @@ pub mod contract_string;
 pub mod license;
 pub mod narrative_dependency;
 pub mod narrative_ir;
+pub mod narrative_nir1;
 pub mod narrative_project_scope_authority;
 pub mod narrative_scope_dependency_projection;
 pub mod narrative_scope_authority_basis;

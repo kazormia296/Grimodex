@@ -519,6 +519,19 @@ export declare class Backend {
   relatedScenesReconcile(): Promise<string>
   nir1EvidenceQualify(ownerKey: string, navigationIdentity: string): Promise<string>
   /**
+   * Read a bounded, request-local NIR-1 Entity/Relation graph.  The
+   * workspace path is checked against the pinned Native authority before
+   * the read transaction begins; the renderer cannot choose a different
+   * DB by changing the project or seed fields.
+   */
+  nir1GraphQuery(payload: any): Promise<string>
+  /**
+   * Pack typed NIR-1 context units without persisting or forwarding them.
+   * The request is deliberately a pure Native operation so renderer-side
+   * selection cannot bypass the Raw/Evidence atomicity rules.
+   */
+  nir1PackContext(payload: any): Promise<string>
+  /**
    * Rebuild可能なsemantic background indexingを協調停止する。
    * 4-cache epochをrotateし、既にpin済みのscene/bulk jobはitem/chunk境界で
    * `IPC_DERIVED_CANCELLED` を返す。途中生成したindex payloadはcommitしない。

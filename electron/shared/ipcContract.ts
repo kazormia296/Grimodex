@@ -655,6 +655,10 @@ export interface NapiBackendLike {
   relatedScenesContinue?(ownerKey: string, operationTicket: string): Promise<string>;
   relatedScenesRelease?(ownerKey: string, operationTicket: string): Promise<string>;
   nir1EvidenceQualify?(ownerKey: string, navigationIdentity: string): Promise<string>;
+  /** Request-local bounded NIR-1 Entity/Relation graph read. */
+  nir1GraphQuery?(payload: unknown): Promise<string>;
+  /** Native-only atomic Raw/IR/Graph context packing. */
+  nir1PackContext?(payload: unknown): Promise<string>;
   /** Main lifecycle only; deliberately absent from the renderer command map. */
   relatedScenesReleaseOwner?(ownerKey: string): Promise<string>;
   /** Main observer only; never a renderer command. */
@@ -6331,6 +6335,77 @@ function requireRelatedScenesBeginRequest(args: CommandArgs) {
   };
 }
 
+function requireNir1GraphQueryRequest(args: CommandArgs): CommandArgs {
+  const command = "nir1_graph_query";
+  return {
+    expectedWorkspacePath: requireNonEmptyString(
+      args,
+      "expectedWorkspacePath",
+      command,
+    ),
+    projectId: requireNonEmptyString(args, "projectId", command),
+    querySceneId: requireNonEmptyString(args, "querySceneId", command),
+    seedEntityId: requireNonEmptyString(args, "seedEntityId", command),
+  };
+}
+
+function requireNir1PackingRequest(args: CommandArgs): CommandArgs {
+  const command = "nir1_pack_context";
+  const payload = requireRecord(args, "payload", command);
+  const budgetTokens = requireUnsignedInteger(payload, "budgetTokens", command);
+  if (budgetTokens === 0) {
+    throw new Error(
+      `invalid args \`payload.budgetTokens\` for command \`${command}\`: expected a positive integer`,
+    );
+  }
+  const rawItems = requirePresent(payload, "items", command);
+  if (!Array.isArray(rawItems) || rawItems.length > 512) {
+    throw new Error(
+      `invalid args \`payload.items\` for command \`${command}\`: expected at most 512 items`,
+    );
+  }
+  const items = rawItems.map((value, index) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new Error(
+        `invalid args \`payload.items[${index}]\` for command \`${command}\`: expected an object`,
+      );
+    }
+    const item = value as CommandArgs;
+    const kind = requireNonEmptyString(item, "kind", command);
+    if (
+      ![
+        "raw",
+        "acceptedIr",
+        "graphEvidence",
+        "authorDeclared",
+        "unreviewedForReview",
+      ].includes(kind)
+    ) {
+      throw new Error(
+        `invalid args \`payload.items[${index}].kind\` for command \`${command}\`: unsupported context kind`,
+      );
+    }
+    const base = {
+      kind,
+      id: requireNonEmptyString(item, "id", command),
+      text: requireNonEmptyString(item, "text", command),
+      tokens: requireUnsignedInteger(item, "tokens", command),
+    };
+    if (base.tokens === 0) {
+      throw new Error(
+        `invalid args \`payload.items[${index}].tokens\` for command \`${command}\`: expected a positive integer`,
+      );
+    }
+    return kind === "raw"
+      ? base
+      : {
+          ...base,
+          atomicGroup: requireNonEmptyString(item, "atomicGroup", command),
+        };
+  });
+  return { budgetTokens, items };
+}
+
 /** napi 実装済みコマンドの明示写像（Phase 3 の各バッチで追加）。 */
 export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   db_execute: {
@@ -7396,6 +7471,22 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         requireNonEmptyString(a, "navigationIdentity", "nir1_evidence_qualify"),
       ),
     ),
+  },
+  nir1_graph_query: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.nir1GraphQuery, "nir1GraphQuery")(
+          requireNir1GraphQueryRequest(a),
+        ),
+      ),
+  },
+  nir1_pack_context: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.nir1PackContext, "nir1PackContext")(
+          requireNir1PackingRequest(a),
+        ),
+      ),
   },
   semantic_reranker_shadow_score: {
     run: async (b, a) =>
