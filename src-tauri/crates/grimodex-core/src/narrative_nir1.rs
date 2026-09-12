@@ -319,7 +319,7 @@ pub fn validate_entity_relation_bundle(
                 || item.source_ref.trim().is_empty()
                 || item.quote.trim().is_empty()
                 || item.end_utf16 < item.start_utf16
-                || item.end_utf16 > item.quote.encode_utf16().count()
+                || item.end_utf16 - item.start_utf16 != item.quote.encode_utf16().count()
             {
                 return Err(Nir1ContractError::InvalidBundle(format!(
                     "invalid Evidence for entity '{}'",

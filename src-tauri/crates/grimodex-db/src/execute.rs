@@ -30,6 +30,11 @@ const SLOW_DB_CALL_MS: u128 = 50;
 /// renderer-origin SQL attempts to cross the workspace/file/schema boundary.
 pub const RENDERER_SQL_SECURITY_ERROR: &str = "RENDERER_SQL_SECURITY";
 
+/// Stored typed NIR-1 Evidence shares the legacy proposal payload columns.
+/// Renderer SQL has no row-safe publication predicate, so these columns stay
+/// Native-only until the explicit D2a plaintext publication gate exists.
+pub const RENDERER_TYPED_PAYLOAD_ERROR: &str = "RENDERER_SQL_TYPED_PAYLOAD";
+
 /// SQL caller classification shared by Electron, Tauri, and MCP.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SqlOrigin {
@@ -207,6 +212,26 @@ fn protected_writer_rejection(ctx: &AuthContext<'_>) -> Option<String> {
     }
 }
 
+fn renderer_typed_payload_read_rejection(ctx: &AuthContext<'_>) -> Option<String> {
+    let AuthAction::Read {
+        table_name,
+        column_name,
+    } = &ctx.action
+    else {
+        return None;
+    };
+
+    let protected_table = table_name.eq_ignore_ascii_case("narrative_proposals")
+        || table_name.eq_ignore_ascii_case("narrative_proposal_revisions");
+    if protected_table && column_name.eq_ignore_ascii_case("payload_json") {
+        Some(format!(
+            "{RENDERER_TYPED_PAYLOAD_ERROR}: {table_name}.{column_name} contains Native-only typed payload"
+        ))
+    } else {
+        None
+    }
+}
+
 fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
     if !matches!(ctx.database_name, None | Some("main") | Some("temp")) {
         return Some("access to an attached database".to_string());
@@ -222,6 +247,10 @@ fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
     };
     if mutates_ai_audit {
         return Some("mutation of ai_audit_events".to_string());
+    }
+
+    if let Some(reason) = renderer_typed_payload_read_rejection(&ctx) {
+        return Some(reason);
     }
 
     if let Some(reason) = protected_writer_rejection(&ctx) {
@@ -465,7 +494,9 @@ where
 
     let denied = denied_reason.lock().ok().and_then(|reason| reason.clone());
     if let Some(reason) = denied {
-        let code = if reason.contains("protected") {
+        let code = if reason.starts_with(RENDERER_TYPED_PAYLOAD_ERROR) {
+            RENDERER_TYPED_PAYLOAD_ERROR
+        } else if reason.contains("protected") {
             PROTECTED_WRITER_SQL_ERROR
         } else {
             RENDERER_SQL_SECURITY_ERROR

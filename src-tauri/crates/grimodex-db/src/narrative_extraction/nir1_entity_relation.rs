@@ -843,6 +843,28 @@ mod tests {
     }
 
     #[test]
+    fn typed_revision_accepts_nonzero_utf16_evidence_after_a_surrogate_prefix() -> anyhow::Result<()>
+    {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries SET summary = ?1 WHERE id = 'nir1-alice'",
+                ["😀Alice waits"],
+            )?;
+            Ok(())
+        })?;
+
+        let mut payload = request(&db);
+        payload.bundle.entities[0].evidence[0].start_utf16 = 2;
+        payload.bundle.entities[0].evidence[0].end_utf16 = 7;
+        payload.bundle.entities[0].evidence[0].quote = "Alice".into();
+        create_nir1_entity_relation_revision(&db, payload)
+            .expect("an exact non-zero UTF-16 source range must be accepted");
+        Ok(())
+    }
+
+    #[test]
     fn typed_revision_rejects_unknown_and_stale_scope_bindings() -> anyhow::Result<()> {
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
@@ -919,6 +941,49 @@ mod tests {
             .to_string()
             .contains("NIR1_ENTITY_RELATION_REVIEW_BUNDLE_UNAVAILABLE"));
         assert!(created["revisionId"].as_str().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn renderer_sql_cannot_read_typed_revision_payloads_from_either_table() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+        let proposal_id = created["proposalId"].as_str().unwrap().to_owned();
+
+        for (table, id) in [
+            ("narrative_proposals", proposal_id.as_str()),
+            ("narrative_proposal_revisions", revision_id.as_str()),
+        ] {
+            let error = db
+                .execute_renderer(
+                    &format!("SELECT payload_json FROM {table} WHERE id = ?1"),
+                    &[json!(id)],
+                    "get",
+                )
+                .expect_err("renderer db_execute must not expose typed Evidence");
+            assert!(
+                error
+                    .to_string()
+                    .contains("RENDERER_SQL_TYPED_PAYLOAD"),
+                "unexpected single-statement error for {table}: {error}"
+            );
+
+            let error = db
+                .execute_batch_tx_renderer(&[crate::BatchStatement {
+                    sql: format!("SELECT payload_json FROM {table} WHERE id = ?1"),
+                    params: vec![json!(id)],
+                    method: "get".into(),
+                }])
+                .expect_err("renderer db_execute_batch must not expose typed Evidence");
+            assert!(
+                error
+                    .to_string()
+                    .contains("RENDERER_SQL_TYPED_PAYLOAD"),
+                "unexpected batch error for {table}: {error}"
+            );
+        }
         Ok(())
     }
 

@@ -25,6 +25,7 @@ fn scope() -> ScopeBinding {
 }
 
 fn entity(id: &str) -> EntityInput {
+    let quote = format!("{id} appears");
     EntityInput {
         entity_id: id.into(),
         entity_type: "character".into(),
@@ -34,9 +35,9 @@ fn entity(id: &str) -> EntityInput {
         evidence: vec![EvidenceInput {
             evidence_id: format!("evidence:{id}"),
             source_ref: "scene:s1".into(),
-            quote: format!("{id} appears"),
+            end_utf16: quote.encode_utf16().count(),
+            quote,
             start_utf16: 0,
-            end_utf16: 12,
         }],
     }
 }
@@ -61,6 +62,24 @@ fn entity_relation_adapter_rejects_cross_project_and_missing_evidence() {
 
     let error = validate_entity_relation_bundle(&bundle).expect_err("invalid bundle");
     assert!(error.to_string().contains("endpoint"));
+}
+
+#[test]
+fn evidence_range_uses_absolute_utf16_width() {
+    let mut source = entity("entity:a");
+    source.evidence[0].quote = "Alice".into();
+    source.evidence[0].start_utf16 = 2;
+    source.evidence[0].end_utf16 = 7;
+    let bundle = EntityRelationBundle {
+        project_id: "project-a".into(),
+        revision_id: "revision-1".into(),
+        producer: "nir1-reviewed-entity-relation-v1".into(),
+        entities: vec![source],
+        relations: vec![],
+    };
+
+    validate_entity_relation_bundle(&bundle)
+        .expect("a non-zero absolute UTF-16 range must be accepted");
 }
 
 #[test]
