@@ -403,7 +403,7 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
     assert.match(executionPlan, new RegExp(field));
   }
 
-  const draftRef = "nir1-l6-l9-contract-proposal/1";
+  const draftRef = "nir1-l6-l9-contract-proposal/2";
   const ledgerSection = executionPlan
     .split("### 契約別の確認台帳\n", 2)[1]
     ?.split("\n### R0 security contract proposal (draft)", 1)[0];
@@ -424,13 +424,25 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
     return row;
   });
   assert.equal(ledgerRows.length, 6);
-  assert.match(executionPlan, /`draftRef`[^\n]*nir1-l6-l9-contract-proposal\/1/);
+  assert.match(executionPlan, /`draftRef`[^\n]*nir1-l6-l9-contract-proposal\/2/);
+  assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/1/);
 
   const proposalSection = executionPlan
     .split("### R0 security contract proposal (draft)\n", 2)[1]
     ?.split("\n### lane開始判定と評価manifest", 1)[0];
   assert.ok(proposalSection, "R0 security contract proposal must be present");
-  assert.match(proposalSection, /draftRef[^\n]*nir1-l6-l9-contract-proposal\/1/);
+  assert.match(proposalSection, /draftRef[^\n]*nir1-l6-l9-contract-proposal\/2/);
+  for (const confirmationRule of [
+    /Confirmation protocol.*only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that row/is,
+    /Plan agreement.*not a ratification/is,
+    /active goal.*not a ratification/is,
+    /merge instruction.*not a ratification/is,
+    /this proposal is fine.*not a ratification/is,
+    /Confirming one row does not confirm its dependencies/i,
+    /typed-revision-material.*cannot be confirmed until.*family choice.*incremented proposal ref/is,
+  ]) {
+    assert.match(proposalSection, confirmationRule);
+  }
   assert.match(
     proposalSection,
     /runtime activation[^\n]*(?:追加しない|未完了)/i,
@@ -474,6 +486,109 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
         new RegExp(`${escapeRegExp(acceptanceField)}:`, "i"),
         `${contractId} must define ${acceptanceField}`,
       );
+    }
+    if (contractId === "graph-limited-binding") {
+      const graphBounds = [
+        "admission `512`",
+        "batch `16x32`",
+        "SQL `100,000 VM steps`",
+        "cancellation every `1,000` steps",
+        "Graph `8ms`",
+        "reader／busy wait `0`",
+        "oversized row",
+        "allocation前",
+        "JSON／material processing中",
+      ];
+      for (const graphSection of [
+        "In-scope attacks",
+        "Mandatory defenses",
+        "Acceptance implications",
+      ]) {
+        assert.match(
+          proposal,
+          new RegExp(`^- ${escapeRegExp(graphSection)}:`, "m"),
+          `graph binding must state bounds in ${graphSection}`,
+        );
+        const sectionStart = proposal.indexOf(`- ${graphSection}:`);
+        const sectionBodyStart = sectionStart + graphSection.length + 3;
+        const nextSection = proposal.indexOf("\n- ", sectionBodyStart);
+        const sectionBody = proposal.slice(
+          sectionBodyStart,
+          nextSection === -1 ? proposal.length : nextSection,
+        );
+        for (const bound of graphBounds) {
+          assert.match(
+            sectionBody,
+            new RegExp(escapeRegExp(bound)),
+            `graph binding ${graphSection} must preserve ${bound}`,
+          );
+        }
+      }
+      assert.match(proposal, /Threshold changes require reconfirmation/);
+    }
+    if (contractId === "native-generation-receipt") {
+      for (const terminalCase of [
+        "succeeded + parsed + required",
+        "failed + invalid + required",
+        "failed + not-attempted + null",
+        "cancelled + not-attempted + null",
+        "skipped + not-attempted + null",
+      ]) {
+        assert.match(
+          proposal,
+          new RegExp(escapeRegExp(terminalCase)),
+          `receipt matrix must include ${terminalCase}`,
+        );
+      }
+      assert.match(proposal, /queued \| running.*non-terminal execution state/);
+      assert.doesNotMatch(proposal, /terminal matrix[^\n]*queued \| running/);
+      for (const receiptRule of [
+        /provider terminal/i,
+        /parseStatus/i,
+        /responseDigest/i,
+        /message version/i,
+        /raw text.*thinking/i,
+        /versioned stable chunk-order digest/i,
+        /provider terminalなしのEOF/i,
+        /length truncation/i,
+        /terminal receiptを発行せずreject/i,
+      ]) {
+        assert.match(proposal, receiptRule);
+      }
+    }
+    if (contractId === "history-reauthorization") {
+      const negativeMatch = proposal.match(/Negative:(.*?)(?=Recovery:)/is);
+      assert.ok(negativeMatch, "history reauthorization needs a negative clause");
+      const negative = negativeMatch[1];
+      for (const historyField of [
+        "`Source`",
+        "`Revision`",
+        "`Decision`",
+        "`Freshness`",
+        "`Index`",
+        "purpose",
+        "input-use",
+        "send classification",
+        "`readingOrder`",
+        "`storyTime`",
+        "`viewpoint`",
+        "`knowledgeHolder`",
+        "`audience`",
+        "`timeline`",
+        "`worldline`",
+        "`narrativeLayer`",
+        "`scene`",
+      ]) {
+        assert.match(
+          negative,
+          new RegExp(escapeRegExp(historyField)),
+          `history negative must name ${historyField}`,
+        );
+      }
+      assert.match(proposal, /full transitive dependency set/);
+      assert.match(proposal, /full transitive dependency enumeration/);
+      assert.match(proposal, /descendant-wide exclusion/);
+      assert.match(proposal, /全descendant exclusion/);
     }
   }
   assert.match(proposalSection, /typed-revision-material[\s\S]*contract-delta-unresolved/);
