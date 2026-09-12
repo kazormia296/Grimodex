@@ -1,16 +1,167 @@
 # NIR-1 L6〜L9 実行計画
 
-更新日: 2026-09-12
+更新日: 2026-09-13
 
-基点: master@96654340ddd2a0407f2fe8aea41a940c3aa516ce
+基点: master@68516b033f395f24f98c502c9fd2a715d7aec2af
+Tree: 04c491c29627ecc840112ebe379a5363e16892ff
 
-状態: 文書化済み。runtime 実装とactivationは未実施。初回文書化時点ではCI、commit、push、PR未実施と記録したが、PR #571更新ではQuick／verifyを実施済みで、Full／runtime検証は未実施。
+状態: #572のtyped基盤を引き継ぎ、PR-R0の文書・quality contract test・manifest traceを固定済み。runtime実装とactivationは未実施。R0のfocused test、`verify:quality`、Quick／verifyは実施済みで、merge gate MのFull／verifyは候補commit後に実施する。
 
 ## 概要
 
 本書は、L0〜L5を引き継いでL6〜L9を実装するための実行契約である。統合計画の履歴的な設計・受入れ記録を置き換えず、実装順序、公開前提、境界、評価、完了判定を具体化する。
 
 初期版の強い送信境界は、制限成立後、同一Electron profile内の全作品・全会話を継続的なlocal-only領域にする。NIR非対応の通常会話も例外にしない。通常操作による解除や、外部利用と併存する分離profileは初期版に含めない。reload、workspace切替、別窓、再起動後も制限を維持する。
+
+## PR-R0 — 現在地と評価契約の固定
+
+R0は、#572の現在地、後続laneの境界、契約ごとの開始可否、評価条件をこの実行計画に固定する文書・品質契約の変更である。runtime、policy、activation、既存のL0〜L5評価fixtureは変更しない。確認基点は最新 `origin/master` の #572 であり、下表のrefは実装・履歴の存在を示すだけで、未確認の保存・receipt・履歴・egress契約を批准したことを示さない。
+
+| 項目 | R0で記録する値 |
+| ---- | -------------- |
+| requestedBase / resolvedBase | `master@68516b033f395f24f98c502c9fd2a715d7aec2af` / 同じ #572 を含む `origin/master` |
+| Tree | `04c491c29627ecc840112ebe379a5363e16892ff` |
+| candidateBranch | `codex/nir1-r0-contract-ledger` |
+| plan / policy / threat refs | 本書、統合計画、ロードマップ、既存 quality manifest / impact map。下流 threat model は draft のまま |
+| receipt boundary | R0 focused test、`verify:quality`、Quick＋直後のverify。Full＋verifyは全PRのmerge gate Mで再実行 |
+
+### #572の実装済み／未完了
+
+| #572で確認できる実装 | 未完了・R0で公開しないもの |
+| -------------------- | ----------------------------- |
+| typed Scope / Entity / Relation / Evidence validation、Native所有のimmutable Revision保存と承認済みRevision reader | RevisionのSource Basis / Dependency / Generic Freshnessによるcanonical資格、全材料closure |
+| request-local Graph primitive、Raw必須・非Raw atomic groupを扱うPacking primitive | canonical Graph Index、全Scope軸の開示、ContextPlan／dispatch／履歴への製品統合 |
+| typed createとPacking helper、および境界の拒否を検証する既存契約 | 通常操作でのreview公開、D2a profile制限、D2b receipt／履歴再認可、L9 journey |
+| typed writerのreconciliation envelope（現状NULLを含む）を保存 | NULL envelopeを後から適格化すること、#572のcatalog読取をGraph Indexへ昇格すること |
+
+### writer・caller・plaintext・egress影響台帳
+
+| ledgerId | writer / caller / 入口 | 現在の扱い | R0の判定 |
+| -------- | ------------------------ | ---------- | --------- |
+| `source-tree-scope` | 本文、tree、Scope registry、scene設定、incarnation | 正本authorityを再利用。設定・本文・復元は旧資格を失効させる対象 | A1/A3/B/D1で詳細ref確認まで未開始 |
+| `proposal-revision` | typed Revision、Human Decision、Evidence、Dependency / Freshness | #572のwriterは保存まで。NULL envelopeは利用資格を証明しない | A2/B/C/D1で材料契約を閉じるまで未開始 |
+| `human-decision` | review、承認、取消、差替え、import / undo / restore | currentかつ明示承認を独立軸として維持 | A2/B/Cで同一transactionの失効を確認するまで未開始 |
+| `index-generation` | Chronicle / Graph build、publish、rebuild、sealed generation | Graphは独立Indexと限定bindingが必要。別authorityを作らない | B/Cでregistry・Freshness・D1 headを確認するまで未開始 |
+| `renderer-typed-ipc` | renderer → preload / main → Native | renderer申告を認可根拠にしない。新IPCのactivationはR0で行わない | D2a/D2bがcaller epochとhandleを固定するまで未開始 |
+| `ai-senders` | chat stream / single-shot / CLI / Codex App Server / background | local設定を含む旧経路をD2a後は拒否。停止経路を利用可能とは数えない | D2aのprofile-wide gateまで未開始 |
+| `review-db-audit-event` | review表示、汎用DB、保存会話・audit、event配信 | 制限対象plaintextの全入口。未分類出口は許可しない | D2a後の公開条件を満たすまで未開始 |
+| `mcp-generic-http-connection` | MCP / HTTP / proxy / redirect / 接続テスト | 新規外部送信や既存localの例外を作らない | D2a/D2b-1の拒否とlocal transport確認まで未開始 |
+
+台帳にない出力入口を「通常機能」と推定して許可しない。R0では既存コードを変更せず、writerの境界とcaller／plaintext／egressの分類だけを固定する。
+
+### profile状態遷移（計画上の開始条件）
+
+| state | 意味 | 次へ進む条件 | R0時点 |
+| ----- | ---- | ------------ | ------- |
+| S0 | 既存L5と#572基盤。NIR-1 L6〜L9 runtime/activationなし | R0台帳が固定される | 現在地 |
+| S1 | A1保存・incarnationと既存L5移行ガードの候補 | Scope authorityの詳細refとA1 focused受入れ | blocked |
+| S2 | D2a profile-wide local-only制限の成立処理中 | 全旧caller・入口拒否、永続化、起動時gate | blocked |
+| S3 | D2a成立後、D2b-2/P3前 | 旧localを含む旧送信拒否を維持し、新しい送信は公開しない | blocked |
+| S4 | D2b-2/P3統合後の対応済みlocal経路だけ | handle、receipt、履歴再認可、最終requestの独立受入れ | blocked |
+
+R0の `ready` は文書・評価契約を次のlaneへ引き渡せるという意味に限る。S1〜S4のruntime開始・activationを許可する意味ではない。
+
+### 契約別の確認台帳
+
+確認できる範囲だけを `confirmedRef` に記録し、今回の計画への同意やR0実装を批准refへ読み替えない。6行すべての `startStatus` は、未確認refを理由とするblocked状態とする。typed Revisionだけは残る差分に `contract-delta-unresolved` を併記する。
+
+| contractId | confirmedRef | confirmedScope | remainingDelta | affectedLanes | startStatus | blockedReason | unblockingEvidence |
+| ---------- | ------------ | -------------- | -------------- | ------------- | ----------- | ------------- | ------------------ |
+| `scope-storage-authority` | #572のScope型と既存Scope authority、既存L6〜L9計画 | 型・既存authorityの再利用まで | 保存範囲、Source/token、incarnation marker、writerの詳細批准 | A1、A2、A3、B、D1 | blocked(ref-unverified) | ref-unverified: 詳細な保存・移行批准ref未確認 | 一次資料の批准ref、threat-model version/ref、writer／cold reopen受入れ |
+| `caller-profile-egress` | 既存の送信境界方針と本書のprofile-wide local-only案 | caller、旧localを含む拒否方針まで | caller発行、永続化、起動順、全出口分類、threat-model差分 | D2a、A2、C、D2b | blocked(ref-unverified) | ref-unverified: egress契約の詳細批准ref未確認 | 一次資料の批准ref、全caller／plaintext／egress台帳、拒否試験 |
+| `typed-revision-material` | #572 typed writer／reader、既存Proposal/Revision/DecisionとFreshness | typed保存と既存authority再利用まで | material family、Envelope/Source Basis/Dependency、closure、Freshness資格。contract-delta-unresolved | A2、A3、B、C、D1 | blocked(ref-unverified) | ref-unverified; contract-delta-unresolved: canonical材料・資格の批准ref未確認 | 材料契約の一次批准ref、全材料positive/negative/unavailable、変更失効試験 |
+| `graph-limited-binding` | 本書・既存計画のproducer/index/eligibility名 | 限定bindingを独立Indexにする方針まで | producerVersion、registryGeneration、Source identity、宣言契約 | B、C | blocked(ref-unverified) | ref-unverified: Graph bindingの詳細批准ref未確認 | bindingの一次批准ref、registry/Freshness/D1一致、Index停止・復旧試験 |
+| `native-generation-receipt` | 既存の版付きdigest・terminal・message version方針 | receiptをNative生成元に束縛する方針まで | 保存authority、transport観測位置、失敗・再開・handle、payload整合 | D2b-1、D2b-2 | blocked(ref-unverified) | ref-unverified: receipt契約の詳細批准ref未確認 | receipt schemaの一次批准ref、保存前後クラッシュ・retry・handle拒否試験 |
+| `history-reauthorization` | 既存のturn毎依存・Scope再認可方針 | 履歴継続を毎turnの資格で評価する方針まで | lineage保存範囲、入力用途／分類、Scene・holder・Worldline変更時の除外規則 | D2b-2、E | blocked(ref-unverified) | ref-unverified: 履歴再認可の詳細批准ref未確認 | lineageの一次批准ref、適格継続と変更失効の実製品journey |
+
+### lane開始判定と評価manifest
+
+| lane | R0が固定する依存 | startStatus | 機能評価 |
+| ---- | ---------------- | ----------- | -------- |
+| R0 | #572、3正本、既存quality契約 | ready | 本書のfocused contract test、quality manifest／impact mapのtrace |
+| D2a | `caller-profile-egress` | blocked | profile全体の外部・旧local拒否、永続化、起動時gate |
+| A1 | `scope-storage-authority` | blocked | Scope保存、incarnation、既存L5移行ガード |
+| A2 | `typed-revision-material` とA1 | blocked | Revision材料、Freshness、Evidence、明示承認、cold reopen |
+| A3 | A1、A2 | blocked | 全Scope軸・全材料のpositive/negative/unavailable開示 |
+| B | A1、A2、`graph-limited-binding` | blocked | Graph Index側の資格、失効、封印・復旧 |
+| C | A3、B、D2a | blocked | R+IRに対する独自Graph改善、path Evidence、P2 |
+| D1 | A2、R0のPacking評価契約 | blocked | 12 taskのRaw／Evidence／label保持、budget selection |
+| D2b-1 | D2a、D1の入力契約、`native-generation-receipt` | blocked | handle、local transport、生成元receipt、dispatch拒否 |
+| D2b-2 | C、D1、D2a、D2b-1、`history-reauthorization` | blocked | 履歴再認可、対応済みlocal、P3最終request |
+| E | 全機能laneとP | blocked | 24検索case、Graph/Packing、実製品journey、独立受入れ |
+| P | 固定検索性能契約 | ready（測定は未実施） | 性能Holdの独立解消。R0では実行しない |
+
+評価manifestは次の既存母集団と識別子を使う。既存24件の検索case（ja/en各12件）は [`evals/nir1-retrieval/manifest.json`](../../evals/nir1-retrieval/manifest.json) を正本とし、model artifact hashも同manifestを参照してここへ重複記載しない。R0では新fixtureを追加せず、Graphは8件の固定case ID（G-01〜G-08）、Packingは12件の固定task ID（P-01〜P-12）を後続PRの評価欄へ割り当てる。全armは同じquery、manual seed、context、同じ固定token budgetを使う。
+
+| 対象 | owner lane | 期待判定 | 比較条件／positive・negative |
+| ---- | ---------- | -------- | ---------------------------- |
+| 既存24件の検索case | L0〜L5／E | RawとIRの既存非回帰を維持。R0は未測定 | `R / R+IR / R+IR+Graph` 同一入力。未対応材料・禁止寄与はnegative |
+| G-01〜G-08（8 Graph case） | C | R+IRに対するGraph独自改善を事前指定1件以上、macro非回帰、Evidence妥当性100%、禁止寄与0 | positiveは実在ID・qualified材料・開示通過、negativeはScope／Freshness／identity欠落。GraphはR+IRと比較し、Rとは比較しない |
+| P-01〜P-12（12 Packing task） | D1／D2b-2 | 必須Raw／Evidence／label保持100%、禁止情報0、prose非回帰、構造taskの事前指定情報を1件以上改善 | positiveはtask別budget内の適格材料、negativeは未承認／未対応／budget超過。D1 fixtureとD2b-2／P3最終requestは別証跡 |
+
+各IDは後続PRで使う固定ラベルであり、R0ではfixtureを追加しない。Graphの事前指定改善はG-01、Packingの事前指定改善はP-12とする。
+
+| ID | query／task class | 期待判定・差分 | positive | negative |
+| -- | ---------------- | -------------- | -------- | -------- |
+| G-01 | 実在Entity seedの1-hop direct | `R+IR+Graph` が `R+IR` より事前指定の1件を改善 | 実在ID・qualified edge・Evidence path | 名前だけのseed・未知ID |
+| G-02 | directed Relationの向き | `R+IR` から非回帰。保存方向の候補だけ | endpoint・type・direction一致 | 逆向き・型不一致edge |
+| G-03 | bounded 2-hop path | `R+IR` から非回帰、最大2hop内 | 2hop以内の全qualified path | 3hop以上・frontier超過 |
+| G-04 | Scope exact／unknown | 不一致・unknown・unresolved材料を0件化 | query／material Scope一致 | Scope軸不一致・未対応制約 |
+| G-05 | current Revision／Freshness | stale・旧EpochはGraph寄与0 | current・明示承認・Fresh | stale、approval違い、旧Epoch |
+| G-06 | Evidence anchor／path | path Evidenceを100%保持 | Source range・revision anchor | Evidence欠落・名前からの推定 |
+| G-07 | strict reading-before-S2／reveal・secret境界 | reading-before-S2を満たす材料だけを許可 | pre-S2に読了した開示済みqualified material | at/after-S2のfuture／same-boundary、reveal前secret |
+| G-08 | Graph Index unusable fallback | `R+IR` またはexact `R`へ戻り、混合集合なし | unusable理由とfallback先 | 部分Graph・旧generation混入 |
+| P-01 | 文体・voiceのRaw＋IR packing | 同一token budgetで文体のRaw／IRを保持 | approved・current材料、case内cache | 他case文体の混入、Raw欠落 |
+| P-02 | 文体・語彙のScope consistency | Scope一致かつFreshness有効な材料だけを保持 | query／material Scope一致、human approval | Scope mismatch／unknown、stale |
+| P-03 | 台詞・turn-takingの履歴 packing | D1 fixture内で必須Raw／labelを保持しbudget超過を拒否 | 同一taskのapproved会話、独立context | 未承認履歴、budget超過、D2b-2最終requestの混入 |
+| P-04 | 台詞 attribution／Evidence | current RevisionとEvidence anchorを保持 | 明示approval、Fresh revision、同一case | 別Revision approval、Evidence欠落 |
+| P-05 | 描写・scene detailのScope filtering | 不適格Scope材料をPackingせず同一budgetを守る | query／material一致、再評価済みcache | unknown Scope、旧cache、budget超過 |
+| P-06 | 描写・sensory detailのisolation | case内のRaw／Evidence／labelを非回帰で保持 | 独立teardown、approved current material | 他task state混入、stale／未承認材料 |
+| P-07 | exact quote／anchor保持 | quoteを同じtoken budgetで正確に保持 | current Evidence range、Scope一致 | 正規化による改変、anchor drift |
+| P-08 | exact quoteのSource／approval | approvedなSourceのみを執筆contextへ入れる | human Decision、Freshness、独立context | 未承認、別Scope、未評価Revision |
+| P-09 | 長距離関係・qualified path | Graph pathをRaw／Evidence契約込みで保持し非回帰 | current qualified edge、同一budget | stale edge、unsupported path、別case混入 |
+| P-10 | 長距離関係・cache再評価 | Scope／incarnation変更後に旧cacheを使わない | 新token、approval再確認、case isolation | 旧cache／旧handle、他task履歴 |
+| P-11 | 構造・required slots | Raw／Evidence／labelを同一budgetで保持しprose非回帰 | task schemaのrequired slot、approved current材料 | Raw欠落、未定義slot、Scope／Freshness不一致 |
+| P-12 | 構造・predeclared improvement | 既存ContextPlan／Raw-priority packing baselineから事前指定slotの充足を1件改善 | approved・Fresh・Scope一致、独立context、system／history／tool／context費用込みの同一budget内 | 改善0、未承認／stale、禁止情報、budget違反 |
+
+診断用の `seed-only` は品質合格の代用にせず、共通seed/contextと同一token budgetの比較条件から分離して原因を説明する。事前指定改善caseの未達、性能Hold、作者価値未測定はPASSへ読み替えない。
+
+retrievalの比較armは `R / R+IR / R+IR+Graph` とし、Graph改善は `R+IR` に対して判定する。Packingはretrieval armをbaselineにせず、既存ContextPlan／Raw-priority packing（system／history／tool／contextの費用を含む）をPacking baselineとして同一token budgetで比較する。
+
+| requirement | 担当PR / lane | positive | negative |
+| ----------- | ------------- | -------- | -------- |
+| GDX-GROUND-001 | A2、A3、C、D1 | G-01〜G-08のEvidence／Scope／identity付き材料 | 未確認材料、関連度だけで通す候補 |
+| GDX-ARTIFACT-001 | A2、B、D1 | immutable Revision、sealed Index、task別Raw／Evidence | NULL envelopeの後付け適格化、stale世代 |
+| GDX-NARR-SEMANTIC-CONTRACT-001 | R0、A1〜E | 三正本と既存manifestの同一条件 | 新authority、暗黙approval、未分類egress |
+| GDX-NARR-COVERAGE-001 | R0、E | 24／8／12の固定母集団と未測定の明示 | 部分fixtureから全体Completeを主張 |
+| GDX-ISOLATION-001 | D2a、E | 同一query／seed／context、分離teardown | ケース間state、fixture、履歴の混入 |
+| GDX-PRECHECK-001 | 全PR | 契約refとblocked理由を台帳に記録 | 計画同意をsecurity-sensitive契約の批准に拡張 |
+| GDX-POLICY-001 | D2a、A3、D2b | 制限対象plaintextをfail-closed | local設定や未分類入口を例外化 |
+| GDX-TRACE-001 | R0、全PR | requirement→PR→positive／negative→receipt | lane・evidence・failure・Holdの断絶 |
+
+製品公開のAND条件は全表で次に統一する。
+
+- Graphの製品公開条件: A3 + B + C + D2a
+- Packingの製品公開条件: C + D1 + D2a + D2b-1 + D2b-2
+
+### 全PR共通 merge gate M
+
+全PR（R0、途中の機能PR、E、Pを含む）のmergeには、最新 `origin/master` を取り込んだcleanなcommit済みcandidate、Full、直後のverifyを要求する。baseまたはHEADが変わった場合はFullをstage 1から再実行し、古いreceiptを再利用しない。R0の機能受入れは文書・品質契約に限定するが、R0もmerge gate Mの対象であり、merge前にはFull＋verifyを実行する。R0ではruntime journeyとactivationを実行しない。
+
+完成commit前のcanonical commandは次のとおりで、R0のfocused test後に実行する。
+
+    pnpm verify:quality
+    pnpm ci:local:quick -- --base origin/master --head HEAD
+    pnpm ci:local:verify -- quick --base origin/master --head HEAD
+
+merge前のMは次のとおりで、rootの受入れ担当が候補をfreezeした後に実行する。
+
+    pnpm ci:local:full -- --base origin/master --head HEAD
+    pnpm ci:local:verify -- full --base origin/master --head HEAD
+
+candidateのbase・head・tree・clean state・receipt directoryは境界時点で記録する。各ステップで同じSHAを過度に照合することや、receiptの見た目だけで承認を推定することはしない。
+
+性能は先行候補のHybrid p95 68.1ms等を再測定値とせず `性能Hold` として保持する。作者効用は `author-value: not-measured` とし、技術受入れ・自動評価へ混ぜない。
 
 ## 引き継ぐ状態と承認境界
 
@@ -30,29 +181,52 @@
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | 選択済み                  | 最小Scope保存・編集UI、レビュー会話分離、安全な執筆履歴継続、profile全体の永続local-only、scene incarnation単位のlegacy互換 |
 | 実装前に明示確認するdraft | 保存authority、呼出主体と送信入口、Native生成元receipt、履歴再認可、profile egress境界の脅威モデル差分                      |
-| 今回の対象外              | runtime実装、activation、外部送信、CI、commit、push、PR、M2全体移行、全抽出recipe対応、作者価値の測定                       |
+| R0で実施しない            | runtime実装、activation、外部送信、Full／runtime journey、push、PR、M2全体移行、全抽出recipe対応、作者価値の測定 |
 
 ## 実装順序と公開条件
 
-| 単位      | 実装・成果                                                                   | 製品公開条件                                  |
-| --------- | ---------------------------------------------------------------------------- | --------------------------------------------- |
-| R0        | 基点、証跡、profile表、writer・呼出主体・送信経路の影響表、評価契約を固定    | 後付けの合格条件変更を禁止                    |
-| D2a       | profile/caller制限、外部dispatch停止、制限の永続化、起動時gate、平文公開gate | restricted plaintextを返す全entrypointの前提  |
-| A1: L6-A  | Scope registry、scene設定、incarnation、互換marker、通常UI/API、Source登録   | A1/A2の保存・reader開発を始める条件にはしない |
-| A2: L7-A  | Entity/Relation typed入力、immutable Revision、明示承認、cold reopen         | D2a完了後にレビュー結果を製品公開             |
-| A3: L6-B  | 全材料の開示判定、各Scope軸のpositive/negative/unavailable                   | Graph利用の前提                               |
-| B: L7-B   | 独立Graph Index、writer失効、条件付き公開、復旧                              | Graph利用の前提                               |
-| C: L7-C   | bounded traversal、保守的融合、path Evidence、P2受入れ                       | Packing利用の前提                             |
-| D1: L8-A  | typed Packing、task別Raw/Evidence保持、budget selection                      | Packing利用の前提                             |
-| D2b: L8-B | Native生成元receipt、履歴再認可、handle・dispatch検証、local P3              | Packingの製品公開の前提                       |
-| E: L9     | 比較、実製品journey、独立受入れ、Full・verify、全deliverable判定             | NIR-1 Complete判定                            |
+| 単位 | 実装・成果 | 開始依存 | 製品公開条件 |
+| ---- | ---------- | -------- | ------------ |
+| R0 | 基点、証跡、profile表、writer・呼出主体・送信経路の影響表、評価契約を固定 | #572 | 後付けの合格条件変更を禁止 |
+| D2a | profile/caller制限、外部dispatch停止、制限の永続化、起動時gate、平文公開gate | R0のcaller/profile egress | restricted plaintextを返す全entrypointの前提 |
+| A1: L6-A | Scope registry、scene設定、incarnation、互換marker、通常UI/API、Source登録 | R0のScope保存authority | A1/A2の保存・reader開発を始める条件にはしない |
+| A2: L7-A | Entity/Relation typed入力、immutable Revision、明示承認、cold reopen | A1＋R0のtyped Revision材料 | D2a完了後にレビュー結果を製品公開 |
+| A3: L6-B | 全材料の開示判定、各Scope軸のpositive/negative/unavailable | A1＋A2 | Graph公開の前提 |
+| B: L7-B | 独立Graph Index、writer失効、条件付き公開、復旧 | A1＋A2＋R0のGraph binding | Graph公開の前提 |
+| C: L7-C | bounded traversal、保守的融合、path Evidence、P2受入れ | A3＋B＋D2a | Graphの製品公開条件の一部、Packing入力 |
+| D1: L8-A | typed Packing、task別Raw/Evidence保持、budget selection | A2＋R0のPacking評価契約 | Packing公開の前提 |
+| D2b-1: L8-Ba | Native生成元receipt、handle・transport・dispatch検証 | D2a＋D1入力＋R0のreceipt契約 | 単独では製品送信を再開しない |
+| D2b-2: L8-Bb | 履歴再認可、対応済みlocal、最終requestとP3 | C＋D1＋D2a＋D2b-1＋R0の履歴契約 | Packingの製品公開条件の一部 |
+| E: L9 | 比較、実製品journey、独立受入れ、Full・verify、全deliverable判定 | 全機能lane＋P | NIR-1 Complete判定 |
+| P | 固定検索性能Holdの解消 | R0後。機能laneと独立に測定 | NIR-1 Complete時にHoldなし |
 
 D2aは先行実装できるが、A1/A2の保存・reader・評価の開発を妨げない。A1/A2の契約成立後、A3・B・D1を並行する。
 
+依存は次の最小図に固定する。PはR0後に独立して測定できるが、Eの完了判定では機能laneと同じMを通る。
+
+```mermaid
+flowchart LR
+  R0 --> D2a
+  R0 --> A1 --> A2
+  A2 --> A3 --> C
+  A2 --> B --> C
+  A2 --> D1
+  D2a --> C
+  D2a --> D2b1[D2b-1]
+  D1 --> D2b1
+  C --> D2b2[D2b-2]
+  D1 --> D2b2
+  D2a --> D2b2
+  D2b1 --> D2b2
+  C --> E
+  D2b2 --> E
+  R0 --> P --> E
+```
+
 制限対象平文を未信頼呼出主体へ返すすべてのentrypointは、D2a完了をactivation前提とする。対象にはA2レビュー表示、汎用DB、review bundle、保存済み会話・audit、起動時の再公開、イベント配信を含める。
 
-- Graphの製品公開条件: A3 + B + D2a
-- Packingの製品公開条件: C + D1 + D2a + D2b
+- Graphの製品公開条件: A3 + B + C + D2a
+- Packingの製品公開条件: C + D1 + D2a + D2b-1 + D2b-2
 
 前提未完了の経路は制限対象平文を公開しない。Native内の保存・読取・合成fixtureによる検証は継続できる。依存図、lane表、activation表、受入れ台帳で同じAND条件を使う。
 

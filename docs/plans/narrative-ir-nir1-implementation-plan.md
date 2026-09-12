@@ -16,7 +16,19 @@ L6–L9は全体計画に保持する。L6正例に必要なL7入力adapterの�
 2026-09-12追記: 基点 master@96654340ddd2a0407f2fe8aea41a940c3aa516ce で、L6〜L9の実装順序・公開条件・送信境界・互換profile・受入れ区分を
 [L6〜L9実行計画](nir1-l6-l9-execution-plan.md)へ分離して文書化した。L0〜L5はマージ済みで、L6〜L9のruntime実装とactivationは未実施である。
 本追記以降、L6〜L9の実行契約は新文書を参照する。従前の「今回の継続実装範囲はL0〜L5」という記述は、2026-09-08時点の承認範囲を示す履歴であり、現在のL6〜L9実行契約を制限しない。
-公開条件は、restricted plaintextを返すすべてのentrypointに対する先行送信基盤 D2a、Graphは A3＋B＋D2a、Packingは C＋D1＋D2a＋D2b とする。
+公開条件は、restricted plaintextを返すすべてのentrypointに対する先行送信基盤 D2a、Graphは A3＋B＋C＋D2a、Packingは C＋D1＋D2a＋D2b-1＋D2b-2 とする。
+
+2026-09-13追記（PR-R0）: 最新 `origin/master` の #572（`master@68516b033f395f24f98c502c9fd2a715d7aec2af`、Tree
+`04c491c29627ecc840112ebe379a5363e16892ff`）を現在地の基点として、
+[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)にR0の部分実装、writer／caller／plaintext／egress台帳、profile状態遷移、契約別開始判定、評価manifestを固定した。
+R0は文書・既存quality contract test・manifest traceだけを変更し、runtime／policy／activationと新規fixtureは変更しない。24件の検索case（ja/en各12件）の正本は
+`evals/nir1-retrieval/manifest.json`であり、Graph G-01〜G-08、Packing P-01〜P-12（文体／台詞／描写／exact quote／長距離関係／構造の各2件）の詳細表と、
+事前指定改善G-01／P-12、Packing baselineの費用境界はL6〜L9実行計画へ集約する。
+6つの下流契約（Scope保存authority、caller/profile egress、typed Revision材料、Graph binding、Native receipt、履歴再認可）は、
+確認できた実装・方針の範囲を超える詳細批准refが未確認のため、すべて `blocked(ref-unverified)` として扱う。typed Revision材料だけは
+`contract-delta-unresolved` を併記する。今回の計画への同意はこれらのsecurity-sensitive契約の批准に拡張しない。
+Graphの製品公開条件は A3＋B＋C＋D2a、Packingの製品公開条件は C＋D1＋D2a＋D2b-1＋D2b-2 とし、
+性能Holdと `author-value: not-measured` を保持する。R0自体の開始判定はreadyだが、下流laneのruntime開始・activationはblockedのままである。
 
 2026-09-08、`codex/nir1-material-replay` の clean HEAD
 `9bb942de7f58d869e9d5de52fb49d9adc49e965b`、tree
@@ -468,3 +480,9 @@ L0–L5は内部reader/writer/fixture/診断ごとの再開承認を求めず、
 2026-09-12のL6〜L9文書化では、D2aをA1/A2の開発開始条件にせずrestricted plaintext公開のactivation前提として追加した。
 同一profileの全作品・全会話を再起動後もlocal-onlyとし、AIタイトル・要約・tool・Agent・CLI等は意図的に停止する。
 L9では必須機能、意図的に停止した補助機能、停止経路の必須拒否試験を分離して判定する。これらはruntime変更ではなく、実装前契約の文書化である。
+
+2026-09-13のPR-R0では、上記の現在地を#572基点へ更新し、6契約の確認台帳を `ref-unverified` として固定した。
+評価は既存24検索case、8 Graph case（G-01〜G-08）、12 Packing task（P-01〜P-12）の識別子と、
+`R / R+IR / R+IR+Graph`、seed-only診断、共通seed/context、同一token budget、事前指定改善caseの比較条件を実行計画へ対応付けた。
+Graph改善はR+IRを比較対象とし、D1 fixtureとD2b-2／P3最終requestは別証跡とする。全PRのmerge gate M（clean candidateのFull＋verify）は維持する。
+R0の文書更新時点ではFull・runtime・activationを実行していないが、候補commit後のMとしてFull＋verifyを別途必須とする。

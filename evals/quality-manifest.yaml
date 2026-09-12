@@ -646,8 +646,10 @@ requirements:
       - scripts/quality/validate-change-feed-writers.test.mjs
       - scripts/quality/validate-narrative-ir-contract.mjs
       - docs/plans/narrative-ir-nir0-implementation-plan.md
+      - docs/plans/narrative-ir-nir1-implementation-plan.md
       - docs/plans/narrative-c2zc-canonical-cutover-impact-matrix.md
       - docs/plans/narrative-semantic-core-roadmap.md
+      - docs/plans/nir1-l6-l9-execution-plan.md
       - docs/plans/nir0-d2-impact-matrix.md
       - docs/certification/nir0/NIR0-CERT.md
       - scripts/c2zc-product-journeys.test.mjs
@@ -735,6 +737,7 @@ requirements:
       - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
       - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts
       - scripts/quality/impact-map.test.mjs
+      - scripts/quality/quality-workflow.test.mjs
       - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
     heavyTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs

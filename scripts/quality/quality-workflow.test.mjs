@@ -345,6 +345,124 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   );
 });
 
+test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates explicit", async () => {
+  const executionPlan = await read("docs/plans/nir1-l6-l9-execution-plan.md");
+  const roadmap = await read("docs/plans/narrative-semantic-core-roadmap.md");
+  const integrationPlan = await read(
+    "docs/plans/narrative-ir-nir1-implementation-plan.md",
+  );
+
+  assert.match(executionPlan, /PR-R0.*現在地と評価契約の固定/is);
+  assert.match(
+    executionPlan,
+    /master@68516b033f395f24f98c502c9fd2a715d7aec2af/,
+  );
+  assert.match(
+    executionPlan,
+    /Tree:\s*04c491c29627ecc840112ebe379a5363e16892ff/,
+  );
+  assert.match(executionPlan, /#572.*実装済み/is);
+  assert.match(executionPlan, /runtime.*activation.*未実施/is);
+
+  for (const contractId of [
+    "scope-storage-authority",
+    "caller-profile-egress",
+    "typed-revision-material",
+    "graph-limited-binding",
+    "native-generation-receipt",
+    "history-reauthorization",
+  ]) {
+    assert.match(executionPlan, new RegExp(contractId));
+  }
+  assert.equal(
+    (executionPlan.match(/blocked\(ref-unverified\)/g) ?? []).length,
+    6,
+    "all six unconfirmed contracts must remain blocked",
+  );
+  assert.match(executionPlan, /contract-delta-unresolved/);
+  for (const field of [
+    "confirmedRef",
+    "confirmedScope",
+    "remainingDelta",
+    "affectedLanes",
+    "startStatus",
+    "blockedReason",
+    "unblockingEvidence",
+  ]) {
+    assert.match(executionPlan, new RegExp(field));
+  }
+
+  assert.match(
+    executionPlan,
+    /Graph.*公開条件.*A3\s*\+\s*B\s*\+\s*C\s*\+\s*D2a/is,
+  );
+  assert.match(
+    executionPlan,
+    /Packing.*公開条件.*C\s*\+\s*D1\s*\+\s*D2a\s*\+\s*D2b-1\s*\+\s*D2b-2/is,
+  );
+  for (const phrase of [
+    /24.*検索case/,
+    /8.*Graph.*case/is,
+    /12.*Packing.*task/is,
+    /R\s*\/\s*R\+IR\s*\/\s*R\+IR\+Graph/,
+    /seed-only/,
+    /共通.*(?:seed|context)/is,
+    /同一.*token budget/is,
+    /事前指定.*改善/,
+    /全PR.*merge gate M/is,
+    /性能Hold/,
+    /author-value:\s*not-measured/,
+  ]) {
+    assert.match(executionPlan, phrase);
+  }
+  assert.match(executionPlan, /evals\/nir1-retrieval\/manifest\.json/);
+  assert.match(executionPlan, /ja\/en各12件/);
+  assert.match(executionPlan, /G-07.*pre-S2.*at\/after-S2/is);
+  assert.match(executionPlan, /事前指定改善.*G-01.*P-12/is);
+  for (const caseId of [
+    "G-01",
+    "G-02",
+    "G-03",
+    "G-04",
+    "G-05",
+    "G-06",
+    "G-07",
+    "G-08",
+    "P-01",
+    "P-02",
+    "P-03",
+    "P-04",
+    "P-05",
+    "P-06",
+    "P-07",
+    "P-08",
+    "P-09",
+    "P-10",
+    "P-11",
+    "P-12",
+  ]) {
+    assert.match(executionPlan, new RegExp(`\\| ${caseId} \\|`));
+  }
+  for (const command of [
+    "pnpm verify:quality",
+    "pnpm ci:local:quick -- --base origin/master --head HEAD",
+    "pnpm ci:local:verify -- quick --base origin/master --head HEAD",
+    "pnpm ci:local:full -- --base origin/master --head HEAD",
+    "pnpm ci:local:verify -- full --base origin/master --head HEAD",
+  ]) {
+    assert.match(
+      executionPlan,
+      new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+  }
+
+  assert.match(roadmap, /PR-R0/);
+  assert.match(roadmap, /68516b033f395f24f98c502c9fd2a715d7aec2af/);
+  assert.match(roadmap, /downstream.*blocked|blocked.*downstream/is);
+  assert.match(integrationPlan, /PR-R0/);
+  assert.match(integrationPlan, /ref-unverified/);
+});
+
 test("new skills use current frontmatter and call the canonical commands", async () => {
   const author = await read(".agents/skills/grimodex-author/SKILL.md");
   const impact = await read(".agents/skills/grimodex-impact-gate/SKILL.md");
