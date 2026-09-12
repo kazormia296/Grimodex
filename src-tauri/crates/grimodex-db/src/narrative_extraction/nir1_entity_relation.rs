@@ -58,7 +58,7 @@ pub struct Nir1EntityRelationRevision {
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", content = "result", rename_all = "camelCase")]
 pub enum Nir1EntityRelationRevisionRead {
-    Available(Nir1EntityRelationRevision),
+    Available(Box<Nir1EntityRelationRevision>),
     Unavailable { reason: String },
 }
 
@@ -301,7 +301,7 @@ pub fn read_nir1_entity_relation_revision(
     }
     let bundle_digest = canonical_json_digest(&serde_json::to_value(&payload.bundle)?)?;
     Ok(Nir1EntityRelationRevisionRead::Available(
-        Nir1EntityRelationRevision {
+        Box::new(Nir1EntityRelationRevision {
             project_id: project_id.into(),
             run_id,
             proposal_set_id,
@@ -311,7 +311,7 @@ pub fn read_nir1_entity_relation_revision(
             eligibility_source: ENTITY_RELATION_SOURCE_KIND,
             index_key: ENTITY_RELATION_INDEX_KEY,
             bundle: payload.bundle,
-        },
+        }),
     ))
 }
 
