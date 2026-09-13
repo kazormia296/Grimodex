@@ -483,4 +483,4 @@ L9では必須機能、意図的に停止した補助機能、停止経路の必
 評価は既存24検索case、8 Graph case（G-01〜G-08）、12 Packing task（P-01〜P-12）の識別子と、
 `R / R+IR / R+IR+Graph`、seed-only診断、共通seed/context、同一token budget、事前指定改善caseの比較条件を実行計画へ対応付けた。
 Graph改善はR+IRを比較対象とし、D1 fixtureとD2b-2／P3最終requestは別証跡とする。全PRのmerge gate M（clean candidateのFull＋verify）は維持する。
-R0の文書更新時点ではruntime journey・activation・merge gate MのFull／verifyを実行していない。現在候補ではfocused test、`verify:quality`、Quick／verifyを実施済みであり、候補commit後のMとしてclean HEADのFull＋verifyを別途必須とする。
+初回static draft時点の「runtime journey・activation・merge gate MのFull／verifyは未実施」という記録は過去の静的draftに限り、現在候補の免除ではない。現在のR0 merge candidateは全PR共通 merge gate Mの対象であり、merge前のclean HEADのFull＋直後verifyを必須とする。R0の機能受入れではruntime journey・activationは対象外である。

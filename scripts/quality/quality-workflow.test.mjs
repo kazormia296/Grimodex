@@ -757,11 +757,33 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
   );
   assert.match(
     executionPlan,
-    /R0の文書更新時点ではruntime journey.*Full／verify.*実行していない/is,
+    /初回static draft.*focused contract testのみ.*Quick／verify／Full／verifyは実施しなかった.*現在候補の証跡または免除ではない.*現在のR0 merge candidate.*merge gate M.*Full＋直後のverify.*要求する/is,
   );
   assert.match(
     executionPlan,
-    /旧R0候補で実施済みだった.*verify:quality.*無効化した.*再開候補では.*再実施/is,
+    /初回static draft.*旧R0候補で実施済みだった.*verify:quality.*Quick.*無効化し.*再開候補で再実施する記録だった.*現在のR0 merge candidate.*merge gate M.*Full＋直後verify.*必須/is,
+  );
+  assert.doesNotMatch(
+    executionPlan,
+    /現在(?:の)?(?:R0 )?候補[^\n]*(?:Full|verify)[^\n]*(?:実施していない|未実施|実施しない|不要|免除)/is,
+    "historical no-run notes must not exempt the current candidate",
+  );
+  assert.match(
+    executionPlan,
+    /sceneIncarnationId.*Native-owned.*scene生存世代ID.*legacy-absent \| explicit \| unknown.*別フィールド.*Scope marker.*incarnation IDではない/is,
+  );
+  assert.match(
+    executionPlan,
+    /通常編集は同じ `sceneIncarnationId` を継続し、Source tokenを更新して旧Revision／Index／query／result／Evidence eligibilityをinvalidate/is,
+  );
+  assert.match(
+    executionPlan,
+    /本文・タイトル・順序等の通常更新.*同じ `sceneIncarnationId`.*Source tokenを更新.*Evidence eligibilityをinvalidate/is,
+  );
+  assert.doesNotMatch(
+    executionPlan,
+    /`sceneIncarnationId` は `legacy-absent \| explicit \| unknown` のmarkerだけ/,
+    "scene incarnation identity must not be conflated with the legacy marker",
   );
   for (const caseId of [
     "G-01",
@@ -828,6 +850,16 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
       narrative,
       /contract-delta-unresolved/,
       `${name} must not retain the resolved-family stale marker`,
+    );
+    assert.match(
+      narrative,
+      /(?:現在のR0 merge candidateは.*merge gate M.*merge前のclean HEADのFull＋直後verifyを必須|The current R0 merge candidate.*merge gate M.*clean candidate must pass Full and immediate verify before merge)/is,
+      `${name} must keep the current candidate subject to merge gate M`,
+    );
+    assert.doesNotMatch(
+      narrative,
+      /(?:現在のR0 merge candidate|The current R0 merge candidate)[^\n]*(?:Full|verify)[^\n]*(?:未実施|実施していない|not run)/is,
+      `${name} must not exempt the current candidate with a historical no-run note`,
     );
   }
 });

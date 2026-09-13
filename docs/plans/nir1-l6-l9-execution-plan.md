@@ -5,7 +5,7 @@
 基点: master@68516b033f395f24f98c502c9fd2a715d7aec2af
 Tree: 04c491c29627ecc840112ebe379a5363e16892ff
 
-状態: #572でtyped基盤runtime（Scope／Entity／Relation／Evidence validation、Native所有のimmutable Revision writer／reader、request-local Graph／Packing primitives）は実装済み。PR-R0の文書・quality contract test・manifest traceを固定済み。残るproduction runtime integration、activation、L6〜L9受入れは未完了。本版では `nir1-l6-l9-contract-proposal/3` のscope-storage-authority／caller-profile-egress／graph-limited-binding／native-generation-receipt／history-reauthorizationの五つを明示確認済みとして記録し、typed-revision-materialは選択済みOption Bの `nir1-l6-l9-contract-proposal/4` draftとしてblocked／unconfirmedのまま保持する。downstream threat modelはdraftのままで、runtime activationは行わない。master更新待ちのため本版ではfocused contract testのみを実施し、Quick／verify／Full／verifyは実施しない。
+状態: #572でtyped基盤runtime（Scope／Entity／Relation／Evidence validation、Native所有のimmutable Revision writer／reader、request-local Graph／Packing primitives）は実装済み。PR-R0の文書・quality contract test・manifest traceを固定済み。残るproduction runtime integration、activation、L6〜L9受入れは未完了。本版では `nir1-l6-l9-contract-proposal/3` のscope-storage-authority／caller-profile-egress／graph-limited-binding／native-generation-receipt／history-reauthorizationの五つを明示確認済みとして記録し、typed-revision-materialは選択済みOption Bの `nir1-l6-l9-contract-proposal/4` draftとしてblocked／unconfirmedのまま保持する。downstream threat modelはdraftのままで、runtime activationは行わない。初回static draftではmaster更新待ちのためfocused contract testのみを実施し、Quick／verify／Full／verifyは実施しなかった。これは現在候補の証跡または免除ではない。現在のR0 merge candidateは全PR共通 merge gate Mの対象であり、merge前のclean candidateにFull＋直後のverifyを要求する。
 
 ## 概要
 
@@ -23,7 +23,7 @@ R0は、#572の現在地、後続laneの境界、契約ごとの開始可否、�
 | Tree | `04c491c29627ecc840112ebe379a5363e16892ff` |
 | candidateBranch | `codex/nir1-r0-contract-ledger` |
 | plan / policy / threat refs | 本書、統合計画、ロードマップ、既存 quality manifest / impact map。下流 threat model は draft のまま |
-| receipt boundary | 旧R0候補のfocused test／`verify:quality`／Quick＋verifyは無効。再開候補で同じ検証を再実施し、Full＋verifyは実施しない |
+| receipt boundary | 初回static draftの旧R0候補のfocused test／`verify:quality`／Quick＋verifyは無効。現在のR0 merge candidateは全PR共通 merge gate M（clean candidateのFull＋直後verify）で判定し、旧receiptを流用しない |
 
 ### #572の実装済み／未完了
 
@@ -83,7 +83,7 @@ Confirmation protocol (recorded, bounded): only an explicit user statement namin
 #### scope-storage-authority
 
 - Baseline (approved; limited): accepted ADR009 はScope／Relation vocabularyと既存のproject Scope authorityだけ、`nir1-plan/1` と `nir1-product-tm/1` はL0〜L5だけを承認済みとする。L6〜L9の保存・移行は未承認。
-- Delta (L6-L9 data / shape / ownership / lifecycle): Native-owned project registryとsceneごとのclosed bindingに、既存 `ScopeBinding` の `reading`／`story`／`auto`／`phase`／`reveal`／`pov`／`authorityRevision` を使い、ADR009の `timeline`／`worldline`／`narrativeLayer`／`knowledgeHolder`／`audience` を対応づける。query identityとmaterial disclosure constraintも同じbindingに含める。`sceneIncarnationId` は `legacy-absent | explicit | unknown` のmarkerだけ（本文やfull closureを複製しない）。既存sceneの移行はlegacy markerに限定し、通常編集は既存IDとSource tokenを保つ。明示設定変更、new／duplicate／import、delete後のID再利用は新しいincarnationまたはunknownとし、clear／undoは旧資格へ戻さず、journal-proven restoreだけを対象にする。registry／setting／incarnation mutationは同一transactionで依存Revision／Index／query／result／Evidenceをinvalidateする。authorityは既存project Scope authorityを再利用し、第二のauthorityを作らない。
+- Delta (L6-L9 data / shape / ownership / lifecycle): Native-owned project registryとsceneごとのclosed bindingに、既存 `ScopeBinding` の `reading`／`story`／`auto`／`phase`／`reveal`／`pov`／`authorityRevision` を使い、ADR009の `timeline`／`worldline`／`narrativeLayer`／`knowledgeHolder`／`audience` を対応づける。query identityとmaterial disclosure constraintも同じbindingに含める。`sceneIncarnationId` はNative-ownedのscene生存世代IDであり、`legacy-absent | explicit | unknown` は別フィールドのScope marker（incarnation IDではない）とする（本文やfull closureを複製しない）。既存sceneの移行はlegacy markerに限定し、通常編集は同じ `sceneIncarnationId` を継続し、Source tokenを更新して旧Revision／Index／query／result／Evidence eligibilityをinvalidateする。明示設定変更、new／duplicate／import、delete後のID再利用は新しいincarnationまたはunknownとし、clear／undoは旧資格へ戻さず、journal-proven restoreだけを対象にする。registry／setting／incarnation mutationは同一transactionで依存Revision／Index／query／result／Evidenceをinvalidateする。authorityは既存project Scope authorityを再利用し、第二のauthorityを作らない。
 - Trusted actors: Native backend、既存project Scope authority、同一transactionのjournal／invalidation。
 - Untrusted actors: rendererのScope／profile／incarnation申告、model output、stale UI／cache／restore-derived data。
 - In-scope attacks: cross-project binding、偽造・stale authority token、unknownからanyへのfallback、ID reuse／restore混入、mutation後のstale result／Evidence／cache。
@@ -255,7 +255,8 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 | 選択済み                  | 最小Scope保存・編集UI、レビュー会話分離、安全な執筆履歴継続、profile全体の永続local-only、scene incarnation単位のlegacy互換 |
 | R0で確認済み・merge後開始 | 五つのproposal/3 contractId別confirmationはproposal scopeだけを確認し、R0 merge＋通常依存成立後のみreadyとする |
 | 実装前に別途確認するdraft | `typed-revision-material` のproposal/4 Option B。別の明示確認があるまで `confirmedRef=none — ref-unverified`、blockedのままとする |
-| R0の文書更新時点で未実施  | 新たなproduction runtime integration、activation、外部送信、runtime journey、merge gate MのFull／verify（候補commit後に必須）、push、PR、M2全体移行、全抽出recipe対応、作者価値の測定 |
+| 初回static draftの文書更新時点で未実施 | 新たなproduction runtime integration、activation、外部送信、runtime journey、push、PR、M2全体移行、全抽出recipe対応、作者価値の測定 |
+| 現在のR0 merge candidateの必須gate | 全PR共通 merge gate Mとしてclean candidateのFull＋直後verifyを必須とし、文書化・focused／Quick結果で免除しない |
 
 ## 実装順序と公開条件
 
@@ -330,19 +331,19 @@ anyはpurposeが必須とするquery identity、Evidence、承認、Freshnessを
 
 ### Scene incarnation
 
-Scope stateはNative管理のsceneIncarnationIdとlegacy-absent、explicit、unknownを保持する。incarnationはsceneの生存世代を区別する内部識別子で、Timeline等のScope identityではない。
+Scope stateはNative管理の独立した `sceneIncarnationId` と、別フィールドの `legacy-absent`／`explicit`／`unknown` Scope markerを保持する。markerはincarnation IDではない。`sceneIncarnationId` はsceneの生存世代を区別する内部識別子で、Timeline等のScope identityではない。
 
 | 操作                                 | 契約                                                        |
 | ------------------------------------ | ----------------------------------------------------------- |
-| 移行時に存在したscene                | 新incarnationとlegacy-absentを記録                          |
-| 本文・タイトル・順序等の通常更新     | 同じincarnationを継続し、Source tokenは更新                 |
+| 移行時に存在したscene                | Nativeが新しい `sceneIncarnationId` を発行し、Scope marker=`legacy-absent`を記録 |
+| 本文・タイトル・順序等の通常更新     | 同じ `sceneIncarnationId` を継続し、Source tokenを更新して旧Revision／Index／query／result／Evidence eligibilityをinvalidate |
 | 同じsceneからの新Revision            | 限定互換は継続。ただしRevision自身の承認・資格は別途必須    |
-| Scopeの明示設定                      | explicitへ移行                                              |
+| Scopeの明示設定                      | 同じ `sceneIncarnationId` を継続し、Scope markerを`explicit`へ移行。設定変更として旧資格をinvalidate |
 | clear、設定編集undo                  | legacyへ戻さず、必要に応じexplicit + unresolved             |
-| 新規、複製、import、削除後のID再利用 | 新incarnation。未設定ならunknown                            |
-| 単一本文版の復元                     | 同じincarnation。Source更新と失効を実施                     |
-| 削除undo、object復元                 | Native journalが旧incarnationと状態を証明できる場合だけ継承 |
-| markerのない部分snapshot、不明な復旧 | unknown。ID・名前・本文一致から推定しない                   |
+| 新規、複製、import、削除後のID再利用 | Nativeが新しい `sceneIncarnationId` を発行し、Scope markerは未設定なら`unknown` |
+| 単一本文版の復元                     | 同じ `sceneIncarnationId`。Source token更新と旧資格のinvalidateを実施 |
+| 削除undo、object復元                 | Native journalが旧 `sceneIncarnationId` と状態を証明できる場合だけ継承 |
+| markerのない部分snapshot、不明な復旧 | Scope marker=`unknown`。ID・名前・本文一致から`sceneIncarnationId`を推定しない |
 
 継続するのは「移行対象sceneの旧Scope設定が未入力」という限定互換だけであり、旧IR、承認、Freshness、Index、query、履歴の利用資格は継続しない。
 
@@ -468,7 +469,7 @@ L9受入れ・merge前:
     pnpm ci:local:full -- --base origin/master --head HEAD
     pnpm ci:local:verify -- full --base origin/master --head HEAD
 
-baseまたはHEADが変わった場合、古いreceiptを流用せずFullをstage 1から再実行する。R0の文書更新時点ではruntime journey・activation・merge gate MのFull／verifyを実行していない。旧R0候補で実施済みだった `verify:quality`、Quick、直後のQuick verifyは本版で無効化した。再開候補では同じ3検証を再実施するが、Full＋verifyは実施しない。
+baseまたはHEADが変わった場合、古いreceiptを流用せずFullをstage 1から再実行する。初回static draftではruntime journey・activation・merge gate MのFull／verifyを実施していないと記録したが、これは現在候補の免除ではない。初回static draftの旧R0候補で実施済みだった `verify:quality`、Quick、直後のQuick verifyを本版で無効化し、再開候補で再実施する記録だった。現在のR0 merge candidateは全PR共通 merge gate Mの対象であり、merge前のclean HEADでFull＋直後verifyが必須である。runtime journey・activationはR0の機能受入れ範囲外である。
 
 ## 非目標と再確認条件
 
