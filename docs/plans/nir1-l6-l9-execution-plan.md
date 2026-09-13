@@ -238,12 +238,13 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 
 ### PR-P 固定検索性能測定結果
 
-2026-09-13のPR-P固定測定は、正本manifestの24 query（ja/en各12）、固定Gold、各query／armの5 warmup＋30 measured（720 calls／arm）、固定AB／BA交互順序、および実Electron renderer経路を使用した。quiet hostでの固定契約結果は次のとおりである。
+2026-09-13のPR-P固定測定は、正本manifestの24 query（ja/en各12）、固定Gold、各query／armの5 warmup＋30 measured（720 calls／arm）、固定AB／BA交互順序、および実Electron renderer経路を使用した。現行candidateに束縛してpersistedした固定契約結果は次のとおりである。
 
-- `Raw p95=41.0ms`、`Hybrid p95=50.7ms`。Hybridは固定上限 `65.04ms` 以下。
-- `720/720` calls completed、`timeout=0`。quality／parity／Evidence gatesを含む判定は `paired-gates-passed`。
-- combined build medianは `3579.0ms` で、固定 `2T=4289.4ms` 以下。
+- `Raw p95=31.5ms`、`Hybrid p95=60.8ms`。Hybridは固定上限 `65.04ms` 以下。
+- 各armで `720/720` calls completed、`failed=0`、`timeout=0`。quality／parity／Evidence gatesを含む判定は `paired-gates-passed`。
+- combined build medianは `3623.8ms` で、固定 `2T=4289.4ms` 以下。
 - 固定 `B=54.2ms`、`D=10.84ms`、`T=2144.7ms` は変更していない。Gold、閾値、case数、run数も変更せず、旧資格の即時失効、Raw継続、UI応答性の必須条件を緩めない。
+- persisted receiptは `.artifacts/nir1-retrieval/pr-p-fixed-2026-09-13-r2/` に保存した。
 
 同一固定候補で先に得たcontended run（`Raw p95=193ms`、`Hybrid p95=105ms`）は診断専用であり、受入れ証跡にはしない。別worktreeのcargo／rustc実行と高いI/O PSIがnative raw-ready tailと同時に観測されたため、`unattributed host contention` evidenceとして扱い、製品回帰とは帰属しない。固定閾値は変更しない。
 

@@ -708,17 +708,17 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
   );
   assert.match(
     executionPlan,
-    /PR-P 固定検索性能測定結果[\s\S]*Raw p95=41\.0ms[\s\S]*Hybrid p95=50\.7ms[\s\S]*65\.04ms/is,
+    /PR-P 固定検索性能測定結果[\s\S]*Raw p95=31\.5ms[\s\S]*Hybrid p95=60\.8ms[\s\S]*65\.04ms/is,
     "the fixed PR-P result must remain recorded against the approved limit",
   );
   assert.match(
     executionPlan,
-    /PR-P 固定検索性能測定結果[\s\S]*720\/720[\s\S]*timeout=0[\s\S]*paired-gates-passed/is,
+    /PR-P 固定検索性能測定結果[\s\S]*720\/720[\s\S]*failed=0[\s\S]*timeout=0[\s\S]*paired-gates-passed/is,
     "the fixed PR-P availability and paired gate result must remain recorded",
   );
   assert.match(
     executionPlan,
-    /PR-P 固定検索性能測定結果[\s\S]*3579\.0ms[\s\S]*2T=4289\.4ms[\s\S]*B=54\.2ms[\s\S]*D=10\.84ms[\s\S]*T=2144\.7ms/is,
+    /PR-P 固定検索性能測定結果[\s\S]*3623\.8ms[\s\S]*2T=4289\.4ms[\s\S]*B=54\.2ms[\s\S]*D=10\.84ms[\s\S]*T=2144\.7ms/is,
     "the fixed PR-P build result and unchanged B/D/T must remain recorded",
   );
   assert.match(
