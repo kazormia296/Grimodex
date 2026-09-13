@@ -804,9 +804,7 @@ pub(crate) fn scope_extension_digest(
                 binding.source_token == expected_token,
                 "NEX_SCENE_SCOPE_SOURCE_TOKEN_INVALID: scene scope source token does not match its state"
             );
-            Ok((binding.compatibility_marker
-                != NarrativeScopeCompatibilityMarkerV1::LegacyAbsent)
-                .then_some(binding))
+            Ok(Some(binding))
         })();
         match binding {
             Ok(Some(binding)) => bindings.push(serde_json::to_value(binding)?),
