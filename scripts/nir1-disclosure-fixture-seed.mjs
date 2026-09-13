@@ -103,6 +103,92 @@ try {
     );
     assert.equal(scenes.length, 2);
     assert.ok(scenes.every((row) => row.storyTimeOrder === null));
+    const readScope = (sceneId) =>
+      harness.invokeOk(launched.page, "narrative_scene_scope_read", {
+        expectedWorkspacePath: workspace,
+        projectId,
+        sceneId,
+      });
+    const initialScopes = await Promise.all([readScope(s1), readScope(s2)]);
+    assert.equal(
+      initialScopes[0].registryRevision,
+      initialScopes[1].registryRevision,
+    );
+    assert.ok(initialScopes[0].registryRevision >= 1);
+    const registry = {
+      registryVersion: "narrative-scene-scope-registry/1",
+      timelineRefs: ["timeline:main"],
+      worldlineRefs: ["worldline:prime"],
+      narrativeLayerRefs: ["layer:manuscript"],
+    };
+    await harness.invokeOk(
+      launched.page,
+      "narrative_scene_scope_registry_update",
+      {
+        expectedWorkspacePath: workspace,
+        payload: {
+          projectId,
+          requestId: randomUUID(),
+          sessionId: randomUUID(),
+          eventUid: randomUUID(),
+          baseVersion: initialScopes[0].registryRevision,
+          updatedAt: new Date().toISOString(),
+          registry,
+        },
+      },
+    );
+    const registryScopes = await Promise.all([readScope(s1), readScope(s2)]);
+    assert.equal(
+      registryScopes[0].registryRevision,
+      initialScopes[0].registryRevision + 1,
+    );
+    assert.equal(
+      registryScopes[0].registryRevision,
+      registryScopes[1].registryRevision,
+    );
+    const explicitScope = {
+      schemaVersion: 1,
+      compatibilityMarker: "explicit",
+      queryIdentity: {
+        timeline: { kind: "exact", ref: "timeline:main" },
+        worldline: { kind: "exact", ref: "worldline:prime" },
+        narrativeLayer: { kind: "exact", ref: "layer:manuscript" },
+      },
+      materialConstraint: {
+        timeline: { kind: "any" },
+        worldline: { kind: "any" },
+        narrativeLayer: { kind: "any" },
+      },
+      knowledgeHolder: { kind: "reader" },
+      audience: { kind: "reader" },
+    };
+    const updateScope = (sceneId, current) =>
+      harness.invokeOk(launched.page, "narrative_scene_scope_update", {
+        expectedWorkspacePath: workspace,
+        payload: {
+          projectId,
+          sceneId,
+          requestId: randomUUID(),
+          sessionId: randomUUID(),
+          eventUid: randomUUID(),
+          baseVersion: current.binding.version,
+          updatedAt: new Date().toISOString(),
+          scope: explicitScope,
+        },
+      });
+    await updateScope(s1, registryScopes[0]);
+    await updateScope(s2, registryScopes[1]);
+    const finalScopes = await Promise.all([readScope(s1), readScope(s2)]);
+    for (const current of finalScopes) {
+      assert.equal(current.binding.compatibilityMarker, "explicit");
+      assert.deepEqual(current.binding.queryIdentity, explicitScope.queryIdentity);
+      assert.deepEqual(
+        current.binding.materialConstraint,
+        explicitScope.materialConstraint,
+      );
+      assert.deepEqual(current.binding.knowledgeHolder, { kind: "reader" });
+      assert.deepEqual(current.binding.audience, { kind: "reader" });
+    }
     const mode = (
       await rows(
         "SELECT phase_resolution_mode AS mode FROM projects WHERE id=?",
@@ -117,6 +203,13 @@ try {
       folderId,
       phaseResolutionMode: mode,
       scenes,
+      scope: {
+        configured: true,
+        registryRefs: registry,
+        queryIdentity: "exact",
+        materialConstraints: "any",
+        principals: "reader",
+      },
     };
   } finally {
     await harness.close(launched.app, launched.page, id);

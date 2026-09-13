@@ -465,7 +465,7 @@ pub(crate) fn collect_scene_temporal_snapshot(
     conn: &Connection,
     project_id: &str,
     scene_id: &str,
-) -> anyhow::Result<(Value, NarrativeChangeEventInput)> {
+) -> anyhow::Result<Value> {
     let raw: String = conn
         .query_row(
             "SELECT json_object(
@@ -498,7 +498,7 @@ pub(crate) fn apply_scene_temporal_patch_in_tx(
     project_id: &str,
     payload: &TemporalScenePatchPayload,
     now: &str,
-) -> anyhow::Result<Value> {
+) -> anyhow::Result<(Value, NarrativeChangeEventInput)> {
     let live_version: Option<i64> = conn
         .query_row(
             "SELECT version FROM tree_nodes

@@ -65,7 +65,7 @@ pub(crate) use scene_scope::backfill_scene_scope_storage_in_tx;
 pub(crate) use scene_scope::ensure_scene_scope_binding_in_tx;
 pub(crate) use scene_scope::{
     ensure_character_reference_mutation_allowed_in_tx,
-    ensure_character_snapshot_restore_allowed_in_tx, invalidate_character_references_in_tx,
+    ensure_character_snapshot_restore_allowed_in_tx,
     invalidate_character_references_with_events_in_tx,
 };
 pub(crate) use scene_scope::ensure_scope_registry_in_tx;

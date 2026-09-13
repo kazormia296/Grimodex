@@ -8,6 +8,12 @@
 use std::path::Path;
 
 use grimodex_core::canonical_json_digest;
+use grimodex_core::narrative_scene_scope::{
+    self, NarrativeSceneMaterialConstraintV1, NarrativeSceneQueryIdentityV1,
+    NarrativeSceneScopeBindingV1, NarrativeSceneScopeRegistryV1,
+    NarrativeScopeCompatibilityMarkerV1, NarrativeScopeConstraintV1, NarrativeScopePrincipalV1,
+    NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID,
+};
 use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use grimodex_db::domain_writes::{
     tree_node_create, tree_node_delete, tree_node_patch, TreeNodeCreatePayload,
@@ -21,7 +27,7 @@ use grimodex_db::narrative_extraction::{
     IncrementalFreshnessCycleOutcome, RebuildDerivedStateOutcome,
 };
 use grimodex_db::Database;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 const PROJECT_ID: &str = "nir0-live-scope-project";
@@ -34,6 +40,93 @@ const UPDATED_AT: &str = "2026-08-24T00:00:01.000Z";
 
 fn digest(value: Value) -> String {
     canonical_json_digest(&value).expect("test oracle projection canonicalizes")
+}
+
+fn fixture_scope_registry() -> Value {
+    json!({
+        "registryVersion": NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID,
+        "timelineRefs": [],
+        "worldlineRefs": [],
+        "narrativeLayerRefs": [],
+    })
+}
+
+fn tree_source_generation(nodes: Value) -> String {
+    digest(json!({
+        "contractId": "narrative-tree-source-generation/1",
+        "projectId": PROJECT_ID,
+        "nodes": nodes,
+    }))
+}
+
+fn initial_tree_source_generation() -> String {
+    tree_source_generation(json!([
+        {
+            "id": "folder-a",
+            "parentId": null,
+            "nodeType": "folder",
+            "sortOrder": "a0",
+            "storyTimeOrder": null,
+            "archivedAt": null,
+            "version": 0,
+            "updatedAt": CREATED_AT,
+        },
+        {
+            "id": "folder-b",
+            "parentId": null,
+            "nodeType": "folder",
+            "sortOrder": "b0",
+            "storyTimeOrder": null,
+            "archivedAt": null,
+            "version": 0,
+            "updatedAt": CREATED_AT,
+        },
+        {
+            "id": "scene-a",
+            "parentId": "folder-a",
+            "nodeType": "scene",
+            "sortOrder": "a0",
+            "storyTimeOrder": "b0",
+            "archivedAt": null,
+            "version": 0,
+            "updatedAt": CREATED_AT,
+        },
+        {
+            "id": "scene-b",
+            "parentId": "folder-a",
+            "nodeType": "scene",
+            "sortOrder": "b0",
+            "storyTimeOrder": "a0",
+            "archivedAt": null,
+            "version": 0,
+            "updatedAt": CREATED_AT,
+        },
+    ]))
+}
+
+fn empty_tree_source_generation() -> String {
+    tree_source_generation(json!([]))
+}
+
+fn scope_extended_authority_token(base_revision_token: String, tree_generation: String) -> String {
+    let registry = fixture_scope_registry();
+    let registry_source_token = digest(json!({
+        "contractId": NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID,
+        "registry": registry.clone(),
+        "version": 1,
+    }));
+    let extension_digest = digest(json!({
+        "contractId": "narrative-scene-scope/1",
+        "registry": registry,
+        "registryRevision": 1,
+        "registrySourceToken": registry_source_token,
+        "treeSourceGeneration": tree_generation,
+        "bindings": [],
+    }));
+    digest(json!({
+        "baseRevisionToken": base_revision_token,
+        "sceneScopeExtensionDigest": extension_digest,
+    }))
 }
 
 /// Independent oracle for the fixture's computed project authority.
@@ -104,7 +197,7 @@ fn baseline_token() -> String {
             }
         ]
     }));
-    digest(json!({
+    let base_revision_token = digest(json!({
         "contractId": "narrative-project-scope-authority-revision/1",
         "projectId": PROJECT_ID,
         "source": {
@@ -114,7 +207,8 @@ fn baseline_token() -> String {
         "scopeRegistryRevision": scope_registry_revision,
         "readingOrderRevision": reading_order_revision,
         "storyTimeOrderRevision": story_time_order_revision
-    }))
+    }));
+    scope_extended_authority_token(base_revision_token, initial_tree_source_generation())
 }
 
 fn empty_project_token() -> String {
@@ -139,7 +233,7 @@ fn empty_project_token() -> String {
         "registryVersion": "narrative-scope/2",
         "mappings": []
     }));
-    digest(json!({
+    let base_revision_token = digest(json!({
         "contractId": "narrative-project-scope-authority-revision/1",
         "projectId": PROJECT_ID,
         "source": {
@@ -149,7 +243,71 @@ fn empty_project_token() -> String {
         "scopeRegistryRevision": scope_registry_revision,
         "readingOrderRevision": reading_order_revision,
         "storyTimeOrderRevision": story_time_order_revision
-    }))
+    }));
+    scope_extended_authority_token(base_revision_token, empty_tree_source_generation())
+}
+
+fn seed_scope_bindings(conn: &Connection) -> anyhow::Result<()> {
+    let registry = NarrativeSceneScopeRegistryV1 {
+        registry_version: NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID.to_owned(),
+        timeline_refs: Vec::new(),
+        worldline_refs: Vec::new(),
+        narrative_layer_refs: Vec::new(),
+    };
+    for scene_id in ["scene-a", "scene-b"] {
+        let mut binding = NarrativeSceneScopeBindingV1 {
+            schema_version: 1,
+            project_id: PROJECT_ID.to_owned(),
+            scene_id: scene_id.to_owned(),
+            scene_incarnation_id: format!("legacy:{scene_id}"),
+            compatibility_marker: NarrativeScopeCompatibilityMarkerV1::LegacyAbsent,
+            query_identity: NarrativeSceneQueryIdentityV1 {
+                timeline: NarrativeScopeConstraintV1::Unresolved {
+                    reason: "legacy-axis-unknown".to_owned(),
+                },
+                worldline: NarrativeScopeConstraintV1::Unresolved {
+                    reason: "legacy-axis-unknown".to_owned(),
+                },
+                narrative_layer: NarrativeScopeConstraintV1::Unresolved {
+                    reason: "legacy-axis-unknown".to_owned(),
+                },
+            },
+            material_constraint: NarrativeSceneMaterialConstraintV1 {
+                timeline: NarrativeScopeConstraintV1::Any,
+                worldline: NarrativeScopeConstraintV1::Any,
+                narrative_layer: NarrativeScopeConstraintV1::Any,
+            },
+            knowledge_holder: NarrativeScopePrincipalV1::Reader {},
+            audience: NarrativeScopePrincipalV1::Reader {},
+            version: 1,
+            source_token: "pending".to_owned(),
+            updated_at: CREATED_AT.to_owned(),
+        };
+        binding.source_token = narrative_scene_scope::source_token(&registry, &binding)?;
+        conn.execute(
+            "INSERT INTO narrative_scene_scope_bindings
+                (project_id, scene_id, scene_incarnation_id, compatibility_marker,
+                 query_identity_json, material_constraint_json, knowledge_holder_json,
+                 audience_json, version, source_token, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                binding.project_id,
+                binding.scene_id,
+                binding.scene_incarnation_id,
+                serde_json::to_value(binding.compatibility_marker)?
+                    .as_str()
+                    .unwrap_or_default(),
+                serde_json::to_string(&binding.query_identity)?,
+                serde_json::to_string(&binding.material_constraint)?,
+                serde_json::to_string(&binding.knowledge_holder)?,
+                serde_json::to_string(&binding.audience)?,
+                binding.version,
+                binding.source_token,
+                binding.updated_at,
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 fn fixture_db() -> Database {
@@ -183,6 +341,29 @@ fn fixture_db() -> Database {
                  'a0', '{"type":"doc","content":[]}', 0,
                  '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z');"#,
         )?;
+        let registry = json!({
+            "registryVersion": NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID,
+            "timelineRefs": [],
+            "worldlineRefs": [],
+            "narrativeLayerRefs": [],
+        });
+        conn.execute(
+            "INSERT INTO narrative_scope_registries
+                (project_id, registry_version, timeline_refs_json, worldline_refs_json,
+                 narrative_layer_refs_json, version, source_token, updated_at)
+             VALUES (?1, ?2, '[]', '[]', '[]', 1, ?3, ?4)",
+            params![
+                PROJECT_ID,
+                NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID,
+                digest(json!({
+                    "contractId": NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID,
+                    "registry": registry,
+                    "version": 1,
+                })),
+                CREATED_AT,
+            ],
+        )?;
+        seed_scope_bindings(conn)?;
         conn.execute(
             "INSERT INTO narrative_extraction_runs
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -467,7 +648,7 @@ fn empty_folder_structural_changes_do_not_false_stale_the_project_aggregate_edge
 }
 
 #[test]
-fn body_and_display_metadata_do_not_touch_the_project_aggregate_edge() {
+fn body_and_display_metadata_invalidate_the_project_aggregate_edge_generation() {
     for (case, field, value) in [
         ("title", "title", json!("Renamed only")),
         (
@@ -486,12 +667,17 @@ fn body_and_display_metadata_do_not_touch_the_project_aggregate_edge() {
             .expect("patch a non-authority field through the real tree writer");
 
         let summary = run_cycle(&db);
+        assert_eq!(summary.affected_edge_count, 1, "{field}");
+        assert_eq!(summary.affected_consumer_count, 1, "{field}");
         assert_eq!(
-            summary.affected_edge_count, 0,
-            "{field} is outside the project Scope/Order authority"
+            edge_state(&db),
+            Some((
+                "stale".to_owned(),
+                Some("source-revision-changed".to_owned()),
+                "rebuild-required".to_owned(),
+            )),
+            "{field} changes the Native tree source generation"
         );
-        assert_eq!(summary.affected_consumer_count, 0, "{field}");
-        assert_eq!(edge_state(&db), None, "{field} must not publish Freshness");
     }
 }
 
@@ -649,7 +835,7 @@ fn project_scope_source_key_must_match_edge_project_exactly() {
 }
 
 #[test]
-fn archive_then_unarchive_populated_folder_routes_feed_and_restores_the_baseline_token() {
+fn archive_then_unarchive_populated_folder_does_not_restore_the_old_generation() {
     let db = fixture_db();
 
     tree_node_patch(
@@ -685,8 +871,12 @@ fn archive_then_unarchive_populated_folder_routes_feed_and_restores_the_baseline
     assert_eq!(unarchived.affected_consumer_count, 1);
     assert_eq!(
         edge_state(&db),
-        Some(("fresh".to_owned(), None, "none".to_owned())),
-        "unarchiving restores the subtree and independently held baseline token"
+        Some((
+            "stale".to_owned(),
+            Some("source-revision-changed".to_owned()),
+            "rebuild-required".to_owned(),
+        )),
+        "unarchiving restores the subtree but not the old Native generation"
     );
 }
 

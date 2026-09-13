@@ -54,6 +54,62 @@ impl Drop for Fixture {
     }
 }
 
+struct MultiCandidateFixture {
+    db: Database,
+    path: PathBuf,
+    manifest: Value,
+}
+
+impl MultiCandidateFixture {
+    fn new() -> Self {
+        let mut bytes = Vec::new();
+        GzDecoder::new(
+            include_bytes!("../../../tests/support/nir1-two-window-cold.db.gz").as_slice(),
+        )
+        .read_to_end(&mut bytes)
+        .expect("two-window cold fixture");
+        let path =
+            std::env::temp_dir().join(format!("nir1-source-two-window-{}.db", uuid::Uuid::new_v4()));
+        std::fs::write(&path, bytes).expect("private two-window fixture copy");
+        let db = Database::new(&path).expect("private two-window fixture through Database");
+        db.migrate().expect("migrate two-window fixture");
+        Self {
+            db,
+            path,
+            manifest: serde_json::from_str(include_str!(
+                "../../../tests/support/nir1-two-window-cold.json"
+            ))
+            .expect("two-window provenance"),
+        }
+    }
+
+    fn project(&self) -> &str {
+        self.manifest["projectId"].as_str().expect("project")
+    }
+
+    fn approved_revisions(&self) -> Vec<String> {
+        self.manifest["normalApprovedChildren"]
+            .as_array()
+            .expect("approved children")
+            .iter()
+            .map(|child| child["revisionId"].as_str().expect("revision").to_owned())
+            .collect()
+    }
+
+    fn roster_len(&self) -> usize {
+        let project = self.project().to_owned();
+        self.db
+            .with_read_transaction(|tx| Ok(read_eligibility_source(tx, &project)?.revisions.len()))
+            .expect("roster")
+    }
+}
+
+impl Drop for MultiCandidateFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 #[test]
 fn nir1_eligibility_source_is_deterministic_and_not_freshness_authority() {
     let f = Fixture::new();
@@ -160,7 +216,7 @@ fn nir1_compact_build_admission_matches_the_cold_reader_for_each_scene() {
             RevisionEligibilityRead,
         },
     };
-    let f = Fixture::new();
+    let f = MultiCandidateFixture::new();
     let project_id = f.project().to_owned();
     f.db
         .with_read_transaction(|tx| {
@@ -170,9 +226,7 @@ fn nir1_compact_build_admission_matches_the_cold_reader_for_each_scene() {
                 &format!("project:scope-authority:{project_id}"),
             )
             .expect("live scope");
-            let revisions = read_eligibility_source(tx, &project_id)
-                .expect("roster")
-                .revisions;
+            let revisions = f.approved_revisions();
             let mut material_source_keys = Vec::new();
             for revision in &revisions {
                 if let MaterialMembershipRead::Complete(membership) =

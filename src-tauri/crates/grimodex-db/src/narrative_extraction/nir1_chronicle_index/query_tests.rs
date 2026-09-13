@@ -1,4 +1,8 @@
 use super::{test_support::Fixture, *};
+use crate::narrative_extraction::{
+    read_narrative_scene_scope, update_narrative_scene_scope, NarrativeSceneScopeUpdatePayload,
+};
+use grimodex_core::narrative_scene_scope::NarrativeScopeConstraintV1;
 
 fn publish(f: &Fixture) {
     let (plan, docs) = f.prepare();
@@ -224,6 +228,92 @@ fn nir1_human_withdrawal_invalidates_held_result_and_click_before_rebuild() {
         Ok(())
     })
     .expect("one invalidation, no stale click");
+}
+
+#[test]
+fn nir1_scene_scope_mutation_rejects_held_snapshot_batch_result_and_evidence_before_rebuild() {
+    let f = Fixture::new();
+    publish(&f);
+    let s1 = f.manifest["s1"].as_str().expect("S1");
+    let s2 = f.manifest["s2"].as_str().expect("S2");
+    let snapshot = captured(&f, s2);
+    let batch = f
+        .db
+        .with_read_transaction(|conn| {
+            let NirQualifiedRead::Qualified(batch) =
+                qualify_chronicle_index_snapshot(conn, &f.runtime, &snapshot)?
+            else {
+                panic!("baseline query snapshot qualifies");
+            };
+            assert_eq!(batch.documents().len(), 2);
+            assert!(validate_chronicle_query_status_snapshot(
+                conn, &f.runtime, &snapshot
+            )?);
+            assert!(validate_chronicle_query_snapshot(conn, &f.runtime, &batch)?);
+            assert!(validate_chronicle_bound_batch(
+                conn, &f.runtime, &snapshot, &batch
+            )?);
+            Ok(batch)
+        })
+        .expect("baseline held query result");
+    let handle = batch.documents()[0].evidence_handles()[0].clone();
+    assert!(!handle.excerpt().is_empty());
+    assert!(!batch.documents()[0].embedding().is_empty());
+
+    let current = f
+        .db
+        .with_read_transaction(|conn| read_narrative_scene_scope(conn, f.project(), s1))
+        .expect("read Native scene scope before mutation");
+    let mut scope = super::super::scene_scope::NarrativeSceneScopeUpdateV1 {
+        schema_version: current.binding.schema_version,
+        compatibility_marker: current.binding.compatibility_marker,
+        query_identity: current.binding.query_identity.clone(),
+        material_constraint: current.binding.material_constraint.clone(),
+        knowledge_holder: current.binding.knowledge_holder.clone(),
+        audience: current.binding.audience.clone(),
+    };
+    scope.material_constraint.worldline = NarrativeScopeConstraintV1::Exact {
+        reference: "worldline:prime".to_owned(),
+    };
+    update_narrative_scene_scope(
+        &f.db,
+        NarrativeSceneScopeUpdatePayload {
+            project_id: f.project().to_owned(),
+            scene_id: s1.to_owned(),
+            request_id: "nir1-held-scope-mutation".to_owned(),
+            session_id: "nir1-query-test".to_owned(),
+            event_uid: "nir1-held-scope-mutation-event".to_owned(),
+            base_version: current.binding.version,
+            updated_at: "2026-09-14T00:00:00.000Z".to_owned(),
+            scope,
+        },
+    )
+    .expect("Native material scope mutation");
+
+    f.db
+        .with_read_transaction(|conn| {
+            assert!(matches!(
+                qualify_chronicle_index_snapshot(conn, &f.runtime, &snapshot)?,
+                NirQualifiedRead::Unavailable {
+                    reason: NirIndexUnavailableReason::QueryUnavailable
+                }
+            ));
+            assert!(!validate_chronicle_query_status_snapshot(
+                conn, &f.runtime, &snapshot
+            )?);
+            assert!(!validate_chronicle_query_snapshot(conn, &f.runtime, &batch)?);
+            assert!(!validate_chronicle_bound_batch(
+                conn, &f.runtime, &snapshot, &batch
+            )?);
+            assert!(matches!(
+                read_chronicle_evidence_navigation(conn, &f.runtime, &handle)?,
+                NirEvidenceNavigationRead::Unavailable {
+                    reason: NirIndexUnavailableReason::EvidenceUnavailable
+                }
+            ));
+            Ok(())
+        })
+        .expect("held scope capability is rejected before rebuild");
 }
 
 #[test]

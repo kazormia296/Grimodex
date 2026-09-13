@@ -1084,11 +1084,12 @@ pub(crate) fn invalidate_character_references_with_events_in_tx(
                 )
               ORDER BY scene_id",
         )?;
-        statement
+        let scene_ids = statement
             .query_map(params![project_id, character_id], |row| {
                 row.get::<_, String>(0)
             })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        scene_ids
     };
     let mut events = Vec::new();
     for scene_id in scene_ids {
@@ -1895,6 +1896,26 @@ pub(crate) fn check_material_constraints(
                 narrative_scene_scope::NarrativeScopeConstraintV1::Unresolved { .. } => false,
             };
             if !matches {
+                return Some(
+                    super::retrieval_admission::RevisionEligibilityReason::ScopeUnsupported,
+                );
+            }
+        }
+        for (principal, identity) in [
+            (&scope.knowledge_holder, &query.knowledge_holder),
+            (&scope.audience, &query.audience),
+        ] {
+            let expected = match principal {
+                NarrativeScopePrincipalV1::Reader {} => "reader".to_owned(),
+                NarrativeScopePrincipalV1::Character { reference } => {
+                    format!("character:{reference}")
+                }
+            };
+            if !matches!(
+                identity,
+                super::retrieval_admission::QueryIdentityState::Resolved(value)
+                    if value == &expected
+            ) {
                 return Some(
                     super::retrieval_admission::RevisionEligibilityReason::ScopeUnsupported,
                 );

@@ -3402,13 +3402,13 @@ mod tests {
             .expect("corrupt missing principal reference");
         let missing_before = missing_db
             .with_conn(|conn| {
-                conn.query_row(
+                Ok(conn.query_row(
                     "SELECT knowledge_holder_json, version, source_token
                        FROM narrative_scene_scope_bindings
                       WHERE project_id = 'p1' AND scene_id = 't1'",
                     [],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
-                )
+                )?)
             })
             .expect("read missing-current corruption");
         let missing_error = apply_project_snapshot_restore(
@@ -3461,13 +3461,13 @@ mod tests {
             .expect("corrupt current principal type");
         let type_before = type_db
             .with_conn(|conn| {
-                conn.query_row(
+                Ok(conn.query_row(
                     "SELECT knowledge_holder_json, version, source_token
                        FROM narrative_scene_scope_bindings
                       WHERE project_id = 'p1' AND scene_id = 't1'",
                     [],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
-                )
+                )?)
             })
             .expect("read type-current corruption");
         let type_error = apply_project_snapshot_restore(
