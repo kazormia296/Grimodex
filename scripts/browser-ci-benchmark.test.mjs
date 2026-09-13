@@ -473,7 +473,6 @@ test("Linux identity mismatch refuses process-group signaling", async () => {
   let identityCalls = 0;
   const child = fakeChild(42_424, () => true);
   let signaled = false;
-  setTimeout(() => child.emit("close", 0, null), 40);
   const result = await measureCommand(process.execPath, ["-e", ""], {
     timeoutMs: 10,
     stdio: "ignore",
@@ -483,13 +482,28 @@ test("Linux identity mismatch refuses process-group signaling", async () => {
     },
     runtime: {
       ...linuxRuntime(42_424),
-      readIdentity: async (pid) => ({
-        state: "alive",
-        identity: { pid, startTimeTicks: ++identityCalls === 1 ? 7 : 8 },
-        pgrp: pid,
-      }),
+      readIdentity: async (pid) => {
+        identityCalls += 1;
+        if (identityCalls === 2) {
+          queueMicrotask(() => child.emit("close", 0, null));
+        }
+        return {
+          state: "alive",
+          identity: { pid, startTimeTicks: identityCalls === 1 ? 7 : 8 },
+          pgrp: pid,
+        };
+      },
     },
   });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.terminationResult.attempted, true);
+  assert.ok(identityCalls >= 2);
+  assert.equal(result.terminationResult.actions.length, 1);
+  assert.equal(result.terminationResult.actions[0]?.identityVerified, false);
+  assert.match(
+    result.terminationResult.actions[0]?.error?.message ?? "",
+    /identity changed|refusing signal/,
+  );
   assert.equal(signaled, false);
   assert.equal(result.terminationResult.terminationVerified, false);
 });
