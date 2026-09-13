@@ -10,12 +10,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { SceneScopeEditor } from "./SceneScopeEditor";
-import type {
-  Constraint,
-  RegistryUpdate,
-  ScopeRead,
-  ScopeUpdate,
-} from "./sceneScopeTypes";
+import type { Constraint, ScopeRead, ScopeUpdate } from "./sceneScopeTypes";
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 
@@ -80,44 +75,6 @@ vi.mock("./SceneScopeFields", () => ({
   ),
 }));
 vi.mock("./SceneScopePrincipals", () => ({ SceneScopePrincipals: () => null }));
-vi.mock("./SceneScopeRegistryEditor", () => ({
-  SceneScopeRegistryEditor: ({
-    projectId,
-    sceneId,
-    workspacePath,
-    registry,
-    registryRevision,
-    onSaved,
-  }: {
-    projectId: string;
-    sceneId: string;
-    workspacePath: string;
-    registry: RegistryUpdate["registry"];
-    registryRevision: number;
-    onSaved: (update: RegistryUpdate) => void | Promise<void>;
-  }) => (
-    <div data-testid="scene-scope-registry-editor">
-      <button
-        type="button"
-        onClick={() => {
-          void Promise.resolve(
-            invokeMock("narrative_scene_scope_registry_update", {
-              expectedWorkspacePath: workspacePath,
-              payload: {
-                projectId,
-                sceneId,
-                baseVersion: registryRevision,
-                registry,
-              },
-            }),
-          ).then(onSaved);
-        }}
-      >
-        Save
-      </button>
-    </div>
-  ),
-}));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -327,7 +284,17 @@ describe("SceneScopeEditor request epochs", () => {
       .mockReturnValueOnce(retrySave.promise);
     render(<SceneScopeEditor node={node("scene-a")} />);
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
-    await act(async () => initialRead.resolve(scope("scene-a", 1)));
+    const initial = scope("scene-a", 1);
+    initial.registry.timelineRefs = ["timeline:main"];
+    await act(async () => initialRead.resolve(initial));
+
+    const registryEditor = screen.getByTestId("scene-scope-registry-editor");
+    const registryTimelineInput = within(registryEditor).getByRole("textbox", {
+      name: "Timeline ref 1",
+    });
+    fireEvent.change(registryTimelineInput, {
+      target: { value: "timeline:local-draft" },
+    });
 
     fireEvent.click(screen.getByTestId("scene-scope-test-edit"));
     fireEvent.click(screen.getByTestId("scene-scope-binding-save"));
@@ -344,6 +311,7 @@ describe("SceneScopeEditor request epochs", () => {
     fireEvent.click(screen.getByTestId("scene-scope-test-edit-pending"));
 
     const recovered = scope("scene-a", 2);
+    recovered.registry.timelineRefs = ["timeline:peer"];
     recovered.binding.materialConstraint.timeline = {
       kind: "exact",
       ref: "timeline:peer",
@@ -363,6 +331,13 @@ describe("SceneScopeEditor request epochs", () => {
     expect(
       screen.getByTestId("scene-scope-conflict-fresh").textContent,
     ).toContain("material.timeline=timeline:peer");
+    expect(
+      screen.getByTestId("scene-scope-conflict-fresh-registry").textContent,
+    ).toContain("timelineRefs=timeline:peer");
+    expect((registryTimelineInput as HTMLInputElement).value).toBe(
+      "timeline:local-draft",
+    );
+    expect(invokeMock.mock.calls).toHaveLength(3);
 
     fireEvent.click(screen.getByTestId("scene-scope-binding-save"));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(4));

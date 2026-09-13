@@ -56,6 +56,16 @@ function describeBindingScope(binding: Binding): string {
   ].join(" · ");
 }
 
+function describeRegistry(registry: ScopeRead["registry"]): string {
+  const describeRefs = (refs: string[]) =>
+    refs.length ? refs.join(",") : "none";
+  return [
+    `timelineRefs=${describeRefs(registry.timelineRefs)}`,
+    `worldlineRefs=${describeRefs(registry.worldlineRefs)}`,
+    `narrativeLayerRefs=${describeRefs(registry.narrativeLayerRefs)}`,
+  ].join(" · ");
+}
+
 /** Native-only editor for the small A1 scene-scope binding. */
 export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
   const { t } = useTranslation();
@@ -66,7 +76,9 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [conflictBinding, setConflictBinding] = useState<Binding | null>(null);
+  const [conflictSnapshot, setConflictSnapshot] = useState<ScopeRead | null>(
+    null,
+  );
   const requestEpoch = useRef(0);
   const draftRef = useRef<Binding | null>(null);
   const identityRef = useRef<SceneScopeIdentity>({
@@ -111,7 +123,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
         setRead(null);
         setDraft(null);
         setLoading(false);
-        setConflictBinding(null);
+        setConflictSnapshot(null);
       }
       return;
     }
@@ -121,7 +133,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
     setDraft(null);
     setLoading(true);
     setError(null);
-    setConflictBinding(null);
+    setConflictSnapshot(null);
     void invoke<ScopeRead>("narrative_scene_scope_read", {
       expectedWorkspacePath: workspacePath,
       projectId: node.projectId,
@@ -171,7 +183,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
       sameIdentity(identityRef.current, requestIdentity);
     setSaving(true);
     setError(null);
-    setConflictBinding(null);
+    setConflictSnapshot(null);
     const now = new Date().toISOString();
     void invoke<ScopeUpdate>("narrative_scene_scope_update", {
       expectedWorkspacePath: workspacePath,
@@ -197,7 +209,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
         if (!isCurrent()) return;
         setRead((current) => (current ? { ...current, ...value } : current));
         setDraft(value.binding);
-        setConflictBinding(null);
+        setConflictSnapshot(null);
       })
       .catch((cause: unknown) => {
         if (!isCurrent()) return;
@@ -212,7 +224,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
           return;
         }
         setLoading(true);
-        setConflictBinding(null);
+        setConflictSnapshot(null);
         void invoke<ScopeRead>("narrative_scene_scope_read", {
           expectedWorkspacePath: requestIdentity.workspacePath,
           projectId: requestIdentity.projectId,
@@ -223,8 +235,20 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
             // Adopt only Native's current OCC identity. Keep every local
             // scope field so a concurrent writer is never silently copied
             // over the user's unsaved draft.
-            setRead(fresh);
-            setConflictBinding(fresh.binding);
+            // This is binding-only recovery. Keep the existing registry object
+            // so the registry editor does not reset its unsaved local draft.
+            setRead((current) =>
+              current
+                ? {
+                    ...current,
+                    registryRevision: fresh.registryRevision,
+                    registrySourceToken: fresh.registrySourceToken,
+                    registryUpdatedAt: fresh.registryUpdatedAt,
+                    binding: fresh.binding,
+                  }
+                : fresh,
+            );
+            setConflictSnapshot(fresh);
             setDraft({
               ...fresh.binding,
               compatibilityMarker: preservedDraft.compatibilityMarker,
@@ -282,22 +306,31 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
         <div
           role="alert"
           className={
-            conflictBinding
+            conflictSnapshot
               ? "rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-950 dark:text-amber-100"
               : "text-[10px] text-destructive"
           }
         >
           <div>{error}</div>
-          {conflictBinding && (
+          {conflictSnapshot && (
             <div
               data-testid="scene-scope-conflict-fresh"
               className="mt-1 break-words"
             >
-              {t(
-                "editor.sceneDetail.scopeConflictCurrent",
-                "Current Native scope",
-              )}
-              : {describeBindingScope(conflictBinding)}
+              <div>
+                {t(
+                  "editor.sceneDetail.scopeConflictCurrent",
+                  "Current Native scope",
+                )}
+                : {describeBindingScope(conflictSnapshot.binding)}
+              </div>
+              <div data-testid="scene-scope-conflict-fresh-registry">
+                {t(
+                  "editor.sceneDetail.scopeConflictCurrentRegistry",
+                  "Current Native registry",
+                )}
+                : {describeRegistry(conflictSnapshot.registry)}
+              </div>
             </div>
           )}
         </div>
