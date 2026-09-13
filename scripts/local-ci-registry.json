@@ -773,7 +773,7 @@
           "id": "c2zc.rust-acceptance",
           "after": ["rust.supervisor-failpoints"],
           "lane": "cargo-shared",
-          "slots": 2,
+          "slots": 12,
           "timeoutMs": 240000,
           "env": {
             "CARGO_BUILD_JOBS": "2",

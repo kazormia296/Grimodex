@@ -4073,7 +4073,7 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
   const c2Task = tasksById.get("c2zc.rust-acceptance");
   assert.equal(rustTestsTask.lane, c2Task.lane);
   assert.deepEqual(c2Task.after, ["rust.supervisor-failpoints"]);
-  assert.equal(c2Task.slots, 2);
+  assert.equal(c2Task.slots, registry.maxSlots);
   assert.equal(c2Task.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
   assert.equal(c2Task.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
   assert.equal(c2Task.command.env.CARGO_BUILD_JOBS, "2");
