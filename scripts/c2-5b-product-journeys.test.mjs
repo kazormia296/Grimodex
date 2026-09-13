@@ -2077,6 +2077,148 @@ test("restore fixture backup readiness reads the online backup snapshot, not the
   }
 });
 
+test("restore fixture backup contract serializes and preserves evidence reads", async () => {
+  const source = await readFile(
+    new URL(
+      "../electron/scripts/narrative-maintenance-product-journeys.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const contractBody = source.match(
+    /export async function readRestoreFixtureBackupContract[\s\S]*?\n}\n\nasync function readRunSnapshot/,
+  )?.[0];
+  assert.ok(contractBody, "restore backup contract must remain inspectable");
+  assert.equal(
+    contractBody.match(/await readRunSnapshotQuery\(/g)?.length,
+    5,
+    "each backup evidence query must be awaited individually",
+  );
+  assert.doesNotMatch(
+    contractBody,
+    /Promise\.all\(/,
+    "backup evidence queries must not overlap on one WAL database",
+  );
+
+  await execFile("sqlite3", ["--version"]);
+  const root = await mkdtemp(path.join(tmpdir(), "c2-5b-backup-contract-"));
+  const workspace = path.join(root, "workspace");
+  const databasePath = path.join(workspace, "grimodex.db");
+  const backupName = "restore-fixture.db";
+  const backupPath = path.join(workspace, "backups", backupName);
+  const projectId = "project-backup-contract";
+  try {
+    await mkdir(path.dirname(backupPath), { recursive: true });
+    await execFile("sqlite3", [
+      databasePath,
+      `
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE schema_data_migrations (
+          migration_id TEXT, contract_version TEXT, applied_at TEXT
+        );
+        CREATE TABLE narrative_semantic_epochs (
+          id TEXT, project_id TEXT, epoch_number INTEGER, reason TEXT, created_at TEXT
+        );
+        CREATE TABLE narrative_extraction_runs (
+          id TEXT, project_id TEXT, run_kind TEXT, work_key TEXT, status TEXT,
+          semantic_epoch_id TEXT, consumer_id TEXT, created_at TEXT, started_at TEXT,
+          completed_at TEXT, spec_json TEXT, terminal_reason_code TEXT,
+          outcome_summary_json TEXT, spec_digest TEXT, catalog_digest TEXT,
+          registry_digest TEXT
+        );
+        CREATE TABLE narrative_extraction_tasks (
+          id TEXT, run_id TEXT, task_kind TEXT, status TEXT, input_json TEXT,
+          attempt_count INTEGER, created_at TEXT, started_at TEXT, completed_at TEXT
+        );
+        CREATE TABLE narrative_extraction_attempts (
+          id TEXT, task_id TEXT, attempt_number INTEGER, started_at TEXT,
+          status TEXT, failure_code TEXT, completed_at TEXT
+        );
+        CREATE TABLE narrative_dependency_edges (
+          id TEXT, project_id TEXT, consumer_kind TEXT, consumer_key TEXT,
+          source_object_identity TEXT, read_set_json TEXT,
+          generated_by_transaction_id TEXT, created_at TEXT, owning_run_id TEXT
+        );
+        CREATE TABLE narrative_dependency_edge_states (
+          edge_id TEXT, project_id TEXT
+        );
+        CREATE TABLE narrative_consumer_freshness (
+          project_id TEXT, consumer_kind TEXT, consumer_key TEXT
+        );
+        INSERT INTO schema_data_migrations VALUES
+          ('narrative-c2-canonical-freshness-v1', 'v1', '2026-09-13T00:00:00Z');
+        INSERT INTO narrative_semantic_epochs VALUES
+          ('epoch-1', '${projectId}', 0, 'initial', '2026-09-13T00:00:01Z');
+        INSERT INTO narrative_extraction_runs VALUES
+          ('run-1', '${projectId}', 'backfill', 'restore', 'completed', 'epoch-1',
+           'consumer-1', '2026-09-13T00:00:02Z', '2026-09-13T00:00:02Z',
+           '2026-09-13T00:00:03Z', '{}', NULL, '{}', 'spec', 'catalog', 'registry');
+        INSERT INTO narrative_extraction_tasks VALUES
+          ('task-1', 'run-1', 'legacy-backfill', 'completed', '{}', 1,
+           '2026-09-13T00:00:02Z', '2026-09-13T00:00:02Z', '2026-09-13T00:00:03Z');
+        INSERT INTO narrative_extraction_attempts VALUES
+          ('attempt-1', 'task-1', 1, '2026-09-13T00:00:02Z', 'completed', NULL,
+           '2026-09-13T00:00:03Z');
+        INSERT INTO narrative_dependency_edges VALUES
+          ('edge-1', '${projectId}', 'narrative-extraction-run', 'consumer-1',
+           'project:scene:source', '[{"token":"token-1"}]', 'tx-1',
+           '2026-09-13T00:00:03Z', 'run-1');
+        INSERT INTO narrative_dependency_edge_states VALUES ('edge-1', '${projectId}');
+        INSERT INTO narrative_consumer_freshness VALUES
+          ('${projectId}', 'narrative-extraction-run', 'consumer-1');
+      `,
+    ]);
+    await execFile("sqlite3", [
+      databasePath,
+      `.backup '${backupPath.replaceAll("'", "''")}'`,
+    ]);
+
+    const readBackupContract =
+      narrativeMaintenanceProductJourneys.readRestoreFixtureBackupContract;
+    assert.equal(typeof readBackupContract, "function");
+    const contract = await readBackupContract(
+      workspace,
+      backupName,
+      projectId,
+      {
+        edgeId: "edge-1",
+        consumerKey: "consumer-1",
+        fixtureOperations: { edgeInsert: "insert-1", gapDelete: "delete-1" },
+      },
+    );
+    assert.deepEqual(contract.marker, {
+      migrationId: "narrative-c2-canonical-freshness-v1",
+      contractVersion: "v1",
+      appliedAt: "2026-09-13T00:00:00Z",
+    });
+    assert.equal(contract.epochs[0].id, "epoch-1");
+    assert.equal(contract.backfillRuns[0].id, "run-1");
+    assert.equal(contract.backfillRuns[0].attemptCount, 1);
+    assert.equal(contract.edge.id, "edge-1");
+    assert.deepEqual(contract.derivedState, {
+      edgeCount: 1,
+      edgeStateCount: 1,
+      freshnessCount: 1,
+    });
+    assert.deepEqual(contract.fixtureOperations, {
+      edgeInsert: "insert-1",
+      gapDelete: "delete-1",
+    });
+
+    await execFile("sqlite3", [backupPath, "DROP TABLE schema_data_migrations;"]);
+    await assert.rejects(
+      readBackupContract(workspace, backupName, projectId, {
+        edgeId: "edge-1",
+        consumerKey: "consumer-1",
+      }),
+      /restore fixture backup contract requires sqlite3:.*no such table: schema_data_migrations/s,
+      "the first failed evidence read must stop and preserve the wrapped error",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("restore fixture requires a typed completed legacy Backfill boundary", async () => {
   const source = await readFile(
     new URL(
