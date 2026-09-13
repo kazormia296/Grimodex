@@ -496,18 +496,28 @@ test("Linux identity mismatch refuses process-group signaling", async () => {
 
 test("final process scan settles when its reader never resolves", async () => {
   let scans = 0;
+  const killCalls = [];
   const child = fakeChild(51_000, () => true);
-  setTimeout(() => child.emit("close", 0, null), 40);
   const started = Date.now();
   const result = await measureCommand(process.execPath, ["-e", ""], {
     platform: "linux",
-    spawn: () => child,
+    spawn: () => {
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
     stdio: "ignore",
-    runtime: linuxRuntime(51_000, async () => {
-      scans += 1;
-      return scans === 1 ? [] : new Promise(() => {});
-    }),
+    runtime: {
+      ...linuxRuntime(51_000, async () => {
+        scans += 1;
+        return scans === 1 ? [] : new Promise(() => {});
+      }),
+      kill: (...args) => killCalls.push(args),
+    },
   });
+  assert.equal(result.childClose.observed, true);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.terminationResult.attempted, false);
+  assert.deepEqual(killCalls, []);
   assert.equal(result.finalSampleTimedOut, true);
   assert.ok(Date.now() - started < 5_800);
 });
