@@ -3177,6 +3177,60 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
     foregroundJourneyBody,
     "foreground workspace-wake journey caller must remain inspectable",
   );
+  const settlePrimaryBody = foregroundJourneyBody.match(
+    /const settledPrimary = [\s\S]*?(?=\n  const settledPostFreshness =)/,
+  )?.[0];
+  assert.ok(
+    settlePrimaryBody,
+    "settle-primary setup must remain an inspectable launch block",
+  );
+  assert.match(
+    settlePrimaryBody ?? "",
+    /setup:\s*NARRATIVE_MAINTENANCE_SEAM_CONTRACT\.setupDisabledValue/,
+    "settle-primary must use the owner-gated setup-disabled seam while seeding the scene",
+  );
+  assert.match(
+    settlePrimaryBody ?? "",
+    /ownerToken:\s*NARRATIVE_MAINTENANCE_OWNER_TOKEN/,
+    "settle-primary setup must remain owner-gated",
+  );
+  assert.match(
+    settlePrimaryBody ?? "",
+    /sceneCreationBaseline = await readRunLedgerSnapshot\(workspaceB\);[\s\S]*?await createSceneIfNeeded\(settledContext, "foreground-primary-settled"\);[\s\S]*?settledContext\.record\("foreground-primary-settled"/,
+    "setup-disabled settle-primary must baseline, seed, then record",
+  );
+  assert.doesNotMatch(
+    settlePrimaryBody ?? "",
+    /waitForReadiness\(/,
+    "setup-disabled settle-primary must not wait on disabled maintenance",
+  );
+  const postFreshnessBody = foregroundJourneyBody.match(
+    /const settledPostFreshness = [\s\S]*?(?=\n  \/\/ Capture A before)/,
+  )?.[0];
+  assert.ok(
+    postFreshnessBody,
+    "settle-post-freshness must remain an inspectable launch block",
+  );
+  assert.match(
+    postFreshnessBody ?? "",
+    /ownerToken:\s*NARRATIVE_MAINTENANCE_OWNER_TOKEN/,
+    "settle-post-freshness must remain owner-gated",
+  );
+  assert.doesNotMatch(
+    postFreshnessBody ?? "",
+    /setup:/,
+    "settle-post-freshness must reopen the normal setup path",
+  );
+  assert.match(
+    postFreshnessBody ?? "",
+    /waitForRunSequence\([\s\S]*?foreground primary post-freshness Verify/s,
+    "settle-post-freshness must own the Freshness -> Verify wait",
+  );
+  assert.match(
+    postFreshnessBody ?? "",
+    /waitForStableLedger\([\s\S]*?foreground primary post-freshness ledger stable/s,
+    "settle-post-freshness must own the stable-ledger wait",
+  );
   assert.match(
     foregroundJourneyBody,
     /harness\.launch\(`\$\{id\}\/settle-primary`\)/,
