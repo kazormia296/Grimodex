@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
@@ -40,8 +41,6 @@ const repoRoot = path.resolve(
 );
 const metricsPath =
   ".artifacts/electron-runtime-performance/runtime-metrics.json";
-const RUNTIME_EVIDENCE_RUN_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const RUNTIME_EVIDENCE_RUN_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 async function read(relativePath) {
   return readFile(path.join(repoRoot, relativePath), "utf8");
@@ -96,8 +95,9 @@ test("local CI runtime evidence stays isolated across run-scoped benchmark outpu
     ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/runtime-metrics.json",
   ]);
 
-  const runRoots = [RUNTIME_EVIDENCE_RUN_A, RUNTIME_EVIDENCE_RUN_B].map(
-    (runId) => path.join(repoRoot, ".artifacts", "local-ci", "runs", runId),
+  const runIds = [randomUUID(), randomUUID()];
+  const runRoots = runIds.map((runId) =>
+    path.join(repoRoot, ".artifacts", "local-ci", "runs", runId),
   );
   t.after(() =>
     Promise.all(
@@ -142,7 +142,7 @@ test("local CI runtime evidence stays isolated across run-scoped benchmark outpu
     return { benchmarkCommand, result, written };
   };
 
-  const first = await executeRun(RUNTIME_EVIDENCE_RUN_A, "run-a", 1);
+  const first = await executeRun(runIds[0], "run-a", 1);
   assert.equal(first.result.status, "failed");
   const firstBytes = new Map(
     await Promise.all(
@@ -152,7 +152,7 @@ test("local CI runtime evidence stays isolated across run-scoped benchmark outpu
       ]),
     ),
   );
-  const second = await executeRun(RUNTIME_EVIDENCE_RUN_B, "run-b", 0);
+  const second = await executeRun(runIds[1], "run-b", 0);
   assert.equal(second.result.status, "passed");
 
   for (const [filePath, bytes] of firstBytes) {
@@ -177,8 +177,8 @@ test("local CI runtime evidence stays isolated across run-scoped benchmark outpu
   );
 
   for (const [runId, expectedRoot, execution] of [
-    [RUNTIME_EVIDENCE_RUN_A, runRoots[0], first],
-    [RUNTIME_EVIDENCE_RUN_B, runRoots[1], second],
+    [runIds[0], runRoots[0], first],
+    [runIds[1], runRoots[1], second],
   ]) {
     const output = path.join(
       ".artifacts",
