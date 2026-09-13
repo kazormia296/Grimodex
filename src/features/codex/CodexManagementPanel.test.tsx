@@ -93,6 +93,14 @@ vi.mock("./search", () => ({
   searchCodexEntries: vi.fn(() => Promise.resolve([])),
 }));
 
+// loadEntries loads type rows in parallel, and the panel initializes builtin
+// types on mount. Keep both DB APIs resolved so this UI test never starts the
+// real browser DB or leaves a pending mount load for the next test.
+vi.mock("./typeApi", () => ({
+  ensureBuiltinTypes: vi.fn(() => Promise.resolve()),
+  listCodexTypes: vi.fn(() => Promise.resolve([])),
+}));
+
 import { listCodexEntries, updateCodexEntry } from "./api";
 const mockListCodexEntries = vi.mocked(listCodexEntries);
 const mockUpdateCodexEntry = vi.mocked(updateCodexEntry);
