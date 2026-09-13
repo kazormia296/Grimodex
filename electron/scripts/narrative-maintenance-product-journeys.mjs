@@ -4211,7 +4211,10 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
   });
 
   const settledPrimary = await withLaunchEnvironment(
-    { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
+    {
+      setup: NARRATIVE_MAINTENANCE_SEAM_CONTRACT.setupDisabledValue,
+      ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+    },
     () => harness.launch(`${id}/settle-primary`),
   );
   let sceneCreationBaseline;
@@ -4222,14 +4225,11 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       workspaceB,
       id,
     );
-    // An empty setup-disabled workspace has no Freshness Run to satisfy the
-    // readiness contract. Seed the ordinary B authoring Source before the
-    // barrier; this launch is outside the foreground marker seam.
+    // This setup-disabled launch cannot satisfy the readiness contract. Keep
+    // it limited to the ordinary B scene seed before the barrier; the normal
+    // post-freshness reopen below owns all Freshness -> Verify settlement.
     sceneCreationBaseline = await readRunLedgerSnapshot(workspaceB);
     await createSceneIfNeeded(settledContext, "foreground-primary-settled");
-    await waitForReadiness(settledContext, "foreground primary settled", {
-      requireMaintenanceSettled: true,
-    });
     settledContext.record("foreground-primary-settled", {
       workspace: workspaceB,
     });
