@@ -34,8 +34,16 @@ export function parsePerformanceBenchmarkArguments(argv) {
   let outputPath = null;
   let reviewFixtureId = null;
   let retryTransientOnce = false;
+  let delimiterSeen = false;
   for (let index = 2; index < argv.length; index += 1) {
     const argument = argv[index];
+    if (argument === "--") {
+      if (delimiterSeen) {
+        throw new Error("-- may only be specified once");
+      }
+      delimiterSeen = true;
+      continue;
+    }
     if (argument === "--retry-transient-once") {
       if (retryTransientOnce) {
         throw new Error("--retry-transient-once may only be specified once");
@@ -83,6 +91,21 @@ export function buildPerformanceBenchmarkInvocation(
   return { smokeEnvironment, budgetArguments };
 }
 
+export function prepareRuntimePerformanceArtifacts(metricsPath) {
+  const attemptPaths = buildRuntimePerformanceAttemptPaths(metricsPath);
+  const evidencePaths = [
+    ...Object.values(attemptPaths),
+    ...Object.values(attemptPaths).map(
+      buildRuntimePerformanceTimeoutArtifactPath,
+    ),
+  ];
+  mkdirSync(path.dirname(attemptPaths.canonical), { recursive: true });
+  for (const evidencePath of evidencePaths) {
+    rmSync(evidencePath, { force: true });
+  }
+  return attemptPaths;
+}
+
 export function runPerformanceBenchmark(argv = process.argv) {
   let options;
   try {
@@ -108,18 +131,7 @@ export function runPerformanceBenchmark(argv = process.argv) {
     : mkdtempSync(path.join(os.tmpdir(), "grimodex-electron-perf-"));
   const metricsPath =
     options.outputPath ?? path.join(temporaryDirectory, "metrics.json");
-  mkdirSync(path.dirname(metricsPath), { recursive: true });
-  const attemptPaths = buildRuntimePerformanceAttemptPaths(metricsPath);
-  for (const candidate of Object.values(attemptPaths)) {
-    rmSync(candidate, { force: true });
-  }
-  for (const candidate of [
-    buildRuntimePerformanceTimeoutArtifactPath(metricsPath),
-    buildRuntimePerformanceTimeoutArtifactPath(attemptPaths.firstEvidence),
-    buildRuntimePerformanceTimeoutArtifactPath(attemptPaths.secondEvidence),
-  ]) {
-    rmSync(candidate, { force: true });
-  }
+  const attemptPaths = prepareRuntimePerformanceArtifacts(metricsPath);
   const smokePath = path.join(rootDir, "electron", "scripts", "smoke.mjs");
   const budgetPath = path.join(
     rootDir,

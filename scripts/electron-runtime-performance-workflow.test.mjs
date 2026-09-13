@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,6 +12,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import yaml from "js-yaml";
 
 import { closeElectronAppWithDiagnostics } from "../electron/scripts/close-electron-app.mjs";
+import { prepareRuntimePerformanceArtifacts } from "../electron/scripts/performance-benchmark.mjs";
+import { buildRuntimePerformanceAttemptPaths } from "../electron/scripts/runtime-performance-retry.mjs";
 import {
   RUNTIME_PERFORMANCE_RAF_CALIBRATION_SAMPLE_COUNT,
   buildRuntimePerformanceSmokeInvocation,
@@ -29,6 +32,7 @@ import {
   terminateOwnedProcessTree,
 } from "../electron/scripts/performance-harness.mjs";
 import * as runtimePerformanceHarness from "../electron/scripts/performance-harness.mjs";
+import { buildLocalCiPlan, runLocalCiInvocationTasks } from "./local-ci.mjs";
 import { DEFAULT_RUNTIME_BUDGETS } from "./runtime-performance-budget.mjs";
 
 const repoRoot = path.resolve(
@@ -49,6 +53,16 @@ function allRunCommands(job) {
     .join("\n");
 }
 
+function runtimeEvidencePaths(metricsPath) {
+  const attemptPaths = buildRuntimePerformanceAttemptPaths(metricsPath);
+  return [
+    ...Object.values(attemptPaths),
+    ...Object.values(attemptPaths).map(
+      buildRuntimePerformanceTimeoutArtifactPath,
+    ),
+  ];
+}
+
 test("package.json exposes deterministic Electron runtime performance contracts", async () => {
   const packageJson = JSON.parse(await read("package.json"));
 
@@ -60,6 +74,132 @@ test("package.json exposes deterministic Electron runtime performance contracts"
     packageJson.scripts["electron:perf:ci"],
     `node electron/scripts/performance-benchmark.mjs --retry-transient-once --output ${metricsPath}`,
   );
+});
+
+test("local CI runtime evidence stays isolated across run-scoped benchmark outputs", async (t) => {
+  const registry = JSON.parse(await read("scripts/local-ci-registry.json"));
+  const plan = buildLocalCiPlan(registry, {
+    profile: "full",
+    base: "origin/master",
+    head: "HEAD",
+    from: "electron-runtime-performance",
+  });
+  const plannedBenchmark = plan.stages[0].commands.find(
+    ({ id }) => id === "runtime.benchmark",
+  );
+  assert.ok(plannedBenchmark);
+  assert.deepEqual(plannedBenchmark.args, [
+    "electron:perf:ci",
+    "--",
+    "--output",
+    ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/runtime-metrics.json",
+  ]);
+
+  const runIds = [randomUUID(), randomUUID()];
+  const runRoots = runIds.map((runId) =>
+    path.join(repoRoot, ".artifacts", "local-ci", "runs", runId),
+  );
+  t.after(() =>
+    Promise.all(
+      runRoots.map((runRoot) => rm(runRoot, { recursive: true, force: true })),
+    ),
+  );
+
+  const executeRun = async (runId, marker, benchmarkExitCode) => {
+    const written = [];
+    let benchmarkCommand = null;
+    const result = await runLocalCiInvocationTasks(plan, {
+      root: repoRoot,
+      runId,
+      executeCommand: async (command) => {
+        if (command.args[0] !== "electron:perf:ci") {
+          return { cleanup: { complete: true }, durationMs: 1, exitCode: 0 };
+        }
+        benchmarkCommand = structuredClone(command);
+        const outputIndex = command.args.indexOf("--output");
+        assert.equal(command.args[outputIndex - 1], "--");
+        const outputPath = path.resolve(
+          repoRoot,
+          command.cwd,
+          command.args[outputIndex + 1],
+        );
+        prepareRuntimePerformanceArtifacts(outputPath);
+        const evidence = runtimeEvidencePaths(outputPath);
+        await Promise.all(
+          evidence.map((filePath, index) =>
+            writeFile(filePath, `${marker}-${index}\n`, "utf8"),
+          ),
+        );
+        written.push(...evidence);
+        return {
+          cleanup: { complete: true },
+          durationMs: 1,
+          exitCode: benchmarkExitCode,
+          signal: null,
+        };
+      },
+    });
+    return { benchmarkCommand, result, written };
+  };
+
+  const first = await executeRun(runIds[0], "run-a", 1);
+  assert.equal(first.result.status, "failed");
+  const firstBytes = new Map(
+    await Promise.all(
+      first.written.map(async (filePath) => [
+        filePath,
+        await readFile(filePath),
+      ]),
+    ),
+  );
+  const second = await executeRun(runIds[1], "run-b", 0);
+  assert.equal(second.result.status, "passed");
+
+  for (const [filePath, bytes] of firstBytes) {
+    assert.deepEqual(await readFile(filePath), bytes);
+  }
+  assert.ok(
+    first.written.every((filePath) =>
+      filePath.startsWith(`${runRoots[0]}${path.sep}`),
+    ),
+  );
+  assert.ok(
+    second.written.every((filePath) =>
+      filePath.startsWith(`${runRoots[1]}${path.sep}`),
+    ),
+  );
+  assert.ok(
+    !second.written.some((filePath) =>
+      filePath.includes(
+        path.join(".artifacts", "electron-runtime-performance"),
+      ),
+    ),
+  );
+
+  for (const [runId, expectedRoot, execution] of [
+    [runIds[0], runRoots[0], first],
+    [runIds[1], runRoots[1], second],
+  ]) {
+    const output = path.join(
+      ".artifacts",
+      "local-ci",
+      "runs",
+      runId,
+      "runtime-metrics.json",
+    );
+    assert.notEqual(output, metricsPath);
+    assert.equal(
+      output,
+      path.relative(repoRoot, path.join(expectedRoot, "runtime-metrics.json")),
+    );
+    assert.equal(execution.benchmarkCommand.command, "pnpm");
+    assert.deepEqual(execution.benchmarkCommand.args, [
+      "electron:perf:ci",
+      "--",
+      "--output",
+      output,
+    ]);
+  }
 });
 
 test("CI runs a fixed Linux Electron runtime gate and always publishes its evidence", async () => {
