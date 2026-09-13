@@ -689,6 +689,12 @@ function deliveryFailureReceiptAccepted(raw: unknown): boolean {
 
 const NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE =
   "NEX_MAINTENANCE_TRANSIENT";
+const NARRATIVE_VERIFY_GRAPH_STATE_CHANGED_FAILURE_CODE =
+  "NEX_VERIFY_GRAPH_STATE_CHANGED";
+
+function hasExactFailureCode(message: string | null, code: string): boolean {
+  return message === code || message?.startsWith(`${code}:`) === true;
+}
 
 function isCanonicalTransientFailure(error: unknown): boolean {
   const message =
@@ -698,9 +704,8 @@ function isCanonicalTransientFailure(error: unknown): boolean {
         ? error
         : null;
   return (
-    message === NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE ||
-    message?.startsWith(`${NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE}:`) ===
-      true
+    hasExactFailureCode(message, NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE) ||
+    hasExactFailureCode(message, NARRATIVE_VERIFY_GRAPH_STATE_CHANGED_FAILURE_CODE)
   );
 }
 

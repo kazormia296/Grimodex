@@ -157,6 +157,12 @@ fn transient_failures_retry_with_a_hard_bound_and_contract_failures_stop() {
     assert_eq!(transient.class, FailureClass::Transient);
     assert!(transient.retryable);
 
+    let graph_state_changed = classify_failure(
+        "NEX_VERIFY_GRAPH_STATE_CHANGED: graph state changed after Verify observed it; run Verify again",
+    );
+    assert_eq!(graph_state_changed.class, FailureClass::Transient);
+    assert!(graph_state_changed.retryable);
+
     let contract = classify_failure("NEX_VERIFY_NO_EPOCH: no Semantic Epoch");
     assert_eq!(contract.class, FailureClass::Contract);
     assert!(!contract.retryable);
