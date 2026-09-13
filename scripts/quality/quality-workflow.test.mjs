@@ -345,7 +345,7 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   );
 });
 
-test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime gated", async () => {
+test("NIR-1 preserves R0 history, records effective typed ratification, and keeps runtime gated", async () => {
   const executionPlan = await read("docs/plans/nir1-l6-l9-execution-plan.md");
   const roadmap = await read("docs/plans/narrative-semantic-core-roadmap.md");
   const integrationPlan = await read(
@@ -386,7 +386,7 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
   assert.doesNotMatch(
     executionPlan,
     /contract-delta-unresolved/,
-    "the selected typed family must be concrete; only its ratification remains",
+    "the selected typed family must be concrete; no contract delta remains unresolved",
   );
   assert.match(executionPlan, /accepted ADR009/);
   assert.match(executionPlan, /accepted ADR010/);
@@ -405,8 +405,8 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
   );
   assert.doesNotMatch(
     executionPlan,
-    /R0 records six|typed row is ready after R0 merge|(?:現在の|The current )R0 merge candidate|search-performance Hold|検索性能Hold|性能Hold/i,
-    "the execution plan must distinguish the pending ratification and Graph recheck",
+    /typed-ratification candidate|ratification PR|ratification[- ]merge|pending-typed-revision-material-ratification-merge|effective only when this ratification PR merges|becomes effective only when this ratification PR merges/i,
+    "the execution plan must not retain pre-merge typed-ratification state",
   );
   assert.doesNotMatch(executionPlan, /本書・既存計画のproducer/);
   for (const field of [
@@ -459,12 +459,12 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
         );
         assert.match(
           cells[4],
-          /pending.*proposal\/4 confirmation.*effective only when this ratification PR merges/,
+          /none.*proposal\/4 Option B.*explicitly ratified and effective.*implementation／acceptance remains dependency-gated/,
         );
-        assert.equal(cells[6], "pending-typed-revision-material-ratification-merge");
+        assert.equal(cells[6], "ready-after-R0-merge");
         assert.match(
           cells[7],
-          /exact user confirmation.*ratification PR must merge.*A1／D2a/,
+          /exact user confirmation.*A1／D2a／normal dependencies.*implementation／acceptance/,
         );
         assert.match(
           cells[8],
@@ -488,12 +488,12 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
   assert.equal(ledgerRows.length, 6);
   assert.equal(
     ledgerRows.filter((row) => row.includes("ready-after-R0-merge")).length,
-    5,
-    "only the five proposal/3 rows are effective after the R0 merge",
+    6,
+    "all six explicitly confirmed contract rows are effective after the R0 merge",
   );
   assert.match(
     executionPlan,
-    /R0.*proposal\/3の五つ.*typed-ratification candidate.*第六行.*このratification PRのmerge後/is,
+    /R0.*proposal\/3の五つ.*PR #579.*Option B.*第六行.*明示批准済み.*契約として有効.*A2はA1＋D2a/is,
   );
   assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/1/);
   assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/2/);
@@ -504,7 +504,7 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
   assert.ok(proposalSection, "R0 security contract proposal must be present");
   assert.match(
     proposalSection,
-    /proposal\/3五つのcontract row.*別ratification candidate.*Option Bのtyped row.*有効化されない/is,
+    /proposal\/3五つのcontract row.*PR #579.*Option Bのtyped row.*明示批准済み.*契約として有効/is,
   );
   for (const confirmationRule of [
     /Confirmation protocol.*only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that one row/is,
@@ -571,7 +571,7 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
       "Negative",
       "Recovery",
       contractId === "typed-revision-material"
-        ? "Lane unlocked after this ratification merges"
+        ? "Lane unlocked after normal dependencies"
         : "Lane unlocked if confirmed",
     ];
     for (const acceptanceField of acceptanceFields) {
@@ -748,7 +748,6 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
   );
   assert.match(executionPlan, /\| D2a \|[^|]*\| ready-after-R0-merge \|/);
   assert.match(executionPlan, /\| A1 \|[^|]*\| ready-after-R0-merge \|/);
-  const a2DependencyToken = "typed-revision-material-ratification-merge";
   const a2LaneRow = executionPlan
     .split("\n")
     .find((line) => line.startsWith("| A2 |"));
@@ -758,7 +757,7 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
     .slice(1, -1)
     .map((cell) => cell.trim());
   assert.equal(a2LaneCells.length, 4, "A2 lane row shape");
-  for (const dependency of ["A1", "D2a", "typed-revision-material"]) {
+  for (const dependency of ["A1", "D2a"]) {
     assert.match(
       a2LaneCells[1],
       new RegExp(escapeRegExp(dependency)),
@@ -767,10 +766,8 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
   }
   assert.match(
     a2LaneRow,
-    new RegExp(
-      `\\| A2 \\|[^|]*\\| ready-after-A1＋D2a＋${escapeRegExp(a2DependencyToken)} \\|`,
-    ),
-    "A2 lane status must include A1, D2a, and the typed ratification merge",
+    /\| A2 \|[^|]*\| ready-after-A1＋D2a \|/,
+    "A2 lane status must include only its ordinary feature dependencies",
   );
   const implementationOrder = executionPlan.split("## 実装順序と公開条件\n", 2)[1];
   assert.ok(implementationOrder, "implementation order must be present");
@@ -783,7 +780,7 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
     .slice(1, -1)
     .map((cell) => cell.trim());
   assert.equal(a2OrderCells.length, 4, "A2 implementation-order row shape");
-  for (const dependency of ["A1", "D2a", a2DependencyToken]) {
+  for (const dependency of ["A1", "D2a"]) {
     assert.match(
       a2OrderCells[2],
       new RegExp(escapeRegExp(dependency)),
@@ -797,16 +794,21 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
   const dependencyGraph = executionPlan.slice(mermaidStart, mermaidEnd);
   assert.match(
     dependencyGraph,
-    /TR\[typed-revision-material ratification merge\]/,
-    "dependency graph must name the separate typed ratification merge",
+    /A1 --> A2/,
+    "dependency graph must retain A1 as an A2 dependency",
   );
-  for (const dependencyEdge of [/A1 --> A2/, /D2a --> A2/, /TR --> A2/]) {
+  for (const dependencyEdge of [/D2a --> A2/]) {
     assert.match(
       dependencyGraph,
       dependencyEdge,
       `A2 dependency graph must include ${dependencyEdge}`,
     );
   }
+  assert.doesNotMatch(
+    dependencyGraph,
+    /TR|typed-revision-material ratification merge/,
+    "dependency graph must not add a ratification merge dependency",
+  );
   assert.match(
     executionPlan,
     /\| P \|[^|]*\| ready-independent（固定契約測定済み、Graph統合再確認待ち） \|/,
@@ -851,7 +853,7 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
   }
   assert.match(
     executionPlan,
-    /R0で確認済み・merge後開始[\s\S]*五つのproposal\/3 contractId[\s\S]*今回のtyped-ratification candidateで記録・merge後有効[\s\S]*第六行[\s\S]*ratification PR #579がmergeされるまで有効化されず[\s\S]*A2はA1＋D2a＋このratification merge後/is,
+    /R0で確認済み・merge後開始[\s\S]*五つのproposal\/3 contractId[\s\S]*明示確認済み・契約として有効[\s\S]*第六行[\s\S]*A2はA1＋D2aの通常依存が成立した後/is,
   );
   assert.doesNotMatch(
     executionPlan,
@@ -865,7 +867,7 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
   );
   assert.match(
     executionPlan,
-    /R0がmergeされ.*D2aとA1を開始できる.*別typed-ratification candidate.*ratification PR #579がmergeされるまで有効化されず.*A2はA1＋D2a＋このratification merge後.*A3・B・C・D1.*blocked.*Pだけは独立/is,
+    /R0がmergeされ.*D2aとA1を開始できる.*proposal\/4 Option B.*typed-revision-material.*既に批准済み・契約として有効.*A2はA1＋D2a.*A3・B・C・D1.*blocked.*Pだけは独立/is,
   );
 
   assert.match(
@@ -901,11 +903,11 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
   );
   assert.match(
     executionPlan,
-    /初回static draft.*focused contract testのみ.*Quick／verify／Full／verifyは実施しなかった.*現在候補の証跡または免除ではない.*このtyped-ratification candidate.*merge gate M.*Full＋直後のverify.*要求する/is,
+    /初回static draft.*focused contract testのみ.*Quick／verify／Full／verifyは実施しなかった.*過去候補の証跡または免除ではない.*今後の実装候補.*merge gate M.*Full＋直後のverify.*要求する/is,
   );
   assert.match(
     executionPlan,
-    /初回static draft.*旧R0候補で実施済みだった.*verify:quality.*Quick.*無効化し.*再開候補で再実施する記録だった.*現行typed-ratification candidate.*merge gate M.*Full＋直後verify.*必須/is,
+    /初回static draft.*旧R0候補で実施済みだった.*verify:quality.*Quick.*無効化し.*再開候補で再実施する記録だった.*今後の実装候補.*merge gate M.*Full＋直後verify.*必須/is,
   );
   assert.doesNotMatch(
     executionPlan,
@@ -986,7 +988,7 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
   assert.match(integrationPlan, /PR-R0/);
   assert.match(
     integrationPlan,
-    /typed-revision-material.*proposal\/4.*Entity／Relation-only.*typed-ratification candidate/is,
+    /proposal\/4.*Entity／Relation-only.*typed-revision-material.*(?:explicitly ratified|明示批准済み)/is,
   );
   for (const [name, narrative] of [
     ["roadmap", roadmap],
@@ -994,8 +996,8 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
   ]) {
     assert.match(
       narrative,
-      /R0 (?:merged|confirmation state: five) (?:with )?five proposal\/3(?: contract)? rows[\s\S]*typed-ratification candidate\/PR #579[\s\S]*records the sixth[\s\S]*proposal\/4 Option B Entity／Relation-only assertion family `typed-revision-material`[\s\S]*effective only when this ratification PR merges[\s\S]*A2 (?:is|becomes) ready only after A1＋D2a＋this ratification merge[\s\S]*activate any runtime or consumer/is,
-      `${name} must mirror R0's five rows and the pending typed-ratification state`,
+      /R0 (?:merged|confirmation state: five) (?:with )?five proposal\/3(?: contract)? rows[\s\S]*PR #579[\s\S]*records the sixth[\s\S]*proposal\/4 Option B Entity／Relation-only assertion family `typed-revision-material`[\s\S]*(?:explicitly ratified and effective|明示批准済み・契約として有効)[\s\S]*A2 (?:is|becomes) ready only after A1＋D2a[\s\S]*activate any runtime or consumer/is,
+      `${name} must mirror R0's five rows and the effective typed-ratification state`,
     );
     assert.match(
       narrative,
@@ -1009,7 +1011,7 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
     );
     assert.doesNotMatch(
       narrative,
-      /R0 records six|typed row is ready after R0 merge|(?:現在の|The current )R0 merge candidate|search-performance Hold|検索性能Hold|性能Hold/i,
+      /R0 records six|typed row is ready after R0 merge|(?:現在の|The current )R0 merge candidate|typed-ratification candidate|ratification PR|ratification merge|search-performance Hold|検索性能Hold|性能Hold/i,
       `${name} must not retain stale current-state or generic performance wording`,
     );
     assert.doesNotMatch(
@@ -1024,13 +1026,13 @@ test("NIR-1 preserves R0 history, gates typed ratification, and keeps runtime ga
     );
     assert.match(
       narrative,
-      /(?:(?:現在の|この)typed-ratification candidateは.*merge gate M.*merge前のclean HEADのFull＋直後verifyを必須|The current typed-ratification candidate.*merge gate M.*clean candidate must pass Full and immediate verify before merge)/is,
-      `${name} must keep the current candidate subject to merge gate M`,
+      /(?:今後の実装候補は.*merge gate M.*merge前のclean HEADのFull＋直後verifyを必須|Future implementation candidates remain subject to the shared merge gate M.*clean candidate must pass Full and immediate verify before merge)/is,
+      `${name} must keep future implementation candidates subject to merge gate M`,
     );
     assert.doesNotMatch(
       narrative,
-      /(?:現在のtyped-ratification candidate|The current typed-ratification candidate)[^\n]*(?:Full|verify)[^\n]*(?:未実施|実施していない|not run)/is,
-      `${name} must not exempt the current candidate with a historical no-run note`,
+      /(?:今後の実装候補は|Future implementation candidates remain)[^\n]*(?:Full|verify)[^\n]*(?:未実施|実施していない|not run)/is,
+      `${name} must not exempt future implementation candidates with a historical no-run note`,
     );
   }
 });
