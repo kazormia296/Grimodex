@@ -2836,85 +2836,82 @@ export async function readRestoreFixtureBackupContract(
   const quotedConsumerKey = String(consumerKey ?? "").replaceAll("'", "''");
   const databasePath = path.join(workspace, "backups", backupName);
   try {
-    const [markerRows, epochs, backfillRuns, edgeRows, derivedStateRows] =
-      await Promise.all([
-        readRunSnapshotQuery(
-          path.dirname(databasePath),
-          `SELECT migration_id AS migrationId,
-                  contract_version AS contractVersion,
-                  applied_at AS appliedAt
-             FROM schema_data_migrations
-            WHERE migration_id = 'narrative-c2-canonical-freshness-v1'`,
-          databasePath,
-        ),
-        readRunSnapshotQuery(
-          path.dirname(databasePath),
-          `SELECT id,
-                  project_id AS projectId,
-                  epoch_number AS epochNumber,
-                  reason,
-                  created_at AS createdAt
-             FROM narrative_semantic_epochs
-            WHERE project_id = '${quotedProjectId}'
-            ORDER BY epoch_number, id`,
-          databasePath,
-        ),
-        readRunSnapshotQuery(
-          path.dirname(databasePath),
-          `SELECT ${RUN_COLUMNS},
-                  (SELECT t.id
-                     FROM narrative_extraction_tasks t
-                    WHERE t.run_id = r.id
-                    ORDER BY t.created_at ASC, t.id ASC
-                    LIMIT 1) AS taskId,
-                  (SELECT a.id
-                     FROM narrative_extraction_attempts a
-                     JOIN narrative_extraction_tasks t ON t.id = a.task_id
-                    WHERE t.run_id = r.id
-                    ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
-                    LIMIT 1) AS attemptId
-             FROM narrative_extraction_runs r
-            WHERE r.project_id = '${quotedProjectId}'
-              AND r.run_kind = 'backfill'
-            ORDER BY r.created_at, r.id`,
-          databasePath,
-        ),
-        readRunSnapshotQuery(
-          path.dirname(databasePath),
-          `SELECT id,
-                  project_id AS projectId,
-                  consumer_kind AS consumerKind,
-                  consumer_key AS consumerKey,
-                  source_object_identity AS sourceObjectIdentity,
-                  read_set_json AS readSetJson,
-                  generated_by_transaction_id AS generatedByTransactionId,
-                  created_at AS createdAt,
-                  owning_run_id AS owningRunId
+    const markerRows = await readRunSnapshotQuery(
+      path.dirname(databasePath),
+      `SELECT migration_id AS migrationId,
+              contract_version AS contractVersion,
+              applied_at AS appliedAt
+         FROM schema_data_migrations
+        WHERE migration_id = 'narrative-c2-canonical-freshness-v1'`,
+      databasePath,
+    );
+    const epochs = await readRunSnapshotQuery(
+      path.dirname(databasePath),
+      `SELECT id,
+              project_id AS projectId,
+              epoch_number AS epochNumber,
+              reason,
+              created_at AS createdAt
+         FROM narrative_semantic_epochs
+        WHERE project_id = '${quotedProjectId}'
+        ORDER BY epoch_number, id`,
+      databasePath,
+    );
+    const backfillRuns = await readRunSnapshotQuery(
+      path.dirname(databasePath),
+      `SELECT ${RUN_COLUMNS},
+              (SELECT t.id
+                 FROM narrative_extraction_tasks t
+                WHERE t.run_id = r.id
+                ORDER BY t.created_at ASC, t.id ASC
+                LIMIT 1) AS taskId,
+              (SELECT a.id
+                 FROM narrative_extraction_attempts a
+                 JOIN narrative_extraction_tasks t ON t.id = a.task_id
+                WHERE t.run_id = r.id
+                ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
+                LIMIT 1) AS attemptId
+         FROM narrative_extraction_runs r
+        WHERE r.project_id = '${quotedProjectId}'
+          AND r.run_kind = 'backfill'
+        ORDER BY r.created_at, r.id`,
+      databasePath,
+    );
+    const edgeRows = await readRunSnapshotQuery(
+      path.dirname(databasePath),
+      `SELECT id,
+              project_id AS projectId,
+              consumer_kind AS consumerKind,
+              consumer_key AS consumerKey,
+              source_object_identity AS sourceObjectIdentity,
+              read_set_json AS readSetJson,
+              generated_by_transaction_id AS generatedByTransactionId,
+              created_at AS createdAt,
+              owning_run_id AS owningRunId
+         FROM narrative_dependency_edges
+        WHERE project_id = '${quotedProjectId}'
+          AND id = '${quotedEdgeId}'
+        ORDER BY created_at, id`,
+      databasePath,
+    );
+    const derivedStateRows = await readRunSnapshotQuery(
+      path.dirname(databasePath),
+      `SELECT
+          (SELECT COUNT(*)
              FROM narrative_dependency_edges
             WHERE project_id = '${quotedProjectId}'
-              AND id = '${quotedEdgeId}'
-            ORDER BY created_at, id`,
-          databasePath,
-        ),
-        readRunSnapshotQuery(
-          path.dirname(databasePath),
-          `SELECT
-              (SELECT COUNT(*)
-                 FROM narrative_dependency_edges
-                WHERE project_id = '${quotedProjectId}'
-                  AND id = '${quotedEdgeId}') AS edgeCount,
-              (SELECT COUNT(*)
-                 FROM narrative_dependency_edge_states
-                WHERE project_id = '${quotedProjectId}'
-                  AND edge_id = '${quotedEdgeId}') AS edgeStateCount,
-              (SELECT COUNT(*)
-                 FROM narrative_consumer_freshness
-                WHERE project_id = '${quotedProjectId}'
-                  AND consumer_kind = 'narrative-extraction-run'
-                  AND consumer_key = '${quotedConsumerKey}') AS freshnessCount`,
-          databasePath,
-        ),
-      ]);
+              AND id = '${quotedEdgeId}') AS edgeCount,
+          (SELECT COUNT(*)
+             FROM narrative_dependency_edge_states
+            WHERE project_id = '${quotedProjectId}'
+              AND edge_id = '${quotedEdgeId}') AS edgeStateCount,
+          (SELECT COUNT(*)
+             FROM narrative_consumer_freshness
+            WHERE project_id = '${quotedProjectId}'
+              AND consumer_kind = 'narrative-extraction-run'
+              AND consumer_key = '${quotedConsumerKey}') AS freshnessCount`,
+      databasePath,
+    );
     const derivedState = derivedStateRows[0] ?? {};
     return {
       projectId,
