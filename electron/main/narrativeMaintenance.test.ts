@@ -767,6 +767,33 @@ describe("narrative maintenance scheduler", () => {
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
   });
 
+  it("renders a graph-state-change verify failure as a bounded retry", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          "NEX_VERIFY_GRAPH_STATE_CHANGED: graph state changed after Verify observed it; run Verify again",
+        ),
+      )
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler, warn } = createScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    const rendered = renderedWarnings(warn).join("\n");
+    expect(rendered).toContain("NEX_MAINTENANCE_TRANSIENT");
+    expect(rendered).toContain("1/3");
+    expect(rendered).not.toContain("background cycle failed");
+    expect(hasErrorClassWarning(warn)).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps malformed native responses error-class even when requeued", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()

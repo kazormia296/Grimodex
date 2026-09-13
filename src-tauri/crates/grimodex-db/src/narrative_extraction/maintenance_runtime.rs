@@ -3281,6 +3281,7 @@ pub fn classify_failure(message: &str) -> FailureClassification {
                 | "NEX_INCREMENTAL_FRESHNESS_INTERRUPTED"
                 | "NEX_REBUILD_DERIVED_STALE_EPOCH"
                 | "NEX_VERIFY_STALE_EPOCH"
+                | "NEX_VERIFY_GRAPH_STATE_CHANGED"
         );
         return FailureClassification {
             class: if retryable {
