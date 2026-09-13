@@ -708,6 +708,19 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
   );
   assert.match(
     executionPlan,
+    /R0で確認済み・merge後開始.*五つのproposal\/3 contractId別confirmation.*R0 merge.*通常依存.*ready/,
+  );
+  assert.match(
+    executionPlan,
+    /実装前に別途確認するdraft.*typed-revision-material.*proposal\/4 Option B.*ref-unverified.*blocked/,
+  );
+  assert.doesNotMatch(
+    executionPlan,
+    /実装前に明示確認するdraft.*保存authority.*呼出主体.*Native生成元receipt.*履歴再認可.*profile egress/is,
+    "the stale five-scope draft row must stay removed",
+  );
+  assert.match(
+    executionPlan,
     /R0がmergeされ.*D2aとA1を開始できる.*typed \/4が別途確認されるまで.*blocked.*Pだけは独立/is,
   );
 
@@ -792,6 +805,31 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
   assert.match(roadmap, /downstream.*blocked|blocked.*downstream/is);
   assert.match(integrationPlan, /PR-R0/);
   assert.match(integrationPlan, /ref-unverified/);
+  for (const [name, narrative] of [
+    ["roadmap", roadmap],
+    ["integration plan", integrationPlan],
+  ]) {
+    assert.match(
+      narrative,
+      /five proposal\/3 contract rows are explicitly confirmed.*ready only after R0 merge plus normal dependencies[\s\S]*typed-revision-material.*proposal\/4 Option B.*unconfirmed\/ref-unverified.*blocked/is,
+      `${name} must mirror the current R0 confirmation state`,
+    );
+    assert.match(
+      narrative,
+      /exact per-contract refs.*execution-plan ledger/is,
+      `${name} must point to the canonical per-contract ledger`,
+    );
+    assert.doesNotMatch(
+      narrative,
+      /(?:six downstream contract|6つの下流契約).*blocked\(ref-unverified\)/is,
+      `${name} must not retain the stale all-six-blocked summary`,
+    );
+    assert.doesNotMatch(
+      narrative,
+      /contract-delta-unresolved/,
+      `${name} must not retain the resolved-family stale marker`,
+    );
+  }
 });
 
 test("new skills use current frontmatter and call the canonical commands", async () => {

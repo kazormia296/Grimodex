@@ -253,7 +253,8 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 | 区分                      | 内容                                                                                                                        |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | 選択済み                  | 最小Scope保存・編集UI、レビュー会話分離、安全な執筆履歴継続、profile全体の永続local-only、scene incarnation単位のlegacy互換 |
-| 実装前に明示確認するdraft | 保存authority、呼出主体と送信入口、Native生成元receipt、履歴再認可、profile egress境界の脅威モデル差分                      |
+| R0で確認済み・merge後開始 | 五つのproposal/3 contractId別confirmationはproposal scopeだけを確認し、R0 merge＋通常依存成立後のみreadyとする |
+| 実装前に別途確認するdraft | `typed-revision-material` のproposal/4 Option B。別の明示確認があるまで `confirmedRef=none — ref-unverified`、blockedのままとする |
 | R0の文書更新時点で未実施  | 新たなproduction runtime integration、activation、外部送信、runtime journey、merge gate MのFull／verify（候補commit後に必須）、push、PR、M2全体移行、全抽出recipe対応、作者価値の測定 |
 
 ## 実装順序と公開条件
