@@ -24,9 +24,9 @@ L6–L9は全体計画に保持する。L6正例に必要なL7入力adapterの�
 R0は文書・既存quality contract test・manifest traceだけを変更し、runtime／policy／activationと新規fixtureは変更しない。24件の検索case（ja/en各12件）の正本は
 `evals/nir1-retrieval/manifest.json`であり、Graph G-01〜G-08、Packing P-01〜P-12（文体／台詞／描写／exact quote／長距離関係／構造の各2件）の詳細表と、
 事前指定改善G-01／P-12、Packing baselineの費用境界はL6〜L9実行計画へ集約する。
-R0 records six contract rows as explicitly confirmed (proposal scope only): five proposal/3 rows plus the independently ratified proposal/4 Option B Entity／Relation-only assertion family `typed-revision-material`. Its confirmed ref is `nir1-l6-l9-contract-proposal/4#typed-revision-material`; the exact per-contract refs and user confirmation are recorded in the execution-plan ledger. The typed row is ready after R0 merge, while A2 is ready only after A1＋D2a＋this row are merged. These confirmations do not complete the downstream threat model or activate any runtime or consumer.
+R0 merged with five proposal/3 contract rows (proposal scope only). This separate typed-ratification candidate/PR #579 records the sixth proposal/4 Option B Entity／Relation-only assertion family `typed-revision-material`; its recorded confirmation becomes effective only when this ratification PR merges. The exact ref `nir1-l6-l9-contract-proposal/4#typed-revision-material` and user confirmation are recorded in the execution-plan ledger. A2 becomes ready only after A1＋D2a＋this ratification merge. These records do not complete the downstream threat model or activate any runtime or consumer.
 Graphの製品公開条件は A3＋B＋C＋D2a、Packingの製品公開条件は C＋D1＋D2a＋D2b-1＋D2b-2 とし、
-性能Holdと `author-value: not-measured` を保持する。R0自体の開始判定はreadyだが、下流laneのproduction runtime integration開始・activation・受入れはblockedのままである。
+standaloneのPR-P固定性能gateは解決済みで、残るのは Graph-integrated recheck pending/Hold（Graph統合再確認）だけとする。`author-value: not-measured` は保持する。R0自体の開始判定はreadyだが、下流laneのproduction runtime integration開始・activation・受入れはblockedのままである。
 
 2026-09-08、`codex/nir1-material-replay` の clean HEAD
 `9bb942de7f58d869e9d5de52fb49d9adc49e965b`、tree
@@ -479,8 +479,8 @@ L0–L5は内部reader/writer/fixture/診断ごとの再開承認を求めず、
 同一profileの全作品・全会話を再起動後もlocal-onlyとし、AIタイトル・要約・tool・Agent・CLI等は意図的に停止する。
 L9では必須機能、意図的に停止した補助機能、停止経路の必須拒否試験を分離して判定する。これらはruntime変更ではなく、実装前契約の文書化である。
 
-2026-09-13のPR-R0では、上記の現在地を#572基点へ更新した。R0 records six contract rows as explicitly confirmed (proposal scope only): five proposal/3 rows plus the independently ratified proposal/4 Option B Entity／Relation-only assertion family `typed-revision-material`. Its confirmed ref is `nir1-l6-l9-contract-proposal/4#typed-revision-material`; the exact per-contract refs and user confirmation are recorded in the execution-plan ledger. The typed row is ready after R0 merge, while A2 is ready only after A1＋D2a＋this row are merged. These confirmations do not complete the downstream threat model or activate any runtime or consumer.
+2026-09-13のPR-R0では、上記の現在地を#572基点へ更新した。R0はproposal/3の五つのcontract rowを明示確認済みとしてmergeした。今回の別PRであるtyped-ratification candidate/PR #579は、proposal/4 Option BのEntity／Relation-only assertion family `typed-revision-material`という第六行を記録するが、その確認はこのratification PRのmerge後に初めて有効となる。ref `nir1-l6-l9-contract-proposal/4#typed-revision-material`、正確なユーザー確認、A1＋D2a＋このratification merge後にA2をreadyとする依存は、execution-plan ledgerに記録する。これらはdownstream threat modelを完了させず、runtime／consumerをactivateしない。
 評価は既存24検索case、8 Graph case（G-01〜G-08）、12 Packing task（P-01〜P-12）の識別子と、
 `R / R+IR / R+IR+Graph`、seed-only診断、共通seed/context、同一token budget、事前指定改善caseの比較条件を実行計画へ対応付けた。
 Graph改善はR+IRを比較対象とし、D1 fixtureとD2b-2／P3最終requestは別証跡とする。全PRのmerge gate M（clean candidateのFull＋verify）は維持する。
-初回static draft時点の「runtime journey・activation・merge gate MのFull／verifyは未実施」という記録は過去の静的draftに限り、現在候補の免除ではない。現在のR0 merge candidateは全PR共通 merge gate Mの対象であり、merge前のclean HEADのFull＋直後verifyを必須とする。R0の機能受入れではruntime journey・activationは対象外である。
+初回static draft時点の「runtime journey・activation・merge gate MのFull／verifyは未実施」という記録は過去の静的draftに限り、現在候補の免除ではない。このtyped-ratification candidateは全PR共通 merge gate Mの対象であり、merge前のclean HEADのFull＋直後verifyを必須とする。R0の機能受入れではruntime journey・activationは対象外である。
