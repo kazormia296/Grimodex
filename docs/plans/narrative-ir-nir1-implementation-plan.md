@@ -24,7 +24,7 @@ L6–L9は全体計画に保持する。L6正例に必要なL7入力adapterの�
 R0は文書・既存quality contract test・manifest traceだけを変更し、runtime／policy／activationと新規fixtureは変更しない。24件の検索case（ja/en各12件）の正本は
 `evals/nir1-retrieval/manifest.json`であり、Graph G-01〜G-08、Packing P-01〜P-12（文体／台詞／描写／exact quote／長距離関係／構造の各2件）の詳細表と、
 事前指定改善G-01／P-12、Packing baselineの費用境界はL6〜L9実行計画へ集約する。
-R0 confirmation state: five proposal/3 contract rows are explicitly confirmed (proposal scope only) and ready only after R0 merge plus normal dependencies. The exact per-contract refs (`nir1-l6-l9-contract-proposal/3#<contractId>`) are recorded in the execution-plan ledger. `typed-revision-material` alone is proposal/4 Option B, unconfirmed/ref-unverified, and blocked; its separate confirmation must name both the exact `draftRef` and `contractId`. These confirmations do not complete the downstream threat model or activate runtime.
+R0 records six contract rows as explicitly confirmed (proposal scope only): five proposal/3 rows plus the independently ratified proposal/4 Option B Entity／Relation-only assertion family `typed-revision-material`. Its confirmed ref is `nir1-l6-l9-contract-proposal/4#typed-revision-material`; the exact per-contract refs and user confirmation are recorded in the execution-plan ledger. The typed row is ready after R0 merge, while A2 is ready only after A1＋D2a＋this row are merged. These confirmations do not complete the downstream threat model or activate any runtime or consumer.
 Graphの製品公開条件は A3＋B＋C＋D2a、Packingの製品公開条件は C＋D1＋D2a＋D2b-1＋D2b-2 とし、
 性能Holdと `author-value: not-measured` を保持する。R0自体の開始判定はreadyだが、下流laneのproduction runtime integration開始・activation・受入れはblockedのままである。
 
@@ -479,7 +479,7 @@ L0–L5は内部reader/writer/fixture/診断ごとの再開承認を求めず、
 同一profileの全作品・全会話を再起動後もlocal-onlyとし、AIタイトル・要約・tool・Agent・CLI等は意図的に停止する。
 L9では必須機能、意図的に停止した補助機能、停止経路の必須拒否試験を分離して判定する。これらはruntime変更ではなく、実装前契約の文書化である。
 
-2026-09-13のPR-R0では、上記の現在地を#572基点へ更新した。R0 confirmation state: five proposal/3 contract rows are explicitly confirmed (proposal scope only) and ready only after R0 merge plus normal dependencies; `typed-revision-material` alone is proposal/4 Option B, unconfirmed/ref-unverified, and blocked. The exact per-contract refs are recorded in the execution-plan ledger; these confirmations do not complete the downstream threat model or activate runtime.
+2026-09-13のPR-R0では、上記の現在地を#572基点へ更新した。R0 records six contract rows as explicitly confirmed (proposal scope only): five proposal/3 rows plus the independently ratified proposal/4 Option B Entity／Relation-only assertion family `typed-revision-material`. Its confirmed ref is `nir1-l6-l9-contract-proposal/4#typed-revision-material`; the exact per-contract refs and user confirmation are recorded in the execution-plan ledger. The typed row is ready after R0 merge, while A2 is ready only after A1＋D2a＋this row are merged. These confirmations do not complete the downstream threat model or activate any runtime or consumer.
 評価は既存24検索case、8 Graph case（G-01〜G-08）、12 Packing task（P-01〜P-12）の識別子と、
 `R / R+IR / R+IR+Graph`、seed-only診断、共通seed/context、同一token budget、事前指定改善caseの比較条件を実行計画へ対応付けた。
 Graph改善はR+IRを比較対象とし、D1 fixtureとD2b-2／P3最終requestは別証跡とする。全PRのmerge gate M（clean candidateのFull＋verify）は維持する。

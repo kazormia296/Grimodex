@@ -345,7 +345,7 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   );
 });
 
-test("NIR-1 R0 records bounded contract confirmations and keeps typed material gated", async () => {
+test("NIR-1 R0 records bounded contract confirmations and keeps runtime gated", async () => {
   const executionPlan = await read("docs/plans/nir1-l6-l9-execution-plan.md");
   const roadmap = await read("docs/plans/narrative-semantic-core-roadmap.md");
   const integrationPlan = await read(
@@ -380,8 +380,8 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
   }
   assert.equal(
     (executionPlan.match(/blocked\(ref-unverified\)/g) ?? []).length,
-    1,
-    "only the unconfirmed typed contract must remain ref-unverified and blocked",
+    0,
+    "no contract remains ref-unverified after the explicit typed ratification",
   );
   assert.doesNotMatch(
     executionPlan,
@@ -393,7 +393,16 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
   assert.match(executionPlan, /accepted ADR011/);
   assert.match(executionPlan, /nir1-plan\/1.*L0〜L5/);
   assert.match(executionPlan, /nir1-product-tm\/1.*L0〜L5/);
-  assert.match(executionPlan, /none — ref-unverified/);
+  assert.doesNotMatch(
+    executionPlan,
+    /none — ref-unverified|unconfirmed typed|typed-revision-material[^\n]*unconfirmed/i,
+    "the explicitly ratified typed row must not retain stale unconfirmed state",
+  );
+  assert.doesNotMatch(
+    executionPlan,
+    /canonical_application_freshness/,
+    "the typed ratification must not widen the Freshness authority",
+  );
   assert.doesNotMatch(executionPlan, /本書・既存計画のproducer/);
   for (const field of [
     "confirmedRef",
@@ -412,11 +421,13 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
   const confirmedContractIds = [
     "scope-storage-authority",
     "caller-profile-egress",
+    "typed-revision-material",
     "graph-limited-binding",
     "native-generation-receipt",
     "history-reauthorization",
   ];
-  const confirmedRefFor = (contractId) => `${proposal3Ref}#${contractId}`;
+  const confirmedRefFor = (contractId) =>
+    `${contractId === "typed-revision-material" ? typedDraftRef : proposal3Ref}#${contractId}`;
   const ledgerSection = executionPlan
     .split("### 契約別の確認台帳\n", 2)[1]
     ?.split("\n### R0 security contract proposal (draft)", 1)[0];
@@ -434,35 +445,42 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
     const draftRef = cells[1].replaceAll("`", "");
     const confirmedRef = cells[2].replaceAll("`", "");
     if (confirmedContractIds.includes(contractId)) {
-      assert.equal(draftRef, proposal3Ref);
       assert.equal(confirmedRef, confirmedRefFor(contractId));
-      assert.match(cells[3], /proposal\/3 scope only/);
-      assert.equal(cells[6], "ready-after-R0-merge");
+      if (contractId === "typed-revision-material") {
+        assert.equal(draftRef, typedDraftRef);
+        assert.match(
+          cells[3],
+          /proposal\/4 scope only.*Option B.*Entity／Relation-only.*nir1\.entity-relation@1/,
+        );
+        assert.match(cells[4], /proposal\/4 explicitly confirmed/);
+        assert.equal(cells[6], "ready-after-R0-merge");
+        assert.match(cells[7], /explicit user confirmation recorded.*A1／D2a/);
+        assert.match(
+          cells[8],
+          /I confirm draftRef nir1-l6-l9-contract-proposal\/4 for contractId typed-revision-material\./,
+        );
+        assert.match(cells[8], /independently ratifies only this row/);
+      } else {
+        assert.equal(draftRef, proposal3Ref);
+        assert.match(cells[3], /proposal\/3 scope only/);
+        assert.equal(cells[6], "ready-after-R0-merge");
+      }
       assert.match(cells[7], /explicit user confirmation recorded/);
       assert.match(cells[8], new RegExp(escapeRegExp(confirmedRefFor(contractId))));
     } else {
-      assert.equal(contractId, "typed-revision-material");
-      assert.equal(draftRef, typedDraftRef);
-      assert.equal(confirmedRef, "none — ref-unverified");
-      assert.match(cells[3], /selected Option B/);
-      assert.equal(cells[6], "blocked(ref-unverified)");
-      assert.match(cells[7], /proposal\/4 requires separate exact user confirmation/);
-      assert.match(
-        cells[8],
-        /I confirm draftRef nir1-l6-l9-contract-proposal\/4 for contractId typed-revision-material\./,
-      );
+      assert.fail(`${contractId} should be explicitly confirmed`);
     }
     return row;
   });
   assert.equal(ledgerRows.length, 6);
   assert.equal(
     ledgerRows.filter((row) => row.includes("ready-after-R0-merge")).length,
-    5,
-    "exactly five proposal/3 rows are confirmed and ready after merge",
+    6,
+    "all five proposal/3 rows and the typed proposal/4 row are confirmed and ready after merge",
   );
   assert.match(
     executionPlan,
-    /confirmed rows retain `nir1-l6-l9-contract-proposal\/3`; pending typed row uses `nir1-l6-l9-contract-proposal\/4`/,
+    /proposal\/3の五つのconfirmed row.*Option Bのtyped row.*それぞれのscopeだけを記録する/,
   );
   assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/1/);
   assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/2/);
@@ -473,7 +491,7 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
   assert.ok(proposalSection, "R0 security contract proposal must be present");
   assert.match(
     proposalSection,
-    /draftRef[^\n]*nir1-l6-l9-contract-proposal\/3[^\n]*pending typed row uses[^\n]*nir1-l6-l9-contract-proposal\/4/,
+    /proposal\/3の五つのconfirmed row[^\n]*Option Bのtyped row/,
   );
   for (const confirmationRule of [
     /Confirmation protocol.*only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that one row/is,
@@ -484,7 +502,8 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
     /merge instruction.*not a ratification/is,
     /this proposal is fine.*not a ratification/is,
     /Confirming one row does not confirm its dependencies/i,
-    /user-selected Option B family is concrete.*nir1-l6-l9-contract-proposal\/4.*typed-revision-material.*remains unconfirmed/is,
+    /user-selected Option B family is concrete.*independently ratified.*typed-revision-material.*nir1-l6-l9-contract-proposal\/4/is,
+    /confirmation is limited to the Entity／Relation-only family.*never widens to a generic consumer／authority/is,
   ]) {
     assert.match(proposalSection, confirmationRule);
   }
@@ -494,7 +513,17 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
   );
   assert.match(
     proposalSection,
-    /runtime activation[^\n]*(?:追加しない|未完了)/i,
+    /runtime(?:／consumer)? activation[^\n]*(?:追加しない|未完了)/i,
+  );
+  assert.doesNotMatch(
+    proposalSection,
+    /remains unconfirmed|ref-unverified|contract-delta-unresolved/i,
+    "the exact typed ratification must clear stale pending markers",
+  );
+  assert.doesNotMatch(
+    proposalSection,
+    /canonical_application_freshness/,
+    "the typed ratification must not introduce a second Freshness authority",
   );
   assert.doesNotMatch(
     proposalSection,
@@ -696,11 +725,16 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
     proposalSection,
     /typed-revision-material[\s\S]*narrative_proposal_revisions\.id[\s\S]*narrative_proposal_decisions[\s\S]*narrative_consumer_freshness/is,
   );
+  assert.doesNotMatch(
+    proposalSection,
+    /canonical_application_freshness/,
+    "the typed proposal must retain the existing Freshness authority",
+  );
   assert.match(executionPlan, /\| D2a \|[^|]*\| ready-after-R0-merge \|/);
   assert.match(executionPlan, /\| A1 \|[^|]*\| ready-after-R0-merge \|/);
   assert.match(
     executionPlan,
-    /\| A2 \|[^|]*\| blocked\(typed-revision-material\/4\) \|/,
+    /\| A2 \|[^|]*\| ready-after-A1＋D2a＋typed-revision-material-merge \|/,
   );
   assert.match(
     executionPlan,
@@ -731,13 +765,27 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
     /standaloneのP固定性能gateは完了[\s\S]*Graph統合再確認だけ/is,
     "the Graph-integrated recheck must remain pending after standalone P passes",
   );
+  for (const [lane, blockedBy] of [
+    ["A3", "A1／A2"],
+    ["B", "A1／A2"],
+    ["C", "A3／B／D2a"],
+    ["D1", "A2"],
+    ["D2b-2", "C／D1／D2a／D2b-1"],
+  ]) {
+    assert.match(
+      executionPlan,
+      new RegExp(`\\| ${lane} \\|[^|]*\\| blocked\\(${blockedBy}\\) \\|`),
+      `${lane} must remain blocked only on its normal dependencies`,
+    );
+  }
   assert.match(
     executionPlan,
-    /R0で確認済み・merge後開始.*五つのproposal\/3 contractId別confirmation.*R0 merge.*通常依存.*ready/,
+    /R0で確認済み・merge後開始.*五つのproposal\/3 contractId.*proposal\/4 Option B.*Entity／Relation-only.*ready/,
   );
-  assert.match(
+  assert.doesNotMatch(
     executionPlan,
-    /実装前に別途確認するdraft.*typed-revision-material.*proposal\/4 Option B.*ref-unverified.*blocked/,
+    /実装前に別途確認するdraft|別の明示確認があるまで[^\n]*blocked|typed \/4が別途確認されるまで/,
+    "the typed row must not retain stale pending-decision language",
   );
   assert.doesNotMatch(
     executionPlan,
@@ -746,7 +794,7 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
   );
   assert.match(
     executionPlan,
-    /R0がmergeされ.*D2aとA1を開始できる.*typed \/4が別途確認されるまで.*blocked.*Pだけは独立/is,
+    /R0がmergeされ.*D2aとA1を開始できる.*typed \/4は明示確認済み.*A2はA1＋D2a.*ready.*A3・B・C・D1.*blocked.*Pだけは独立/is,
   );
 
   assert.match(
@@ -865,14 +913,17 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
   assert.match(roadmap, /68516b033f395f24f98c502c9fd2a715d7aec2af/);
   assert.match(roadmap, /downstream.*blocked|blocked.*downstream/is);
   assert.match(integrationPlan, /PR-R0/);
-  assert.match(integrationPlan, /ref-unverified/);
+  assert.match(
+    integrationPlan,
+    /typed-revision-material.*independently ratified.*proposal\/4.*Entity／Relation-only/is,
+  );
   for (const [name, narrative] of [
     ["roadmap", roadmap],
     ["integration plan", integrationPlan],
   ]) {
     assert.match(
       narrative,
-      /five proposal\/3 contract rows are explicitly confirmed.*ready only after R0 merge plus normal dependencies[\s\S]*typed-revision-material.*proposal\/4 Option B.*unconfirmed\/ref-unverified.*blocked/is,
+      /six contract rows (?:are|as) explicitly confirmed \(proposal scope only\): five proposal\/3 rows plus the independently ratified proposal\/4 Option B Entity／Relation-only assertion family `typed-revision-material`[\s\S]*typed row is ready after R0 merge.*A2 is ready only after A1＋D2a＋this row are merged[\s\S]*activate any runtime or consumer/is,
       `${name} must mirror the current R0 confirmation state`,
     );
     assert.match(
@@ -887,8 +938,13 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
     );
     assert.doesNotMatch(
       narrative,
-      /contract-delta-unresolved/,
-      `${name} must not retain the resolved-family stale marker`,
+      /contract-delta-unresolved|ref-unverified|unconfirmed\/ref-unverified/,
+      `${name} must not retain stale unconfirmed markers`,
+    );
+    assert.doesNotMatch(
+      narrative,
+      /canonical_application_freshness/,
+      `${name} must not introduce a second Freshness authority`,
     );
     assert.match(
       narrative,
