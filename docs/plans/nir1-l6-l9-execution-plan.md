@@ -5,7 +5,7 @@
 基点: master@68516b033f395f24f98c502c9fd2a715d7aec2af
 Tree: 04c491c29627ecc840112ebe379a5363e16892ff
 
-状態: #572でtyped基盤runtime（Scope／Entity／Relation／Evidence validation、Native所有のimmutable Revision writer／reader、request-local Graph／Packing primitives）は実装済み。PR-R0の文書・quality contract test・manifest traceを固定済み。残るproduction runtime integration、activation、L6〜L9受入れは未完了。本版では `nir1-l6-l9-contract-proposal/3` のscope-storage-authority／caller-profile-egress／graph-limited-binding／native-generation-receipt／history-reauthorizationの五つを明示確認済みとして記録し、typed-revision-materialは選択済みOption Bの `nir1-l6-l9-contract-proposal/4` draftとしてblocked／unconfirmedのまま保持する。downstream threat modelはdraftのままで、runtime activationは行わない。初回static draftではmaster更新待ちのためfocused contract testのみを実施し、Quick／verify／Full／verifyは実施しなかった。これは現在候補の証跡または免除ではない。現在のR0 merge candidateは全PR共通 merge gate Mの対象であり、merge前のclean candidateにFull＋直後のverifyを要求する。
+状態: #572でtyped基盤runtime（Scope／Entity／Relation／Evidence validation、Native所有のimmutable Revision writer／reader、request-local Graph／Packing primitives）は実装済み。PR-R0の文書・quality contract test・manifest traceを固定し、proposal/3の五つのcontract rowをmergeした。残るproduction runtime integration、activation、L6〜L9受入れは未完了。本版の別PRであるtyped-ratification candidate/PR #579は、選択済みOption Bの `nir1-l6-l9-contract-proposal/4` にあるEntity／Relation-only assertion familyの `typed-revision-material` を第六行として記録するが、その確認はこのratification PRのmerge後に初めて有効となる。A2はA1＋D2a＋このratification merge後にreadyとなる。downstream threat modelはdraftのままで、runtime／consumer activationは行わない。初回static draftではmaster更新待ちのためfocused contract testのみを実施し、Quick／verify／Full／verifyは実施しなかった。これは現在候補の証跡または免除ではない。このtyped-ratification candidateは全PR共通 merge gate Mの対象であり、merge前のclean candidateにFull＋直後のverifyを要求する。
 
 ## 概要
 
@@ -15,7 +15,7 @@ Tree: 04c491c29627ecc840112ebe379a5363e16892ff
 
 ## PR-R0 — 現在地と評価契約の固定
 
-R0は、#572の現在地、後続laneの境界、契約ごとの開始可否、評価条件をこの実行計画に固定する文書・品質契約の変更である。runtime、policy、activation、既存のL0〜L5評価fixtureは変更しない。確認基点は最新 `origin/master` の #572 であり、下表のrefは実装・履歴の存在または記録した明示確認の範囲だけを示し、未確認のtyped /4契約を批准したことやruntimeを有効化したことを示さない。
+R0は、#572の現在地、後続laneの境界、契約ごとの開始可否、評価条件をこの実行計画に固定する文書・品質契約の変更である。runtime、policy、activation、既存のL0〜L5評価fixtureは変更しない。確認基点は最新 `origin/master` の #572であり、下表のrefは実装・履歴の存在または記録した明示確認の範囲だけを示し、確認済みtyped /4のscopeを越えて新しいruntime／consumer資格を有効化したことを示さない。
 
 | 項目 | R0で記録する値 |
 | ---- | -------------- |
@@ -23,7 +23,7 @@ R0は、#572の現在地、後続laneの境界、契約ごとの開始可否、�
 | Tree | `04c491c29627ecc840112ebe379a5363e16892ff` |
 | candidateBranch | `codex/nir1-r0-contract-ledger` |
 | plan / policy / threat refs | 本書、統合計画、ロードマップ、既存 quality manifest / impact map。下流 threat model は draft のまま |
-| receipt boundary | 初回static draftの旧R0候補のfocused test／`verify:quality`／Quick＋verifyは無効。現在のR0 merge candidateは全PR共通 merge gate M（clean candidateのFull＋直後verify）で判定し、旧receiptを流用しない |
+| receipt boundary | 初回static draftの旧R0候補のfocused test／`verify:quality`／Quick＋verifyは無効。現在のtyped-ratification candidateは全PR共通 merge gate M（clean candidateのFull＋直後verify）で判定し、旧receiptを流用しない |
 
 ### #572の実装済み／未完了
 
@@ -63,22 +63,22 @@ R0の `ready` は文書・評価契約を次のlaneへ引き渡せるという�
 
 ### 契約別の確認台帳
 
-`draftRef` はレビュー対象の提案版、`confirmedRef` は明示確認済みの批准refであり、同じ値や提案の存在を確認と読み替えない。五つの行は `nir1-l6-l9-contract-proposal/3#<contractId>` の形式で一つずつ明示確認済みとして記録し、typed Revisionだけは `nir1-l6-l9-contract-proposal/4` の別draftを `none — ref-unverified` のまま保持する。confirmed行もruntime activationを許可せず、R0 mergeと通常依存を満たすまでlaneを開始しない。
+`draftRef` はレビュー対象の提案版、`confirmedRef` は明示確認済みの批准refであり、同じ値や提案の存在を確認と読み替えない。五つのproposal/3行に加え、typed Revisionの `nir1-l6-l9-contract-proposal/4` Option B rowも、ユーザーのexact statementにより `draftRef#contractId` の形式で明示確認済みとして記録する。typed rowのconfirmed scopeはEntity／Relation-only assertion familyに限り、confirmed行もruntime／consumer activationを許可せず、R0 mergeと通常依存を満たすまでlaneを開始しない。
 
 | contractId | draftRef | confirmedRef | confirmedScope | remainingDelta | affectedLanes | startStatus | blockedReason | unblockingEvidence |
 | ---------- | -------- | ------------ | -------------- | -------------- | ------------- | ----------- | ------------- | ------------------ |
 | `scope-storage-authority` | `nir1-l6-l9-contract-proposal/3` | `nir1-l6-l9-contract-proposal/3#scope-storage-authority` | proposal/3 scope only: L0〜L5の `nir1-product-tm/1` と既存Scope vocabulary＋記載したL6〜L9保存delta | none — proposal/3 confirmed; implementation／acceptance remains dependency-gated | A1、A2、A3、B、D1 | ready-after-R0-merge | none — explicit user confirmation recorded; R0 merge／normal dependencies still gate start | `confirmedRef=nir1-l6-l9-contract-proposal/3#scope-storage-authority`; exact row only; start after R0 merge／normal dependencies |
 | `caller-profile-egress` | `nir1-l6-l9-contract-proposal/3` | `nir1-l6-l9-contract-proposal/3#caller-profile-egress` | proposal/3 scope only: L0〜L5の `nir1-product-tm/1` boundary＋記載したL6〜L9 egress delta | none — proposal/3 confirmed; implementation／acceptance remains dependency-gated | D2a、A2、C、D2b | ready-after-R0-merge | none — explicit user confirmation recorded; R0 merge／normal dependencies still gate start | `confirmedRef=nir1-l6-l9-contract-proposal/3#caller-profile-egress`; exact row only; start after R0 merge／normal dependencies |
-| `typed-revision-material` | `nir1-l6-l9-contract-proposal/4` | none — ref-unverified | proposal/4 selected Option B scope only: L0〜L5の `nir1-product-tm/1`＋既存Revision/Freshness vocabularyとEntity／Relation delta。ratificationなし | proposal/4 confirmation remains none — ref-unverified | A2、A3、B、C、D1 | blocked(ref-unverified) | ref-unverified: proposal/4 requires separate exact user confirmation | Exact statement required: "I confirm draftRef nir1-l6-l9-contract-proposal/4 for contractId typed-revision-material."; this confirms only this row |
+| `typed-revision-material` | `nir1-l6-l9-contract-proposal/4` | `nir1-l6-l9-contract-proposal/4#typed-revision-material` | proposal/4 scope only: Option B independent Entity／Relation-only assertion family `nir1.entity-relation@1`、L0〜L5の `nir1-product-tm/1`＋既存Revision/Freshness vocabularyと記載したdelta。generic consumer／authorityへの拡張なし | pending — this separate ratification candidate records the explicit proposal/4 confirmation; it becomes effective only when this ratification PR merges; implementation／acceptance remains dependency-gated | A2、A3、B、C、D1 | pending-typed-revision-material-ratification-merge | exact user confirmation is recorded in this candidate; the ratification PR must merge before the row is effective, while A1／D2a／normal dependencies still gate A2 start | `confirmedRef=nir1-l6-l9-contract-proposal/4#typed-revision-material`; exact statement: "I confirm draftRef nir1-l6-l9-contract-proposal/4 for contractId typed-revision-material."; this independently ratifies only this row |
 | `graph-limited-binding` | `nir1-l6-l9-contract-proposal/3` | `nir1-l6-l9-contract-proposal/3#graph-limited-binding` | proposal/3 scope only: L0〜L5の `nir1-product-tm/1`＋既存dependency vocabularyと記載したGraph binding delta | none — proposal/3 confirmed; implementation／acceptance remains dependency-gated | B、C | ready-after-R0-merge | none — explicit user confirmation recorded; R0 merge／normal dependencies still gate start | `confirmedRef=nir1-l6-l9-contract-proposal/3#graph-limited-binding`; exact row only; start after R0 merge／normal dependencies |
 | `native-generation-receipt` | `nir1-l6-l9-contract-proposal/3` | `nir1-l6-l9-contract-proposal/3#native-generation-receipt` | proposal/3 scope only: L0〜L5の `nir1-product-tm/1` boundary＋記載したreceipt delta | none — proposal/3 confirmed; implementation／acceptance remains dependency-gated | D2b-1、D2b-2 | ready-after-R0-merge | none — explicit user confirmation recorded; R0 merge／normal dependencies still gate start | `confirmedRef=nir1-l6-l9-contract-proposal/3#native-generation-receipt`; exact row only; start after R0 merge／normal dependencies |
 | `history-reauthorization` | `nir1-l6-l9-contract-proposal/3` | `nir1-l6-l9-contract-proposal/3#history-reauthorization` | proposal/3 scope only: L0〜L5の `nir1-product-tm/1`＋既存Scope／Revision vocabularyと記載したlineage delta | none — proposal/3 confirmed; implementation／acceptance remains dependency-gated | D2b-2、E | ready-after-R0-merge | none — explicit user confirmation recorded; R0 merge／normal dependencies still gate start | `confirmedRef=nir1-l6-l9-contract-proposal/3#history-reauthorization`; exact row only; start after R0 merge／normal dependencies |
 
 ### R0 security contract proposal (draft)
 
-`draftRef`: confirmed rows retain `nir1-l6-l9-contract-proposal/3`; pending typed row uses `nir1-l6-l9-contract-proposal/4`。これはレビューとユーザー確認のための提案であり、新しいauthority、保存表、IPC、policy、runtime、activationを追加しない。L0〜L5の `nir1-product-tm/1` の範囲は変更しない。五つのconfirmedRefは各proposal/3 contractIdのscopeだけを確認し、downstream threat modelはdraftのままとする。trusted／untrusted actor、攻撃範囲、防御、保存・保持、データ分類、endpoint、acceptance conditionのmaterial changeは再確認を要する。以下の「確認後に開くlane」は実装着手を意味せず、runtime activationは別途未完了のままとする。
+`draftRef`: R0でmerge済みのproposal/3五つのcontract rowと、この別ratification candidateで記録するOption Bのtyped rowは、それぞれのscopeだけを記録する。typed rowの確認はこのratification PRがmergeされるまで有効化されない。これはレビューとユーザー確認のための提案であり、新しいauthority、保存表、IPC、policy、runtime、consumer、activationを追加しない。L0〜L5の `nir1-product-tm/1` の範囲は変更しない。六つ目のrowは各contractIdのscopeだけを確認し、downstream threat modelはdraftのままとする。trusted／untrusted actor、攻撃範囲、防御、保存・保持、データ分類、endpoint、acceptance conditionのmaterial changeは再確認を要する。以下の「確認後に開くlane」は実装着手を意味せず、runtime／consumer activationは別途未完了のままとする。
 
-Confirmation protocol (recorded, bounded): only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that one row; the stable ledger form is `draftRef#contractId`. The five `nir1-l6-l9-contract-proposal/3#<contractId>` refs in the ledger record separate confirmations for exactly `scope-storage-authority`, `caller-profile-egress`, `graph-limited-binding`, `native-generation-receipt`, and `history-reauthorization`; they confirm proposal/3 scope only. Plan agreement, an active goal, a merge instruction, or broad wording such as “this proposal is fine” is not a ratification. Confirming one row does not confirm its dependencies. The user-selected Option B family is concrete in `nir1-l6-l9-contract-proposal/4`, but `typed-revision-material` remains unconfirmed until this separate exact statement: “I confirm draftRef nir1-l6-l9-contract-proposal/4 for contractId typed-revision-material.” Confirmation never activates runtime, grants secret privilege, or permits external send.
+Confirmation protocol (recorded, bounded): only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that one row; the stable ledger form is `draftRef#contractId`. The five `nir1-l6-l9-contract-proposal/3#<contractId>` refs in the ledger record separate confirmations for exactly `scope-storage-authority`, `caller-profile-egress`, `graph-limited-binding`, `native-generation-receipt`, and `history-reauthorization`; they confirm proposal/3 scope only. The user-selected Option B family is concrete and independently ratified for `typed-revision-material` by the exact statement: “I confirm draftRef nir1-l6-l9-contract-proposal/4 for contractId typed-revision-material.” Plan agreement, an active goal, a merge instruction, or broad wording such as “this proposal is fine” is not a ratification. Confirming one row does not confirm its dependencies. The confirmation is limited to the Entity／Relation-only family and never widens to a generic consumer／authority, activates runtime, grants secret privilege, or permits external send.
 
 #### scope-storage-authority
 
@@ -106,13 +106,13 @@ Confirmation protocol (recorded, bounded): only an explicit user statement namin
 
 - Baseline (approved; limited): #572で実装済みの `ADR011` immutable proposal-revision semantics、`ADR010` Material Basis／Dependency／Context vocabulary、既存 `narrative-consumer-contract` の `narrative_proposal_revisions.id` とcanonical `narrative_consumer_freshness` だけを再利用する。`nir1-product-tm/1` はL0〜L5だけを承認済みとし、`narrative-ir-revision` は既存policyでnot-yet-modelledのままにする。
 - Delta (L6-L9 data / shape / ownership / lifecycle): User-selected Option B defines the independent Entity／Relation assertion family `nir1.entity-relation@1`; it is not a mapping to policy family `scene-event@1`. The only supported payload is #572 `EntityRelationBundle { projectId, revisionId, producer, entities[{ entityId, entityType, label, sourceToken, scope{ reading, story, auto, phase, reveal, pov, authorityRevision }, evidence[{ evidenceId, sourceRef, quote, startUtf16, endUtf16 }] }], relations[{ edgeId, fromEntityId, toEntityId, relationType, directionality, sourceToken, evidenceIds }] }`. Native writer owns UUID `revisionId` and payload digest, validates same-project visible `codex_entries`／`codex_relations`, summary／name-derived UTF-16 Evidence, and current Scope token, then stores the immutable payload in existing `narrative_proposal_revisions`; current reader requires exact current revision and the existing `approved`／`human`／`electron:human-review` decision. The existing `narrative_proposal_decisions` ledger remains separate. Existing Envelope V2 references `effectiveMaterialBasis.sourceBasis`／`evidenceSet`／`dependencySet` (with digests) and `revisionBasis.contextSet`／`derivationContextSet` are used where populated; `reconciliation_envelope` NULL never qualifies. The canonical `narrative_consumer_freshness` row remains the sole Freshness authority for the proposal-revision key. Store full transitive dependency IDs／digests and Evidence／basis references only; do not copy full closure bodies or add an assertion table, Consumer, or authority. Source／edge／Freshness mutation invalidates the immutable revision in the same transaction; an old NULL row is never retrofitted.
-- Supported material boundary / smallest remaining decision: Option B is concrete: same-project visible Codex entities／relations and their summary／name Evidence only, with no scene／Chronicle／artifact／import／author-declared material and no inferred full closure. The family choice is resolved as `nir1.entity-relation@1`; the only remaining decision is the separate user ratification of this `/4` row. Until then the row is blocked and `confirmedRef` remains `none — ref-unverified`.
+- Supported material boundary / smallest remaining decision: Option B is concrete and independently ratified in this candidate: same-project visible Codex entities／relations and their summary／name Evidence only, with no scene／Chronicle／artifact／import／author-declared material and no inferred full closure. The family choice is resolved as `nir1.entity-relation@1`; this candidate records the exact `/4` row, but its confirmation becomes effective only when this ratification PR merges. Implementation and acceptance remain gated by A1／D2a and the normal lane dependencies.
 - Trusted actors: Native typed writer／reader、existing `narrative_proposal_revisions` row、existing `narrative_proposal_decisions` ledger、registered Source／D1、canonical `narrative_consumer_freshness`。
 - Untrusted actors: renderer bundle／ID／digest／Scope、model output、mutable catalog／cache／Graph／Index、stale IPC、client-supplied family claims。
 - In-scope attacks: forged ID／token／digest、cross-project／revision、stale／deleted Source／Evidence、missing／partial transitive dependencies、NULL-envelope promotion、`scene-event@1` remapping、unsupported familyのGraph／Packing流入、freshness self-claim、second Freshness／Consumer／authority、duplicate full-closure storage。
 - Out-of-scope attacks: semantic truth／model quality、future `scene-event@1` mapping or another family approval、full closure storage／export、external send、secret privilege、Graph／Index activation。
 - Mandatory defenses: current exact `EntityRelationBundle` validators (including deny-unknown-fields)、Native UUID／UTF-16／live-source checks、allowlist `nir1.entity-relation@1` only、same-project visible entity／relation and Evidence binding、existing proposal／revision／decision authorities、complete existing Envelope V2 basis／context／dependency／Source refs with Native-owned digest, full transitive dependency IDs／digests without closure-body copies, and canonical `narrative_consumer_freshness`; unknown／unavailable fails closed, source／edge／Freshness publication and invalidation share one transaction, direct DML／old-row rewrite／new authority are forbidden, and the bundle cannot be interpreted as `scene-event@1` without a future separately ratified contract.
-- Acceptance implications: Positive: exact `nir1.entity-relation@1` bundle shape, same-project live Sources, UTF-16 Evidence, current immutable Revision, explicit existing Human Decision, complete existing basis／dependency refs, canonical Freshness, and stable cold-reopen result with no second authority or full-closure copy. Negative: reject `scene-event@1` remapping, unsupported family/material, cross-project／revision, stale／deleted Source／Evidence, missing／partial transitive dependencies, forged token／digest, NULL envelope, duplicate closure body, or unqualified Graph／Packing; no lane starts before the exact `/4` confirmation statement. Recovery: any Source／edge／basis／decision mutation makes the prior row stale, requires a new immutable Revision plus new Human Decision and canonical Freshness evaluation, and rollback／restore never auto-qualifies it; failure returns display-only. Lane unlocked if confirmed: A2 after A1 and the exact `/4` confirmation; A3／B／C／D1 remain blocked until their normal dependencies and typed material qualification are complete. Required unblocking evidence is the exact statement: “I confirm draftRef nir1-l6-l9-contract-proposal/4 for contractId typed-revision-material.”
+- Acceptance implications: Positive: exact `nir1.entity-relation@1` bundle shape, same-project live Sources, UTF-16 Evidence, current immutable Revision, explicit existing Human Decision, complete existing basis／dependency refs, canonical Freshness, and stable cold-reopen result with no second authority or full-closure copy. Negative: reject `scene-event@1` remapping, unsupported family/material, cross-project／revision, stale／deleted Source／Evidence, missing／partial transitive dependencies, forged token／digest, NULL envelope, duplicate closure body, or unqualified Graph／Packing; no lane starts before A1／D2a and the normal dependencies are merged. Recovery: any Source／edge／basis／decision mutation makes the prior row stale, requires a new immutable Revision plus new Human Decision and canonical Freshness evaluation, and rollback／restore never auto-qualifies it; failure returns display-only. Lane unlocked after this ratification merges: A2 is only ready after A1＋D2a＋this ratification merge; A3／B／C／D1 remain blocked until their normal dependencies and typed material qualification are complete. Required confirmation evidence is the exact statement: “I confirm draftRef nir1-l6-l9-contract-proposal/4 for contractId typed-revision-material.”
 
 #### graph-limited-binding
 
@@ -154,13 +154,13 @@ Confirmation protocol (recorded, bounded): only an explicit user statement namin
 | R0 | #572、3正本、既存quality契約 | ready | 本書のfocused contract test、quality manifest／impact mapのtrace |
 | D2a | `caller-profile-egress` | ready-after-R0-merge | profile全体の外部・旧local拒否、永続化、起動時gate。R0 merge後かつ通常依存成立後のみ開始 |
 | A1 | `scope-storage-authority` | ready-after-R0-merge | Scope保存、incarnation、既存L5移行ガード。R0 merge後かつ通常依存成立後のみ開始 |
-| A2 | `typed-revision-material` とA1 | blocked(typed-revision-material/4) | Revision材料、Freshness、Evidence、明示承認、cold reopen。typed /4の別確認まで開始不可 |
-| A3 | A1、A2 | blocked(typed-revision-material/4) | 全Scope軸・全材料のpositive/negative/unavailable開示。typed /4資格まで開始不可 |
-| B | A1、A2、`graph-limited-binding` | blocked(typed-revision-material/4) | Graph Index側の資格、失効、封印・復旧。typed /4資格まで開始不可 |
-| C | A3、B、D2a | blocked(typed-revision-material/4) | R+IRに対する独自Graph改善、path Evidence、P2。typed /4資格まで開始不可 |
-| D1 | A2、R0のPacking評価契約 | blocked(typed-revision-material/4) | 12 taskのRaw／Evidence／label保持、budget selection。typed /4資格まで開始不可 |
+| A2 | `typed-revision-material` とA1、D2a | ready-after-A1＋D2a＋typed-revision-material-ratification-merge | Revision材料、Freshness、Evidence、明示承認、cold reopen。確認済みtyped /4でも、A1＋D2a＋当該ratification PRのmerge後にlane／reviewをreadyとする（Native部分の並行開発は可） |
+| A3 | A1、A2 | blocked(A1／A2) | 全Scope軸・全材料のpositive/negative/unavailable開示。A1／A2の通常依存成立まで開始不可 |
+| B | A1、A2、`graph-limited-binding` | blocked(A1／A2) | Graph Index側の資格、失効、封印・復旧。A1／A2とGraph契約の通常依存成立まで開始不可 |
+| C | A3、B、D2a | blocked(A3／B／D2a) | R+IRに対する独自Graph改善、path Evidence、P2。A3／B／D2aの通常依存成立まで開始不可 |
+| D1 | A2、R0のPacking評価契約 | blocked(A2) | 12 taskのRaw／Evidence／label保持、budget selection。A2の通常依存成立まで開始不可 |
 | D2b-1 | D2a、D1の入力契約、`native-generation-receipt` | blocked | handle、local transport、生成元receipt、dispatch拒否 |
-| D2b-2 | C、D1、D2a、D2b-1、`history-reauthorization` | blocked(typed-revision-material/4 via C／D1) | 履歴再認可、対応済みlocal、P3最終request。typed /4資格まで開始不可 |
+| D2b-2 | C、D1、D2a、D2b-1、`history-reauthorization` | blocked(C／D1／D2a／D2b-1) | 履歴再認可、対応済みlocal、P3最終request。C／D1／D2a／D2b-1の通常依存成立まで開始不可 |
 | E | 全機能laneとP | blocked | 24検索case、Graph/Packing、実製品journey、独立受入れ |
 | P | 固定検索性能契約 | ready-independent（固定契約測定済み、Graph統合再確認待ち） | 固定24件のR／R+IR性能gateを通過。Graphは後続の統合再確認で判定 |
 
@@ -248,7 +248,7 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 
 同一固定候補で先に得たcontended run（`Raw p95=193ms`、`Hybrid p95=105ms`）は診断専用であり、受入れ証跡にはしない。別worktreeのcargo／rustc実行と高いI/O PSIがnative raw-ready tailと同時に観測されたため、`unattributed host contention` evidenceとして扱い、製品回帰とは帰属しない。固定閾値は変更しない。
 
-これによりstandaloneのP固定性能gateは完了した。PR-Pで残るのは `R+IR+Graph` 対 `R+IR` のGraph統合再確認だけであり、Full runtime performanceとauthor-valueは別の判定として扱う。
+これによりstandaloneのPR-P固定性能gateは解決済みで、残るのは `R+IR+Graph` 対 `R+IR` の Graph-integrated recheck pending/Hold（Graph統合再確認）だけである。Graph完了は主張せず、Full runtime performanceとauthor-valueは別の判定として扱う。
 
 ## 引き継ぐ状態と承認境界
 
@@ -267,10 +267,10 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 | 区分                      | 内容                                                                                                                        |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | 選択済み                  | 最小Scope保存・編集UI、レビュー会話分離、安全な執筆履歴継続、profile全体の永続local-only、scene incarnation単位のlegacy互換 |
-| R0で確認済み・merge後開始 | 五つのproposal/3 contractId別confirmationはproposal scopeだけを確認し、R0 merge＋通常依存成立後のみreadyとする |
-| 実装前に別途確認するdraft | `typed-revision-material` のproposal/4 Option B。別の明示確認があるまで `confirmedRef=none — ref-unverified`、blockedのままとする |
+| R0で確認済み・merge後開始 | R0でmerge済みの五つのproposal/3 contractIdはproposal scopeだけを確認し、R0 merge＋通常依存成立後のみreadyとする。 |
+| 今回のtyped-ratification candidateで記録・merge後有効 | proposal/4 Option BのEntity／Relation-only `typed-revision-material`を第六行として記録する。この確認は今回のratification PR #579がmergeされるまで有効化されず、A2はA1＋D2a＋このratification merge後にreadyとする。 |
 | 初回static draftの文書更新時点で未実施 | 新たなproduction runtime integration、activation、外部送信、runtime journey、push、PR、M2全体移行、全抽出recipe対応、作者価値の測定 |
-| 現在のR0 merge candidateの必須gate | 全PR共通 merge gate Mとしてclean candidateのFull＋直後verifyを必須とし、文書化・focused／Quick結果で免除しない |
+| 現行typed-ratification candidateの必須gate | 全PR共通 merge gate Mとしてclean candidateのFull＋直後verifyを必須とし、文書化・focused／Quick結果で免除しない |
 
 ## 実装順序と公開条件
 
@@ -279,7 +279,7 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 | R0 | 基点、証跡、profile表、writer・呼出主体・送信経路の影響表、評価契約を固定 | #572 | 後付けの合格条件変更を禁止 |
 | D2a | profile/caller制限、外部dispatch停止、制限の永続化、起動時gate、平文公開gate | R0のcaller/profile egress | restricted plaintextを返す全entrypointの前提 |
 | A1: L6-A | Scope registry、scene設定、incarnation、互換marker、通常UI/API、Source登録 | R0のScope保存authority | Scope設定の永続化と既存L5移行ガードを同一PRで受入れ。restricted plaintext公開はD2aまで閉じる |
-| A2: L7-A | Entity/Relation typed入力、immutable Revision、明示承認、cold reopen | A1＋R0のtyped Revision材料 | D2a完了後にレビュー結果を製品公開 |
+| A2: L7-A | Entity/Relation typed入力、immutable Revision、明示承認、cold reopen | A1＋D2a＋typed-revision-material-ratification-merge | D2a完了後にレビュー結果を製品公開 |
 | A3: L6-B | 全材料の開示判定、各Scope軸のpositive/negative/unavailable | A1＋A2 | Graph公開の前提 |
 | B: L7-B | 独立Graph Index、writer失効、条件付き公開、復旧 | A1＋A2＋R0のGraph binding | Graph公開の前提 |
 | C: L7-C | bounded traversal、保守的融合、path Evidence、P2受入れ | A3＋B＋D2a | Graphの製品公開条件の一部、Packing入力 |
@@ -289,14 +289,18 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 | E: L9 | 比較、実製品journey、独立受入れ、Full・verify、全deliverable判定 | 全機能lane＋P | NIR-1 Complete判定 |
 | P | 固定検索性能契約の完了、Graph統合再確認 | R0後。機能laneと独立に測定 | NIR-1 Complete時にGraph統合再確認まで完了しHoldなし |
 
-R0がmergeされ、各laneの通常依存が満たされた後に限り、D2aとA1を開始できる。D2aは先行実装できるが、A1/A2の保存・reader・評価の開発を妨げない。typed /4が別途確認されるまでA2・A3・B・C・D1とそれらを消費する後続laneはblockedのままとし、Pだけは独立して測定できる。
+R0がmergeされ、各laneの通常依存が満たされた後に限り、D2aとA1を開始できる。D2aは先行実装できるが、A1/A2の保存・reader・評価の開発を妨げない。この別typed-ratification candidateで記録したproposal/4 rowは今回のratification PR #579がmergeされるまで有効化されず、A2はA1＋D2a＋このratification merge後に限りreadyとなる。A3・B・C・D1とそれらを消費する後続laneは通常依存が成立するまでblockedのままとする。Pだけは独立して測定できる。
 
 依存は次の最小図に固定する。PはR0後に独立して測定できるが、Eの完了判定では機能laneと同じMを通る。
 
 ```mermaid
 flowchart LR
   R0 --> D2a
-  R0 --> A1 --> A2
+  R0 --> A1
+  R0 --> TR[typed-revision-material ratification merge]
+  A1 --> A2
+  D2a --> A2
+  TR --> A2
   A2 --> A3 --> C
   A2 --> B --> C
   A2 --> D1
@@ -483,7 +487,7 @@ L9受入れ・merge前:
     pnpm ci:local:full -- --base origin/master --head HEAD
     pnpm ci:local:verify -- full --base origin/master --head HEAD
 
-baseまたはHEADが変わった場合、古いreceiptを流用せずFullをstage 1から再実行する。初回static draftではruntime journey・activation・merge gate MのFull／verifyを実施していないと記録したが、これは現在候補の免除ではない。初回static draftの旧R0候補で実施済みだった `verify:quality`、Quick、直後のQuick verifyを本版で無効化し、再開候補で再実施する記録だった。現在のR0 merge candidateは全PR共通 merge gate Mの対象であり、merge前のclean HEADでFull＋直後verifyが必須である。runtime journey・activationはR0の機能受入れ範囲外である。
+baseまたはHEADが変わった場合、古いreceiptを流用せずFullをstage 1から再実行する。初回static draftではruntime journey・activation・merge gate MのFull／verifyを実施していないと記録したが、これは現在候補の免除ではない。初回static draftの旧R0候補で実施済みだった `verify:quality`、Quick、直後のQuick verifyを本版で無効化し、再開候補で再実施する記録だった。現行typed-ratification candidateは全PR共通 merge gate Mの対象であり、merge前のclean HEADでFull＋直後verifyが必須である。runtime journey・activationはR0の機能受入れ範囲外である。
 
 ## 非目標と再確認条件
 
