@@ -16,6 +16,7 @@ use grimodex_post_effect::{
     PostEffectAiRequest, PostEffectAiResolvedRoute, PostEffectRuntime,
 };
 
+use crate::profile_egress::ProfileDispatchPermit;
 use crate::state::AppState;
 
 /// DB/event/abort state を同じ Backend instanceへ束縛する runtime。
@@ -23,16 +24,25 @@ use crate::state::AppState;
 pub(crate) struct NodePostEffectRuntime {
     state: Arc<AppState>,
     db: Option<PinnedWorkspaceDb>,
+    /// The permit is cloned into detached run runtimes so the profile startup
+    /// barrier waits for the actual AI task, not only its fire-and-forget
+    /// launch call.
+    dispatch: Option<ProfileDispatchPermit>,
 }
 
 impl NodePostEffectRuntime {
     pub(crate) fn new(state: Arc<AppState>) -> Self {
-        Self { state, db: None }
+        Self {
+            state,
+            db: None,
+            dispatch: None,
+        }
     }
 
     pub(crate) fn new_scoped(
         state: Arc<AppState>,
         expected_workspace_path: &str,
+        dispatch: ProfileDispatchPermit,
     ) -> Result<Self, AppError> {
         let workspace = active_workspace_snapshot(&state.ws)?;
         let active = workspace
@@ -52,6 +62,7 @@ impl NodePostEffectRuntime {
         Ok(Self {
             state,
             db: Some(Arc::clone(workspace.db())),
+            dispatch: Some(dispatch),
         })
     }
 }
@@ -65,6 +76,7 @@ impl PostEffectRuntime for NodePostEffectRuntime {
         Ok(Self {
             state: Arc::clone(&self.state),
             db: Some(db),
+            dispatch: self.dispatch.clone(),
         })
     }
 
@@ -98,6 +110,7 @@ pub(crate) struct NodePostEffectAiClient {
     settings: grimodex_ai::AiSettings,
     api_key: Option<String>,
     api_key_error: Option<String>,
+    dispatch: Option<ProfileDispatchPermit>,
 }
 
 impl NodePostEffectAiClient {
@@ -110,7 +123,13 @@ impl NodePostEffectAiClient {
             settings,
             api_key,
             api_key_error,
+            dispatch: None,
         }
+    }
+
+    pub(crate) fn with_dispatch(mut self, dispatch: ProfileDispatchPermit) -> Self {
+        self.dispatch = Some(dispatch);
+        self
     }
 
     fn resolve_api_key(&self, settings: &grimodex_ai::AiSettings) -> anyhow::Result<String> {
@@ -165,8 +184,12 @@ impl PostEffectAiClient for NodePostEffectAiClient {
         )?;
         let route =
             PostEffectAiResolvedRoute::from_settings_and_prepared(&settings, prepared.clone());
+        let profile_dispatch = self.dispatch.clone();
         let dispatch: PostEffectAiDispatch<'a> = Box::new(move || {
             Box::pin(async move {
+                if let Some(dispatch) = &profile_dispatch {
+                    dispatch.ensure_open()?;
+                }
                 let api_key = self.resolve_api_key(&settings)?;
                 let detected_model = settings.model.clone();
                 let raw_response =
@@ -186,6 +209,9 @@ impl PostEffectAiClient for NodePostEffectAiClient {
         request: PostEffectAiRequest<'a>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<PostEffectAiOutput>> + Send + 'a>> {
         Box::pin(async move {
+            if let Some(dispatch) = &self.dispatch {
+                dispatch.ensure_open()?;
+            }
             let settings = apply_model_override(
                 self.settings.clone(),
                 request.model_override,

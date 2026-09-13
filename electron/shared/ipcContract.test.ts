@@ -9978,6 +9978,40 @@ describe("Post-effect Phase 3d コマンド", () => {
     ).toHaveLength(1);
   });
 
+  it("start_post_effect_run は Native へ渡す caller identity を outer main binding から再投影する", async () => {
+    const { backend, methods } = makeBackend();
+    const issued = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "session-1",
+    };
+    const forged = {
+      ...issued,
+      senderId: 7,
+      callerId: "renderer-forged",
+    };
+
+    const env = await dispatchInvoke(
+      "start_post_effect_run",
+      {
+        ...startArgs({ ...singleArgs, callerIdentity: forged }),
+        callerIdentity: issued,
+      },
+      { backend, shell: noShell, secrets: secrets("sk-review") },
+    );
+
+    expect(env.ok).toBe(true);
+    expect(methods.startPostEffectRun).toHaveBeenCalledWith(
+      expect.objectContaining({ callerIdentity: issued }),
+      expect.any(Object),
+      expect.any(String),
+      null,
+    );
+  });
+
   it("start_post_effect_run_multi は scenes を含むsnake_case argsを保持し、optional key=nullでも開始する", async () => {
     const { backend, calls, methods } = makeBackend();
     const keyStore = secrets(null);

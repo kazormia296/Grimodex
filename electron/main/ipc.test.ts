@@ -8,6 +8,11 @@ import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 import { IPC } from "../shared/ipcContract.js";
 import { NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS } from "./narrativeMaintenance.js";
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
+import { createCliAiManager } from "./cliAi.js";
+import {
+  createProfileEgressGate,
+  D2A_EGRESS_DENIED_MARKER,
+} from "./profileEgress.js";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<
@@ -2188,6 +2193,130 @@ describe("NIR-1 router sender binding", () => {
       expect.objectContaining({ callerIdentity: identity }),
     );
     expect(saveAiSettings).toHaveBeenCalledWith({});
+  });
+
+  it("keeps every legacy AI family at dispatch zero, including route variants", async () => {
+    const nativeTransportCalls: string[] = [];
+    const nativeTransport = (method: string, result = "{}") =>
+      vi.fn(async () => {
+        nativeTransportCalls.push(method);
+        return result;
+      });
+    const nativeCalls = {
+      initializeProfileEgress: async () =>
+        JSON.stringify({
+          profileId: "profile-1",
+          callerEpoch: 2,
+          restricted: true,
+          handlesInvalidated: true,
+          inFlightStopped: true,
+        }),
+      registerProfileEgressCaller: vi.fn(),
+      invalidateProfileEgressCallers: vi.fn(),
+      sendChatMessage: nativeTransport("sendChatMessage"),
+      sendChatMessageStream: nativeTransport("sendChatMessageStream"),
+      sendInlineAiStream: nativeTransport("sendInlineAiStream"),
+      sendAgentMessage: nativeTransport("sendAgentMessage"),
+      listAiModels: nativeTransport("listAiModels"),
+      testAiConnection: nativeTransport("testAiConnection"),
+      startPostEffectRun: nativeTransport("startPostEffectRun"),
+      startPostEffectRunMulti: nativeTransport("startPostEffectRunMulti"),
+      narrativeExtractionGetRunReviewBundle: nativeTransport(
+        "narrativeExtractionGetRunReviewBundle",
+      ),
+      saveGlobalSettings: nativeTransport("saveGlobalSettings"),
+    };
+    const childDispatches: string[] = [];
+    const cliManager = createCliAiManager(() => undefined, {
+      runner: {
+        run: async () => {
+          childDispatches.push("run");
+          return { exitCode: 0, signal: null, stdout: "", stderr: "" };
+        },
+        start: () => {
+          childDispatches.push("start");
+          throw new Error("unexpected CLI child dispatch");
+        },
+      } as never,
+      detectBinary: async () => null,
+    });
+    const profileEgress = await createProfileEgressGate(
+      nativeCalls as unknown as NapiBackendLike,
+    );
+    registerIpcRouter(
+      nativeCalls as unknown as NapiBackendLike,
+      cliManager.handlers,
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const legacyRoutes: Array<[string, Record<string, unknown>]> = [
+      ["send_chat_message", { messages: ["old"], apiVariant: "loopback" }],
+      [
+        "send_chat_message_stream",
+        { messages: ["old"], endpointId: "proxy", retry: true },
+      ],
+      ["send_inline_ai_stream", { messages: ["old"], apiVariant: "redirect" }],
+      ["send_agent_message", { messages: ["old"], sessionId: "other" }],
+      ["list_ai_models", { provider: "ollama", endpointId: "proxy" }],
+      ["test_ai_connection", { provider: "ollama", endpointId: "redirect" }],
+      ["start_post_effect_run", { retry: true, sessionId: "old" }],
+      ["start_post_effect_run_multi", { retry: true, workspaceId: "other" }],
+      ["send_cli_chat_stream", { sessionId: undefined }],
+      ["detect_cli_binary", { cli: "codex" }],
+      ["test_cli_connection", { endpointId: "proxy" }],
+      ["list_cli_models", { retry: true }],
+      ["codex_app_start_turn", { sessionId: "old", workspaceId: "other" }],
+      ["codex_app_respond_to_request", { requestId: "old" }],
+      ["codex_app_get_status", { sessionId: undefined }],
+      ["codex_app_list_models", { workspaceId: "other", retry: true }],
+      ["codex_app_test_connection", { redirect: true }],
+      ["narrative_extraction_get_run_review_bundle", { messages: ["old"] }],
+      ["project_snapshot_restore_context", { workspaceId: "other" }],
+      ["lint_ignore_list", { projectId: "other" }],
+      ["lint_ignore_list_scene", { projectId: "other", sessionId: "old" }],
+      ["lint_term_dictionary_list", { projectId: "other" }],
+    ];
+
+    for (const [command, args] of legacyRoutes) {
+      const envelope = await invokeHandler()(
+        { sender: { id: 42 } },
+        command,
+        args,
+      );
+      expect(envelope.ok, command).toBe(false);
+      if (!envelope.ok) {
+        expect(envelope.error, command).toMatch(
+          new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`),
+        );
+      }
+    }
+    for (const call of [
+      nativeCalls.sendChatMessage,
+      nativeCalls.sendChatMessageStream,
+      nativeCalls.sendInlineAiStream,
+      nativeCalls.sendAgentMessage,
+      nativeCalls.listAiModels,
+      nativeCalls.testAiConnection,
+      nativeCalls.startPostEffectRun,
+      nativeCalls.startPostEffectRunMulti,
+      nativeCalls.narrativeExtractionGetRunReviewBundle,
+    ]) {
+      expect(call).not.toHaveBeenCalled();
+    }
+    expect(nativeTransportCalls).toEqual([]);
+    expect(childDispatches).toEqual([]);
+
+    const save = await invokeHandler()(
+      { sender: { id: 42 } },
+      "save_global_settings",
+      { settings: { theme: "dark" } },
+    );
+    expect(save.ok).toBe(true);
+    expect(nativeTransportCalls).toEqual(["saveGlobalSettings"]);
+    cliManager.disposeAll();
   });
 
   it("passes a main owner to Native and prevents a second WebContents from copying it", async () => {

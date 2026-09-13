@@ -407,6 +407,10 @@ export interface ExtractCodexEntitySeedsRequestV1 {
 export interface NapiBackendLike {
   /** Main-only D2a startup barrier; never registered in renderer IPC. */
   initializeProfileEgress?(): Promise<string>;
+  /** Main-only registration of a main-issued caller identity. */
+  registerProfileEgressCaller?(identity: string): void;
+  /** Main-only invalidation after the trusted workspace binding changes. */
+  invalidateProfileEgressCallers?(): void;
   dbExecute(sql: string, params: unknown, method: string): Promise<string>;
   dbExecuteBatch(statements: unknown): Promise<string>;
   narrativeRuntimePolicyGet?(): Promise<string>;
@@ -9070,9 +9074,12 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       );
       const { settings, apiKey, apiKeyError } =
         await resolvePostEffectAiSnapshot(b, args, d, "start_post_effect_run");
+      const callerIdentity = a.callerIdentity;
       return parseWire(
         await startPostEffectRun(
-          { ...args, expectedWorkspacePath },
+          callerIdentity === undefined
+            ? { ...args, expectedWorkspacePath }
+            : { ...args, expectedWorkspacePath, callerIdentity },
           settings,
           apiKey,
           apiKeyError,
@@ -9101,9 +9108,12 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           d,
           "start_post_effect_run_multi",
         );
+      const callerIdentity = a.callerIdentity;
       return parseWire(
         await startPostEffectRunMulti(
-          { ...args, expectedWorkspacePath },
+          callerIdentity === undefined
+            ? { ...args, expectedWorkspacePath }
+            : { ...args, expectedWorkspacePath, callerIdentity },
           settings,
           apiKey,
           apiKeyError,

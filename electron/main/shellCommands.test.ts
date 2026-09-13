@@ -288,6 +288,29 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("openExternal（scheme 再検証 = safeUrl.ts と二重防御）", () => {
+  it("profile egress gate が閉じている間は shell.openExternal へ到達しない", async () => {
+    const denied = vi.fn(() => {
+      throw new Error("D2A_EGRESS_DENIED: external URL opening is disabled");
+    });
+    openExternalMock.mockClear();
+    registerShellBridgeHandlers(undefined, undefined, denied);
+    try {
+      const env = await invokeBridge(
+        IPC.openExternal,
+        { sender: {} },
+        "https://example.com/",
+      );
+      expect(env).toEqual({
+        ok: false,
+        error: "D2A_EGRESS_DENIED: external URL opening is disabled",
+      });
+      expect(denied).toHaveBeenCalledOnce();
+      expect(openExternalMock).not.toHaveBeenCalled();
+    } finally {
+      registerShellBridgeHandlers();
+    }
+  });
+
   it("https は許可される", async () => {
     const env = await invokeBridge(
       IPC.openExternal,

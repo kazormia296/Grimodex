@@ -2576,13 +2576,13 @@ struct TestAiConnectionRequest {
     caller_identity: Option<profile_egress::CallerIdentity>,
 }
 
-fn authorize_profile_egress(
+fn begin_profile_egress_dispatch(
     state: &Arc<AppState>,
     identity: Option<&profile_egress::CallerIdentity>,
-) -> Result<()> {
+) -> Result<profile_egress::ProfileDispatchPermit> {
     state
         .profile_egress
-        .authorize_optional(identity)
+        .begin_dispatch(identity)
         .map_err(|error| Error::from_reason(format!("{error:#}")))
 }
 
@@ -2860,21 +2860,34 @@ impl Backend {
         })
     }
 
-    /// Main-only D2a startup barrier. It rotates the profile caller epoch,
-    /// invalidates pre-existing native stream handles, waits for all native
-    /// streams to quiesce, and persists local-only mode before renderer/event
-    /// wiring is installed by Electron main.
+    /// Main-only D2a startup barrier. The first call performs the explicit
+    /// restricted-publication transition; later process starts load the same
+    /// profile epoch without rotating it. In either case all native stream
+    /// handles and dispatch leases are quiesced before renderer/event wiring
+    /// is installed by Electron main.
     #[napi]
     pub async fn initialize_profile_egress(&self) -> Result<String> {
-        // Close the gate and rotate the epoch before awaiting any cancellation;
-        // a concurrent stale caller must not start another transport during
-        // the stop barrier.
+        // Load persisted state first. Only the first explicit publication
+        // transitions a fresh profile; ordinary restarts must not rotate or
+        // re-activate the restriction.
+        if !self.state.profile_egress.status().restricted {
+            self.state
+                .profile_egress
+                .activate_first_restricted_publication(false)
+                .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        }
+        // Close the gate before awaiting cancellation. The state mutex makes
+        // this transition and every subsequent dispatch admission mutually
+        // exclusive; an already restricted profile keeps its durable epoch.
         self.state
             .profile_egress
-            .activate(false)
+            .begin_startup_barrier()
             .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        let post_effect_stopped = self.state.post_effect_abort.abort_all();
         let chat_stopped = self.state.chat_streams.abort_all().await;
         let inline_stopped = self.state.inline_ai_streams.abort_all().await;
+        self.state.profile_egress.wait_for_dispatches().await;
+        self.state.post_effect_abort.clear_abort_all();
         let status = self
             .state
             .profile_egress
@@ -2892,8 +2905,31 @@ impl Backend {
                 "inlineStreamsStopped".to_string(),
                 serde_json::json!(inline_stopped),
             );
+            object.insert(
+                "postEffectRunsStopped".to_string(),
+                serde_json::json!(post_effect_stopped),
+            );
         }
         serde_json::to_string(&json).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Main-only registration of one exact caller identity for this Backend
+    /// process generation. Renderer IPC never exposes this method.
+    #[napi]
+    pub fn register_profile_egress_caller(&self, identity: String) -> Result<()> {
+        let identity: profile_egress::CallerIdentity = serde_json::from_str(&identity)
+            .map_err(|error| Error::from_reason(format!("invalid caller identity: {error}")))?;
+        self.state
+            .profile_egress
+            .register_caller(&identity)
+            .map_err(|error| Error::from_reason(format!("{error:#}")))
+    }
+
+    /// Main-only invalidation when the trusted workspace binding changes.
+    /// Renderer-provided identities cannot clear or retain Native registrations.
+    #[napi]
+    pub fn invalidate_profile_egress_callers(&self) {
+        self.state.profile_egress.invalidate_callers();
     }
 
     // ─────────────────────── license (Phase 3e) ──────────────────────────
@@ -4108,7 +4144,13 @@ impl Backend {
         run_blocking(move || {
             let params = params_array(params)?;
             with_db_state(&state.ws, |db| {
-                let rows = db.execute_renderer(&sql, &params, &method)?;
+                let rows = if state.profile_egress.status().restricted {
+                    db.execute_renderer_profile_egress(&sql, &params, &method)?
+                } else {
+                    // Keep direct standalone Backend use compatible before the
+                    // explicit first-restricted-publication transition.
+                    db.execute_renderer(&sql, &params, &method)?
+                };
                 Ok(serde_json::to_string(&QueryResult { rows })?)
             })
         })
@@ -4125,7 +4167,13 @@ impl Backend {
         run_blocking(move || {
             let statements: Vec<BatchStatement> = from_wire("statements", statements)?;
             with_db_state(&state.ws, |db| {
-                let rows = db.execute_batch_tx_renderer(&statements)?;
+                let rows = if state.profile_egress.status().restricted {
+                    db.execute_batch_tx_renderer_profile_egress(&statements)?
+                } else {
+                    // Keep direct standalone Backend use compatible before the
+                    // explicit first-restricted-publication transition.
+                    db.execute_batch_tx_renderer(&statements)?
+                };
                 Ok(serde_json::to_string(&QueryResult { rows })?)
             })
         })
@@ -4796,8 +4844,12 @@ impl Backend {
         let task = napi::tokio::task::spawn_blocking(move || {
             trace.finish_span(blocking_pool_span);
             let state_for_hook = Arc::clone(&state);
+            let workspace_binding = path.clone();
             let mut on_swapped = move |trace: &mut NativeWorkspaceOpenTrace| {
                 rotate_ime_workspace_traced(&state_for_hook, Some(trace));
+                state_for_hook
+                    .profile_egress
+                    .bind_workspace(Some(workspace_binding.clone()));
 
                 let matcher_span = trace.begin_span(NativeWorkspaceOpenSpanName::MatcherLockWait);
                 let mut matcher = match state_for_hook.codex_matcher.lock() {
@@ -5014,8 +5066,14 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let state_for_hook = Arc::clone(&state);
+            let workspace_binding = active_workspace_path(&state.ws)
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned());
             restore_backup_core(&state.ws, &file_name, move || {
                 rotate_ime_workspace(&state_for_hook);
+                state_for_hook
+                    .profile_egress
+                    .bind_workspace(workspace_binding.clone());
                 let mut matcher = match state_for_hook.codex_matcher.lock() {
                     Ok(matcher) => matcher,
                     Err(poisoned) => poisoned.into_inner(),
@@ -8639,7 +8697,7 @@ impl Backend {
         api_key_error: Option<String>,
     ) -> Result<String> {
         let caller_identity = caller_identity_from_args(&args)?;
-        authorize_profile_egress(&self.state, caller_identity.as_ref())?;
+        let dispatch = begin_profile_egress_dispatch(&self.state, caller_identity.as_ref())?;
         let expected_workspace_path = args
             .as_object_mut()
             .and_then(|object| object.remove("expectedWorkspacePath"))
@@ -8652,10 +8710,15 @@ impl Backend {
             from_wire("args", args).map_err(app_err_to_napi)?;
         let settings: grimodex_ai::AiSettings =
             from_wire("settings", settings).map_err(app_err_to_napi)?;
-        let runtime =
-            NodePostEffectRuntime::new_scoped(Arc::clone(&self.state), &expected_workspace_path)
-                .map_err(app_err_to_napi)?;
-        let ai = NodePostEffectAiClient::new(settings, api_key, api_key_error);
+        let ai_dispatch = dispatch.clone();
+        let runtime = NodePostEffectRuntime::new_scoped(
+            Arc::clone(&self.state),
+            &expected_workspace_path,
+            dispatch,
+        )
+        .map_err(app_err_to_napi)?;
+        let ai = NodePostEffectAiClient::new(settings, api_key, api_key_error)
+            .with_dispatch(ai_dispatch);
         let result = grimodex_post_effect::start_post_effect_run(runtime, ai, args)
             .await
             .map_err(app_err_to_napi)?;
@@ -8673,7 +8736,7 @@ impl Backend {
         api_key_error: Option<String>,
     ) -> Result<String> {
         let caller_identity = caller_identity_from_args(&args)?;
-        authorize_profile_egress(&self.state, caller_identity.as_ref())?;
+        let dispatch = begin_profile_egress_dispatch(&self.state, caller_identity.as_ref())?;
         let expected_workspace_path = args
             .as_object_mut()
             .and_then(|object| object.remove("expectedWorkspacePath"))
@@ -8686,10 +8749,15 @@ impl Backend {
             from_wire("args", args).map_err(app_err_to_napi)?;
         let settings: grimodex_ai::AiSettings =
             from_wire("settings", settings).map_err(app_err_to_napi)?;
-        let runtime =
-            NodePostEffectRuntime::new_scoped(Arc::clone(&self.state), &expected_workspace_path)
-                .map_err(app_err_to_napi)?;
-        let ai = NodePostEffectAiClient::new(settings, api_key, api_key_error);
+        let ai_dispatch = dispatch.clone();
+        let runtime = NodePostEffectRuntime::new_scoped(
+            Arc::clone(&self.state),
+            &expected_workspace_path,
+            dispatch,
+        )
+        .map_err(app_err_to_napi)?;
+        let ai = NodePostEffectAiClient::new(settings, api_key, api_key_error)
+            .with_dispatch(ai_dispatch);
         let result = grimodex_post_effect::start_post_effect_run_multi(runtime, ai, args)
             .await
             .map_err(app_err_to_napi)?;
@@ -8756,7 +8824,7 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: ChatRequest = from_wire("args", args).map_err(app_err_to_napi)?;
-        authorize_profile_egress(&self.state, req.caller_identity.as_ref())?;
+        let dispatch = begin_profile_egress_dispatch(&self.state, req.caller_identity.as_ref())?;
         let audit_context = req.audit_context.clone();
         let audit_workspace =
             pin_native_ai_audit_workspace(&self.state, &audit_context).map_err(app_err_to_napi)?;
@@ -8806,6 +8874,9 @@ impl Backend {
             .iter()
             .map(|m| (m.role.as_str(), m.content.as_str()))
             .collect();
+        dispatch
+            .ensure_open()
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
         let result = grimodex_ai::send_chat(&params, &msgs)
             .await
             .map_err(native_ai_error_to_napi)?;
@@ -8827,7 +8898,6 @@ impl Backend {
         api_key: String,
     ) -> Result<()> {
         let req: ChatRequest = from_wire("args", args).map_err(app_err_to_napi)?;
-        authorize_profile_egress(&self.state, req.caller_identity.as_ref())?;
         let stream_id = req.stream_id.as_deref().unwrap_or_default();
         if stream_id.trim().is_empty()
             || stream_id != stream_id.trim()
@@ -8843,6 +8913,14 @@ impl Backend {
             .chat_streams
             .register(&stream_id)
             .map_err(native_ai_error_to_napi)?;
+        let dispatch =
+            match begin_profile_egress_dispatch(&self.state, req.caller_identity.as_ref()) {
+                Ok(dispatch) => dispatch,
+                Err(error) => {
+                    self.state.chat_streams.complete(&stream_id, &cancellation);
+                    return Err(error);
+                }
+            };
         let outcome: Result<()> = async {
             let audit_context = req.audit_context.clone();
             let audit_workspace = pin_native_ai_audit_workspace(&self.state, &audit_context)
@@ -8899,6 +8977,9 @@ impl Backend {
                 .iter()
                 .map(|m| (m.role.as_str(), m.content.as_str()))
                 .collect();
+            dispatch
+                .ensure_open()
+                .map_err(|error| Error::from_reason(format!("{error:#}")))?;
             let result =
                 grimodex_ai::send_chat_stream(&params, &msgs, flag, &emitter, "chat").await;
             if let Err(e) = result {
@@ -8940,7 +9021,6 @@ impl Backend {
         api_key: String,
     ) -> Result<()> {
         let req: InlineAiRequest = from_wire("args", args).map_err(app_err_to_napi)?;
-        authorize_profile_egress(&self.state, req.caller_identity.as_ref())?;
         if req.stream_id.trim().is_empty()
             || req.stream_id != req.stream_id.trim()
             || req.stream_id != req.audit_context.execution_id
@@ -8955,6 +9035,16 @@ impl Backend {
             .inline_ai_streams
             .register(&stream_id)
             .map_err(native_ai_error_to_napi)?;
+        let dispatch =
+            match begin_profile_egress_dispatch(&self.state, req.caller_identity.as_ref()) {
+                Ok(dispatch) => dispatch,
+                Err(error) => {
+                    self.state
+                        .inline_ai_streams
+                        .complete(&stream_id, &cancellation);
+                    return Err(error);
+                }
+            };
         let outcome: Result<()> = async {
             let audit_context = req.audit_context.clone();
             let audit_workspace = pin_native_ai_audit_workspace(&self.state, &audit_context)
@@ -9009,6 +9099,9 @@ impl Backend {
                 .iter()
                 .map(|m| (m.role.as_str(), m.content.as_str()))
                 .collect();
+            dispatch
+                .ensure_open()
+                .map_err(|error| Error::from_reason(format!("{error:#}")))?;
             let result =
                 grimodex_ai::send_chat_stream(&params, &msgs, flag, &emitter, "inline-ai").await;
             if let Err(e) = result {
@@ -9051,7 +9144,7 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: AgentRequest = from_wire("args", args).map_err(app_err_to_napi)?;
-        authorize_profile_egress(&self.state, req.caller_identity.as_ref())?;
+        let dispatch = begin_profile_egress_dispatch(&self.state, req.caller_identity.as_ref())?;
         let audit_context = req.audit_context.clone();
         let audit_workspace =
             pin_native_ai_audit_workspace(&self.state, &audit_context).map_err(app_err_to_napi)?;
@@ -9099,6 +9192,9 @@ impl Backend {
             &audit_workspace,
             audit_context,
         );
+        dispatch
+            .ensure_open()
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
         let result = grimodex_ai::send_chat_with_tools(&params, &req.messages, &req.tools)
             .await
             .map_err(native_ai_error_to_napi)?;
@@ -9116,7 +9212,7 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: ListAiModelsRequest = from_wire("args", args).map_err(app_err_to_napi)?;
-        authorize_profile_egress(&self.state, req.caller_identity.as_ref())?;
+        let dispatch = begin_profile_egress_dispatch(&self.state, req.caller_identity.as_ref())?;
         let mut settings: grimodex_ai::AiSettings =
             from_wire("settings", settings).map_err(app_err_to_napi)?;
         if let Some(endpoint_id) = req.endpoint_id.as_deref().filter(|id| !id.is_empty()) {
@@ -9130,6 +9226,9 @@ impl Backend {
             req.expected_ollama_endpoint.as_deref(),
         )
         .map_err(native_ai_error_to_napi)?;
+        dispatch
+            .ensure_open()
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
         let models = grimodex_ai::fetch_models_for(
             &req.provider,
             &api_key,
@@ -9154,7 +9253,7 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: TestAiConnectionRequest = from_wire("args", args).map_err(app_err_to_napi)?;
-        authorize_profile_egress(&self.state, req.caller_identity.as_ref())?;
+        let dispatch = begin_profile_egress_dispatch(&self.state, req.caller_identity.as_ref())?;
         let audit_context = req.audit_context.clone();
         let audit_workspace =
             pin_native_ai_audit_workspace(&self.state, &audit_context).map_err(app_err_to_napi)?;
@@ -9200,6 +9299,9 @@ impl Backend {
             route,
             effective_request_configuration,
         };
+        dispatch
+            .ensure_open()
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
         grimodex_ai::test_connection_with_observer(
             &req.provider,
             &req.model,

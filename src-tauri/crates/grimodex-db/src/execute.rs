@@ -35,6 +35,10 @@ pub const RENDERER_SQL_SECURITY_ERROR: &str = "RENDERER_SQL_SECURITY";
 /// Native-only until the explicit D2a plaintext publication gate exists.
 pub const RENDERER_TYPED_PAYLOAD_ERROR: &str = "RENDERER_SQL_TYPED_PAYLOAD";
 
+/// Stable marker returned when D2a's Native SQL publication guard rejects a
+/// protected read or a statement that would return DML result plaintext.
+pub const RENDERER_PROFILE_EGRESS_ERROR: &str = "D2A_EGRESS_DENIED";
+
 /// SQL caller classification shared by Electron, Tauri, and MCP.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SqlOrigin {
@@ -57,6 +61,10 @@ impl SqlOrigin {
 thread_local! {
     static UNTRUSTED_SQL_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static PENDING_INSERT_COLUMNS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    /// Set only while the Electron Native D2a generic-DB adapter is running.
+    /// The ordinary renderer policy remains backwards-compatible; D2a adds a
+    /// publication guard on top of the same SQLite authorizer.
+    static PROFILE_EGRESS_SQL_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
 const RENDERER_SQL_RESOURCE_ERROR: &str = "RENDERER_SQL_RESOURCE_LIMIT";
@@ -318,6 +326,80 @@ fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
     }
 }
 
+// Profile-restricted renderer SQL is allowed to read or mutate only the
+// app-level settings and SQLite schema bookkeeping. Project, scene, Codex,
+// event, and every other workspace table can contain model-visible material;
+// they remain Native typed-writer-only. SQLite's authorizer supplies the
+// actual table names, so quoted identifiers, CTEs, subqueries, and
+// INSERT ... SELECT cannot bypass classification with spelling changes.
+// Everything else, including a newly introduced table, is fail-closed.
+const D2A_LOCAL_TABLES: &[&str] = &[
+    "app_settings",
+    "sqlite_master",
+    "sqlite_schema",
+    "sqlite_sequence",
+];
+
+fn d2a_table_is_local(table_name: &str) -> bool {
+    let normalized = table_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(table_name)
+        .trim_matches(|character| matches!(character, '`' | '"' | '[' | ']'));
+    D2A_LOCAL_TABLES
+        .iter()
+        .any(|table| table.eq_ignore_ascii_case(normalized))
+}
+
+fn renderer_profile_egress_sql_rejection(ctx: &AuthContext<'_>) -> Option<String> {
+    if !PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get) {
+        return None;
+    }
+    if !matches!(ctx.database_name, None | Some("main")) {
+        return Some(format!(
+            "{RENDERER_PROFILE_EGRESS_ERROR}: restricted or unknown database {:?}",
+            ctx.database_name
+        ));
+    }
+    match &ctx.action {
+        AuthAction::Read { table_name, .. } if !d2a_table_is_local(table_name) => Some(format!(
+            "{RENDERER_PROFILE_EGRESS_ERROR}: restricted or unknown plaintext read from {table_name}"
+        )),
+        AuthAction::Delete { table_name }
+        | AuthAction::Insert { table_name }
+        | AuthAction::Update { table_name, .. }
+            if !d2a_table_is_local(table_name) => Some(format!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: restricted or unknown DML target {table_name}"
+            )),
+        _ => None,
+    }
+}
+
+fn with_profile_egress_sql<T>(operation: impl FnOnce() -> T) -> T {
+    let previous = PROFILE_EGRESS_SQL_ACTIVE.with(|active| {
+        let previous = active.get();
+        active.set(true);
+        previous
+    });
+    let result = operation();
+    PROFILE_EGRESS_SQL_ACTIVE.with(|active| active.set(previous));
+    result
+}
+
+/// SQLite itself is the parser for DML result shape. Preparing the statement
+/// and checking `readonly` plus `column_count` rejects every DML `RETURNING`
+/// form (including CTE variants) before execution without a pseudo SQL parser.
+fn reject_profile_egress_dml_result(conn: &Connection, sql: &str) -> anyhow::Result<()> {
+    if !PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get) {
+        return Ok(());
+    }
+    let statement = conn.prepare(sql)?;
+    if !statement.readonly() && statement.column_count() > 0 {
+        anyhow::bail!("{RENDERER_PROFILE_EGRESS_ERROR}: DML result plaintext is not published");
+    }
+    Ok(())
+}
+
 struct RendererSqlPolicyState {
     sql_length_limit: i32,
     vdbe_op_limit: i32,
@@ -437,7 +519,8 @@ where
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_CREATE, false)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE, false)?;
         conn.authorizer(Some(move |ctx: AuthContext<'_>| {
-            if let Some(reason) = renderer_sql_rejection(ctx) {
+            let profile_reason = renderer_profile_egress_sql_rejection(&ctx);
+            if let Some(reason) = profile_reason.or_else(|| renderer_sql_rejection(ctx)) {
                 if let Ok(mut denied) = denied_for_hook.lock() {
                     // A direct mutation of a protected parent may also trigger
                     // an indirect legacy `ai_audit_events` cascade.  Preserve
@@ -494,7 +577,9 @@ where
 
     let denied = denied_reason.lock().ok().and_then(|reason| reason.clone());
     if let Some(reason) = denied {
-        let code = if reason.starts_with(RENDERER_TYPED_PAYLOAD_ERROR) {
+        let code = if reason.starts_with(RENDERER_PROFILE_EGRESS_ERROR) {
+            RENDERER_PROFILE_EGRESS_ERROR
+        } else if reason.starts_with(RENDERER_TYPED_PAYLOAD_ERROR) {
             RENDERER_TYPED_PAYLOAD_ERROR
         } else if reason.contains("protected") {
             PROTECTED_WRITER_SQL_ERROR
@@ -708,6 +793,15 @@ impl Database {
         self.execute_batch_tx_impl(statements, SqlOrigin::Renderer)
     }
 
+    /// Execute renderer-origin statements with the Native D2a plaintext
+    /// publication guard layered onto the shared SQLite authorizer.
+    pub fn execute_batch_tx_renderer_profile_egress(
+        &self,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        with_profile_egress_sql(|| self.execute_batch_tx_impl(statements, SqlOrigin::Renderer))
+    }
+
     pub fn execute_batch_tx_untrusted(
         &self,
         origin: SqlOrigin,
@@ -727,6 +821,7 @@ impl Database {
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
         prepare_untrusted_statement_context(sql);
+        reject_profile_egress_dml_result(conn, sql)?;
         if renderer_indirect_ai_audit_cascade(conn, sql)? {
             return Err(anyhow::anyhow!(
                 "{RENDERER_SQL_SECURITY_ERROR}: denied mutation of ai_audit_events"
@@ -820,6 +915,17 @@ impl Database {
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
         self.execute_impl(sql, params, method, SqlOrigin::Renderer)
+    }
+
+    /// Execute one renderer-origin statement with the Native D2a plaintext
+    /// publication guard layered onto the shared SQLite authorizer.
+    pub fn execute_renderer_profile_egress(
+        &self,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        with_profile_egress_sql(|| self.execute_impl(sql, params, method, SqlOrigin::Renderer))
     }
 
     pub fn execute_with_origin(
@@ -947,6 +1053,118 @@ mod tests {
         );
         db.execute("CREATE TABLE trusted (id INTEGER)", &[], "run")
             .expect("trusted backend schema operation remains available");
+    }
+
+    #[test]
+    fn profile_egress_rejects_restricted_reads_and_dml_result_plaintext() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE projects (id INTEGER PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted local schema setup");
+        db.execute(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted settings schema setup");
+        db.execute("CREATE TABLE messages (content TEXT NOT NULL)", &[], "run")
+            .expect("trusted restricted schema setup");
+        db.execute("CREATE TABLE d2a_unknown (value TEXT)", &[], "run")
+            .expect("trusted unknown schema setup");
+        db.execute(
+            "CREATE TEMP TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted temporary settings schema setup");
+        db.execute(
+            "INSERT INTO messages (content) VALUES ('private')",
+            &[],
+            "run",
+        )
+        .expect("trusted restricted seed");
+
+        let error = db
+            .execute_renderer_profile_egress("SELECT content FROM messages", &[], "all")
+            .expect_err("D2a must not publish restricted reads");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected error: {error}"
+        );
+
+        let error = db
+            .execute_renderer_profile_egress("SELECT value FROM temp.app_settings", &[], "all")
+            .expect_err("D2a must not publish temporary or attached database reads");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected error: {error}"
+        );
+
+        for sql in [
+            "SELECT content FROM \"messages\"",
+            "WITH source AS (SELECT content FROM messages) SELECT content FROM source",
+            "SELECT value FROM (SELECT content AS value FROM messages)",
+            "SELECT value FROM app_settings WHERE value IN (SELECT content FROM messages)",
+            "SELECT value FROM d2a_unknown",
+            "INSERT INTO d2a_unknown (value) VALUES ('unknown')",
+            "UPDATE d2a_unknown SET value = 'unknown'",
+            "DELETE FROM d2a_unknown",
+            "UPDATE app_settings SET value = (SELECT content FROM messages)",
+            "WITH source AS (SELECT content FROM messages) INSERT INTO app_settings (key, value) SELECT 'leak', value FROM source",
+        ] {
+            let error = db
+                .execute_renderer_profile_egress(sql, &[], "all")
+                .expect_err("D2a must reject restricted and unknown table access");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected error for {sql}: {error}"
+            );
+        }
+
+        let error = db
+            .execute_renderer_profile_egress(
+                "INSERT INTO projects (id, value) VALUES (1, 'local') RETURNING value",
+                &[],
+                "all",
+            )
+            .expect_err("D2a must not publish DML RETURNING rows");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected error: {error}"
+        );
+
+        let error = db
+            .execute_renderer_profile_egress(
+                "INSERT INTO app_settings (key, value) SELECT 'leak', content FROM messages",
+                &[],
+                "run",
+            )
+            .expect_err("D2a must not read restricted sources during DML");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn profile_egress_allows_non_plaintext_local_dml() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted local schema setup");
+
+        db.execute_renderer_profile_egress(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            &[Value::from("local"), Value::from("setting")],
+            "run",
+        )
+        .expect("non-model local DML remains available");
     }
 
     #[test]

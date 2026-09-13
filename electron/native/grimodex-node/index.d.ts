@@ -11,12 +11,17 @@ export declare class Backend {
    */
   constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null, rerankerResourceRoot?: string | undefined | null)
   /**
-   * Main-only D2a startup barrier. It rotates the profile caller epoch,
-   * invalidates pre-existing native stream handles, waits for all native
-   * streams to quiesce, and persists local-only mode before renderer/event
-   * wiring is installed by Electron main.
+   * Main-only D2a startup barrier. The first call performs the explicit
+   * restricted-publication transition; later process starts load the same
+   * profile epoch without rotating it. In either case all native stream
+   * handles and dispatch leases are quiesced before renderer/event wiring
+   * is installed by Electron main.
    */
   initializeProfileEgress(): Promise<string>
+  /** Main-only registration of a main-issued caller identity. */
+  registerProfileEgressCaller(identity: string): void
+  /** Main-only invalidation after the trusted workspace binding changes. */
+  invalidateProfileEgressCallers(): void
   /**
    * Main-process-only bridge used during the Electron v2 first-run
    * credential migration. This method is deliberately absent from

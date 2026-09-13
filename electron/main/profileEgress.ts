@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 
-import type { CommandArgs, NapiBackendLike } from "../shared/ipcContract.js";
+import {
+  NAPI_COMMANDS,
+  type CommandArgs,
+  type NapiBackendLike,
+} from "../shared/ipcContract.js";
 
 export const D2A_EGRESS_DENIED_MARKER = "D2A_EGRESS_DENIED:";
 
@@ -29,6 +33,22 @@ type D2aRoute =
   | "native-mutation"
   | "internal"
   | "unclassified";
+
+/**
+ * Renderer-visible typed results that are not safe to expose while D2a is
+ * restricted.  The `satisfies` key check makes adding a stale/nonexistent
+ * command to this small exception ledger a compile-time error; all other
+ * commands remain covered by the route ledger below.
+ */
+export type D2aTypedResultPolicy = "plaintext-publication";
+export const D2A_TYPED_RESULT_POLICY = {
+  project_snapshot_restore_context: "plaintext-publication",
+  lint_ignore_list: "plaintext-publication",
+  lint_ignore_list_scene: "plaintext-publication",
+  lint_term_dictionary_list: "plaintext-publication",
+} as const satisfies Partial<
+  Record<keyof typeof NAPI_COMMANDS, D2aTypedResultPolicy>
+>;
 
 const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["send_chat_message", "old-external-ai"],
@@ -211,12 +231,9 @@ const INTERNAL_COMMANDS = new Set([
   "lint_ignore_copy",
   "lint_ignore_create",
   "lint_ignore_delete",
-  "lint_ignore_list",
-  "lint_ignore_list_scene",
   "lint_ignore_move",
   "lint_term_dictionary_delete",
   "lint_term_dictionary_insert",
-  "lint_term_dictionary_list",
   "lint_term_dictionary_set_enabled",
   "lint_term_dictionary_update",
   "lint_text",
@@ -268,7 +285,6 @@ const INTERNAL_COMMANDS = new Set([
   "project_patch",
   "project_snapshot_apply_restore",
   "project_snapshot_create",
-  "project_snapshot_restore_context",
   "quarantine_live_database",
   "rebuild_narrative_derived_state",
   "related_scenes_release",
@@ -349,14 +365,6 @@ const PROTECTED_DB_TABLES = new Set([
 
 const LOCAL_DB_TABLES = new Set([
   "app_settings",
-  "change_events",
-  "codex_entries",
-  "codex_relations",
-  "codex_types",
-  "events",
-  "projects",
-  "scene_events",
-  "tree_nodes",
 ]);
 
 function dbReadRoute(sql: unknown): D2aRoute {
@@ -387,6 +395,12 @@ function dbStatementRoute(sql: unknown): D2aRoute {
     : "unclassified";
 }
 
+function typedResultRoute(command: string): D2aRoute | undefined {
+  return D2A_TYPED_RESULT_POLICY[
+    command as keyof typeof D2A_TYPED_RESULT_POLICY
+  ];
+}
+
 const ALLOWED_BACKEND_EVENTS = new Set([
   "backend:ready",
   "workspace:opened",
@@ -406,6 +420,8 @@ const ALLOWED_BACKEND_EVENTS = new Set([
 ]);
 
 function commandRoute(command: string, args: CommandArgs): D2aRoute {
+  const typedResult = typedResultRoute(command);
+  if (typedResult) return typedResult;
   const explicit = DENIED_COMMANDS.get(command);
   if (explicit) return explicit;
   if (ALLOWED_STOP_COMMANDS.has(command)) return "native-mutation";
@@ -452,13 +468,25 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   readonly unavailable: boolean;
   private readonly profileId: string;
   private readonly callerEpoch: number;
+  private readonly registerCaller:
+    | ((identity: MainIssuedCallerIdentity) => void)
+    | null;
+  private readonly invalidateCallers: (() => void) | null;
   private workspaceId: string | null = null;
   private readonly identities = new Map<number, MainIssuedCallerIdentity>();
+  private readonly registrationErrors = new Map<number, string>();
 
-  constructor(status: NativeProfileEgressStatus | null, unavailable: boolean) {
+  constructor(
+    status: NativeProfileEgressStatus | null,
+    unavailable: boolean,
+    registerCaller?: (identity: MainIssuedCallerIdentity) => void,
+    invalidateCallers?: () => void,
+  ) {
     const profileId = status?.profileId;
     const callerEpoch = status?.callerEpoch;
     this.unavailable = unavailable;
+    this.registerCaller = registerCaller ?? null;
+    this.invalidateCallers = invalidateCallers ?? null;
     this.profileId =
       typeof profileId === "string" &&
       profileId.trim() === profileId &&
@@ -475,21 +503,92 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
 
   issueCallerIdentity(senderId: number): MainIssuedCallerIdentity {
     const existing = this.identities.get(senderId);
-    if (existing) return existing;
-    const identity: MainIssuedCallerIdentity = {
-      profileId: this.profileId,
-      callerId: randomUUID(),
-      callerEpoch: this.callerEpoch,
-      senderId,
-      workspaceId: this.workspaceId,
-      sessionId: randomUUID(),
-    };
-    this.identities.set(senderId, identity);
+    const identity =
+      existing ??
+      ({
+        profileId: this.profileId,
+        callerId: randomUUID(),
+        callerEpoch: this.callerEpoch,
+        senderId,
+        workspaceId: this.workspaceId,
+        sessionId: randomUUID(),
+      } satisfies MainIssuedCallerIdentity);
+    if (!existing) this.identities.set(senderId, identity);
+    // Native invalidates registrations during every workspace open/restore.
+    // Do not re-register an unchanged JS identity on the next invoke: an IPC
+    // event may be queued behind that invoke, and re-registering here would
+    // reopen the old workspace/session tuple before the event can rotate it.
+    // Registration failures remain retryable without weakening this rule.
+    if (
+      this.registerCaller &&
+      (!existing || this.registrationErrors.has(senderId))
+    ) {
+      try {
+        this.registerCaller(identity);
+        this.registrationErrors.delete(senderId);
+      } catch (error) {
+        this.registrationErrors.set(
+          senderId,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     return identity;
   }
 
   assertInvoke(command: string, args: CommandArgs): void {
+    if (
+      this.unavailable &&
+      (command === "db_execute" || command === "db_execute_batch")
+    ) {
+      throw denied(
+        "unclassified",
+        `route ${command} is unavailable until the Native profile gate is ready`,
+      );
+    }
     const route = commandRoute(command, args);
+    const callerIdentity = args.callerIdentity;
+    if (callerIdentity !== undefined && callerIdentity !== null) {
+      if (
+        typeof callerIdentity !== "object" ||
+        Array.isArray(callerIdentity) ||
+        typeof (callerIdentity as Record<string, unknown>).senderId !== "number"
+      ) {
+        throw denied("unclassified", "caller identity is malformed");
+      }
+      const senderId = (callerIdentity as Record<string, number>).senderId;
+      const issued = this.identities.get(senderId);
+      const candidate = callerIdentity as Partial<MainIssuedCallerIdentity>;
+      if (
+        !issued ||
+        issued.profileId !== candidate.profileId ||
+        issued.callerId !== candidate.callerId ||
+        issued.callerEpoch !== candidate.callerEpoch ||
+        issued.senderId !== candidate.senderId ||
+        issued.workspaceId !== candidate.workspaceId ||
+        issued.sessionId !== candidate.sessionId
+      ) {
+        throw denied(
+          "unclassified",
+          `caller identity is not issued for sender ${senderId}`,
+        );
+      }
+    }
+    if (
+      callerIdentity !== null &&
+      typeof callerIdentity === "object" &&
+      !Array.isArray(callerIdentity) &&
+      typeof (callerIdentity as Record<string, unknown>).senderId === "number"
+    ) {
+      const senderId = (callerIdentity as Record<string, number>).senderId;
+      const registrationError = this.registrationErrors.get(senderId);
+      if (registrationError && !ALLOWED_STOP_COMMANDS.has(command)) {
+        throw denied(
+          "unclassified",
+          `caller registration failed for sender ${senderId}: ${registrationError}`,
+        );
+      }
+    }
     if (
       route === "old-external-ai" ||
       route === "old-local-ai" ||
@@ -540,9 +639,19 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     // contract or exposing renderer-supplied identity.
     const workspaceId = nestedWorkspaceId ?? record.workspaceId ?? record.path;
     if (typeof workspaceId !== "string" || workspaceId.trim() === "") return;
-    if (workspaceId !== this.workspaceId) {
+    if (workspaceId !== this.workspaceId || this.identities.size > 0) {
+      const senderIds = [...this.identities.keys()];
+      try {
+        this.invalidateCallers?.();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        for (const senderId of senderIds) {
+          this.registrationErrors.set(senderId, detail);
+        }
+      }
       this.workspaceId = workspaceId;
       this.identities.clear();
+      this.registrationErrors.clear();
     }
   }
 }
@@ -550,7 +659,11 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
 export async function createProfileEgressGate(
   backend: NapiBackendLike | null,
 ): Promise<ProfileEgressGate> {
-  if (!backend?.initializeProfileEgress) {
+  if (
+    !backend?.initializeProfileEgress ||
+    !backend.registerProfileEgressCaller ||
+    !backend.invalidateProfileEgressCallers
+  ) {
     return new NativeBoundProfileEgressGate(null, true);
   }
   try {
@@ -563,7 +676,14 @@ export async function createProfileEgressGate(
     ) {
       return new NativeBoundProfileEgressGate(null, true);
     }
-    return new NativeBoundProfileEgressGate(status, false);
+    return new NativeBoundProfileEgressGate(
+      status,
+      false,
+      (identity) => {
+        backend.registerProfileEgressCaller!(JSON.stringify(identity));
+      },
+      () => backend.invalidateProfileEgressCallers!(),
+    );
   } catch (error) {
     console.error(
       `[grimodex-electron] D2a profile egress startup failed: ${error instanceof Error ? error.message : String(error)}`,
