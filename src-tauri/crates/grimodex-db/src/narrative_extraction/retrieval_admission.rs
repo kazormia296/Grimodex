@@ -75,6 +75,45 @@ pub fn read_revision_retrieval_eligibility(
     if let Some(reason) = disclosure::check(&membership, &query, &envelope, &payload)? {
         return Ok(unavailable(reason));
     }
+    let material_source_keys = membership
+        .materials
+        .iter()
+        .map(|material| material.source_key.clone())
+        .collect::<Vec<_>>();
+    let material_scope_cache = match super::scene_scope::preload_material_scene_scopes(
+        conn,
+        project_id,
+        &material_source_keys,
+    ) {
+        Ok(scopes) => scopes,
+        Err(error)
+            if error.downcast_ref::<rusqlite::Error>().is_some()
+                || error.downcast_ref::<std::io::Error>().is_some() =>
+        {
+            return Err(error)
+        }
+        Err(_) => return Ok(unavailable(RevisionEligibilityReason::MaterialAuthorityUnavailable)),
+    };
+    let material_scopes = match super::scene_scope::select_material_scene_scopes(
+        &material_scope_cache,
+        &material_source_keys,
+    ) {
+        Ok(scopes) => scopes,
+        Err(_) => {
+            return Ok(unavailable(
+                RevisionEligibilityReason::MaterialAuthorityUnavailable,
+            ));
+        }
+    };
+    if let Some(reason) = super::scene_scope::check_material_constraints(
+        &material_scopes,
+        &query,
+        &query.authority,
+        &membership.active_scope_controls,
+        &membership.run_id,
+    ) {
+        return Ok(unavailable(reason));
+    }
     // Reuse the one verified membership replay; the cold canonical API also
     // composes this same evaluator, rather than becoming another authority.
     let canonical = match freshness::read(conn, project_id, &membership)? {

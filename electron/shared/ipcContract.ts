@@ -666,6 +666,9 @@ export interface NapiBackendLike {
   ): Promise<string>;
   /** Cold reader for an explicitly human-approved typed Revision. */
   nir1EntityRelationRevisionRead?(payload: unknown): Promise<string>;
+  narrativeSceneScopeRead?(payload: unknown): Promise<string>;
+  narrativeSceneScopeUpdate?(payload: unknown): Promise<string>;
+  narrativeSceneScopeRegistryUpdate?(payload: unknown): Promise<string>;
   /** Main lifecycle only; deliberately absent from the renderer command map. */
   relatedScenesReleaseOwner?(ownerKey: string): Promise<string>;
   /** Main observer only; never a renderer command. */
@@ -6431,6 +6434,44 @@ function requireNir1PackingRequest(args: CommandArgs): CommandArgs {
   return { budgetTokens, items };
 }
 
+function requireSceneScopeReadRequest(args: CommandArgs): CommandArgs {
+  const command = "narrative_scene_scope_read";
+  const allowedKeys = new Set(["expectedWorkspacePath", "projectId", "sceneId"]);
+  for (const key of Object.keys(args)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(`invalid args \`${key}\` for command \`${command}\`: unknown field`);
+    }
+  }
+  return {
+    expectedWorkspacePath: requireNonEmptyString(args, "expectedWorkspacePath", command),
+    projectId: requireNonEmptyString(args, "projectId", command),
+    sceneId: requireNonEmptyString(args, "sceneId", command),
+  };
+}
+
+function requireSceneScopeMutationRequest(args: CommandArgs, command: string): CommandArgs {
+  const allowedKeys = new Set(["expectedWorkspacePath", "payload"]);
+  for (const key of Object.keys(args)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(`invalid args \`${key}\` for command \`${command}\`: unknown field`);
+    }
+  }
+  const payload = requireRecord(args, "payload", command);
+  const requiredKeys = command === "narrative_scene_scope_update"
+    ? ["projectId", "sceneId", "requestId", "sessionId", "eventUid", "baseVersion", "updatedAt", "scope"]
+    : ["projectId", "requestId", "sessionId", "eventUid", "baseVersion", "updatedAt", "registry"];
+  for (const key of requiredKeys) {
+    requirePresent(payload, key, command);
+  }
+  if (typeof payload.baseVersion !== "number" || !Number.isSafeInteger(payload.baseVersion) || payload.baseVersion < 1) {
+    throw new Error(`invalid args \`payload.baseVersion\` for command \`${command}\`: expected a positive safe integer`);
+  }
+  return {
+    expectedWorkspacePath: requireNonEmptyString(args, "expectedWorkspacePath", command),
+    payload,
+  };
+}
+
 /** napi 実装済みコマンドの明示写像（Phase 3 の各バッチで追加）。 */
 export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   db_execute: {
@@ -7517,6 +7558,41 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         )(payload, workspaceBinding),
       );
     },
+  },
+  narrative_scene_scope_read: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeSceneScopeRead,
+          "narrativeSceneScopeRead",
+        )(requireSceneScopeReadRequest(a)),
+      ),
+  },
+  narrative_scene_scope_update: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeSceneScopeUpdate,
+          "narrativeSceneScopeUpdate",
+        )(requireSceneScopeMutationRequest(a, "narrative_scene_scope_update")),
+      ),
+  },
+  narrative_scene_scope_registry_update: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeSceneScopeRegistryUpdate,
+          "narrativeSceneScopeRegistryUpdate",
+        )(
+          requireSceneScopeMutationRequest(
+            a,
+            "narrative_scene_scope_registry_update",
+          ),
+        ),
+      ),
   },
   // The typed Revision reader returns Evidence plaintext and therefore stays
   // out of renderer IPC until the Native-owned D2a publication gate exists.

@@ -1002,6 +1002,7 @@ pub fn narrative_extraction_apply_commit(
 
             let mut created = Vec::new();
             let mut after_snapshots = Vec::new();
+            let mut scene_scope_refresh_events = Vec::new();
             let mut application_ids = Vec::with_capacity(payload.applications.len());
             // Kept so each Contribution can name the operation that produced
             // it (SCHEMA 29). 1:1 with `payload.operations` by construction,
@@ -1255,6 +1256,9 @@ pub fn narrative_extraction_apply_commit(
                             &scene_payload,
                             &now,
                         )?;
+                        if let Some(event) = result.scope_refresh_event.clone() {
+                            scene_scope_refresh_events.push(event);
+                        }
                         (
                             "temporal_scene_chronicle",
                             result.entity_id,
@@ -1290,6 +1294,9 @@ pub fn narrative_extraction_apply_commit(
                             &story_order_payload,
                             &now,
                         )?;
+                        if let Some(event) = result.scope_refresh_event.clone() {
+                            scene_scope_refresh_events.push(event);
+                        }
                         (
                             "temporal_scene_story_order",
                             result.entity_id,
@@ -1765,12 +1772,13 @@ pub fn narrative_extraction_apply_commit(
                 }
             }
 
-            let maintenance_events = events_from_journal_entities(
+            let mut maintenance_events = events_from_journal_entities(
                 after_json["entities"]
                     .as_array()
                     .ok_or_else(|| anyhow::anyhow!("commit journal entities are missing"))?,
                 NarrativeChangeCauseKind::Forward,
             )?;
+            maintenance_events.extend(scene_scope_refresh_events);
             let maintenance_transaction = if maintenance_events.is_empty() {
                 None
             } else {

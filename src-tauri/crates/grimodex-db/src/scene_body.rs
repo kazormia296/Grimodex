@@ -372,6 +372,16 @@ pub fn save_scene_body_bundle(
                 );
             }
             let before_scene = scene_feed_snapshot(conn, &payload.project_id, &payload.scene_id)?;
+            let existing_scene_updated_at = before_scene
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .unwrap_or(payload.updated_at.as_str());
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.scene_id,
+                existing_scene_updated_at,
+            )?;
             let mut before_foreshadows = BTreeMap::new();
             if payload.include_sidecars {
                 for foreshadow_id in payload.foreshadow_base_versions.keys() {
@@ -788,6 +798,13 @@ pub fn save_scene_body_bundle(
             )?;
             let source_key = format!("project:scene:{}", payload.scene_id);
             let source_token = format!("v{}@{}", updated.0, updated.1);
+            let scene_scope_refresh_event =
+                crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &payload.scene_id,
+                    &updated.1,
+                )?;
             crate::narrative_extraction::propagate_source_change_freshness_in_tx(
                 conn,
                 &payload.project_id,
@@ -828,6 +845,7 @@ pub fn save_scene_body_bundle(
                 Some(&after_scene),
                 scene_paths,
             )?];
+            narrative_events.push(scene_scope_refresh_event);
             for foreshadow_id in &changed_roots {
                 let after = foreshadow_feed_snapshot(
                     conn,

@@ -2370,6 +2370,55 @@ export const narrativeExtractionStageReceipts = sqliteTable(
   ],
 );
 
+// NIR-1 A1. The existing tree/project Scope authority remains canonical for
+// membership and order; these Native-owned rows carry only typed scope
+// metadata, principals, incarnation, and OCC/source-token state.
+export const narrativeScopeRegistries = sqliteTable(
+  "narrative_scope_registries",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    registryVersion: text("registry_version").notNull(),
+    timelineRefsJson: text("timeline_refs_json").notNull(),
+    worldlineRefsJson: text("worldline_refs_json").notNull(),
+    narrativeLayerRefsJson: text("narrative_layer_refs_json").notNull(),
+    version: integer("version").notNull().default(1),
+    sourceToken: text("source_token").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId] })],
+);
+
+export const narrativeSceneScopeBindings = sqliteTable(
+  "narrative_scene_scope_bindings",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    sceneIncarnationId: text("scene_incarnation_id").notNull(),
+    compatibilityMarker: text("compatibility_marker").notNull(),
+    queryIdentityJson: text("query_identity_json").notNull(),
+    materialConstraintJson: text("material_constraint_json").notNull(),
+    knowledgeHolderJson: text("knowledge_holder_json").notNull(),
+    audienceJson: text("audience_json").notNull(),
+    version: integer("version").notNull().default(1),
+    sourceToken: text("source_token").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.sceneId] }),
+    index("idx_narrative_scene_scope_bindings_scene").on(table.sceneId),
+    index("idx_narrative_scene_scope_bindings_project").on(
+      table.projectId,
+      table.version,
+    ),
+  ],
+);
+
 export const narrativeProposalSets = sqliteTable("narrative_proposal_sets", {
   id: text("id").primaryKey(),
   runId: text("run_id").notNull(),
@@ -4169,6 +4218,12 @@ export type NarrativeExtractionStageReceipt =
   typeof narrativeExtractionStageReceipts.$inferSelect;
 export type NewNarrativeExtractionStageReceipt =
   typeof narrativeExtractionStageReceipts.$inferInsert;
+export type NarrativeScopeRegistry = typeof narrativeScopeRegistries.$inferSelect;
+export type NewNarrativeScopeRegistry = typeof narrativeScopeRegistries.$inferInsert;
+export type NarrativeSceneScopeBinding =
+  typeof narrativeSceneScopeBindings.$inferSelect;
+export type NewNarrativeSceneScopeBinding =
+  typeof narrativeSceneScopeBindings.$inferInsert;
 export type NarrativeDependencyDeclarationSet =
   typeof narrativeDependencyDeclarationSets.$inferSelect;
 export type NewNarrativeDependencyDeclarationSet =

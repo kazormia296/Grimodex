@@ -1710,6 +1710,96 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
+  it("A1 scene scope read は workspace/project/scene authority を Native へ渡す", async () => {
+    const method = vi.fn().mockResolvedValue(
+      '{"registry":{"registryVersion":"narrative-scene-scope-registry/1","timelineRefs":[],"worldlineRefs":[],"narrativeLayerRefs":[]},"registryRevision":1,"registrySourceToken":"sha256:0000000000000000000000000000000000000000000000000000000000000000","registryUpdatedAt":"2026-09-13T00:00:00.000Z","binding":{"projectId":"project-1","sceneId":"scene-1"}}',
+    );
+    const { backend } = fakeBackend({
+      narrativeSceneScopeRead: method,
+    });
+    const args = {
+      expectedWorkspacePath: "/workspace/project-1",
+      projectId: "project-1",
+      sceneId: "scene-1",
+    };
+
+    const env = await dispatchInvoke("narrative_scene_scope_read", args, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        registry: {
+          registryVersion: "narrative-scene-scope-registry/1",
+          timelineRefs: [],
+          worldlineRefs: [],
+          narrativeLayerRefs: [],
+        },
+        registryRevision: 1,
+        registrySourceToken:
+          "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        registryUpdatedAt: "2026-09-13T00:00:00.000Z",
+        binding: { projectId: "project-1", sceneId: "scene-1" },
+      },
+    });
+    expect(method).toHaveBeenCalledExactlyOnceWith(args);
+  });
+
+  it("A1 scene scope mutation は未知の引数を拒否し、typed payloadを一度だけ渡す", async () => {
+    const method = vi.fn().mockResolvedValue(
+      '{"binding":{"projectId":"project-1","sceneId":"scene-1","version":2}}',
+    );
+    const { backend } = fakeBackend({
+      narrativeSceneScopeUpdate: method,
+    });
+    const payload = {
+      projectId: "project-1",
+      sceneId: "scene-1",
+      requestId: "scope-request-1",
+      sessionId: "scope-session-1",
+      eventUid: "scope-event-1",
+      baseVersion: 1,
+      updatedAt: "2026-09-13T00:00:00.000Z",
+      scope: {
+        schemaVersion: 1,
+        compatibilityMarker: "explicit",
+        queryIdentity: {
+          timeline: { kind: "unresolved", reason: "pending" },
+          worldline: { kind: "unresolved", reason: "pending" },
+          narrativeLayer: { kind: "unresolved", reason: "pending" },
+        },
+        materialConstraint: {
+          timeline: { kind: "any" },
+          worldline: { kind: "any" },
+          narrativeLayer: { kind: "any" },
+        },
+        knowledgeHolder: { kind: "reader" },
+        audience: { kind: "reader" },
+      },
+    };
+    const args = { expectedWorkspacePath: "/workspace/project-1", payload };
+
+    const env = await dispatchInvoke("narrative_scene_scope_update", args, {
+      backend,
+      shell: noShell,
+    });
+    expect(env).toEqual({
+      ok: true,
+      value: { binding: { projectId: "project-1", sceneId: "scene-1", version: 2 } },
+    });
+    expect(method).toHaveBeenCalledExactlyOnceWith(args);
+
+    const rejected = await dispatchInvoke(
+      "narrative_scene_scope_update",
+      { ...args, unexpected: true },
+      { backend, shell: noShell },
+    );
+    expect(rejected.ok).toBe(false);
+    expect(method).toHaveBeenCalledExactlyOnceWith(args);
+  });
+
   it("semantic per-entity commands forward workspace/project authority before the entity id", async () => {
     const semanticIndexScene = vi.fn().mockResolvedValue("1");
     const codexIndexEntry = vi.fn().mockResolvedValue("2");
@@ -5594,6 +5684,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_maintenance_inbox_list",
       "narrative_runtime_policy_get",
       "narrative_runtime_policy_set",
+      "narrative_scene_scope_read",
+      "narrative_scene_scope_registry_update",
+      "narrative_scene_scope_update",
       "nir1_entity_relation_revision_create",
       "nir1_evidence_qualify",
       "nir1_pack_context",

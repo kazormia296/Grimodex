@@ -61,6 +61,28 @@ pub use nir1_entity_relation::{
 pub use nir1_graph::{read_nir1_graph, Nir1GraphRequest, Nir1GraphResponse};
 pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
+pub(crate) use scene_scope::backfill_scene_scope_storage_in_tx;
+pub(crate) use scene_scope::ensure_scene_scope_binding_in_tx;
+pub(crate) use scene_scope::{
+    ensure_character_reference_mutation_allowed_in_tx,
+    ensure_character_snapshot_restore_allowed_in_tx, invalidate_character_references_in_tx,
+    invalidate_character_references_with_events_in_tx,
+};
+pub(crate) use scene_scope::ensure_scope_registry_in_tx;
+pub(crate) use scene_scope::refresh_scene_scope_source_token_for_scene_in_tx;
+pub(crate) use scene_scope::refresh_scene_scope_source_token_in_tx;
+#[cfg(test)]
+pub(crate) use scene_scope::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT;
+#[cfg(test)]
+pub(crate) use material_membership::MATERIAL_MEMBERSHIP_READ_COUNT;
+pub(crate) use scene_scope::{
+    canonical_scene_scope_snapshot, canonical_scope_registry_snapshot, scope_extension_digest,
+};
+pub use scene_scope::{
+    read_narrative_scene_scope, update_narrative_scene_scope,
+    update_narrative_scene_scope_registry, NarrativeSceneScopeReadV1,
+    NarrativeSceneScopeRegistryUpdatePayload, NarrativeSceneScopeUpdatePayload,
+};
 mod human_derivation;
 pub mod human_material_basis;
 mod human_materialization;
@@ -81,6 +103,7 @@ mod phase_undo;
 mod plot_thread_operations;
 mod plot_thread_undo;
 mod project_scope_authority;
+mod scene_scope;
 mod scope_dependency_projection;
 mod publish_runtime;
 mod reconciliation_envelope;
@@ -721,12 +744,13 @@ pub fn temporal_scene_patch(
                 &payload.project_id,
                 &payload.target_id,
             )?;
-            let mut value = temporal_operations::apply_scene_temporal_patch_in_tx(
-                conn,
-                &payload.project_id,
-                &payload,
-                &now,
-            )?;
+            let (mut value, scene_scope_refresh_event) =
+                temporal_operations::apply_scene_temporal_patch_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &payload,
+                    &now,
+                )?;
             if payload.origin == NarrativeChangeOrigin::Human {
                 crate::narrative_extraction::record_human_field_write(
                     conn,
@@ -858,30 +882,33 @@ pub fn temporal_scene_patch(
                     undo_journal_id: Some(undo_journal_id.clone()),
                     application_ids: Vec::new(),
                     occurred_at: now,
-                    events: vec![NarrativeChangeEventInput {
-                        object_key: serde_json::json!({
-                            "kind": "scene",
-                            "sceneId": payload.target_id,
-                        }),
-                        change_kind: if changed_paths
-                            .iter()
-                            .any(|path| path == "/storyTimeOrder" || path == "/storyTimeLabel")
-                        {
-                            "order".to_string()
-                        } else {
-                            "calendar".to_string()
+                    events: vec![
+                        NarrativeChangeEventInput {
+                            object_key: serde_json::json!({
+                                "kind": "scene",
+                                "sceneId": payload.target_id,
+                            }),
+                            change_kind: if changed_paths
+                                .iter()
+                                .any(|path| path == "/storyTimeOrder" || path == "/storyTimeLabel")
+                            {
+                                "order".to_string()
+                            } else {
+                                "calendar".to_string()
+                            },
+                            mutation_kind: "update".to_string(),
+                            before_version: Some(payload.base_version),
+                            before_digest: Some(narrative_snapshot_digest(&before_feed)?),
+                            after_version: Some(version),
+                            after_digest: Some(narrative_snapshot_digest(&after_feed)?),
+                            structural_impact: Some(serde_json::json!({
+                                "changedPaths": changed_paths.clone(),
+                            })),
+                            changed_paths,
+                            text_impact: None,
                         },
-                        mutation_kind: "update".to_string(),
-                        before_version: Some(payload.base_version),
-                        before_digest: Some(narrative_snapshot_digest(&before_feed)?),
-                        after_version: Some(version),
-                        after_digest: Some(narrative_snapshot_digest(&after_feed)?),
-                        structural_impact: Some(serde_json::json!({
-                            "changedPaths": changed_paths.clone(),
-                        })),
-                        changed_paths,
-                        text_impact: None,
-                    }],
+                        scene_scope_refresh_event,
+                    ],
                 },
             )?;
             value["maintenanceTransactionId"] = Value::String(append.narrative.transaction_id);

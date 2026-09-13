@@ -3711,6 +3711,67 @@ impl Database {
                 ON narrative_extraction_stage_receipts(project_id, run_id, task_id, attempt_id);
             ",
         )?;
+
+        // NIR-1 A1: the existing tree/project Scope authority remains the
+        // owner of membership and order. These narrow rows hold only the
+        // typed scene-scope extension, its registry, and Native/OCC metadata;
+        // no prose or material closure is copied here.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_scope_registries (
+                project_id                TEXT NOT NULL PRIMARY KEY
+                    REFERENCES projects(id) ON DELETE CASCADE,
+                registry_version          TEXT NOT NULL
+                    CHECK(length(registry_version) > 0),
+                timeline_refs_json        TEXT NOT NULL
+                    CHECK(json_valid(timeline_refs_json)
+                      AND json_type(timeline_refs_json) = 'array'),
+                worldline_refs_json       TEXT NOT NULL
+                    CHECK(json_valid(worldline_refs_json)
+                      AND json_type(worldline_refs_json) = 'array'),
+                narrative_layer_refs_json TEXT NOT NULL
+                    CHECK(json_valid(narrative_layer_refs_json)
+                      AND json_type(narrative_layer_refs_json) = 'array'),
+                version                   INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+                source_token              TEXT NOT NULL
+                    CHECK(length(source_token) = 71
+                      AND source_token GLOB 'sha256:*'
+                      AND substr(source_token, 8) NOT GLOB '*[^0-9a-f]*'),
+                updated_at                TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_scene_scope_bindings (
+                project_id            TEXT NOT NULL
+                    REFERENCES projects(id) ON DELETE CASCADE,
+                scene_id              TEXT NOT NULL
+                    REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                scene_incarnation_id  TEXT NOT NULL CHECK(length(scene_incarnation_id) > 0),
+                compatibility_marker  TEXT NOT NULL
+                    CHECK(compatibility_marker IN ('legacy-absent', 'explicit', 'unknown')),
+                query_identity_json   TEXT NOT NULL
+                    CHECK(json_valid(query_identity_json)
+                      AND json_type(query_identity_json) = 'object'),
+                material_constraint_json TEXT NOT NULL
+                    CHECK(json_valid(material_constraint_json)
+                      AND json_type(material_constraint_json) = 'object'),
+                knowledge_holder_json  TEXT NOT NULL
+                    CHECK(json_valid(knowledge_holder_json)
+                      AND json_type(knowledge_holder_json) = 'object'),
+                audience_json          TEXT NOT NULL
+                    CHECK(json_valid(audience_json)
+                      AND json_type(audience_json) = 'object'),
+                version                INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+                source_token           TEXT NOT NULL
+                    CHECK(length(source_token) = 71
+                      AND source_token GLOB 'sha256:*'
+                      AND substr(source_token, 8) NOT GLOB '*[^0-9a-f]*'),
+                updated_at             TEXT NOT NULL,
+                PRIMARY KEY(project_id, scene_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_scene_scope_bindings_scene
+                ON narrative_scene_scope_bindings(scene_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_scene_scope_bindings_project
+                ON narrative_scene_scope_bindings(project_id, version);
+            ",
+        )?;
         Self::repair_narrative_v2_monotonicity_trigger(&conn)?;
         Self::repair_timelapse_creation_baseline_triggers(&conn)?;
 
@@ -3945,6 +4006,11 @@ impl Database {
         // `user_version` remains unchanged until the checkpoint below.
         conn.execute_batch("SAVEPOINT narrative_c2_schema_32")?;
         let c2zb_result = (|| -> anyhow::Result<()> {
+            // A1 migration compatibility is Native-owned: every pre-A1 scene
+            // gets one persisted legacy marker and a fresh incarnation id.
+            // This runs in the schema savepoint so a failed migration cannot
+            // leave partially materialized scope state behind.
+            crate::narrative_extraction::backfill_scene_scope_storage_in_tx(&conn)?;
             let c2zb_marker_due = crate::narrative_extraction::c2zb_application_rekey::migrate_narrative_application_rekey_v32(
                 &conn,
             )?;

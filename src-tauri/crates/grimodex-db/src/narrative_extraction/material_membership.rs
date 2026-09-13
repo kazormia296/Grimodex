@@ -4,12 +4,19 @@ mod lineage;
 
 use anyhow::{ensure, Result};
 use rusqlite::Connection;
+#[cfg(test)]
+use std::cell::Cell;
 
 use super::human_material_basis::{MaterialBasis, MaterialSourceBasisEntry};
 use super::material_membership_root::{
     read_root_material, Material, RequestProof, RosterIssue, RosterStatus, VerifiedArtifact,
     VerifiedReceipt,
 };
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static MATERIAL_MEMBERSHIP_READ_COUNT: Cell<usize> = Cell::new(0);
+}
 
 #[derive(Debug)]
 // This transient read result owns its verified snapshot and is consumed
@@ -68,6 +75,8 @@ pub fn read_revision_material_membership(
     project_id: &str,
     revision_id: &str,
 ) -> Result<MaterialMembershipRead> {
+    #[cfg(test)]
+    MATERIAL_MEMBERSHIP_READ_COUNT.with(|count| count.set(count.get() + 1));
     ensure!(
         !conn.is_autocommit(),
         "material membership requires a read transaction"

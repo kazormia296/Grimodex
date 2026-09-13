@@ -267,6 +267,13 @@ pub fn restore_scene_revision(
                 "REVISION_CONTENT_RESTORE_VERSION_MISMATCH: scene changed during restore"
             );
             let after = scene_snapshot(conn, &payload.project_id, &payload.entity_id)?;
+            let scene_scope_refresh_event =
+                crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &payload.entity_id,
+                    &after.updated_at,
+                )?;
 
             crate::narrative_extraction::record_human_field_write(
                 conn,
@@ -351,7 +358,9 @@ pub fn restore_scene_revision(
                         // the versioned TextChangeImpact contract.
                         text_impact: None,
                         structural_impact: None,
-                    }],
+                    },
+                    scene_scope_refresh_event,
+                ],
                 },
             )?;
             crate::timelapse::append_timelapse_body_snapshots_in_tx(

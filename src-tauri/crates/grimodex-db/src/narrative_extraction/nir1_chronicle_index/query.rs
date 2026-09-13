@@ -250,7 +250,7 @@ pub fn qualify_chronicle_index_query(
             reason: Reason::ColdIndex,
         });
     };
-    qualify_proof(runtime, proof, query)
+    qualify_proof(conn, runtime, proof, query)
 }
 
 /// Lend only the exact capability captured before query embedding. One full
@@ -272,10 +272,11 @@ pub fn qualify_chronicle_index_snapshot(
             reason: Reason::QueryUnavailable,
         });
     };
-    qualify_proof(runtime, snapshot.proof.clone(), query)
+    qualify_proof(conn, runtime, snapshot.proof.clone(), query)
 }
 
 fn qualify_proof(
+    conn: &Connection,
     runtime: &NirChronicleIndexRuntime,
     proof: Arc<IndexProof>,
     query: RetrievalQueryContext,

@@ -6068,6 +6068,86 @@ impl Backend {
         .await
     }
 
+    /// Read the Native-owned A1 scene Scope binding and registry from the
+    /// workspace selected at IPC arrival. The renderer supplies identity only;
+    /// the active workspace path remains the Native authority check.
+    #[napi]
+    pub async fn narrative_scene_scope_read(&self, payload: serde_json::Value) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            project_id: String,
+            scene_id: String,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let response = workspace.authority.db().with_read_transaction(|conn| {
+                narrative_extraction::read_narrative_scene_scope(
+                    conn,
+                    &request.project_id,
+                    &request.scene_id,
+                )
+            })?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Atomically update one A1 scene Scope binding with Native OCC and the
+    /// existing Change Feed/invalidation writer.
+    #[napi]
+    pub async fn narrative_scene_scope_update(&self, payload: serde_json::Value) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            payload: narrative_extraction::NarrativeSceneScopeUpdatePayload,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let response = narrative_extraction::update_narrative_scene_scope(
+                workspace.authority.db(),
+                request.payload,
+            )?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Atomically update the project Scope vocabulary registry. Scene bindings
+    /// are revalidated against the new registry inside the same transaction.
+    #[napi]
+    pub async fn narrative_scene_scope_registry_update(&self, payload: serde_json::Value) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            payload: narrative_extraction::NarrativeSceneScopeRegistryUpdatePayload,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let response = narrative_extraction::update_narrative_scene_scope_registry(
+                workspace.authority.db(),
+                request.payload,
+            )?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     // ─────────────────────── semantic Phase 3 Batch 4 ───────────────────
     // 全DB commandはrun_semantic_wireがinvoke開始時のDB Arc + 4cache epochを
     // 一貫pinする。各closureは共有runtimeだけを呼び、workspaceを再解決しない。

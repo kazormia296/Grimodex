@@ -2014,12 +2014,27 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
     // Scope projection notifications are deliberately conservative. Resolve
     // each bound projection after selection; a project tree event is not
     // itself evidence that every projection's revision changed.
-    let scope_event = batch.events.iter().rev().find(|event| event_changes_project_scope_authority(event));
+    let scope_event = batch
+        .events
+        .iter()
+        .rev()
+        .find(|event| event_changes_project_scope_authority(event));
     let projection_sources = if scope_event.is_some() {
-        db.with_conn(|conn| Ok::<_, anyhow::Error>(all_project_edges(conn, &batch.project_id)?
-            .into_iter().filter(|edge| edge.source_object_identity.starts_with("scope-dependency:v1:"))
-            .map(|edge| edge.source_object_identity).collect::<BTreeSet<_>>()))?
-    } else { BTreeSet::new() };
+        db.with_conn(|conn| {
+            Ok::<_, anyhow::Error>(
+                all_project_edges(conn, &batch.project_id)?
+                    .into_iter()
+                    .filter(|edge| {
+                        edge.source_object_identity
+                            .starts_with("scope-dependency:v1:")
+                    })
+                    .map(|edge| edge.source_object_identity)
+                    .collect::<BTreeSet<_>>(),
+            )
+        })?
+    } else {
+        BTreeSet::new()
+    };
     identities.extend(projection_sources.iter().cloned());
     // An Apply can create a new Application whose Feed event has no Source
     // locator (for example a chronicle event).  The typed transaction still
@@ -3336,6 +3351,7 @@ fn source_identity_for_event(
     };
     Ok(match kind {
         "scene" => Some(format!("project:scene:{}", required("sceneId")?)),
+        "scene-scope" | "scope-registry" => None,
         "temporal-projection" => Some(format!("projection:{}", required("projectionId")?)),
         "codex-entry"
         | "codex-relation"
@@ -3486,6 +3502,12 @@ fn folder_event_has_live_scene_subtree_impact(event: &NarrativeChangeEventRecord
 }
 
 pub(crate) fn event_changes_project_scope_authority(event: &NarrativeChangeEventRecord) -> bool {
+    if matches!(
+        event.object_key.get("kind").and_then(Value::as_str),
+        Some("scene-scope") | Some("scope-registry")
+    ) {
+        return true;
+    }
     let node_type = match event.object_key.get("kind").and_then(Value::as_str) {
         Some("scene") => Some("scene"),
         Some("component") => event

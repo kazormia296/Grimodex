@@ -12,7 +12,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::change_feed::NarrativeChangeOrigin;
+use super::change_feed::{NarrativeChangeEventInput, NarrativeChangeOrigin};
 
 pub(crate) const OP_KIND_SCENE_METADATA_PATCH: &str = "temporal.scene.metadata.patch";
 pub(crate) const OP_KIND_EVENT_METADATA_PATCH: &str = "temporal.event.metadata.patch";
@@ -103,6 +103,7 @@ pub(crate) struct TemporalPatchTxResult {
     pub version: i64,
     pub after_snapshot: Value,
     pub before_snapshot: Value,
+    pub scope_refresh_event: Option<NarrativeChangeEventInput>,
 }
 
 pub(crate) fn collect_scene_chronicle_snapshot(
@@ -194,12 +195,15 @@ pub(crate) fn apply_scene_metadata_patch_in_tx(
         "NEX_TEMPORAL_SCENE_VERSION_MISMATCH: scene '{}' patch conflict",
         payload.target_id
     );
+    let scope_refresh_event =
+        super::refresh_scene_scope_source_token_in_tx(conn, project_id, &payload.target_id, now)?;
     let after_snapshot = collect_scene_chronicle_snapshot(conn, &payload.target_id)?;
     Ok(TemporalPatchTxResult {
         entity_id: payload.target_id.clone(),
         version: next_version,
         after_snapshot,
         before_snapshot,
+        scope_refresh_event: Some(scope_refresh_event),
     })
 }
 
@@ -209,7 +213,7 @@ pub(crate) fn restore_scene_chronicle_patch(
     before_snapshot: &Value,
     expected_after_version: i64,
     now: &str,
-) -> anyhow::Result<i64> {
+) -> anyhow::Result<(i64, NarrativeChangeEventInput)> {
     let live_version: i64 = conn.query_row(
         "SELECT version FROM tree_nodes WHERE id = ?1",
         params![scene_id],
@@ -260,7 +264,9 @@ pub(crate) fn restore_scene_chronicle_patch(
         updated == 1,
         "NEX_COMMIT_SCENE_EDITED: scene '{scene_id}' restore conflict"
     );
-    Ok(next_version)
+    let scope_refresh_event =
+        super::refresh_scene_scope_source_token_for_scene_in_tx(conn, scene_id, now)?;
+    Ok((next_version, scope_refresh_event))
 }
 
 pub(crate) fn collect_event_chronicle_snapshot(
@@ -357,6 +363,7 @@ pub(crate) fn apply_event_metadata_patch_in_tx(
         version: next_version,
         after_snapshot,
         before_snapshot,
+        scope_refresh_event: None,
     })
 }
 
@@ -458,7 +465,7 @@ pub(crate) fn collect_scene_temporal_snapshot(
     conn: &Connection,
     project_id: &str,
     scene_id: &str,
-) -> anyhow::Result<Value> {
+) -> anyhow::Result<(Value, NarrativeChangeEventInput)> {
     let raw: String = conn
         .query_row(
             "SELECT json_object(
@@ -564,11 +571,16 @@ pub(crate) fn apply_scene_temporal_patch_in_tx(
         "NEX_TEMPORAL_SCENE_VERSION_MISMATCH: scene '{}' patch conflict",
         payload.target_id
     );
-    Ok(serde_json::json!({
-        "sceneId": payload.target_id,
-        "version": next_version,
-        "updatedAt": now,
-    }))
+    let scope_refresh_event =
+        super::refresh_scene_scope_source_token_in_tx(conn, project_id, &payload.target_id, now)?;
+    Ok((
+        serde_json::json!({
+            "sceneId": payload.target_id,
+            "version": next_version,
+            "updatedAt": now,
+        }),
+        scope_refresh_event,
+    ))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -663,12 +675,15 @@ pub(crate) fn apply_story_order_materialize_in_tx(
         "NEX_TEMPORAL_SCENE_VERSION_MISMATCH: scene '{}' story-order conflict",
         payload.scene_id
     );
+    let scope_refresh_event =
+        super::refresh_scene_scope_source_token_in_tx(conn, project_id, &payload.scene_id, now)?;
     let after_snapshot = collect_scene_story_order_snapshot(conn, &payload.scene_id)?;
     Ok(TemporalPatchTxResult {
         entity_id: payload.scene_id.clone(),
         version: next_version,
         after_snapshot,
         before_snapshot,
+        scope_refresh_event: Some(scope_refresh_event),
     })
 }
 
@@ -678,7 +693,7 @@ pub(crate) fn restore_scene_story_order_patch(
     before_snapshot: &Value,
     expected_after_version: i64,
     now: &str,
-) -> anyhow::Result<i64> {
+) -> anyhow::Result<(i64, NarrativeChangeEventInput)> {
     let live_version: i64 = conn.query_row(
         "SELECT version FROM tree_nodes WHERE id = ?1",
         params![scene_id],
@@ -714,7 +729,9 @@ pub(crate) fn restore_scene_story_order_patch(
         updated == 1,
         "NEX_COMMIT_SCENE_EDITED: scene '{scene_id}' restore conflict"
     );
-    Ok(next_version)
+    let scope_refresh_event =
+        super::refresh_scene_scope_source_token_for_scene_in_tx(conn, scene_id, now)?;
+    Ok((next_version, scope_refresh_event))
 }
 
 /// OCC for `project_calendar.version`, checked once at commit start whenever
