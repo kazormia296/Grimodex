@@ -2107,6 +2107,89 @@ describe("registerIpcRouter workspace-open main trace", () => {
 });
 
 describe("NIR-1 router sender binding", () => {
+  it("returns a denied egress route as an envelope before Native dispatch", async () => {
+    const sendChatMessage = vi.fn();
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => ({
+        profileId: "profile-1",
+        callerId: "main-caller-1",
+        callerEpoch: 2,
+        senderId: 42,
+        workspaceId: null,
+        sessionId: "session-1",
+      })),
+      assertInvoke: vi.fn(() => {
+        throw new Error("D2A_EGRESS_DENIED: old-external-ai");
+      }),
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+    };
+    registerIpcRouter(
+      { sendChatMessage } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "send_chat_message",
+      {},
+    );
+
+    expect(envelope).toEqual({
+      ok: false,
+      error: "D2A_EGRESS_DENIED: old-external-ai",
+    });
+    expect(sendChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("replaces renderer identity with the main-issued caller before Native dispatch", async () => {
+    const saveAiSettings = vi.fn(async () => undefined);
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "session-1",
+    };
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+    };
+    registerIpcRouter(
+      { saveAiSettings } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "save_ai_settings",
+      { settings: {}, callerIdentity: { callerId: "renderer-forged" } },
+    );
+
+    expect(envelope.ok).toBe(true);
+    expect(profileEgress.issueCallerIdentity).toHaveBeenCalledWith(42);
+    expect(profileEgress.assertInvoke).toHaveBeenCalledWith(
+      "save_ai_settings",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(saveAiSettings).toHaveBeenCalledWith({});
+  });
+
   it("passes a main owner to Native and prevents a second WebContents from copying it", async () => {
     const calls: Array<Record<string, unknown>> = [];
     const relatedScenesBegin = vi.fn(async (request: Record<string, unknown>) => {

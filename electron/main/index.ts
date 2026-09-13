@@ -22,6 +22,7 @@ import {
   broadcastBackendEvent,
   broadcastMainEvent,
   registerEventBus,
+  setBackendEventEgressGate,
   sendBackendEventToWindow,
   sendMainEventToWindow,
 } from "./events.js";
@@ -53,9 +54,11 @@ import {
 } from "./updater.js";
 import { createVivliostyleManager } from "./vivliostyle.js";
 import { createMainWindow, getWindow } from "./windows.js";
+import { createProfileEgressGate } from "./profileEgress.js";
 import {
   applySessionPermissionPolicy,
   registerSecurityHandlers,
+  setExternalEgressGate,
 } from "./security.js";
 import { parseWebEditorHandoffProtocolRequest } from "./webEditorHandoffProtocol.js";
 import {
@@ -89,6 +92,7 @@ async function initializeNarrativeMaintenanceStartup(
   userDataDir: string,
 ): Promise<{
   initializedBackend: ReturnType<typeof initBackend>;
+  profileEgress: Awaited<ReturnType<typeof createProfileEgressGate>>;
   narrativeMaintenanceCiSeam: Awaited<
     ReturnType<typeof configureNarrativeMaintenanceCiSeam>
   >;
@@ -103,6 +107,11 @@ async function initializeNarrativeMaintenanceStartup(
     // envelope. The owner-gated CI acceptance launch must fail before a
     // renderer can appear when native startup is unavailable.
     const initializedBackend = initBackend({ failFast });
+    // D2a is the first main/native boundary after backend construction. It
+    // must complete before CI seams, workspace events, schedulers, or a
+    // renderer can publish profile plaintext.
+    const profileEgress = await createProfileEgressGate(initializedBackend);
+    setBackendEventEgressGate(profileEgress);
     // The product-journey seam is deliberately configured at this one startup
     // point: after native initialization, before any scheduler can observe a
     // workspace event. Unauthorized launches return inactive without reading
@@ -131,6 +140,7 @@ async function initializeNarrativeMaintenanceStartup(
       );
     return {
       initializedBackend,
+      profileEgress,
       narrativeMaintenanceCiSeam,
       narrativeMaintenanceCiHeldFreshnessWriter,
     };
@@ -228,9 +238,11 @@ if (!gotSingleInstanceLock) {
     if (!startup) return;
     const {
       initializedBackend,
+      profileEgress,
       narrativeMaintenanceCiSeam,
       narrativeMaintenanceCiHeldFreshnessWriter,
     } = startup;
+    setExternalEgressGate(() => profileEgress.assertExternalUrl());
     const backend = wrapBackendForProductJourneyAi(
       initializedBackend,
       shouldUseProductJourneyAi({ isPackaged: app.isPackaged }),
@@ -549,18 +561,23 @@ if (!gotSingleInstanceLock) {
       keyStore,
       broadcastBackendEvent,
       narrativeMaintenanceCiSeam,
+      profileEgress,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には
     // 届かない（FE 購読者なしのデバッグチャネル — TSFn 実証は
     // workspace:opened が担う）。
-    registerEventBus(backend, (channel, payload) => {
-      narrativeFreshness.handleBackendEvent(channel, payload);
-      narrativeMaintenanceTriggers?.handleBackendEvent(channel, payload);
-      if (channel === "workspace:opened") {
-        void codexApp.handleWorkspaceChanged();
-      }
-    });
+    registerEventBus(
+      backend,
+      (channel, payload) => {
+        narrativeFreshness.handleBackendEvent(channel, payload);
+        narrativeMaintenanceTriggers?.handleBackendEvent(channel, payload);
+        if (channel === "workspace:opened") {
+          void codexApp.handleWorkspaceChanged();
+        }
+      },
+      profileEgress,
+    );
     performance.mark("grimodex:electron-create-main-window");
     const mainWindow = createMainWindow();
     mainWindow.webContents.once("did-finish-load", () => {

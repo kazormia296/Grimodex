@@ -405,6 +405,8 @@ export interface ExtractCodexEntitySeedsRequestV1 {
 }
 
 export interface NapiBackendLike {
+  /** Main-only D2a startup barrier; never registered in renderer IPC. */
+  initializeProfileEgress?(): Promise<string>;
   dbExecute(sql: string, params: unknown, method: string): Promise<string>;
   dbExecuteBatch(statements: unknown): Promise<string>;
   narrativeRuntimePolicyGet?(): Promise<string>;

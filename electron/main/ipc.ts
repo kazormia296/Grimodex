@@ -24,6 +24,7 @@ import {
   IPC,
   IPC_BACKEND_UNAVAILABLE_MARKER,
   IPC_UNIMPLEMENTED_MARKER,
+  toErrorString,
 } from "../shared/ipcContract.js";
 import type {
   CanonicalAuthorityRoute,
@@ -49,6 +50,7 @@ import {
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
 import { createRelatedScenesSearchAuthority } from "./relatedScenesSearchAuthority.js";
 import { createRelatedScenesReconciler } from "./relatedScenesReconciler.js";
+import type { ProfileEgressGate } from "./profileEgress.js";
 
 const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_create",
@@ -1949,6 +1951,7 @@ export function registerIpcRouter(
   secrets?: SecretsResolver,
   broadcast?: (channel: string, payload: unknown) => void,
   narrativeMaintenanceCiSeam: NarrativeMaintenanceCiSeam = { active: false },
+  profileEgress?: ProfileEgressGate,
 ): void {
   const relatedScenesReconciler = createRelatedScenesReconciler({
     reconcile: async () => {
@@ -1999,7 +2002,18 @@ export function registerIpcRouter(
           canonicalArgs,
           event.sender,
         );
-        const envelope = await dispatchInvoke(cmd, boundArgs, {
+        const callerIdentity = profileEgress?.issueCallerIdentity(
+          event.sender.id,
+        );
+        const dispatchArgs = callerIdentity
+          ? { ...boundArgs, callerIdentity }
+          : boundArgs;
+        try {
+          profileEgress?.assertInvoke(cmd, dispatchArgs);
+        } catch (error) {
+          return { ok: false, error: toErrorString(error) };
+        }
+        const envelope = await dispatchInvoke(cmd, dispatchArgs, {
           backend,
           shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
           secrets,
@@ -2109,9 +2123,16 @@ export function registerIpcRouter(
 
   // パネル別窓（§6.5、S7）の実体を注入する（shellCommands は windows.ts に
   // 直接依存しない — PanelWindowDelegate のコメント参照）。
-  registerShellBridgeHandlers({
+  const panelWindowDelegate = {
     open: openPanelWindow,
     focusByLabel: focusPanelWindow,
     existsByLabel: hasPanelWindow,
-  });
+  };
+  if (profileEgress) {
+    registerShellBridgeHandlers(panelWindowDelegate, undefined, () =>
+      profileEgress.assertExternalUrl(),
+    );
+  } else {
+    registerShellBridgeHandlers(panelWindowDelegate);
+  }
 }

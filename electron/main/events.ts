@@ -19,6 +19,7 @@ import {
   isAllowedRendererEventChannel,
 } from "../shared/ipcContract.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
+import type { ProfileEgressGate } from "./profileEgress.js";
 import {
   isRelatedScenesInvalidatedEvent,
   isRelatedScenesIndexReadyEvent,
@@ -29,6 +30,15 @@ import {
 /** Native completion signal consumed by main only; never broadcast to a window. */
 export const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT =
   "narrative-maintenance:epoch-rotated";
+
+let profileEgressGate: ProfileEgressGate | null = null;
+
+/** Install the startup gate before any trusted manager can publish an event. */
+export function setBackendEventEgressGate(
+  profileEgress?: ProfileEgressGate | null,
+): void {
+  profileEgressGate = profileEgress ?? null;
+}
 
 /** 全窓（送信元含む）へ 1 イベントを配信する。 */
 export function broadcastEvent(channel: string, payload: unknown): void {
@@ -44,6 +54,10 @@ export function broadcastBackendEvent(channel: string, payload: unknown): void {
     console.warn(
       `[backend:event] rejected non-backend channel: ${String(channel)}`,
     );
+    return;
+  }
+  if (profileEgressGate && !profileEgressGate.allowsBackendEvent(channel)) {
+    console.warn(`[backend:event] rejected D2a egress channel: ${channel}`);
     return;
   }
   broadcastEvent(channel, payload);
@@ -62,6 +76,10 @@ export function sendBackendEventToWindow(
     console.warn(
       `[backend:event] rejected non-backend channel: ${String(channel)}`,
     );
+    return;
+  }
+  if (profileEgressGate && !profileEgressGate.allowsBackendEvent(channel)) {
+    console.warn(`[backend:event] rejected D2a egress channel: ${channel}`);
     return;
   }
   const target = BrowserWindow.getAllWindows().find(
@@ -135,6 +153,15 @@ function handleBackendEvent(
     );
     return;
   }
+  if (
+    typeof channel === "string" &&
+    !observerOnly &&
+    profileEgressGate &&
+    !profileEgressGate.allowsBackendEvent(channel)
+  ) {
+    console.warn(`[backend:event] rejected D2a egress channel: ${channel}`);
+    return;
+  }
   let payload: unknown = payloadJson;
   if (typeof payloadJson === "string") {
     try {
@@ -145,15 +172,24 @@ function handleBackendEvent(
       console.warn(`[backend:event] non-JSON payload on ${channel}`);
     }
   }
-  if (channel === RELATED_SCENES_INVALIDATED_EVENT && !isRelatedScenesInvalidatedEvent(payload)) {
+  if (
+    channel === RELATED_SCENES_INVALIDATED_EVENT &&
+    !isRelatedScenesInvalidatedEvent(payload)
+  ) {
     console.warn("[backend:event] invalid related-scenes invalidation payload");
     return;
   }
-  if (channel === RELATED_SCENES_INDEX_READY_EVENT && !isRelatedScenesIndexReadyEvent(payload)) {
-    console.warn("[backend:event] invalid related-scenes index readiness payload");
+  if (
+    channel === RELATED_SCENES_INDEX_READY_EVENT &&
+    !isRelatedScenesIndexReadyEvent(payload)
+  ) {
+    console.warn(
+      "[backend:event] invalid related-scenes index readiness payload",
+    );
     return;
   }
   try {
+    profileEgressGate?.observeBackendEvent?.(channel, payload);
     observer?.(channel, payload);
   } catch (cause) {
     console.warn(
@@ -173,7 +209,9 @@ function handleBackendEvent(
 export function registerEventBus(
   backend: NapiBackendLike | null,
   observer?: (channel: string, payload: unknown) => void,
+  profileEgress?: ProfileEgressGate,
 ): void {
+  setBackendEventEgressGate(profileEgress);
   ipcMain.on(IPC.emit, (_event, channel: unknown, payload: unknown) => {
     if (
       typeof channel !== "string" ||

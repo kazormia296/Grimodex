@@ -11,6 +11,13 @@ export declare class Backend {
    */
   constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null, rerankerResourceRoot?: string | undefined | null)
   /**
+   * Main-only D2a startup barrier. It rotates the profile caller epoch,
+   * invalidates pre-existing native stream handles, waits for all native
+   * streams to quiesce, and persists local-only mode before renderer/event
+   * wiring is installed by Electron main.
+   */
+  initializeProfileEgress(): Promise<string>
+  /**
    * Main-process-only bridge used during the Electron v2 first-run
    * credential migration. This method is deliberately absent from
    * `NAPI_COMMANDS`, so renderer IPC cannot request plaintext credentials.

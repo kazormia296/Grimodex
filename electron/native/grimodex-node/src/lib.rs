@@ -19,6 +19,7 @@ mod convert;
 mod legacy_keyring;
 mod narrative_maintenance;
 mod post_effect_runtime;
+mod profile_egress;
 mod related_scenes;
 mod related_scenes_build_registry;
 mod related_scenes_context;
@@ -2503,6 +2504,7 @@ struct ChatRequest {
     expected_ollama_endpoint: Option<String>,
     request_max_output_tokens: Option<u32>,
     audit_context: NativeAiAuditContext,
+    caller_identity: Option<profile_egress::CallerIdentity>,
 }
 
 /// `send_inline_ai_stream` の FE 引数 (camelCase)。チャットと同じ message / reasoning
@@ -2521,6 +2523,7 @@ struct InlineAiRequest {
     provider: Option<grimodex_ai::AiProvider>,
     endpoint_id: Option<String>,
     audit_context: NativeAiAuditContext,
+    caller_identity: Option<profile_egress::CallerIdentity>,
 }
 
 /// `send_agent_message` の FE 引数 (camelCase)。AgentMessage / AgentToolDef の
@@ -2545,6 +2548,7 @@ struct AgentRequest {
     request_max_output_tokens: Option<u32>,
     resolved_tool_protocol: Option<grimodex_ai::ResolvedToolProtocol>,
     audit_context: NativeAiAuditContext,
+    caller_identity: Option<profile_egress::CallerIdentity>,
 }
 
 /// `list_ai_models` の FE 引数。API キーは一覧取得では任意なので main が
@@ -2556,6 +2560,7 @@ struct ListAiModelsRequest {
     endpoint_id: Option<String>,
     selected_model_id: Option<String>,
     expected_ollama_endpoint: Option<String>,
+    caller_identity: Option<profile_egress::CallerIdentity>,
 }
 
 /// `test_ai_connection` の FE 引数。接続先 provider/model は必須、variant / endpoint
@@ -2568,6 +2573,26 @@ struct TestAiConnectionRequest {
     api_variant: Option<String>,
     endpoint_id: Option<String>,
     audit_context: NativeAiAuditContext,
+    caller_identity: Option<profile_egress::CallerIdentity>,
+}
+
+fn authorize_profile_egress(
+    state: &Arc<AppState>,
+    identity: Option<&profile_egress::CallerIdentity>,
+) -> Result<()> {
+    state
+        .profile_egress
+        .authorize_optional(identity)
+        .map_err(|error| Error::from_reason(format!("{error:#}")))
+}
+
+fn caller_identity_from_args(
+    args: &serde_json::Value,
+) -> Result<Option<profile_egress::CallerIdentity>> {
+    let Some(value) = args.get("callerIdentity") else {
+        return Ok(None);
+    };
+    from_wire("callerIdentity", value.clone()).map_err(app_err_to_napi)
 }
 
 struct RevalidatedNarrativeWorkspace<'a> {
@@ -2833,6 +2858,42 @@ impl Backend {
         Ok(Backend {
             state: Arc::new(state),
         })
+    }
+
+    /// Main-only D2a startup barrier. It rotates the profile caller epoch,
+    /// invalidates pre-existing native stream handles, waits for all native
+    /// streams to quiesce, and persists local-only mode before renderer/event
+    /// wiring is installed by Electron main.
+    #[napi]
+    pub async fn initialize_profile_egress(&self) -> Result<String> {
+        // Close the gate and rotate the epoch before awaiting any cancellation;
+        // a concurrent stale caller must not start another transport during
+        // the stop barrier.
+        self.state
+            .profile_egress
+            .activate(false)
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        let chat_stopped = self.state.chat_streams.abort_all().await;
+        let inline_stopped = self.state.inline_ai_streams.abort_all().await;
+        let status = self
+            .state
+            .profile_egress
+            .confirm_in_flight_stopped()
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        debug_assert_eq!(status.in_flight_stopped, true);
+        let mut json =
+            serde_json::to_value(status).map_err(|error| Error::from_reason(error.to_string()))?;
+        if let Some(object) = json.as_object_mut() {
+            object.insert(
+                "chatStreamsStopped".to_string(),
+                serde_json::json!(chat_stopped),
+            );
+            object.insert(
+                "inlineStreamsStopped".to_string(),
+                serde_json::json!(inline_stopped),
+            );
+        }
+        serde_json::to_string(&json).map_err(|error| Error::from_reason(error.to_string()))
     }
 
     // ─────────────────────── license (Phase 3e) ──────────────────────────
@@ -8577,6 +8638,8 @@ impl Backend {
         api_key: Option<String>,
         api_key_error: Option<String>,
     ) -> Result<String> {
+        let caller_identity = caller_identity_from_args(&args)?;
+        authorize_profile_egress(&self.state, caller_identity.as_ref())?;
         let expected_workspace_path = args
             .as_object_mut()
             .and_then(|object| object.remove("expectedWorkspacePath"))
@@ -8609,6 +8672,8 @@ impl Backend {
         api_key: Option<String>,
         api_key_error: Option<String>,
     ) -> Result<String> {
+        let caller_identity = caller_identity_from_args(&args)?;
+        authorize_profile_egress(&self.state, caller_identity.as_ref())?;
         let expected_workspace_path = args
             .as_object_mut()
             .and_then(|object| object.remove("expectedWorkspacePath"))
@@ -8691,6 +8756,7 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: ChatRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        authorize_profile_egress(&self.state, req.caller_identity.as_ref())?;
         let audit_context = req.audit_context.clone();
         let audit_workspace =
             pin_native_ai_audit_workspace(&self.state, &audit_context).map_err(app_err_to_napi)?;
@@ -8761,6 +8827,7 @@ impl Backend {
         api_key: String,
     ) -> Result<()> {
         let req: ChatRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        authorize_profile_egress(&self.state, req.caller_identity.as_ref())?;
         let stream_id = req.stream_id.as_deref().unwrap_or_default();
         if stream_id.trim().is_empty()
             || stream_id != stream_id.trim()
@@ -8873,6 +8940,7 @@ impl Backend {
         api_key: String,
     ) -> Result<()> {
         let req: InlineAiRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        authorize_profile_egress(&self.state, req.caller_identity.as_ref())?;
         if req.stream_id.trim().is_empty()
             || req.stream_id != req.stream_id.trim()
             || req.stream_id != req.audit_context.execution_id
@@ -8983,6 +9051,7 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: AgentRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        authorize_profile_egress(&self.state, req.caller_identity.as_ref())?;
         let audit_context = req.audit_context.clone();
         let audit_workspace =
             pin_native_ai_audit_workspace(&self.state, &audit_context).map_err(app_err_to_napi)?;
@@ -9047,6 +9116,7 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: ListAiModelsRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        authorize_profile_egress(&self.state, req.caller_identity.as_ref())?;
         let mut settings: grimodex_ai::AiSettings =
             from_wire("settings", settings).map_err(app_err_to_napi)?;
         if let Some(endpoint_id) = req.endpoint_id.as_deref().filter(|id| !id.is_empty()) {
@@ -9084,6 +9154,7 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: TestAiConnectionRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        authorize_profile_egress(&self.state, req.caller_identity.as_ref())?;
         let audit_context = req.audit_context.clone();
         let audit_workspace =
             pin_native_ai_audit_workspace(&self.state, &audit_context).map_err(app_err_to_napi)?;
