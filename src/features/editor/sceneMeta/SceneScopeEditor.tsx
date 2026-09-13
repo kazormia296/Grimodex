@@ -207,7 +207,11 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
     })
       .then((value) => {
         if (!isCurrent()) return;
-        setRead((current) => (current ? { ...current, ...value } : current));
+        // A binding write does not change the registry. Keep its object
+        // identity so the registry editor preserves an unsaved local draft.
+        setRead((current) =>
+          current ? { ...current, binding: value.binding } : current,
+        );
         setDraft(value.binding);
         setConflictSnapshot(null);
       })

@@ -366,5 +366,8 @@ describe("SceneScopeEditor request epochs", () => {
         "v3",
       ),
     );
+    expect((registryTimelineInput as HTMLInputElement).value).toBe(
+      "timeline:local-draft",
+    );
   });
 });
