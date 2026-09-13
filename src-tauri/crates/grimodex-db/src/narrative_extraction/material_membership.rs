@@ -15,7 +15,7 @@ use super::material_membership_root::{
 
 #[cfg(test)]
 thread_local! {
-    pub(crate) static MATERIAL_MEMBERSHIP_READ_COUNT: Cell<usize> = Cell::new(0);
+    pub(crate) static MATERIAL_MEMBERSHIP_READ_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 #[derive(Debug)]

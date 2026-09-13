@@ -44,6 +44,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestEpoch = useRef(0);
+  const draftRef = useRef<Binding | null>(null);
   const identityRef = useRef<SceneScopeIdentity>({
     workspacePath,
     projectId: node.projectId,
@@ -54,6 +55,9 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
     projectId: node.projectId,
     sceneId: node.id,
   };
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
   // Render-time identity update closes the gap before React runs the effect
   // cleanup when navigation is deferred by the host.
   identityRef.current = identity;
@@ -166,7 +170,54 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
       })
       .catch((cause: unknown) => {
         if (!isCurrent()) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
+        const message = cause instanceof Error ? cause.message : String(cause);
+        if (!message.includes("NEX_SCENE_SCOPE_VERSION_MISMATCH")) {
+          setError(message);
+          return;
+        }
+        const preservedDraft = draftRef.current ?? draft;
+        if (!preservedDraft || !requestIdentity.workspacePath) {
+          setError(message);
+          return;
+        }
+        setLoading(true);
+        void invoke<ScopeRead>("narrative_scene_scope_read", {
+          expectedWorkspacePath: requestIdentity.workspacePath,
+          projectId: requestIdentity.projectId,
+          sceneId: requestIdentity.sceneId,
+        })
+          .then((fresh) => {
+            if (!isCurrent()) return;
+            // Adopt only Native's current OCC identity. Keep every local
+            // scope field so a concurrent writer is never silently copied
+            // over the user's unsaved draft.
+            setRead(fresh);
+            setDraft({
+              ...fresh.binding,
+              compatibilityMarker: preservedDraft.compatibilityMarker,
+              queryIdentity: preservedDraft.queryIdentity,
+              materialConstraint: preservedDraft.materialConstraint,
+              knowledgeHolder: preservedDraft.knowledgeHolder,
+              audience: preservedDraft.audience,
+            });
+            setError(
+              t(
+                "editor.sceneDetail.scopeConflict",
+                "Scene scope changed while you were editing. Review your draft and save again.",
+              ),
+            );
+          })
+          .catch((refreshCause: unknown) => {
+            if (!isCurrent()) return;
+            setError(
+              refreshCause instanceof Error
+                ? refreshCause.message
+                : String(refreshCause),
+            );
+          })
+          .finally(() => {
+            if (isCurrent()) setLoading(false);
+          });
       })
       .finally(() => {
         if (isCurrent()) setSaving(false);

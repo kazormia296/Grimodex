@@ -228,8 +228,7 @@ fn insert_seed_rows(
     )?;
     crate::narrative_extraction::ensure_scope_registry_in_tx(conn, project_id, now_dt).map_err(
         |error| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
                 error.to_string(),
             )))
         },
@@ -272,8 +271,7 @@ fn insert_seed_rows(
                 now_dt,
             )
             .map_err(|error| {
-                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
                     error.to_string(),
                 )))
             })?;

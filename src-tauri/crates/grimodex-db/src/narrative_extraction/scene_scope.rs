@@ -1028,27 +1028,8 @@ pub(crate) fn ensure_character_snapshot_restore_allowed_in_tx(
     Ok(())
 }
 
-/// Undo/restore is not allowed to revive a previously eligible principal
-/// reference. Move every matching binding to explicit Unknown state and bump
-/// its Native OCC/version token in the same transaction as the restore.
-pub(crate) fn invalidate_character_references_in_tx(
-    conn: &Connection,
-    project_id: &str,
-    character_id: &str,
-    updated_at: &str,
-) -> Result<usize> {
-    Ok(invalidate_character_references_with_events_in_tx(
-        conn,
-        project_id,
-        character_id,
-        updated_at,
-    )?
-    .len())
-}
-
 /// Invalidate every binding that names a restored character and return the
-/// same-transaction Feed events describing those authority changes.  The
-/// count-only wrapper above remains for callers that do not append a Feed.
+/// same-transaction Feed events describing those authority changes.
 pub(crate) fn invalidate_character_references_with_events_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -1588,7 +1569,7 @@ fn material_scope_integer(value: SqlValue) -> Result<i64> {
 
 #[cfg(test)]
 thread_local! {
-    pub(crate) static MATERIAL_SCOPE_PRELOAD_QUERY_COUNT: Cell<usize> = Cell::new(0);
+    pub(crate) static MATERIAL_SCOPE_PRELOAD_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Load every unique scene scope needed by one retrieval snapshot in one

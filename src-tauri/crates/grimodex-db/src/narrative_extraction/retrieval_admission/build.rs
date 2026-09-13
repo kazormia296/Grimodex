@@ -180,19 +180,3 @@ pub(in crate::narrative_extraction) fn finalize_build_candidate(
         evidence_artifacts,
     }))
 }
-
-pub(in crate::narrative_extraction) fn read_build_candidate(
-    conn: &Connection,
-    project: &str,
-    revision: &str,
-    authority: &NarrativeProjectScopeAuthorityV1,
-    material_scope_cache: &super::super::scene_scope::MaterialSceneScopeCache,
-) -> Result<std::result::Result<BuildCandidate, Reason>> {
-    let preflight = preflight_build_candidate(conn, project, revision, authority)?;
-    match preflight {
-        Ok(preflight) => {
-            finalize_build_candidate(conn, project, authority, preflight, material_scope_cache)
-        }
-        Err(reason) => Ok(Err(reason)),
-    }
-}

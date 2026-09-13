@@ -10,7 +10,12 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { SceneScopeEditor } from "./SceneScopeEditor";
-import type { RegistryUpdate, ScopeRead } from "./sceneScopeTypes";
+import type {
+  Constraint,
+  RegistryUpdate,
+  ScopeRead,
+  ScopeUpdate,
+} from "./sceneScopeTypes";
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 
@@ -36,7 +41,30 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
-vi.mock("./SceneScopeFields", () => ({ SceneScopeFields: () => null }));
+vi.mock("./SceneScopeFields", () => ({
+  SceneScopeFields: ({
+    onAxisChange,
+  }: {
+    onAxisChange: (
+      group: "queryIdentity" | "materialConstraint",
+      axis: "timeline" | "worldline" | "narrativeLayer",
+      value: Constraint,
+    ) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="scene-scope-test-edit"
+      onClick={() =>
+        onAxisChange("queryIdentity", "timeline", {
+          kind: "exact",
+          ref: "timeline:local",
+        })
+      }
+    >
+      Edit
+    </button>
+  ),
+}));
 vi.mock("./SceneScopePrincipals", () => ({ SceneScopePrincipals: () => null }));
 vi.mock("./SceneScopeRegistryEditor", () => ({
   SceneScopeRegistryEditor: ({
@@ -270,5 +298,74 @@ describe("SceneScopeEditor request epochs", () => {
     );
     expect(screen.getByText("scope refresh failed")).toBeTruthy();
     expect(invokeMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("rebases an OCC conflict and saves the local draft without navigation", async () => {
+    const initialRead = deferred<ScopeRead>();
+    const staleSave = deferred<ScopeUpdate>();
+    const recoveryRead = deferred<ScopeRead>();
+    const retrySave = deferred<ScopeUpdate>();
+    invokeMock
+      .mockReset()
+      .mockReturnValueOnce(initialRead.promise)
+      .mockReturnValueOnce(staleSave.promise)
+      .mockReturnValueOnce(recoveryRead.promise)
+      .mockReturnValueOnce(retrySave.promise);
+    render(<SceneScopeEditor node={node("scene-a")} />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
+    await act(async () => initialRead.resolve(scope("scene-a", 1)));
+
+    fireEvent.click(screen.getByTestId("scene-scope-test-edit"));
+    fireEvent.click(screen.getByTestId("scene-scope-binding-save"));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
+    expect(invokeMock.mock.calls[1][1].payload.baseVersion).toBe(1);
+    staleSave.reject(
+      new Error(
+        "NEX_SCENE_SCOPE_VERSION_MISMATCH: expected base version 1, current is 2",
+      ),
+    );
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(3));
+
+    const recovered = scope("scene-a", 2);
+    recovered.binding.queryIdentity.timeline = {
+      kind: "exact",
+      ref: "timeline:peer",
+    };
+    await act(async () => recoveryRead.resolve(recovered));
+    await waitFor(() =>
+      expect(screen.getByTestId("scene-scope-editor").textContent).toContain(
+        "v2",
+      ),
+    );
+    expect(
+      screen.getByText(
+        "Scene scope changed while you were editing. Review your draft and save again.",
+      ),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("scene-scope-binding-save"));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(4));
+    expect(invokeMock.mock.calls[3][1].payload.baseVersion).toBe(2);
+    expect(
+      invokeMock.mock.calls[3][1].payload.scope.queryIdentity.timeline,
+    ).toEqual({ kind: "exact", ref: "timeline:local" });
+    await act(async () =>
+      retrySave.resolve({
+        registry: recovered.registry,
+        binding: {
+          ...recovered.binding,
+          version: 3,
+          queryIdentity: {
+            ...recovered.binding.queryIdentity,
+            timeline: { kind: "exact", ref: "timeline:local" },
+          },
+        },
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("scene-scope-editor").textContent).toContain(
+        "v3",
+      ),
+    );
   });
 });

@@ -96,12 +96,6 @@ impl MultiCandidateFixture {
             .collect()
     }
 
-    fn roster_len(&self) -> usize {
-        let project = self.project().to_owned();
-        self.db
-            .with_read_transaction(|tx| Ok(read_eligibility_source(tx, &project)?.revisions.len()))
-            .expect("roster")
-    }
 }
 
 impl Drop for MultiCandidateFixture {
@@ -172,7 +166,7 @@ fn nir1_eligibility_source_keeps_unapproved_current_roster_and_detects_withdrawa
     let project_id = f.project().to_owned();
     let source = f
         .db
-        .with_read_transaction(|tx| Ok(read_eligibility_source(tx, &project_id)?))
+        .with_read_transaction(|tx| read_eligibility_source(tx, &project_id))
         .expect("unapproved roster");
     assert_eq!(
         source.revisions.len(),
@@ -211,7 +205,8 @@ fn nir1_compact_build_admission_matches_the_cold_reader_for_each_scene() {
         material_membership::{read_revision_material_membership, MaterialMembershipRead},
         project_scope_authority::load_live_project_scope_authority,
         retrieval_admission::{
-            build::read_build_candidate, read_retrieval_query_context,
+            build::{finalize_build_candidate, preflight_build_candidate},
+            read_retrieval_query_context,
             read_revision_retrieval_eligibility, RetrievalQueryContextRead,
             RevisionEligibilityRead,
         },
@@ -259,11 +254,19 @@ fn nir1_compact_build_admission_matches_the_cold_reader_for_each_scene() {
             let mut admitted = 0;
             let mut denied = 0;
             for revision in revisions {
-                let candidate = read_build_candidate(
+                let preflight = preflight_build_candidate(
                     tx,
                     &project_id,
                     &revision,
                     &authority,
+                )
+                .expect("cold build")
+                .expect("normal approved child");
+                let candidate = finalize_build_candidate(
+                    tx,
+                    &project_id,
+                    &authority,
+                    preflight,
                     &material_scope_cache,
                 )
                 .expect("cold build")
@@ -633,12 +636,12 @@ fn nir1_read_snapshot_keeps_unaffected_candidate_when_existing_scope_row_is_corr
     let cold = f
         .db
         .with_read_transaction(|tx| {
-            Ok(crate::narrative_extraction::read_revision_retrieval_eligibility(
+            crate::narrative_extraction::read_revision_retrieval_eligibility(
                 tx,
                 &project_id,
                 &revisions[1],
                 &query_scene,
-            )?)
+            )
         })
         .expect("corrupt scope is a normal cold-admission denial");
     assert!(matches!(
@@ -756,12 +759,12 @@ fn nir1_read_snapshot_keeps_unaffected_candidate_when_existing_scope_version_is_
     let cold = f
         .db
         .with_read_transaction(|tx| {
-            Ok(crate::narrative_extraction::read_revision_retrieval_eligibility(
+            crate::narrative_extraction::read_revision_retrieval_eligibility(
                 tx,
                 &project_id,
                 &revisions[1],
                 &query_scene,
-            )?)
+            )
         })
         .expect("REAL scope version is a normal cold-admission denial");
     assert!(matches!(
@@ -782,7 +785,11 @@ fn nir1_scope_sql_failures_propagate_from_both_readers() {
         .as_str()
         .expect("revision")
         .to_owned();
-    let query_scene_id = f.manifest["s1"].as_str().expect("query scene").to_owned();
+    // s2 is after the child's material source; s1 correctly denies before
+    // material preload with SourceNotBeforeQuery.
+    let query_scene_id = f.manifest["s2"].as_str().expect("query scene").to_owned();
+    crate::narrative_extraction::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT
+        .with(|count| count.set(0));
     f.db
         .with_conn(|conn| {
             conn.authorizer(Some(|context: AuthContext<'_>| {
@@ -792,7 +799,9 @@ fn nir1_scope_sql_failures_propagate_from_both_readers() {
                         table_name: "narrative_scene_scope_bindings",
                         ..
                     }
-                ) {
+                ) && crate::narrative_extraction::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT
+                    .with(|count| count.get() > 0)
+                {
                     Authorization::Deny
                 } else {
                     Authorization::Allow
@@ -808,6 +817,8 @@ fn nir1_scope_sql_failures_propagate_from_both_readers() {
                 result
             };
             drop(snapshot_result);
+            crate::narrative_extraction::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT
+                .with(|count| count.set(0));
             let eligibility_result = {
                 let tx = conn.unchecked_transaction()?;
                 let result = crate::narrative_extraction::read_revision_retrieval_eligibility(
@@ -818,7 +829,7 @@ fn nir1_scope_sql_failures_propagate_from_both_readers() {
                 );
                 anyhow::ensure!(
                     result.is_err(),
-                    "scope-table authorizer failure must escape cold retrieval reader"
+                    "material scope preload authorizer failure must escape cold retrieval reader"
                 );
                 result
             };
