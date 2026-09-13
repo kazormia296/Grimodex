@@ -34,8 +34,16 @@ export function parsePerformanceBenchmarkArguments(argv) {
   let outputPath = null;
   let reviewFixtureId = null;
   let retryTransientOnce = false;
+  let delimiterSeen = false;
   for (let index = 2; index < argv.length; index += 1) {
     const argument = argv[index];
+    if (argument === "--") {
+      if (delimiterSeen) {
+        throw new Error("-- may only be specified once");
+      }
+      delimiterSeen = true;
+      continue;
+    }
     if (argument === "--retry-transient-once") {
       if (retryTransientOnce) {
         throw new Error("--retry-transient-once may only be specified once");
