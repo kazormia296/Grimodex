@@ -1020,7 +1020,12 @@
         {
           "label": "50k-character runtime performance gate",
           "command": "pnpm",
-          "args": ["electron:perf:ci"],
+          "args": [
+            "electron:perf:ci",
+            "--",
+            "--output",
+            ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/runtime-metrics.json"
+          ],
           "id": "runtime.benchmark",
           "after": [
             "quality.contracts",
