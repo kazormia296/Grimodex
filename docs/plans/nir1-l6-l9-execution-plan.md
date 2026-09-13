@@ -162,13 +162,13 @@ Confirmation protocol (recorded, bounded): only an explicit user statement namin
 | D2b-1 | D2a、D1の入力契約、`native-generation-receipt` | blocked | handle、local transport、生成元receipt、dispatch拒否 |
 | D2b-2 | C、D1、D2a、D2b-1、`history-reauthorization` | blocked(typed-revision-material/4 via C／D1) | 履歴再認可、対応済みlocal、P3最終request。typed /4資格まで開始不可 |
 | E | 全機能laneとP | blocked | 24検索case、Graph/Packing、実製品journey、独立受入れ |
-| P | 固定検索性能契約 | ready-independent（測定は未実施） | 性能Holdの独立解消。typed /4と機能laneに依存せず、R0では実行しない |
+| P | 固定検索性能契約 | ready-independent（固定契約測定済み、Graph統合再確認待ち） | 固定24件のR／R+IR性能gateを通過。Graphは後続の統合再確認で判定 |
 
 評価manifestは次の既存母集団と識別子を使う。既存24件の検索case（ja/en各12件）は [`evals/nir1-retrieval/manifest.json`](../../evals/nir1-retrieval/manifest.json) を正本とし、model artifact hashも同manifestを参照してここへ重複記載しない。R0では新fixtureを追加せず、Graphは8件の固定case ID（G-01〜G-08）、Packingは12件の固定task ID（P-01〜P-12）を後続PRの評価欄へ割り当てる。全armは同じquery、manual seed、context、同じ固定token budgetを使う。
 
 | 対象 | owner lane | 期待判定 | 比較条件／positive・negative |
 | ---- | ---------- | -------- | ---------------------------- |
-| 既存24件の検索case | L0〜L5／E | RawとIRの既存非回帰を維持。R0は未測定 | `R / R+IR / R+IR+Graph` 同一入力。未対応材料・禁止寄与はnegative |
+| 既存24件の検索case | L0〜L5／E | RawとIRの既存非回帰を維持。PR-P固定性能gate通過、Graph統合再確認待ち | `R / R+IR / R+IR+Graph` 同一入力。未対応材料・禁止寄与はnegative |
 | G-01〜G-08（8 Graph case） | C | R+IRに対するGraph独自改善を事前指定1件以上、macro非回帰、Evidence妥当性100%、禁止寄与0 | positiveは実在ID・qualified材料・開示通過、negativeはScope／Freshness／identity欠落。GraphはR+IRと比較し、Rとは比較しない |
 | P-01〜P-12（12 Packing task） | D1／D2b-2 | 必須Raw／Evidence／label保持100%、禁止情報0、prose非回帰、構造taskの事前指定情報を1件以上改善 | positiveはtask別budget内の適格材料、negativeは未承認／未対応／budget超過。D1 fixtureとD2b-2／P3最終requestは別証跡 |
 
@@ -197,7 +197,7 @@ Confirmation protocol (recorded, bounded): only an explicit user statement namin
 | P-11 | 構造・required slots | Raw／Evidence／labelを同一budgetで保持しprose非回帰 | task schemaのrequired slot、approved current材料 | Raw欠落、未定義slot、Scope／Freshness不一致 |
 | P-12 | 構造・predeclared improvement | 既存ContextPlan／Raw-priority packing baselineから事前指定slotの充足を1件改善 | approved・Fresh・Scope一致、独立context、system／history／tool／context費用込みの同一budget内 | 改善0、未承認／stale、禁止情報、budget違反 |
 
-診断用の `seed-only` は品質合格の代用にせず、共通seed/contextと同一token budgetの比較条件から分離して原因を説明する。事前指定改善caseの未達、性能Hold、作者価値未測定はPASSへ読み替えない。
+診断用の `seed-only` は品質合格の代用にせず、共通seed/contextと同一token budgetの比較条件から分離して原因を説明する。事前指定改善caseの未達、Graph統合再確認のHold、作者価値未測定はPASSへ読み替えない。
 
 retrievalの比較armは `R / R+IR / R+IR+Graph` とし、Graph改善は `R+IR` に対して判定する。Packingはretrieval armをbaselineにせず、既存ContextPlan／Raw-priority packing（system／history／tool／contextの費用を含む）をPacking baselineとして同一token budgetで比較する。
 
@@ -234,7 +234,21 @@ merge前のMは次のとおりで、rootの受入れ担当が候補をfreezeし�
 
 candidateのbase・head・tree・clean state・receipt directoryは境界時点で記録する。各ステップで同じSHAを過度に照合することや、receiptの見た目だけで承認を推定することはしない。
 
-性能は先行候補のHybrid p95 68.1ms等を再測定値とせず `性能Hold` として保持する。作者効用は `author-value: not-measured` とし、技術受入れ・自動評価へ混ぜない。
+先行候補のHybrid p95 68.1ms等は再測定値にせず履歴として保持する。PR-Pの固定24件R／R+IR性能gate結果と、後続のGraph統合再確認を次節に記録する。作者効用は `author-value: not-measured` とし、技術受入れ・自動評価へ混ぜない。
+
+### PR-P 固定検索性能測定結果
+
+2026-09-13のPR-P固定測定は、正本manifestの24 query（ja/en各12）、固定Gold、各query／armの5 warmup＋30 measured（720 calls／arm）、固定AB／BA交互順序、および実Electron renderer経路を使用した。現行candidateに束縛してpersistedした固定契約結果は次のとおりである。
+
+- `Raw p95=31.5ms`、`Hybrid p95=60.8ms`。Hybridは固定上限 `65.04ms` 以下。
+- 各armで `720/720` calls completed、`failed=0`、`timeout=0`。quality／parity／Evidence gatesを含む判定は `paired-gates-passed`。
+- combined build medianは `3623.8ms` で、固定 `2T=4289.4ms` 以下。
+- 固定 `B=54.2ms`、`D=10.84ms`、`T=2144.7ms` は変更していない。Gold、閾値、case数、run数も変更せず、旧資格の即時失効、Raw継続、UI応答性の必須条件を緩めない。
+- persisted receiptは `.artifacts/nir1-retrieval/pr-p-fixed-2026-09-13-r2/` に保存した。
+
+同一固定候補で先に得たcontended run（`Raw p95=193ms`、`Hybrid p95=105ms`）は診断専用であり、受入れ証跡にはしない。別worktreeのcargo／rustc実行と高いI/O PSIがnative raw-ready tailと同時に観測されたため、`unattributed host contention` evidenceとして扱い、製品回帰とは帰属しない。固定閾値は変更しない。
+
+これによりstandaloneのP固定性能gateは完了した。PR-Pで残るのは `R+IR+Graph` 対 `R+IR` のGraph統合再確認だけであり、Full runtime performanceとauthor-valueは別の判定として扱う。
 
 ## 引き継ぐ状態と承認境界
 
@@ -242,11 +256,11 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 
 - #567でマージされたL0〜L5のRelated Scenes経路、Evidence navigation、失効・復旧契約。
 - 先行候補のFull全16 stage・verify成功と、merged masterへの反映。
-- Hybrid p95 68.1ms、固定B=54.2ms、D=10.84ms、上限65.04msの性能Hold。
+- PR-P固定24件R／R+IR性能gateは完了。固定B=54.2ms、D=10.84ms、上限65.04msを維持し、Graph統合再確認だけを残す。
 - 復旧受入れ第2版の、旧資格の即時失効、Raw継続、background再公開、再生成2秒を改善目標とする扱い。
 - NIR-0、C2-ZC、既存Scope authority、Evidence、Freshness、Revision/Decisionの責務分離。
 
-  68.1msは先行候補の測定であり、現在HEADの再測定値ではない。#570のFull 600秒は助言的なCI目標であり、NIR検索の固定性能gateとは別に扱う。
+  68.1msは先行候補の測定であり、現在HEADの再測定値ではない。#570のFull 600秒は助言的なCI目標であり、NIR検索の固定性能gateとは別に扱う。Graph統合再確認は未実施のまま保持する。
 
 ### 区分
 
@@ -273,7 +287,7 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 | D2b-1: L8-Ba | Native生成元receipt、handle・transport・dispatch検証 | D2a＋D1入力＋R0のreceipt契約 | 単独では製品送信を再開しない |
 | D2b-2: L8-Bb | 履歴再認可、対応済みlocal、最終requestとP3 | C＋D1＋D2a＋D2b-1＋R0の履歴契約 | Packingの製品公開条件の一部 |
 | E: L9 | 比較、実製品journey、独立受入れ、Full・verify、全deliverable判定 | 全機能lane＋P | NIR-1 Complete判定 |
-| P | 固定検索性能Holdの解消 | R0後。機能laneと独立に測定 | NIR-1 Complete時にHoldなし |
+| P | 固定検索性能契約の完了、Graph統合再確認 | R0後。機能laneと独立に測定 | NIR-1 Complete時にGraph統合再確認まで完了しHoldなし |
 
 R0がmergeされ、各laneの通常依存が満たされた後に限り、D2aとA1を開始できる。D2aは先行実装できるが、A1/A2の保存・reader・評価の開発を妨げない。typed /4が別途確認されるまでA2・A3・B・C・D1とそれらを消費する後続laneはblockedのままとし、Pだけは独立して測定できる。
 
@@ -448,7 +462,7 @@ Graphでは巨大frontier、単一巨大行、allocation前検査、JSON/materia
 | 必須機能                                              | 固定quality、performance、journey、独立受入れ、Full/verifyを満たした場合だけ |
 | 意図的に停止した補助機能                              | 有効化を要求しない。停止状態を記録                                           |
 | 停止経路の拒否                                        | 送信境界の必須試験として成功を要求                                           |
-| 性能Hold、必須Graph/Packing正例未達、blocked/deferred | Completeに読み替えない                                                       |
+| Graph統合再確認のHold、必須Graph/Packing正例未達、blocked/deferred | Completeに読み替えない                                                       |
 
 作者価値はauthor-value: not-measuredとして技術受入れから分離する。人間がアプリ外で入力・手動コピーした任意文章の意味まで完全追跡する保証には広げない。
 

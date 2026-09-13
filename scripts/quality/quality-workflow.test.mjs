@@ -704,7 +704,32 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
   );
   assert.match(
     executionPlan,
-    /\| P \|[^|]*\| ready-independent（測定は未実施） \|/,
+    /\| P \|[^|]*\| ready-independent（固定契約測定済み、Graph統合再確認待ち） \|/,
+  );
+  assert.match(
+    executionPlan,
+    /PR-P 固定検索性能測定結果[\s\S]*Raw p95=31\.5ms[\s\S]*Hybrid p95=60\.8ms[\s\S]*65\.04ms/is,
+    "the fixed PR-P result must remain recorded against the approved limit",
+  );
+  assert.match(
+    executionPlan,
+    /PR-P 固定検索性能測定結果[\s\S]*720\/720[\s\S]*failed=0[\s\S]*timeout=0[\s\S]*paired-gates-passed/is,
+    "the fixed PR-P availability and paired gate result must remain recorded",
+  );
+  assert.match(
+    executionPlan,
+    /PR-P 固定検索性能測定結果[\s\S]*3623\.8ms[\s\S]*2T=4289\.4ms[\s\S]*B=54\.2ms[\s\S]*D=10\.84ms[\s\S]*T=2144\.7ms/is,
+    "the fixed PR-P build result and unchanged B/D/T must remain recorded",
+  );
+  assert.match(
+    executionPlan,
+    /contended run[\s\S]*診断専用[\s\S]*unattributed host contention/is,
+    "host-contended measurements must remain diagnostic-only and unattributed",
+  );
+  assert.match(
+    executionPlan,
+    /standaloneのP固定性能gateは完了[\s\S]*Graph統合再確認だけ/is,
+    "the Graph-integrated recheck must remain pending after standalone P passes",
   );
   assert.match(
     executionPlan,
@@ -742,7 +767,7 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
     /同一.*token budget/is,
     /事前指定.*改善/,
     /全PR.*merge gate M/is,
-    /性能Hold/,
+    /Graph統合再確認のHold/,
     /author-value:\s*not-measured/,
   ]) {
     assert.match(executionPlan, phrase);
