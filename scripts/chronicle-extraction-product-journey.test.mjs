@@ -830,19 +830,48 @@ test("applied evidence requires two human-approved revision applications and one
   assert.throws(() => assertChronicleApplied(state, bundle, "scene"));
 });
 
-test("Chronicle journey keeps a restored panel open and opens a hidden panel once", async () => {
-  for (const state of ["true", "false"]) {
+test("Chronicle journey waits for layout hydration before reading or toggling a panel", async () => {
+  for (const restoredState of ["true", "false"]) {
     const calls = [];
+    let layoutReleased = false;
+    let releaseLayout;
+    const layoutReady = new Promise((resolve) => {
+      releaseLayout = resolve;
+    });
+    let state = restoredState;
     const page = {
       locator: (selector) => {
+        if (
+          selector === '[data-layout-shell][data-layout-initialized="true"]'
+        ) {
+          return {
+            waitFor: async (options) => {
+              assert.deepEqual(options, { state: "attached" });
+              calls.push("layout-ready-wait");
+              await layoutReady;
+              layoutReleased = true;
+              calls.push("layout-ready");
+            },
+          };
+        }
         assert.equal(selector, '[data-stripe-icon="chronicle"]');
         return {
-          waitFor: async () => calls.push("toggle-ready"),
+          waitFor: async () => {
+            assert.equal(layoutReleased, true);
+            calls.push("toggle-ready");
+          },
           getAttribute: async (name) => {
             assert.equal(name, "aria-pressed");
+            assert.equal(layoutReleased, true);
+            calls.push("state-read");
             return state;
           },
-          click: async () => calls.push("toggle"),
+          click: async () => {
+            assert.equal(layoutReleased, true);
+            assert.equal(state, "false");
+            calls.push("toggle");
+            state = "true";
+          },
         };
       },
       getByTitle: (title, options) => {
@@ -851,17 +880,38 @@ test("Chronicle journey keeps a restored panel open and opens a hidden panel onc
         return {
           waitFor: async (options) => {
             assert.deepEqual(options, { state: "visible" });
+            assert.equal(layoutReleased, true);
+            assert.equal(state, "true");
             calls.push("panel-visible");
           },
         };
       },
     };
-    await showChronicleFixturePanel(page);
+    const panelPromise = showChronicleFixturePanel(page);
+    await Promise.resolve();
+    assert.deepEqual(calls, ["layout-ready-wait"]);
+    assert.equal(layoutReleased, false);
+    releaseLayout();
+    await panelPromise;
     assert.deepEqual(
       calls,
-      state === "true"
-        ? ["toggle-ready", "panel-visible"]
-        : ["toggle-ready", "toggle", "panel-visible"],
+      restoredState === "true"
+        ? [
+            "layout-ready-wait",
+            "layout-ready",
+            "toggle-ready",
+            "state-read",
+            "panel-visible",
+          ]
+        : [
+            "layout-ready-wait",
+            "layout-ready",
+            "toggle-ready",
+            "state-read",
+            "toggle",
+            "panel-visible",
+          ],
     );
+    assert.equal(state, "true");
   }
 });
