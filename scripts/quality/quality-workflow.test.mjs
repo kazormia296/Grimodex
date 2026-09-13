@@ -345,7 +345,7 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   );
 });
 
-test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates explicit", async () => {
+test("NIR-1 R0 records bounded contract confirmations and keeps typed material gated", async () => {
   const executionPlan = await read("docs/plans/nir1-l6-l9-execution-plan.md");
   const roadmap = await read("docs/plans/narrative-semantic-core-roadmap.md");
   const integrationPlan = await read(
@@ -380,10 +380,14 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
   }
   assert.equal(
     (executionPlan.match(/blocked\(ref-unverified\)/g) ?? []).length,
-    6,
-    "all six unconfirmed contracts must remain blocked",
+    1,
+    "only the unconfirmed typed contract must remain ref-unverified and blocked",
   );
-  assert.match(executionPlan, /contract-delta-unresolved/);
+  assert.doesNotMatch(
+    executionPlan,
+    /contract-delta-unresolved/,
+    "the selected typed family must be concrete; only its ratification remains",
+  );
   assert.match(executionPlan, /accepted ADR009/);
   assert.match(executionPlan, /accepted ADR010/);
   assert.match(executionPlan, /accepted ADR011/);
@@ -403,7 +407,16 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
     assert.match(executionPlan, new RegExp(field));
   }
 
-  const draftRef = "nir1-l6-l9-contract-proposal/3";
+  const proposal3Ref = "nir1-l6-l9-contract-proposal/3";
+  const typedDraftRef = "nir1-l6-l9-contract-proposal/4";
+  const confirmedContractIds = [
+    "scope-storage-authority",
+    "caller-profile-egress",
+    "graph-limited-binding",
+    "native-generation-receipt",
+    "history-reauthorization",
+  ];
+  const confirmedRefFor = (contractId) => `${proposal3Ref}#${contractId}`;
   const ledgerSection = executionPlan
     .split("### 契約別の確認台帳\n", 2)[1]
     ?.split("\n### R0 security contract proposal (draft)", 1)[0];
@@ -418,13 +431,39 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
       .slice(1, -1)
       .map((cell) => cell.trim());
     assert.equal(cells.length, 9, `${contractId} ledger shape`);
-    assert.equal(cells[1].replaceAll("`", ""), draftRef);
-    assert.equal(cells[2], "none — ref-unverified");
-    assert.equal(cells[6], "blocked(ref-unverified)");
+    const draftRef = cells[1].replaceAll("`", "");
+    const confirmedRef = cells[2].replaceAll("`", "");
+    if (confirmedContractIds.includes(contractId)) {
+      assert.equal(draftRef, proposal3Ref);
+      assert.equal(confirmedRef, confirmedRefFor(contractId));
+      assert.match(cells[3], /proposal\/3 scope only/);
+      assert.equal(cells[6], "ready-after-R0-merge");
+      assert.match(cells[7], /explicit user confirmation recorded/);
+      assert.match(cells[8], new RegExp(escapeRegExp(confirmedRefFor(contractId))));
+    } else {
+      assert.equal(contractId, "typed-revision-material");
+      assert.equal(draftRef, typedDraftRef);
+      assert.equal(confirmedRef, "none — ref-unverified");
+      assert.match(cells[3], /selected Option B/);
+      assert.equal(cells[6], "blocked(ref-unverified)");
+      assert.match(cells[7], /proposal\/4 requires separate exact user confirmation/);
+      assert.match(
+        cells[8],
+        /I confirm draftRef nir1-l6-l9-contract-proposal\/4 for contractId typed-revision-material\./,
+      );
+    }
     return row;
   });
   assert.equal(ledgerRows.length, 6);
-  assert.match(executionPlan, /`draftRef`[^\n]*nir1-l6-l9-contract-proposal\/3/);
+  assert.equal(
+    ledgerRows.filter((row) => row.includes("ready-after-R0-merge")).length,
+    5,
+    "exactly five proposal/3 rows are confirmed and ready after merge",
+  );
+  assert.match(
+    executionPlan,
+    /confirmed rows retain `nir1-l6-l9-contract-proposal\/3`; pending typed row uses `nir1-l6-l9-contract-proposal\/4`/,
+  );
   assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/1/);
   assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/2/);
 
@@ -432,18 +471,27 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
     .split("### R0 security contract proposal (draft)\n", 2)[1]
     ?.split("\n### lane開始判定と評価manifest", 1)[0];
   assert.ok(proposalSection, "R0 security contract proposal must be present");
-  assert.match(proposalSection, /draftRef[^\n]*nir1-l6-l9-contract-proposal\/3/);
+  assert.match(
+    proposalSection,
+    /draftRef[^\n]*nir1-l6-l9-contract-proposal\/3[^\n]*pending typed row uses[^\n]*nir1-l6-l9-contract-proposal\/4/,
+  );
   for (const confirmationRule of [
-    /Confirmation protocol.*only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that row/is,
+    /Confirmation protocol.*only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that one row/is,
+    /stable ledger form is `draftRef#contractId`/,
+    /five.*refs.*record separate confirmations.*exactly `scope-storage-authority`.*`caller-profile-egress`.*`graph-limited-binding`.*`native-generation-receipt`.*`history-reauthorization`/is,
     /Plan agreement.*not a ratification/is,
     /active goal.*not a ratification/is,
     /merge instruction.*not a ratification/is,
     /this proposal is fine.*not a ratification/is,
     /Confirming one row does not confirm its dependencies/i,
-    /typed-revision-material.*cannot be confirmed until.*family choice.*incremented proposal ref/is,
+    /user-selected Option B family is concrete.*nir1-l6-l9-contract-proposal\/4.*typed-revision-material.*remains unconfirmed/is,
   ]) {
     assert.match(proposalSection, confirmationRule);
   }
+  assert.match(
+    proposalSection,
+    /I confirm draftRef nir1-l6-l9-contract-proposal\/4 for contractId typed-revision-material\./,
+  );
   assert.match(
     proposalSection,
     /runtime activation[^\n]*(?:追加しない|未完了)/i,
@@ -632,7 +680,36 @@ test("NIR-1 R0 keeps #572 partial, downstream contracts blocked, and gates expli
     executionPlan,
     /Native解析後のtextをtrim、Unicode正規化、renderer加工せずhashする/,
   );
-  assert.match(proposalSection, /typed-revision-material[\s\S]*contract-delta-unresolved/);
+  assert.match(
+    proposalSection,
+    /typed-revision-material[\s\S]*User-selected Option B defines.*independent Entity／Relation assertion family `nir1\.entity-relation@1`/,
+  );
+  assert.match(
+    proposalSection,
+    /typed-revision-material[\s\S]*same-project visible Codex entities／relations.*no scene／Chronicle／artifact／import／author-declared material/is,
+  );
+  assert.match(
+    proposalSection,
+    /typed-revision-material[\s\S]*do not copy full closure bodies or add an assertion table, Consumer, or authority/,
+  );
+  assert.match(
+    proposalSection,
+    /typed-revision-material[\s\S]*narrative_proposal_revisions\.id[\s\S]*narrative_proposal_decisions[\s\S]*narrative_consumer_freshness/is,
+  );
+  assert.match(executionPlan, /\| D2a \|[^|]*\| ready-after-R0-merge \|/);
+  assert.match(executionPlan, /\| A1 \|[^|]*\| ready-after-R0-merge \|/);
+  assert.match(
+    executionPlan,
+    /\| A2 \|[^|]*\| blocked\(typed-revision-material\/4\) \|/,
+  );
+  assert.match(
+    executionPlan,
+    /\| P \|[^|]*\| ready-independent（測定は未実施） \|/,
+  );
+  assert.match(
+    executionPlan,
+    /R0がmergeされ.*D2aとA1を開始できる.*typed \/4が別途確認されるまで.*blocked.*Pだけは独立/is,
+  );
 
   assert.match(
     executionPlan,
